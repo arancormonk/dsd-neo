@@ -2602,7 +2602,9 @@ suite runs under this compiler.
     admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
     `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
     always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
-    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. The records keyed to a call epoch or
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
+    bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
+    from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
     transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
     call, the last admitted M17 META) are cleared when the call state starts over
     (`call_state_forget_epoch_records()`: a new call-state extension restarts the epochs at 1, as another engine run on

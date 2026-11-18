@@ -239,6 +239,9 @@ typedef struct {
     uint8_t reason_is_user_data;
 } lip_fields;
 
+/* TS 100 392-18-1 Table 6.94: "Emergency condition is detected". */
+enum { LIP_REASON_EMERGENCY = 2U };
+
 static void
 lip_fields_from_usbd(const uint8_t* input, lip_fields* f) {
     f->time_elapsed = (uint8_t)convert_bits_into_output(input + 4, 2);
@@ -291,6 +294,11 @@ lip_parse_short_report(const uint8_t* bits, size_t bit_count, lip_short_report* 
     lip_fields f;
     lip_fields_from_short_report(bits, &f);
     lip_fields_to_report(&f, out);
+    if (!f.reason_is_user_data && f.reason == LIP_REASON_EMERGENCY) {
+        /* The short report's own reason for sending (Table 6.94). A DMR USBD reply's 3-bit reason is another table
+           (TS 102 361-4 Table 6.80), where no code means an emergency. */
+        out->flags = (uint16_t)(out->flags | DSD_POS_FLAG_EMERGENCY);
+    }
     return 1;
 }
 

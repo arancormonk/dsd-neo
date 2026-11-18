@@ -327,6 +327,41 @@ test_codes(void) {
     session_close(&s);
 }
 
+/* The type of additional data and its value (table 6.1) of @p lip: 0 a reason for sending, 1 user-defined data. */
+static void
+lip_set_additional(ttb_block* lip, uint32_t user_data, uint32_t value) {
+    lip->bits[67] = (uint8_t)user_data;
+    for (int i = 0; i < 8; i++) {
+        lip->bits[68 + i] = (uint8_t)((value >> (7 - i)) & 1U);
+    }
+}
+
+/* Reason for sending 2, "Emergency condition is detected" (table 6.94), marks the record as an emergency, so the same
+ * place reported again as an emergency is no repeat of the ordinary report; user-defined data 2 is no reason. */
+static void
+test_emergency_reason(void) {
+    session s = session_open();
+    ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 0, 0);
+    ttb_block c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    lip_set_additional(&lip, 0U, 2U);
+    c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    dsd_position_fix rec[4];
+    assert(feed_since(&s, 0, rec, 4) == 2);
+    assert((rec[0].flags & DSD_POS_FLAG_EMERGENCY) == 0U && (rec[1].flags & DSD_POS_FLAG_EMERGENCY) != 0U);
+    assert(rec[1].lat_e7 == rec[0].lat_e7 && rec[1].lon_e7 == rec[0].lon_e7);
+    assert((notice_row(&s)->pos.flags & DSD_POS_FLAG_EMERGENCY) != 0U);
+    session_close(&s);
+
+    s = session_open();
+    lip_set_additional(&lip, 1U, 2U);
+    c = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    send_sds(&s, &c, 0, 0);
+    assert(feed_since(&s, 0, rec, 4) == 1 && (rec[0].flags & DSD_POS_FLAG_EMERGENCY) == 0U);
+    session_close(&s);
+}
+
 /* What is not published: a report at exactly (0, 0) is refused, a report on a carrier no earlier CRC-passed block
  * proved waits like the notice, and a long report is named, not decoded. None prints coordinates. */
 static void
@@ -562,6 +597,7 @@ int
 main(void) {
     test_direct_with_and_without_fcs();
     test_codes();
+    test_emergency_reason();
     test_not_published();
     test_undecoded();
     test_concatenated();

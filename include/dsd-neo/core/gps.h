@@ -64,8 +64,9 @@ typedef struct {
     uint32_t err_m;              /**< Table 6.93: codes 0..5 are 2 m..200 km, 6 is 200 km (a lower bound), 7 is 0 */
     uint16_t speed_dkmh;         /**< 0.1 km/h (Table 6.51); 126 is 1043 km/h (a lower bound), 127 is unknown */
     uint16_t heading_ddeg;       /**< 0.1 degree (Table 6.45): code x 225; 15 is 3375 and ambiguous */
-    uint16_t flags;              /**< dsd_position_flag: SPEED_LOWER_BOUND, ERR_LOWER_BOUND, HEADING_AMBIGUOUS and
-                                   VALIDITY_UNKNOWN (position error 7, decision D11) */
+    uint16_t flags;              /**< dsd_position_flag: SPEED_LOWER_BOUND, ERR_LOWER_BOUND, HEADING_AMBIGUOUS,
+                                   VALIDITY_UNKNOWN (position error 7, decision D11) and EMERGENCY (reason for sending 2,
+                                   "Emergency condition is detected", Table 6.94; never from user-defined data) */
     uint8_t time_elapsed;        /**< Table 6.111 code 0..3 (dsd_position_fix::age_class) */
     uint8_t position_error;      /**< Table 6.93 code 0..7 */
     uint8_t velocity_code;       /**< Table 6.51 code 0..127 */
