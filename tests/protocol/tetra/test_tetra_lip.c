@@ -464,7 +464,9 @@ test_undecoded(void) {
 
 /* A concatenated message (PID 12, or 140 with SDS-TL) whose payload PID is 10 is a LIP PDU once complete. Its parts
  * must come from one reception: across a carrier boundary between them, nothing of the message is published under the
- * reception the receiver is on now, neither its position nor its notice. */
+ * reception the receiver is on now, neither its position nor its notice. The part left from the other reception is
+ * dropped before the new part is taken: the message retransmitted whole on the new reception completes, its part 1 no
+ * longer paired with the old part 2. */
 static void
 test_concatenated(void) {
     const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
@@ -484,7 +486,7 @@ test_concatenated(void) {
         const Event_History* row = notice_row(&s);
         dsd_position_fix rec[2];
         if (moved) {
-            assert(strstr(s.log, "src_SSI=4242 dst_SSI=257 withheld (reception changed)") != NULL);
+            assert(strstr(s.log, "TETRA SDS LIP") == NULL);
             for (int i = 0; i < 255; i++) {
                 const Event_History* any = &s.state->event_history_s[0].Event_History_Items[i];
                 assert(strstr(any->event_string, "SDS SRC: 4242") == NULL && any->pos.valid == 0U);
@@ -493,6 +495,13 @@ test_concatenated(void) {
             char lfile[512];
             read_lfile(&s, lfile, sizeof lfile);
             assert(lfile[0] == '\0');
+            /* The rest of the retransmission, on the reception it began on: the whole message is the report. */
+            c = sds_concat_part(SENDER_SSI, transport, 5, 2, lip.bits + 40, lip.n - 40);
+            send_sds(&s, &c, 0, 0);
+            row = notice_row(&s);
+            assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);
+            assert(row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->source_id == SENDER_SSI);
+            assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].source_id == SENDER_SSI);
         } else {
             assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
             assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);

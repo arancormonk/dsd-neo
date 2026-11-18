@@ -961,15 +961,19 @@ sds_concat_same_party(const sds_concat_party* a, const sds_concat_party* b) {
 }
 
 /* The context collecting @p part's message (the same sender, addressed party, reference and transport): the matching
- * one, else a free one, else the stalest. Contexts idle for
- * longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way. */
+ * one, else a free one, else the stalest. Contexts idle for longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way,
+ * and so are those begun on another reception (a retune, a trunk-scan target switch or a received identity change
+ * since their first part): their parts are another reception's message, which a part heard now never completes. */
 static sds_concat_ctx*
-sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* part, uint64_t now_ms) {
+sds_concat_find(const dsd_state* state, struct tetra_sds_concat_store* store, const sds_concat_part* part,
+                uint64_t now_ms) {
     sds_concat_ctx* free_ctx = NULL;
     sds_concat_ctx* oldest = &store->ctx[0];
     for (unsigned i = 0; i < SDS_CONCAT_CONTEXTS; i++) {
         sds_concat_ctx* c = &store->ctx[i];
-        if (c->valid && now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS) {
+        if (c->valid
+            && (now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS
+                || (c->received_count > 0 && !dsd_position_origin_matches(state, &c->origin)))) {
             sds_concat_clear(c);
         }
         if (c->valid && sds_concat_same_sender(&c->src, &part->src) && sds_concat_same_party(&c->dst, &part->dst)
@@ -1061,7 +1065,8 @@ tetra_mle_forget_reassembly(dsd_state* state) {
 
 /* Add one well-formed part (sds_read_concat_control()) to the reassembly of @p ctx's TETRA state and report the message
  * state in @p status. A message's first part to arrive notes the reception it came from, which a complete message
- * keeps (a position it carries is refused when a later part came from another reception). */
+ * keeps; a part heard on another reception starts the message over (sds_concat_find()), so the parts of one message
+ * all come from one reception. */
 static int
 sds_concat_submit(const mle_ctx* ctx, const sds_concat_part* part, sds_concat_status* status) {
     struct tetra_sds_concat_store* store = sds_concat_store(ctx->ts);
@@ -1069,7 +1074,7 @@ sds_concat_submit(const mle_ctx* ctx, const sds_concat_part* part, sds_concat_st
         return SDS_CONCAT_REJECTED;
     }
     const uint64_t now_ms = dsd_decode_now_mono_ms();
-    sds_concat_ctx* c = sds_concat_find(store, part, now_ms);
+    sds_concat_ctx* c = sds_concat_find(ctx->state, store, part, now_ms);
     if (c->received_count == 0) {
         dsd_position_origin_capture(ctx->opts, ctx->state, &c->origin);
     }
