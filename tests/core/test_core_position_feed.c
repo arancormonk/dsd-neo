@@ -699,6 +699,37 @@ test_generation_moves_with_dmr_burst_mode(void) {
     free_state(st);
 }
 
+/* Issue #800, fail closed: two reports whose receptions no scope names are one reception only within one reception
+ * generation. On conventional DMR heard from PCM input (no tuned frequency, no network identity) a colour-code change
+ * moves the generation and leaves both reception scopes unknown: the same radio's unchanged checked report on colour
+ * code 1, then on colour code 2 within the repeat window, is a new record. On colour code 1 both times it is a repeat. */
+static void
+test_unscoped_generation_change_is_not_a_repeat(void) {
+    for (int change = 0; change <= 1; change++) {
+        dsd_state* st = new_state();
+        assert(dsd_position_feed_start(st) == 0);
+        clock_at_ms(T0_MS);
+        dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        dsd_position_fix f = base_fix();
+        assert(dsd_position_admit(NULL, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT);
+        assert(f.reception_scope.kind == DSD_POS_SCOPE_NONE && f.freq_hz == 0);
+        const uint64_t first_gen = f.origin_gen;
+        if (change) {
+            dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 2U);
+        }
+        clock_at_ms(T0_MS + 1000U);
+        f = base_fix();
+        const dsd_position_admit_result r = dsd_position_admit(NULL, st, &f, 1, 1, NULL);
+        assert(f.reception_scope.kind == DSD_POS_SCOPE_NONE && (f.origin_gen != first_gen) == (change != 0));
+        if (r != (change ? DSD_POSITION_ADMITTED_KEPT : DSD_POSITION_ADMITTED_NOT_KEPT)) {
+            DSD_FPRINTF(stderr, "FAIL: unscoped reports %s were %s\n", change ? "of two generations" : "of one",
+                        change ? "folded" : "kept twice");
+            exit(1);
+        }
+        free_state(st);
+    }
+}
+
 static void
 test_anonymous_never_fold(void) {
     dsd_state* st = new_state();
@@ -986,6 +1017,7 @@ main(void) {
     test_phase_change_is_not_a_repeat();
     test_generation_moves_with_retune_and_phase();
     test_generation_moves_with_dmr_burst_mode();
+    test_unscoped_generation_change_is_not_a_repeat();
     test_track_table_forgets_the_oldest();
     test_ring_wrap_and_read();
     test_read_edges();

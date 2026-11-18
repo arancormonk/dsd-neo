@@ -2520,7 +2520,10 @@ suite runs under this compiler.
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
   equal, where it was heard included: protocol class, slot, tuned frequency, reception scope and label, so the same fix
   on the other slot, another visited network or the other P25 phase is a new record (Phase 1 and Phase 2 TDMA slot 1
-  publish one slot value; a radio that changes phase keeps both records, while both polarities of one phase fold); kept less than 30 s ago on the decode clock; anonymous sources never
+  publish one slot value; a radio that changes phase keeps both records, while both polarities of one phase fold;
+  where either report's reception scope is unknown, only the same reception generation is one place, so two
+  conventional receptions no scope names, a colour code apart, keep both records); kept less than 30 s ago on the
+  decode clock; anonymous sources never
   fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
   producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
   takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0

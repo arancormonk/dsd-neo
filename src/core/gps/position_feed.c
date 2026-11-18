@@ -344,13 +344,20 @@ dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b) {
 }
 
 /* Where a reader sees a report was heard, and the label it was shown under: its protocol class, slot, tuned frequency,
- * reception scope and label. The protocol family is the track's, and a burst of the other polarity is the same carrier;
+ * reception scope and label, and where no scope names the reception, its reception generation. The protocol family is the track's, and a burst of the other polarity is the same carrier;
  * but P25 Phase 1 and Phase 2 are two receptions (dsd_sync_protocol_class(), issue #800), though Phase 1 and a
  * Phase 2 report of TDMA slot 1 publish one slot value: a radio that changes phase keeps both records. */
 static int
 pos_reception_published_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
     /* A slot nobody knows is no slot another report was heard on. */
     if (((a->flags | b->flags) & (unsigned)DSD_POS_FLAG_SLOT_UNKNOWN) != 0U) {
+        return 0;
+    }
+    /* Two unknown receptions are no evidence of one (issue #800, fail closed): with no scope to compare, only the same
+       reception generation is (a conventional carrier that relocks to another colour code keeps no scope either). */
+    const int unscoped = a->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_NONE
+                         || b->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_NONE;
+    if (unscoped && a->origin_gen != b->origin_gen) {
         return 0;
     }
     return dsd_sync_protocol_class(a->protocol) == dsd_sync_protocol_class(b->protocol) && a->slot == b->slot
