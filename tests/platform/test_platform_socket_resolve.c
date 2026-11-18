@@ -155,22 +155,33 @@ expect_udp_loopback_round_trips(void) {
         goto done;
     }
     /* The kernel keeps the timeout in its own clock ticks and rounds it up to a whole tick (Linux stores jiffies), so
-       it reads back as 1.25 s plus less than one tick: 1.253333 s on a 300 Hz kernel. One tick is at most 10 ms (the
-       slowest kernel clock, 100 Hz). */
-    const long long expected_us = 1250000LL;
-    const long long max_tick_us = 10000LL;
+       it reads back as 1.25 s plus up to a tick, whose length is the kernel's (3.33 ms at 300 Hz, 20 ms at 50 Hz). The
+       wrapper's timeout must read back exactly as 1.25 s set with setsockopt() directly on another socket does. */
     struct timeval got_tv;
+    struct timeval native_tv;
     int got_len = (int)sizeof(got_tv);
-    if (dsd_socket_getsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &got_tv, &got_len) != 0 || got_len != (int)sizeof(got_tv)) {
+    socklen_t native_len = (socklen_t)sizeof(native_tv);
+    const struct timeval requested_tv = {.tv_sec = 1, .tv_usec = 250000};
+    dsd_socket_t reference = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (reference == DSD_INVALID_SOCKET
+        || setsockopt(reference, SOL_SOCKET, SO_RCVTIMEO, &requested_tv, (socklen_t)sizeof(requested_tv)) != 0
+        || getsockopt(reference, SOL_SOCKET, SO_RCVTIMEO, &native_tv, &native_len) != 0
+        || native_len != (socklen_t)sizeof(native_tv)) {
+        DSD_FPRINTF(stderr, "native receive timeout reference failed\n");
+        rc = 1;
+    } else if (dsd_socket_getsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &got_tv, &got_len) != 0
+               || got_len != (int)sizeof(got_tv)) {
         DSD_FPRINTF(stderr, "receive timeout read-back failed\n");
         rc = 1;
-    } else {
-        const long long got_us = (long long)got_tv.tv_sec * 1000000LL + (long long)got_tv.tv_usec;
-        if (got_us < expected_us || got_us - expected_us >= max_tick_us) {
-            DSD_FPRINTF(stderr, "receive timeout round-trip mismatch: %lld us, expected %lld us up to one tick more\n",
-                        got_us, expected_us);
-            rc = 1;
-        }
+    } else if (got_tv.tv_sec != native_tv.tv_sec || got_tv.tv_usec != native_tv.tv_usec) {
+        DSD_FPRINTF(stderr,
+                    "receive timeout round-trip mismatch: %lld.%06lld s, the kernel keeps 1.25 s as %lld.%06lld s\n",
+                    (long long)got_tv.tv_sec, (long long)got_tv.tv_usec, (long long)native_tv.tv_sec,
+                    (long long)native_tv.tv_usec);
+        rc = 1;
+    }
+    if (reference != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(reference);
     }
 
     errno = 0;
