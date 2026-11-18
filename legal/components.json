@@ -784,6 +784,35 @@
         "packaging/windows/PThreads4W-NOTICE.txt": "ab620b4fe865583cca883b258f728f7f2234802f7c1b8d74fdb6a4dd2642ae2c",
         "packaging/windows/PThreads4W-CONTRIBUTORS.txt": "effb91775c0046810206ca4b1fcd5e9cac856b99bb54db80bab0069d14ef5eca"
       }
+    },
+    {
+      "id": "vcpkg-ports",
+      "name": "vcpkg port recipes",
+      "paths": [
+        "vcpkg-ports/soapysdr/",
+        "vcpkg-ports/rtlsdr/",
+        "vcpkg-ports/portaudio/",
+        "vcpkg-ports/LICENSE-vcpkg.txt"
+      ],
+      "distribution": [
+        "source"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "notices": [
+        "vcpkg-ports/LICENSE-vcpkg.txt"
+      ],
+      "assessment": "The soapysdr and rtlsdr overlays are copies of vcpkg's builtin ports at the manifest baseline and the portaudio overlay of its port-version 8, each with dsd-neo changes its portfile names (GPL-3.0-or-later). vcpkg's LICENSE.txt at the baseline, with Microsoft's notice, is kept beside them as vcpkg-ports/LICENSE-vcpkg.txt. These are build recipes: no vcpkg code is compiled into a release package (the rtlsdr .diff files and jack.diff change build files; fix-guid-linker-errors.patch carries PortAudio's own upstream commits), so the packages do not carry the notice.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "vcpkg-ports/LICENSE-vcpkg.txt": "1ee376fc340e0aa6ad6a3581c94126e741468705096ac92263048a21daa86460"
+      }
     }
   ]
 }

@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+# This file, usage and vcpkg.json are copied from vcpkg's builtin port,
+# ports/soapysdr at the manifest baseline, vcpkg commit
+# 9eec002df1cd109f8f104cd966a763daf9751489; Copyright (c) Microsoft Corporation,
+# MIT license in vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (the tools
+# feature, the pin and these comments) are GPL-3.0-or-later.
 # Overlay of vcpkg's builtin soapysdr port (0.8.1 at the manifest baseline),
 # which never builds SoapySDR's apps. The tools feature adds SoapySDRUtil: the
 # Windows ZIP ships it next to SoapySDR.dll, so a user can list the modules that

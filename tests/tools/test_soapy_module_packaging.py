@@ -71,6 +71,12 @@ LIBUSB_ATTRIBUTIONS = (
     "Hash table functions adapted from glibc, by Ulrich Drepper et al.", "Major code testing contribution by Xiaofan Chen",
     "Other contributors:")
 MIT_GRANT = "The above copyright notice and this permission notice shall be included"
+# The overlays copied from vcpkg's builtin ports (MIT, Microsoft) -> where they came from. The others are dsd-neo's own.
+VCPKG_PORT_COPIES = {
+    "soapysdr": "ports/soapysdr at the manifest baseline",
+    "rtlsdr": "ports/rtlsdr at the manifest baseline",
+    "portaudio": "ports/portaudio at port-version 8",
+}
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
 
 
@@ -266,6 +272,39 @@ class SoapyModulePackaging(unittest.TestCase):
                          "August 17th, 2003")
         self.assertIn("licenses/BSL-1.0.txt", re.search(r"required=\(([^\n]+)\)",
                                                         read(".github/workflows/linux-appimage.yaml")).group(1).split())
+
+    def test_vcpkg_port_copies_keep_the_vcpkg_notice(self):
+        # vcpkg's MIT license asks that its notice stay with copies of its files: the overlays copied from its ports
+        # keep it beside them, and every portfile says whose it is.
+        notice = read("vcpkg-ports/LICENSE-vcpkg.txt")
+        self.assertTrue(notice.startswith("MIT License\n\nCopyright (c) Microsoft Corporation\n"), notice[:80])
+        self.assertIn(MIT_GRANT, notice.replace("\n", " "))
+        baseline = json.loads(read("vcpkg.json"))["builtin-baseline"]
+        overlays = sorted(p.name for p in (ROOT / "vcpkg-ports").iterdir() if p.is_dir())
+        for name in overlays:
+            portfile = read(f"vcpkg-ports/{name}/portfile.cmake")
+            with self.subTest(port=name):
+                if name in VCPKG_PORT_COPIES:
+                    self.assertTrue(portfile.startswith("# SPDX-License-Identifier: GPL-3.0-or-later AND MIT\n"),
+                                    portfile[:80])
+                    header = " ".join(line.lstrip("# ") for line in portfile.split("\n\n", 1)[0].splitlines())
+                    for words in ("Copyright (c) Microsoft Corporation", "vcpkg-ports/LICENSE-vcpkg.txt",
+                                  VCPKG_PORT_COPIES[name], "dsd-neo's changes"):
+                        self.assertIn(words, header)
+                    if "manifest baseline" in VCPKG_PORT_COPIES[name]:
+                        self.assertIn(baseline, header)
+                else:
+                    self.assertTrue(portfile.startswith("# SPDX-License-Identifier: GPL-3.0-or-later\n"),
+                                    portfile[:80])
+        component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "vcpkg-ports")
+        self.assertEqual((component["license_declared"], component["license_concluded"]), ("MIT", "MIT"))
+        self.assertEqual(component["notices"], ["vcpkg-ports/LICENSE-vcpkg.txt"])
+        # Build recipes, not compiled into a release: the packages need not carry the notice.
+        self.assertEqual(component["distribution"], ["source"])
+        self.assertEqual(sorted(component["paths"]),
+                         sorted([f"vcpkg-ports/{name}/" for name in VCPKG_PORT_COPIES] + ["vcpkg-ports/LICENSE-vcpkg.txt"]))
+        self.assertIn('"vcpkg-ports"', read("tools/legal_inventory.py"))
+        self.assertIn("vcpkg-ports/LICENSE-vcpkg.txt", read("THIRD_PARTY.md"))
 
     def test_staging_ships_every_notice(self):
         script = read("tools/windows/stage_release_tree.ps1")

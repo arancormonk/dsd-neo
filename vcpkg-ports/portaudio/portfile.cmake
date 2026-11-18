@@ -1,3 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+# This file, vcpkg.json, jack.diff and fix-guid-linker-errors.patch (PortAudio's
+# own upstream commits) are copied from vcpkg's builtin port, ports/portaudio at
+# port-version 8 (git tree 47dce0abd35ae2790f4fa16d09279a80f601db93, the last
+# without the asio feature), Copyright (c) Microsoft Corporation, MIT license in
+# vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (PA_USE_ASIOSDK declared
+# MAYBE_UNUSED_VARIABLES, which keeps vcpkg from warning about it, the
+# formatting and these comments) are GPL-3.0-or-later.
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO PortAudio/portaudio

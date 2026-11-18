@@ -57,6 +57,10 @@ rights and distribution issues before claiming GPL-compliant redistribution.
   release job refuses a tree that lacks one. SoapySDR's BSL-1.0 text is
   `LICENSES/BSL-1.0.txt`. Corresponding source for the LGPL libusb build stays
   under CORRESPONDING-SOURCE.
+- Keep vcpkg's MIT license and Microsoft's notice beside the overlays copied
+  from its ports (`soapysdr`, `rtlsdr`, `portaudio`) as
+  `vcpkg-ports/LICENSE-vcpkg.txt`; each copied portfile names its source port
+  and the dsd-neo changes. No vcpkg code reaches a release package.
 - Separate workflow concurrency by event and explicitly gate downstream
   Android, nightly and AUR jobs on successful prerequisites plus
   `!cancelled()`, so a skipped PR-only classifier does not suppress publication.

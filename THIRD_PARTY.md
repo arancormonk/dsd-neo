@@ -248,3 +248,11 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, are kept in
   `packaging/windows/` and shipped as `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
   `licenses/PThreads4W-CONTRIBUTORS.txt`.
+
+## vcpkg Port Recipes
+
+- **vcpkg** (Copyright (c) Microsoft Corporation, https://github.com/microsoft/vcpkg) - MIT. The `soapysdr` and `rtlsdr`
+  overlays in `vcpkg-ports/` are copies of vcpkg's builtin ports at the manifest baseline, and `portaudio` of its
+  builtin port at port-version 8, each with the dsd-neo changes its `portfile.cmake` names (GPL-3.0-or-later). vcpkg's
+  license and notice are kept beside them as `vcpkg-ports/LICENSE-vcpkg.txt`. The recipes only drive the Windows
+  build: no vcpkg code is compiled into a release package, so the packages do not carry this notice.
