@@ -2566,10 +2566,17 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
     // delivers it again (a replay after an upgrade).
     fill_carrier(logged, row);
-    // A notice an older build stored keeps its detail as one text: the repeat (the same detail) gives it its parts.
+    // A notice an older build stored keeps its detail as one text: the repeat (the same detail) gives it its parts, and
+    // the name this build gives the delivery (notice_texts_same() matched the older one against it): an unsummarised
+    // notice is named by its whole detail line now, so a later replay, neither row legacy any more, compares the two
+    // as rows of this build and finds it.
     if (logged.messageText.isEmpty() && !row_gps_known(logged)) {
         take_message(logged, row);
         take_gps(logged, row);
+        if (!notice_is_legacy(logged)) {
+            logged.name = row.name;
+            logged.legacyDetail.clear();
+        }
     }
     fill_identity(logged, row);
     drop_anonymous_gps_of_named(logged);
@@ -2577,8 +2584,9 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     unionFragments(logged, row.fragments);
     (void)receive_adopt_identity(logged, row);
     const QModelIndex idx = index(repeated);
-    Q_EMIT dataChanged(idx, idx,
-                       {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole, DetailRole});
+    Q_EMIT dataChanged(
+        idx, idx,
+        {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole, DetailRole, NameRole});
     return true;
 }
 

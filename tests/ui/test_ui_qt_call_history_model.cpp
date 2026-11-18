@@ -5637,7 +5637,30 @@ test_repeated_legacy_notice_matches_its_detail(void) {
         deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", "Another message");
         model.refresh(ring.state);
         expect("legacy notice: a delivery with another message is another row", model.count() == 3);
+        // The migrated rows carry the name this build gives the deliveries, so a second replay, with neither row legacy
+        // any more, still finds them.
+        const QString line = QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000");
+        QStringList names;
+        for (int i = 0; i < model.count(); i++) {
+            names.append(model.data(model.index(i), CallHistoryModel::NameRole).toString());
+        }
+        expect("legacy notice: the unsummarised notice is named by its whole detail line now",
+               names.contains(line) && names.contains(QStringLiteral("NMEA from 44")));
+        RingFixture again;
+        deliver(again, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(again, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(again.state);
+        expect("legacy notice: a second replay logs no new row", model.count() == 3);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
     }
+    CallHistoryModel reloaded;
+    reloaded.beginSession();
+    RingFixture third;
+    deliver(third, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+    deliver(third, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+    reloaded.refresh(third.state);
+    expect("legacy notice: a replay after a reload logs no new row", reloaded.count() == 3);
 }
 
 /* Issue #800, B5: on the single-slot DMR decoder a fragment whose over-the-air slot was still pending merges into a
