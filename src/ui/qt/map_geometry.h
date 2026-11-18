@@ -210,18 +210,32 @@ dash_hidden_segment(DashWalk& walk, float px, float py, float qx, float qy, floa
     return added;
 }
 
-/** @brief Walk a segment the view shows, cutting it into dashes. */
+/**
+ * @brief Walk a segment the view shows, cutting it into dashes.
+ *
+ * The distance along it is kept in double, so a dash a hundredth of a pixel
+ * long still moves it on along a segment of any length a view can show. A
+ * segment so long that a step no longer moves it (only possible with no clip)
+ * draws nothing past that point and keeps only the pattern's phase.
+ */
 inline int
 dash_shown_segment(DashWalk& walk, float px, float py, float qx, float qy, float len, const TrailStyle& style,
                    std::vector<StrokeVertex>& out) {
     int added = 0;
-    float t = 0.0F;
-    while ((len - t) > walk.remaining) {
-        t += walk.remaining;
-        const float k = t / len;
-        added += dash_toggle(walk, px + ((qx - px) * k), py + ((qy - py) * k), style, out);
+    const double length = len;
+    double t = 0.0;
+    while ((length - t) > static_cast<double>(walk.remaining)) {
+        const double next = t + static_cast<double>(walk.remaining);
+        const float k = static_cast<float>(next / length);
+        const float mx = px + ((qx - px) * k);
+        const float my = py + ((qy - py) * k);
+        if (!(next > t)) {
+            return added + dash_hidden_segment(walk, mx, my, qx, qy, static_cast<float>(length - t), style, out);
+        }
+        t = next;
+        added += dash_toggle(walk, mx, my, style, out);
     }
-    walk.remaining -= (len - t);
+    walk.remaining -= static_cast<float>(length - t);
     if (walk.on) {
         walk.xs.push_back(qx);
         walk.ys.push_back(qy);
@@ -312,9 +326,11 @@ usable_pen(const TrailStyle& style) {
  * @brief Stroke a trail, appending its triangles; returns vertices added.
  *
  * A point with a non-finite coordinate breaks the trail there: the runs either
- * side are stroked apart, never joined across it. Callers mark the gaps the
- * position model reports (lost reports, a new stream) the same way, so no line
- * is drawn across missing positions. A run of fewer than two usable points
+ * side are stroked apart, never joined across it. map_math::project_track()
+ * writes a non-finite world point (a track's break) as exactly that, so a
+ * caller marks the gaps the position model reports (lost reports, a new
+ * stream) with a non-finite point before projecting, and no line is drawn
+ * across missing positions. A run of fewer than two usable points
  * draws nothing.
  *
  * A solid trail costs a bounded number of vertices per point wherever it lies.
@@ -523,10 +539,11 @@ atlas_cell(int column, int row, int cell_px, int atlas_width_px, int atlas_heigh
 /**
  * @brief A marker sprite centred on (@p cx, @p cy), @p size logical pixels square, appending 6 vertices.
  *
- * The quad's top left corner is snapped to the device pixel grid at
- * @p device_pixel_ratio so a sprite drawn at its own resolution stays sharp
- * rather than smeared across two pixels. Nothing is added for a non-positive
- * size, a non-finite position or ratio.
+ * Every edge lands on the device pixel grid at @p device_pixel_ratio: the
+ * top left corner is snapped, and the quad spans round(size x ratio) device
+ * pixels (at least one) each way. Render the atlas cell at that many pixels
+ * and the sprite is drawn 1:1, sharp rather than smeared across two pixels.
+ * Nothing is added for a non-positive size, a non-finite position or ratio.
  *
  * @return Vertices added: 6 or 0.
  */
@@ -539,8 +556,9 @@ append_marker_quad(float cx, float cy, float size, float device_pixel_ratio, con
     }
     const float left = std::round((cx - (size / 2.0F)) * device_pixel_ratio) / device_pixel_ratio;
     const float top = std::round((cy - (size / 2.0F)) * device_pixel_ratio) / device_pixel_ratio;
-    const float right = left + size;
-    const float bottom = top + size;
+    const float span = std::max(1.0F, std::round(size * device_pixel_ratio)) / device_pixel_ratio;
+    const float right = left + span;
+    const float bottom = top + span;
     out.push_back(SpriteVertex{left, top, cell.u0, cell.v0});
     out.push_back(SpriteVertex{right, top, cell.u1, cell.v0});
     out.push_back(SpriteVertex{left, bottom, cell.u0, cell.v1});

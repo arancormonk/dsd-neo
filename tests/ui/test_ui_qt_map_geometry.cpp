@@ -384,6 +384,13 @@ test_marker_quads(void) {
         assert(near(v.v, is_top ? cell.v0 : cell.v1, 0.0F));
     }
     assert(near(max_x - min_x, 24.0F, 1.0e-4F));
+    /* A size that is not a whole number of device pixels still lands every edge on the grid. */
+    std::vector<mg::SpriteVertex> odd;
+    assert(mg::append_marker_quad(100.37F, 51.9F, 23.9F, dpr, cell, odd) == 6);
+    for (const mg::SpriteVertex& v : odd) {
+        assert(near(v.x * dpr, std::round(v.x * dpr), 1.0e-3F) && near(v.y * dpr, std::round(v.y * dpr), 1.0e-3F));
+    }
+    assert(near(odd[5].x - odd[0].x, 63.0F / dpr, 1.0e-4F) && near(odd[5].y - odd[0].y, 63.0F / dpr, 1.0e-4F));
     /* Bad input adds nothing. */
     assert(mg::append_marker_quad(kNaN, 51.9F, 24.0F, dpr, cell, out) == 0);
     assert(mg::append_marker_quad(10.0F, 51.9F, 0.0F, dpr, cell, out) == 0);

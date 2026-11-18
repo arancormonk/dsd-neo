@@ -23,6 +23,14 @@
  *  - Screen coordinates are logical pixels, y down, origin at the view's top
  *    left. The world repeats east and west; a point is drawn once, at the copy
  *    nearest the view's centre (screen_from_world()), and taps test that copy.
+ *    The view is never wider than the world (clamp_viewport() raises the zoom
+ *    until the world fills it), so that copy is the only one on screen.
+ *  - Every function taking a Viewport expects one from clamp_viewport(); every
+ *    function here that returns one has already clamped it. Tiles and points
+ *    placed with the same clamped viewport line up.
+ *  - A non-finite world point is a break in a track: project_track() passes it
+ *    through as non-finite screen coordinates, which map_geometry.h's
+ *    append_trail() splits on. Fitting skips such points.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_MAP_MATH_H_
@@ -31,6 +39,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace dsd_qt {
@@ -214,8 +223,22 @@ metres_to_px(double metres, double lat_deg, double zoom) {
     return metres / metres_per_px(lat_deg, zoom);
 }
 
+/** @brief The zoom at which the world is exactly @p width logical pixels wide; kMinZoom for a view narrower than 256. */
+inline double
+min_zoom_for_width(double width) {
+    if (!(width > kTileSize)) {
+        return kMinZoom;
+    }
+    return clamp_zoom(std::log2(width / kTileSize));
+}
+
 /**
  * @brief A viewport made valid: zoom clamped, centre x wrapped, centre y kept so the world fills the view vertically.
+ *
+ * The zoom is also raised until the world is at least as wide as the view, so
+ * no copy of the world beside the one drawn is ever on screen: each point and
+ * each tile appears once (a tile cut by the view's two side edges is the
+ * exception, listed at each edge).
  *
  * North and south there is nothing past the projection's edge, so the centre
  * stops where the edge meets the view's edge; when the whole world is shorter
@@ -224,9 +247,9 @@ metres_to_px(double metres, double lat_deg, double zoom) {
  */
 inline Viewport
 clamp_viewport(Viewport vp) {
-    vp.zoom = clamp_zoom(vp.zoom);
     vp.width = (vp.width > 0.0 && std::isfinite(vp.width)) ? vp.width : 0.0;
     vp.height = (vp.height > 0.0 && std::isfinite(vp.height)) ? vp.height : 0.0;
+    vp.zoom = std::max(clamp_zoom(vp.zoom), min_zoom_for_width(vp.width));
     vp.center_x = wrap_x(vp.center_x);
     if (!std::isfinite(vp.center_y)) {
         vp.center_y = 0.5;
@@ -247,7 +270,7 @@ nearest_wrap_delta(double dx) {
     return dx - std::floor(dx + 0.5);
 }
 
-/** @brief Where a world point is drawn: the copy nearest the view's centre. */
+/** @brief Where a world point is drawn: the copy nearest the view's centre. @p vp as clamp_viewport() returns it. */
 inline ScreenPoint
 screen_from_world(const Viewport& vp, WorldPoint p) {
     const double world = world_size_px(vp.zoom);
@@ -349,10 +372,11 @@ tile_span(double start, double length, double cell) {
  * @brief Every tile the view shows at its tile zoom, nearest the view's centre first.
  *
  * Tiles come from tile_zoom(), scaled to the view's fractional zoom. East and
- * west the world repeats: a view wider than the world lists the same tile
- * once per copy it shows, each with its own rectangle (a fetcher keys on z, x,
- * y and fetches it once). North and south nothing past the edge is listed.
- * Empty for an empty view, or one needing more than kMaxVisibleTiles.
+ * west the world wraps: a view showing 180 degrees lists the tiles either side
+ * of it, and one the width of the whole world can list the tile its two side
+ * edges cut at each edge, with its own rectangle each time (a fetcher keys on
+ * z, x, y and fetches it once). North and south nothing past the edge is
+ * listed. Empty for an empty view, or one needing more than kMaxVisibleTiles.
  * The order is the fetch order: the centre of the view fills in first.
  */
 inline std::vector<VisibleTile>
@@ -366,6 +390,11 @@ visible_tiles(const Viewport& view) {
     const long long count = 1LL << tz;
     const double world = world_size_px(vp.zoom);
     const double cell = world / static_cast<double>(count);
+    /* Checked before any cast: a size no screen has would overflow the tile indices. */
+    if ((vp.width / cell) + 2.0 > static_cast<double>(kMaxVisibleTiles)
+        || (vp.height / cell) + 2.0 > static_cast<double>(kMaxVisibleTiles)) {
+        return tiles;
+    }
     const double left = (vp.center_x * world) - (vp.width / 2.0);
     const double top = (vp.center_y * world) - (vp.height / 2.0);
     const TileSpan xs = tile_span(left, vp.width, cell);
@@ -402,11 +431,17 @@ visible_tiles(const Viewport& view) {
 /**
  * @brief A track's points on screen, kept continuous across the antimeridian.
  *
- * The last point, the track's current position, is placed where its marker is
- * drawn (screen_from_world()), so the trail ends at the marker. Every earlier
- * point takes the copy nearest the point after it: a radio crossing 180
- * degrees draws a short step east, not a line back across the whole world.
+ * The last usable point, the track's current position, is placed where its
+ * marker is drawn (screen_from_world()), so the trail ends at the marker.
+ * Every earlier point takes the copy nearest the usable point after it: a radio
+ * crossing 180 degrees draws a short step east, not a line back across the
+ * whole world.
  *
+ * A point with a non-finite x or y is a break: it is written as NaN (both
+ * coordinates), which append_trail() splits the trail on, and the points on
+ * either side keep the places they would have without it.
+ *
+ * @param vp    As clamp_viewport() returns it.
  * @param xs,ys At least @p count entries each.
  */
 inline void
@@ -415,17 +450,24 @@ project_track(const Viewport& vp, const WorldPoint* points, int count, float* xs
         return;
     }
     const double world = world_size_px(vp.zoom);
-    ScreenPoint s = screen_from_world(vp, points[count - 1]);
-    xs[count - 1] = static_cast<float>(s.x);
-    ys[count - 1] = static_cast<float>(s.y);
-    double next_world_x = points[count - 1].x;
-    for (int i = count - 2; i >= 0; i--) {
-        const double dx = nearest_wrap_delta(points[i].x - next_world_x);
-        s.x += dx * world;
-        s.y = (vp.height / 2.0) + ((points[i].y - vp.center_y) * world);
+    bool placed = false;
+    double screen_x = 0.0;
+    double next_world_x = 0.0;
+    for (int i = count - 1; i >= 0; i--) {
+        if (!std::isfinite(points[i].x) || !std::isfinite(points[i].y)) {
+            xs[i] = std::numeric_limits<float>::quiet_NaN();
+            ys[i] = std::numeric_limits<float>::quiet_NaN();
+            continue;
+        }
+        if (placed) {
+            screen_x += nearest_wrap_delta(points[i].x - next_world_x) * world;
+        } else {
+            screen_x = screen_from_world(vp, points[i]).x;
+            placed = true;
+        }
         next_world_x = points[i].x;
-        xs[i] = static_cast<float>(s.x);
-        ys[i] = static_cast<float>(s.y);
+        xs[i] = static_cast<float>(screen_x);
+        ys[i] = static_cast<float>((vp.height / 2.0) + ((points[i].y - vp.center_y) * world));
     }
 }
 
@@ -434,7 +476,9 @@ project_track(const Viewport& vp, const WorldPoint* points, int count, float* xs
  *
  * The nearest marker whose centre is within @p radius logical pixels; between
  * markers at the same distance the later one wins, because it is drawn on
- * top. Markers are tested where screen_from_world() draws them.
+ * top. Markers are tested where screen_from_world() draws them, with @p vp as
+ * clamp_viewport() returns it; a marker with a non-finite coordinate is never
+ * hit.
  */
 inline int
 hit_test(const Viewport& vp, const WorldPoint* markers, int count, double sx, double sy, double radius) {
@@ -460,19 +504,36 @@ struct XArc {
     double width;
 };
 
+/** @brief Whether a world point can be placed: both coordinates finite. A non-finite one is a break, not a place. */
+inline bool
+placeable(WorldPoint p) {
+    return std::isfinite(p.x) && std::isfinite(p.y);
+}
+
 /**
- * @brief The shortest arc of the wrapped x axis that holds every point.
+ * @brief The shortest arc of the wrapped x axis that holds every placeable point.
  *
  * Sorted around the circle, the points leave gaps between neighbours; the arc
  * is everything but the widest gap. Markers on both sides of 180 degrees are a
- * short arc across it, not the whole world between them.
+ * short arc across it, not the whole world between them. Points that are not
+ * placeable() are skipped, never moved somewhere.
+ *
+ * @return false, leaving @p out alone, when no point is placeable.
  */
-inline XArc
-shortest_x_arc(const WorldPoint* points, int count) {
+inline bool
+shortest_x_arc(const WorldPoint* points, int count, XArc* out) {
+    if (points == nullptr || out == nullptr || count <= 0) {
+        return false;
+    }
     std::vector<double> xs;
     xs.reserve(static_cast<size_t>(count));
     for (int i = 0; i < count; i++) {
-        xs.push_back(wrap_x(points[i].x));
+        if (placeable(points[i])) {
+            xs.push_back(wrap_x(points[i].x));
+        }
+    }
+    if (xs.empty()) {
+        return false;
     }
     std::sort(xs.begin(), xs.end());
     /* The gap that wraps from the last point round to the first. */
@@ -485,7 +546,8 @@ shortest_x_arc(const WorldPoint* points, int count) {
             west = xs[i];
         }
     }
-    return XArc{west, std::max(0.0, 1.0 - widest)};
+    *out = XArc{west, std::max(0.0, 1.0 - widest)};
+    return true;
 }
 
 /** @brief The zoom at which @p span world units fill @p avail pixels; @p fallback for a span too small to measure. */
@@ -503,22 +565,31 @@ zoom_to_fill(double span, double avail, double fallback) {
  * Fit-to-markers: the shortest arc east-west (shortest_x_arc()), the full
  * north-south extent, and the largest zoom at which both fit inside the view
  * less the padding. One point, or points too close to tell apart, centre at
- * @p max_zoom. The size of @p view is kept; its centre and zoom are replaced.
+ * @p max_zoom. The zoom never goes below the one where the world fills the
+ * view's width (clamp_viewport()). The size of @p view is kept; its centre and
+ * zoom are replaced.
  *
- * @return false, leaving @p out alone, when there is no point or no room.
+ * Points that are not placeable() (a track's breaks) are skipped.
+ *
+ * @return false, leaving @p out alone, when there is no placeable point or no room.
  */
 inline bool
 fit_points(const Viewport& view, const WorldPoint* points, int count, double padding, double max_zoom, Viewport* out) {
     if (out == nullptr || points == nullptr || count <= 0 || !(view.width > 0.0) || !(view.height > 0.0)) {
         return false;
     }
-    const XArc arc = shortest_x_arc(points, count);
+    XArc arc{0.0, 0.0};
+    if (!shortest_x_arc(points, count, &arc)) {
+        return false;
+    }
     double north = 1.0;
     double south = 0.0;
     for (int i = 0; i < count; i++) {
-        const double y = std::isfinite(points[i].y) ? std::min(1.0, std::max(0.0, points[i].y)) : 0.5;
-        north = std::min(north, y);
-        south = std::max(south, y);
+        if (placeable(points[i])) {
+            const double y = std::min(1.0, std::max(0.0, points[i].y));
+            north = std::min(north, y);
+            south = std::max(south, y);
+        }
     }
     const double pad = (padding > 0.0) ? padding : 0.0;
     const double avail_w = std::max(1.0, view.width - (2.0 * pad));

@@ -280,15 +280,36 @@ test_visible_tiles_wrap_the_antimeridian(void) {
 
 void
 test_visible_tiles_low_zoom_wide_view(void) {
-    /* Zoom 0 on a wide, tall view: the one tile, once per copy of the world, and nothing north or south. */
-    const mm::Viewport vp = mm::clamp_viewport(view(0.5, 0.2, 0.0, 1000.0, 700.0));
-    assert(near(vp.center_y, 0.5, kTol)); /* the world is shorter than the view: it sits in the middle */
-    const std::vector<mm::VisibleTile> tiles = mm::visible_tiles(vp);
-    assert(tiles.size() == 5U);
-    for (const mm::VisibleTile& t : tiles) {
-        assert(t.z == 0 && t.x == 0 && t.y == 0);
-        assert(near(t.top, 350.0 - 128.0, kPxTol));
+    /* Zoom 0 asked of a view wider than the world: the zoom rises until the world fills the width, so no
+     * second copy of the world (where markers, drawn once, would be missing) is ever on screen. */
+    const mm::Viewport wide = mm::clamp_viewport(view(0.5, 0.5, 0.0, 1000.0, 700.0));
+    assert(near(wide.zoom, std::log2(1000.0 / 256.0), kTol));
+    assert(near(mm::world_size_px(wide.zoom), 1000.0, 1.0e-6));
+    const std::vector<mm::VisibleTile> wide_tiles = mm::visible_tiles(wide);
+    assert(wide_tiles.size() == 16U); /* zoom 2, 250 px tiles: 4 across, 4 rows over y 150..850 of the world */
+    for (size_t i = 0; i < wide_tiles.size(); i++) {
+        for (size_t j = i + 1U; j < wide_tiles.size(); j++) {
+            assert(wide_tiles[i].x != wide_tiles[j].x || wide_tiles[i].y != wide_tiles[j].y);
+        }
     }
+    check_tiles_cover_view(wide, wide_tiles);
+    /* Every point of the world is drawn on screen there. */
+    const mm::WorldPoint corners[] = {mm::WorldPoint{0.0, 0.5}, mm::WorldPoint{0.999, 0.5}};
+    for (const mm::WorldPoint& c : corners) {
+        const mm::ScreenPoint at = mm::screen_from_world(wide, c);
+        assert(at.x >= 0.0 && at.x <= 1000.0);
+    }
+    assert(near(mm::min_zoom_for_width(200.0), 0.0, kTol));
+    assert(near(mm::min_zoom_for_width(1.0e12), mm::kMaxZoom, kTol));
+
+    /* A tall, narrow view at the lowest zoom: the world is shorter than the view and sits in the middle, one tile,
+     * nothing north or south. */
+    const mm::Viewport vp = mm::clamp_viewport(view(0.5, 0.2, 0.0, 300.0, 900.0));
+    assert(near(vp.center_y, 0.5, kTol));
+    const std::vector<mm::VisibleTile> tiles = mm::visible_tiles(vp);
+    assert(tiles.size() == 1U);
+    assert(tiles[0].z == 0 && tiles[0].x == 0 && tiles[0].y == 0);
+    assert(near(tiles[0].top, 450.0 - 150.0, kPxTol) && near(tiles[0].size, 300.0, kPxTol));
     check_tiles_cover_view(vp, tiles);
 
     /* An empty view needs nothing, and a size no screen has gets nothing rather than a million tiles. */
@@ -297,6 +318,11 @@ test_visible_tiles_low_zoom_wide_view(void) {
     const size_t nan_view =
         mm::visible_tiles(view(0.5, 0.5, 5.0, std::numeric_limits<double>::quiet_NaN(), 400.0)).size();
     assert(empty_view == 0U && huge_view == 0U && nan_view == 0U);
+    /* Sizes far past any screen are refused before a tile index is computed, so nothing overflows. */
+    const size_t absurd_wide = mm::visible_tiles(view(0.5, 0.5, 5.0, 1.0e30, 400.0)).size();
+    const size_t absurd_tall = mm::visible_tiles(view(0.5, 0.5, 5.0, 400.0, 1.0e30)).size();
+    const size_t past_double = mm::visible_tiles(view(0.5, 0.5, 5.0, 1.0e300, 1.0e300)).size();
+    assert(absurd_wide == 0U && absurd_tall == 0U && past_double == 0U);
 }
 
 void
@@ -402,6 +428,49 @@ test_track_projection_crosses_the_antimeridian(void) {
     assert(near(untouched, 7.0, kTol));
 }
 
+/*
+ * A break in a track (a non-finite point, the convention map_geometry.h's
+ * append_trail() splits on) stays a break through the projection: it comes out
+ * non-finite, and the points on both sides of it are kept and placed as they
+ * would be without it, across 180 degrees too. Without this a break blanked
+ * every older point, and the trail before the gap vanished.
+ */
+void
+test_track_projection_keeps_both_sides_of_a_break(void) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const mm::WorldPoint whole[] = {
+        mm::world_from_lat_lon(-5.0, 179.8),
+        mm::world_from_lat_lon(-5.0, 179.95),
+        mm::world_from_lat_lon(-5.0, -179.95),
+        mm::world_from_lat_lon(-5.0, -179.8),
+    };
+    const mm::WorldPoint broken[] = {whole[0], whole[1], mm::WorldPoint{nan, nan}, whole[2], whole[3]};
+    const mm::Viewport vp = mm::clamp_viewport(view(0.9998, whole[0].y, 9.0, 400.0, 400.0));
+    float wx[4];
+    float wy[4];
+    mm::project_track(vp, whole, 4, wx, wy);
+    float bx[5];
+    float by[5];
+    mm::project_track(vp, broken, 5, bx, by);
+    assert(!std::isfinite(bx[2]) && !std::isfinite(by[2]));
+    const int kept[] = {0, 1, 3, 4};
+    for (int i = 0; i < 4; i++) {
+        assert(std::isfinite(bx[kept[i]]) && std::isfinite(by[kept[i]]));
+        assert(near(bx[kept[i]], wx[i], 1.0e-3) && near(by[kept[i]], wy[i], 1.0e-3));
+    }
+    /* Only x or only y non-finite is a break as well, and breaks at either end leave the rest in place. */
+    const mm::WorldPoint half[] = {
+        mm::WorldPoint{nan, 0.5}, whole[0], mm::WorldPoint{whole[1].x, nan}, whole[2], whole[3],
+        mm::WorldPoint{nan, nan},
+    };
+    float hx[6];
+    float hy[6];
+    mm::project_track(vp, half, 6, hx, hy);
+    assert(!std::isfinite(hx[0]) && !std::isfinite(hx[2]) && !std::isfinite(hx[5]));
+    assert(near(hx[1], wx[0], 1.0e-3) && near(hx[3], wx[2], 1.0e-3) && near(hx[4], wx[3], 1.0e-3));
+    assert(near(hy[1], wy[0], 1.0e-3) && near(hy[4], wy[3], 1.0e-3));
+}
+
 void
 test_hit_testing(void) {
     const mm::WorldPoint centre = mm::world_from_lat_lon(22.5, 45.0);
@@ -499,8 +568,48 @@ test_fit_across_the_antimeridian(void) {
     const double lon = mm::lat_lon_from_world(mm::WorldPoint{fit.center_x, fit.center_y}).lon;
     assert(near(lon, 179.75, 1.0e-6));
 
-    const mm::XArc arc = mm::shortest_x_arc(pts, 3);
-    assert(near(arc.width, 2.5 / 360.0, 1.0e-12));
+    mm::XArc arc{0.0, 0.0};
+    const bool have_arc = mm::shortest_x_arc(pts, 3, &arc);
+    assert(have_arc && near(arc.width, 2.5 / 360.0, 1.0e-12));
+}
+
+/*
+ * A track's breaks are non-finite points. Fitting skips them rather than
+ * reading them as a place (a NaN made 0.5, the middle of the world, would pull
+ * the fit towards 0 degrees), and a set with no placeable point is refused.
+ */
+void
+test_fit_skips_breaks(void) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const mm::WorldPoint real = mm::world_from_lat_lon(60.0, -35.0);
+    const mm::WorldPoint pts[] = {
+        mm::WorldPoint{nan, nan},
+        real,
+        mm::WorldPoint{nan, 0.1},
+        mm::WorldPoint{0.1, std::numeric_limits<double>::infinity()},
+    };
+    const mm::Viewport base = view(0.5, 0.5, 3.0, 400.0, 600.0);
+    mm::Viewport fit;
+    const bool fitted = mm::fit_points(base, pts, 4, 32.0, 15.0, &fit);
+    assert(fitted && near(fit.zoom, 15.0, kTol));
+    assert(near(fit.center_x, real.x, 1.0e-12) && near(fit.center_y, real.y, 1.0e-12));
+
+    mm::XArc arc{0.25, 0.5};
+    const bool arc_of_breaks = mm::shortest_x_arc(pts, 1, &arc);
+    const bool arc_of_none = mm::shortest_x_arc(pts, 0, &arc);
+    const bool arc_of_null = mm::shortest_x_arc(nullptr, 3, &arc);
+    assert(!arc_of_breaks && !arc_of_none && !arc_of_null);
+    assert(near(arc.west, 0.25, kTol) && near(arc.width, 0.5, kTol));
+
+    mm::Viewport untouched = view(0.25, 0.25, 4.0, 1.0, 1.0);
+    const mm::WorldPoint breaks[] = {mm::WorldPoint{nan, nan}, mm::WorldPoint{nan, 0.5}};
+    const bool fitted_breaks = mm::fit_points(base, breaks, 2, 32.0, 15.0, &untouched);
+    assert(!fitted_breaks && near(untouched.center_x, 0.25, kTol) && near(untouched.zoom, 4.0, kTol));
+
+    /* A marker that is a break is never hit. */
+    const mm::Viewport vp = mm::clamp_viewport(view(0.5, 0.5, 3.0, 400.0, 400.0));
+    const mm::WorldPoint markers[] = {mm::WorldPoint{nan, 0.5}};
+    assert(mm::hit_test(vp, markers, 1, 200.0, 200.0, 1.0e9) == -1);
 }
 
 void
@@ -534,9 +643,11 @@ main(void) {
     test_screen_world_round_trip();
     test_zoom_keeps_the_anchor();
     test_track_projection_crosses_the_antimeridian();
+    test_track_projection_keeps_both_sides_of_a_break();
     test_hit_testing();
     test_fit_points();
     test_fit_across_the_antimeridian();
+    test_fit_skips_breaks();
     test_ground_scale();
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_MATH: ok\n");
     return 0;
