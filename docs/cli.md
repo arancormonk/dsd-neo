@@ -568,7 +568,9 @@ does.
   embedded GPS, P25 L3Harris or Motorola link control or MAC) takes the radio a checked message of the same call named
   on the same reception, so after a colour code, NAC or system change without the call ending it is `0` until such a
   message names the radio again; a P25 special address (`$FFFFFC`-`$FFFFFF`, for example a report from a network
-  address) is never a radio, and a talker is not carried past a message that names one.
+  address) is never a radio, and a talker is not carried past a message that names one. Nor is a radio named only by
+  its home ID from another system (or before the system is known), or by a link control that needs a Source ID
+  Extension: its report is `0` too.
 
   Never written:
   - D-STAR and M17 positions: their source is a callsign and the column is a number. They still reach History and
