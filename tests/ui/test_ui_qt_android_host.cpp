@@ -144,6 +144,8 @@ struct PlatformRecordings {
     int canShares = 0;
     std::atomic<int> cleans{0};
     std::atomic<bool> cleanOnWorker{false};
+    std::atomic<int> diagnosticsCleans{0};
+    std::atomic<bool> diagnosticsCleanOnWorker{false};
     bool zip = false;
     bool onWorker = false;
     bool canShareAnswer = true;
@@ -718,6 +720,13 @@ DecoderHostAndroid::platformCleanRecordingShares() {
     PlatformRecordings& r = recordings();
     r.cleanOnWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
     ++r.cleans;
+}
+
+void
+DecoderHostAndroid::platformCleanDiagnosticsShares() {
+    PlatformRecordings& r = recordings();
+    r.diagnosticsCleanOnWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
+    ++r.diagnosticsCleans;
 }
 
 QString
@@ -2872,9 +2881,14 @@ check_recording_share() {
     const QString a = temp_recording(dir, "a.wav", "RIFF");
     reset_recordings();
     recordings().cleans = 0;
+    recordings().diagnosticsCleans = 0;
     DecoderHostAndroid host;
     check(wait_for([]() { return recordings().cleans.load() == 1; }) && recordings().cleanOnWorker.load(),
           "a host cleans old share copies once, at its start, on the transfer worker");
+    // Issue #800, D10: the diagnostics share copies too, so an older build's copy does not wait for the next share.
+    check(wait_for([]() { return recordings().diagnosticsCleans.load() == 1; })
+              && recordings().diagnosticsCleanOnWorker.load(),
+          "a host cleans old diagnostics share copies once, at its start, on the transfer worker");
     host.setRecordingIndex([&a](const QString& path) { return path == a; });
     const auto shared = [](const QString& path, const QString& title) {
         return with_transfer([&path, &title](const PlatformRecordings& r) {
