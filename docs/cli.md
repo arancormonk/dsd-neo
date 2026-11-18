@@ -600,13 +600,17 @@ does.
     token): the report prints `Position: (suppressed; layout not confirmed)`. An LRRP document that declares more
     than its packet holds: `Position suppressed (incomplete document)`. A data packet whose IP datagram declares more
     than the packet's user data holds (`Incomplete Datagram; not decoded;`): a pad or CRC octet never completes it.
-  - A DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
+  - A DMR data packet whose blocks came in another slot, from another kind of sender (a direct-mode header, then
+    repeater-mode blocks) or after a retune: `Data block not from its header's slot or reception; packet dropped;`. A
+    DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
     whose last digit would be in it gives no position.
 
   A position on the equator or the prime meridian is written; earlier versions dropped it.
 
   The source column is the radio ID only when it came from checked content, else `00000000`. DMR embedded GPS takes
-  the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it.
+  the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it,
+  in a burst from the same kind of sender on the same slot: a repeater-mode burst after a direct-mode call whose
+  terminator was missed is `0` until a checked LC of the new transmission names its radio.
   P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
   never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
   messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked

@@ -312,12 +312,54 @@ test_single_slot_decoder_publishes_proven_slot(void) {
     fixture_close(&f);
 }
 
+/* Who sends the next burst, as frame sync leaves it for the single-slot decoder: direct mode on slot 2 (its own sync
+ * word names the slot), or a radio's MS-sourced repeater-mode burst (no slot to prove). */
+static void
+burst_from(fixture* f, int direct) {
+    f->st->synctype = DSD_SYNC_DMR_MS_VOICE;
+    f->st->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
+    f->st->dmr_dm_sync_slot = direct ? 2U : 0U;
+    f->st->dmr_mono_rx_slot = direct ? DSD_DMR_MONO_RX_TS2 : DSD_DMR_MONO_RX_PENDING;
+}
+
+/* Issue #800, fail closed: the sync words tell a direct-mode transmission from a repeater-mode one. A direct-mode voice
+ * header names SOURCE; with its terminator missed, a repeater-mode (MS-sourced) voice burst follows on the same carrier
+ * and colour code, and the call layer keeps the call. The embedded GPS of that burst is not the direct-mode call's: it
+ * is anonymous until a checked LC of the new transmission names its talker. */
+static void
+test_direct_to_repeater_transition(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    burst_from(&f, 1);
+    voice_lc(&f, 1U);
+    expect_true("direct mode: call open", call_open(&f));
+    embedded_gps(&f);
+    expect_fix(&f, "direct mode, slot 2", 1);
+
+    const Event_History* row = &f.st->event_history_s[0].Event_History_Items[0];
+    const uint64_t named_rev = row->pos.rev;
+    expect_true("direct mode: the call's row took the fix", row->pos.valid == 1U && named_rev != 0U);
+
+    burst_from(&f, 0);
+    expect_true("repeater mode: call kept", call_open(&f));
+    embedded_gps(&f);
+    expect_fix(&f, "repeater-mode burst after a direct-mode header", 0);
+    expect_true("repeater mode: the direct-mode call's row keeps its fix", row->pos.rev == named_rev);
+
+    voice_lc(&f, 3U);
+    embedded_gps(&f);
+    expect_fix(&f, "repeater mode, named by its own checked LC", 1);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_reception_change();
     test_same_reception();
     test_failed_report_prints_no_content();
     test_single_slot_decoder_publishes_proven_slot();
+    test_direct_to_repeater_transition();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

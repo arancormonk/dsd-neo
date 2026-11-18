@@ -23,6 +23,7 @@
 
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -81,6 +82,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     state->currentslot = slot;
     state->data_byte_ctr[slot] = (uint16_t)(((uint16_t)data[1] << 8) | data[2]);
     state->data_header_valid[slot] = (uint8_t)(data[3] & 0x01U);
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, state, &state->dmr_data_origin[slot]);
     state->data_header_sap[slot] = (uint8_t)((data[3] >> 1) & 0x0FU);
     state->data_header_blocks[slot] = (uint8_t)(data[4] % 128U);
     state->data_block_counter[slot] = (uint8_t)(data[5] % 128U);
@@ -100,6 +103,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         if ((op[0] & 0x20U) != 0U) {
             state->data_header_valid[slot] = (uint8_t)(op[3] & 0x01U);
+            // The reception the header was heard on, which its blocks must share (issue #800).
+            dsd_position_origin_capture(NULL, state, &state->dmr_data_origin[slot]);
         }
         if ((op[0] & 0x10U) != 0U) {
             state->data_header_format[slot] = (uint8_t)(op[4] % 16U);

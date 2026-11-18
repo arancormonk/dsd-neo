@@ -2647,7 +2647,11 @@ suite runs under this compiler.
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
     transmission (a healed fade keeps it); the received identity's epoch (`dsd_received_identity::epoch`, moved by
     another access code, system, site or family; a trunk follow keeps it) is the one it was learned under (the
-    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); and the
+    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); for DMR, the
+    burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
+    `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
+    a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
+    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
     the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
@@ -2733,6 +2737,15 @@ suite runs under this compiler.
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
+  - DMR packet binding (`dmr_data_header_binds()` in `dmr_block.c`, fail closed). A data block, and a DPF 15 header
+    that extends a standard one, belongs to the standard data header that armed its lane only when it came on the
+    reception that header's origin still matches and in a burst of the same identity (`dmr_data_air[slot]`,
+    `dsd_position_dmr_air()`): the sender kind by its sync word (BS-sourced, MS-sourced, direct mode) and, on the
+    single-slot decoder, the over-the-air slot (proven by the CACH, named by a direct-mode sync word; an MS-sourced burst
+    has none to prove, decided limit; a BS-sourced lane still Checking binds nothing). Otherwise the packet is dropped
+    (`Data block not from its header's slot or reception; packet dropped;`), so a header's radio never names another
+    transmission's blocks; an MBC header clears the origin, so no data block binds to it (test `DMR_DATA_HEADER_AIR`,
+    through the real single-slot data path).
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
     DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
     `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU

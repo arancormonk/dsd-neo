@@ -20,7 +20,11 @@
  *  - the reception has not changed since: the received identity's epoch (dsd_received_identity::epoch, moved by
  *    another access code, system, site or family on the carrier) is the one the evidence was learned under. A trunk
  *    follow keeps that epoch; a carrier change ends the call or clears the evidence;
- *  - the call still names the evidence's source (and, for the target, its target).
+ *  - the call still names the evidence's source (and, for the target, its target);
+ *  - for DMR, the burst carrying the report is the evidence's: the same sender kind by its sync word (a repeater's
+ *    BS-sourced burst, a radio's MS-sourced one, direct mode's) on the same over-the-air slot
+ *    (dsd_position_dmr_air_same()). A direct-mode call whose terminator was missed is not the repeater-mode call
+ *    that follows it on the carrier, whatever the call layer kept.
  * Anything else (a relock to another colour code, a NAC or system change, a new talker, another slot's or phase's
  * call) leaves the report anonymous. The evidence itself is only ever learned from content whose own check passed.
  */
@@ -54,7 +58,8 @@ typedef struct dsd_position_attribution {
     uint32_t rx_epoch;     /**< dsd_state::rx_id epoch when learned */
     int32_t protocol;      /**< the call's DSD_SYNC_* value */
     uint8_t group;         /**< 1 when @c target is a talkgroup */
-    uint8_t reserved[7];
+    uint8_t air;           /**< DMR: the burst identity it was learned on (dsd_position_dmr_air()); else 0 */
+    uint8_t reserved[6];
 } dsd_position_attribution;
 
 /** The call a report would borrow from, as the producer sees it. */
@@ -71,6 +76,27 @@ typedef struct dsd_position_attribution_call {
 /** The protocol class attribution compares: P25 Phase 1, P25 Phase 2, else the protocol family
  * (dsd_sync_protocol_family()), so DMR base and mobile bursts are one class. */
 int dsd_position_attribution_class(int protocol);
+
+/** dsd_position_dmr_air(): not a DMR burst. */
+#define DSD_POSITION_DMR_AIR_NONE    0U
+/** dsd_position_dmr_air(): a DMR burst whose over-the-air slot the decoder has not proven; it binds to nothing. */
+#define DSD_POSITION_DMR_AIR_UNKNOWN 0xFFU
+
+/**
+ * @brief The identity of the DMR burst @p state is decoding (issue #800, fail closed): who sent it by its own sync word
+ * (a repeater's BS-sourced burst, a radio's MS-sourced one, or direct mode) and its over-the-air slot.
+ *
+ * The two-slot decoder keeps the slots apart by its lanes, so the slot is left out there. The single-slot decoder
+ * (dsd_state::dmr_mono_rx_slot) carries both slots on one lane: there the slot is the one proven for the lane, a
+ * direct-mode sync word's own, or none for an MS-sourced burst (it has no CACH to prove one, decided limit). A
+ * repeater's burst on a lane still Checking its slot is DSD_POSITION_DMR_AIR_UNKNOWN. DSD_POSITION_DMR_AIR_NONE when
+ * neither the current nor the last sync is DMR; NULL gives NONE.
+ */
+uint8_t dsd_position_dmr_air(const dsd_state* state);
+
+/** 1 when two DMR burst identities (dsd_position_dmr_air()) are one sender's on one slot: equal, and neither
+ * DSD_POSITION_DMR_AIR_UNKNOWN. */
+int dsd_position_dmr_air_same(uint8_t a, uint8_t b);
 
 /** Zero @p a (no evidence). NULL does nothing. Inline, so state helpers that clear it need no core link. */
 static inline void
@@ -91,8 +117,9 @@ int dsd_position_attribution_call_from_closing(const struct dsd_event_closing_ca
  * @brief Record that content of @p call whose own check passed named @p source (and @p target with @p group).
  *
  * Recorded only while @p call is open and holds that source (a target the call does not hold is left out): @p out then
- * takes the call, its protocol, the binding @p bind and the reception's epoch, and 1 is returned. Otherwise @p out is
- * left as it was and 0 is returned.
+ * takes the call, its protocol, the binding @p bind, the reception's epoch and, for a DMR call, the identity of the
+ * burst that carried the content (dsd_position_dmr_air()), and 1 is returned. Otherwise @p out is left as it was and 0
+ * is returned.
  */
 int dsd_position_attribution_learn(const dsd_state* state, const dsd_position_attribution_call* call, uint32_t source,
                                    uint32_t target, int group, dsd_position_attribution_bind bind,

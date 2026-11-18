@@ -2208,6 +2208,11 @@ struct dsd_state {
        on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
        (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
     dsd_position_origin dmr_data_origin[2];
+    /* Per slot: the identity of the burst that standard header came in (dsd_position_dmr_air()). Its blocks, and a
+       proprietary header that extends it, are taken only from a burst of the same sender kind on the same over-the-air
+       slot, on the reception dmr_data_origin still matches (issue #800, fail closed): the single-slot decoder carries
+       both slots on one lane, and two independently checked bursts are not one transmission by their CRCs alone. */
+    uint8_t dmr_data_air[2];
     /* Per slot: whether the target of the data header that began the assembly is a talkgroup, as its check left it
        (issue #800): the DMR standard data header's G/I bit, an NXDN data call header's call type (broadcast or
        group); 0 for a P25 data packet (its LLID names a radio). Position producers (LRRP, LOCN, LIP over UDP, ASCII

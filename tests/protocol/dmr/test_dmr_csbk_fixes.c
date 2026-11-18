@@ -22,6 +22,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -335,6 +336,8 @@ static void
 test_udt_decoder_emergency(dsd_opts* opts, dsd_state* state, uint8_t octet0, int want_emergency) {
     state->currentslot = 0;
     state->data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, state, &state->dmr_data_origin[0]);
     state->data_header_blocks[0] = 2;
     state->data_block_counter[0] = 2;
     state->data_byte_ctr[0] = 0;

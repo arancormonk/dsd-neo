@@ -32,6 +32,63 @@ dsd_position_attribution_class(int protocol) {
     return dsd_sync_protocol_family(protocol);
 }
 
+/* The DMR sender kinds dsd_position_dmr_air() names, above the two slot bits. */
+#define DMR_AIR_KIND_BS     1U
+#define DMR_AIR_KIND_MS     2U
+#define DMR_AIR_KIND_DIRECT 3U
+
+/* The over-the-air slot (1/2) of a DMR burst of @p kind on the single-slot decoder's lane, 0 for none to prove (an
+ * MS-sourced burst), DSD_POSITION_DMR_AIR_UNKNOWN while a repeater's lane is still Checking. */
+static uint8_t
+dmr_air_mono_slot(const dsd_state* state, uint8_t kind) {
+    if (state->dmr_mono_rx_slot >= DSD_DMR_MONO_RX_TS1) {
+        return (uint8_t)(state->dmr_mono_rx_slot - DSD_DMR_MONO_RX_TS1 + 1U);
+    }
+    if (kind == DMR_AIR_KIND_DIRECT) {
+        return state->dmr_dm_sync_slot;
+    }
+    return kind == DMR_AIR_KIND_MS ? 0U : DSD_POSITION_DMR_AIR_UNKNOWN;
+}
+
+uint8_t
+dsd_position_dmr_air(const dsd_state* state) {
+    if (!state) {
+        return DSD_POSITION_DMR_AIR_NONE;
+    }
+    int sync = state->synctype;
+    if (!DSD_SYNC_IS_DMR(sync)) {
+        sync = state->lastsynctype;
+    }
+    if (!DSD_SYNC_IS_DMR(sync)) {
+        return DSD_POSITION_DMR_AIR_NONE;
+    }
+    uint8_t kind = DMR_AIR_KIND_MS;
+    if (DSD_SYNC_IS_DMR_BS(sync)) {
+        kind = DMR_AIR_KIND_BS;
+    } else if (state->dmr_dm_sync_slot == 1U || state->dmr_dm_sync_slot == 2U) {
+        kind = DMR_AIR_KIND_DIRECT;
+    }
+    uint8_t slot = 0U;
+    if (state->dmr_mono_rx_slot != DSD_DMR_MONO_RX_NONE) {
+        slot = dmr_air_mono_slot(state, kind);
+        if (slot == DSD_POSITION_DMR_AIR_UNKNOWN) {
+            return DSD_POSITION_DMR_AIR_UNKNOWN;
+        }
+    }
+    return (uint8_t)((kind << 2) | slot);
+}
+
+int
+dsd_position_dmr_air_same(uint8_t a, uint8_t b) {
+    return a == b && a != DSD_POSITION_DMR_AIR_UNKNOWN;
+}
+
+/* The DMR burst identity evidence or a report of @p protocol carries: dsd_position_dmr_air() for DMR, else NONE. */
+static uint8_t
+attribution_air(const dsd_state* state, int protocol) {
+    return DSD_SYNC_IS_DMR(protocol) ? dsd_position_dmr_air(state) : (uint8_t)DSD_POSITION_DMR_AIR_NONE;
+}
+
 int
 dsd_position_attribution_call_from_slot(const dsd_state* state, uint8_t slot, dsd_position_attribution_call* out) {
     if (!out) {
@@ -90,6 +147,7 @@ dsd_position_attribution_learn(const dsd_state* state, const dsd_position_attrib
     out->group = (uint8_t)(names_target && group != 0);
     out->rx_epoch = state->rx_id.epoch;
     out->protocol = call->protocol;
+    out->air = attribution_air(state, call->protocol);
     return 1;
 }
 
@@ -119,7 +177,8 @@ attribution_same_reception(const dsd_state* state, const dsd_position_attributio
 }
 
 /* Every condition of the rule but the identity: evidence held, the call open, one protocol class for the call, the
- * evidence and the report, the same call, the same reception. */
+ * evidence and the report, the same call, the same reception and, for DMR, the same burst identity (sender kind and
+ * over-the-air slot) as the burst carrying the report. */
 static int
 attribution_binds(const dsd_state* state, const dsd_position_attribution* a, const dsd_position_attribution_call* call,
                   int report_protocol) {
@@ -129,6 +188,10 @@ attribution_binds(const dsd_state* state, const dsd_position_attribution* a, con
     const int report_class = dsd_position_attribution_class(report_protocol);
     if (dsd_position_attribution_class(call->protocol) != report_class
         || dsd_position_attribution_class(a->protocol) != report_class) {
+        return 0;
+    }
+    if (DSD_SYNC_IS_DMR(report_protocol)
+        && !dsd_position_dmr_air_same(a->air, attribution_air(state, report_protocol))) {
         return 0;
     }
     return attribution_same_call(a, call) && attribution_same_reception(state, a);
@@ -151,6 +214,7 @@ dsd_position_attribution_grant(const dsd_state* state, const dsd_position_attrib
         granted->source = a->source;
         granted->rx_epoch = a->rx_epoch;
         granted->protocol = call->protocol;
+        granted->air = a->air;
         if (a->target != 0U && call->target == (uint64_t)a->target) {
             granted->target = a->target;
             granted->group = a->group;

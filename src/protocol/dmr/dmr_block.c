@@ -20,6 +20,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -592,6 +593,17 @@ dmr_dheader_arms_assembler(const dmr_dheader_fields* f) {
     }
 }
 
+/* The standard data header that armed the lane and the burst now on it are one transmission's (issue #800, fail
+   closed): the reception the header was heard on still holds (dsd_position_origin_matches()), and the burst is the same
+   sender kind on the same over-the-air slot (dsd_position_dmr_air_same()). Two bursts whose own checks passed are not
+   one packet by their CRCs alone: the single-slot decoder carries both slots on one lane, and a direct-mode header is
+   not the repeater-mode packet that follows it. */
+static int
+dmr_data_header_binds(const dsd_state* state, uint8_t slot) {
+    return dsd_position_origin_matches(state, &state->dmr_data_origin[slot & 1U])
+           && dsd_position_dmr_air_same(state->dmr_data_air[slot & 1U], dsd_position_dmr_air(state));
+}
+
 // A standard header starts a new packet: confirmed mode and a proprietary header belong to the one they
 // were signalled in, and an interrupted packet must not lend them to this one. The format handlers set
 // confirmed mode again; an MNIS P_HEAD that follows sets data_p_head. A proprietary header continues the
@@ -605,11 +617,15 @@ dmr_dheader_start_packet(dsd_state* state, uint8_t slot, const dmr_dheader_field
 }
 
 // A header that does not arm the assembler disarms it, so a stray continuation after it cannot complete
-// the packet it interrupted. A proprietary header leaves the standard header's arming alone.
+// the packet it interrupted. A proprietary header leaves the standard header's arming alone when it is that header's
+// transmission's (dmr_data_header_binds()); heard in another burst source, slot or reception it disarms it (issue #800,
+// fail closed).
 static void
 dmr_dheader_set_armed(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
     if (f->dpf != 15) {
         state->data_header_valid[slot] = dmr_dheader_arms_assembler(f);
+    } else if (!dmr_data_header_binds(state, slot)) {
+        state->data_header_valid[slot] = 0;
     }
 }
 
@@ -656,8 +672,10 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
         state->dmr_data_checked_group[slot] = (uint8_t)(f.gi == 1);
-        // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3).
+        // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3), and the
+        // burst its blocks must share (dmr_data_header_binds()).
         dsd_position_origin_capture(opts, state, &state->dmr_data_origin[slot & 1U]);
+        state->dmr_data_air[slot & 1U] = dsd_position_dmr_air(state);
     } else {
         // A proprietary header keeps the previous transmission's source/target on purpose, but
         // that pair must not go on selecting a decryption key: drop the group qualifier so the
@@ -1919,6 +1937,15 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
     UNUSED(databurst);
     dmr_block_assembler_init_ctx(&ctx, opts, state, block_bytes, block_len, type);
+    if ((ctx.type == 1 || ctx.is_udt) && state->data_header_valid[ctx.slot] == 1
+        && !dmr_data_header_binds(state, ctx.slot)) {
+        // A block from another slot, sender or reception than the header that armed the lane is not this packet's:
+        // the packet is dropped, and the block with it (its own header was missed).
+        DSD_FPRINTF(stderr, "\n Slot %d - Data block not from its header's slot or reception; packet dropped;",
+                    ctx.slot + 1);
+        dmr_block_assembler_reset_type1(&ctx);
+        return;
+    }
     if (ctx.type == 1) {
         dmr_block_assembler_handle_type1(&ctx);
     } else if (ctx.type == 2) {
