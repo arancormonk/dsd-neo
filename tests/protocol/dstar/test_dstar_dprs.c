@@ -524,8 +524,9 @@ send_slow_data_header(rig* r, const char* mycall) {
 
 /* N0ONE's call is ACTIVE (its terminator missed) when another transmission's RF header fails its CRC
  * (processDSTAR_HD() leaves dstar_dprs_source_unchecked set: DSTAR_PROCESS). A whole, CRC-valid D-PRS record heard
- * after it is not N0ONE's: it names no one, until a header whose CRC passed names the transmission (here the slow-data
- * header of N0TWO's), whose next record is N0TWO's. */
+ * after it is not N0ONE's: it names no one, until a header whose CRC passed names the transmission's MY callsign (here
+ * the slow-data header of N0TWO's), whose next record is N0TWO's. A checked header with a blank MY field names no one
+ * and leaves the records anonymous. */
 static void
 test_failed_header_leaves_records_anonymous(void) {
     rig r;
@@ -538,12 +539,21 @@ test_failed_header_leaves_records_anonymous(void) {
     expect_str("record after a failed header names nobody", f[0].source_text, "");
     expect_int("record after a failed header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    /* A checked header whose MY field is blank names no one: the call keeps N0ONE's callsign, which is not this
+       transmission's, so the next record still names nobody. */
+    send_slow_data_header(&r, "");
+    expect_int("a blank checked header names no one", r.state->dstar_dprs_source_unchecked, 1);
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("record after a blank header admitted", feed_records(&r, f, 3U), 2);
+    expect_str("record after a blank header names nobody", f[1].source_text, "");
+    expect_int("record after a blank header is unverified", f[1].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
     send_slow_data_header(&r, "N0TWO");
     expect_int("a checked header names the transmission", r.state->dstar_dprs_source_unchecked, 0);
     send_gps(&r, k_vector, strlen(k_vector), 0);
-    expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 2);
-    expect_str("record after the checked header is N0TWO's", f[1].source_text, "N0TWO");
-    expect_int("record after the checked header is checked", f[1].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
+    expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 3);
+    expect_str("record after the checked header is N0TWO's", f[2].source_text, "N0TWO");
+    expect_int("record after the checked header is checked", f[2].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
     rig_close(&r);
 }
 

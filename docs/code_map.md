@@ -2629,9 +2629,10 @@ suite runs under this compiler.
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
-    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and a D-STAR RF
-    header whose CRC failed leaves D-PRS records anonymous (`dstar_dprs_source_unchecked`) until a checked header, on
-    RF or in the slow data, names the transmission. Tests:
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and every D-STAR RF
+    header, whatever its CRC, drops the half-collected D-PRS record and leaves D-PRS records anonymous
+    (`dstar_dprs_source_unchecked`) until a checked header, on RF or in the slow data, names the transmission's MY
+    callsign (a checked header with a blank MY field names no one and leaves them anonymous too). Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
     `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.

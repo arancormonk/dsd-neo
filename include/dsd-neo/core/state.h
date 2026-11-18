@@ -2984,9 +2984,10 @@ struct dsd_state {
     /* The D-PRS record being collected from slow data; only a complete one whose CRC-16/X.25 matches is evidence or a
      * position (issue #800 2.10). */
     dstar_dprs_assembly dstar_dprs;
-    /* 1 from an RF header whose CRC failed until a header whose CRC passed names a transmission again (issue #800): the
-     * failed header began a transmission the slot 0 call's callsign may not be, so a D-PRS record completed meanwhile
-     * names no source, however long the call stays ACTIVE. */
+    /* 1 from an RF header (which begins a transmission) until a header whose CRC passed names that transmission's MY
+     * callsign (issue #800), and after a checked header whose MY field is blank: the slot 0 call's callsign may be
+     * another transmission's (its terminator missed), so a D-PRS record completed meanwhile names no source, however
+     * long the call stays ACTIVE. */
     uint8_t dstar_dprs_source_unchecked;
 
     //M17 Storage

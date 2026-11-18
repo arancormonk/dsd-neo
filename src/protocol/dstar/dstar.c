@@ -112,6 +112,11 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     for (i = 0; i < 660; i++) {
         getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
+    /* A header opens another transmission, whether or not it decodes: a D-PRS record the one before it left unfinished
+       is not this one's, and whose transmission it is stays unknown (the call it leaves ACTIVE, its terminator missed,
+       may be another radio's) until a checked header names a callsign (dstar_header_decode_soft()). */
+    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+    state->dstar_dprs_source_unchecked = 1U;
     /* A carrier boundary split the header (issue #575), or an input interruption cut it (a Signal search left it): the
        rest of it belongs to another carrier or is erasures the reader stood in, which the soft Viterbi decode reads as
        confident symbols. It decodes nothing, and the superframe behind it is not read. */
@@ -124,16 +129,8 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
         dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
-        /* A header opens a transmission: a D-PRS record the one before it left unfinished is not this one's. */
-        DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
-        /* Its callsigns are the call's now (dstar_header.c): a D-PRS record of this transmission is theirs. */
-        state->dstar_dprs_source_unchecked = 0U;
-    } else {
-        /* A header began another transmission, but whose is not known: the call it leaves ACTIVE (the last one's
-           terminator missed) may be another radio's, so no D-PRS record names a source until a checked header does. */
-        state->dstar_dprs_source_unchecked = 1U;
     }
     (void)processDSTAR(opts, state);
     return header_ok;

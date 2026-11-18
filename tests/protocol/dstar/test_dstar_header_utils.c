@@ -106,7 +106,8 @@ test_soft_decode_pipeline(void) {
 }
 
 static void
-build_encoded_header_fixture_ex(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags, int corrupt_crc) {
+build_encoded_header_fixture_my(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags, int corrupt_crc,
+                                const char my[12]) {
     uint8_t header[41];
     int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
     int coded[DSD_DSTAR_HEADER_CODED_BITS];
@@ -119,7 +120,7 @@ build_encoded_header_fixture_ex(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint
     DSD_MEMCPY(header + 3, "RPT2TST ", 8);
     DSD_MEMCPY(header + 11, "RPT1TST ", 8);
     DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
-    DSD_MEMCPY(header + 27, "N0CALL  /TST", 12);
+    DSD_MEMCPY(header + 27, my, 12);
     const uint16_t crc = (uint16_t)(dstar_crc16(header, 39U) ^ (corrupt_crc ? 0xFFFFU : 0x0000U));
     header[39] = (uint8_t)(crc >> 8U);
     header[40] = (uint8_t)crc;
@@ -141,6 +142,11 @@ build_encoded_header_fixture_ex(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint
     for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
         soft_rx[i] = soft_scrambled[i] > 0x7FFFU ? 1.0F : -1.0F;
     }
+}
+
+static void
+build_encoded_header_fixture_ex(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags, int corrupt_crc) {
+    build_encoded_header_fixture_my(soft_rx, flags, corrupt_crc, "N0CALL  /TST");
 }
 
 static void
@@ -188,6 +194,40 @@ test_soft_data_header_preserves_callsigns(void) {
     assert(strcmp(call.route_text[0], "RPT1TST") == 0);
     assert(strcmp(call.target_text, "CQCQCQ") == 0);
     assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+}
+
+/* Issue #800: only a header whose CRC passed and whose MY field names a callsign names the transmission a D-PRS record
+ * belongs to. processDSTAR_HD() marks every RF header's transmission unnamed (DSTAR_PROCESS); the decode names it. A
+ * blank MY field names no one, though the call keeps the callsign of the transmission before it. */
+static void
+test_soft_header_decode_names_the_dprs_source_only_with_a_callsign(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    state.dstar_dprs_source_unchecked = 1U;
+    build_encoded_header_fixture(soft_rx, 0x00U);
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    assert(state.dstar_dprs_source_unchecked == 0U);
+
+    state.dstar_dprs_source_unchecked = 1U;
+    build_encoded_header_fixture_my(soft_rx, 0x00U, 0, "            ");
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    assert(state.dstar_dprs_source_unchecked == 1U);
+    assert(strcmp(get_dstar_call(&state).source_text, "N0CALL /TST") == 0);
+
+    /* Only the suffix: no callsign either. */
+    build_encoded_header_fixture_my(soft_rx, 0x00U, 0, "        /TST");
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    assert(state.dstar_dprs_source_unchecked == 1U);
+
+    build_encoded_header_fixture_ex(soft_rx, 0x00U, 1);
+    assert(dstar_header_decode_soft(&state, soft_rx) == 0);
+    assert(state.dstar_dprs_source_unchecked == 1U);
+    dsd_state_ext_free_all(&state);
 }
 
 /* #391: the header CRC-16/X.25 is the D-STAR data path's only real check, and the SPS hunt
@@ -512,6 +552,7 @@ main(void) {
     test_soft_header_decode_extracts_callsigns();
     test_soft_data_header_preserves_callsigns();
     test_soft_header_decode_reports_a_failed_crc();
+    test_soft_header_decode_names_the_dprs_source_only_with_a_callsign();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();

@@ -192,8 +192,9 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
             DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
             DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
             (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-            /* The transmission's own callsigns are on the call: a D-PRS record of it may name them again. */
-            state->dstar_dprs_source_unchecked = 0U;
+            /* The transmission's own callsign is on the call: a D-PRS record of it may name it again. A blank MY
+               field names no one, so the callsign the call still carries is another transmission's. */
+            state->dstar_dprs_source_unchecked = dstar_callsign_present(ctx->str4, 8U) ? 0U : 1U;
         }
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
@@ -370,8 +371,8 @@ dstar_dprs_call_epoch(const dsd_state* state) {
  * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call it was heard
  * in, which only a header whose CRC-16/X.25 passed names (dstar_header.c and the slow-data header above), and only
  * when the whole record arrived within that call. A record begun outside an active call has no checked source, and
- * neither has one completed after an RF header that failed its CRC (another transmission began, maybe another radio's)
- * until a checked header names the transmission again (dsd_state::dstar_dprs_source_unchecked).
+ * neither has one completed after an RF header (another transmission began, maybe another radio's) until a checked
+ * header names the transmission's MY callsign (dsd_state::dstar_dprs_source_unchecked).
  */
 static void
 dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {

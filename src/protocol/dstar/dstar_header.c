@@ -110,5 +110,8 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
     DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    /* The transmission's own callsign is on the call now: a D-PRS record of it may name it. A blank MY field names
+       no one, and the call may still carry the last transmission's callsign (its terminator missed). */
+    state->dstar_dprs_source_unchecked = dstar_callsign_present(str4, 8U) ? 0U : 1U;
     return 1;
 }

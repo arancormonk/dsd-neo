@@ -182,3 +182,17 @@ dstar_crc16(const uint8_t* data, size_t len) {
     crc = (uint16_t)~crc;
     return (uint16_t)((crc << 8) | (crc >> 8));
 }
+
+int
+dstar_callsign_present(const char* field, size_t len) {
+    if (field == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < len && field[i] != '\0'; i++) {
+        const unsigned char c = (unsigned char)field[i];
+        if (c > 0x20U && c < 0x7FU) {
+            return 1;
+        }
+    }
+    return 0;
+}
