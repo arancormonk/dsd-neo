@@ -16148,6 +16148,8 @@ enum {
     YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
     YC_STALE_NOTES,   /* a check, an open verdict and an unchecked frame the row left noted: the landing forgets all */
     YC_UNCHECKED_FRAMES, /* X2-TDMA frames, which no check can prove: held while they come, then steps */
+    YC_UNLANDED,         /* rejected syncs on a stay no row landing is in force for (the scan's start frequency, a
+                            placeholder row): yields at the first boundary, noCarrier() steps */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -16174,6 +16176,9 @@ yc_setup(dsd_opts* opts, dsd_state* state, int which, long int base_hz) {
     } else if (which == YC_UNCHECKED_SET || which == YC_UNCHECKED_FRAMES) {
         opts->frame_x2tdma = 1;
         opts->frame_provoice = 1;
+    }
+    if (which == YC_UNLANDED) {
+        dsd_engine_scan_landing_forget(state);
     }
     if (which != YC_QUIET_FIRST) { /* a quiet row steps on its result long before -t runs out */
         yc_age(state, which != YC_ANCHOR_FRESH);
@@ -16224,7 +16229,7 @@ yc_check(dsd_opts* opts, dsd_state* state, int which) {
     if (which == YC_PARTIAL || which == YC_UNCHECKED_FRAMES) {
         return yc_check_held_then_steps(opts, state, which);
     }
-    if (which == YC_NOISE || which == YC_UNCHECKED_SET) {
+    if (which == YC_NOISE || which == YC_UNCHECKED_SET || which == YC_UNLANDED) {
         rc |= expect_true("noise: yields at the first boundary past -t", g_frame_count == 1);
         noCarrier(opts, state);
         rc |= expect_true("noise: noCarrier() steps, with no quiet NOTICE", g_rtl_tune_calls == 1 && g_yq.notices == 0);
@@ -16324,7 +16329,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_UNCHECKED_FRAMES; which++) {
+    for (int which = YC_NOISE; which <= YC_UNLANDED; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

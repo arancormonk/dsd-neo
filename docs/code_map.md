@@ -681,8 +681,11 @@ Generated (do not edit/commit):
       (`scan_y_unchecked_seq`) and which holds the row only while such frames keep coming, so the default set's -Y row
       on NXDN48 or dPMR noise leaves like a typed one), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
-      and it has not yielded for this landing epoch and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
-      `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. Checked content
+      and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
+      `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. The stay is the
+      landing epoch (`dsd_engine_scan_owner::landing_epoch`), which a row's landing and a landing forgotten both move,
+      so a stay no row landing is in force for (the scan's start frequency, a zero-frequency placeholder row) leaves too
+      (`ENGINE_NO_CARRIER_RESET` case `YC_UNLANDED`). Checked content
       reaches it with no hook and no allocation: the content-evidence wrapper (`dsd_frame_sync_hook_content_evidence()`)
       moves `dsd_state::scan_y_content_seq` for every PROVEN note, and `scan_y_partial_seq` with the longest
       `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the boundary

@@ -4458,8 +4458,9 @@ live_scanner_y_window_start_m(const dsd_state* state) {
    syncs of the protocols whose hunt stamps the anchor keep it fresh, as before), no content a protocol's CRC/FEC gate
    passed came for -t, nor a frame of a protocol with no such gate (live_scanner_y_window_start_m(); a real call's checks
    or frames keep it fresh, whatever skip-silent says), the
-   other terms hold (live_scanner_y_frame_step_may_decide()), and it has not yielded for this landing and anchor yet;
-   the pair it would yield for goes in @p out_epoch and @p out_mark_ms. Pure: it reads, and decides nothing itself.
+   other terms hold (live_scanner_y_frame_step_may_decide()), and it has not yielded for this stay (a row's landing, or
+   a stay no landing is in force for) and anchor yet; the pair it would yield for goes in @p out_epoch and
+   @p out_mark_ms. Pure: it reads, and decides nothing itself.
    Off -Y, one compare. */
 static int
 live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, uint64_t* out_epoch,
@@ -4472,15 +4473,14 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
         || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
     }
-    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    /* The stay the yield is for: the landing epoch, which a row's landing and a landing forgotten both move, so a stay
+       no row landing is in force for (the scan's start frequency, a placeholder row) is tracked too. A state with no
+       scan owner has had neither: its stay is epoch 0. */
     const dsd_engine_scan_owner* owner =
         (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
-    if (!landing || !owner || landing->by != DSD_ENGINE_SCAN_LANDING_ROW) {
-        return 0;
-    }
-    *out_epoch = landing->epoch;
+    *out_epoch = owner ? owner->landing_epoch : 0U;
     *out_mark_ms = (int64_t)(mark_m * 1000.0);
-    return owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
+    return !owner || owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
 }
 
 /* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
@@ -4528,7 +4528,7 @@ live_scanner_y_content_frame_yield(const dsd_opts* opts, dsd_state* state) {
     if (!live_scanner_y_frames_carry_nothing(opts, state, &epoch, &mark_ms)) {
         return 0;
     }
-    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
         owner->y_frame_yield_epoch = epoch;
         owner->y_frame_yield_mark_ms = mark_ms;
