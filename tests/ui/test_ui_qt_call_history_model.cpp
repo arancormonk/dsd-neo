@@ -5443,6 +5443,66 @@ test_spill_text_only_replay_keeps_saved_position(void) {
                       == QStringLiteral("GPS: Hidden"));
 }
 
+/* 2.7: a merged row keeps each fragment's GPS unit. When the fragment whose fix it shows loses that fix (the core's
+ * later text-only write), the row shows the best remaining fragment's fix, whatever order the readings come in, and
+ * also after a reload. */
+void
+test_lost_fix_gives_way_to_remaining_fragment(void) {
+    const time_t when = 1754703500;
+    for (int order = 0; order < 3; order++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* a = with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+        (void)a;
+        Event_History* b =
+            with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
+        a = &ring.rings[0].Event_History_Items[2];
+        b = &ring.rings[0].Event_History_Items[1];
+        if (order == 1) {
+            // Fragment A is read only after B lost its fix.
+            Event_History saved = *a;
+            DSD_MEMSET(a, 0, sizeof(*a));
+            model.refresh(ring.state);
+            DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
+            b->pos.valid = 0U;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            *a = saved;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+        } else {
+            model.refresh(ring.state);
+            expect("2.7 lost fix: the higher rev shows first", model.count() == 1 && detail_of(model, 0) == "GPS: B");
+            if (order == 2) {
+                model.startSaveForTest();
+                model.waitForSaveForTest();
+                CallHistoryModel reloaded;
+                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
+                b->pos.valid = 0U;
+                ring.touchCommitted(0);
+                reloaded.refresh(ring.state);
+                expect("2.7 lost fix: after a reload the remaining fix shows",
+                       reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
+                continue;
+            }
+            DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
+            b->pos.valid = 0U;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+        }
+        expect(order == 0 ? "2.7 lost fix: the remaining fragment's fix shows"
+                          : "2.7 lost fix: the same row when the text-only reading comes first",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: A"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        const QJsonObject stored = stored_row_with(80401U, 8401U);
+        expect("2.7 lost fix: the shown fix and the other fragment's text are stored",
+               stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
+                   && stored.value(QLatin1String("gpsAlt")).toArray().size() == 1);
+    }
+}
+
 /* Spec 2.14: a row that names its source never shows an anonymous report. A ring row read while its call named no
  * source keeps its anonymous fix; once the same row names a radio with the fix still on it (as an older core left it),
  * the fix and its text go, also from a store that kept them. */
@@ -6109,6 +6169,7 @@ main(int argc, char** argv) {
     test_texts_and_position_survive_save_reload_and_spill();
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();
+    test_lost_fix_gives_way_to_remaining_fragment();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
     test_callsign_callers_stay_apart();
