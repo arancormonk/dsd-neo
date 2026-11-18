@@ -680,6 +680,18 @@ test_late_post_from_a_replaced_input(void) {
     DSD_MEMSET(&held, 0, sizeof held);
     check(dsd_input_backlog_take(&held) == 1 && held.measured == 0U && held.order == device.order,
           "a device input's post stands");
+    /* A device input attaches no queue. Replaced between a watchdog's mark and its confirmation (another device opened,
+       dsd_input_backlog_forget()), its late post is no drop of the replacement either. */
+    dsd_input_backlog_retire();
+    dsd_input_cut on_device;
+    dsd_input_backlog_mark(&on_device);
+    dsd_input_backlog_forget();
+    dsd_input_backlog_post(&on_device);
+    DSD_MEMSET(&held, 0, sizeof held);
+    const int device_taken = dsd_input_backlog_take(&held);
+    DSD_SNPRINTF(what, sizeof what, "a post marked on a device input since replaced is refused (held %d, order %llu)",
+                 device_taken, (unsigned long long)held.order);
+    check(!device_taken, what);
     /* A switch's attach is in flight when the post marked on the input it replaces comes: refused while the new input
        stands, back once its start fails, since the input it was marked on is the one read again. */
     dsd_input_backlog_attach(&old_queue, fake_queue_arrived);

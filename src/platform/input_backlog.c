@@ -299,6 +299,11 @@ dsd_input_backlog_forget(void) {
         s_post_held = 0;
     }
     s_undo_post_held = 0; /* the input replaced, nothing comes back to it */
+    if (s_queue == NULL && !s_opening) {
+        /* A device input (or none) attaches no queue, so no attach moved the attachment: the replacement takes a new
+           one here, and a post marked on the input replaced, confirmed late, is refused (dsd_input_backlog_post()). */
+        backlog_new_attachment_locked();
+    }
     backlog_end_opening_locked();
     backlog_unlock();
 }

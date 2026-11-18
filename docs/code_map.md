@@ -7449,7 +7449,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the old TCP connection and confirmed after the reconnect), is refused by `dsd_input_backlog_post()` itself, past the
   opening-to-reader handoff above: it would move the new stream's timeline and drop nothing of it
   (`test_late_post_from_a_replaced_input()`). One marked on the input a switch's attach in flight replaced comes back
-  if that attach's input fails to start. What one drop takes is bounded, and no drop waits for audio: the sound-card input (per backend:
+  if that attach's input fails to start. A device input attaches no queue, so its replacement takes a new attachment at
+  the forget, and a late post marked on the device replaced is refused the same way. What one drop takes is bounded, and no drop waits for audio: the sound-card input (per backend:
   PulseAudio on Linux and macOS, what the client holds, at most 2 s of frames at the stream's rate, exact to one
   32-frame read (up to 31 frames past it), no read begun after 250 ms; PortAudio on Windows, one snapshot of what is
   available, at most 2 s of frames at the stream's rate and no read begun after 250 ms; AAudio on Android, at most 96000 frames and no read begun after 250 ms; see the platform audio entry), the

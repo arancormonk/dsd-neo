@@ -100,7 +100,9 @@ void dsd_input_backlog_post(const dsd_input_cut* cut);
 /** The decoder takes the held post into @p out: 1 when one was held and not retired, else 0. */
 int dsd_input_backlog_take(dsd_input_cut* out);
 
-/** The input was replaced: a held post not measured on the queue attached now is retired. Decoder thread. */
+/** The input was replaced: a held post not measured on the queue attached now is retired. A replacement that attaches
+ * no queue (a device input) takes a new attachment here, so a post marked on the input it replaced and confirmed later
+ * is refused too (dsd_input_backlog_post()). Decoder thread. */
 void dsd_input_backlog_forget(void);
 
 /** A run boundary: a held post is retired. */
