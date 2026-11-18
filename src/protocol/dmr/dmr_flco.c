@@ -24,6 +24,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
@@ -910,23 +911,20 @@ dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
     }
 }
 
-/* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE call's source: the embedded GPS LC
-   that follows in this transmission is that radio's (spec 2.2), sent to the target the same LC named while the call
-   still has it. Any other LC leaves the record alone, so it names a
-   source only while the call stays the transmission and source it recorded (a fade the call layer heals keeps it). */
+/* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE DMR call's source: the embedded GPS
+   LC that follows in this transmission is that radio's (spec 2.2), sent to the target the same LC named while the call
+   still has it. The evidence is bound to the transmission (a fade the call layer heals keeps it) and to the reception
+   (dsd_position_attribution_learn()); any other LC leaves it alone. */
 static void
 dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
-    dsd_call_snapshot call;
-    if (!dmr_flco_crc_checked(ctx) || ctx->source == 0U || dsd_call_state_get(ctx->state, slot, &call) <= 0
-        || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id != ctx->source) {
+    dsd_position_attribution_call call;
+    if (!dmr_flco_crc_checked(ctx) || !dsd_position_attribution_call_from_slot(ctx->state, slot, &call)
+        || !DSD_SYNC_IS_DMR(call.protocol)) {
         return;
     }
-    ctx->state->dmr_lc_checked_transmission[slot] = dsd_call_snapshot_transmission(&call);
-    ctx->state->dmr_lc_checked_source[slot] = ctx->source;
-    const int names_target = ctx->target != 0U && call.ota_target_id == (uint64_t)ctx->target;
-    ctx->state->dmr_lc_checked_target[slot] = names_target ? ctx->target : 0U;
-    ctx->state->dmr_lc_checked_group[slot] =
-        (uint8_t)(names_target && dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
+    (void)dsd_position_attribution_learn(
+        ctx->state, &call, ctx->source, ctx->target, dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE,
+        DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION, &ctx->state->dmr_lc_attribution[slot]);
 }
 
 /* A voice LC header begins a transmission, whichever radio sends it: the record of the one before no longer names the
@@ -938,11 +936,7 @@ dmr_flco_forget_checked_source(const dmr_flco_ctx* ctx) {
     if (ctx->type != 1U || ctx->slot >= 2U) {
         return;
     }
-    const uint8_t slot = ctx->slot;
-    ctx->state->dmr_lc_checked_transmission[slot] = 0U;
-    ctx->state->dmr_lc_checked_source[slot] = 0U;
-    ctx->state->dmr_lc_checked_target[slot] = 0U;
-    ctx->state->dmr_lc_checked_group[slot] = 0U;
+    dsd_position_attribution_clear(&ctx->state->dmr_lc_attribution[ctx->slot]);
 }
 
 static void

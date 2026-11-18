@@ -14,16 +14,19 @@
  * it set, or one a later message inherited from it, is unchecked. All coordinates and IDs are made up.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
@@ -906,6 +909,140 @@ test_sacch_voice_user(void) {
     fixture_close(&f);
 }
 
+/* MAC_ACTIVE (opcode 4) carrying no voice user message: the voice start names no identity of its own. */
+static void
+mac_active_addressless(fixture* f) {
+    const uint8_t mac[18] = {0x80};
+    send_facch(f, mac);
+}
+
+/* A checked Network Status Broadcast (Abbreviated, 0x7B) of @p sysid on the fixture's WACN and NAC. */
+static void
+network_status(fixture* f, uint16_t sysid) {
+    const uint32_t wacn = 0xBEE00U;
+    const uint16_t nac = 0x293U;
+    const uint8_t nsb[] = {0x7B,
+                           0x00,
+                           (uint8_t)(wacn >> 12),
+                           (uint8_t)(wacn >> 4),
+                           (uint8_t)(((wacn & 0x0FU) << 4) | ((sysid >> 8) & 0x0FU)),
+                           (uint8_t)sysid,
+                           (uint8_t)(VC_CHANNEL >> 8),
+                           (uint8_t)(VC_CHANNEL & 0xFFU),
+                           0x00,
+                           (uint8_t)((nac >> 8) & 0x0FU),
+                           (uint8_t)nac};
+    send_mac(f, 0, nsb, sizeof nsb, 1);
+}
+
+/* A Phase 1 Group Voice Channel User link control (hard decode) of @p tg by @p src, as an LDU1 dispatches it. */
+static void
+p1_group_voice_user(fixture* f, uint16_t tg, uint32_t src) {
+    const uint8_t bytes[9] = {
+        0x00,        0x00, 0x00, 0x00, (uint8_t)(tg >> 8), (uint8_t)tg, (uint8_t)(src >> 16), (uint8_t)(src >> 8),
+        (uint8_t)src};
+    uint8_t lcw[72];
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    f->st->synctype = DSD_SYNC_P25P1_POS;
+    f->st->lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_lcw(f->opts, f->st, lcw, 0);
+    f->st->synctype = DSD_SYNC_P25P2_POS;
+    f->st->lastsynctype = DSD_SYNC_P25P2_POS;
+}
+
+/* The attribution rule (issue #800, dsd_position_attribution_grant()): a Phase 2 report borrows its sender only from a
+ * Phase 2 call. A conventional Phase 1 call still ACTIVE on slot 0 (its terminator missed), whose own checked voice user
+ * named its source, names no Phase 2 report's sender, before or after a Phase 2 call of its own replaces it. */
+static void
+test_phase1_call_names_no_phase2_report(void) {
+    fixture f;
+    fixture_open(&f);
+    f.opts->trunk_enable = 0;
+    p1_group_voice_user(&f, (uint16_t)TG_A, SRC_A);
+    dsd_call_snapshot call;
+    expect_true("phase 1 call open", dsd_call_state_get(f.st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                                         && DSD_SYNC_IS_P25P1(call.protocol) && call.ota_source_id == SRC_A);
+    send_gps(&f, 0);
+    expect_report(&f, "phase 2 report during a phase 1 call", 0U, 0U, 0);
+    // The Phase 2 call's own checked PTT names it.
+    mac_ptt(&f, TG_A, SRC_B);
+    expect_true("phase 2 call open", dsd_call_state_get(f.st, 0U, &call) > 0 && DSD_SYNC_IS_P25P2(call.protocol)
+                                         && call.ota_source_id == SRC_B);
+    send_gps(&f, 0);
+    expect_report(&f, "phase 2 report on its own call", SRC_B, TG_A, 1);
+    fixture_close(&f);
+}
+
+/* The attribution rule's reception: a checked identity counts only under the reception it was named under. A checked
+ * Network Status Broadcast naming another system (conventional, no terminator between), or another NAC on the
+ * carrier, leaves the next report anonymous until a checked message of the call names it again under the new one. */
+static void
+test_reception_change(void) {
+    for (int change = 0; change < 2; change++) {
+        fixture f;
+        fixture_open(&f);
+        f.opts->trunk_enable = 0;
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+        dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, change ? "nac: before" : "system: before", SRC_A, TG_A, 1);
+        const uint32_t before = f.st->rx_id.epoch;
+        if (change == 0) {
+            network_status(&f, 0x1A4U);
+        } else {
+            dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x294U);
+        }
+        expect_true(change ? "nac: reception changed" : "system: reception changed", f.st->rx_id.epoch != before);
+        expect_true(change ? "nac: call still open" : "system: call still open", slot0_call_names(TG_A, SRC_A, f.st));
+        send_gps(&f, 0);
+        expect_report(&f, change ? "nac: after the change" : "system: after the change", 0U, 0U, 0);
+        // A source-less continuation keeps the call but names no one under the new reception.
+        mac_active(&f, TG_A, 0U);
+        send_gps(&f, 0);
+        expect_report(&f, change ? "nac: source-less continuation" : "system: source-less continuation", 0U, 0U, 0);
+        // A checked voice user naming all three under the new reception names the call again.
+        sacch_group_voice_user(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, change ? "nac: renamed" : "system: renamed", SRC_A, TG_A, 1);
+        fixture_close(&f);
+    }
+
+    // Trunked: an assignment accepted under one system is not inherited by a voice start under another.
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+    group_grant(&f, SRC_A, 1);
+    dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A4U);
+    mac_active(&f, TG_A, 0U);
+    expect_true("trunked: source-less call open", slot0_call_names(TG_A, SRC_A, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "trunked: assignment of another reception", 0U, 0U, 0);
+    fixture_close(&f);
+}
+
+/* One call's identity: a checked voice user of another talkgroup takes the slot from the assignment, and an addressless
+ * MAC_ACTIVE then starts the assignment's call. Its talker is not the other talkgroup's: the report never pairs that
+ * talker with the assignment's talkgroup, a pair no message named. */
+static void
+test_addressless_active_after_other_talkgroup(void) {
+    fixture f;
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    sacch_group_voice_user(&f, TG_A + 1U, SRC_B);
+    expect_true("other talkgroup's call", slot0_call_names(TG_A + 1U, SRC_B, f.st));
+    mac_active_addressless(&f);
+    dsd_call_snapshot call;
+    expect_true("addressless active: the assignment's call, no talker",
+                dsd_call_state_get(f.st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                    && call.ota_target_id == TG_A && call.ota_source_id == 0U);
+    send_gps(&f, 0);
+    expect_report(&f, "addressless active after another talkgroup's voice user", 0U, 0U, 0);
+    fixture_close(&f);
+}
+
 /* Every grant routing in the MAC dispatch stamps the grant's CRC verdict on the slot's identity. */
 static void
 test_every_grant_kind(void) {
@@ -1004,6 +1141,9 @@ main(void) {
     test_unstamped_voice_start();
     test_hangtime();
     test_every_grant_kind();
+    test_phase1_call_names_no_phase2_report();
+    test_reception_change();
+    test_addressless_active_after_other_talkgroup();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

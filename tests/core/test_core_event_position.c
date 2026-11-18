@@ -300,6 +300,40 @@ test_reacquired_segment_strengthens_reception_scope(void) {
     assert(row(1)->rx_scope.identity_freq_hz == 0);
 }
 
+/* Issue #800: a reacquired segment heard on another reception (here two conventional P25 segments with no system
+ * identity, so the tuned frequency is the scope: 450 MHz, then 451 MHz after the sync loss) still merges as one row,
+ * but its position, however newer its rev, never lands on a row heard somewhere else: the merged row keeps its own
+ * reception and no position. On the same reception the newer position does merge. */
+static void
+test_reacquired_position_keeps_reception(void) {
+    for (int moved = 0; moved <= 1; moved++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ);
+        assert(row(1)->rx_scope.scope.a == 450000000U && row(1)->pos.valid == 0U);
+        if (moved) {
+            g_opts.rtlsdr_center_freq = 451000000U;
+        }
+        const uint64_t second = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        assert(second != first);
+        const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+        assert(f.reception_scope.a == (moved ? 451000000U : 450000000U));
+        assert(dsd_event_enrich_position(NULL, &g_state, 0U, second, &f, "segment fix") == 1);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+        assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_FEED_TUNED_FREQ && row(1)->rx_scope.scope.a == 450000000U);
+        if (moved) {
+            assert(row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+        } else {
+            expect_row_fix(row(1), &f, "segment fix");
+        }
+    }
+}
+
 /* A call that ended before any render takes the record as it ended, with the frequency the row is given (the call's
  * own), not whatever the staged row held. */
 static void
@@ -697,6 +731,7 @@ main(void) {
     test_foreign_sender_enriches_its_call();
     test_reception_scope_refines_mid_call();
     test_reacquired_segment_strengthens_reception_scope();
+    test_reacquired_position_keeps_reception();
     test_reception_scope_of_a_call_ended_unseen();
     test_declined_position_keeps_crc_marking();
     test_callsign_sources();

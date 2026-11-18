@@ -810,9 +810,10 @@ p25p2_vpdu_active_target_matches(const dsd_state* state, uint64_t target) {
     return 0;
 }
 
-/* The provenance of an L3Harris GPS MAC: the MAC CRC verdict, and the slot's ACTIVE call's identity only when its
- * source, target and kind all came from checked messages (spec 2.19, p25_sm_checked_call_identity()). Otherwise the
- * report names no one. */
+/* The provenance of an L3Harris GPS MAC: the MAC CRC verdict, and the slot's ACTIVE Phase 2 call's identity only when
+ * its source, target and kind all came from checked messages under this reception (spec 2.19,
+ * p25_sm_checked_call_identity()): a Phase 1 call still open on the slot names no Phase 2 report's sender. Otherwise
+ * the report names no one. */
 static void
 p25p2_vpdu_harris_report_ctx(const p25p2_vpdu_ctx* ctx, dsd_gps_report_ctx* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -820,7 +821,7 @@ p25p2_vpdu_harris_report_ctx(const p25p2_vpdu_ctx* ctx, dsd_gps_report_ctx* out)
     out->slot = (uint8_t)(ctx->slot & 1);
     out->pos_verified = (uint8_t)(ctx->crc_ok != 0);
     p25_sm_published_identity identity;
-    if (p25_sm_checked_call_identity(ctx->state, ctx->slot & 1, &identity)) {
+    if (p25_sm_checked_call_identity(ctx->state, ctx->slot & 1, out->protocol, &identity)) {
         out->call_epoch = identity.epoch;
         out->source_id = identity.source;
         out->target_id = identity.target;

@@ -615,6 +615,64 @@ test_udt_nmea_dispatch(dsd_opts* opts, dsd_state* state, const char* path) {
     return failed;
 }
 
+/* Issue #800: P25 data's IP source is the low 24 address bits, so a fixed network endpoint (here 10.255.255.253, the
+ * P25 FNE ID $FFFFFD) reaches the position path as a source ID. It names no radio: a LIP (UDP 5017) or LRRP (UDP 4001)
+ * report is kept anonymous, with its checked destination, and no track, `-L` row or notice names $FFFFFD. A DMR packet
+ * from the same address keeps its source: DMR addressing is untouched. */
+static int
+test_p25_fixed_network_source(dsd_opts* opts, dsd_state* state, const char* path) {
+    int failed = 0;
+    uint8_t packet[38];
+    build_packet(packet);
+    packet[12] = 10;
+    packet[13] = 255;
+    packet[14] = 255;
+    packet[15] = 253;
+    static const int carriers[] = {DSD_SYNC_P25P1_POS, DSD_SYNC_DMR_BS_DATA_POS};
+    for (size_t c = 0; c < sizeof carriers / sizeof carriers[0]; c++) {
+        const int p25 = DSD_SYNC_IS_P25P1(carriers[c]);
+        state->lastsynctype = carriers[c];
+        dsd_state_ext_free_all(state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        CHECK(truncate_output(path));
+        CHECK(decode_ip_pdu(opts, state, sizeof packet, packet) == 1);
+        dsd_position_fix rec;
+        dsd_position_feed_meta meta;
+        CHECK(dsd_position_feed_copy_since(state, 0U, &rec, 1, &meta) == 1);
+        CHECK(rec.kind == DSD_POS_LIP && rec.target_id == 222U && rec.lat_e7 == -225000000);
+        CHECK(rec.source_id == (p25 ? 0U : 0xFFFFFDU));
+        CHECK(expect_rows(path, 1, p25 ? "00000000" : "16777213", "-22.500000", "-45.000000", 20, 0,
+                          p25 ? "P25 FNE UDP LIP" : "DMR UDP LIP from the same address"));
+        const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+        CHECK(notice->pos.valid == 1U && notice->pos.lat_e7 == -225000000);
+        CHECK(notice->source_id == (p25 ? 0U : 0xFFFFFDU));
+
+        // LRRP on UDP 4001 from the same endpoint: an Immediate Location Response with a 2D point.
+        static const uint8_t doc[] = {0x07, 0x09, 0x66, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00};
+        uint8_t lrrp[28 + sizeof doc];
+        DSD_MEMCPY(lrrp, packet, 28);
+        lrrp[3] = (uint8_t)sizeof lrrp;
+        lrrp[20] = 0x0F;
+        lrrp[21] = 0xA1;
+        lrrp[22] = 0x0F;
+        lrrp[23] = 0xA1; // UDP 4001
+        lrrp[24] = 0;
+        lrrp[25] = (uint8_t)(8U + sizeof doc);
+        DSD_MEMCPY(lrrp + 28, doc, sizeof doc);
+        dsd_state_ext_free_all(state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        CHECK(truncate_output(path));
+        CHECK(decode_ip_pdu(opts, state, sizeof lrrp, lrrp) == 1);
+        CHECK(dsd_position_feed_copy_since(state, 0U, &rec, 1, &meta) == 1);
+        CHECK(rec.kind == DSD_POS_DMR_LRRP && rec.target_id == 222U);
+        CHECK(rec.source_id == (p25 ? 0U : 0xFFFFFDU));
+        CHECK(notice->pos.valid == 1U && notice->pos.kind == DSD_POS_DMR_LRRP);
+        CHECK(notice->source_id == (p25 ? 0U : 0xFFFFFDU));
+    }
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -641,6 +699,7 @@ main(void) {
     int failed = test_udt(&opts, &state, path);
     failed |= test_udp(&opts, &state, path);
     failed |= test_udp_packet_origin(&opts, &state, path);
+    failed |= test_p25_fixed_network_source(&opts, &state, path);
     failed |= test_compressed(&opts, &state, path);
     for (int carrier = 0; carrier < 3; ++carrier) {
         failed |= test_active_call_ownership(&opts, &state, path, carrier);

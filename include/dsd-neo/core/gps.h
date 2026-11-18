@@ -110,9 +110,10 @@ void lip_write_location_row(const dsd_opts* opts, const struct dsd_position_fix*
 
 /**
  * @brief The DMR embedded GPS LC (TS 102 361-2 Table 7.3). The caller (dmr_flco) runs it only for an unprotected LC
- * whose embedded checksum passed. Its source is the slot's ACTIVE call's when a checked full LC of that call named it
- * (dsd_state::dmr_lc_checked_transmission / dmr_lc_checked_source), and its destination with the group flag when that
- * LC also named the call's target (dmr_lc_checked_target / dmr_lc_checked_group); otherwise the report is unattributed.
+ * whose embedded checksum passed. Its source, and its destination with the group flag while the call still has it,
+ * are those a checked full LC of the slot's ACTIVE DMR call named (dsd_state::dmr_lc_attribution), by the attribution
+ * rule (dsd_position_attribution_grant(): the same transmission, under the same reception); otherwise the report is
+ * unattributed.
  */
 void dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]);
 /**

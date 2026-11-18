@@ -2486,7 +2486,8 @@ suite runs under this compiler.
   group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
   (`dsd_position_origin_capture()`/`_matches()`: the received identity's epoch with the trunk tuning generation), or
-  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays),
+  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
+  a source that names no radio (`dsd_position_source_names_radio()`: a P25 fixed-network ID, destination kept),
   freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
   none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
   tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
@@ -2529,7 +2530,9 @@ suite runs under this compiler.
   same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
   WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
-  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
+  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
+  segment's position only when it was heard on the row's reception (its `rx_scope` equal to the row's after the
+  merge folds in what the segment learned; a side that knows none is no mismatch; test `CORE_EVENT_POSITION`).
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
   no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
   `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
@@ -2568,19 +2571,43 @@ suite runs under this compiler.
     `USBD LIP Poll Response; SRC(Hash): NNN;`, never `-L`. `lip_parse_short_report()` and its text and `-L` helpers are
     shared with TETRA.
   - DMR embedded GPS (`dmr_embedded_gps()`): the embedded LC checksum (`WEAK_CHECK`) / a checked, non-RAS full LC of
-    the same transmission named the call's source (`dmr_lc_checked_transmission`, `dmr_lc_checked_source`, cleared
-    with the reception), else unverified; the destination and group flag that LC named
-    (`dmr_lc_checked_target`, `dmr_lc_checked_group`) while the call still has that target.
+    the same transmission named the call's source (`dmr_lc_attribution[slot]`, learned in `dmr_flco.c` bound to the
+    transmission and the reception, cleared at every voice LC header and carrier change), else unverified; the
+    destination and group flag that LC named while the call still has that target. By the attribution rule below: a
+    relock onto another colour code, or another site named on the carrier, keeps the call but leaves the next fix
+    anonymous until a checked full LC under the new reception names the talker (test `DMR_EMBEDDED_GPS_ATTRIBUTION`).
   - P25 Phase 1 L3Harris and Motorola APX (MFID $90 LCO $06, `FORMAT_PROVISIONAL`) link control (`p25_lcw.c`,
     `nmea_harris()`, `apx_embedded_gps()` with a `dsd_gps_report_ctx`): a hard RS decode of the LDU1 or TDULC LC (a
     soft-erasure retry is unchecked); L3Harris pairs Part A (LCO 42 or 44) only with the Part B of its parity (43 or
     45) on the same call epoch and source within 2 s on the decode clock, in storage of its own
-    (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE call.
+    (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE Phase 1
+    call (`p25_p1_lc_attribution`, by the attribution rule below: a checked NID naming another NAC, or another system
+    named, without the call ending leaves the report anonymous, in the call and in its terminator).
     Every Phase 1 LC verdict (identity events, preemption candidates, the checked-identity record, the GPS position)
     depends on that hard decode (`p25_lcw_ctx.lc_hard`). A terminator's GPS LC belongs to the call that terminator
     ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
     and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
-    `p25_sm_checked_call_identity()` (P25 SM below).
+    `p25_sm_checked_call_identity()` (P25 SM below), by the attribution rule below: never from a Phase 1 call still
+    open on the slot, never across a reception change.
+  - Attribution rule (`<dsd-neo/core/position_attribution.h>`, `src/core/gps/position_attribution.c`). Every producer
+    that names a report's sender from a call rather than from the report (DMR embedded GPS, P25 Phase 1 GPS link
+    control and Motorola APX, P25 Phase 2 L3Harris MAC) records its evidence with `dsd_position_attribution_learn()`
+    when a checked message of the call names it, and borrows it only through `dsd_position_attribution_grant()`:
+    the call is open (ACTIVE, or the call the report's own terminator just ended,
+    `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
+    protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
+    transmission (a healed fade keeps it); the received identity's epoch (`dsd_received_identity::epoch`, moved by
+    another access code, system, site or family; a trunk follow keeps it) is the one it was learned under; and the
+    call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
+    The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
+    the slot's assignment (`identity_rx_epoch`). The other producers name the sender from the report's own carrier
+    (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
+    the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
+  - A P25 fixed-network ID (`$FFFFFD`, `$FFFFFF`) names no radio wherever a report's source comes from
+    (`dsd_position_source_names_radio()`): admission clears such a source and keeps the destination, so a checked
+    report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits as the source: LRRP, LOCN,
+    LIP over UDP from 10.255.255.253) is anonymous, and its data notice names no sender. DMR addressing is unchanged.
+    Test: `DMR_LIP_CARRIERS`.
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
     A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
@@ -2628,12 +2655,12 @@ suite runs under this compiler.
     Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
-    transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
+    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, a D-PRS record begun in a
     call, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
-    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and every D-STAR RF
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
     header, whatever its CRC, drops the half-collected D-PRS record and leaves D-PRS records anonymous
     (`dstar_dprs_source_unchecked`) until a checked header, on RF or in the slow data, names the transmission's MY
     callsign (a checked header with a blank MY field names no one and leaves them anonymous too). Tests:
@@ -12356,21 +12383,28 @@ Private per-protocol modules worth knowing about:
   `p25_sm_note_call_identity()`, with the MAC CRC verdict). A voice user also updates the slot's assignment
   (`p25_slot_note_voice_user()`): naming the assignment's kind and target, it applies there as a repeated grant does,
   so a later source-less MAC_ACTIVE inherits the latest talker with that voice user's verdict, never the grant's; naming
-  another kind or target, it drops the assignment's source, which no longer says who is talking.
-  The record holds the call's current source, target and kind; `p25_sm_merge_published_identity()` keeps a flag only
-  within the same epoch and value. Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
+  another kind or target, it drops the assignment's source, which no longer says who is talking. An addressless voice
+  start (a MAC_ACTIVE with no voice user) takes the canonical call's talker only while that call is the assignment's
+  (same kind and target, `p25_voice_assignment_call_src()`), so a talker of another talkgroup is never paired with
+  the assignment's talkgroup.
+  The record holds the call's current source, target and kind, its protocol and the reception (received identity
+  epoch) its flags were earned under; `p25_sm_merge_published_identity()` keeps a flag only within the same epoch,
+  reception and value, and an assignment's verdicts are carried into it only under the reception the assignment was
+  accepted under (`identity_rx_epoch`). Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
   older convenience emitters publish unchecked, and the event builders default to unchecked.
   `p25_sm_checked_call_identity()` returns the record only while the call is ACTIVE on that epoch with that source,
-  target and kind, all three checked and a source named. Position producers attribute a Phase 2 report only through
-  it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no radio on its
-  positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a checked
-  repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
-  hard-decoded voice-user LC record (`p25_p1_lc_checked_id`, `p25_lcw.c`), which follows the same rule. A link control
+  target and kind, all three checked and a source named, and by the attribution rule (Core, position producers) for the
+  report's protocol class: a Phase 1 call never names a Phase 2 report's sender, and a NAC or system change without the
+  call ending withholds the record until a checked message names the call again. Position producers attribute a Phase 2
+  report only through it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no
+  radio on its positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a
+  checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
+  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c`), which follows the same rule. A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A fixed-network ID (`0xFFFFFD`, `0xFFFFFF`) is never a checked source
-  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet,
-  so a report during such a call or from such an LLID is kept anonymous. Tests:
-  `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
+  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
+  a report during such a call or from such an LLID is kept anonymous (and admission clears one that reaches a report
+  another way, `dsd_position_source_names_radio()`). Tests: `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as

@@ -568,9 +568,9 @@ test_reused_state_forgets_checked_identity(void) {
     int rc = 0;
 
     const uint64_t first = start_checked_call(&opts, &state);
-    rc |=
-        expect_true("first run: checked identity of its call", first != 0U && state.p25_p1_lc_checked_id.epoch == first
-                                                                   && state.p25_p1_lc_checked_id.source == 0x010203U);
+    rc |= expect_true("first run: checked identity of its call",
+                      first != 0U && state.p25_p1_lc_attribution.call_epoch == first
+                          && state.p25_p1_lc_attribution.source == 0x010203U);
 
     dsd_state_ext_free_all(&state);
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();

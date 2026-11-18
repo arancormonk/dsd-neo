@@ -210,6 +210,16 @@ pos_protocol_family(uint8_t protocol) {
 }
 
 int
+dsd_position_source_names_radio(int protocol, uint64_t source) {
+    if (source == 0U) {
+        return 0;
+    }
+    /* TIA-102.AABC: WUID $FFFFFD is the fixed network equipment, $FFFFFF all units. A P25 packet's IP source takes the
+       low 24 address bits, so a network endpoint lands here too. */
+    return !(DSD_SYNC_IS_P25(protocol) && (source == 0xFFFFFDU || source == 0xFFFFFFU));
+}
+
+int
 dsd_position_protocol_family(int protocol) {
     if (protocol < 0 || protocol >= (int)DSD_POSITION_PROTOCOL_NONE) {
         return -1;
@@ -260,11 +270,16 @@ pos_well_formed(const dsd_position_fix* f) {
 }
 
 /* Step 2: without checked provenance (or with a hashed source) the source, callsign, target and group flag go; the
- * report format stays. Admission owns SOURCE_UNVERIFIED; a hashed source stays marked hashed instead. */
+ * report format stays. Admission owns SOURCE_UNVERIFIED; a hashed source stays marked hashed instead. A P25
+ * fixed-network ID in the source (dsd_position_source_names_radio()) names no radio however checked the carrier was: it
+ * goes alone, the destination stays, and the report is anonymous. */
 static void
 pos_clear_identity(dsd_position_fix* r, int source_verified) {
     const int hashed = (r->flags & DSD_POS_FLAG_SOURCE_HASHED) != 0U;
     r->flags = (uint16_t)(r->flags & ~(unsigned)DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    if (!dsd_position_source_names_radio(r->protocol, r->source_id)) {
+        r->source_id = 0U;
+    }
     if (source_verified == 1 && !hashed) {
         return;
     }

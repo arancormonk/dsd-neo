@@ -1045,7 +1045,10 @@ decode_ip_pdu_event_category(uint8_t protocol, uint16_t src_port, uint16_t dst_p
 static int
 decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t prot, uint32_t src24, uint32_t dst24,
                           uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
+    // A P25 fixed network endpoint's address names no radio (dsd_position_source_names_radio()): the notice of a
+    // packet it sent names no sender, as the report it carried names none.
+    const uint32_t sender = dsd_position_source_names_radio(state->lastsynctype, src24) ? src24 : 0U;
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, sender, dst24);
     const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
     // An admitted LIP report was staged with its text by lip_pdu_decoder() and this notice consumes it. An ICMP
     // wrapper never claims a fix produced by its enclosed packet: that packet's own notice consumed it.

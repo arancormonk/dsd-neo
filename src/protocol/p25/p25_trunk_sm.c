@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -1573,9 +1574,9 @@ p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_clai
 }
 
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
- * the call's current source, target and kind and its epoch; a field keeps its flag only within the same epoch and
- * with the same value, and gains the message's verdict where the message named the value the call now holds. A call
- * that is not ACTIVE leaves no record. */
+ * the call's current source, target and kind, its epoch and protocol, and the reception's epoch; a field keeps its flag
+ * only within the same epoch, under the same reception and with the same value, and gains the message's verdict where
+ * the message named the value the call now holds. A call that is not ACTIVE leaves no record. */
 static void
 p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state* state, int slot,
                                 const p25_sm_identity_claim* claim) {
@@ -1589,13 +1590,16 @@ p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state*
     const uint32_t target = (uint32_t)call.ota_target_id;
     const uint8_t kind = (uint8_t)call.kind;
     uint8_t kept = 0U;
-    if (rec->epoch == call.epoch) {
+    /* A flag earned under another reception (another access code or system named since) is not this one's. */
+    if (rec->epoch == call.epoch && rec->rx_epoch == state->rx_id.epoch) {
         const p25_sm_identity_claim held = {.source = rec->source, .target = rec->target, .kind = rec->kind};
         kept = (uint8_t)(rec->checked & p25_sm_claim_names(&held, source, target, kind));
     }
     rec->epoch = call.epoch;
     rec->source = source;
     rec->target = target;
+    rec->rx_epoch = state->rx_id.epoch;
+    rec->protocol = call.protocol;
     rec->kind = kind;
     rec->is_group = (uint8_t)(call.kind == DSD_CALL_KIND_GROUP_VOICE);
     rec->checked = (uint8_t)((kept | (claim->checked & p25_sm_claim_names(claim, source, target, kind)))
@@ -2278,6 +2282,7 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
     slot_ctx->dst = ev->dst;
     slot_ctx->is_group = ev->is_group ? 1 : 0;
     slot_ctx->identity_checked = (uint8_t)(ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL);
+    slot_ctx->identity_rx_epoch = state ? state->rx_id.epoch : 0U;
     slot_ctx->data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     slot_ctx->svc_bits = ev->svc_bits;
     slot_ctx->enc_override_clear = (eval_ctx && eval_ctx->enc_override_clear) ? 1 : 0;
@@ -3564,15 +3569,17 @@ p25_call_observation_retains_ended_call(const dsd_state* state, int slot, p25_ca
 }
 
 /* Records the identity the SM just published for the slot's canonical call (spec 2.19): the assignment's fields, each
- * with the assignment's verdict, merged into the call's record. */
+ * with the assignment's verdict, merged into the call's record. A verdict earned under another reception than this one
+ * (another access code or system named since the assignment was accepted) is not carried. */
 static void
 p25_sm_note_published_identity(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state,
                                const dsd_call_observation* observation) {
+    const int same_reception = slot_ctx->identity_rx_epoch == state->rx_id.epoch;
     const p25_sm_identity_claim claim = {
         .source = p25_source_id_known(slot_ctx->src) ? (uint32_t)slot_ctx->src : 0U,
         .target = observation->ota_target_id <= UINT32_MAX ? (uint32_t)observation->ota_target_id : 0U,
         .kind = (uint8_t)observation->kind,
-        .checked = (uint8_t)(slot_ctx->identity_checked & P25_SM_IDENTITY_CHECKED_ALL),
+        .checked = same_reception ? (uint8_t)(slot_ctx->identity_checked & P25_SM_IDENTITY_CHECKED_ALL) : 0U,
     };
     p25_sm_merge_published_identity(&slot_ctx->published, state, observation->slot, &claim);
 }
@@ -4017,13 +4024,31 @@ p25_voice_canonical_source_checked(const dsd_state* state, int slot, const p25_s
     return (uint8_t)(published->checked & P25_SM_IDENTITY_CHECKED_SOURCE);
 }
 
+/* The source of the slot's ACTIVE canonical call, while that call is the assignment's: the same kind and target. A
+ * call of another target (a voice user of another talkgroup took the slot) names no talker of the assignment's call, so
+ * an addressless voice start never pairs its talker with the assignment's target. */
+static int
+p25_voice_assignment_call_src(const dsd_state* state, int slot, const p25_sm_slot_ctx_t* slot_ctx) {
+    dsd_call_snapshot call;
+    if (!state || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id > (uint64_t)INT_MAX) {
+        return 0;
+    }
+    const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
+    if (held.target == 0U || call.ota_target_id != (uint64_t)held.target || (uint8_t)call.kind != held.kind) {
+        return 0;
+    }
+    return (int)call.ota_source_id;
+}
+
 static void
 p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const p25_sm_slot_ctx_t* slot_ctx,
                                         p25_sm_event_t* out) {
     out->is_group = slot_ctx->is_group;
     out->tg = slot_ctx->is_group ? slot_ctx->ota_tg : 0;
     out->dst = slot_ctx->is_group ? 0 : slot_ctx->dst;
-    out->src = p25_voice_state_slot_src(state, slot);
+    // One call's identity: the talker of the canonical call only while it is the assignment's call.
+    out->src = p25_voice_assignment_call_src(state, slot, slot_ctx);
     // Every field comes from somewhere else, and keeps the verdict it has there.
     uint8_t source_checked = p25_voice_canonical_source_checked(state, slot, slot_ctx, out->src);
     if (!p25_source_id_known(out->src) && p25_voice_start_assignment_source_is_fresh(slot_ctx)) {
@@ -7548,7 +7573,7 @@ p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uin
 }
 
 int
-p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_identity* out) {
+p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protocol, p25_sm_published_identity* out) {
     if (out) {
         DSD_MEMSET(out, 0, sizeof(*out));
     }
@@ -7563,6 +7588,22 @@ p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0
         || !p25_sm_published_identity_names_call(published, &call)) {
+        return 0;
+    }
+    // The attribution rule: the report's protocol class, the call's epoch, the reception the flags were earned under.
+    dsd_position_attribution evidence;
+    DSD_MEMSET(&evidence, 0, sizeof(evidence));
+    evidence.call_epoch = published->epoch;
+    evidence.source = published->source;
+    evidence.target = published->target;
+    evidence.group = published->is_group;
+    evidence.rx_epoch = published->rx_epoch;
+    evidence.protocol = published->protocol;
+    dsd_position_attribution_call view;
+    dsd_position_attribution granted;
+    if (!dsd_position_attribution_call_from_slot(state, (uint8_t)slot, &view)
+        || !dsd_position_attribution_grant(state, &evidence, &view, report_protocol, &granted)
+        || granted.target != published->target) {
         return 0;
     }
     *out = *published;

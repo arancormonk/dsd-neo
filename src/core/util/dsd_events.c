@@ -1191,10 +1191,27 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
     dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
+/* Whether the segment's position may land on the row it merges into (issue #800): it was heard on the reception the
+ * row was. A reacquired segment comes after a sync loss, so this is the position writers' rule for another reception
+ * (dsd_event_pos_row_takes()): its scope and discriminator equal the row's, once the row has taken what the segment
+ * learned (watchdog_event_rx_scope_learns()). Only a known mismatch refuses: a side that knows no reception (none
+ * read, or a none scope) is no evidence of another one. */
+static int
+watchdog_event_rx_scope_admits_position(const dsd_event_rx_scope* row, const dsd_event_rx_scope* segment) {
+    if (!row->resolved || !segment->resolved || row->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE
+        || segment->scope.kind == (uint8_t)DSD_POS_SCOPE_NONE) {
+        return 1;
+    }
+    return row->scope.kind == segment->scope.kind && row->scope.a == segment->scope.a
+           && row->scope.b == segment->scope.b && row->identity_freq_hz == segment->identity_freq_hz;
+}
+
 // GPS text and position come from one side, so they never disagree (issue #800). With a position on either side the
-// newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix) supplies both;
-// a side without one never displaces a position. With none on either side the text merges as other progressive
-// detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text changed.
+// newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix) supplies both,
+// but only one heard on the row's reception (watchdog_event_rx_scope_admits_position()): a newer rev never overrides a
+// known reception mismatch; a side without one never displaces a position. With none on either side the text merges
+// as other progressive detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text
+// changed.
 static uint8_t
 watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
     const uint64_t retained_rev = retained->pos.valid ? retained->pos.rev : 0U;
@@ -1207,7 +1224,8 @@ watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
         return (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s),
                                                               0);
     }
-    if (staged_rev <= retained_rev) {
+    if (staged_rev <= retained_rev
+        || !watchdog_event_rx_scope_admits_position(&retained->rx_scope, &staged->rx_scope)) {
         return 0U;
     }
     const int changed = strncmp(retained->gps_s, staged->gps_s, sizeof(retained->gps_s)) != 0;
@@ -4175,6 +4193,7 @@ dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_c
     }
     out->epoch = call.epoch;
     out->source_id = call.ota_source_id;
+    out->target_id = call.ota_target_id;
     out->protocol = call.protocol;
     out->slot = slot;
     out->valid = 1U;

@@ -708,6 +708,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/dmr_key_map.h
   C
 )
+# The attribution rule position producers borrow a call's identity by (issue #800).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_attribution
+  HEADERS_PUBLIC_CORE_POSITION_ATTRIBUTION
+  dsd-neo/core/position_attribution.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_attribution_cxx
+  HEADERS_PUBLIC_CORE_POSITION_ATTRIBUTION_CXX
+  dsd-neo/core/position_attribution.h
+  CXX
+)
 # The trunk-scan list spec opts, the next start and the user config share (issue #697).
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_trunk_scan_lists
@@ -8175,6 +8188,28 @@ target_link_libraries(
 )
 add_test(NAME CORE_POSITION_FEED COMMAND dsd-neo_test_core_position_feed)
 
+# The attribution rule producers that borrow a call's identity use, as a matrix (issue #800).
+add_executable(
+    dsd-neo_test_core_position_attribution
+    core/test_core_position_attribution.c
+)
+target_include_directories(
+    dsd-neo_test_core_position_attribution
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_position_attribution
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME CORE_POSITION_ATTRIBUTION
+    COMMAND dsd-neo_test_core_position_attribution
+)
+
 # The unit activity reason tables; the P25 ones against the P25 prints' former table.
 add_executable(
     dsd-neo_test_core_unit_activity_reason
@@ -12664,6 +12699,41 @@ else()
 endif()
 add_test(NAME P25_P1_HARRIS_GPS COMMAND dsd-neo_test_p25_p1_harris_gps)
 
+# DMR embedded GPS attribution through the real full-LC dispatch: the attribution rule's reception (issue #800)
+add_executable(
+    dsd-neo_test_dmr_embedded_gps_attribution
+    protocol/dmr/test_dmr_embedded_gps_attribution.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_embedded_gps_attribution
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_dmr_embedded_gps_attribution
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_dmr_embedded_gps_attribution
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME DMR_EMBEDDED_GPS_ATTRIBUTION
+    COMMAND dsd-neo_test_dmr_embedded_gps_attribution
+)
+
 # P25 P2 L3Harris GPS through the real MAC dispatch, trunk SM identity verdicts, decoder, admission and -L (issue #800)
 add_executable(
     dsd-neo_test_p25_p2_harris_gps
@@ -16148,6 +16218,7 @@ add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -16190,6 +16261,7 @@ add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -16230,6 +16302,7 @@ add_executable(
     dsd-neo_test_core_gps_destination
     core/test_core_gps_destination.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c

@@ -17,7 +17,8 @@
  * 1. Gate: the position check passed (pos_verified) and the receive policy (dsd_receive_allows()) admits the report's
  *    protocol and slot; else DSD_POSITION_REFUSED.
  * 2. Identity: without source_verified (or with DSD_POS_FLAG_SOURCE_HASHED) the source, callsign, target and
- *    DSD_POS_FLAG_TARGET_GROUP are cleared; the report format (kind) is kept.
+ *    DSD_POS_FLAG_TARGET_GROUP are cleared; the report format (kind) is kept. A source that names no radio
+ *    (dsd_position_source_names_radio(): a P25 fixed-network ID) is cleared alone, the destination kept.
  * 3. Origin: a multi-fragment report is refused when its first fragment was heard under another reception generation
  *    (dsd_position_origin_capture() / dsd_position_origin_matches()).
  * 4. Values: |lat| <= 90, |lon| <= 180, exactly (0,0) refused; an out-of-range heading becomes unknown.
@@ -281,6 +282,11 @@ struct dsd_received_identity;
  * none. Writes @p out (NONE when none) and returns 1 when a scope was found, 0 otherwise (or for NULL @p rx). NULL
  * @p out does nothing. */
 int dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_t tuned_hz, dsd_position_scope* out);
+
+/** 1 when @p source names a radio of @p protocol (DSD_SYNC_*): not 0, and on P25 not a fixed-network ID ($FFFFFD, the
+ * fixed network equipment, or $FFFFFF, all units; a P25 packet's IP source reduced to 24 bits reaches these too).
+ * Admission clears such a source (step 2) and keeps the destination; a notice names no such sender either. */
+int dsd_position_source_names_radio(int protocol, uint64_t source);
 
 /** The protocol family a track belongs to (dsd_position_same_track()): one value per system type, so P25 Phase 1 and
  * 2, or DMR base and mobile bursts, give one family; a sync type of no listed family is its own. -1 for a value that is

@@ -937,15 +937,15 @@ test_hdu_forgets_the_checked_identity(void) {
         DSD_MEMSET(&state, 0, sizeof(state));
         g_rs_hard_result = decode == 0 ? 0 : 1;
         g_rs_soft_result = decode == 2 ? 1 : 0;
-        state.p25_p1_lc_checked_id.epoch = 5U;
-        state.p25_p1_lc_checked_id.source = 1001U;
-        state.p25_p1_lc_checked_id.target = 100U;
+        state.p25_p1_lc_attribution.call_epoch = 5U;
+        state.p25_p1_lc_attribution.source = 1001U;
+        state.p25_p1_lc_attribution.target = 100U;
         state.p25_p1_harris_part_a.valid = 1U;
         state.p25_p1_harris_part_a.epoch = 5U;
         state.p25_p1_harris_part_a.source = 1001U;
         processHDU(&opts, &state);
         rc |= expect_int("HDU forgets the checked identity",
-                         state.p25_p1_lc_checked_id.epoch == 0U && state.p25_p1_lc_checked_id.source == 0U, 1);
+                         state.p25_p1_lc_attribution.call_epoch == 0U && state.p25_p1_lc_attribution.source == 0U, 1);
         rc |= expect_int("HDU forgets the Part A", state.p25_p1_harris_part_a.valid, 0);
     }
     return rc;

@@ -7960,8 +7960,8 @@ test_target_switch_forgets_the_received_identity(void) {
     }
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
     // A's DMR checked-LC record (issue #800) names a radio of a's carrier: b's embedded GPS fixes never take it.
-    state.dmr_lc_checked_transmission[0] = 1U;
-    state.dmr_lc_checked_source[0] = 1001U;
+    state.dmr_lc_attribution[0].transmission = 1U;
+    state.dmr_lc_attribution[0].source = 1001U;
     state.symbol_clock = 7000U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -7970,7 +7970,7 @@ test_target_switch_forgets_the_received_identity(void) {
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
         test_rc = 1;
     }
-    if (state.dmr_lc_checked_transmission[0] != 0U || state.dmr_lc_checked_source[0] != 0U) {
+    if (state.dmr_lc_attribution[0].transmission != 0U || state.dmr_lc_attribution[0].source != 0U) {
         DSD_FPRINTF(stderr, "rx-id: the switch to b kept a's DMR checked-LC record\n");
         test_rc = 1;
     }

@@ -372,6 +372,7 @@ int dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t sl
 typedef struct dsd_event_closing_call {
     uint64_t epoch;     /**< the call's epoch; 0 when nothing was captured */
     uint64_t source_id; /**< the call's dsd_call_snapshot::ota_source_id when captured; 0 = none */
+    uint64_t target_id; /**< the call's dsd_call_snapshot::ota_target_id when captured; 0 = none */
     int protocol;       /**< the call's DSD_SYNC_* value */
     uint8_t slot;       /**< the slot it was captured on */
     uint8_t valid;      /**< 1 when the slot had an ACTIVE call to capture */
