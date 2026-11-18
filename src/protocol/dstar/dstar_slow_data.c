@@ -46,9 +46,11 @@ typedef struct dstar_sd_ctx_s {
     int len;
 } dstar_sd_ctx;
 
+/* Printable ASCII, space included: the only bytes slow data puts on the console or in a stored message. Control bytes
+ * (ESC among them) never reach either; the raw bytes stay for the checks (the header CRC, the D-PRS record CRC). */
 static int
 dstar_sd_is_printable(uint8_t value) {
-    return (value > 0x19) && (value < 0x7F);
+    return (value >= 0x20U) && (value < 0x7FU);
 }
 
 static void
@@ -123,6 +125,11 @@ dstar_sd_capture_header_strings(dstar_sd_ctx* ctx) {
     ctx->str2[8] = '\0';
     ctx->str3[8] = '\0';
     ctx->str4[12] = '\0';
+    /* Shown and put on the call: printable only. The CRC was taken over the raw header bytes. */
+    dstar_text_make_printable(ctx->str1);
+    dstar_text_make_printable(ctx->str2);
+    dstar_text_make_printable(ctx->str3);
+    dstar_text_make_printable(ctx->str4);
 }
 
 static void

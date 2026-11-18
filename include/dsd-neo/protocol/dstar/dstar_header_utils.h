@@ -33,5 +33,10 @@ uint16_t dstar_crc16(const uint8_t* data, size_t len);
  * is printable ASCII other than a space. An all-spaces (or empty) field names no one.
  */
 int dstar_callsign_present(const char* field, size_t len);
+/**
+ * @brief Replace every byte of the NUL-terminated @p text that is not printable ASCII (0x20-0x7E) with a space, so
+ * header text shown on the console or kept on a call carries no control bytes.
+ */
+void dstar_text_make_printable(char* text);
 
 #endif // DSD_NEO_PROTOCOL_DSTAR_HEADER_UTILS_H

@@ -69,6 +69,11 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     str2[8] = '\0';
     str3[8] = '\0';
     str4[12] = '\0';
+    /* Shown and put on the call: printable only. The CRC below is over the raw header bytes. */
+    dstar_text_make_printable(str1);
+    dstar_text_make_printable(str2);
+    dstar_text_make_printable(str3);
+    dstar_text_make_printable(str4);
 
     const uint16_t crc_ext = (uint16_t)(((uint8_t)radioheader[39] << 8U) | (uint8_t)radioheader[40]);
     const uint16_t crc_cmp = dstar_crc16((const uint8_t*)radioheader, 39U);

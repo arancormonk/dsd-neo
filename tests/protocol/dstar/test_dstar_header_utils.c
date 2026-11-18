@@ -23,6 +23,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/synctype_ids.h"
+#include "test_support.h"
 
 static const uint8_t k_slow_data_scrambler[24] = {
     0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1,
@@ -506,6 +507,140 @@ test_slow_data_text_by_mini_header(void) {
     free(history);
 }
 
+/* Whether @p text holds a byte below 0x20 other than a line break, or DEL. */
+static int
+has_control_byte(const char* text) {
+    for (; *text != '\0'; text++) {
+        const unsigned char c = (unsigned char)*text;
+        if ((c < 0x20U && c != '\n') || c == 0x7FU) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Run @p fn with stderr captured into @p out. */
+static void
+capture_stderr_of(void (*fn)(void* arg), void* arg, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    out[0] = '\0';
+    assert(dsd_test_capture_stderr_begin(&cap, "dstar_ctl") == 0);
+    fn(arg);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, out, out_size) == 0);
+}
+
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    uint8_t* bits;
+} sd_run;
+
+static void
+run_slow_data(void* arg) {
+    sd_run* r = (sd_run*)arg;
+    processDSTAR_SD(r->opts, r->state, r->bits);
+}
+
+typedef struct {
+    dsd_state* state;
+    const float* soft;
+    int result;
+} hd_run;
+
+static void
+run_header(void* arg) {
+    hd_run* r = (hd_run*)arg;
+    r->result = dstar_header_decode_soft(r->state, r->soft);
+}
+
+/* Radio text is shown and kept as printable ASCII only (issue #800): control bytes (ESC, 0x1A-0x1F among them) in a
+ * text block, in GPS data, or in a header's callsigns (on RF or in the slow data, CRC passing over the raw bytes)
+ * become spaces, on the console and on the call. */
+static void
+test_control_bytes_never_reach_display_text(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    Event_History_I* history;
+    uint8_t bytes[60];
+    uint8_t bits[480];
+    char out[8192];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    history = (Event_History_I*)calloc(2u, sizeof(*history));
+    assert(history != NULL);
+    state.event_history_s = history;
+    open_dstar_call(&opts, &state);
+    sd_run run = {&opts, &state, bits};
+
+    static const uint8_t text_minis[2] = {0x40, 0x41};
+    static const char* const text_data[2] = {"AB\x1b"
+                                             "CD",
+                                             "E\x1a\x1f"
+                                             "F"};
+    slow_data_blocks(bytes, text_minis, text_data, 2);
+    pack_slow_data_bytes(bytes, bits);
+    capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+    assert(strcmp(state.dstar_txt, "AB CDE  F") == 0);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, "AB CDE  F") == 0);
+    assert(strstr(out, "TEXT: AB CDE  F") != NULL);
+    assert(!has_control_byte(out));
+
+    static const uint8_t gps_minis[2] = {0x35, 0x35};
+    static const char* const gps_data[2] = {"$$CR\x1b", "C\x1e"
+                                                        "12"};
+    slow_data_blocks(bytes, gps_minis, gps_data, 2);
+    pack_slow_data_bytes(bytes, bits);
+    capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+    assert(strstr(out, "GPS DATA: ") != NULL);
+    assert(!has_control_byte(out));
+
+    /* A slow-data header whose CRC passes over a callsign holding ESC. */
+    uint8_t compact[51];
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    DSD_MEMSET(compact, 0x20, sizeof(compact));
+    bytes[0] = 0x55;
+    compact[0] = 0x00;
+    compact[1] = 0x00;
+    compact[2] = 0x00;
+    DSD_MEMCPY(compact + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(compact + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(compact + 19, "CQCQCQ  ", 8);
+    DSD_MEMCPY(compact + 27,
+               "N1\x1b"
+               "CALL /TST",
+               12);
+    const uint16_t crc = dstar_crc16(compact, 39U);
+    compact[39] = (uint8_t)(crc >> 8);
+    compact[40] = (uint8_t)(crc & 0xFFU);
+    set_compacted_slow_data_bytes(bytes, compact);
+    pack_slow_data_bytes(bytes, bits);
+    capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+    assert(strstr(out, "SRC: N1 CALL /TST") != NULL);
+    assert(!has_control_byte(out));
+    assert(strcmp(get_dstar_call(&state).source_text, "N1 CALL /TST") == 0);
+    dsd_state_ext_free_all(&state);
+    free(history);
+
+    /* The RF header. */
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture_my(soft_rx, 0x00U, 0,
+                                    "N2\x1b"
+                                    "CALL /TST");
+    hd_run hd = {&state, soft_rx, 0};
+    capture_stderr_of(run_header, &hd, out, sizeof(out));
+    assert(hd.result == 1);
+    assert(strstr(out, "SRC: N2 CALL /TST") != NULL);
+    assert(!has_control_byte(out));
+    assert(strcmp(get_dstar_call(&state).source_text, "N2 CALL /TST") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
 /* Issue #800 2.10: a superframe that opens with "$$CRC" and an APRS position, but is no whole record whose CRC
  * matches, is shown as data and is neither a position nor evidence (DSTAR_DPRS covers the checked record). */
 static void
@@ -557,6 +692,7 @@ main(void) {
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_by_mini_header();
+    test_control_bytes_never_reach_display_text();
     test_slow_data_unchecked_aprs_is_no_position();
     return 0;
 }

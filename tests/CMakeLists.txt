@@ -2038,7 +2038,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dstar_header_utils
-    PRIVATE dsd-neo_proto_dstar
+    PRIVATE dsd-neo_proto_dstar dsd-neo_test_support
 )
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
