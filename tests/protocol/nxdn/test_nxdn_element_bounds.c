@@ -1789,11 +1789,13 @@ write_vcall_iv_fields(uint8_t* bits, uint64_t iv) {
 
 /* A scrambled call (cipher 1) sends no MI. With its scrambler key loaded, dsd_state::payload_miN holds the scrambler's
    LFSR seeded from that key (as the voice call assignment loads it): the VCALL's published crypto, and the event
-   history row built on it, carry no MI, so the key reaches no snapshot or output. A DES call's IV is its MI. */
+   history row built on it, carry no MI, so the key reaches no snapshot or output. A DES or AES call's IV is its MI, but
+   only once the call sent it: a VCALL heard before its VCALL_IV, with the assignment's key in payload_miN, publishes
+   no MI, and the VCALL_IV that follows publishes the IV. */
 static int
 test_vcall_scrambler_seed_is_no_mi(void) {
     int rc = 0;
-    for (int cipher = 1; cipher <= 2; cipher++) {
+    for (int cipher = 1; cipher <= 3; cipher++) {
         dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
         dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
         static Event_History_I histories[2];
@@ -1808,18 +1810,21 @@ test_vcall_scrambler_seed_is_no_mi(void) {
         state->nxdn_confirmed = 1;
         state->R = 0x4D2ULL;
         state->scalar_key_present[0] = 1U;
-        state->payload_miN = cipher == 1 ? state->R : 0x0102030405060708ULL;
+        state->payload_miN = state->R; /* As a followed assignment loads the destination's key. */
         DSD_MEMSET(bits, 0, sizeof(bits));
         write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x1234U, 0x4567U, (uint8_t)cipher, 0x01U);
         NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
         dsd_call_snapshot call;
-        rc |= expect_int(cipher == 1 ? "scrambler-vcall-canonical" : "des-vcall-canonical",
+        rc |= expect_int(cipher == 1 ? "scrambler-vcall-canonical" : "des-aes-vcall-canonical",
                          dsd_call_state_get(state, 0U, &call), 1);
-        if (cipher == 1) {
-            rc |= expect_u64("scrambler-vcall-mi", call.mi, 0U);
-            rc |= expect_u64("scrambler-vcall-event-mi", histories[0].Event_History_Items[0].mi, 0U);
-        } else {
-            rc |= expect_u64("des-vcall-mi", call.mi, 0x0102030405060708ULL);
+        rc |= expect_u64(cipher == 1 ? "scrambler-vcall-mi" : "des-aes-vcall-mi-before-iv", call.mi, 0U);
+        rc |= expect_u64(cipher == 1 ? "scrambler-vcall-event-mi" : "des-aes-vcall-event-mi-before-iv",
+                         histories[0].Event_History_Items[0].mi, 0U);
+        if (cipher != 1) {
+            write_vcall_iv_fields(bits, 0x0102030405060708ULL);
+            NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+            rc |= expect_int("des-aes-vcall-iv-canonical", dsd_call_state_get(state, 0U, &call), 1);
+            rc |= expect_u64("des-aes-vcall-iv-mi", call.mi, 0x0102030405060708ULL);
         }
         state->event_history_s = NULL;
         dsd_state_ext_free_all(state);
@@ -2283,7 +2288,7 @@ test_type_d_scch_publishes_crypto_fragments(void) {
     uint8_t message[32];
     const uint8_t cipher = 2U;
     const uint8_t key_id = 0x2AU;
-    const uint64_t iv_a = 0x155U;
+    const uint64_t iv_a = 0x3FU; /* An INFO2 IV A message: its 11-bit ID field reads 31, the 12 IV A bits overlap it. */
     const uint64_t iv_b = 0x2DU;
     const uint64_t iv_c = 0x12U;
     if (!opts || !state) {
@@ -2318,7 +2323,12 @@ test_type_d_scch_publishes_crypto_fragments(void) {
     rc |= expect_int("type-d-scch-option-legacy-cipher", state->nxdn_cipher_type, cipher);
     rc |= expect_int("type-d-scch-option-legacy-key", state->nxdn_key, key_id);
 
-    state->payload_miN = iv_a << 11;
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 2U, 2U);
+    write_bits_u64(message, 13U, iv_a, 12U);
+    NXDN_decode_scch(opts, state, message, 0U);
+    rc |= expect_u64("type-d-scch-iv-a-legacy-mi", state->payload_miN, iv_a << 11);
+
     DSD_MEMSET(message, 0, sizeof(message));
     write_bits_u64(message, 0U, 3U, 2U);
     write_bits_u64(message, 8U, iv_c, 5U);

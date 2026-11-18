@@ -4913,8 +4913,10 @@ are read under `dsd_event_history_transaction_begin()`, as every other cross-thr
 CSI key, which the terminal UI shows redacted unless `--show-keys`, and `payload_miN`, into which an NXDN voice call
 assignment or scrambled frame copies the scrambler key as its LFSR seed (also wiped from the live state with its keys,
 `dsd_key_state_secure_wipe()`). That seed is never published as a call's MI: an NXDN call's published MI is the IV a
-DES or AES call sends, and a scrambled call has none (`nxdn_published_mi()`), so no call, event row or output built on
-them carries the key. A publish overwrites them with the live values.
+DES or AES call sent for that call (`dsd_state::nxdn_rx_iv`, noted with the call's epoch by `nxdn_note_received_iv()`
+from a VCALL_IV or an SCCH IV completed on that call's IV A), 0 until it came, and a scrambled call has none
+(`nxdn_published_mi()`), so no call, event row, output or terminal IV built on them carries the key, even for a DES
+or AES VCALL heard after an assignment loaded it and before the call's IV. A publish overwrites them with the live values.
 The snapshots outlive the session (`snapshot.h`), so `dsd_app_frontend_runtime_stop()` wipes them, once the hooks are
 cleared and nothing can publish them again (`dsd_app_snapshot_wipe_keys()`, `DSD_SECURE_ZERO`): the published copy at
 once, the consumer's at its own thread's next read, which then copies the published state again. The terminal UI
@@ -12906,7 +12908,8 @@ Private per-protocol modules worth knowing about:
   frame, 80 ms, later). Its IV parts (IV A in an INFO2 naming ID 31, IV B and C in an INFO1) are the decoder's working
   IV (`payload_miN`), kept either way and cleared with it at no carrier and when a tuned call is released, so IV A
   sent before the confirmation still completes the IV the call takes once it is
-  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The "Type-D" category it names stays with its own frame only,
+  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The completed IV is the call's MI only on IV A received for
+  that call, and only from a confirmed IV B and C. The "Type-D" category it names stays with its own frame only,
   the frame's FACCH1 reading it
   (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
   release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the

@@ -3100,6 +3100,18 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The IV a DES or AES NXDN call published as its MI (the IV it sent over the air; nxdn_published_mi()), printed as
+   "IV: ...", or "IV: none" before one came: never dsd_state::payload_miN, where a followed assignment loads the key. */
+static void
+ui_render_nxdn_iv(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.mi != 0U) {
+        printw("IV: %016llX ", (unsigned long long)call.mi);
+    } else {
+        printw("IV: none ");
+    }
+}
+
 static void
 ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n|");
@@ -3132,7 +3144,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x2:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            ui_render_nxdn_iv(state);
             attron(COLOR_PAIR(2));
             printw("DES1 ");
             if (state->R != 0) {
@@ -3144,7 +3156,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x3:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            ui_render_nxdn_iv(state);
             attron(COLOR_PAIR(2));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] == 1) {

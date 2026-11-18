@@ -3375,6 +3375,43 @@ test_nxdn_scrambler_seed_redacted(void) {
     free(opts);
 }
 
+/* A DES NXDN call's encryption line shows the IV the call sent (its published MI), never dsd_state::payload_miN, where a
+   followed assignment loads the destination's key: before the call's IV came the line says so, and the key shows
+   nowhere. */
+static void
+test_nxdn_des_iv_only_once_received(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    state->carrier = 1;
+    state->nxdn_cipher_type = 2;
+    state->R = 0x3039ULL;
+    state->payload_miN = 0x3039ULL; /* As the assignment loads it. */
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_NXDN_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_encryption_line(opts, state);
+    assert_capture_contains("IV: none ");
+    assert(strstr(g_printw_capture, "3039") == NULL);
+
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    crypto.algid = 2U;
+    crypto.mi = 0x0102030405060708ULL;
+    crypto.observed_m = 1.1;
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_encryption_line(opts, state);
+    assert_capture_contains("IV: 0102030405060708 ");
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_loaded_scalar_key_status(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -5752,6 +5789,7 @@ main(void) {
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
     test_nxdn_scrambler_seed_redacted();
+    test_nxdn_des_iv_only_once_received();
     test_loaded_scalar_key_status();
     test_slot_row_shows_its_own_calls_key();
     test_edacs_tree_update_helpers();

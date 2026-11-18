@@ -3311,6 +3311,7 @@ static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     state->payload_miN = nxdn_vcall_iv_extract(state, Message);
     DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
+    nxdn_note_received_iv(state, state->payload_miN);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
@@ -3800,6 +3801,9 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
         DSD_FPRINTF(stderr, "\n%s ", KYEL);
         DSD_FPRINTF(stderr, " Call IV A: %04llX; ", info->iv_a);
         state->payload_miN = info->iv_a << 11;
+        // Kept before the transmission is confirmed, like the decoder's IV: a confirmed IV B and C complete it.
+        state->nxdn_rx_iv_a_epoch = nxdn_live_call_epoch(state);
+        state->nxdn_rx_iv_a_valid = 1U;
     } else {
         DSD_FPRINTF(stderr, "\n%s ", KGRN);
         DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
@@ -3847,6 +3851,11 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
         if (!info->acts) {
             return;
+        }
+        // Received whole only on top of this call's IV A; on anything else (a key a followed assignment loaded) the
+        // completed value is no IV.
+        if (state->nxdn_rx_iv_a_valid != 0U && state->nxdn_rx_iv_a_epoch == nxdn_live_call_epoch(state)) {
+            nxdn_note_received_iv(state, state->payload_miN);
         }
         nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
                                   DSD_CALL_ENC_OBSERVED_NONE);

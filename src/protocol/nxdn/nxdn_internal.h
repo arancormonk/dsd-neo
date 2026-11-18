@@ -38,13 +38,34 @@ void nxdn_reset_payload_seed_if_forced(dsd_state* state);
 void nxdn_reset_data_call_state(dsd_state* state);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
+/* The epoch of the canonical call on slot 0 (0 with none). */
+static inline uint64_t
+nxdn_live_call_epoch(const dsd_state* state) {
+    uint64_t epoch = 0U;
+    uint64_t revision = 0U;
+    (void)dsd_call_state_get_revision(state, 0U, &epoch, &revision);
+    return epoch;
+}
+
+/* An IV an NXDN DES or AES call sent over the air was received (@p iv), for the call slot 0 carries now. */
+static inline void
+nxdn_note_received_iv(dsd_state* state, uint64_t iv) {
+    state->nxdn_rx_iv = iv;
+    state->nxdn_rx_iv_epoch = nxdn_live_call_epoch(state);
+    state->nxdn_rx_iv_valid = 1U;
+}
+
 /* The MI a call of NXDN cipher @p cipher publishes (call state, event history and every output built on them): the IV
-   a DES or AES call sends over the air (VCALL_IV, the SACCH superframe), held in dsd_state::payload_miN. A scrambled
-   call sends none: there payload_miN is the scrambler's LFSR, seeded from the loaded key, which is no MI and goes to no
-   output. 0 for every cipher but DES and AES. */
+   a DES or AES call sent over the air for this call (dsd_state::nxdn_rx_iv, nxdn_note_received_iv()), and 0 until one
+   came. Never payload_miN: a followed assignment loads the destination's key there, and the scrambler's LFSR, seeded
+   from the key, runs there, neither of which is an MI or goes to any output. 0 for every cipher but DES and AES. */
 static inline uint64_t
 nxdn_published_mi(const dsd_state* state, uint8_t cipher) {
-    return (cipher == 2U || cipher == 3U) ? (uint64_t)state->payload_miN : 0U;
+    if ((cipher != 2U && cipher != 3U) || state->nxdn_rx_iv_valid == 0U
+        || state->nxdn_rx_iv_epoch != nxdn_live_call_epoch(state)) {
+        return 0U;
+    }
+    return state->nxdn_rx_iv;
 }
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
