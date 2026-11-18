@@ -414,6 +414,18 @@ test_unreadable_and_oversized(const QString& root) {
     junk.close();
     expect("an unreadable entry is a miss", cache.lookup(k, fields()).reuse == MapTileCache::Reuse::Miss);
     expect("and is deleted", !QFileInfo::exists(cache.pathFor(k)));
+    const MapTileKey locked = key(8, 2, 2);
+    expect("an entry to lock is stored", store_tile(cache, locked, {"Cache-Control: max-age=600"}));
+    expect("its permissions are taken away", QFile::setPermissions(cache.pathFor(locked), QFileDevice::Permissions()));
+    QFile probe(cache.pathFor(locked));
+    if (probe.open(QIODevice::ReadOnly)) {
+        probe.close(); /* Running with privileges that ignore file permissions: nothing to check here. */
+    } else {
+        MapTileCache reader(root, kTemplate, wall_now);
+        expect("an entry that cannot be opened is a miss",
+               reader.lookup(locked, fields()).reuse == MapTileCache::Reuse::Miss);
+        expect("and is deleted, not retried on every lookup", !QFileInfo::exists(cache.pathFor(locked)));
+    }
     /* Each side is checked on its own, so the bounds are tested on narrow images: a conversion of more than 65536
      * pixels runs on Qt's thread pool, whose hand-offs ThreadSanitizer cannot see into. */
     expect("a PNG wider than 512 px is refused", dsd_qt::mapTileDecodePng(make_png(513, 64, Qt::red)).isNull());
@@ -958,6 +970,26 @@ test_invalid_template_and_unavailable(const QString& root) {
 }
 
 void
+test_default_port_left_out_of_host(const QString& root) {
+    const QString dir = root + QStringLiteral("/port");
+    Harness h(dir);
+    const QString withPort = QStringLiteral("https://tiles.example.test:443/{z}/{x}/{y}.png");
+    h.worker->setUrlTemplate(withPort);
+    h.worker->setEnabled(true);
+    h.server.fallback.headers = {"Cache-Control: max-age=600", "Vary: Host"};
+    h.worker->requestTiles({key(2, 2, 2)});
+    expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    MapTileCache cache(dir, withPort, wall_now);
+    MapTileRequestFields sent = fields();
+    expect("the stored Host value has no default port, as libcurl sends it",
+           cache.lookup(key(2, 2, 2), sent).reuse == MapTileCache::Reuse::Fresh);
+    MapTileCache again(dir, withPort, wall_now);
+    sent.host = QByteArrayLiteral("tiles.example.test:443");
+    expect("so the value with the port does not match",
+           again.lookup(key(2, 2, 2), sent).reuse == MapTileCache::Reuse::Miss);
+}
+
+void
 test_user_agent_stored_for_vary(const QString& root) {
     const QString dir = root + QStringLiteral("/ua");
     Harness h(dir);
@@ -1158,6 +1190,7 @@ main(int argc, char** argv) {
     test_templates();
     test_invalid_template_and_unavailable(root);
     test_user_agent_stored_for_vary(root);
+    test_default_port_left_out_of_host(root);
     expect("every worker thread so far ended", wait_threads_gone());
     test_template_change_during_fetch(root);
     test_tiles_off_during_fetch(root);

@@ -114,6 +114,12 @@ reap_finished_locked(ThreadRegistry& r) {
 
 void
 shutdown_post_routine() {
+    {
+        /* Consumed by this run: a thread started from here on (a later QCoreApplication) installs it again. */
+        ThreadRegistry& r = registry();
+        std::lock_guard<std::mutex> lock(r.mutex);
+        r.postRoutineInstalled = false;
+    }
     (void)MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
 }
 

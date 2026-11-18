@@ -25,13 +25,16 @@
  *   template change. Cache hits are still answered while it waits.
  * - The destructor never waits for the thread: it sets the stop flag and the cancel token. The thread ends on its own
  *   once the fetch in flight returns (about 100 ms after the cancel with libcurl 8.20 or later; an older libcurl
- *   stuck in a name lookup returns when the system resolver does), without decoding or storing what that fetch
- *   brought. It shares nothing with the deleted object: its state is reference-counted, and no result is posted once
- *   the destructor has run.
- * - Every thread is joined: one that has finished at the next worker's start, and the rest at application exit,
- *   where a post routine (qAddPostRoutine, run as QCoreApplication is destroyed) stops them all and joins them
- *   within kShutdownJoinMs. Only a thread still inside libcurl when that runs out (an old libcurl in a name
- *   lookup) is detached, and then leaves while the process exits.
+ *   stuck in a name lookup returns when the system resolver does). A fetch that returns after the stop is neither
+ *   decoded nor stored; one that returned just before it still is. It shares nothing with the deleted object: its
+ *   state is reference-counted, and no result is posted once the destructor has run.
+ * - Every thread is joined: one that has finished at the next worker's start, and the rest by shutdownThreads().
+ *   The first thread started while a QCoreApplication exists installs a post routine (qAddPostRoutine, run as
+ *   QCoreApplication is destroyed) that stops them all and joins them within kShutdownJoinMs; a thread started
+ *   after that routine ran installs it again. An owner with a teardown trace (android/main.cpp) should call
+ *   shutdownThreads() in its own stage right after the QML engine goes, so the wait is measured; the routine then
+ *   finds nothing. Only a thread still inside libcurl when the wait runs out (an old libcurl in a name lookup) is
+ *   detached, and then leaves while the process exits.
  * - Work begun before tiles were turned off or the template changed delivers nothing, posts no state, adds no
  *   backoff and is not retried, so the new source never shows or revalidates the old one's tiles.
  * - The URL template may hold a key, so it is never logged, never put in an error and never written to disk (the
@@ -128,8 +131,9 @@ class MapTileWorker : public QObject {
     /**
      * @brief Whether @p urlTemplate is a usable tile template.
      *
-     * It must be `https://` with a non-empty host free of placeholders and of userinfo, visible ASCII only, hold each of `{z}`, `{x}`
-     * and `{y}` and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the longest coordinates.
+     * It must be `https://` with a non-empty host free of placeholders and of userinfo, visible ASCII only, hold each
+     * of `{z}`, `{x}` and `{y}` and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the longest
+     * coordinates.
      *
      * @param host Receives the host (with any port) for the "sent to" line when valid.
      */
