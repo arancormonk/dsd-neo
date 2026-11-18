@@ -5956,19 +5956,37 @@ frame_sync_hand_back_after_tick(dsd_state* state) {
     return DSD_SYNC_NONE;
 }
 
-int
-getFrameSync(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-
-    const time_t now = dsd_decode_time();
-    const double nowm = dsd_decode_now_mono_s();
+/* The decoder's own once-a-second P25 tick at the hunt's entry: 1 when it ran and moved the chain. Nothing was read
+   yet, so the hand-back leaves the handler's consumption for the next call to note. */
+static int
+frame_sync_entry_tick_moved_chain(dsd_opts* opts, dsd_state* state, time_t now) {
     frame_sync_chain_mark entry;
     frame_sync_chain_mark_take(&entry, state);
-    if (frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state)) {
-        /* Nothing read yet: the handler's consumption is the next call's to note. */
-        return frame_sync_hand_back_after_tick(state);
+    return frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state);
+}
+
+/* getFrameSync()'s entry: 1 when the call ends before it hunts, with *@p out its result: -1 with no context, or no sync
+   when the decoder's own tick moved the chain (handed back). */
+static int
+frame_sync_entry_ends_call(dsd_opts* opts, dsd_state* state, time_t now, int* out) {
+    if (!opts || !state) {
+        *out = -1;
+        return 1;
+    }
+    if (frame_sync_entry_tick_moved_chain(opts, state, now)) {
+        *out = frame_sync_hand_back_after_tick(state);
+        return 1;
+    }
+    return 0;
+}
+
+int
+getFrameSync(dsd_opts* opts, dsd_state* state) {
+    const time_t now = dsd_decode_time();
+    const double nowm = dsd_decode_now_mono_s();
+    int ended = DSD_SYNC_NONE;
+    if (frame_sync_entry_ends_call(opts, state, now, &ended)) {
+        return ended;
     }
     frame_sync_apply_cli_mod_lock(opts, state);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
@@ -5989,8 +6007,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
-            /* A P25 watchdog beat's tick runs here, on the decoder thread (frame_sync_watchdog_tick.c). */
-            if (frame_sync_service_p25_watchdog(opts, state)) {
+            if (frame_sync_service_p25_watchdog(opts, state)) { /* a beat's tick (frame_sync_watchdog_tick.c) */
                 frame_sync_sps_hunt_mark_return(state);
                 return frame_sync_hand_back_after_tick(state);
             }

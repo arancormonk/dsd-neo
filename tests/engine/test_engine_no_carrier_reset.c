@@ -398,7 +398,7 @@ static long int g_rigctl_setfreq_freq = 0;
 static uint32_t g_rigctl_confirmed_hz = 0U;
 /* What a rigctl tune and a frame dispatch report to the P25 watchdog read case (test_live_p25_beat_in_a_read()). */
 static void (*g_setfreq_observer)(long int freq) = NULL;
-static int (*g_process_frame_observer)(dsd_opts* opts, dsd_state* state) = NULL;
+static int (*g_process_frame_observer)(const dsd_opts* opts, const dsd_state* state) = NULL;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
@@ -15096,7 +15096,7 @@ wd6_setfreq(long int freq) {
 }
 
 static int
-wd6_process_frame(dsd_opts* opts, dsd_state* state) {
+wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     if (g_wd6.returned && g_wd6.frames++ == 0) {
         g_wd6.first_sync = state->synctype;

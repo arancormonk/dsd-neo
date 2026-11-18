@@ -40,6 +40,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1551,20 +1552,20 @@ test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now(void) {
     g_watchdog_tick_clock_ns = k_watchdog_t1_ns;
     const int first = getFrameSync(&opts, &state);
     if (first != DSD_SYNC_NONE || state.input_interrupted != 1 || g_reads != 299) {
-        fprintf(stderr, "FAIL: the checkpoint retune did not hand back (sync %d, interrupted %d, reads %ld)\n", first,
-                state.input_interrupted, g_reads);
+        DSD_FPRINTF(stderr, "FAIL: the checkpoint retune did not hand back (sync %d, interrupted %d, reads %ld)\n",
+                    first, state.input_interrupted, g_reads);
         g_watchdog_failures++;
     }
     state.input_interrupted = 0;
     g_watchdog_tick_kind = 0;
     const int second = getFrameSync(&opts, &state);
     if (!DSD_SYNC_IS_P25P1(second)) {
-        fprintf(stderr, "FAIL: the next hunt found no word after the retune (sync %d)\n", second);
+        DSD_FPRINTF(stderr, "FAIL: the next hunt found no word after the retune (sync %d)\n", second);
         g_watchdog_failures++;
     }
     if (state.last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t1_ns / 1e9) {
-        fprintf(stderr, "FAIL: the sync after the retune stamped %.3f s, before the tick's %.3f s\n",
-                state.last_cc_sync_time_m, (double)k_watchdog_t1_ns / 1e9);
+        DSD_FPRINTF(stderr, "FAIL: the sync after the retune stamped %.3f s, before the tick's %.3f s\n",
+                    state.last_cc_sync_time_m, (double)k_watchdog_t1_ns / 1e9);
         g_watchdog_failures++;
     }
     watchdog_case_done(&state);
@@ -1579,8 +1580,9 @@ test_a_refused_checkpoint_tune_keeps_the_window(void) {
     watchdog_case_init(&opts, &state, 313, WATCHDOG_TICK_REFUSED);
     const int sync = getFrameSync(&opts, &state);
     if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1 || g_reads != 313) {
-        fprintf(stderr, "FAIL: a refused tune lost the word spanning the checkpoint (sync %d, ticks %d, reads %ld)\n",
-                sync, g_watchdog_ticks, g_reads);
+        DSD_FPRINTF(stderr,
+                    "FAIL: a refused tune lost the word spanning the checkpoint (sync %d, ticks %d, reads %ld)\n", sync,
+                    g_watchdog_ticks, g_reads);
         g_watchdog_failures++;
     }
     watchdog_case_done(&state);
@@ -1597,12 +1599,13 @@ test_a_sync_never_moves_the_control_channel_stamp_back(void) {
     state.last_cc_sync_time = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
     const int sync = getFrameSync(&opts, &state);
     if (!DSD_SYNC_IS_P25P1(sync)) {
-        fprintf(stderr, "FAIL: the word was not found (sync %d)\n", sync);
+        DSD_FPRINTF(stderr, "FAIL: the word was not found (sync %d)\n", sync);
         g_watchdog_failures++;
     }
     if (state.last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t1_ns / 1e9
         || state.last_cc_sync_time < (time_t)(k_watchdog_t1_ns / 1000000000ULL)) {
-        fprintf(stderr, "FAIL: the sync moved the control channel's stamp back to %.3f s\n", state.last_cc_sync_time_m);
+        DSD_FPRINTF(stderr, "FAIL: the sync moved the control channel's stamp back to %.3f s\n",
+                    state.last_cc_sync_time_m);
         g_watchdog_failures++;
     }
     watchdog_case_done(&state);
@@ -1626,8 +1629,8 @@ test_an_entry_tick_retune_hands_back(void) {
     });
     const int sync = getFrameSync(&opts, &state);
     if (sync != DSD_SYNC_NONE || state.input_interrupted != 1 || g_reads != 0 || g_watchdog_ticks != 1) {
-        fprintf(stderr, "FAIL: the entry tick's retune did not hand back (sync %d, interrupted %d, reads %ld)\n", sync,
-                state.input_interrupted, g_reads);
+        DSD_FPRINTF(stderr, "FAIL: the entry tick's retune did not hand back (sync %d, interrupted %d, reads %ld)\n",
+                    sync, state.input_interrupted, g_reads);
         g_watchdog_failures++;
     }
     watchdog_case_done(&state);
