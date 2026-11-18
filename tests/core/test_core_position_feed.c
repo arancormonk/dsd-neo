@@ -668,6 +668,11 @@ test_stream_restart(void) {
     assert(dsd_position_feed_start(st) == 0);
     const uint64_t third = dsd_position_feed_stream_id(st);
     assert(third != 0U && third != second && third != first);
+    /* Each stream is the process instance plus the process's run count (no test starts a thousand runs), so another
+       process, which draws an instance of its own, numbers its runs with other streams. */
+    const uint64_t instance = dsd_position_proc_instance();
+    assert(instance != 0U && first - instance >= 1U && first - instance < 1000U);
+    assert(second - instance == first - instance + 1U && third - instance == second - instance + 1U);
     assert(dsd_position_feed_start(NULL) == -1);
     free_state(st);
 }

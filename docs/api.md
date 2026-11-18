@@ -471,7 +471,10 @@ kept again.
 
 * `pos_stream` names the decoder run (a decimal string, like every 64-bit
   identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is
-  a new `pos_stream`, numbered from `1` again.
+  a new `pos_stream`, numbered from `1` again. The stream carries a random
+  number drawn when the decoder process starts, so a restarted decoder names
+  its runs differently too: a client that reconnects after a restart never
+  meets a `pos_stream` and `pos_seq` pair it saw from the earlier process.
 * A subscriber is sent every report kept after its `subscribe` response (and
   possibly one kept in the instant before it), never the reports from before:
   there is no backlog, and `get` does not serve positions.

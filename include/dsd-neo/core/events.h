@@ -42,6 +42,22 @@ dsd_event_systype_has_slots(int systype) {
     return DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype);
 }
 
+/**
+ * The label a row's GPS detail line (the event log's and the terminal history's) puts before Event_History::gps_s:
+ * "GPS: ", or none when the text already starts with that label (DMR embedded GPS, UDT NMEA, Motorola APX and M17 GNSS
+ * keep "GPS: " in their text, which History shows on its own), so the line carries exactly one.
+ */
+static inline const char*
+dsd_event_gps_detail_label(const char* gps_text) {
+    static const char k_label[] = "GPS:";
+    for (size_t i = 0U; i + 1U < sizeof k_label; i++) {
+        if (gps_text == NULL || gps_text[i] != k_label[i]) {
+            return "GPS: ";
+        }
+    }
+    return "";
+}
+
 /** Opaque guard for serializing event-history mutations with telemetry snapshots. */
 typedef struct {
     void* opaque;
@@ -340,14 +356,16 @@ int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const 
  *
  * @p fix must be the record dsd_position_admit() returned for an admitted report (rev set). The CRC provenance of the
  * slot (dsd_state::event_crc_invalid) marks the call and the epoch's row as every enrichment does, whether or not the
- * row takes the position. Callers must not hold the
+ * row takes the position. A position written into a row already committed (its event log line written without it)
+ * appends that row's `GPS:` line to the event log of @p opts (an "Enriched:" continuation with the row's own stamp, as
+ * dsd_event_enrich_alias_ex() does for a late alias); @p opts NULL writes no log line. Callers must not hold the
  * call-state lock or a history transaction. Decoder thread.
  *
  * @return 1 when written, 0 when declined, -1 for invalid arguments (NULLs, no history, slot >= 2, epoch 0, or a report
  *         that was not admitted).
  */
-int dsd_event_enrich_position(dsd_state* state, uint8_t slot, uint64_t epoch, const dsd_position_fix* fix,
-                              const char* gps_text);
+int dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                              const dsd_position_fix* fix, const char* gps_text);
 
 /** A call captured just before it ends, for detail decoded after the end in the same message (spec N2: a P25 Phase 1
  * TDULC ends the call before it dispatches its own link control). */
@@ -373,7 +391,7 @@ int dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_eve
  * only for the message that ended the call (the P25 Phase 1 terminator's own GPS link control); any later message
  * enriches ACTIVE calls only. A capture with valid 0, or a slot whose call has since moved to another epoch, declines.
  */
-int dsd_event_enrich_position_closing(dsd_state* state, const dsd_event_closing_call* closing,
+int dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
                                       const dsd_position_fix* fix, const char* gps_text);
 
 /**

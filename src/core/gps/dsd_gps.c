@@ -43,7 +43,7 @@
  * (dsd_event_enrich_position()); with @p fix NULL the text alone (dsd_event_enrich_gps()). A nonzero
  * @p expected_source must be the call's source. */
 static int
-gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source, const char* text,
+gps_enrich_active_call(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t expected_source, const char* text,
                        const dsd_position_fix* fix, dsd_call_snapshot* call_out) {
     dsd_call_snapshot call;
     const int has_active_call = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
@@ -57,7 +57,7 @@ gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source,
         *call_out = call;
     }
     if (fix != NULL) {
-        return dsd_event_enrich_position(state, slot, call.epoch, fix, text);
+        return dsd_event_enrich_position(opts, state, slot, call.epoch, fix, text);
     }
     return dsd_event_enrich_gps(state, slot, call.epoch, text);
 }
@@ -857,14 +857,14 @@ gps_report_print_prefix(const dsd_gps_report_ctx* ctx) {
 /* Write an admitted report into its call's history row: the call the terminator just ended (spec N2), the call of the
  * epoch the report was bound to, or else the slot's ACTIVE call. The writer's typed-source rule decides. */
 static void
-gps_report_write_history(dsd_state* state, uint8_t slot, const dsd_gps_report_ctx* ctx, const dsd_position_fix* fix,
-                         const char* text) {
+gps_report_write_history(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_gps_report_ctx* ctx,
+                         const dsd_position_fix* fix, const char* text) {
     if (ctx->closing != NULL && ctx->closing->valid) {
-        (void)dsd_event_enrich_position_closing(state, ctx->closing, fix, text);
+        (void)dsd_event_enrich_position_closing(opts, state, ctx->closing, fix, text);
     } else if (ctx->call_epoch != 0U) {
-        (void)dsd_event_enrich_position(state, slot, ctx->call_epoch, fix, text);
+        (void)dsd_event_enrich_position(opts, state, slot, ctx->call_epoch, fix, text);
     } else {
-        (void)gps_enrich_active_call(state, slot, 0U, text, fix, NULL);
+        (void)gps_enrich_active_call(opts, state, slot, 0U, text, fix, NULL);
     }
 }
 
@@ -1019,7 +1019,7 @@ harris_gps_publish(const dsd_opts* opts, dsd_state* state, const harris_gps_fiel
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "(%.6lf%s, %.6lf%s)",
                      latitude, deg_glyph, longitude, deg_glyph);
     }
-    gps_report_write_history(state, slot, ctx, fix, state->dmr_embedded_gps[slot]);
+    gps_report_write_history(opts, state, slot, ctx, fix, state->dmr_embedded_gps[slot]);
 
     // -L: the -L placeholder 0 stands for an unknown heading, as before.
     const int speed_kph = (int)((fix->speed_dkmh + 5U) / 10U);
@@ -1110,7 +1110,7 @@ dmr_embedded_gps_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, c
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: %.5lf%s%s %.5lf%s%s %s",
                  p.lat, deg_glyph, p.latstr, p.lon, deg_glyph, p.lonstr, err);
     if (a->has_call) {
-        (void)dsd_event_enrich_position(state, slot, a->call.epoch, &a->fix, state->dmr_embedded_gps[slot]);
+        (void)dsd_event_enrich_position(opts, state, slot, a->call.epoch, &a->fix, state->dmr_embedded_gps[slot]);
     }
     gps_write_lrrp_admitted(opts, &a->fix, 0, 0);
 }
@@ -1198,7 +1198,7 @@ apx_gps_publish(const dsd_opts* opts, dsd_state* state, const dsd_position_fix* 
     apx_gps_print_reserved(lc_bits);
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "GPS: %lf%s%s %lf%s%s (%lf, %lf)",
                  lat_abs, deg_glyph, latstr, lon_abs, deg_glyph, lonstr, latitude, longitude);
-    gps_report_write_history(state, slot, ctx, fix, state->dmr_embedded_gps[slot]);
+    gps_report_write_history(opts, state, slot, ctx, fix, state->dmr_embedded_gps[slot]);
     gps_write_lrrp_compact(opts, state, slot, fix->source_id, latitude, longitude, 0, 0);
 }
 

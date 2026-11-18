@@ -405,7 +405,8 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
                                     row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias,
                                     row->crc_invalid);
-    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps, row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, dsd_event_gps_detail_label(row->gps_s), row->gps_s,
+                                    wanted.gps, row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal,
                                     row->crc_invalid);
     fflush(event_log_file);
@@ -4009,10 +4010,25 @@ dsd_event_pos_call_open_for(const dsd_call_snapshot* call, uint64_t epoch, int a
     return call->phase == DSD_CALL_PHASE_ACTIVE || (allow_ended && call->phase == DSD_CALL_PHASE_ENDED);
 }
 
+/* A position written into row @p item after the row committed: its event log line went out without it, so append the
+ * row's GPS line with the row's own stamp, as a late alias does (dsd_event_enrich_committed_alias()). opts NULL writes
+ * no log line. */
+static void
+dsd_event_pos_log_committed(const dsd_opts* opts, uint8_t slot, const Event_History* item) {
+    if (opts == NULL) {
+        return;
+    }
+    watchdog_event_merge_added added;
+    DSD_MEMSET(&added, 0, sizeof added);
+    added.gps = 1U;
+    watchdog_event_write_log_entry(opts, slot, (uint8_t)(dsd_event_systype_has_slots(item->systype) ? 1U : 0U),
+                                   "Enriched: ", NULL, item, &added);
+}
+
 /* Caller holds the call-state lock. Write the report into the epoch's row, or decline. */
 static int
-dsd_event_enrich_position_locked(dsd_state* state, uint8_t slot, dsd_call_state_ext* ext, uint64_t epoch,
-                                 const dsd_position_fix* fix, const char* gps_text) {
+dsd_event_enrich_position_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot, dsd_call_state_ext* ext,
+                                 uint64_t epoch, const dsd_position_fix* fix, const char* gps_text) {
     dsd_call_snapshot* call = &ext->calls.slots[slot];
     uint8_t history_index = 0U;
     const dsd_event_enrich_target target =
@@ -4044,13 +4060,14 @@ dsd_event_enrich_position_locked(dsd_state* state, uint8_t slot, dsd_call_state_
     dsd_event_pos_write(item, fix, gps_text);
     if (history_index != 0U) {
         event_struct->commit_rev++; /* late enrichment of a committed row */
+        dsd_event_pos_log_committed(opts, slot, item);
     }
     dsd_event_history_mark_dirty(event_struct);
     return 1;
 }
 
 static int
-dsd_event_enrich_position_impl(dsd_state* state, uint8_t slot, uint64_t epoch, int allow_ended,
+dsd_event_enrich_position_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, int allow_ended,
                                const dsd_position_fix* fix, const char* gps_text) {
     if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U
         || !dsd_event_pos_fix_admitted(fix) || !gps_text) {
@@ -4064,16 +4081,16 @@ dsd_event_enrich_position_impl(dsd_state* state, uint8_t slot, uint64_t epoch, i
     const dsd_call_snapshot* call = &ext->calls.slots[slot];
     int written = 0;
     if (dsd_event_pos_call_open_for(call, epoch, allow_ended) && dsd_event_pos_call_compatible(call, fix)) {
-        written = dsd_event_enrich_position_locked(state, slot, ext, epoch, fix, gps_text);
+        written = dsd_event_enrich_position_locked(opts, state, slot, ext, epoch, fix, gps_text);
     }
     dsd_call_state_ext_unlock(ext);
     return written;
 }
 
 int
-dsd_event_enrich_position(dsd_state* state, uint8_t slot, uint64_t epoch, const dsd_position_fix* fix,
-                          const char* gps_text) {
-    return dsd_event_enrich_position_impl(state, slot, epoch, 0, fix, gps_text);
+dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_position_fix* fix, const char* gps_text) {
+    return dsd_event_enrich_position_impl(opts, state, slot, epoch, 0, fix, gps_text);
 }
 
 int
@@ -4095,15 +4112,15 @@ dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_c
 }
 
 int
-dsd_event_enrich_position_closing(dsd_state* state, const dsd_event_closing_call* closing, const dsd_position_fix* fix,
-                                  const char* gps_text) {
+dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
+                                  const dsd_position_fix* fix, const char* gps_text) {
     if (!closing) {
         return -1;
     }
     if (!closing->valid) {
         return (!state || !dsd_event_pos_fix_admitted(fix) || !gps_text) ? -1 : 0;
     }
-    return dsd_event_enrich_position_impl(state, closing->slot, closing->epoch, 1, fix, gps_text);
+    return dsd_event_enrich_position_impl(opts, state, closing->slot, closing->epoch, 1, fix, gps_text);
 }
 
 int

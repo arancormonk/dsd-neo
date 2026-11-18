@@ -1523,6 +1523,37 @@ p25_slot_promote_identity(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_cla
         (uint8_t)((slot_ctx->identity_checked | (claim->checked & named)) & P25_SM_IDENTITY_CHECKED_ALL);
 }
 
+/* A message naming @p claim about the call the slot's assignment already holds (a repeated grant): each field it names
+ * with the assignment's own value gains the message's verdict, and each field it names with another value takes that
+ * value with the message's verdict alone, the earlier value's flag never carried over. A target goes with its kind. */
+static void
+p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+    const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
+    const uint8_t named = p25_sm_claim_names(claim, held.source, held.target, held.kind);
+    uint8_t checked = (uint8_t)((slot_ctx->identity_checked | (claim->checked & named)) & P25_SM_IDENTITY_CHECKED_ALL);
+    if (claim->source != 0U && (named & P25_SM_IDENTITY_CHECKED_SOURCE) == 0U) {
+        slot_ctx->src = (int)claim->source;
+        checked = (uint8_t)((checked & (P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND))
+                            | (claim->checked & P25_SM_IDENTITY_CHECKED_SOURCE));
+    }
+    const int kind_named = claim->kind != (uint8_t)DSD_CALL_KIND_UNKNOWN;
+    const int kind_changed = kind_named && (named & P25_SM_IDENTITY_CHECKED_KIND) == 0U;
+    const int target_changed = kind_named && claim->target != 0U && (named & P25_SM_IDENTITY_CHECKED_TARGET) == 0U;
+    if (kind_changed || target_changed) {
+        const int is_group = claim->kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE;
+        slot_ctx->is_group = is_group ? 1 : 0;
+        slot_ctx->ota_tg = is_group ? (int)claim->target : 0;
+        slot_ctx->dst = is_group ? 0 : (int)claim->target;
+        /* A kind whose target the message left out has no target: nothing of the old one carries over. */
+        checked =
+            (uint8_t)((checked & P25_SM_IDENTITY_CHECKED_SOURCE) | (claim->checked & P25_SM_IDENTITY_CHECKED_KIND));
+        if (claim->target != 0U) {
+            checked |= (uint8_t)(claim->checked & P25_SM_IDENTITY_CHECKED_TARGET);
+        }
+    }
+    slot_ctx->identity_checked = checked;
+}
+
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
  * the call's current source, target and kind and its epoch; a field keeps its flag only within the same epoch and
  * with the same value, and gains the message's verdict where the message named the value the call now holds. A call
@@ -2698,16 +2729,17 @@ p25_grant_duplicate_starts_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_event
     return assignment_slot >= 0 && assignment_slot <= 1 && !p25_voice_slot_epoch_active(&ctx->slots[assignment_slot]);
 }
 
-/* The repeat confirms the fields it names with the values the call on @p call_slot already has (spec 2.19): a passed
- * check promotes them, a failed one changes nothing, and a field naming another value is not the call's. */
+/* The repeat names the call on @p call_slot by its own fields (spec 2.19): one naming the value the call already has is
+ * promoted by a passed check and left by a failed one; one naming another value (a new talker on the same slot and
+ * talkgroup, or another target the carrier's call is judged by) replaces it with the repeat's verdict. */
 static void
-p25_grant_duplicate_promote_identity(p25_sm_ctx_t* ctx, const dsd_state* state, int call_slot, const p25_sm_event_t* ev,
-                                     int data_call) {
+p25_grant_duplicate_apply_identity(p25_sm_ctx_t* ctx, const dsd_state* state, int call_slot, const p25_sm_event_t* ev,
+                                   int data_call) {
     if (call_slot < 0 || call_slot > 1) {
         return;
     }
     const p25_sm_identity_claim claim = p25_sm_event_claim(ev);
-    p25_slot_promote_identity(&ctx->slots[call_slot], &claim);
+    p25_slot_apply_identity_claim(&ctx->slots[call_slot], &claim);
     if (!data_call) {
         p25_sm_merge_published_identity(&ctx->slots[call_slot].published, state, call_slot, &claim);
     }
@@ -2759,7 +2791,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     }
     p25_grant_note_enc_reprobe_admitted(ctx, eval_ctx, now_m);
     const int call_slot = p25_grant_logical_slot(ctx, route->slot);
-    p25_grant_duplicate_promote_identity(ctx, state, call_slot, ev, data_call);
+    p25_grant_duplicate_apply_identity(ctx, state, call_slot, ev, data_call);
     p25_grant_duplicate_refresh_call(ctx, opts, state, call_slot, target_id, data_call, now_m);
     if (data_call) {
         ctx->t_tune_m = now_m;

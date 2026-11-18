@@ -14,8 +14,8 @@
  * single-consumer snapshot accessors' state touched, so the Qt model, a background tap and any other reader can each
  * follow it with a cursor of their own.
  *
- * Streams: every decoder run is a new stream (dsd_position_fix::stream_id, never 0, never repeated in the process)
- * whose seq starts at 1. The published ring holds one stream at a time: the run's first publish replaces the previous
+ * Streams: every decoder run is a new stream (dsd_position_fix::stream_id, never 0, never repeated in the process, and
+ * different in a restarted process) whose seq starts at 1. The published ring holds one stream at a time: the run's first publish replaces the previous
  * run's records. After a run ends, its records stay until the next run's first publish, and the run's final publish
  * (the engine publishes at the end of every run whose lifecycle started) carries its last records.
  *

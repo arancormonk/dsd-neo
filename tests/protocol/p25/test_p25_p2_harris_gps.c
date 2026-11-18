@@ -676,6 +676,82 @@ test_checked_repeat_promotes(void) {
     fixture_close(&f);
 }
 
+/* A repeat of the grant (the duplicate-grant path: the same carrier, slot and talkgroup) naming another talker replaces
+ * the assignment's source with its own, and its own verdict: the earlier talker's checked source never names a later
+ * report, before voice or during it. */
+static void
+test_duplicate_grant_replaces_source(void) {
+    for (int crc_ok = 0; crc_ok < 2; crc_ok++) {
+        char label[160];
+        // Before either talker's voice: a source-less MAC_ACTIVE inherits the repeat's talker.
+        fixture f;
+        fixture_open(&f);
+        group_grant(&f, SRC_A, 1);
+        group_grant(&f, SRC_B, crc_ok);
+        const p25_sm_slot_ctx_t* slot = &p25_sm_get_ctx()->slots[0];
+        DSD_SNPRINTF(label, sizeof label, "repeat naming another talker (crc %d): assignment", crc_ok);
+        expect_true(label, slot->src == (int)SRC_B
+                               && (slot->identity_checked & P25_SM_IDENTITY_CHECKED_SOURCE)
+                                      == (crc_ok ? P25_SM_IDENTITY_CHECKED_SOURCE : 0)
+                               && (slot->identity_checked & P25_SM_IDENTITY_CHECKED_TARGET) != 0);
+        mac_active(&f, TG_A, 0U);
+        DSD_SNPRINTF(label, sizeof label, "repeat naming another talker (crc %d): call", crc_ok);
+        expect_true(label, slot0_call_names(TG_A, SRC_B, f.st));
+        send_gps(&f, 0);
+        DSD_SNPRINTF(label, sizeof label, "repeat naming another talker before voice (crc %d)", crc_ok);
+        expect_report(&f, label, crc_ok ? SRC_B : 0U, TG_A, 1);
+        fixture_close(&f);
+
+        // During the first talker's checked voice: the repeat's talker and verdict name the next report.
+        fixture_open(&f);
+        group_grant(&f, SRC_A, 1);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "first talker's voice", SRC_A, TG_A, 1);
+        group_grant(&f, SRC_B, crc_ok);
+        DSD_SNPRINTF(label, sizeof label, "repeat naming another talker during voice (crc %d): call", crc_ok);
+        expect_true(label, slot0_call_names(TG_A, SRC_B, f.st));
+        send_gps(&f, 0);
+        DSD_SNPRINTF(label, sizeof label, "repeat naming another talker during voice (crc %d)", crc_ok);
+        expect_report(&f, label, crc_ok ? SRC_B : 0U, TG_A, 1);
+        fixture_close(&f);
+    }
+}
+
+/* On an FDMA carrier a repeat is matched by the target the call is judged by, so it can name another kind or target than
+ * the assignment (a private call to radio TG_A on the group's carrier): each field it names with another value takes
+ * that value with the repeat's own verdict. */
+static void
+test_fdma_repeat_replaces_kind(void) {
+    for (int crc_ok = 0; crc_ok < 2; crc_ok++) {
+        fixture f;
+        fixture_open(&f);
+        // IDEN 2: an FDMA channel plan on the same band.
+        f.st->p25_iden_fdma[2].base_freq = CC_HZ / 5;
+        f.st->p25_iden_fdma[2].chan_type = 1;
+        f.st->p25_iden_fdma[2].chan_spac = 100;
+        f.st->p25_iden_fdma[2].trust = 2;
+        f.st->p25_iden_fdma[2].populated = 1;
+        f.st->p25_chan_tdma_explicit[2] = 1;
+        const uint8_t group[] = {
+            0x40, 0x00, 0x20, 0x0A, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_A >> 16), (uint8_t)(SRC_A >> 8), (uint8_t)SRC_A};
+        send_mac(&f, 0, group, sizeof group, 1);
+        const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+        expect_true("fdma group grant followed", sm->state == P25_SM_TUNED && sm->vc_is_tdma == 0
+                                                     && sm->slots[0].is_group == 1
+                                                     && sm->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
+        const uint8_t unit[] = {
+            0x44, 0x20, 0x0A, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_B >> 16), (uint8_t)(SRC_B >> 8), (uint8_t)SRC_B};
+        send_mac(&f, 0, unit, sizeof unit, crc_ok);
+        const p25_sm_slot_ctx_t* slot = &sm->slots[0];
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "fdma repeat naming a private call (crc %d)", crc_ok);
+        expect_true(label, slot->is_group == 0 && slot->dst == (int)TG_A && slot->ota_tg == 0 && slot->src == (int)SRC_B
+                               && slot->identity_checked == (crc_ok ? P25_SM_IDENTITY_CHECKED_ALL : 0));
+        fixture_close(&f);
+    }
+}
+
 /* A checked SACCH MAC_SIGNAL voice user that establishes the call on late entry (no MAC_PTT/MAC_ACTIVE) names it. */
 static void
 test_sacch_voice_user(void) {
@@ -794,6 +870,8 @@ main(void) {
     test_sourceless_update();
     test_sourceless_continuation_keeps_source();
     test_checked_repeat_promotes();
+    test_duplicate_grant_replaces_source();
+    test_fdma_repeat_replaces_kind();
     test_sacch_voice_user();
     test_epoch_change();
     test_conventional();

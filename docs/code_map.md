@@ -2496,14 +2496,22 @@ suite runs under this compiler.
   equal, kept less than 30 s ago on the decode clock; anonymous sources never fold; 256 tracks, the least recently
   kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
-  still works and nothing is kept. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
+  still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
+  it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
+  `pos_seq` cursor never matches a report of an earlier process. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
   seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
 - API note: history rows carry the admitted fix (`Event_History::pos`, a padding-free `dsd_event_pos`, issue #800).
   Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
   admitted record: `dsd_event_enrich_position()` (the slot's ACTIVE call of an epoch),
   `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
-  ends before it dispatches its own link control), `dsd_event_set_open_call_position()` (D-STAR slow data),
-  `dsd_event_stage_position()` (the next data notice; `Event_History_Staged::pos_fix` keeps the whole record) and
+  ends before it dispatches its own link control; both take the `dsd_opts` the event log is written through, and a
+  position written into a row that already committed appends the row's `GPS:` line to `-J` with the row's own stamp,
+  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`; the `-J` and terminal history GPS
+  detail lines take their label from `dsd_event_gps_detail_label()`, none when `gps_s` already starts with `GPS:`, as
+  DMR embedded GPS, UDT NMEA, Motorola APX and M17 text does, so the line has one; tests `P25_P1_HARRIS_GPS`,
+  `DMR_FLCO_MONO_CRC_SCOPE`),
+  `dsd_event_set_open_call_position()` (D-STAR slow data), `dsd_event_stage_position()` (the next data notice;
+  `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
   report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its
@@ -12300,7 +12308,11 @@ Private per-protocol modules worth knowing about:
   a new call epoch, a release or a reset clears all three. A failed check never sets a flag, and a field inherited
   from an earlier assignment keeps that assignment's flag. Every site that sets or confirms identity applies it
   through `p25_sm_identity_claim` (only the fields the message itself named): new grants (`p25_grant_store_slot_context`,
-  a new assignment), duplicate grants (`p25_grant_duplicate_promote_identity`), voice starts that change the call
+  a new assignment), duplicate grants (`p25_grant_duplicate_apply_identity()` → `p25_slot_apply_identity_claim()`: a
+  repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
+  by the target its call is judged by that names another target or kind, replaces that field in the assignment with
+  its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
+  with the new talker, a new canonical epoch; test `P25_P2_HARRIS_GPS`), voice starts that change the call
   (`p25_voice_start_commit_identity`) and ones that change nothing (`p25_voice_start_promote_identity`), the
   trunk-off publication (`p25_sm_conventional_note_identity`), and Phase 2 MAC_SIGNAL voice users that observe the
   canonical call themselves (`p25p2_vpdu_observe_voice()` → `p25_sm_note_call_identity()`, with the MAC CRC verdict).

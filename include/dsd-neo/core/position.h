@@ -34,8 +34,8 @@
  *
  * The ring (DSD_POSITION_FEED_CAPACITY records) lives in the state extension slot DSD_STATE_EXT_CORE_POSITION_FEED.
  * The engine creates it at the start of every run (dsd_position_feed_start()); it is freed with every other extension
- * when the run ends, so every run is a new stream (stream_id, never 0, never repeated in the process) whose seq starts
- * at 1. It is not part of a trunk-scan target's saved state, and no carrier loss or decoder reset clears it.
+ * when the run ends, so every run is a new stream (stream_id, never 0, never repeated in the process, and offset from
+ * the process instance, so another process's runs have other streams) whose seq starts at 1. It is not part of a trunk-scan target's saved state, and no carrier loss or decoder reset clears it.
  *
  * Threading: the live ring is written and read on the decoder thread only. Frontends read the copies app-control
  * publishes (dsd_position_feed_copy_since() is the publish hop's read).
@@ -288,8 +288,9 @@ int dsd_position_scope_from_rxid(const struct dsd_received_identity* rx, uint32_
 int dsd_position_protocol_family(int protocol);
 
 /**
- * @brief Start the run's feed: a new stream (a new stream_id, seq restarting at 1, no remembered tracks) in @p state's
- * extension slot, allocated when the slot has none, and draw the process instance if no call drew it yet. The engine
+ * @brief Start the run's feed: a new stream (a new stream_id: the process instance, drawn if no call drew it yet, plus
+ * the process's run count; seq restarting at 1, no remembered tracks) in @p state's extension slot, allocated when the
+ * slot has none. The engine
  * calls it at the start of every run, never on the decode path. Returns 0, or -1 for NULL @p state or a failed
  * allocation (the feed then stays off for the run and admission still works).
  */

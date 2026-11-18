@@ -431,11 +431,14 @@ Windows console runs:
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
-  event's own stamp rather than reading the clock again. A `GPS:` line follows a call only for a position sent during
+  event's own stamp rather than reading the clock again. A `GPS:` line carries one label, also when the position text
+  starts with its own (DMR embedded GPS, UDT NMEA, Motorola, M17). A `GPS:` line follows a call only for a position sent during
   that call (DMR embedded GPS, P25 L3Harris or Motorola link control, M17, D-STAR); a separate data report (LRRP, LOCN,
   LIP, UDT NMEA, ASCII NMEA, NXDN GPS, TETRA LIP) gets its own data line with its `GPS:` line, never the call of the
   radio talking at the time, and a DMR USBD LIP reply is an anonymous `USBD LIP Poll Response; SRC(Hash): NNN;` line
-  (the hash is not a radio ID). A report with LIP position error 7 reads `fix may be old or invalid`. A voice
+  (the hash is not a radio ID). A call position decoded after the call's line was written (the L3Harris or Motorola
+  report in the terminator that ends a P25 Phase 1 call) appends that call's `GPS:` line then, carrying the call
+  line's stamp. A report with LIP position error 7 reads `fix may be old or invalid`. A voice
   transmission reacquired after a sync loss appends a `Reacquired:` continuation carrying the stamp of the row it
   extends. While scanning a `-Y` list or rotating `--trunk-scan` targets, each line names the channel it was heard on in
   brackets between the timestamp and the protocol token. A [service name](#receive-filters-and-service-names) that

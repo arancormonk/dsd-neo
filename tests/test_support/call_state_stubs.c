@@ -372,8 +372,9 @@ stub_write_position(dsd_state* state, uint8_t slot, uint64_t epoch, int allow_en
 }
 
 int
-dsd_event_enrich_position(dsd_state* state, uint8_t slot, uint64_t epoch, const dsd_position_fix* fix,
-                          const char* gps_text) {
+dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_position_fix* fix, const char* gps_text) {
+    (void)opts;
     return stub_write_position(state, slot, epoch, 0, fix, gps_text);
 }
 
@@ -396,8 +397,9 @@ dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_c
 }
 
 int
-dsd_event_enrich_position_closing(dsd_state* state, const dsd_event_closing_call* closing, const dsd_position_fix* fix,
-                                  const char* gps_text) {
+dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
+                                  const dsd_position_fix* fix, const char* gps_text) {
+    (void)opts;
     if (closing == NULL) {
         return -1;
     }

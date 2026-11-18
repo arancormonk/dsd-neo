@@ -479,11 +479,13 @@ dsd_position_feed_start(dsd_state* state) {
             return -1;
         }
     }
+    /* The stream is the process instance (drawn here, at run start, so no report pays for the draw on the decode path)
+       plus the process's run count: never repeated in the process, and a restarted process, with an instance of its
+       own, names its runs differently, so a client's (stream, seq) cursor never matches another process's report. */
+    const uint64_t instance = dsd_position_proc_instance();
     do {
-        f->stream_id = dsd_atomic_u64_fetch_add_relaxed(&g_next_stream, 1U);
+        f->stream_id = instance + dsd_atomic_u64_fetch_add_relaxed(&g_next_stream, 1U);
     } while (f->stream_id == 0U);
-    /* The process instance is drawn here, at run start, so no report pays for the draw on the decode path. */
-    (void)dsd_position_proc_instance();
     return 0;
 }
 
