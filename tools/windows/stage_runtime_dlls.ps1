@@ -294,9 +294,11 @@ function Get-NormalizedDirs {
 
 # A library comes from the search folders only. A Visual C++ runtime DLL may also come
 # from Visual Studio's redistributable folders or the build machine's System32: a clean
-# Windows lacks it, so it is copied from wherever it is found (Get-DllKind).
-$libraryDirs = Get-NormalizedDirs (@($destinationFull) + $SearchDirs)
-$runtimeDirs = Get-NormalizedDirs ($libraryDirs + @(Get-VsRedistDirs) + @($system32))
+# Windows lacks it, so it is copied from wherever it is found (Get-DllKind). A function
+# that returns one folder returns a string, not an array, so each result is put back
+# into one before a list is added to it.
+$libraryDirs = @(Get-NormalizedDirs (@($destinationFull) + $SearchDirs))
+$runtimeDirs = @(Get-NormalizedDirs ($libraryDirs + @(Get-VsRedistDirs) + @($system32)))
 
 $queue = New-Object 'System.Collections.Generic.Queue[string]'
 $visited = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)

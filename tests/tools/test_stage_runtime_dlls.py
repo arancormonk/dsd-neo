@@ -177,14 +177,27 @@ class StageRuntimeDlls(unittest.TestCase):
         base.with_name(inspected + ".err").write_bytes(err.encode())
         base.with_name(inspected + ".rc").write_text(str(rc))
 
-    def stage(self):
+    def visual_studio(self, version="14.51.36231", toolset="VC143"):
+        """A Visual Studio installation that vswhere finds; returns its redistributable runtime folder."""
+        install = self.work / "vs"
+        installer = self.program_files / "Microsoft Visual Studio/Installer"
+        installer.mkdir(parents=True, exist_ok=True)
+        vswhere = installer / "vswhere.exe"
+        vswhere.write_text(f"#!/bin/sh\necho '{install}'\n", encoding="utf-8")
+        vswhere.chmod(0o755)
+        crt = install / f"VC/Redist/MSVC/{version}/x64/Microsoft.{toolset}.CRT"
+        crt.mkdir(parents=True)
+        return crt
+
+    def stage(self, search=None):
         # Only the fakes are on PATH, so no real dumpbin, objdump or llvm-objdump on the host can answer instead.
         env = dict(os.environ, PATH=str(self.tools), SystemRoot=str(self.work / "windows"))
         env["ProgramFiles(x86)"] = str(self.program_files)
         runner = self.work / "run.ps1"
         runner.write_text(RUNNER, encoding="utf-8")
+        search = self.search if search is None else search
         result = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-File", str(runner), "-Script", str(SCRIPT),
-                                 "-Target", str(self.target), "-Dest", str(self.dest), "-Search", str(self.search)],
+                                 "-Target", str(self.target), "-Dest", str(self.dest), "-Search", str(search)],
                                 env=env, cwd=self.work, check=False, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT)
         return result.returncode, normalized(result.stdout.decode("utf-8", "replace"))
@@ -243,6 +256,18 @@ class StageRuntimeDlls(unittest.TestCase):
         rc, output = self.stage()
         self.assertEqual(rc, 0, output)
         self.assertEqual([name for name in self.staged() if name.endswith(".dll")], sorted(runtime))
+
+    def test_runtime_is_found_when_the_destination_is_the_only_search_folder(self):
+        # The release workflows name one search folder, and a caller may name only the destination: the folders to
+        # search then reduce to one, and the Visual C++ runtime folders must still be searched after it.
+        crt = self.visual_studio()
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", ["VCRUNTIME140_1.dll", "KERNEL32.dll"]))
+        (crt / "VCRUNTIME140_1.dll").write_bytes(pe_image(b"runtime"))
+        self.respond("dumpbin", "VCRUNTIME140_1.dll", out=dumpbin_report("VCRUNTIME140_1.dll", ["KERNEL32.dll"]))
+        rc, output = self.stage(search=self.dest)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(self.staged(), ["VCRUNTIME140_1.dll", "dlls-manifest.txt"])
 
     def test_dumpbin_report_without_dependencies_is_valid(self):
         self.tool("dumpbin")
