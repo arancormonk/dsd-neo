@@ -7364,7 +7364,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   ring attaches before its receive thread starts (nothing counted yet) and stdin's reader when it opens, so neither
   has a moment in which a post waits for its input to be measured. A UDP input whose receive thread then fails to start undoes its attach
   (`dsd_input_backlog_attach_failed()`): the reader an input switch keeps running is the measured input again, on the
-  attachment it had, so a mark taken on it before the switch still applies. Attachment numbers are never reused, so a
+  attachment it had, so a mark taken on it before the switch still applies, and a device input's unmeasured post the
+  attach retired stands again (unless a later post does), so the device the switch keeps running still drops its old
+  audio (`PLATFORM_PCM_STREAM` `test_failed_start_restores_a_device_post()`). Attachment numbers are never reused, so a
   cut measured on the failed queue never applies to a later one.
   Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in

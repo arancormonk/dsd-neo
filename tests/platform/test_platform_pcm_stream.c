@@ -600,6 +600,37 @@ test_failed_start_puts_back_the_replaced_queue(void) {
     dsd_input_backlog_retire();
 }
 
+/* Issue #834: a device input (PulseAudio, PortAudio, AAudio) attaches no queue, so a retune the watchdog posts on it is
+   unmeasured, and stands on the mark's time. A switch to UDP retires it at its attach (nothing the new input holds was
+   queued before it), but when the UDP receive thread does not start the device runs on: the post comes back with it,
+   so the device still drops its old audio. */
+static void
+test_failed_start_restores_a_device_post(void) {
+    static uint64_t failed = 30U;
+    dsd_input_backlog_retire();
+    dsd_input_cut device_mark;
+    dsd_input_backlog_mark(&device_mark);
+    check(device_mark.measured == 0U, "a device input is not measured");
+    dsd_input_backlog_post(&device_mark);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(dsd_input_backlog_take(NULL) == 0, "the switch's attach retires the device's post");
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut taken;
+    DSD_MEMSET(&taken, 0, sizeof taken);
+    check(dsd_input_backlog_take(&taken) == 1 && taken.order == device_mark.order && taken.measured == 0U
+              && taken.marked_ns == device_mark.marked_ns,
+          "the failed start gives the device its post back");
+
+    /* Only the attach that retired it gives it back: one that ended (a stop) before another attach failed does not. */
+    dsd_input_backlog_post(&device_mark);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_detach(&failed);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_attach_failed(&failed);
+    check(dsd_input_backlog_take(NULL) == 0, "a post the failed start's own attach did not retire is not brought back");
+    dsd_input_backlog_retire();
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -651,6 +682,7 @@ main(void) {
     test_post_while_the_input_opens_is_measured_when_posted();
     test_opening_keeps_its_own_connection();
     test_failed_start_puts_back_the_replaced_queue();
+    test_failed_start_restores_a_device_post();
     test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {

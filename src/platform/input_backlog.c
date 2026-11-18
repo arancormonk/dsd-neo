@@ -53,6 +53,10 @@ static dsd_input_arrived_fn s_undo_arrived;
 static uint64_t s_undo_prior_seq;
 static uint64_t s_undo_continued_from;
 static uint64_t s_undo_continued_to;
+/* The unmeasured post (a device input's) the last attach retired, which its failed start puts back
+   (dsd_input_backlog_attach_failed()): the device it was posted on runs on. */
+static int s_undo_post_held;
+static dsd_input_cut s_undo_post;
 
 static void
 backlog_lock(void) {
@@ -119,6 +123,7 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     s_undo_prior_seq = s_seq;
     s_undo_continued_from = s_continued_from;
     s_undo_continued_to = s_continued_to;
+    s_undo_post_held = 0;
     backlog_new_attachment_locked();
     s_undo_seq = s_seq;
     s_queue = queue;
@@ -129,8 +134,10 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
                queue attached, so the queue's count goes on from the connection's and the post stands on it. */
             s_post.seq = s_seq;
         } else if (!s_post.measured) {
-            /* Posted while no input was attached: the peer moved before this input existed, so nothing it holds was
-               queued before the post. */
+            /* Posted while no queue was attached (a device input, or none): the peer moved before this input existed,
+               so nothing it holds was queued before the post. Kept for a failed start, whose device runs on. */
+            s_undo_post_held = s_undo_held;
+            s_undo_post = s_post;
             s_post_held = 0;
         }
     }
@@ -168,6 +175,11 @@ dsd_input_backlog_attach_failed(const void* queue) {
             if (s_post_held && s_post.measured && s_post.seq == s_undo_seq) {
                 s_post_held = 0;
             }
+            /* The device input the attach retired a post of runs on: its post stands again, unless a later one does. */
+            if (s_undo_post_held && (!s_post_held || s_undo_post.order > s_post.order)) {
+                s_post = s_undo_post;
+                s_post_held = 1;
+            }
             s_queue = s_undo_queue;
             s_arrived = s_undo_arrived;
             s_seq = s_undo_prior_seq;
@@ -179,6 +191,7 @@ dsd_input_backlog_attach_failed(const void* queue) {
             backlog_new_attachment_locked();
         }
         s_undo_held = 0;
+        s_undo_post_held = 0;
     }
     backlog_unlock();
 }
@@ -271,6 +284,7 @@ dsd_input_backlog_forget(void) {
     if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq && !s_opening)) {
         s_post_held = 0;
     }
+    s_undo_post_held = 0; /* the input replaced, nothing comes back to it */
     backlog_end_opening_locked();
     backlog_unlock();
 }
@@ -279,6 +293,7 @@ void
 dsd_input_backlog_retire(void) {
     backlog_lock();
     s_post_held = 0;
+    s_undo_post_held = 0;
     backlog_end_opening_locked();
     backlog_unlock();
 }
