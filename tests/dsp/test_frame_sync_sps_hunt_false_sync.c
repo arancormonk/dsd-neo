@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +45,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_state_buffers.h"
+#include "frame_sync_test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -1457,6 +1459,180 @@ test_a_p25p1_word_hint_is_the_unlocked_rotations_alone(void) {
     assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
 }
 
+/*
+ * A P25 watchdog beat's tick runs on the decoder thread inside the hunt: at getFrameSync()'s entry tick and at its
+ * 300-symbol checkpoint. A tick there that retunes (a release to the control channel, a hunt step) leaves nothing of the
+ * window worth matching, and the engine took the tuning generation and getFrameSync() its decode time before the
+ * tune: the hunt hands back with no sync, as a read that left for a queued command does (state->input_interrupted, no
+ * no-carrier pass), and the engine's next call starts on the new carrier with both taken afresh. A tune request the
+ * receiver refused or deferred before it moved keeps the window: a word spanning the checkpoint still matches.
+ */
+enum { WATCHDOG_TICK_MOVES = 1, WATCHDOG_TICK_REFUSED = 2 };
+
+static int g_watchdog_tick_kind = 0;
+static int g_watchdog_ticks = 0;
+static uint64_t g_watchdog_tick_clock_ns = 0U; /* the decode clock the tick leaves, 0 to leave it */
+static int g_watchdog_failures = 0;
+
+/* What a tick that makes a tune request leaves behind: a landed tune, or one refused before the receiver moved. */
+static void
+watchdog_tick_effect(void) {
+    g_watchdog_ticks++;
+    if (g_watchdog_tick_clock_ns != 0U) {
+        dsd_decode_clock_test_set_ns(g_watchdog_tick_clock_ns);
+    }
+    if (g_watchdog_tick_kind == 0) {
+        return;
+    }
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_complete(request, g_watchdog_tick_kind == WATCHDOG_TICK_MOVES
+                                                   ? DSD_TRUNK_TUNE_RESULT_OK
+                                                   : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+}
+
+static int
+fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    watchdog_tick_effect();
+    return 1;
+}
+
+static void
+fake_entry_tick(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    watchdog_tick_effect();
+}
+
+static const uint64_t k_watchdog_t0_ns = 2000000000000ULL;
+static const uint64_t k_watchdog_t1_ns = 2012000000000ULL;
+
+/* A stream of filler with a P25p1 word whose last symbol is read at @p word_end (1-based), the decode clock at t0, and
+   a checkpoint service of @p kind. */
+static void
+watchdog_case_init(dsd_opts* opts, dsd_state* state, int word_end, int kind) {
+    init_hunt_opts_state(opts, state, 0);
+    assert(init_state_buffers(state));
+    stream_reset(P25P1_SYNC, word_end - 24);
+    g_marker_count = 1;
+    dsd_frame_sync_reset_mod_state();
+    dsd_trunk_tuning_requests_reset();
+    dsd_decode_clock_use_test(k_watchdog_t0_ns);
+    g_reads = 0;
+    g_watchdog_ticks = 0;
+    g_watchdog_tick_kind = kind;
+    g_watchdog_tick_clock_ns = 0U;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+        .p25_sm_watchdog_service = fake_watchdog_service,
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+}
+
+static void
+watchdog_case_done(dsd_state* state) {
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_decode_clock_use_system();
+    free_state_buffers(state);
+    g_marker_count = 0;
+    g_watchdog_tick_kind = 0;
+    state->input_interrupted = 0;
+}
+
+/* A checkpoint tick that landed a tune hands back at once: the word read after it is the next call's, which stamps the
+   control channel's sync with the decode time the tick left (t1), not the time this call started (t0). */
+static void
+test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    watchdog_case_init(&opts, &state, 340, WATCHDOG_TICK_MOVES);
+    g_watchdog_tick_clock_ns = k_watchdog_t1_ns;
+    const int first = getFrameSync(&opts, &state);
+    if (first != DSD_SYNC_NONE || state.input_interrupted != 1 || g_reads != 299) {
+        fprintf(stderr, "FAIL: the checkpoint retune did not hand back (sync %d, interrupted %d, reads %ld)\n", first,
+                state.input_interrupted, g_reads);
+        g_watchdog_failures++;
+    }
+    state.input_interrupted = 0;
+    g_watchdog_tick_kind = 0;
+    const int second = getFrameSync(&opts, &state);
+    if (!DSD_SYNC_IS_P25P1(second)) {
+        fprintf(stderr, "FAIL: the next hunt found no word after the retune (sync %d)\n", second);
+        g_watchdog_failures++;
+    }
+    if (state.last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t1_ns / 1e9) {
+        fprintf(stderr, "FAIL: the sync after the retune stamped %.3f s, before the tick's %.3f s\n",
+                state.last_cc_sync_time_m, (double)k_watchdog_t1_ns / 1e9);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(&state);
+}
+
+/* A checkpoint tick whose tune request the receiver refused moved nothing: the word spanning the checkpoint (symbols
+   290 to 313) still matches in the same call. */
+static void
+test_a_refused_checkpoint_tune_keeps_the_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    watchdog_case_init(&opts, &state, 313, WATCHDOG_TICK_REFUSED);
+    const int sync = getFrameSync(&opts, &state);
+    if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1 || g_reads != 313) {
+        fprintf(stderr, "FAIL: a refused tune lost the word spanning the checkpoint (sync %d, ticks %d, reads %ld)\n",
+                sync, g_watchdog_ticks, g_reads);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(&state);
+}
+
+/* A newer control-channel sync stamp (a tick's grace after a tune, set while this call hunted) is never put back to the
+   time the call started. */
+static void
+test_a_sync_never_moves_the_control_channel_stamp_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    watchdog_case_init(&opts, &state, 100, 0);
+    state.last_cc_sync_time_m = (double)k_watchdog_t1_ns / 1e9;
+    state.last_cc_sync_time = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    const int sync = getFrameSync(&opts, &state);
+    if (!DSD_SYNC_IS_P25P1(sync)) {
+        fprintf(stderr, "FAIL: the word was not found (sync %d)\n", sync);
+        g_watchdog_failures++;
+    }
+    if (state.last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t1_ns / 1e9
+        || state.last_cc_sync_time < (time_t)(k_watchdog_t1_ns / 1000000000ULL)) {
+        fprintf(stderr, "FAIL: the sync moved the control channel's stamp back to %.3f s\n", state.last_cc_sync_time_m);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(&state);
+}
+
+/* The entry tick (frame_sync_maybe_tick_p25_trunk_sm(), the decoder's own once a second) that lands a tune hands back
+   before reading anything, as the checkpoint does. */
+static void
+test_an_entry_tick_retune_hands_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    watchdog_case_init(&opts, &state, 100, WATCHDOG_TICK_MOVES);
+    opts.trunk_enable = 1;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    dsd_frame_sync_test_reset_p25_trunk_tick_state();
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+        .p25_sm_try_tick = fake_entry_tick,
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+    const int sync = getFrameSync(&opts, &state);
+    if (sync != DSD_SYNC_NONE || state.input_interrupted != 1 || g_reads != 0 || g_watchdog_ticks != 1) {
+        fprintf(stderr, "FAIL: the entry tick's retune did not hand back (sync %d, interrupted %d, reads %ld)\n", sync,
+                state.input_interrupted, g_reads);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(&state);
+}
+
 int
 main(void) {
     test_an_interrupted_read_returns_at_once_and_counts_nothing();
@@ -1485,6 +1661,11 @@ main(void) {
     test_a_p25p1_word_on_a_binary_profile_steps_to_4800_4();
     test_a_p25p1_word_hint_is_the_unlocked_rotations_alone();
     test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4();
+    test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now();
+    test_a_refused_checkpoint_tune_keeps_the_window();
+    test_a_sync_never_moves_the_control_channel_stamp_back();
+    test_an_entry_tick_retune_hands_back();
+    assert(g_watchdog_failures == 0);
     return 0;
 }
 

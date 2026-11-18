@@ -1283,19 +1283,30 @@ watchdog predicate does not read the sync or CC-format hints modified by frame a
 **P25 watchdog threading:** the P25 watchdog thread is a beat (`p25_sm_watchdog_request_tick()`, every 200 ms with a
 frontend, 400 ms headless, `DSD_NEO_P25_WD_MS`): it reads and writes no `dsd_state` or `dsd_opts`, and makes no tune.
 The tick it asks for runs on the decoder thread (`p25_sm_watchdog_service()`: the same `p25_sm_try_tick()`, under the
-tick guard), which owns every field the hunt reads and makes every tune: at the frame-sync hunt's 300-symbol checkpoint
-(`frame_sync_service_p25_watchdog()`, which drops the history and starts the hunt's context over in place when the tick
-moved the chain: the modulation, the symbol profile or a tune), between synced frames
-(`live_scanner_process_synced_frames()`), in the main pass's own tick, and in place inside a hunt read waiting on a
-quiet input (each slice of the silent PCM wait, the RTL idle-bounded read). A beat that finds the guard held stays
-asked for. So a release, a control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`,
-`samplesPerSymbol`, `symbolCenter`, `sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates and the sync
-stamps in the same decoder-thread call that retunes, before another sample is read; the beat-to-tick delay is at most
-one checkpoint (62.5 ms at 4800 sym/s), one frame, or one quiet-read slice. A frame read waits for its samples inside a
-dispatch that holds the guard, as before. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the
-published P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
+tick guard), which owns every field the hunt reads and makes every tune: at the frame-sync hunt's 300-symbol checkpoint,
+between synced frames (`live_scanner_process_synced_frames()`), in the main pass's own tick, and in a hunt read before
+each wait on its transport: a PCM read (UDP, TCP, stdin) that finds nothing buffered (a zero-timeout read first, so a
+buffered sample services nothing and a trickling sender is serviced at every sample it makes the read wait for), the
+RTL idle-bounded read, and a TCP reconnect's backoff and connect waits (its cancel check). A beat that finds the guard
+held stays asked for. A tick inside the hunt that moved the chain (`frame_sync_watchdog_tick.c`: the modulation, the
+symbol profile, or a tune request that may have moved the receiver, `dsd_trunk_tuning_retuned_since()`; one refused
+or deferred before it moved keeps the window) hands back at once: the read leaves with no sample and the partial
+symbol given up, and `getFrameSync()` returns no sync with `dsd_state::input_interrupted` set and its history
+dropped, as for a queued command, with no no-carrier pass. The engine's next call then starts on the new carrier with
+the tuning generation (the dispatch gate's) and the decode time (the sync stamps') taken afresh, so no window joins
+the two carriers and the first frame on the new one dispatches. The decoder's own once-a-second tick at
+`getFrameSync()`'s entry hands back the same way. The control channel's sync stamp a sync accept writes only moves
+forward (`frame_sync_note_cc_sync()`). So a release, a control-channel hunt step and a CQPSK retry write the decoder's
+profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`, `sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio
+gates, the payload crypto fields and the sync stamps in the same decoder-thread call that retunes, before another sample
+is read. Beat-to-tick delay: one checkpoint (62.5 ms at 4800 sym/s), one frame, or one transport wait (at most a
+100 ms slice). A frame read waits for its samples inside a dispatch that holds the guard, as before. A Pulse or
+PortAudio capture read (`dsd_audio_read()`) blocks until the device delivers; a device that stops delivering holds
+the beat until it resumes. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the published P25p1
+decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
 `ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
-watchdog-paced release tunes from the decoder thread (tsan-debug).
+watchdog-paced release tunes from the decoder thread (tsan-debug); `DSP_INPUT_INTERRUPT` and
+`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the transport-wait service and the forward-only stamp.
 
 DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
@@ -2537,11 +2548,13 @@ suite runs under this compiler.
     `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
     row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
     commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
-    call-state lock, the lock every commit holds while it rotates a slot: a flush in a P25 tick (a trunk
-    control-channel return or tune, under the tick guard; the decoder thread runs the watchdog's ticks) can meet the decoder thread committing the slot's ended call
+    call-state lock, the lock every commit holds while it rotates a slot. In a running decoder a flush (a P25 tick's
+    trunk control-channel return or tune, under the tick guard) and a commit of the slot's ended call
     (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
-    guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
-    thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
+    guard) are both the decoder thread's, the watchdog's ticks included ("P25 watchdog threading"), so they never
+    overlap; the lock keeps the check and the close one step for a caller that runs a tick on a thread of its own (the
+    engine tests' in-flight ticks), so the two never close the same file. The slot writers never meet a flush: they run
+    under the tick guard (a frame dispatch), and a flush runs only inside a tick. Lock order: tick
     guard, then the call-state lock, then the journal's and the segment table's; no flush caller holds the call-state
     lock or an event-history transaction. Every departure the decoder makes runs it, after ending its calls where it
     ends them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a

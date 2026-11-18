@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_cleanup_calls = 0;
+static int g_failures = 0;
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -418,6 +420,144 @@ test_a_lost_tcp_input_is_no_socket(void) {
     assert(g_cleanup_calls == 0);
 }
 
+/* --- A P25 watchdog beat's tick, run in a hunt read on the decoder thread. --- */
+
+/* What the tick does: retune (a tune request that landed), make a tune request the receiver refused before it moved,
+   or nothing (no beat was waiting). Counts every service the read makes. */
+enum { BEAT_NONE = 0, BEAT_MOVES = 1, BEAT_REFUSED = 2 };
+
+static int g_beat = BEAT_NONE;
+static int g_services = 0;
+
+static int
+fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_services++;
+    if (g_beat == BEAT_NONE) {
+        return 0;
+    }
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_complete(request,
+                                      g_beat == BEAT_MOVES ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    g_beat = BEAT_NONE;
+    return 1;
+}
+
+static void
+install_watchdog_service(void) {
+    dsd_frame_sync_hooks hooks = {0};
+    hooks.p25_sm_watchdog_service = fake_watchdog_service;
+    dsd_frame_sync_hooks_set(&hooks);
+    dsd_trunk_tuning_requests_reset();
+    g_services = 0;
+}
+
+/* A quiet hunt read whose tick retuned leaves at once with no sample, the partial symbol given up, as for a queued
+   command, without waiting out a stream pause: the samples after it are the new carrier's, and no window may join the
+   two. A tick whose tune the receiver refused moved nothing: the read waits on and takes the sample. */
+static void
+test_a_quiet_hunt_read_leaves_when_its_tick_retunes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_watchdog_service();
+    init_udp_session(&opts, &state, 1, 0);
+    g_beat = BEAT_MOVES;
+    const uint64_t start_ms = dsd_realtime_mono_ms();
+    (void)getSymbol(&opts, &state, 0);
+    const uint64_t waited_ms = dsd_realtime_mono_ms() - start_ms;
+    if (state.input_interrupted != 1 || state.symbolcnt != 0U || waited_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
+        fprintf(stderr,
+                "FAIL: a quiet read whose tick retuned did not leave at once (interrupted %d, symbols %u, %llu ms)\n",
+                state.input_interrupted, (unsigned)state.symbolcnt, (unsigned long long)waited_ms);
+        g_failures++;
+    }
+
+    install_watchdog_service();
+    init_udp_session(&opts, &state, 1, 0);
+    g_beat = BEAT_REFUSED;
+    (void)getSymbol(&opts, &state, 0);
+    if (state.input_interrupted != 0 || state.symbolcnt != 1U) {
+        fprintf(stderr, "FAIL: a refused tune made the read leave (interrupted %d, symbols %u)\n",
+                state.input_interrupted, (unsigned)state.symbolcnt);
+        g_failures++;
+    }
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+/* A sender slow enough that every read waits for its sample, yet never long enough for a wait to time out: each wait
+   on the transport services a beat, so the tick it asks for never waits for 300 symbols of a trickle. A sample already
+   buffered services nothing. */
+static int g_slow_reads = 0;
+
+static int
+fake_slow_udp_read(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    (void)opts;
+    if (timeout_ms == 0U) {
+        return -1; /* nothing buffered: the sample is still on its way */
+    }
+    dsd_sleep_ms(20U);
+    g_slow_reads++;
+    *out = 1111;
+    return 1;
+}
+
+static void
+test_slow_reads_that_succeed_service_the_beat(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_watchdog_service();
+    init_udp_session(&opts, &state, 0, 0);
+    dsd_net_audio_input_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.udp_read_sample_wait = fake_slow_udp_read;
+    dsd_net_audio_input_hooks_set(&hooks);
+    g_slow_reads = 0;
+    for (int i = 0; i < 5; i++) {
+        (void)getSymbol(&opts, &state, 0);
+    }
+    if (g_slow_reads != 5 || g_services < 5) {
+        fprintf(stderr, "FAIL: slow reads serviced %d beats over %d transport waits\n", g_services, g_slow_reads);
+        g_failures++;
+    }
+    /* Frame decoding never services one: the frame waits for its samples under the guard. */
+    install_watchdog_service();
+    (void)getSymbol(&opts, &state, 1);
+    if (g_services != 0) {
+        fprintf(stderr, "FAIL: a frame read serviced %d beats\n", g_services);
+        g_failures++;
+    }
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+/* A TCP input that ended: the reconnect's backoff and connect wait service the beat, and a tick that retunes there
+   gives the reconnect up for now, as a queued command does; the next read tries again. */
+static void
+test_a_tcp_reconnect_services_the_beat(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_watchdog_service();
+    init_tcp_session(&opts, &state, 0);
+    (void)getSymbol(&opts, &state, 0);
+    if (g_services == 0) {
+        fprintf(stderr, "FAIL: a TCP reconnect serviced no beat\n");
+        g_failures++;
+    }
+
+    install_watchdog_service();
+    init_tcp_session(&opts, &state, 0);
+    g_beat = BEAT_MOVES;
+    (void)getSymbol(&opts, &state, 0);
+    if (state.input_interrupted != 1 || state.input_fallback_pending != 0 || g_tcp_connects > 1) {
+        fprintf(stderr,
+                "FAIL: a reconnect whose tick retuned did not give way (interrupted %d, fallback %d, connects %d)\n",
+                state.input_interrupted, state.input_fallback_pending, g_tcp_connects);
+        g_failures++;
+    }
+    g_beat = BEAT_NONE;
+    dsd_frame_sync_hooks_set(NULL);
+}
+
 #ifdef USE_RADIO
 static int g_rtl_read_result;
 
@@ -471,11 +611,15 @@ main(void) {
     test_an_auto_tcp_input_does_not_retry_forever();
     test_a_cancelled_reconnect_is_no_lost_input();
     test_a_lost_tcp_input_is_no_socket();
+    test_a_quiet_hunt_read_leaves_when_its_tick_retunes();
+    test_slow_reads_that_succeed_service_the_beat();
+    test_a_tcp_reconnect_services_the_beat();
 #ifdef USE_RADIO
     test_idle_nfm_radio_yields_without_shutdown();
 #endif
     dsd_runtime_set_controls_pending(NULL);
     dsd_net_audio_input_hooks_set(NULL);
+    assert(g_failures == 0);
     printf("DSP_INPUT_INTERRUPT: OK\n");
     return 0;
 }

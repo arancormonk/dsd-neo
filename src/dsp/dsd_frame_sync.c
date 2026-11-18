@@ -511,10 +511,14 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     state->min = ((state->min) + ctx->lmin) / 2;
 }
 
+/* The control channel's sync stamp only moves forward: the hunt's decode time is the one its call started with, and a
+   tick inside the call (the grace after a tune) may already have stamped a later one. */
 static inline void
 frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
-    ctx->state->last_cc_sync_time = ctx->now;
-    ctx->state->last_cc_sync_time_m = ctx->nowm;
+    if (ctx->nowm > ctx->state->last_cc_sync_time_m) {
+        ctx->state->last_cc_sync_time = ctx->now;
+        ctx->state->last_cc_sync_time_m = ctx->nowm;
+    }
 }
 
 static void
@@ -3030,10 +3034,10 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
 static time_t g_p25_trunk_tick_last_tick = 0;
 static time_t g_p25_trunk_tick_last_p25_seen = 0;
 
-void
+int
 frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now) {
     if (now == g_p25_trunk_tick_last_tick) {
-        return;
+        return 0;
     }
 
     int p25_by_sync = DSD_SYNC_IS_P25(state->lastsynctype) ? 1 : 0;
@@ -3042,10 +3046,12 @@ frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now)
     }
     int p25_recent = (g_p25_trunk_tick_last_p25_seen != 0 && (now - g_p25_trunk_tick_last_p25_seen) <= 3) ? 1 : 0;
     int p25_active = p25_by_sync || p25_recent || (state->p25_p2_active_slot != -1);
-    if (opts->trunk_enable == 1 && p25_active) {
+    const int ticks = opts->trunk_enable == 1 && p25_active;
+    if (ticks) {
         dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     }
     g_p25_trunk_tick_last_tick = now;
+    return ticks;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -5940,34 +5946,14 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
     return budget_step != 0;
 }
 
-/* The tick a P25 watchdog beat asked for, run here on the decoder thread
-   (dsd_frame_sync_hook_p25_sm_watchdog_service()). 1 when one ran and moved the chain under the hunt: a release to the
-   control channel, a hunt step or a CQPSK retry (the modulation, the symbol profile or a tune). */
+/* A P25 tick inside the hunt moved the chain (frame_sync_watchdog_tick.c): the hunt hands back at once with no sync, as
+   a read that left for a queued command does, and the engine's next call starts on the new carrier with the tuning
+   generation and the decode time taken afresh. No no-carrier pass: nothing was lost, the receiver moved. */
 static int
-frame_sync_p25_watchdog_tick_moved_chain(dsd_opts* opts, dsd_state* state) {
-    const int rf_mod = state->rf_mod;
-    const int sps_idx = state->sps_hunt_idx;
-    const int sps = state->samplesPerSymbol;
-    const uint64_t last_request = dsd_trunk_tuning_last_request();
-    if (!dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state)) {
-        return 0;
-    }
-    return state->rf_mod != rf_mod || state->sps_hunt_idx != sps_idx || state->samplesPerSymbol != sps
-           || dsd_trunk_tuning_last_request() != last_request;
-}
-
-/* The hunt's checkpoint: the beat's tick runs here, and when it, or one a hunt read ran since, moved the chain, nothing of
-   the window is worth matching: the hunt drops its history and starts its context over in place, as a CQPSK trial's
-   handback does, with no no-sync return, which would run a no-carrier pass. Returns 1 when it did. */
-static int
-frame_sync_service_p25_watchdog(frame_sync_runtime_ctx* rt, dsd_opts* opts, dsd_state* state) {
-    const int in_read = frame_sync_take_p25_watchdog_moved_chain();
-    if (!frame_sync_p25_watchdog_tick_moved_chain(opts, state) && !in_read) {
-        return 0;
-    }
+frame_sync_hand_back_after_tick(dsd_state* state) {
+    state->input_interrupted = 1;
     frame_sync_history_drop(state);
-    frame_sync_runtime_init(rt, opts, state);
-    return 1;
+    return DSD_SYNC_NONE;
 }
 
 int
@@ -5978,7 +5964,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     const time_t now = dsd_decode_time();
     const double nowm = dsd_decode_now_mono_s();
-    frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
+    frame_sync_chain_mark entry;
+    frame_sync_chain_mark_take(&entry, state);
+    if (frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state)) {
+        /* Nothing read yet: the handler's consumption is the next call's to note. */
+        return frame_sync_hand_back_after_tick(state);
+    }
     frame_sync_apply_cli_mod_lock(opts, state);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     frame_sync_p25p1_mod_compare_note(opts, state);
@@ -5987,8 +5978,6 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
-    /* A tick a read ran before this call is behind the context just built. */
-    (void)frame_sync_take_p25_watchdog_moved_chain();
     /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
     frame_sync_history_resume(&rt, state);
 
@@ -6000,8 +5989,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
-            if (frame_sync_service_p25_watchdog(&rt, opts, state)) {
-                continue;
+            /* A P25 watchdog beat's tick runs here, on the decoder thread (frame_sync_watchdog_tick.c). */
+            if (frame_sync_service_p25_watchdog(opts, state)) {
+                frame_sync_sps_hunt_mark_return(state);
+                return frame_sync_hand_back_after_tick(state);
             }
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);

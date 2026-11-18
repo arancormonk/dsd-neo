@@ -122,13 +122,25 @@ typedef struct {
 /** @brief The hunt profile at @p index; an out-of-range index yields the 4800/4 default. */
 const frame_sync_sps_profile* frame_sync_sps_profile_for_index(int index);
 
-void frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
-/** A P25 watchdog beat's tick, run in place inside a hunt read waiting on a quiet input (frame_sync_watchdog_tick.c).
- * Decoder thread. */
-void frame_sync_service_p25_watchdog_in_read(dsd_opts* opts, dsd_state* state);
-/** Whether a tick a hunt read ran in place moved the chain since the last call: the hunt's next checkpoint then starts
- * its context over. Clears it. Decoder thread. */
-int frame_sync_take_p25_watchdog_moved_chain(void);
+/** The decoder's own P25 tick, once a decode second while P25 is active (getFrameSync()'s entry). 1 when it ran one. */
+int frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
+
+/** What a P25 tick inside the hunt could move under it (frame_sync_watchdog_tick.c): the modulation, the symbol
+ * profile, and the newest tune request. Decoder thread. */
+typedef struct {
+    int rf_mod;
+    int sps_hunt_idx;
+    int samples_per_symbol;
+    uint64_t last_request;
+} frame_sync_chain_mark;
+
+void frame_sync_chain_mark_take(frame_sync_chain_mark* mark, const dsd_state* state);
+/** 1 when the chain moved since @p mark: the modulation or the symbol profile changed, or a tune request begun since
+ * may have moved the receiver (one refused or deferred before it moved counts not). */
+int frame_sync_chain_moved(const frame_sync_chain_mark* mark, const dsd_state* state);
+/** A P25 watchdog beat's tick, on the decoder thread, in the hunt: 1 when one ran and moved the chain, and the hunt
+ * hands back at once with no sync (the caller sets dsd_state::input_interrupted). */
+int frame_sync_service_p25_watchdog(dsd_opts* opts, dsd_state* state);
 void frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
 int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 int frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state);

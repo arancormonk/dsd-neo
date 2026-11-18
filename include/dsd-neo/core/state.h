@@ -1074,7 +1074,8 @@ typedef struct {
 typedef enum {
     /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended; or a hunt read
        on a live RTL stream that came back idle (DSD_RTL_READ_IDLE) gave way to a queued command or a put-off
-       publication (issue #834). The engine loop clears it at its next pass. */
+       publication (issue #834); or a P25 tick inside the hunt moved the chain under it (a retune, a new symbol
+       profile), and the hunt handed back. The engine loop clears it at its next pass. */
     DSD_INTERRUPT_NONE = 0,
     /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
        stands erasures in while the search runs. */
