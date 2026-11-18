@@ -590,8 +590,9 @@ does.
     heading field does not stop the row: that field becomes unknown.
   - A report the [receive filters](#receive-filters-and-service-names) reject; a report in several parts (DMR and P25
     data packets, an NXDN data call, an L3Harris Part A and B, a TETRA concatenated SDS) whose parts were heard across
-    a retune or a trunk scan switch (an NMEA packet's sentences and a TETRA location report's notice are then left out
-    of the event log and History too); an NXDN GPS report not bound to the checked data header that opened it; an
+    a retune, a trunk scan switch or a change of P25 phase on the carrier (an NMEA packet's sentences, a P25 location
+    service packet's text and notice, and a TETRA location report's notice are then left out of the event log and
+    History too); an NXDN GPS report not bound to the checked data header that opened it; an
     L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart); a TETRA
     concatenated SDS whose parts name no one addressed party.
   - A report shorter than its fields: a UDT NMEA report whose pad nibbles leave less than its format's 80 (short) or

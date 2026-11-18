@@ -966,6 +966,20 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         return status;
     }
 
+    /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through it,
+       which takes the current one. The header's CRC and the blocks' are separate checks: neither shows the two were
+       heard together across a retune, a trunk-scan switch or a change of P25 phase. A packet whose header was heard on
+       another reception than the receiver is on now stages nothing, in either branch below, and gives no notice, as
+       the NMEA parser withholds such a packet whole (issue #800, fail closed). */
+    const dsd_position_origin* origin = state->p25_mdpu_origin.valid ? &state->p25_mdpu_origin : NULL;
+    if (origin != NULL && !dsd_position_origin_matches(state, origin)) {
+        DSD_FPRINTF(stderr, " P25 Location Service: payload withheld (reception changed);");
+        state->dmr_lrrp_gps[0][0] = '\0';
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
+        status.data_notice_emitted = 1;
+        return status;
+    }
+
     uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
     DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
     dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
@@ -980,9 +994,6 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         // --dmr-tg-key-csv lookup treat this address as one.
         state->dmr_data_target_is_group[slot] = 0;
         state->dmr_data_checked_group[slot] = 0;
-        /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through
-           it. */
-        const dsd_position_origin* origin = state->p25_mdpu_origin.valid ? &state->p25_mdpu_origin : NULL;
         status.data_notice_emitted =
             nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin) != 0U;
     } else {

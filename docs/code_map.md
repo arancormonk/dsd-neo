@@ -2686,7 +2686,10 @@ suite runs under this compiler.
     takes neither branch (`p25_handle_sap48_location_data()`, fail closed): a damaged first octet makes an NMEA report
     read as text, and the service's text can hold a position in any form, so its payload is never printed, staged or
     kept as text or GPS; its notice says `P25 Location Service: payload withheld (CRC ERR);` (the raw MPDU dump stays
-    with `-Z`; test `CORE_NMEA_SENTENCE`). The sentences and the report are read
+    with `-Z`; test `CORE_NMEA_SENTENCE`). Nor does one whose MDPU header was heard on another reception than the one
+    the receiver is on now (`p25_mdpu_origin`: a retune, target switch or change of P25 phase since the header): the
+    header and block CRCs are separate checks, so neither branch stages anything, the packet gives no notice, and the
+    console says `P25 Location Service: payload withheld (reception changed);`. The sentences and the report are read
     from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
     the kept text is bounded).
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data

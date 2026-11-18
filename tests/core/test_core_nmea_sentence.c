@@ -16,6 +16,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -700,37 +701,63 @@ p25_ip_lrrp(void) {
     p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + ip_len + 4U));
 }
 
+/* Issue #800, fail closed: an MDPU's header and its blocks pass separate checks, and neither shows they were heard on
+ * one reception. A packet whose header was heard before a retune or a change of P25 phase gives nothing of its
+ * location payload under the reception after it, in any form: no NMEA or LRRP report, and no location text (a
+ * plain-text location payload, which reads as a position in any form) in a notice, the text staged for one or on
+ * stderr. Heard with no change, each gives its report or text. */
 static void
 test_p25_origin(void) {
     char s[128];
     sentence(s, sizeof s, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
     dsd_position_fix recs[4];
-    for (int lrrp = 0; lrrp <= 1; lrrp++) {
-        for (int retune = 0; retune <= 1; retune++) {
+    for (int kind = 0; kind <= 2; kind++) {           /* 0 NMEA, 1 LRRP over IP, 2 plain location text */
+        for (int change = 0; change <= 2; change++) { /* 0 none, 1 a retune, 2 a change of P25 phase */
             reset_fixture();
+            dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P1_POS);
             dsd_position_origin_capture(&g_opts, &g_state, &g_state.p25_mdpu_origin);
-            if (retune) {
+            if (change == 1) {
                 dsd_trunk_tuning_generation_advance();
+            } else if (change == 2) {
+                dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P2_POS);
+                dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P1_POS);
             }
-            if (lrrp) {
-                p25_ip_lrrp();
+            dsd_test_capture_stderr cap;
+            char out[4096];
+            out[0] = '\0';
+            if (dsd_test_capture_stderr_begin(&cap, "sap48_origin") == 0) {
+                if (kind == 1) {
+                    p25_ip_lrrp();
+                } else {
+                    p25_sap48(kind == 0 ? s : "AT 2230.0000N 04500.0000E", 0);
+                }
+                dsd_test_capture_stderr_end(&cap);
+                CHECK(dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
             } else {
-                p25_sap48(s, 0);
+                CHECK(0);
             }
             const int kept = feed_records(recs, 4);
-            CHECK(kept == (retune ? 0 : 1));
-            CHECK(kept != 1 || recs[0].kind == (lrrp ? DSD_POS_DMR_LRRP : DSD_POS_NMEA));
+            CHECK(kept == (change != 0 || kind == 2 ? 0 : 1));
+            CHECK(kept != 1 || recs[0].kind == (kind == 1 ? DSD_POS_DMR_LRRP : DSD_POS_NMEA));
             CHECK(kept != 1 || recs[0].protocol == DSD_SYNC_P25P1_POS);
-            if (!lrrp && retune) {
-                /* Nothing of a packet that began on another reception goes in under this one: no sentence text, no
-                   NMEA notice, nothing staged for the next notice. */
-                for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
-                    const Event_History* row = &g_history[0].Event_History_Items[i];
-                    CHECK(strstr(row->text_message, "2230") == NULL && strstr(row->gps_s, "2230") == NULL);
-                    CHECK(strstr(row->event_string, "NMEA SRC") == NULL);
-                }
+            if (kind == 1) {
+                continue;
+            }
+            int text_rows = 0;
+            for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+                const Event_History* row = &g_history[0].Event_History_Items[i];
+                text_rows += strstr(row->text_message, "2230") != NULL || strstr(row->gps_s, "2230") != NULL
+                             || strstr(row->event_string, "2230") != NULL;
+                CHECK(change == 0 || strstr(row->event_string, "NMEA SRC") == NULL);
+            }
+            if (change != 0) {
+                /* Nothing of a packet that began on another reception goes in under this one: no sentence or text,
+                   no notice, nothing staged for the next notice. */
+                CHECK(text_rows == 0 && strstr(out, "2230") == NULL);
                 CHECK(strstr(dsd_event_staged_text(&g_state, 0), "2230") == NULL);
                 CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "2230") == NULL);
+            } else {
+                CHECK(text_rows > 0);
             }
         }
     }
