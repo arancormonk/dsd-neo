@@ -162,7 +162,7 @@ PositionModel::gapValue(const Row& row, int role) {
         case GapRole:
         case ShownRole: return true;
         case TimeTextRole: return row.gapTimeKnown ? time_text(row.gapTimeS) : QString();
-        case ReceivedTimeRole: return row.gapTimeKnown ? QVariant(row.gapTimeS) : QVariant();
+        case ReceivedTimeRole: return row.gapTimeKnown ? QVariant(static_cast<double>(row.gapTimeS)) : QVariant();
         case ReceivedClockRole: return row.gapTimeKnown ? QVariant(row.gapClock) : QVariant();
         default: return {};
     }
@@ -467,13 +467,17 @@ PositionModel::placeGap() {
     endInsertRows();
 }
 
-/* The track whose newest report arrived first leaves (anonymous points included). */
+/* An anonymous point leaves before any named track (each anonymous report is a row of its own, so a busy hashed or
+ * unverified source would otherwise push out every radio that has a trail); among them, the one whose newest report
+ * arrived first. */
 void
 PositionModel::evictOldest() {
+    const auto before = [](const Row& a, const Row& b) {
+        return a.anonymous != b.anonymous ? a.anonymous : a.lastArrival < b.lastArrival;
+    };
     int oldest = -1;
     for (int i = 0; i < m_rows.size(); ++i) {
-        const Row& row = m_rows.at(i);
-        if (!row.gap && (oldest < 0 || row.lastArrival < m_rows.at(oldest).lastArrival)) {
+        if (!m_rows.at(i).gap && (oldest < 0 || before(m_rows.at(i), m_rows.at(oldest)))) {
             oldest = i;
         }
     }
@@ -537,6 +541,14 @@ PositionModel::addFix(Row& row, const dsd_position_fix& fix, quint64 arrival, qu
     }
 }
 
+/* @p fix is the last report read: a gap found after it is "missing from" its receive time. */
+void
+PositionModel::noteReceived(const dsd_position_fix& fix) {
+    m_lastRxKnown = fix.rx_time_s > 0;
+    m_lastRxS = fix.rx_time_s;
+    m_lastRxClock = fix.rx_clock;
+}
+
 /* The marks before a report: a break holds for the next point any track takes, a loss shows the gap row now. */
 void
 PositionModel::applyMarks(quint8 gap, Ingest& batch) {
@@ -552,9 +564,7 @@ PositionModel::applyMarks(quint8 gap, Ingest& batch) {
 void
 PositionModel::ingest(const dsd_position_fix& fix, quint8 gap, Ingest& batch) {
     applyMarks(gap, batch);
-    m_lastRxKnown = fix.rx_time_s > 0;
-    m_lastRxS = fix.rx_time_s;
-    m_lastRxClock = fix.rx_clock;
+    noteReceived(fix);
     ++m_arrivals;
     int at = -1;
     QByteArray key;
@@ -643,6 +653,10 @@ PositionModel::handOff() {
         ingest(tapped.fixAt(i), tapped.gapAt(i), batch);
     }
     ingestPage(nullptr, 0, tapped.trailingGap, batch);
+    if (tapped.dropped > 0U) {
+        qInfo("positions: %llu reports received in the background were dropped (the queue was full)",
+              static_cast<unsigned long long>(tapped.dropped));
+    }
     m_read = tapped.read;
     batch.sampleChanged = sample_moved(before, m_read.sample);
     finishBatch(batch);
@@ -669,6 +683,10 @@ PositionModel::clear() {
         const PositionTap::Result tapped = m_tap->stop();
         if (tapped.ran) {
             m_read = tapped.read;
+        }
+        if (tapped.count > 0) {
+            // Read, then dropped by the clear: a later gap's "missing from" time starts after the last of them.
+            noteReceived(tapped.fixAt(tapped.count - 1));
         }
         if (!m_handoffOwed && !m_tap->start(m_read)) {
             qWarning("positions: the background capture could not start");

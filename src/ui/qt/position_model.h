@@ -47,7 +47,8 @@ namespace dsd_qt {
  * VALIDITY_UNKNOWN, decision D11) never extends a trail and never moves the track's current position: it is held apart
  * as the track's newest unknown fix (a hollow marker). A trail breaks (Point::breakBefore) wherever reports may be
  * missing or a run changed: no line is drawn across it. At most kTrackCapacity rows (anonymous ones included) are held;
- * the one whose newest report came first leaves first.
+ * an anonymous point leaves before any named track, and among either the one whose newest report came first leaves
+ * first.
  *
  * Losses: when the view lost reports, the background queue dropped some, or a run ended before its last reports were
  * read, one gap row ("positions may be missing from" timeText) stands where the loss was found, above the tracks that
@@ -253,6 +254,7 @@ class PositionModel : public QAbstractListModel {
     void setCount(int held);
     void readView();
     void handOff();
+    void noteReceived(const dsd_position_fix& fix);
     void applyMarks(quint8 gap, Ingest& batch);
     void ingestPage(const dsd_position_fix* fixes, int n, quint8 gap, Ingest& batch);
     void ingest(const dsd_position_fix& fix, quint8 gap, Ingest& batch);
@@ -266,7 +268,6 @@ class PositionModel : public QAbstractListModel {
     QVector<Row> m_rows;
     int m_count = 0;
     QHash<QByteArray, quint64> m_trackIds; /* typed source -> track id */
-    quint64 m_nextId = 1;
     quint64 m_nextOrder = 1;
     quint64 m_arrivals = 0;
     quint64 m_breakEpoch = 0;

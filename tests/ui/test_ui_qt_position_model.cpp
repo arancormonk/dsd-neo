@@ -342,6 +342,27 @@ test_caps() {
     f.model.poll();
     CHECK(track_of(f.model, 1000U) != nullptr && track_of(f.model, 1000U)->trail.size() == 1);
     CHECK(role(f.model, 0, "sourceId").toUInt() == 1000U);
+
+    // Anonymous points leave before any named track: a flood of hashed reports keeps every named radio, however long
+    // ago it reported, and the anonymous points cycle among themselves.
+    const int namedBefore = f.model.count();
+    std::vector<dsd_position_fix> hashed;
+    for (int i = 0; i < 3; ++i) {
+        dsd_position_fix h = fix_of(0U, i, kT0 + 400 + i);
+        h.flags = DSD_POS_FLAG_SOURCE_HASHED;
+        hashed.push_back(h);
+    }
+    publish(s, hashed, sample_of(s, 0, kT0, true));
+    f.model.poll();
+    // The first anonymous point had to evict a named track (no anonymous one yet); the next two evicted anonymous ones.
+    int anonymous = 0;
+    for (const PositionModel::Row& row : f.model.rows()) {
+        anonymous += row.anonymous ? 1 : 0;
+    }
+    CHECK(namedBefore == PositionModel::kTrackCapacity && f.model.count() == PositionModel::kTrackCapacity);
+    CHECK(anonymous == 1);
+    CHECK(track_of(f.model, 7U) != nullptr && track_of(f.model, 5000U) != nullptr);
+    CHECK(f.model.rows().first().anonymous && f.model.rows().first().current.lat_e7 == kLat + 2);
 }
 
 /* A loss breaks every trail there and shows one gap row (at the top, with the time of the last report read); a later
@@ -413,6 +434,19 @@ test_clear() {
     f.model.poll();
     CHECK(!f.model.backgroundCaptureRunningForTest());
     CHECK(f.model.count() == 1 && track_of(f.model, 9U) != nullptr && track_of(f.model, 8U) == nullptr);
+
+    // A clear while away drops what the tap read; a later loss is "missing from" the last of those, not from before.
+    set_app_state(Qt::ApplicationHidden);
+    publish(s, {fix_of(10U, 0, kT0 + 13)}, sample_of(s, 0, kT0, true));
+    f.model.waitForBackgroundPollForTest();
+    f.model.clear();
+    set_app_state(Qt::ApplicationActive);
+    f.model.poll();
+    CHECK(f.model.count() == 0);
+    publish(s, run_of(11U, DSD_POSITION_FEED_CAPACITY + 1, kT0 + 100), sample_of(s, 0, kT0, true));
+    f.model.poll();
+    CHECK(gap_rows(f.model) == 1);
+    CHECK(role(f.model, f.model.rowForTrack(0U), "receivedTime").toLongLong() == kT0 + 13);
 }
 
 /* System fixes age on the wall clock, also after the run stops; the filter shows what is young enough. */
