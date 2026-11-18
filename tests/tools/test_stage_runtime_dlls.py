@@ -197,6 +197,19 @@ class StageRuntimeDlls(unittest.TestCase):
         calls = normalized((self.tools / "calls.log").read_text(encoding="utf-8")).splitlines()
         self.assertIn(f"dumpbin /DEPENDENTS {self.target}", calls)
 
+    def test_every_visual_cpp_runtime_dll_is_staged(self):
+        # The runtime DLLs whose names carry a suffix come with the Visual C++ redistributable, not with Windows: a
+        # build machine has them in System32, a clean Windows does not.
+        runtime = ["MSVCP140_ATOMIC_WAIT.dll", "MSVCP140_CODECVT_IDS.dll", "VCRUNTIME140_THREADS.dll"]
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", runtime + ["KERNEL32.dll"]))
+        for name in runtime + ["KERNEL32.dll"]:
+            (self.system32 / name).write_bytes(pe_image(b"system"))
+            self.respond("dumpbin", name, out=dumpbin_report(name, ["KERNEL32.dll"]))
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        self.assertEqual([name for name in self.staged() if name.endswith(".dll")], sorted(runtime))
+
     def test_dumpbin_report_without_dependencies_is_valid(self):
         self.tool("dumpbin")
         self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", []))

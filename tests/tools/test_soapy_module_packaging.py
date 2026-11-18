@@ -356,6 +356,13 @@ foreach ($pair in @(@('airspyhf.dll', 'airspyhf_set_hf_att'), @('airspyhf.dll', 
                     @('airspyhf.dll', 'airspyhf_set_hf_agc'))) {
     $result['imports'][$pair[0] + ':' + $pair[1]] = Test-DumpbinImport -Text $text['imports'] -Dll $pair[0] -Function $pair[1]
 }
+$result['kinds'] = [ordered]@{}
+foreach ($name in 'KERNEL32.dll', 'ucrtbase.dll', 'mfc42.dll', 'msvcp60.dll', 'msvcrt.dll', 'api-ms-win-crt-heap-l1-1-0.dll',
+                  'ext-ms-win-ntuser-uicontext-ext-l1-1-0.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.dll',
+                  'VCRUNTIME140_THREADS.dll', 'MSVCP140.dll', 'msvcp140_2.dll', 'MSVCP140_ATOMIC_WAIT.dll',
+                  'MSVCP140_CODECVT_IDS.dll', 'concrt140.dll', 'vcomp140.dll', 'mfc140u.dll', 'msvcp140d.dll') {
+    $result['kinds'][$name] = Get-DllKind -Name $name
+}
 $result | ConvertTo-Json -Depth 5 -Compress
 """
 
@@ -596,6 +603,11 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(list(result["probe_messages"]), ["airspy", "airspyhf", "hackrf", ""])
         self.assertEqual(result["dependents"], ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll",
                                                 "WS2_32.dll"])
+        system = ("KERNEL32.dll", "ucrtbase.dll", "mfc42.dll", "msvcp60.dll", "msvcrt.dll")
+        api_sets = ("api-ms-win-crt-heap-l1-1-0.dll", "ext-ms-win-ntuser-uicontext-ext-l1-1-0.dll")
+        self.assertEqual(result["kinds"], {name: "Other" if name in system else "ApiSet" if name in api_sets
+                                           else "Redistributable" for name in result["kinds"]})
+        self.assertEqual(len(result["kinds"]), 18)
         self.assertEqual(result["imports"], {
             "airspyhf.dll:airspyhf_set_hf_att": True, "airspyhf.dll:airspyhf_set_hf_lna": False,
             "SoapySDR.dll:airspyhf_set_hf_lna": True, "airspyhf.dll:Import": False,
@@ -799,6 +811,15 @@ class SoapyReleaseScripts(unittest.TestCase):
                     path.write_bytes(saved)
                 self.assertEqual(rc, 1, output)
                 self.assertIn(message, output)
+        # A Visual C++ runtime DLL the tree lacks, which the build machine's System32 happens to hold: a clean Windows
+        # does not have it.
+        (windows / "System32/MSVCP140_ATOMIC_WAIT.dll").write_bytes(b"MZ redistributable")
+        self.report["dependents"]["SoapySDR.dll"].append("MSVCP140_ATOMIC_WAIT.dll")
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("SoapySDR.dll -> MSVCP140_ATOMIC_WAIT.dll", output)
+        self.report["dependents"]["SoapySDR.dll"].remove("MSVCP140_ATOMIC_WAIT.dll")
         # A dependency report that is not about an image (an object file named like a DLL).
         self.report["types"] = {"hackrf.dll": "COFF OBJECT"}
         self.write_report(tools)

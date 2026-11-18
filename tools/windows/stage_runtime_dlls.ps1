@@ -218,8 +218,6 @@ $normalizedDirs = $normalizedDirs |
     ForEach-Object { $_.Trim().TrimEnd('\', '/') } |
     Select-Object -Unique
 
-$ignoreNameRegex = '^(?i)(api-ms-win-|ext-ms-).+\.dll$'
-$allowSystemCopyRegex = '^(?i)(vcruntime|msvcp|concrt|vcomp)[0-9]+(_[0-9]+)?\.dll$'
 
 $queue = New-Object 'System.Collections.Generic.Queue[string]'
 $visited = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -236,7 +234,8 @@ while ($queue.Count -gt 0) {
 
     $deps = Get-DependentDllNames -BinaryPath $current -DumpbinPath $dumpbin -ObjdumpPath $objdump
     foreach ($dll in $deps) {
-        if ($dll -match $ignoreNameRegex) {
+        $kind = Get-DllKind -Name $dll
+        if ($kind -eq 'ApiSet') {
             continue
         }
 
@@ -265,7 +264,9 @@ while ($queue.Count -gt 0) {
             $isSystem32 = $sourcePath.StartsWith($system32, [System.StringComparison]::OrdinalIgnoreCase)
         }
 
-        if ($isSystem32 -and ($dll -notmatch $allowSystemCopyRegex)) {
+        # A Windows DLL stays where Windows keeps it; a Visual C++ runtime DLL is
+        # copied even from System32, since a clean Windows lacks it (Get-DllKind).
+        if ($isSystem32 -and $kind -ne 'Redistributable') {
             continue
         }
 

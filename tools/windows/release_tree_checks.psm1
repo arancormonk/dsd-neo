@@ -112,6 +112,31 @@ function Find-SoapyLoadError {
     return $null
 }
 
+# How a release treats a DLL a binary imports, shared by the staging and the checks:
+#   ApiSet           an API set name (api-ms-win-*, ext-ms-*), resolved by Windows itself;
+#   Redistributable  a Visual C++ runtime DLL (vcruntime140*.dll, msvcp140*.dll,
+#                    concrt140, vccorlib140, vcomp140, vcamp140, mfc140*, and their
+#                    debug and Unicode builds), which comes
+#                    with the Visual C++ redistributable, never with Windows, so the
+#                    release carries it in bin\ even when the build machine's System32
+#                    holds a copy;
+#   Other            anything else: a Windows DLL when it is in System32, otherwise a
+#                    library the release carries.
+function Get-DllKind {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if ($Name -match '^(?i)(api-ms-win-|ext-ms-).+\.dll$') {
+        return 'ApiSet'
+    }
+    if ($Name -match '^(?i)(vcruntime|msvcp|concrt|vccorlib|vcomp|vcamp|mfcm?)[0-9]{3}[a-z]*(_[a-z0-9_]+)?\.dll$') {
+        return 'Redistributable'
+    }
+    return 'Other'
+}
+
 # Whether the file is a PE image Windows can load (an executable or a DLL), from its
 # own headers: the MZ header, the PE signature it points to, the image flag in the COFF
 # header and a PE32 or PE32+ optional header. An object file has none of these, though
@@ -282,5 +307,5 @@ function Invoke-IsolatedProcess {
 }
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
-    Find-SoapyLoadError, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Test-PeImage, Test-DumpbinImageReport,
+    Find-SoapyLoadError, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Test-PeImage, Test-DumpbinImageReport,
     Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess

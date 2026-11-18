@@ -36,8 +36,6 @@ $Modules = @{ airspy = 'airspySupport.dll'; airspyhf = 'airspyhfSupport.dll'; ha
 $Libraries = @{ airspy = 'airspy.dll'; airspyhf = 'airspyhf.dll'; hackrf = 'hackrf.dll' }
 $ProbeMessages = Get-SoapyProbeMessages
 $NoMatch = Get-SoapyNoMatchMessage
-$RuntimeDllRegex = '^(?i)(vcruntime|msvcp|concrt|vcomp)[0-9]+(_[0-9]+)?\.dll$'
-$ApiSetRegex = '^(?i)(api-ms-win-|ext-ms-).+\.dll$'
 
 function Resolve-Dumpbin {
     $command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
@@ -244,10 +242,12 @@ function Test-LoadPath {
     $binaries = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
     foreach ($binary in @($binaries | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
         foreach ($name in @(Get-ImageDependents $binary.FullName)) {
-            if ($name -match $ApiSetRegex -or (Test-Path -LiteralPath (Join-Path $bin $name))) {
+            $kind = Get-DllKind -Name $name
+            if ($kind -eq 'ApiSet' -or (Test-Path -LiteralPath (Join-Path $bin $name))) {
                 continue
             }
-            if ($name -notmatch $RuntimeDllRegex -and (Test-Path -LiteralPath (Join-Path $system32 $name))) {
+            # The runner's System32 holds the Visual C++ redistributable; a user's may not.
+            if ($kind -eq 'Other' -and (Test-Path -LiteralPath (Join-Path $system32 $name))) {
                 continue
             }
             $missing.Add("$($binary.Name) -> $name")
