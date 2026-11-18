@@ -178,6 +178,23 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
     return failures, info
 
 
+def select_cases(names, sets, hangtimes, all_legs):
+    """The (name, skip-silent, hangtime, decoder set) cases a run covers. A filter that names no call, set or leg is
+    refused (SystemExit), so a misspelled one or a combination outside the default legs never passes having run
+    nothing."""
+    unknown = [name for name in names if name not in CALLS] + [s for s in sets or () if s not in SETS]
+    if unknown:
+        raise SystemExit(f"FAIL: unknown call or decoder set: {', '.join(unknown)}")
+    if all_legs:
+        legs = [(s, t, skip) for s in sets or SETS for t in hangtimes or (1, 2) for skip in (False, True)]
+    else:
+        legs = [leg for leg in LEGS if (not sets or leg[0] in sets) and (not hangtimes or leg[1] in hangtimes)]
+    if not legs:
+        raise SystemExit("FAIL: --sets and --hangtime select none of the default legs; add --all-legs to run every set "
+                         "at every hangtime given")
+    return [(name, skip, hangtime, decoder_set) for decoder_set, hangtime, skip in legs for name in names]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("host")
@@ -191,11 +208,11 @@ def main():
     names = args.names or list(CALLS)
     hangtimes = [int(value) for value in args.hangtime.split(",")] if args.hangtime else None
     sets = args.sets.split(",") if args.sets else None
-    if args.all_legs:
-        legs = [(s, t, skip) for s in sets or SETS for t in hangtimes or (1, 2) for skip in (False, True)]
-    else:
-        legs = [leg for leg in LEGS if (not sets or leg[0] in sets) and (not hangtimes or leg[1] in hangtimes)]
-    cases = [(name, skip, hangtime, decoder_set) for decoder_set, hangtime, skip in legs for name in names]
+    cases = select_cases(names, sets, hangtimes, args.all_legs)
+    if not Path(args.host).is_file():
+        parser.error(f"no replay host at {args.host}")
+    if not fixtures.is_dir():
+        parser.error(f"no fixture directory at {fixtures}")
     failed = 0
     with tempfile.TemporaryDirectory(prefix="dsd-y-call-hold-") as temporary:
         root = Path(temporary)

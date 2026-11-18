@@ -26562,6 +26562,17 @@ if(Python3_Interpreter_FOUND)
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
     set_tests_properties(TOOLS_ANALOG_AUDIO_OUT_CHECK PROPERTIES TIMEOUT 60)
+    # tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD) refuses a selection that runs
+    # nothing: filters outside the default legs, an unknown set or call, a missing host
+    # or fixture directory. Stdlib only; runs no host.
+    add_test(
+        NAME TOOLS_Y_CALL_HOLD_CHECK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_y_call_hold_check.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(TOOLS_Y_CALL_HOLD_CHECK PROPERTIES TIMEOUT 60)
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.
