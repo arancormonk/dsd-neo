@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -1824,6 +1825,7 @@ test_staged_low_rate_pcm(void) {
                                                                             && opts->input_upsample_prev_valid == 1);
     rc |= expect_true("staged: and the input reads on", pipe_next(opts) == 501);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_resampler_reset(&opts->input_resampler); /* the staged resampler's FIR, as the input's close frees it */
 
     dsd_pcm_stream_close(opts->audio_in_stdin);
     opts->audio_in_stdin = NULL;
