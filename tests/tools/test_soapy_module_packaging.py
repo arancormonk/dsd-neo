@@ -1063,14 +1063,16 @@ class SoapyReleaseScripts(unittest.TestCase):
         for label, break_shell, words in cases:
             with self.subTest(case=label):
                 break_shell()
-                rc, output, stage = self.stage(tools, build, installed, windows)
-                self.assertEqual(rc, 1, output)
-                for word in words:
-                    self.assertIn(word, output)
-                self.assertFalse((stage / "bin/VCRUNTIME140.dll").exists(), output)
-                self.shell = dict(shell)
-                self.write_cache(build, self.toolset)
-                shutil.rmtree(stage, ignore_errors=True)
+                try:
+                    rc, output, stage = self.stage(tools, build, installed, windows)
+                    self.assertEqual(rc, 1, output)
+                    for word in words:
+                        self.assertIn(word, output)
+                    self.assertFalse((stage / "bin/VCRUNTIME140.dll").exists(), output)
+                finally:
+                    self.shell = dict(shell)
+                    self.write_cache(build, self.toolset)
+                    shutil.rmtree(self.work / "dist/dsd-neo-msvc", ignore_errors=True)
         # A cache that spells the toolset's folder with backslashes, as on Windows, names the same compilers.
         cache = build / "CMakeCache.txt"
         cache.write_text(cache.read_text().replace(f"{self.toolset}/bin/Hostx64/x64/",
