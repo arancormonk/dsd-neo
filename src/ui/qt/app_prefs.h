@@ -146,7 +146,7 @@ class AppPrefs : public QObject {
     Q_PROPERTY(QString mapTileAttribution READ mapTileAttribution WRITE setMapTileAttribution NOTIFY mapTilesChanged)
     Q_PROPERTY(int mapAgeFilter READ mapAgeFilter WRITE setMapAgeFilter NOTIFY mapAgeFilterChanged)
     /* {latitude, longitude, zoom} of the map's view, or {} when none is saved. The map writes it only while its view
-     * owes nothing to the device's own position (MapScreen.qml); AppPrefs only keeps what it is given. */
+     * owes nothing to the device's own position (MapViewKeeper.qml); AppPrefs only keeps what it is given. */
     Q_PROPERTY(QVariantMap mapViewport READ mapViewport WRITE setMapViewport NOTIFY mapViewportChanged)
 
   public:

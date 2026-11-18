@@ -747,9 +747,11 @@ says **Live position needs precise location.**
 
 The map remembers, on this phone only, whether tiles are on, the tile server and its attribution, the age filter and
 the area you last looked at. None of these go into a backup, and a restore leaves them as they are. The saved area is
-never one centred on you: once Locate me, Follow my position or **Show every radio** has used your dot, the map saves
-no area for the rest of that visit, and closing it goes back to the last area it saved. Following a radio is never
-saved. Tracks are kept in memory only; History rows keep their own position.
+never one centred on you: once Locate me, Follow my position or **Show every radio** has used your dot, or the map
+first opened around you, the map saves no area for the rest of that visit. Closing it then goes back to the last area
+it saved, or to the whole world when it saved none. So with a saved location less than a day old and no area saved
+yet, the map opens on the radios and you each time. Following a radio is never saved. Tracks are kept in memory
+only; History rows keep their own position.
 
 ## Backup and restore
 
@@ -2139,7 +2141,8 @@ librtlsdr's, libusb's and dsd-neo's own rtl/usb error lines, and the service's
 (`usb_claim_interface error -1`): a record that is wholly one of those producers' fixed
 lines is exempt from the key-option rule. So are the numbers in signed measurements and
 settings, but only as fields of the producer's own text, with its label before them
-(`Tuner error set to -5 ppm.`, `TX Offset: -25;`, an LRRP `Lat: -32.12345`): a number
+(`Tuner error set to -5 ppm.`, `TX Offset: -25;`; a decoded position's `Lat:` field passes this rule too, but
+the position redaction then drops its whole record): a number
 is never exempt for its shape or its unit, since `-19 ppm` is also option `-1` with key
 `9`. A record that echoes a command line (`args:`, `argv`, `cmd`, a quoted option) gets
 no exemption at all.

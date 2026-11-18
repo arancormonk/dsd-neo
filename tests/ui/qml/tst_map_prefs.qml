@@ -231,11 +231,53 @@ Item {
             compare(Object.keys(prefs.mapViewport).length, 0, "and keeps nothing");
         }
 
+        // Close while following a live fix that is not the saved one: letting the lease go moves the dot back to
+        // the saved fix, and that must not re-centre the camera after the close put the view back. With and without
+        // animation, on the host that runs the live feed.
+        function closeWhileFollowingLive(reduced) {
+            testContext.useLifecycleHost(true);
+            testContext.setLocationSupported(true);
+            testContext.useAppPrefs(true);
+            Ui.Theme.reducedMotion = reduced;
+            testContext.pushPosition({source: 1001, lat: -30.0, lon: -60.0, label: "Engine 7"});
+            restart();
+            canvas().centerOn(savedPlace.latitude, savedPlace.longitude, savedPlace.zoom);
+            tryVerify(function () { return sameView(prefs.mapViewport, savedPlace.latitude, savedPlace.longitude, savedPlace.zoom); }, 2000);
+            locate();
+            item("mapLocate").activate();
+            verify(canvas().followDevice, "following the device");
+            testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 2000,
+                                                  lat: 25.0, lon: 47.0, accuracyM: 5, fixAtMs: savedSystems.realtimeNowMs()});
+            tryVerify(function () { return item("mapLocator").live; }, 2000, "the live fix is in use");
+            tryVerify(function () { return near(canvas().centerLatitude, 25.0, 0.5); }, 2000, "the camera follows it");
+            close();
+            wait(reduced ? 50 : 600);
+            verify(sameView(canvasView(), savedPlace.latitude, savedPlace.longitude, savedPlace.zoom), "back on the saved view: " + JSON.stringify(canvasView()));
+            verify(sameView(prefs.mapViewport, savedPlace.latitude, savedPlace.longitude, savedPlace.zoom), "nothing written: " + JSON.stringify(prefs.mapViewport));
+            reopen();
+            canvas().panBy(-5, 0);
+            verify(near(prefs.mapViewport.latitude, savedPlace.latitude, 0.01), "the next visit keeps a view from the saved one: " + JSON.stringify(prefs.mapViewport));
+            loader.visible = false;
+            loader.active = false;
+            testContext.useLifecycleHost(false);
+            testContext.setLocationSupported(true);
+            testContext.useAppPrefs(true);
+        }
+        function test_06_close_while_following_a_live_fix() {
+            closeWhileFollowingLive(true);
+        }
+        function test_07_close_while_following_a_live_fix_animated() {
+            closeWhileFollowingLive(false);
+        }
+
         // A "Show on map" pin centres on a History row's fix, which is not the device's: the view is kept.
         function test_05_a_pin_view_is_kept() {
             restart();
             screen.showPin({uid: "row-1", label: "Engine 7", position: {latitude: -12.5, longitude: 33.0}});
-            verify(sameView(prefs.mapViewport, -12.5, 33.0, canvas().zoom), JSON.stringify(prefs.mapViewport));
+            // The pin sits below the chips (MapView.topInset), so the view's centre is a little north of it.
+            var shown = canvasView();
+            verify(near(shown.latitude, -12.5, 0.1) && near(shown.longitude, 33.0, 1e-5), JSON.stringify(shown));
+            verify(sameView(prefs.mapViewport, shown.latitude, shown.longitude, shown.zoom), JSON.stringify(prefs.mapViewport));
         }
     }
 }

@@ -16718,6 +16718,10 @@ Qt Quick frontend (`src/ui/qt`):
   `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
   `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
   `doImport()` clears them.
+- Sheet room (issue #800): `ModalSheet.bottomInset` (default 0) is room at the bottom the panel stays out of, as if
+  the sheet ended there, for something drawn over the dim that must stay readable (the map's attribution chip).
+  `availableHeight` (the sheet less the inset, above the keyboard) is what the panel centres in and what
+  `maximumHeight` is taken from, so the inset is lost once, not twice. Every other sheet leaves it at 0, unchanged.
 - Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
   `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
   field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
@@ -18097,7 +18101,8 @@ Qt Quick frontend (`src/ui/qt`):
     `TeardownStage("map tile threads")` right after `engine.reset()`, and a `qAddPostRoutine` on every platform)
     joins what ends in time and releases only an old libcurl stuck in a name lookup. `validTemplate()`: `https://`, a
     host without braces or userinfo, each of `{z}{x}{y}` once, no other braces, at most 2048 B filled; `templateHost()`
-    gives the host (with port) the settings sheet names. The template and the tile URLs are never logged or stored.
+    gives the host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL;
+    the template is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
     Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
     epochs, backoff, Retry-After, UA, https only, the exit join).
   - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as
@@ -18144,31 +18149,45 @@ Qt Quick frontend (`src/ui/qt`):
     in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). Labels never
     overlap: emergencies first, then the selected track, then the freshest; the List has every name. While a new
     zoom's tiles load, earlier zooms' tiles in view stand in (at most 64). The item holds no gesture state: the screen's
-    handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `centerOnTrack()`,
-    `centerOnDevice()`, `centerOn()`, `trackAt()`, `markerPoint()`, `pointFor()` (the History pin). `followTrackId`
+    handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
+    `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
+    the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
+    of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
+    puts its target in the middle of the part below it (`belowTopInset()`). `fitPadding` is label room at the text size
+    (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId`
     and `followDevice` re-centre on every change; a pan ends either. `cameraUsedDevicePosition` turns true once the
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
     saved-view rule below reads it. Tile loading stops at once (not at the next polish, which a hidden window never
     gets) when the app goes Hidden/Suspended, the item hides or leaves its window, or `active` goes false (the List).
     Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the software picture, pan reuse across the wrap, background
     stop).
-  - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills, the status column, the control column of
-    48 px buttons, the attribution chip kept above the detail sheet), `MapList.qml` (the List), `MapPositionSheet.qml`
+  - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
+    tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
+    what is followed, tile trouble, location notices) that `topInset` follows, the control column of 48 px buttons,
+    the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
+    `ModalSheet.bottomInset`), `MapList.qml` (the List), `MapPositionSheet.qml`
     (a marker's, row's or pin's detail sheet), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
     and Follow my position), `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and
     `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has
     `mapPaper`, `mapTileInk`, `mapGrid`, `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable
     `reducedMotion`, fed by `DecoderHost::reducedMotion` (Android: `ValueAnimator.areAnimatorsEnabled()`, read in
     `refreshPresentation()`; desktop false): with it the camera jumps (`cameraDurationMs` 0, else 250 ms).
-  - Tiles: off until "Load map tiles" (the empty state's or the prompt's) or the Map settings switch, and the prompt
-    and the settings name the host the viewed area goes to. The attribution ("© OpenStreetMap contributors") is always
+  - Tiles: off until "Load map tiles" (the prompt's, or the empty state's once the prompt is set aside) or the Map
+    settings switch, and the prompt and the settings name the host the viewed area goes to. The prompt's × sets it
+    aside for the app's run (`tilesPromptDismissed`, in memory, not a pref: the screen is kept between visits). The
+    attribution ("© OpenStreetMap contributors") is always
     visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`). Tile
     trouble is a quiet chip, never a modal.
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
     refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
     still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow
-    on, precise only ("Live position needs precise location." otherwise). A live fix moves the dot and the camera,
-    nothing else. Desktop has no location: the button is hidden.
+    on, precise only ("Live position needs precise location." otherwise). On Android an Item stays visible while the
+    app is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended is away, Inactive is
+    not, as the feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`: the lease goes while
+    the app is away and comes back on return with follow on; the feed's own state slot runs first and finds no lease
+    held, so the platform feed starts once. A live fix moves the dot and the camera, nothing else. Desktop has no
+    location: the button is hidden.
   - Navigation: `mainRoot.mapOpen`, a `Loader` built at the first open and kept (its view, tile source and the List's
     place survive a close), declared after the session tools so it covers idle and session History. Its guard joins
     `callRecordingsOpen` at the six sites that block auto-start and the session tools under it. Entries: the session
@@ -18176,8 +18195,11 @@ Qt Quick frontend (`src/ui/qt`):
     session, so kept tracks stay reachable after Stop) and "Show on map" in the History/Listen/Monitor detail sheet
     (`historyShowOnMap`, `HistoryDetailSheet.showMap`, false in Signal search; only for a row with a position). "Show on
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
-    row is still logged and its screen shows, else the focus goes back to that screen; a close the app makes (an
-    incoming document) reopens nothing. Stop keeps the map open. The pin is the row's saved fix
+    row is still logged and its screen shows; when the row has left the log the focus goes to the History list
+    (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
+    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
+    `mapReturn.focus` and Back gives it the focus again. A close the app makes (an incoming document) reopens nothing.
+    Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
     without one); `position_kind_text.h` names a report format in the same words on the map and on the pin.
@@ -18197,8 +18219,14 @@ Qt Quick frontend (`src/ui/qt`):
     on, follow off then zoom, follow off then fit, close, restart, a first fit with the device, the pin).
   - Accessibility: the canvas is `Accessible.ignored`; the List is its complete equivalent (every mark, each state in
     words, the same sheet and Follow), detached while hidden (`KeepPlace`), its row names paced (`SpeechPacer`,
-    `Navigation.speechPeriodMs`), rows updated in place. The sheet's ages are `LiveText`. Every map action has a
-    button. Tests: `tst_map_screen.qml`, `tst_main_map.qml` (navigation), `tst_map_view.qml` (pixels),
+    `Navigation.speechPeriodMs`), rows updated in place. An unnamed radio is its bare ID everywhere (List, sheet title,
+    map label), so the words match the label. The drawn History pin is not a node either: its equivalents are the
+    `mapPinChip` ("Details") on the map and `mapPinRow` leading the List (a Button named "Saved position from History:
+    <name>", described by its received date and time, format and states), both through `openPinDetails()`. The detail
+    sheet follows #782: fixed slots (5 state lines, 13 detail lines) behind integer-model Repeaters, shown by `visible`
+    and renamed in place; the ages are read apart (`ages`) by its three `LiveText` lines only, so a tick renames them
+    and rebuilds nothing. Every map action has a button. Tests: `tst_map_screen.qml`, `tst_main_map.qml` (navigation),
+    `tst_map_view.qml` (pixels),
     `qml_a11y/tst_a11y_map.qml` (churn while fixes arrive).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs

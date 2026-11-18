@@ -60,13 +60,19 @@ Item {
                 // places the camera (it fits the radios).
                 if (!keeper.screen.cameraPlaced)
                     keeper.screen.cameraPlaced = keeper.restore();
-            } else if (keeper.map.cameraUsedDevicePosition && !keeper.restore()) {
-                // Nothing saved to go back to: the whole world, and the next
-                // visit places the camera again.
-                keeper.map.zoom = keeper.map.minimumZoom;
-                keeper.map.centerLatitude = 0;
-                keeper.map.centerLongitude = 0;
-                keeper.screen.cameraPlaced = false;
+            } else if (keeper.map.cameraUsedDevicePosition) {
+                // Following the device ends first, whichever handler of this
+                // close runs first: the dot moving back from a live fix to the
+                // saved one must not re-centre the camera after the restore.
+                keeper.map.followDevice = false;
+                if (!keeper.restore()) {
+                    // Nothing saved to go back to: the whole world, and the
+                    // next visit places the camera again.
+                    keeper.map.zoom = keeper.map.minimumZoom;
+                    keeper.map.centerLatitude = 0;
+                    keeper.map.centerLongitude = 0;
+                    keeper.screen.cameraPlaced = false;
+                }
             }
         }
     }

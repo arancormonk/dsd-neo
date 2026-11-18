@@ -100,11 +100,12 @@ does not have to be fetched again. The cache is not part of the app's backup fil
 can clear it at any time.
 
 The app saves on your device whether tiles are on, the tile server you entered and its
-attribution, the age filter you chose, and the area you last looked at, so the map opens where
-you left it. That saved area is never one your own position shaped: once Locate me, Follow
-my position or Show every radio has used your position in a visit, the map saves no area until
-you close it, and it then goes back to the last area it saved. None of these are part
-of the app's backup file. A tile server address you enter can hold a key, so the app does not
+attribution, the age filter you chose, and the area you last looked at, so the map can open
+where you left it. That saved area is never one your own position shaped: once Locate me,
+Follow my position or Show every radio has used your position in a visit, or the map first
+opened around you, the map saves no area until you close it. It then goes back to the last
+area it saved, or shows the whole world when it saved none. None of these are part of the
+app's backup file. A tile server address you enter can hold a key, so the app does not
 write it to its diagnostics log.
 
 ## Location
@@ -145,8 +146,9 @@ to do it, under that provider's terms. The app asks for location only while you 
 never in the background.
 
 The last location the app got for Use my location, the nearby-site chooser, Listen's Nearest
-order and the map's Locate me (latitude, longitude, accuracy and time) is saved on your device so it can pick
-nearby sites and order your saved systems by distance. It stops being used after 24 hours
+order and the map's Locate me (latitude, longitude, accuracy and time) is saved on your device
+so it can pick nearby sites, order your saved systems by distance and show your dot on the
+map. It stops being used after 24 hours
 and is removed the next time the app checks it, while it is running or when you open it
 again. The app does not write it to its diagnostics log, and it is not part of the app's own
 backup file. If you deny location, ZIP code, browse and system ID searches all still work.
@@ -186,7 +188,8 @@ lines from the log's saved files as well, not only from what the app shows. It c
 device's maker and model, its Android version, and what the app decoded, such as talkgroups
 and radio IDs. If you turn on raw message printing (the `-Z` option, off by default), the log
 also keeps the raw bytes of received messages, and those can still hold a position in coded
-form. The log leaves your device only if you copy or share it yourself.
+form. The map's tile server address is never written to it. The log leaves your device only
+if you copy or share it yourself.
 
 ## Permissions
 

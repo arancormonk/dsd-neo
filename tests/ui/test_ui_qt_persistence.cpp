@@ -1517,7 +1517,8 @@ test_map_prefs() {
         expect("map: the same view again is no change", views == 1);
         prefs.setMapViewport(view(10.0, 20.0, 4.0));
         expect("map: the newest view wins", views == 2 && near(prefs.mapViewport(), view(10.0, 20.0, 4.0)));
-        for (int i = 0; i < 40 && !prefs_file().contains(QStringLiteral("map/viewport")); ++i) {
+        // Up to 5 s for the 1 s timer, so a slowed sanitizer run does not flake.
+        for (int i = 0; i < 100 && !prefs_file().contains(QStringLiteral("map/viewport")); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             QCoreApplication::processEvents();
         }
