@@ -15529,10 +15529,12 @@ Qt Quick frontend (`src/ui/qt`):
       Capacity Plus / EDACS, then a full system) must be equal; a weaker one joins a stronger one of its family, and the
       row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
-    - Fold (`fold_payload()`, `fill_identity()`): a fragment gives the row its texts, position, sender scope, protocol
-      and target and source texts only when it names the same radio (`fragment_identity_compatible()`): an anonymous
-      fragment never enriches a named row, one naming another radio keeps its texts to itself, and the texts anonymous
-      fragments gave are dropped when the row learns its radio. The reception scope folds by strength from any
+    - Fold (`fold_payload()`, `fill_identity()`, `foldRow()`): a fragment gives the row its texts, position, sender
+      scope, protocol, target and source texts, source number and source label only when it names the same radio
+      (`fragment_identity_compatible()`): an anonymous fragment never enriches a named row, and one naming another
+      radio (another number, callsign or sender system; also an update found by its fragment, which is not merged
+      again) keeps all of them to itself and leaves the row's own as they were. The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
       unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's

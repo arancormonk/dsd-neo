@@ -75,6 +75,10 @@ void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
 
+/** @brief Whether fragment @p row is of @p existing's radio, so it may give the row its texts, position and source
+ * label: one protocol family and sender system, no other source number or text, and not anonymous beside a named row. */
+bool fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+
 /** @brief Whether two rows' known identities agree: protocol family, reception and sender system, source text. */
 bool rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 

@@ -1734,8 +1734,12 @@ void
 CallHistoryModel::foldRow(Row& existing, const Row& row) {
     // A row keeps one radio and that radio's name. The merge never folds two known sources, but an update found by
     // its fragment (ingestRow()) is not merged again: a fragment of unknown source that joined one radio's row and
-    // then learned another radio keeps the row's radio, so it must not bring that other radio's name.
-    if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
+    // then learned another radio keeps the row's radio, so it must not bring that other radio's number or name.
+    // Another radio is another number, another callsign (D-STAR and M17 rows have no number) or another sender
+    // system, the rule the row's texts and position follow (fold_payload()). Judged before anything below fills in
+    // the row's identity.
+    const bool sameRadio = fragment_identity_compatible(existing, row);
+    if (sameRadio) {
         merge_source_label(existing, row);
     }
     // Before the source below: what the fragment may give depends on the radio the row named until now.
@@ -1768,7 +1772,7 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     existing.enc = existing.enc || row.enc;
     existing.emergency = existing.emergency || row.emergency;
-    if (existing.src == 0) {
+    if (existing.src == 0 && sameRadio) {
         existing.src = row.src;
     }
     drop_anonymous_gps_of_named(existing);

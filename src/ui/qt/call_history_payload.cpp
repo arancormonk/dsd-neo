@@ -67,26 +67,6 @@ row_names_source(const CallHistoryModel::Row& row) {
     return row.src != 0 || !row.sourceText.simplified().isEmpty();
 }
 
-/**
- * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
- * protocol family and sender system, and the same radio.
- *
- * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
- * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios.
- */
-bool
-fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    if (!call_history_protocols_compatible(existing.protocol, row.protocol)
-        || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
-        return false;
-    }
-    if (row_names_source(existing) && !row_names_source(row)) {
-        return false;
-    }
-    return !(existing.src != 0 && row.src != 0 && existing.src != row.src)
-           && !raw_texts_differ(existing.sourceText, row.sourceText);
-}
-
 /** @brief Where a row's GPS unit stands in the order that picks a merged row's one (call_history_gps_adopts()). */
 CallHistoryPositionKey
 gps_key(const CallHistoryModel::Row& row) {
@@ -188,6 +168,28 @@ position_to_json(const CallHistoryModel::Position& pos, QJsonObject& obj) {
 }
 
 } // namespace
+
+/**
+ * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
+ * protocol family and sender system, and the same radio.
+ *
+ * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
+ * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios. The
+ * row's source label follows the same rule (foldRow()): a fragment of another radio, by number, callsign or sender
+ * system, never names the row.
+ */
+bool
+fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (!call_history_protocols_compatible(existing.protocol, row.protocol)
+        || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
+        return false;
+    }
+    if (row_names_source(existing) && !row_names_source(row)) {
+        return false;
+    }
+    return !(existing.src != 0 && row.src != 0 && existing.src != row.src)
+           && !raw_texts_differ(existing.sourceText, row.sourceText);
+}
 
 /** @brief Keep the newest kMaxSessionOrdinals of @p rings, by ordinal. */
 void
@@ -369,13 +371,14 @@ take_message(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
  */
 void
 fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    // A fragment of another radio names nothing on the row (foldRow()), so the row keeps what its fragments gave it.
+    if (!fragment_identity_compatible(existing, row)) {
+        return;
+    }
     if (!row_names_source(existing) && row_names_source(row)) {
         existing.messageText.clear();
         existing.gpsText.clear();
         existing.pos = CallHistoryModel::Position();
-    }
-    if (!fragment_identity_compatible(existing, row)) {
-        return;
     }
     if (call_history_fold_adopts(!existing.messageText.isEmpty(),
                                  provenance(existing.msgWhen, existing.msgSeq, existing.msgSlot),

@@ -5551,6 +5551,98 @@ test_fragment_texts_follow_the_rows_radio(void) {
     }
 }
 
+/* B2/B3: an update of an absorbed fragment that later names another radio keeps the row's source label, as it keeps the
+ * row's radio and fix: another callsign on a D-STAR row (no source number to tell them apart), and the same number from
+ * another sender system. */
+void
+test_fragment_label_follows_the_rows_radio(void) {
+    const time_t when = 1754702100;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* first = ring.commit(0, 0U, 0U, when, when + 3, "CQCQCQ");
+        first->systype = DSD_SYNC_DSTAR_HD_POS;
+        DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "N0ONE");
+        with_gps(first, "DPRS: one", 225000000, 450000000, 3U)->pos.kind = DSD_POS_DSTAR_DPRS;
+        Event_History* absorbed = ring.commit(0, 0U, 0U, when + 4, when + 7, "CQCQCQ");
+        absorbed->systype = DSD_SYNC_DSTAR_HD_POS;
+        model.refresh(ring.state);
+        expect("label: the anonymous D-STAR fragment joins N0ONE's call",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("N0ONE"));
+        // The core fills the absorbed fragment later with another caller.
+        DSD_SNPRINTF(absorbed->src_str, sizeof(absorbed->src_str), "%s", "N0TWO");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: another callsign does not rename the row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("N0ONE")
+                   && detail_of(model, 0) == QStringLiteral("DPRS: one"));
+    }
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* named = ring.commit(0, 80211U, 8211U, when + 20, when + 23);
+        DSD_SNPRINTF(named->s_name, sizeof(named->s_name), "%s", "Radio A");
+        with_gps(named, "GPS: radio A", 225000000, 450000000, 3U);
+        named->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        named->pos.scope.a = 901U;
+        named->pos.scope.b = 9U;
+        Event_History* absorbed = ring.commit(0, 80211U, 0U, when + 24, when + 27);
+        model.refresh(ring.state);
+        expect("label: the source-less fragment joins radio A's call",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Radio A"));
+        // The same number, learned later from another system.
+        absorbed->source_id = 8211U;
+        DSD_SNPRINTF(absorbed->s_name, sizeof(absorbed->s_name), "%s", "Radio B");
+        with_gps(absorbed, "GPS: radio B", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 902U;
+        absorbed->pos.scope.b = 9U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: the same number of another system does not rename the row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Radio A")
+                   && detail_of(model, 0) == QStringLiteral("GPS: radio A"));
+    }
+    resetStorage();
+    {
+        // A nameless call heard on one system, whose absorbed fragment later names a radio of another: the row names
+        // no radio of the other system, by number or by name, and keeps its own fix.
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* nameless = ring.commit(0, 80212U, 0U, when + 40, when + 43);
+        with_gps(nameless, "GPS: nameless", 225000000, 450000000, 3U);
+        nameless->pos.anonymous = 1U;
+        nameless->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        nameless->pos.scope.a = 901U;
+        nameless->pos.scope.b = 9U;
+        Event_History* absorbed = ring.commit(0, 80212U, 0U, when + 44, when + 47);
+        model.refresh(ring.state);
+        expect("label: two nameless fragments are one call", model.count() == 1);
+        absorbed->source_id = 8212U;
+        DSD_SNPRINTF(absorbed->s_name, sizeof(absorbed->s_name), "%s", "Radio B");
+        with_gps(absorbed, "GPS: radio B", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 902U;
+        absorbed->pos.scope.b = 9U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: a radio of another system does not name the nameless row",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 0U
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          != QStringLiteral("Radio B")
+                   && detail_of(model, 0) == QStringLiteral("GPS: nameless"));
+    }
+}
+
 /* 2.7: a merged row shows the fix of its newest fragment by run and rev, never by stamps. The run after a backward wall
  * clock step still orders by rev; a later run's fix wins over an earlier run's higher rev, read live or as a backlog; a
  * reload keeps the run ordinals, so a ring read again after a relaunch is the same run. */
@@ -6022,6 +6114,7 @@ main(int argc, char** argv) {
     test_callsign_callers_stay_apart();
     test_identity_placeholders_are_no_raw_identity();
     test_named_row_drops_anonymous_position();
+    test_fragment_label_follows_the_rows_radio();
     test_textual_destinations_under_one_service_stay_apart();
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
