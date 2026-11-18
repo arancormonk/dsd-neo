@@ -12453,6 +12453,9 @@ Private per-protocol modules worth knowing about:
   talker either (fail closed, `p25_sm_identity_claim::source_placeholder`): the call may keep the assignment's talker
   for display, as before, but that talker loses its checked flag in the assignment and in the record, so a dispatcher
   or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
+  identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
+  user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
+  than reading as an omitted field. The
   verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
   flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
   starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names

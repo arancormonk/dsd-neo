@@ -280,8 +280,9 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     };
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     if (began >= 0) {
-        p25_sm_note_call_identity(state, slot, (uint32_t)subscriber_source, (uint32_t)target,
-                                  kind == DSD_CALL_KIND_GROUP_VOICE,
+        // The identity tracking reads the source field as received: a special address there is evidence (it names no
+        // radio, so the talker kept for display loses its verdict), never an omitted field.
+        p25_sm_note_call_identity(state, slot, (uint32_t)source, (uint32_t)target, kind == DSD_CALL_KIND_GROUP_VOICE,
                                   crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U);
     }
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);

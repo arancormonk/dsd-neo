@@ -1076,6 +1076,32 @@ test_special_address_source(void) {
     }
 }
 
+/* Issue #800, fail closed: a checked SACCH MAC_SIGNAL voice user of the call's talkgroup whose source field holds a
+ * special address names no radio, and takes the source's verdict away like any other message does: the call keeps
+ * SRC_A for display, and the next report is anonymous in the feed and in -L until a checked message names a radio. */
+static void
+test_special_address_voice_user(void) {
+    static const uint32_t specials[] = {0xFFFFFCU, 0xFFFFFDU, 0xFFFFFEU, 0xFFFFFFU};
+    for (size_t i = 0; i < sizeof specials / sizeof specials[0]; i++) {
+        fixture f;
+        fixture_open(&f);
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "sacch voice user from %06X", (unsigned)specials[i]);
+        group_grant(&f, SRC_A, 1);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "special voice user: before", SRC_A, TG_A, 1);
+        sacch_group_voice_user(&f, TG_A, specials[i]);
+        expect_true("special voice user: call kept", slot0_call_names(TG_A, SRC_A, f.st));
+        send_gps(&f, 0);
+        expect_report(&f, tag, 0U, 0U, 0);
+        sacch_group_voice_user(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "special voice user: named again", SRC_A, TG_A, 1);
+        fixture_close(&f);
+    }
+}
+
 /* Issue #800: identity a checked message names after the reception changed is bound to the new reception. A trunked
  * assignment held from system 0x1A3 survives a change of the checked network identity to 0x1A4; the next checked
  * MAC_PTT names the talker (another one, or the grant's again) with its own verdicts under the new reception, so the
@@ -1270,6 +1296,7 @@ main(void) {
     test_special_address_source();
     test_retune_rebinds_identity();
     test_reception_change_reuse();
+    test_special_address_voice_user();
     test_anonymous_phase2_report_stays_off_phase1_row();
     dsd_decode_clock_use_system();
     if (g_fail) {
