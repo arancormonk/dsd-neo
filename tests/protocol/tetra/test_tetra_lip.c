@@ -428,7 +428,8 @@ test_undecoded(void) {
 }
 
 /* A concatenated message (PID 12, or 140 with SDS-TL) whose payload PID is 10 is a LIP PDU once complete. Its parts
- * must come from one reception: a carrier boundary between them refuses the position (the notice still goes in). */
+ * must come from one reception: across a carrier boundary between them, nothing of the message is published under the
+ * reception the receiver is on now, neither its position nor its notice. */
 static void
 test_concatenated(void) {
     const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
@@ -446,15 +447,19 @@ test_concatenated(void) {
         c = sds_concat_part(SENDER_SSI, transport, 5, 1, lip.bits, 40);
         send_sds(&s, &c, 1, 0);
         const Event_History* row = notice_row(&s);
-        assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
         dsd_position_fix rec[2];
         if (moved) {
-            assert(strstr(s.log, "short location report; Position: (refused)") != NULL);
-            assert(row->pos.valid == 0U && feed_since(&s, 0, rec, 2) == 0);
+            assert(strstr(s.log, "src_SSI=4242 dst_SSI=257 withheld (reception changed)") != NULL);
+            for (int i = 0; i < 255; i++) {
+                const Event_History* any = &s.state->event_history_s[0].Event_History_Items[i];
+                assert(strstr(any->event_string, "SDS SRC: 4242") == NULL && any->pos.valid == 0U);
+            }
+            assert(feed_since(&s, 0, rec, 2) == 0);
             char lfile[512];
             read_lfile(&s, lfile, sizeof lfile);
             assert(lfile[0] == '\0');
         } else {
+            assert(strstr(row->event_string, "SDS SRC: 4242; TGT: 257; LIP: short location report;") != NULL);
             assert(strstr(s.log, "short location report; LIP: 22.50000") != NULL);
             assert(row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->source_id == SENDER_SSI);
             assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].source_id == SENDER_SSI);

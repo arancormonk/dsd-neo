@@ -2594,7 +2594,10 @@ suite runs under this compiler.
     `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
     and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
     `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
-    retune, target switch or reception change came in between. `-L` rows: LRRP and LOCN through
+    retune, target switch or reception change came in between. Such a report publishes nothing of its own under the
+    reception the receiver is on now: no text, no staged GPS and no notice of its own (`nmea_sentence_checker()` and
+    `sds_lip_report()` test the origin before they stage anything; the other producers stage only what admission
+    admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
     `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
     always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
     Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. The records keyed to a call epoch or

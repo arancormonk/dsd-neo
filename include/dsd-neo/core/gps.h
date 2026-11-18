@@ -169,8 +169,11 @@ enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
  * @param packet_verified 1 when the packet's own check passed: then the position and the packet's source and
  *        destination (the slot's dmr_lrrp_source / dmr_lrrp_target, qualified by dmr_data_checked_group) may be
  *        published; otherwise no position and no sentence text is kept.
- * @param origin The reception the packet's first fragment was heard on (a multi-fragment packet), or NULL.
- * @return 1 when at least one sentence passed its checksum, else 0.
+ * @param origin The reception the packet's first fragment was heard on (a multi-fragment packet), or NULL. When the
+ *        receiver is no longer on it (dsd_position_origin_matches()), nothing of the packet is published: no position,
+ *        no sentence text and no notice.
+ * @return 1 when at least one sentence passed its checksum (the packet is handled, its notice emitted or withheld),
+ *         else 0.
  */
 uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                               int packet_verified, const struct dsd_position_origin* origin);

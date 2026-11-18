@@ -1529,6 +1529,14 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     nmea_packet pkt;
     DSD_MEMSET(&pkt, 0, sizeof(pkt));
     nmea_packet_scan(bytes, n, &pkt);
+    if (pkt.checked > 0 && origin != NULL && !dsd_position_origin_matches(state, origin)) {
+        /* The packet began on another reception (a retune or a trunk scan switch since its header): nothing of it, its
+           sentences' text and its notice included, belongs to the one the receiver is on now. */
+        DSD_FPRINTF(stderr, " NMEA Withheld (reception changed);");
+        state->dmr_lrrp_source[slot_idx] = 0U;
+        state->dmr_lrrp_target[slot_idx] = 0U;
+        return 1U;
+    }
     if (pkt.checked > 0 && packet_verified == 1) {
         DSD_FPRINTF(stderr, "%s", pkt.text);
     } else if (pkt.checked > 0) {

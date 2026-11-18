@@ -530,6 +530,17 @@ test_p25_origin(void) {
             CHECK(kept == (retune ? 0 : 1));
             CHECK(kept != 1 || recs[0].kind == (lrrp ? DSD_POS_DMR_LRRP : DSD_POS_NMEA));
             CHECK(kept != 1 || recs[0].protocol == DSD_SYNC_P25P1_POS);
+            if (!lrrp && retune) {
+                /* Nothing of a packet that began on another reception goes in under this one: no sentence text, no
+                   NMEA notice, nothing staged for the next notice. */
+                for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+                    const Event_History* row = &g_history[0].Event_History_Items[i];
+                    CHECK(strstr(row->text_message, "2230") == NULL && strstr(row->gps_s, "2230") == NULL);
+                    CHECK(strstr(row->event_string, "NMEA SRC") == NULL);
+                }
+                CHECK(strstr(dsd_event_staged_text(&g_state, 0), "2230") == NULL);
+                CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "2230") == NULL);
+            }
         }
     }
 }

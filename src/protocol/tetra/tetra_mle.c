@@ -1492,6 +1492,13 @@ static void
 sds_lip_report(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits, int nbits,
                const dsd_position_origin* origin) {
     const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
+    if (origin != NULL && !dsd_position_origin_matches(ctx->state, origin)) {
+        /* The message's first part came from another reception (a retune or a trunk scan switch since): nothing of it,
+           its notice included, belongs to the one the receiver is on now. */
+        DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u withheld (reception changed)\n", ctx->cc,
+                    d->calling.ssi, (unsigned)dst);
+        return;
+    }
     sds_lip lip;
     DSD_MEMSET(&lip, 0, sizeof lip);
     sds_lip_decode(ctx, d, dst, bits, nbits, origin, &lip);
