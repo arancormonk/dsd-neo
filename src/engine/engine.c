@@ -3654,6 +3654,7 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     opts->dPMR_next_part_of_superframe = 0;
     /* M17: the LSF from LICH chunks, the packet and the signature. */
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_signature_advertised = 0;
@@ -3916,6 +3917,7 @@ dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
 static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;

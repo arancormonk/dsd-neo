@@ -12,7 +12,9 @@ Implemented decode coverage:
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD,
   or an IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an
-  LSF that failed its CRC still sets up the stream, but its META is not read.
+  LSF that failed its CRC still sets up the stream, but its META is not read. A stream's LSD counts only when all six
+  of its LICH pieces were heard in one transmission, on one tuning, and on the same side of the moment the stream was
+  confirmed; one put together across a retune or another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
   topic, once per transmission and META content. A coordinate of -2^23 (never used by the specification) is no position,
   a bearing above 359 degrees reads `Bearing: Invalid;` with the speed kept, and radius code 7 counts as "more than 64

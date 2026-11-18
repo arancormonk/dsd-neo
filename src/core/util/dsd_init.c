@@ -1486,6 +1486,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
 
     //M17 Storage
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;

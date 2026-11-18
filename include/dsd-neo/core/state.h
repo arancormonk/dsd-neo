@@ -658,6 +658,21 @@ typedef struct dstar_text_assembly {
     dstar_sd_binding bind;
 } dstar_text_assembly;
 
+/**
+ * The M17 LSF being assembled from LICH chunks (src/protocol/m17/m17.c, issue #800): which chunks it holds (bit n: chunk
+ * n of six) and what its first chunk was heard under -- the transmission (the slot 0 ACTIVE M17 call's epoch, 0 none;
+ * an LSF frame, a packet frame, an EOT and the carrier's end begin another and empty the assembly), whether the
+ * transmission was confirmed (dsd_state::m17_confirmed) and the reception (dsd_position_origin_capture()). A chunk heard
+ * when any of them has changed resets the assembly; only one holding all six chunks under one binding, its CRC passed,
+ * names a call or carries a position.
+ */
+typedef struct m17_lich_assembly {
+    uint8_t held;
+    uint8_t confirmed;
+    uint64_t call_epoch;
+    dsd_position_origin origin;
+} m17_lich_assembly;
+
 typedef struct {
     uint8_t mask;
     char last_alias[40];
@@ -3004,6 +3019,7 @@ struct dsd_state {
 
     //M17 Storage
     uint8_t m17_lsf[360];
+    m17_lich_assembly m17_lich; /* what the LICH chunks in m17_lsf were heard under */
     uint8_t m17_pkt[850];
 
     // Soft symbol buffer for Viterbi decoding (M17, NXDN, etc.)

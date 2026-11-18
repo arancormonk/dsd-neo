@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "m17_algorithms.h"
+#include "m17_confirm.h"
 #include "m17_internal.h"
 #include "test_support.h"
 
@@ -891,6 +893,56 @@ test_unbound_lsf_is_not_the_active_calls(void) {
     rig_close(&r);
 }
 
+/* LICH chunks @p first through @p last of the LSF in @p bits, each through the real LICH decoder. */
+static void
+send_lich_chunks(rig* r, const uint8_t bits[LSF_BITS], uint8_t first, uint8_t last) {
+    for (uint8_t chunk = first; chunk <= last; chunk++) {
+        uint8_t content[M17_LICH_CONTENT_BITS];
+        uint8_t encoded[M17_LICH_BITS];
+        DSD_MEMSET(content, 0, sizeof(content));
+        (void)m17_lich_build_content(bits, chunk, content);
+        m17_lich_encode_bits(content, encoded);
+        expect_int("LICH chunk accepted", m17_process_lich(r->state, r->opts, encoded), 0);
+    }
+}
+
+/* Issue #800 (g62-r5): an LSF assembled from LICH chunks is bound to what its first chunk was heard under. A retune (a
+ * completed one advances the reception generation) or the transmission's confirmation between chunks three and four
+ * leaves an LSF whose CRC still passes but whose chunks span two receptions or states: it publishes no position and no
+ * call. The next whole cycle, heard on one reception, does. */
+static void
+test_lich_lsd_bound_to_its_first_chunk(void) {
+    for (int change = 0; change < 2; change++) {
+        rig r;
+        rig_open(&r);
+        uint8_t meta[M17_META_BYTES];
+        uint8_t bits[LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+        (void)build_lsf(bits, packed, 0, 1U, meta);
+        const uint64_t rev = dsd_position_last_rev();
+        send_lich_chunks(&r, bits, 0U, 2U);
+        if (change == 0) {
+            dsd_trunk_tuning_generation_advance();
+        } else {
+            m17_confirm_note_evidence(r.state, M17_EVIDENCE_STRONG);
+        }
+        send_lich_chunks(&r, bits, 3U, 5U);
+        const char* what = change == 0 ? "retune" : "confirmation";
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "LSF across a %s: no position", what);
+        expect_int(label, (long long)(dsd_position_last_rev() - rev), 0);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        DSD_SNPRINTF(label, sizeof label, "LSF across a %s: no call", what);
+        expect_true(label, dsd_call_state_get(r.state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+        send_lich_chunks(&r, bits, 0U, 5U);
+        DSD_SNPRINTF(label, sizeof label, "next whole cycle after a %s: position", what);
+        expect_int(label, (long long)(dsd_position_last_rev() - rev), 1);
+        rig_close(&r);
+    }
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -902,6 +954,7 @@ main(void) {
     test_relaxed_bad_lsf_gives_nothing();
     test_meta_field_ranges();
     test_lich_lsd_position();
+    test_lich_lsd_bound_to_its_first_chunk();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();
