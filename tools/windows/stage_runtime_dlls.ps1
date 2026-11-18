@@ -64,6 +64,15 @@ function Get-DumpbinPath {
     return $null
 }
 
+function Get-ReadobjPath {
+    $cmd = Get-Command 'llvm-readobj' -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Path
+    }
+
+    return $null
+}
+
 function Get-ObjdumpPath {
     $cmd = Get-Command 'llvm-objdump' -ErrorAction SilentlyContinue
     if ($cmd) {
@@ -102,6 +111,54 @@ function Test-ObjdumpReport {
     return $false
 }
 
+# llvm-readobj --coff-imports starts with the file it read and its format.
+function Test-ReadobjReport {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    $expected = $BinaryPath.Replace('\', '/')
+    $file = @($Lines | Where-Object { $_ -match '^File:\s*(.+?)\s*$' -and $Matches[1].Replace('\', '/') -ieq $expected })
+    $format = @($Lines | Where-Object { $_ -match '^Format:\s*COFF-x86-64\s*$' })
+    return ($file.Count -eq 1) -and ($format.Count -eq 1)
+}
+
+# Whether objdump -p shows a delay import directory, which neither GNU nor LLVM objdump
+# decodes: they list only the import table, so a DLL the image delay-loads goes unnamed.
+# Throws when the report has no data directory to tell.
+function Test-ObjdumpDelayImports {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    $entries = @($Lines | Where-Object { $_ -match '^Entry d\s+([0-9A-Fa-f]+)\s+([0-9A-Fa-f]+)\s+Delay Import Directory\s*$' })
+    if ($entries.Count -ne 1) {
+        throw "$Tool printed no Delay Import Directory entry for ${BinaryPath}, so its delay-loaded DLLs are unknown:`n$($Lines -join "`n")"
+    }
+    $fields = $entries[0] -split '\s+'
+    $address = [System.Convert]::ToUInt64($fields[2], 16)
+    $size = [System.Convert]::ToUInt64($fields[3], 16)
+    return ($address -ne 0) -or ($size -ne 0)
+}
+
+# The DLLs an image imports, those it delay-loads included: dumpbin /DEPENDENTS and
+# llvm-readobj --coff-imports list both; objdump -p lists only the import table, so it
+# is used only for an image without delay imports.
 function Get-DependentDllNames {
     param(
         [Parameter(Mandatory = $true)]
@@ -109,6 +166,9 @@ function Get-DependentDllNames {
 
         [Parameter(Mandatory = $false)]
         [string]$DumpbinPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ReadobjPath,
 
         [Parameter(Mandatory = $false)]
         [string]$ObjdumpPath
@@ -122,11 +182,14 @@ function Get-DependentDllNames {
     if ($DumpbinPath) {
         $tool = 'dumpbin'
         $output = & $DumpbinPath /DEPENDENTS $BinaryPath 2>&1
+    } elseif ($ReadobjPath) {
+        $tool = [System.IO.Path]::GetFileNameWithoutExtension($ReadobjPath)
+        $output = & $ReadobjPath --coff-imports $BinaryPath 2>&1
     } elseif ($ObjdumpPath) {
         $tool = [System.IO.Path]::GetFileNameWithoutExtension($ObjdumpPath)
         $output = & $ObjdumpPath -p $BinaryPath 2>&1
     } else {
-        throw 'Neither dumpbin nor objdump could be found; cannot resolve DLL dependencies.'
+        throw 'None of dumpbin, llvm-readobj and objdump could be found; cannot resolve DLL dependencies.'
     }
     $exitCode = $LASTEXITCODE
 
@@ -141,12 +204,23 @@ function Get-DependentDllNames {
         if (-not (Test-DumpbinImageReport -Text $text)) {
             throw "dumpbin printed no dependency report of an image for ${BinaryPath}:`n$text"
         }
+        $names = Get-DumpbinDependents -Text $text
+    } elseif ($ReadobjPath) {
+        if (-not (Test-ReadobjReport -Lines $lines -BinaryPath $BinaryPath)) {
+            throw "$tool printed no COFF import report for ${BinaryPath}:`n$text"
+        }
+        # The Name line of each Import and DelayImport block.
         $names = $lines |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ -match '^[A-Za-z0-9_.+-]+\.dll$' }
+            ForEach-Object {
+                if ($_ -match '^\s+Name:\s*(.+\.dll)\s*$') { $Matches[1] }
+            } |
+            Where-Object { $_ }
     } else {
         if (-not (Test-ObjdumpReport -Lines $lines -BinaryPath $BinaryPath)) {
             throw "$tool printed no PE report for ${BinaryPath}:`n$text"
+        }
+        if (Test-ObjdumpDelayImports -Lines $lines -Tool $tool -BinaryPath $BinaryPath) {
+            throw "${BinaryPath} has delay-loaded DLLs, which $tool cannot list; run from a Visual Studio developer shell (dumpbin) or put llvm-readobj on PATH"
         }
         $names = $lines |
             ForEach-Object {
@@ -198,6 +272,7 @@ $destinationFull = (Resolve-Path $DestinationDir).Path
 $targetFull = (Resolve-Path $TargetBinary).Path
 
 $dumpbin = Get-DumpbinPath
+$readobj = Get-ReadobjPath
 $objdump = Get-ObjdumpPath
 
 $system32 = Join-Path $env:SystemRoot 'System32'
@@ -236,7 +311,7 @@ while ($queue.Count -gt 0) {
     }
     $visited.Add($current) | Out-Null
 
-    $deps = Get-DependentDllNames -BinaryPath $current -DumpbinPath $dumpbin -ObjdumpPath $objdump
+    $deps = Get-DependentDllNames -BinaryPath $current -DumpbinPath $dumpbin -ReadobjPath $readobj -ObjdumpPath $objdump
     foreach ($dll in $deps) {
         $kind = Get-DllKind -Name $dll
         if ($kind -eq 'ApiSet' -or $kind -eq 'Windows') {

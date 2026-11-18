@@ -26196,9 +26196,10 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
-    # tools/windows/stage_runtime_dlls.ps1 under pwsh, with fake dumpbin and objdump
-    # tools. The fakes are POSIX scripts, so this registers off Windows wherever pwsh
-    # is installed; the Windows release jobs run the script with the real dumpbin.
+    # tools/windows/stage_runtime_dlls.ps1 under pwsh, with fake dumpbin, llvm-readobj
+    # and objdump tools. The fakes are POSIX scripts, so this registers off Windows
+    # wherever pwsh is installed; the Windows release jobs run the script with the real
+    # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
         add_test(

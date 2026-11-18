@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Regressions for tools/windows/stage_runtime_dlls.ps1, run under pwsh with fake dumpbin and objdump tools.
+"""Regressions for tools/windows/stage_runtime_dlls.ps1, run under pwsh with fake dumpbin, llvm-readobj and objdump
+tools.
 
 The release jobs stage the DLLs a Windows binary needs with this script. An inspection that failed or printed
 something other than a dependency report used to leave the binary with no dependencies, so nothing was staged and
-the script still succeeded. The fakes print what the real tools print (dumpbin's CRLF report, GNU objdump's
-pei-x86-64 and LLVM objdump's coff-x86-64 headers) and are looked up through PATH as the script looks up the real
-ones.
+the script still succeeded. The fakes print what the real tools print (dumpbin's CRLF report, llvm-readobj's Import
+and DelayImport blocks, GNU objdump's pei-x86-64 and LLVM objdump's coff-x86-64 headers and data directory) and are
+looked up through PATH as the script looks up the real ones.
 """
 
 import os
@@ -77,32 +78,64 @@ def coff_object(tag=b""):
     return struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0) + tag
 
 
-def dumpbin_report(name, dependencies, file_type="DLL"):
+def dumpbin_report(name, dependencies, file_type="DLL", delay_loaded=()):
     """dumpbin /DEPENDENTS output as MSVC prints it, CRLF line endings included."""
     lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0",
              "Copyright (C) Microsoft Corporation.  All rights reserved.", "", "",
              f"Dump of file {name}", "", f"File Type: {file_type}", ""]
     if dependencies:
         lines += ["  Image has the following dependencies:", ""] + [f"    {d}" for d in dependencies] + [""]
+    if delay_loaded:
+        lines += ["  Image has the following delay load dependencies:", ""] + [f"    {d}" for d in delay_loaded] + [""]
     lines += ["  Summary", "", "        1000 .data", "        1000 .pdata", "        3000 .rdata",
               "        1000 .reloc", "        9000 .text", ""]
     return "\r\n".join(lines)
 
 
-def gnu_objdump_report(dependencies):
+# The 16 entries of a PE image's data directory, as GNU and LLVM objdump -p print them.
+DATA_DIRECTORY = ("Export Directory [.edata (or where ever we found it)]", "Import Directory [parts of .idata]",
+                  "Resource Directory [.rsrc]", "Exception Directory [.pdata]", "Security Directory",
+                  "Base Relocation Directory [.reloc]", "Debug Directory", "Description Directory",
+                  "Special Directory", "Thread Storage Directory [.tls]", "Load Configuration Directory",
+                  "Bound Import Directory", "Import Address Table Directory", "Delay Import Directory",
+                  "CLR Runtime Header", "Reserved")
+
+
+def data_directory(delay_loaded):
+    """The data directory as objdump prints it. Neither GNU nor LLVM objdump names a delay-loaded DLL: an image that
+    delay-loads one shows only a non-empty Delay Import Directory (entry d), as lld-link's /delayload output does."""
+    lines = ["The Data Directory"]
+    for index, name in enumerate(DATA_DIRECTORY):
+        rva, size = ("0000000000002008", "00000040") if index == 0xD and delay_loaded else ("0" * 16, "0" * 8)
+        lines.append(f"Entry {index:x} {rva} {size} {name}")
+    return "\n".join(lines) + "\n"
+
+
+def gnu_objdump_report(dependencies, delay_loaded=False):
     imports = "".join(f"\n\tDLL Name: {d}\n\tvma:  Hint/Ord Member-Name Bound-To\n\t5338\t   27  ExitProcess\n"
                       for d in dependencies)
     return ("\n{path}:     file format pei-x86-64\n\nCharacteristics 0x2022\n\texecutable\n\tlarge address aware\n"
-            "\nThe Import Tables (interpreted .rdata section contents)\n"
+            "\n" + data_directory(delay_loaded) + "\nThe Import Tables (interpreted .rdata section contents)\n"
             " vma:            Hint    Time      Forward  DLL       First\n" + imports)
 
 
-def llvm_objdump_report(dependencies):
+def llvm_objdump_report(dependencies, delay_loaded=False):
     imports = "".join(f"\n    DLL Name: {d}\n    vma:  Hint/Ord Member-Name Bound-To\n    0x5338    27  ExitProcess\n"
                       for d in dependencies)
     return ("\n{path}:\tfile format coff-x86-64\nCharacteristics 0x2022\n\texecutable\n\tlarge address aware\n"
-            "\nThe Import Tables:\n  lookup 0000503c time 00000000 fwd 00000000 name 00005990 addr 0000519c\n"
-            + imports)
+            "\n" + data_directory(delay_loaded) + "\nThe Import Tables:\n"
+            "  lookup 0000503c time 00000000 fwd 00000000 name 00005990 addr 0000519c\n" + imports)
+
+
+def llvm_readobj_report(dependencies, delay_loaded=()):
+    """llvm-readobj --coff-imports output: an Import block per DLL, a DelayImport block per delay-loaded one."""
+    imports = "".join(f"Import {{\n  Name: {d}\n  ImportLookupTableRVA: 0x7710\n  ImportAddressTableRVA: 0x6100\n"
+                      f"  Symbol: ExitProcess (27)\n}}\n" for d in dependencies)
+    delayed = "".join(f"DelayImport {{\n  Name: {d}\n  Attributes: 0x1\n  ModuleHandle: 0x3000\n"
+                      f"  ImportAddressTable: 0x3008\n  ImportNameTable: 0x2048\n  BoundDelayImportTable: 0x0\n"
+                      f"  UnloadDelayImportTable: 0x0\n  Import {{\n    Symbol: dep_fn (0)\n"
+                      f"    Address: 0x180001024\n  }}\n}}\n" for d in delay_loaded)
+    return "\nFile: {path}\nFormat: COFF-x86-64\nArch: x86_64\nAddressSize: 64bit\n" + imports + delayed
 
 
 def normalized(text):
@@ -343,6 +376,49 @@ class StageRuntimeDlls(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertEqual([name for name in self.staged() if name.endswith(".dll")], [])
 
+    def test_delay_loaded_dependencies_are_staged(self):
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
+        (self.search / "dep.dll").write_bytes(pe_image(b"dep"))
+        for tool, report in (
+                ("dumpbin", dumpbin_report("dsd-neo.exe", ["a.dll"], delay_loaded=["dep.dll"])),
+                # llvm-readobj on Windows ends its lines with CRLF.
+                ("llvm-readobj", llvm_readobj_report(["a.dll"], delay_loaded=["dep.dll"]).replace("\n", "\r\n"))):
+            with self.subTest(tool=tool):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report)
+                empty = dumpbin_report("x.dll", []) if tool == "dumpbin" else llvm_readobj_report([])
+                for name in ("a.dll", "dep.dll"):
+                    self.respond(tool, name, out=empty)
+                rc, output = self.stage()
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(self.staged(), ["a.dll", "dep.dll", "dlls-manifest.txt"])
+                if tool == "llvm-readobj":
+                    calls = normalized((self.tools / "calls.log").read_text(encoding="utf-8")).splitlines()
+                    self.assertIn(f"llvm-readobj --coff-imports {self.target}", calls)
+
+    def test_objdump_cannot_list_delay_loaded_dependencies(self):
+        # GNU and LLVM objdump -p list only the import table: for an image whose one dependency is delay-loaded they
+        # exit 0, name no DLL and show a non-empty Delay Import Directory. Staging stops rather than stage nothing.
+        (self.search / "dep.dll").write_bytes(pe_image(b"dep"))
+        for tool, report in (("objdump", gnu_objdump_report), ("llvm-objdump", llvm_objdump_report)):
+            with self.subTest(tool=tool):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report([], delay_loaded=True))
+                self.assert_refused([tool, str(self.target), "delay-loaded"])
+            with self.subTest(tool=tool, report="no data directory"):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report([]).replace(data_directory(False), ""))
+                self.assert_refused([tool, str(self.target), "Delay Import Directory"])
+
+    def test_llvm_readobj_report_for_another_file_stops_staging(self):
+        self.tool("llvm-readobj")
+        self.respond("llvm-readobj", "dsd-neo.exe",
+                     out=llvm_readobj_report(["a.dll"]).replace("{path}", str(self.work / "other.exe")))
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
+        self.assert_refused(["llvm-readobj", str(self.target)])
 
 
 if __name__ == "__main__":
