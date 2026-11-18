@@ -730,6 +730,15 @@ uint32_t p25_sm_slot_grant_seq(int slot);
 int p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protocol, p25_sm_published_identity* out);
 
 /**
+ * @brief Whether the state machine's record of the slot's call at @p epoch has withdrawn the talker @p source (issue
+ * #800, fail closed): it names another source, or names @p source without its checked flag as it counts now (a special
+ * address or a non-local source in a later message's source field, a repeated grant naming another talker, a
+ * reception change). Evidence another record keeps of that talker (the Phase 1 voice-user LC record,
+ * p25_p1_lc_attribution) no longer names a report's sender then. 0 when the record holds no identity of that call.
+ */
+int p25_sm_call_source_withdrawn(const dsd_state* state, int slot, uint64_t epoch, uint32_t source);
+
+/**
  * @brief Record an identity a decoded message named for a slot's canonical call (issue #800, spec 2.19).
  *
  * For a message that observes the canonical call itself (a Phase 2 MAC_SIGNAL voice user), after that observation.
@@ -744,10 +753,9 @@ int p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_pr
  * @param target Talkgroup (group) or destination RID (private) the message named; 0 when none.
  * @param is_group 1 for a group call, 0 for a private call.
  * @param checked P25_SM_IDENTITY_CHECKED_* bits: the message's own check (0 when it failed).
- * @param source_nonlocal 1 when @p source is not a complete local address (p25_sm_event_t::source_nonlocal).
  */
 void p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
-                               uint8_t checked, int source_nonlocal);
+                               uint8_t checked);
 
 /**
  * @brief Check whether a voice-user observation re-describes a call that just ended.

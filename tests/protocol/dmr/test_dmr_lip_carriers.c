@@ -136,6 +136,18 @@ send_udt(dsd_opts* opts, dsd_state* state, int corrupt) {
     dmr_block_assembler(opts, state, block, 12, 0x07, 3);
 }
 
+/* send_udt() of a failed report, its console output in @p out. */
+static int
+capture_udt(dsd_opts* opts, dsd_state* state, char* out, size_t cap) {
+    dsd_test_capture_stderr capture;
+    if (dsd_test_capture_stderr_begin(&capture, "lip_carriers_udt") != 0) {
+        return 0;
+    }
+    send_udt(opts, state, 1);
+    dsd_test_capture_stderr_end(&capture);
+    return dsd_test_capture_stderr_read(&capture, out, cap) == 0;
+}
+
 static int
 test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     int failed = 0;
@@ -150,10 +162,18 @@ test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     send_udt(opts, state, 1);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a invalid UDT"));
     CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
-    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11).
+    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11). Its
+    // console line says the position was suppressed and shows no other part of the report (speed, heading, error),
+    // which only -Z prints.
     opts->dmr_crc_relaxed_default = 1;
-    CHECK(truncate_output(path));
-    send_udt(opts, state, 1);
+    for (int payload = 1; payload >= 0; payload--) {
+        opts->payload = payload;
+        CHECK(truncate_output(path));
+        char out[4096];
+        CHECK(capture_udt(opts, state, out, sizeof out));
+        CHECK(strstr(out, "Position: (suppressed; CRC ERR)") != NULL);
+        CHECK((strstr(out, "Spd:") != NULL) == (payload == 1));
+    }
     opts->dmr_crc_relaxed_default = 0;
     const Event_History* failed_notice = &state->event_history_s[0].Event_History_Items[1];
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a relaxed invalid UDT"));
@@ -199,7 +219,16 @@ test_udp(dsd_opts* opts, dsd_state* state, const char* path) {
     for (uint8_t flags = 1U; flags <= 2U; flags++) {
         state->event_crc_invalid[0] = flags;
         CHECK(truncate_output(path));
+        dsd_test_capture_stderr capture;
+        char out[4096];
+        out[0] = '\0';
+        CHECK(dsd_test_capture_stderr_begin(&capture, "lip_carriers_udp") == 0);
         decode_ip_pdu(opts, state, sizeof packet, packet);
+        dsd_test_capture_stderr_end(&capture);
+        CHECK(dsd_test_capture_stderr_read(&capture, out, sizeof out) == 0);
+        // Only that the position was suppressed, none of the report's other fields (they print with -Z).
+        CHECK(strstr(out, "Position: (suppressed;") != NULL && strstr(out, "Spd:") == NULL);
+        CHECK(strstr(out, "Position Error") == NULL);
         CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
         const Event_History* unchecked = &state->event_history_s[0].Event_History_Items[1];
         CHECK(strstr(unchecked->event_string, "LIP SRC: 111;") != NULL);
@@ -484,6 +513,43 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     CHECK(strcmp(active->gps_s, saved) == 0);
     CHECK(strstr(state->dmr_embedded_gps[0], "LIP:") != NULL);
     CHECK(strcmp(state->dmr_embedded_gps[0], inner->gps_s) == 0);
+    return failed;
+}
+
+/* An ICMP Echo Request or Reply carries opaque data, never a quoted datagram: a complete UDP/5017 report from radio 111
+   copied into an echo from radio 999 is no report of 111's. Only the error types (3, 4, 5, 11, 12) quote the invoking
+   datagram; one of them still decodes it (test_icmp_enclosed_report()). */
+static int
+test_icmp_echo_not_decoded(dsd_opts* opts, dsd_state* state, const char* path) {
+    int failed = 0;
+    static const uint8_t echo_types[] = {8U, 0U, 13U};
+    for (size_t i = 0; i < sizeof echo_types; i++) {
+        reset_carrier_state(state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        CHECK(truncate_output(path));
+        uint8_t packet[66] = {0};
+        packet[0] = 0x45;
+        packet[3] = sizeof packet;
+        packet[8] = 64;
+        packet[9] = 1;
+        packet[12] = 10;
+        packet[14] = 3;
+        packet[15] = 231; // 10.0.3.231: src24 = 999.
+        packet[16] = 10;
+        packet[19] = 222;
+        packet[20] = echo_types[i];
+        build_packet(packet + 28);
+        (void)decode_ip_pdu(opts, state, sizeof packet, packet);
+        CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X3 ICMP echo"));
+        dsd_position_feed_meta meta;
+        dsd_position_fix recs[2];
+        CHECK(dsd_position_feed_copy_since(state, 0U, recs, 2U, &meta) == 0);
+        for (int r = 0; r < DSD_EVENT_HISTORY_LEN; r++) {
+            const Event_History* row = &state->event_history_s[0].Event_History_Items[r];
+            CHECK(row->pos.valid == 0U && strstr(row->gps_s, "LIP:") == NULL);
+            CHECK(strstr(row->event_string, "LIP SRC: 111;") == NULL);
+        }
+    }
     return failed;
 }
 
@@ -781,6 +847,7 @@ main(void) {
     }
     failed |= test_truncated_ownership(&opts, &state, path);
     failed |= test_icmp_enclosed_report(&opts, &state, path);
+    failed |= test_icmp_echo_not_decoded(&opts, &state, path);
     failed |= test_udp_mixed_ports(&opts, &state);
     failed |= test_compressed_mixed_ports(&opts, &state);
     failed |= test_udt_nmea_dispatch(&opts, &state, path);

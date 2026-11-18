@@ -62,10 +62,6 @@ struct p25p2_mac_voice_identity {
     int is_group;
     int svc_bits;
     int source_optional;
-    /* An extended voice user (0x21, 0x22) names src by its home SUID: has_suid 1 with its WACN and System ID. */
-    int has_suid;
-    uint32_t suid_wacn;
-    uint32_t suid_sysid;
 };
 
 struct p25p2_iden_update {

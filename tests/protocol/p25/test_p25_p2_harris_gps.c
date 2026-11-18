@@ -1132,13 +1132,13 @@ extended_private_grant(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src) {
     send_mac(f, 0, grant, sizeof grant, 1);
 }
 
-/* Group Voice Channel User - Extended (0x21, TIA-102.BBAD-A Fig 20) of TG_A: the source address @p src and the source
- * SUID @p wacn:@p sys.@p src, as a SACCH MAC_SIGNAL (@p active 0) or in a FACCH MAC_ACTIVE (1). */
+/* Group Voice Channel User - Extended (0x21, TIA-102.BBAD-A Fig 20) of TG_A: the working source address @p src and
+ * the source SUID @p wacn:@p sys.@p unit, as a SACCH MAC_SIGNAL (@p active 0) or in a FACCH MAC_ACTIVE (1). */
 static void
-extended_group_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src, int active) {
+extended_group_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src, uint32_t unit, int active) {
     uint8_t msg[15] = {
         0x21, 0x00, (uint8_t)(TG_A >> 8), (uint8_t)TG_A, (uint8_t)(src >> 16), (uint8_t)(src >> 8), (uint8_t)src};
-    put_suid(&msg[7], wacn, sys, src);
+    put_suid(&msg[7], wacn, sys, unit);
     if (!active) {
         send_sacch_signal(f, msg, 14U);
         return;
@@ -1148,13 +1148,36 @@ extended_group_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src,
     send_facch(f, mac);
 }
 
+/* Unit to Unit Voice Channel User - Extended (0x22, TIA-102.BBAD-A) to UNIT_B: the working source address @p src and
+ * the source SUID @p wacn:@p sys.@p unit, as a SACCH MAC_SIGNAL (@p active 0) or in a FACCH MAC_ACTIVE (1). */
+static void
+extended_private_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src, uint32_t unit, int active) {
+    uint8_t msg[15] = {0x22,
+                       0x00,
+                       (uint8_t)(UNIT_B >> 16),
+                       (uint8_t)(UNIT_B >> 8),
+                       (uint8_t)UNIT_B,
+                       (uint8_t)(src >> 16),
+                       (uint8_t)(src >> 8),
+                       (uint8_t)src};
+    put_suid(&msg[8], wacn, sys, unit);
+    if (!active) {
+        send_sacch_signal(f, msg, 15U);
+        return;
+    }
+    uint8_t mac[18] = {0x80};
+    DSD_MEMCPY(&mac[1], msg, 15U);
+    send_facch(f, mac);
+}
+
 /* Issue #800, fail closed: a source named only by a home SUID is a local radio only when that home is the reception's
  * own system (its checked WACN and System ID). The extended VCH unit-to-unit grant (0xC4) carries the source's SUID
  * alone: from another system, or with the reception's system not known yet, its source is never checked, so the
  * addressless MAC_ACTIVE that follows leaves the next report anonymous (no sender scope, no local radio-list label);
- * from the reception's own system it names the talker. An extended group voice user (0x21) whose SUID is another
- * system's takes the talker's verdict away like a special address, as a SACCH MAC_SIGNAL and inside a MAC_ACTIVE,
- * even naming the unit ID a checked PTT named; one of the reception's own system keeps it. */
+ * from the reception's own system it names the talker. An extended voice user (0x21 group, 0x22 unit to unit) carries
+ * the talker's working source address as well as its home SUID: the working address names the talker on this system,
+ * whatever system the SUID's home is (another, this one, or none known yet) and whatever unit ID it holds, as a SACCH
+ * MAC_SIGNAL and inside a MAC_ACTIVE, so a roaming radio's next report names it. */
 static void
 test_foreign_home_id(void) {
     for (int home = 0; home < 3; home++) {
@@ -1172,23 +1195,35 @@ test_foreign_home_id(void) {
         expect_report(&f, tags[home], home == 1 ? SRC_A : 0U, home == 1 ? UNIT_B : 0U, 0);
         fixture_close(&f);
     }
-    for (int k = 0; k < 4; k++) {
+    static const char* const homes[] = {"another system", "the home system", "no known system"};
+    for (int k = 0; k < 12; k++) {
         const int active = k & 1;
-        const int foreign = (k & 2) == 0;
+        const int private_call = (k & 2) != 0;
+        const int home = k / 4;
         fixture f;
         fixture_open(&f);
-        dsd_rxid_note_p25_network(f.st, HOME_WACN, HOME_SYS);
-        group_grant(&f, SRC_A, 1);
-        mac_ptt(&f, TG_A, SRC_A);
+        if (home != 2) {
+            dsd_rxid_note_p25_network(f.st, HOME_WACN, HOME_SYS);
+        }
+        if (private_call) {
+            private_grant(&f, SRC_B, 1);
+        } else {
+            group_grant(&f, SRC_B, 1);
+        }
+        /* The working address SRC_A; the SUID's unit ID SRC_B. */
+        const uint32_t wacn = home == 1 ? HOME_WACN : FOREIGN_WACN;
+        const uint16_t sys = home == 1 ? (uint16_t)HOME_SYS : (uint16_t)FOREIGN_SYS;
+        if (private_call) {
+            extended_private_voice_user(&f, wacn, sys, SRC_A, SRC_B, active);
+        } else {
+            extended_group_voice_user(&f, wacn, sys, SRC_A, SRC_B, active);
+        }
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof tag, "%s %s, SUID of %s", private_call ? "0x22" : "0x21",
+                     active ? "in MAC_ACTIVE" : "on SACCH", homes[home]);
+        expect_true(tag, slot0_call_names(private_call ? UNIT_B : TG_A, SRC_A, f.st));
         send_gps(&f, 0);
-        expect_report(&f, "0x21: before", SRC_A, TG_A, 1);
-        extended_group_voice_user(&f, foreign ? FOREIGN_WACN : HOME_WACN, foreign ? FOREIGN_SYS : HOME_SYS, SRC_A,
-                                  active);
-        char tag[96];
-        DSD_SNPRINTF(tag, sizeof tag, "0x21 %s from %s", active ? "in MAC_ACTIVE" : "on SACCH",
-                     foreign ? "another system" : "the home system");
-        send_gps(&f, 0);
-        expect_report(&f, tag, foreign ? 0U : SRC_A, foreign ? 0U : TG_A, !foreign);
+        expect_report(&f, tag, SRC_A, private_call ? UNIT_B : TG_A, !private_call);
         fixture_close(&f);
     }
 }

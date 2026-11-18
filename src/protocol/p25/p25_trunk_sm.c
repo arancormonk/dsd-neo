@@ -7668,24 +7668,36 @@ p25_sm_published_identity_names_call(const p25_sm_published_identity* published,
 
 void
 p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
-                          uint8_t checked, int source_nonlocal) {
+                          uint8_t checked) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
     p25_sm_event_t ev = {0};
     ev.src = (int)source;
     ev.identity_checked = checked;
-    ev.source_nonlocal = (uint8_t)(source_nonlocal ? 1U : 0U);
     const p25_sm_identity_claim claim = {
         .source = (source != 0U && p25_source_id_is_subscriber(source)) ? source : 0U,
         .target = target,
         .kind = (uint8_t)(is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
         .checked = p25_sm_event_verdicts(&ev),
-        .source_placeholder = (uint8_t)(p25_source_id_is_placeholder(ev.src) || ev.source_nonlocal),
+        .source_placeholder = p25_source_id_is_placeholder(ev.src),
     };
     p25_sm_slot_ctx_t* slot_ctx = &p25_sm_get_ctx()->slots[slot];
     p25_sm_merge_published_identity(&slot_ctx->published, state, slot, &claim);
     p25_slot_note_voice_user(slot_ctx, state, &claim);
+}
+
+int
+p25_sm_call_source_withdrawn(const dsd_state* state, int slot, uint64_t epoch, uint32_t source) {
+    if (!state || slot < 0 || slot > 1 || epoch == 0U) {
+        return 0;
+    }
+    const p25_sm_published_identity* published = &p25_sm_get_ctx()->slots[slot].published;
+    if (published->epoch != epoch) {
+        return 0;
+    }
+    return published->source != source
+           || (p25_published_verdicts_now(published, state) & (uint8_t)P25_SM_IDENTITY_CHECKED_SOURCE) == 0U;
 }
 
 int

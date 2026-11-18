@@ -1930,8 +1930,11 @@ suite runs under this compiler.
   reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
   quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
   service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
-  decoded;` or `Truncated UDP;`. The compressed path passes the data header's LLIDs as the radios and a
-  NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
+  decoded;` or `Truncated UDP;`. An ICMP message's data is decoded as a datagram only for the error types that quote
+  the invoking datagram (`decode_ip_pdu_icmp_quotes_datagram()`: 3, 4, 5, 11, 12); an Echo Request or Reply (or any
+  other type) carries opaque data, so a report copied into it is never one (test `DMR_LIP_CARRIERS`). The compressed
+  path passes the data header's LLIDs as the radios and a NULL IPv4 header (9361/49198 then print the LLIDs), and
+  appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
@@ -2507,7 +2510,11 @@ suite runs under this compiler.
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
   equal, where it was heard included: slot, tuned frequency, reception scope and label, so the same fix on the other
   slot or another visited network is a new record; kept less than 30 s ago on the decode clock; anonymous sources never
-  fold; 256 tracks, the least recently kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
+  producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
+  takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0
+  with `DSD_POS_FLAG_SLOT_UNKNOWN`, which is never the same place as another report (test
+  `DMR_EMBEDDED_GPS_ATTRIBUTION`). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
   still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
   it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
@@ -2565,8 +2572,13 @@ suite runs under this compiler.
 - API note: position producers (issue #800). Each decoder that reads a position fills one `dsd_position_fix` (its
   `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
   nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
-  gets its GPS text, history position, `-L` row and feed record; a refused or unchecked report prints its fields
-  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Every producer prints
+  gets its GPS text, history position, `-L` row and feed record; a refused report prints its fields without
+  coordinates (`(refused)`), and a report whose check failed or that `-F` accepted as RAS prints only that
+  (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`): its other content (an MNIS LOCN report's text, an LRRP
+  document's time, radius, altitude, speed and track, a LOCN time, a LIP report's motion, error, reason and time, a UDT
+  NMEA report's speed, time and course, an embedded GPS LC's position error) prints only with `-Z`, by one rule
+  (`dsd_gps_report_content_printable()`, `<dsd-neo/core/gps.h>`; tests `DMR_EVENT_CRC`, `DMR_LRRP_CRC_GATING`,
+  `DMR_LIP_CARRIERS`, `DMR_EMBEDDED_GPS_ATTRIBUTION`, `CORE_GPS_LRRP_CRC_GATING`). Every producer prints
   a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
   sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
   before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
@@ -2658,7 +2670,11 @@ suite runs under this compiler.
     0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
     rejected. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
-    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. The sentences and the report are read
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. A SAP 48 packet whose CRC failed (`-F`)
+    takes neither branch (`p25_handle_sap48_location_data()`, fail closed): a damaged first octet makes an NMEA report
+    read as text, and the service's text can hold a position in any form, so its payload is never printed, staged or
+    kept as text or GPS; its notice says `P25 Location Service: payload withheld (CRC ERR);` (the raw MPDU dump stays
+    with `-Z`; test `CORE_NMEA_SENTENCE`). The sentences and the report are read
     from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
     the kept text is bounded).
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
@@ -12468,7 +12484,11 @@ Private per-protocol modules worth knowing about:
   (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
   ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
   a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
-  display (test `P25_P1_HARRIS_GPS`). A link control
+  display (test `P25_P1_HARRIS_GPS`). The LC record also counts only while the state machine's record of the same
+  call has not withdrawn that talker (`p25_sm_call_source_withdrawn()`: it names another source, or that one without
+  its checked flag as it counts now), so any checked message the state machine applies to the call, a repeated grant
+  naming a special address or a non-local source among them, revokes the LC evidence as well (test
+  `P25_P1_HARRIS_GPS` `test_repeat_grant_withdraws_evidence()`). A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
@@ -12480,13 +12500,17 @@ Private per-protocol modules worth knowing about:
   identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
   user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
   than reading as an omitted field. A source that is not a complete local address of the reception is read the same
-  way (`p25_sm_event_t::source_nonlocal`, the `source_nonlocal` argument): its value stays for display, but it is never
-  checked and it takes the source's flag away. That is a unit named only by its home SUID whose WACN and System ID are
-  not the reception's checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is
-  not known): the Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone) and the
-  extended voice users (0x21/0x22, as MAC_SIGNAL and inside MAC_PTT/MAC_ACTIVE, `p25p2_mac_voice_identity::has_suid`);
-  and a Phase 1 voice-user LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A foreign
-  unit's home ID therefore never names a report's sender, a sender scope or a local radio-list label. The
+  way (`p25_sm_event_t::source_nonlocal`): its value stays for display, but it is never checked and it takes the
+  source's flag away. That is a unit named only by its home SUID whose WACN and System ID are not the reception's
+  checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is not known): the
+  Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
+  LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
+  source address as well as the home SUID names the talker by the working address, which is local: the extended voice
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
+  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
+  The
   verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
   flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
   starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names

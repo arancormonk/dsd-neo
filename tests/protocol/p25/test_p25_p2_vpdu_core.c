@@ -2749,7 +2749,8 @@ run_cases(void) {
     rc |= test_voice_user_protocol_change_opens_call();
     rc |= test_source_less_conventional_voice_user_requires_matching_end();
 
-    // Case 14: extended private voice (0x22) derives source from the SUID tail.
+    // Case 14: extended private voice (0x22) names the talker by its working source address; the SUID after it is the
+    // radio's home identity, shown apart, never the source (issue #800).
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2765,20 +2766,20 @@ run_cases(void) {
         MAC[5] = 0x45; // target
         MAC[6] = 0x01;
         MAC[7] = 0x02;
-        MAC[8] = 0x03; // abbreviated source bytes, should be superseded
+        MAC[8] = 0x03; // working source address
         MAC[9] = 0x10;
         MAC[10] = 0x20;
         MAC[11] = 0x30;
         MAC[12] = 0x40;
         MAC[13] = 0xAA;
         MAC[14] = 0xBB;
-        MAC[15] = 0xCC; // SUID tail source
+        MAC[15] = 0xCC; // SUID unit ID: the home identity
 
         process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
         dsd_call_snapshot call = {0};
         rc |= expect_true("p2_private_ext canonical call", dsd_call_state_get(&state, 0U, &call) > 0);
         rc |= expect_eq_long("p2_private_ext_target", (long)call.ota_target_id, 0x012345);
-        rc |= expect_eq_long("p2_private_ext_suid_source", (long)call.ota_source_id, 0xAABBCC);
+        rc |= expect_eq_long("p2_private_ext_working_source", (long)call.ota_source_id, 0x010203);
         rc |= expect_eq_long("p2_private_ext_kind", (long)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
         dsd_state_ext_free_all(&state);
     }

@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -98,6 +99,47 @@ file_size_nonzero(const char* path) {
     return (sz > 0) ? 1 : 0;
 }
 
+/* Issue #800, fail closed: a report whose packet failed its check prints only that its position was suppressed; the
+ * rest of the document (here its time) prints for a checked packet, or with -Z. Returns 0 when it holds. */
+static int
+failed_report_prints_no_content(dsd_opts* opts, dsd_state* st) {
+    // POINT_2D, then a timestamp (token 0x34): 2026-06-15 12:00:00 UTC.
+    static const uint8_t pdu[] = {0x07, 24,   0x22, 0x00, 0x66, 0x10, 0x00, 0x00, 0x00, 0x20,
+                                  0x00, 0x00, 0x00, 0x34, 0x1F, 0xA9, 0x9E, 0xC0, 0x00, 0x00};
+
+    static const struct {
+        uint8_t crc_ok;
+        int payload;
+        int shown;
+    } runs[] = {{0, 0, 0}, {0, 1, 1}, {1, 0, 1}};
+
+    const int saved_lrrp_output = opts->lrrp_file_output;
+    opts->lrrp_file_output = 0;
+    int rc = 0;
+    for (size_t r = 0; r < sizeof runs / sizeof runs[0]; r++) {
+        opts->payload = runs[r].payload;
+        dsd_test_capture_stderr cap;
+        char out[4096];
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_lrrp_failed_content") != 0) {
+            return 1;
+        }
+        dmr_lrrp(opts, st, (uint16_t)(sizeof pdu - 1U), 111, 222, (uint8_t*)pdu, runs[r].crc_ok);
+        dsd_test_capture_stderr_end(&cap);
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+            return 1;
+        }
+        if ((strstr(out, "LRRP Time: 2026.06.15 12:00:00") != NULL) != runs[r].shown
+            || (!runs[r].crc_ok && strstr(out, "Position: (suppressed; CRC ERR)") == NULL)) {
+            DSD_FPRINTF(stderr, "LRRP crc_ok %u -Z %d: content shown wrong: %s\n", runs[r].crc_ok, runs[r].payload,
+                        out);
+            rc = 1;
+        }
+    }
+    opts->payload = 0;
+    opts->lrrp_file_output = saved_lrrp_output;
+    return rc;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -154,7 +196,7 @@ main(void) {
     }
 
     remove(outtmpl);
-    return 0;
+    return failed_report_prints_no_content(&opts, &st) != 0 ? 3 : 0;
 }
 
 #if defined(__GNUC__) && !defined(__cplusplus)

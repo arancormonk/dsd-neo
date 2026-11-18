@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/receive_types.h"
 #include "dsd-neo/core/state_fwd.h"
 
 _Static_assert((int)DSD_STATE_EXT_CORE_POSITION_FEED < (int)DSD_STATE_EXT_MAX,
@@ -341,6 +342,10 @@ dsd_position_same_track(const dsd_position_fix* a, const dsd_position_fix* b) {
  * and label (the protocol family is the track's; a burst of the other polarity is the same carrier). */
 static int
 pos_reception_published_equal(const dsd_position_fix* a, const dsd_position_fix* b) {
+    /* A slot nobody knows is no slot another report was heard on. */
+    if (((a->flags | b->flags) & (unsigned)DSD_POS_FLAG_SLOT_UNKNOWN) != 0U) {
+        return 0;
+    }
     return a->slot == b->slot && a->freq_hz == b->freq_hz && pos_scope_equal(&a->reception_scope, &b->reception_scope)
            && strncmp(a->label, b->label, sizeof(a->label)) == 0;
 }
@@ -533,6 +538,25 @@ pos_feed_keep(dsd_state* state, dsd_position_fix* r) {
     return DSD_POSITION_ADMITTED_KEPT;
 }
 
+/* The slot a report was heard on as the record publishes it (and the repeat rule compares it): the over-the-air slot
+ * (0 for TS1, 1 for TS2) of a two-slot protocol. The producer names its lane (dsd_position_fix::slot); the single-slot
+ * DMR decoder carries either over-the-air slot on its one lane, so its report takes the slot the CACH proved for that
+ * lane (dsd_receive_identity_current()). One heard while no slot is proven (an inbound burst has no CACH) names none:
+ * slot 0 with DSD_POS_FLAG_SLOT_UNKNOWN, which the repeat rule never takes as the same place (issue #800, fail closed).
+ * A protocol without slots keeps 0. */
+static void
+pos_publish_slot(const dsd_state* state, dsd_position_fix* rec) {
+    dsd_receive_identity heard;
+    dsd_receive_identity_current(state, rec->protocol, rec->slot, &heard);
+    rec->flags = (uint16_t)(rec->flags & ~(unsigned)DSD_POS_FLAG_SLOT_UNKNOWN);
+    if (heard.slot != 0U) {
+        rec->slot = (uint8_t)(heard.slot - 1U);
+    } else if (heard.slot_pending != 0U) {
+        rec->slot = 0U;
+        rec->flags = (uint16_t)(rec->flags | DSD_POS_FLAG_SLOT_UNKNOWN);
+    }
+}
+
 dsd_position_admit_result
 dsd_position_admit(const dsd_opts* opts, dsd_state* state, dsd_position_fix* fix, int pos_verified, int source_verified,
                    const dsd_position_origin* origin) {
@@ -543,6 +567,7 @@ dsd_position_admit(const dsd_opts* opts, dsd_state* state, dsd_position_fix* fix
         return DSD_POSITION_REFUSED;
     }
     dsd_position_fix rec = *fix;
+    pos_publish_slot(state, &rec);
     pos_clear_identity(&rec, source_verified);
     dsd_position_origin here;
     if (origin) {
