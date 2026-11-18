@@ -6389,13 +6389,6 @@ test_weaker_identity_joins_stronger(void) {
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
 }
 
-/* Issue #800, fail closed: a fragment gives a merged row its fix, and the row learns a stronger reception scope from it,
- * only when it was heard on the reception the row's other fragments were, read before anything is adopted (the core's
- * reception rule, call_history_same_reception()). A P25 call heard on 450 MHz with only a tuned-frequency scope, then
- * a fragment of the same talkgroup and radio under a NAC scoped to 451 MHz, in one epoch: the calls still merge, but
- * the row keeps its 450 MHz reception and none of the 451 MHz fragment's fix, live and after a reload. A fragment of
- * another decoder run with no known reception is no reception of the row's either: its epoch counts in another ring.
- * The same fragments on one tuned frequency still give the row their fix. */
 /* Issue #800, fail closed: two carriers of one system are two receptions, though the system's scope (a P25 WACN and
  * SYSID) names no carrier. A call's fragment heard on 450 MHz and a fragment of the same talkgroup and radio heard on
  * 451 MHz with a fix, both under that system: the calls still merge, but the row takes none of the 451 MHz fix, live
@@ -6432,6 +6425,13 @@ test_fix_stays_on_its_carrier(void) {
     }
 }
 
+/* Issue #800, fail closed: a fragment gives a merged row its fix, and the row learns a stronger reception scope from it,
+ * only when it was heard on the reception the row's other fragments were, read before anything is adopted (the core's
+ * reception rule, call_history_same_reception()). A P25 call heard on 450 MHz with only a tuned-frequency scope, then
+ * a fragment of the same talkgroup and radio under a NAC scoped to 451 MHz, in one epoch: the calls still merge, but
+ * the row keeps its 450 MHz reception and none of the 451 MHz fragment's fix, live and after a reload. A fragment of
+ * another decoder run with no known reception is no reception of the row's either: its epoch counts in another ring.
+ * The same fragments on one tuned frequency still give the row their fix. */
 void
 test_fix_stays_on_its_reception(void) {
     const time_t when = 1754706400;
