@@ -35,6 +35,10 @@ void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196],
                             const uint8_t* reliab98);
 
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
+/* Over-the-air slot @p slot (0: slot 1, 1: slot 2) took the single-slot decoder's lane 0 (its call is there, or the lane
+   is proven to carry it): a PI header that slot sent while the lane was not bound to it (dsd_state::dmr_mono_pi) is
+   applied to lane 0 now, if it is still fresh on this carrier. A cheap no-op without one. */
+void dmr_pi_mono_take_pending(dsd_opts* opts, dsd_state* state, uint8_t slot);
 
 /* Per-slot encryption-classification hysteresis for the DMR service-option privacy bit.
  * Values stored in dsd_state.dmr_enc_class[]: 0 unclassified, 1 clear, 2 encrypted. */

@@ -826,6 +826,21 @@ dmr_flco_is_capmax_private(const dmr_flco_ctx* ctx) {
     return ctx->fid == 0x10 && ctx->flco == 0x13;
 }
 
+/* A checked LC on the single-slot decoder's lane 0 whose call is now of a known slot: a PI header that slot sent before
+   the lane was its (dsd_state::dmr_mono_pi) is that call's (dmr_pi_mono_take_pending()). */
+static void
+dmr_flco_take_pending_pi(const dmr_flco_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if ((state->dmr_mono_pi[0].pending | state->dmr_mono_pi[1].pending) == 0U || ctx->voice_slot != 0U
+        || !dmr_mono_folds_standalone_burst(ctx->opts, state)) {
+        return;
+    }
+    const uint8_t lane = dmr_mono_lane_call_slot(state);
+    if (lane != 0U) {
+        dmr_pi_mono_take_pending(ctx->opts, state, (uint8_t)(lane - 1U));
+    }
+}
+
 static dsd_call_kind
 dmr_flco_call_kind(const dmr_flco_ctx* ctx) {
     if (ctx->flco == 0x03 || ctx->flco == 0x05 || ctx->flco == 0x07 || ctx->flco == 0x23
@@ -1245,6 +1260,10 @@ dmr_flco_ensure_heal_hook(void) {
 // the rest of the transmission even after the epoch heals.
 static void
 dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
+    // That slot's transmission ended: a PI header it sent for a call the single-slot lane never took is not the next's.
+    if (dmr_mono_burst_slot_known(ctx->state, ctx->burst_slot)) {
+        ctx->state->dmr_mono_pi[ctx->burst_slot].pending = 0U;
+    }
     const int lc_readable = dmr_flco_lc_readable(ctx);
     const int verified = ctx->CRCCorrect == 1U && lc_readable;
     const uint8_t idx = ctx->slot != 0U ? 1U : 0U;
@@ -1760,6 +1779,7 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
         dmr_flco_print_emergency_flag(ctx);
         if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
             dmr_flco_publish_voice(ctx);
+            dmr_flco_take_pending_pi(ctx);
         }
         dmr_flco_apply_enc_lockout(ctx);
         dmr_flco_print_service_options(ctx);

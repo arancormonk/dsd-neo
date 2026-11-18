@@ -270,6 +270,14 @@ dmr_vcrypt_superframe_start(dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
+/* A PI header kept for its slot's call is dmr_pi.c's business; MS data keys no voice. */
+void
+dmr_pi_mono_take_pending(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
 void
 dmr_vcrypt_superframe_end(dsd_state* state, uint8_t slot) {
     (void)state;

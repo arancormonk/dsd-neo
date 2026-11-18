@@ -514,6 +514,10 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         /* A CACH an interruption cut or a boundary moved is erasures, never slot evidence. */
         if (!dsd_state_frame_read_lost(state, carrier_seq)) {
             dmr_ms_note_rx_slot(state, cachdata);
+            /* The lane proven to carry a slot: a PI header that slot sent before the lane was its keys this voice. */
+            if (state->dmr_mono_rx_slot >= DSD_DMR_MONO_RX_TS1) {
+                dmr_pi_mono_take_pending(opts, state, (uint8_t)(state->dmr_mono_rx_slot - DSD_DMR_MONO_RX_TS1));
+            }
         }
 
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr, 12, 36, 0);

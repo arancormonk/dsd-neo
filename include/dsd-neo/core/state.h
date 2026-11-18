@@ -2084,6 +2084,20 @@ struct dsd_state {
         unsigned long long int mi;
     } dmr_mono_slot1_data_crypto;
 
+    /* A checked DMR PI header the single-slot decoder without trunking heard on over-the-air slot 1 or 2 (index) while
+     * lane 0 was not bound to that slot's call (no active call there of that slot): its bytes and check, kept for that
+     * slot's call, which gets it when that slot takes lane 0 (dmr_pi_mono_take_pending()), within
+     * DMR_PI_PRECALL_HOLD_S on the same carrier. Dropped when taken, at that slot's terminator and with the slots' call
+     * decryption (dmr_forget_call_decryption()). Owned by src/protocol/dmr. */
+    struct {
+        uint8_t pending;
+        uint8_t crc_invalid;
+        uint8_t bytes[10];
+        uint32_t crc_correct;
+        uint32_t carrier_seq;
+        double m;
+    } dmr_mono_pi[2];
+
     /* A checked DMR PI header decoded while no call was active on the slot (its voice LC header was lost): the ALG ID
      * and key id it carried, with the DSD_CALL_CRYPTO_RX_* bits it received (<dsd-neo/core/call_state.h>), held for the
      * call the next checked LC opens on the slot, which receives them (dmr_flco.c). Cleared when they transfer, at the
