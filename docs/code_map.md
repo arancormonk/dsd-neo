@@ -602,7 +602,8 @@ Generated (do not edit/commit):
       the check was suspended ends it at the next publication with nothing requested; an old channel's checked content
       just after the tune may end a check, which only keeps the channel (a lost skip); a new visit key takes a new
       baseline, and a setting change drops it; a READY result older than 250 ms ends it, a pending verdict (below) or
-      not.
+      not, and a quiet answer already older than that when it is collected never becomes READY, so no service hands it
+      back (`test_scan_quiet_stale_result_never_hands_back_from_a_frame()`).
     - Decision (`scan_quiet_apply()`): the visit and revisions unchanged; the classes, analog kind and width and DSP
       rate in force, which the caller passes as this pass's `scan_quiet_eligibility`, equal to those measured (a NULL
       one declines); the tap's capture still the result's and the live output generation still its generation (a

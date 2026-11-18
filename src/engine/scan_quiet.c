@@ -979,12 +979,15 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
         return;
     }
     if (taken > 0) {
-        if (result.request_id == c->request_seq && result.valid && result.quiet) {
+        /* A quiet answer found after it aged past SCAN_QUIET_READY_MAX_AGE_MS is as stale as a READY one the reconcile
+           ages out: no skip, and no hand-back that would leave the frame loop for a skip the apply refuses. */
+        if (result.request_id == c->request_seq && result.valid && result.quiet
+            && quiet_age_ms(now_ms, completed_ms) <= SCAN_QUIET_READY_MAX_AGE_MS) {
             c->result = result;
             c->ready_ms = completed_ms;
             c->phase = SCAN_QUIET_READY;
         } else {
-            c->phase = SCAN_QUIET_DONE; /* busy, or not measurable */
+            c->phase = SCAN_QUIET_DONE; /* busy, not measurable, or stale */
         }
         return;
     }

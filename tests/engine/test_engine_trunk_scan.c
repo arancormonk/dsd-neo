@@ -25055,6 +25055,32 @@ test_scan_quiet_changing_candidates_are_bounded_by_the_result_age(void) {
     return rc;
 }
 
+/* Issue #834: a quiet result collected after it aged past SCAN_QUIET_READY_MAX_AGE_MS (it completed 300 ms before the
+   frame boundary that finds it, inside its request's deadline) is no result: the frame service hands nothing back, so
+   the frame loop is not left for a skip the apply would refuse anyway, and the check ends. */
+static int
+test_scan_quiet_stale_result_never_hands_back_from_a_frame(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    qt_pass(&opts, &state);
+    int rc = qt_expect("the pass requests the check", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    g_quiet_rt_ms += 300U;
+    const int served = dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "a result 300 ms old hands nothing back from a frame (service %d, phase %d)",
+                 served, (int)scan_quiet_phase_get(&state));
+    rc |= qt_expect(label, served == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+    quiet_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* SUSPENDED: an ineligible visit (the owner's conditions, no class, an analog class with no width, a session that is
    no RTL input, runs an I/Q replay or I/Q stream it cannot retune, or runs on a replay's decode clock) requests nothing,
    and the hunt's service returns 0 without reading the tap. The setting off: nothing published, nothing asked. */
@@ -26971,6 +26997,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_adopts_a_park_measured_in_flight);
     rc |= run_with_default_tune_hook(test_scan_quiet_landing_adoption_keeps_a_pending_verdict);
     rc |= run_with_default_tune_hook(test_scan_quiet_changing_candidates_are_bounded_by_the_result_age);
+    rc |= run_with_default_tune_hook(test_scan_quiet_stale_result_never_hands_back_from_a_frame);
     rc |= run_with_default_tune_hook(test_scan_quiet_suspended_visit_requests_nothing);
     rc |= run_with_default_tune_hook(test_scan_quiet_live_radio_after_a_replay_measures);
     rc |= test_scan_quiet_hook_off_is_one_load();
