@@ -23935,6 +23935,8 @@ add_test(
 # expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
 # that also asserts a log line names that line instead, since exit code 0 already
 # means every audio bound held. not_expected is a regex that must not appear.
+# dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected [audio_out]]]): audio_out is the
+# --analog-audio-out file the run must write, passed apart from mode so a path holding a space stays whole.
 function(dsd_neo_add_analog_replay_test test_name fixture mode)
     set(_expected "ANALOG AUDIO OK")
     if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
@@ -23944,6 +23946,10 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
     if(ARGC GREATER 4)
         set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
     endif()
+    set(_audio_out_arg)
+    if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
+        set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV5}")
+    endif()
     add_test(
         NAME ${test_name}
         COMMAND
@@ -23951,7 +23957,7 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
             "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
             "-DMODE=${mode}"
             "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-            "-DEXPECTED=${_expected}" ${_not_expected_arg} -P
+            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg} -P
             "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
     set_tests_properties(
@@ -24553,13 +24559,15 @@ if(DSD_HAS_RADIO)
     endforeach()
     # --analog-audio-out writes every delivered sample (tools/scan_quiet_reception.py
     # scores its voice rows from it): the 1480 ms the host captured are 71040 samples at
-    # the 48 kHz sink, and the run still passes its bounds.
+    # the 48 kHz sink, and the run still passes its bounds. The file's name holds a
+    # space, as any path in a build directory with one does: it must be written whole.
     dsd_neo_add_analog_replay_test(
         DECODE_IQ_ANALOG_AUDIO_OUT
         nfm_tone_synth
-        "${_analog_nfm_tone_fixed50} --analog-audio-out ${CMAKE_CURRENT_BINARY_DIR}/analog_audio_out.f32"
+        "${_analog_nfm_tone_fixed50}"
         "captured_ms=1480[.]00 .*ANALOG AUDIO OUT: rate_hz=48000 samples=71040.*ANALOG AUDIO OK"
         "${_analog_off_path}"
+        "${CMAKE_CURRENT_BINARY_DIR}/analog audio out.f32"
     )
     # The same file read back: one float32 per delivered sample, whose RMS is the ANALOG
     # METRIC line's rms_dbfs within 0.01 dB, so a scale, format or stale-slice error in
@@ -25429,10 +25437,12 @@ if(DSD_HAS_RADIO)
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
     # them a host whose checks never fired would pass every case above.
-    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected [trailing]]])
+    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected [trailing [audio_out]]]])
     # rc defaults to 1; not_expected is a regex that must not appear, such as a bound
     # that has to keep holding; trailing goes after "-o null", so a host option can be
-    # the last argument. Pass "" to leave an optional argument at its default.
+    # the last argument; audio_out is the --analog-audio-out path, passed apart from mode
+    # so a path holding a space stays whole. Pass "" to leave an optional argument at its
+    # default.
     function(
         dsd_neo_add_analog_replay_fail_test
         test_name
@@ -25452,6 +25462,10 @@ if(DSD_HAS_RADIO)
         if(ARGC GREATER 6 AND NOT "${ARGV6}" STREQUAL "")
             set(_trailing_arg "-DTRAILING=${ARGV6}")
         endif()
+        set(_audio_out_arg)
+        if(ARGC GREATER 7 AND NOT "${ARGV7}" STREQUAL "")
+            set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV7}")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
@@ -25460,7 +25474,7 @@ if(DSD_HAS_RADIO)
                 "-DMODE=${mode}"
                 "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
                 "-DEXPECTED=${expected}" ${_rc_arg} ${_not_expected_arg}
-                ${_trailing_arg} -P
+                ${_trailing_arg} ${_audio_out_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/analog_replay_fail_check.cmake"
         )
         set_tests_properties(
@@ -25516,12 +25530,18 @@ if(DSD_HAS_RADIO)
         "-fA --analog-min-snr-db 20"
         "ANALOG AUDIO FAIL: tone SNR dB not measured"
     )
-    # An --analog-audio-out file that cannot be written (here a directory) fails the run.
+    # An --analog-audio-out file that cannot be written (here a directory, whose name
+    # holds a space so the whole path must reach the host) fails the run, naming it.
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/analog audio out dir")
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_AUDIO_OUT_UNWRITABLE
         nfm_tone_synth
-        "-fA --analog-audio-out ${CMAKE_CURRENT_BINARY_DIR}"
-        "FAIL: could not write the delivered audio to "
+        "-fA"
+        "FAIL: could not write the delivered audio to [^\n]*/analog audio out dir"
+        ""
+        ""
+        ""
+        "${CMAKE_CURRENT_BINARY_DIR}/analog audio out dir"
     )
     # The received-tone lock bound (issue #522): a limit below the lock time
     # nfm_ctcss_synth_1000 measures fails on the measured value, and on a replay with no
