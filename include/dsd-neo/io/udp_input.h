@@ -57,7 +57,8 @@ int udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeou
 
 /**
  * @brief Drop the samples the ring held when @p cut was marked and the decoder has not read: what a rigctl peer sent
- * before its retune (issue #834). Samples written into the ring after the mark are kept. A cut measured on another
+ * before its retune (issue #834). The mark moved every datagram the socket held into the ring first, so those count
+ * too. Samples written into the ring after the mark are kept. A cut measured on another
  * input, or on this one before it was restarted, drops nothing (dsd_input_backlog_cut_applies()).
  *
  * @param opts Decoder options containing UDP context.

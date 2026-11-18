@@ -17914,6 +17914,34 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
 add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
 
+# A rigctl retune's mark of the UDP input counts the datagrams still queued in the socket (issue #834): udp_input.c is
+# built in with its receive-hold seam (DSD_NEO_TEST_HOOKS), as for CORE_AUDIO_INPUT_SWITCH_BACKLOG.
+if(NOT APPLE AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_io_udp_input_ingress
+        io/test_io_udp_input_ingress.c
+        ${PROJECT_SOURCE_DIR}/src/io/audio_backends/udp_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/audio_backends
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE dsd-neo_core dsd-neo_io_audio
+    )
+    add_test(
+        NAME IO_UDP_INPUT_INGRESS
+        COMMAND dsd-neo_test_io_udp_input_ingress
+    )
+endif()
+
 add_executable(dsd-neo_test_io_udp_bind io/test_io_udp_bind.c)
 target_include_directories(
     dsd-neo_test_io_udp_bind

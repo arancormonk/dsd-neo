@@ -2625,7 +2625,7 @@ channel is delayed.
     already held from the old channel when it asked for the tune, just before it reads the next sample, and keeps
     everything that arrived after it asked, even audio the radio software sent before its answer, and even when that new
     audio is what ended a wait for input: on UDP input what its receive buffer
-    held, on TCP input what its read buffer and the connection held, and on stdin fed by another program what the pipe
+    and the system's socket held, on TCP input what its read buffer and the connection held, and on stdin fed by another program what the pipe
     held. On sound-card input (PulseAudio on Linux and macOS, PortAudio on Windows, AAudio on Android), which says
     nothing of when its audio arrived, DSD-neo drops what the sound system has handed over but it has not read yet, and
     keeps the newest part of it, as much audio as the time since it asked for the tune (the audio captured since). What

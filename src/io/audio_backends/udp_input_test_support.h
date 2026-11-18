@@ -15,6 +15,10 @@ extern "C" {
 /* The next @p count receive threads udp_input_start() starts fail to start, as a host out of threads fails them. */
 void udp_input_test_fail_thread_starts(int count);
 
+/* While @p hold is set, the receive thread takes nothing from the socket, as a thread descheduled with datagrams
+   queued: they stay in the socket until it is cleared (or a backlog mark takes them). */
+void udp_input_test_hold_receive(int hold);
+
 #ifdef __cplusplus
 }
 #endif

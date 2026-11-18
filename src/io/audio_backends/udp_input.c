@@ -58,7 +58,13 @@ typedef struct udp_input_ctx {
     dsd_atomic_u64 packets;
     dsd_atomic_u64 bytes;
     dsd_atomic_u64 drops;
+    /* One datagram's bytes, used only under ring.m: by the receive thread and by a backlog mark, which both move what
+       the socket holds into the ring (udp_input_take_queued_locked()). */
+    uint8_t* rx_buf;
 } udp_input_ctx;
+
+/* The largest datagram a read takes. */
+#define UDP_INPUT_DATAGRAM_MAX 65536U
 
 /**
  * @brief Initialize the sample ring with the requested capacity.
@@ -150,12 +156,74 @@ udp_input_mirror_counters(dsd_opts* opts, const udp_input_ctx* ctx) {
     opts->udp_in_drops = (unsigned long long)dsd_atomic_u64_load_relaxed(&ctx->drops);
 }
 
+/* What the last socket read said: a datagram, nothing left to read, or a fatal error. */
+enum { UDP_TAKE_DATAGRAM = 0, UDP_TAKE_EMPTY = 1, UDP_TAKE_FATAL = 2 };
+
+/* One datagram from the socket (non-blocking) into the ring, widened from PCM16LE, the samples that do not fit counted
+   as drops. Under ring.m. */
+static int
+udp_input_take_one_locked(udp_input_ctx* ctx) {
+    const int n = dsd_socket_recv(ctx->sockfd, ctx->rx_buf, UDP_INPUT_DATAGRAM_MAX, 0);
+    if (n < 0) {
+        const int err = dsd_socket_get_error();
+#if DSD_PLATFORM_WIN_NATIVE
+        if (err == WSAEINTR) {
+            return UDP_TAKE_DATAGRAM; /* read again */
+        }
+        return (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT) ? UDP_TAKE_EMPTY : UDP_TAKE_FATAL;
+#else
+        if (err == EINTR) {
+            return UDP_TAKE_DATAGRAM; /* read again */
+        }
+        return (err == EAGAIN || (EWOULDBLOCK != EAGAIN && err == EWOULDBLOCK)) ? UDP_TAKE_EMPTY : UDP_TAKE_FATAL;
+#endif
+    }
+    if (n == 0) {
+        return UDP_TAKE_DATAGRAM; /* an empty datagram: nothing to write */
+    }
+    (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->packets, 1U);
+    (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->bytes, (uint64_t)n);
+    // Must be even number of bytes for int16 samples
+    const size_t nsamp = (size_t)(n / 2);
+    if (nsamp == 0) {
+        return UDP_TAKE_DATAGRAM;
+    }
+    const int16_t* s = (const int16_t*)ctx->rx_buf; // assumes little-endian input
+    const size_t wrote = ring_write(&ctx->ring, s, nsamp);
+    if (wrote < nsamp) {
+        (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->drops, (uint64_t)(nsamp - wrote));
+    }
+    return UDP_TAKE_DATAGRAM;
+}
+
+/* Every datagram the socket holds now, into the ring, without waiting (issue #834). Under ring.m, so a datagram is
+   counted (ring.written) as it leaves the socket, never in between: a backlog mark that takes the lock sees each one
+   either still in the socket, which it takes itself, or in the ring. Returns 1 when the socket failed for good. */
+static int
+udp_input_take_queued_locked(udp_input_ctx* ctx) {
+    for (;;) {
+        const int taken = udp_input_take_one_locked(ctx);
+        if (taken != UDP_TAKE_DATAGRAM) {
+            return taken == UDP_TAKE_FATAL;
+        }
+    }
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+/* While set, the receive thread takes nothing from the socket: a thread descheduled with datagrams queued. */
+static atomic_int s_udp_test_hold_receive;
+
+void
+udp_input_test_hold_receive(int hold) {
+    atomic_store(&s_udp_test_hold_receive, hold ? 1 : 0);
+}
+#endif
+
 /**
  * @brief Background UDP receive thread that widens PCM16LE datagrams.
  *
- * Receives UDP datagrams, converts to int16 samples, and pushes them into the
- * ring while tracking drop statistics on overflow. It never touches the
- * decoder's options.
+ * Waits for the socket to become readable, then moves every datagram it holds into the ring under the ring's lock
+ * (udp_input_take_queued_locked()), counting drops on overflow. It never touches the decoder's options.
  *
  * @param arg Pointer to the owning `udp_input_ctx`.
  * @return NULL on exit.
@@ -166,61 +234,29 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     udp_rx_thread(void* arg) {
     udp_input_ctx* ctx = (udp_input_ctx*)arg;
-    const size_t max_bytes = 65536;
-    uint8_t* buf = (uint8_t*)malloc(max_bytes);
-    if (!buf) {
-        DSD_THREAD_RETURN;
-    }
-
     while (atomic_load(&ctx->running)) {
-        int n = dsd_socket_recv(ctx->sockfd, buf, max_bytes, 0);
-        if (n < 0) {
-            int err = dsd_socket_get_error();
-#if DSD_PLATFORM_WIN_NATIVE
-            if (err == WSAEINTR) {
-                continue;
-            }
-            if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT) {
-                dsd_sleep_ms(1);
-                continue;
-            }
-#else
-            if (err == EINTR) {
-                continue;
-            }
-            if (err == EAGAIN || (EWOULDBLOCK != EAGAIN && err == EWOULDBLOCK)) {
-                dsd_sleep_ms(1);
-                continue;
-            }
+#ifdef DSD_NEO_TEST_HOOKS
+        if (atomic_load(&s_udp_test_hold_receive)) {
+            dsd_sleep_ms(1);
+            continue;
+        }
 #endif
-            // fatal error -> stop
+        /* A short wait, so the thread notices a stop request. */
+        const int ready = dsd_socket_wait(ctx->sockfd, DSD_SOCKET_WAIT_READ, 200U);
+        if (ready < 0) {
+            break; // fatal error -> stop
+        }
+        if (ready == 0) {
+            continue;
+        }
+        dsd_mutex_lock(&ctx->ring.m);
+        const int failed = udp_input_take_queued_locked(ctx);
+        dsd_cond_signal(&ctx->ring.cv);
+        dsd_mutex_unlock(&ctx->ring.m);
+        if (failed) {
             break;
         }
-        if (n == 0) {
-            // no data
-            continue;
-        }
-        (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->packets, 1U);
-        (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->bytes, (uint64_t)n);
-        // Must be even number of bytes for int16 samples
-        size_t nsamp = (size_t)(n / 2);
-        if (nsamp == 0) {
-            continue;
-        }
-
-        // Write into ring, account for drops
-        const int16_t* s = (const int16_t*)buf; // assumes little-endian input
-        size_t wrote = 0;
-        dsd_mutex_lock(&ctx->ring.m);
-        wrote = ring_write(&ctx->ring, s, nsamp);
-        if (wrote < nsamp) {
-            (void)dsd_atomic_u64_fetch_add_relaxed(&ctx->drops, (uint64_t)(nsamp - wrote));
-        }
-        dsd_mutex_unlock(&ctx->ring.m);
-        ring_signal(&ctx->ring);
     }
-
-    free(buf);
     DSD_THREAD_RETURN;
 }
 
@@ -251,12 +287,19 @@ udp_input_bind_address(const char* bindaddr, int port, struct sockaddr_in* addr)
     return 0;
 }
 
-/* The ring's count for a backlog mark (<dsd-neo/platform/input_backlog.h>): the samples written into it so far. The
-   datagrams the socket holds that the receive thread has not taken yet count as later. */
+/* The ring's count for a backlog mark (<dsd-neo/platform/input_backlog.h>), issue #834: every datagram the socket holds
+   now is moved into the ring first, under the ring's lock (udp_input_take_queued_locked()), so the count covers all
+   the input that reached this host before the mark, a datagram the receive thread is moving at that moment included,
+   whether the thread was descheduled or not, and none that arrives after it. */
 static uint64_t
 udp_input_arrived(const void* queue) {
-    const udp_input_ctx* ctx = (const udp_input_ctx*)queue;
-    return dsd_atomic_u64_load_relaxed(&ctx->ring.written);
+    udp_input_ctx* ctx = (udp_input_ctx*)queue; /* the queue attached, which the count may move input into */
+    dsd_mutex_lock(&ctx->ring.m);
+    (void)udp_input_take_queued_locked(ctx);
+    const uint64_t written = dsd_atomic_u64_load_relaxed(&ctx->ring.written);
+    dsd_cond_signal(&ctx->ring.cv);
+    dsd_mutex_unlock(&ctx->ring.m);
+    return written;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -315,8 +358,13 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
     int rcvbuf = 4 * 1024 * 1024;
     (void)dsd_socket_setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
-    // Set a short receive timeout so thread can notice stop requests
-    (void)dsd_socket_set_recv_timeout(sockfd, 200); // 200ms
+    /* Reads never wait: the receive thread waits for readiness (with a short timeout, so it notices stop requests), and
+       a backlog mark takes what the socket holds without waiting (udp_input_arrived()). */
+    if (dsd_socket_set_nonblocking(sockfd, 1) != 0) {
+        DSD_FPRINTF(stderr, "Failed to make the UDP input socket non-blocking\n");
+        dsd_socket_close(sockfd);
+        return -1;
+    }
 
     if (dsd_socket_bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
         DSD_FPRINTF(stderr, "Failed to bind UDP %s:%d\n", bindaddr ? bindaddr : "127.0.0.1", port);
@@ -343,7 +391,10 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         cap = 48000; // minimum
     }
     ring_init(&ctx->ring, cap);
-    if (ctx->ring.cap == 0) {
+    ctx->rx_buf = (uint8_t*)malloc(UDP_INPUT_DATAGRAM_MAX);
+    if (ctx->ring.cap == 0 || !ctx->rx_buf) {
+        ring_destroy(&ctx->ring);
+        free(ctx->rx_buf);
         dsd_socket_close(sockfd);
         free(ctx);
         return -1;
@@ -358,6 +409,7 @@ udp_input_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate) 
         /* The input did not start: the input it was to replace (a switch keeps it running) is measured again. */
         dsd_input_backlog_attach_failed(ctx);
         ring_destroy(&ctx->ring);
+        free(ctx->rx_buf);
         dsd_socket_close(sockfd);
         free(ctx);
         opts->udp_in_ctx = NULL;
@@ -391,6 +443,7 @@ udp_input_stop(dsd_opts* opts) {
         ctx->sockfd = DSD_INVALID_SOCKET;
     }
     ring_destroy(&ctx->ring);
+    free(ctx->rx_buf);
     free(ctx);
     opts->udp_in_ctx = NULL;
     opts->udp_in_sockfd = DSD_INVALID_SOCKET;

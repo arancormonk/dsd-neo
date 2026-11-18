@@ -10,7 +10,8 @@
  *
  * The queue the decoder reads attaches itself while it exists (dsd_input_backlog_attach()): a function that returns
  * how much input the queue has taken in so far, in its own unit, and is safe to call from any thread while attached.
- * The PCM stream reader (stdin, TCP) counts bytes and the UDP ring samples. A mark (dsd_input_backlog_mark()) records
+ * The PCM stream reader (stdin, TCP) counts bytes and the UDP ring samples (once the datagrams its socket holds are
+ * in it). A mark (dsd_input_backlog_mark()) records
  * that count and the time; the queue's drop discards input up to the count (dsd_pcm_stream_discard_through(),
  * udp_input_discard_through()) and only on the attachment it was measured on (dsd_input_backlog_cut_applies()). A
  * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark's

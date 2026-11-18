@@ -7313,8 +7313,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   refused request or a lost reply installs nothing. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
-  ring the samples written into it; each count is safe to read from any thread, and each queue detaches before it is
-  freed. The mark holds that count, the attachment it was read on and the time. The queue's drop discards up to the
+  ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the
+  receive thread and the mark both take datagrams from the non-blocking socket only under the ring's lock,
+  `udp_input_take_queued_locked()`, so a datagram queued in the socket while the thread was descheduled, or one the
+  thread is moving, counts as before the mark, and one that arrives after it does not; `IO_UDP_INPUT_INGRESS`); each
+  count is safe to read from any thread, and each queue detaches before it is freed. The mark holds that count, the attachment it was read on and the time. The queue's drop discards up to the
   count, and only on that attachment (`dsd_input_backlog_cut_applies()`): `dsd_pcm_stream_discard_through()` and the
   `udp_discard_through` and `tcp_discard_through` network-audio hooks. A device input attaches nothing, since neither
   thread can say when the audio it holds was captured: its drop keeps the newest audio, as much as the time since the
@@ -10863,7 +10866,7 @@ Notes:
   them in the network-audio hook table (`udp_read_sample_wait`, `tcp_read_sample_wait`, `tcp_connect`, and
   `udp_discard_through`/`tcp_discard_through`, which drop what the ring, or the TCP reader and socket, held at a rigctl
   retune's mark, issue #834; the UDP ring attaches itself to the input backlog while it runs, counting the samples
-  written into it). The stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0
+  written into it once the socket's queued datagrams are in it). The stdin input is not a network backend: `dsd_audio.c` opens one `dsd_pcm_stream` on fd 0
   (`dsd_opts::audio_in_stdin`, raw PCM16LE as libsndfile read it), which the symbol path and the M17 encoder share, both
   in bounded waits, and an input switch holds and closes like the other handles.
 - M17 protocol frame packing/parsing lives in `src/protocol/m17/m17.c`; M17 UDP socket helpers are exposed via
