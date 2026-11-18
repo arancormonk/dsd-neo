@@ -144,6 +144,9 @@ class DiagnosticsLog {
     void setIoFaultForTest(IoFault fault);
     static void setLoadHookForTest(LoadHook hook);
     static QString redact(QString text);
+    // Test seam: whether a record carries a producer's label for a received position (issue #800, D10), the rule the
+    // redaction rests on, without the backstop shapes.
+    static bool namesPositionProducerForTest(const QString& text);
     // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
     static std::pair<int, int> producerLineCountsForTest();
     // Test seam: how many signed-measurement templates are listed, and how many the builder accepted (each needs a

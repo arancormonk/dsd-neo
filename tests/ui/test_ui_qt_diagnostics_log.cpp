@@ -29,14 +29,22 @@
 #include <condition_variable>
 #include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -1846,8 +1854,10 @@ receivedPositionsAreRemoved() {
         QStringLiteral(" 1200z2230.00N104500.00E>test"),
         QStringLiteral(" 2230.00SD04500.00W-"),
         // dstar_slow_data.c GPS data blocks, a part of a D-PRS record or NMEA sentence each.
-        QStringLiteral(" DATA: N/04500.00E>test"),
-        QStringLiteral(" _UNK:  DATA: .00N/04500.00E>test"),
+        QStringLiteral(" GPS DATA: N/04500.00E>test"),
+        QStringLiteral(" GPS DATA: 12  z2230.00N/04500.00"),
+        QStringLiteral(" GPS DATA: EA mobile"),
+        QStringLiteral(" _UNK:  GPS DATA: .00N/04500.00E>test"),
         QStringLiteral(" _UNK:  .00N/04500.00E>test"),
     };
     QTemporaryDir dir;
@@ -1914,6 +1924,239 @@ receivedPositionsAreRemoved() {
     for (const auto& line : keptLines) {
         const QString record = QStringLiteral("[stderr] [info] ") + line;
         checkLabelled(DiagnosticsLog::redact(record) == record, "a line with no position changed: " + line.toUtf8());
+    }
+}
+
+namespace producers {
+
+/* A decoder rig: heap state as the decoder keeps it, with event history and the position feed. */
+struct Rig {
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+    Event_History_I* history = static_cast<Event_History_I*>(calloc(2U, sizeof(Event_History_I)));
+
+    Rig() {
+        check(opts != nullptr && state != nullptr && history != nullptr, "producer rig allocated");
+        if (state == nullptr || history == nullptr) {
+            return;
+        }
+        for (uint8_t slot = 0U; slot < 2U; slot++) {
+            init_event_history(&history[slot], 0, 255);
+        }
+        state->event_history_s = history;
+        check(dsd_position_feed_start(state) == 0, "producer rig feed starts");
+    }
+
+    ~Rig() {
+        if (state != nullptr) {
+            dsd_state_ext_free_all(state);
+        }
+        free(history);
+        free(state);
+        free(opts);
+    }
+
+    Rig(const Rig&) = delete;
+    Rig& operator=(const Rig&) = delete;
+
+    int
+    admitted() const {
+        static dsd_position_fix fixes[8];
+        dsd_position_feed_meta meta;
+        return dsd_position_feed_copy_since(state, 0U, fixes, 8U, &meta);
+    }
+};
+
+/* What @p run prints to stderr, a newline after it (the decoder ends each frame's line). */
+QByteArray
+printed(const std::function<void()>& run) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "diag-producer") != 0) {
+        check(false, "stderr capture starts");
+        return {};
+    }
+    run();
+    (void)dsd_test_capture_stderr_end(&cap);
+    static char text[16384];
+    check(dsd_test_capture_stderr_read(&cap, text, sizeof(text)) == 0, "stderr capture read");
+    return QByteArray(text) + '\n';
+}
+
+uint16_t
+x25(const QByteArray& text) {
+    uint16_t crc = 0xFFFFU;
+    for (const char c : text) {
+        crc ^= static_cast<uint8_t>(c);
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 1U) != 0U ? static_cast<uint16_t>((crc >> 1) ^ 0x8408U) : static_cast<uint16_t>(crc >> 1);
+        }
+    }
+    return static_cast<uint16_t>(~crc);
+}
+
+/* One D-STAR slow-data superframe whose GPS blocks carry @p chunk (at most 50 bytes), scrambled and bit-ordered as
+ * processDSTAR_SD() reads it; the rest is filler. */
+void
+sendDstarSuperframe(Rig& rig, const QByteArray& chunk) {
+    static const uint8_t kScrambler[24] = {0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1};
+    uint8_t bytes[60];
+    DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+    for (qsizetype at = 0, block = 0; at < chunk.size(); block++) {
+        const qsizetype n = std::min<qsizetype>(5, chunk.size() - at);
+        uint8_t* b = bytes + (block * 6);
+        b[0] = static_cast<uint8_t>(0x30U | static_cast<unsigned>(n));
+        DSD_MEMCPY(b + 1, chunk.constData() + at, static_cast<size_t>(n));
+        at += n;
+    }
+    uint8_t bits[480];
+    for (int byteIdx = 0; byteIdx < 60; byteIdx++) {
+        const uint8_t byte = bytes[59 - byteIdx];
+        for (int bit = 0; bit < 8; bit++) {
+            const int pos = 479 - ((byteIdx * 8) + bit);
+            bits[pos] = static_cast<uint8_t>(((byte >> (7 - bit)) & 1U) ^ kScrambler[pos % 24]);
+        }
+    }
+    processDSTAR_SD(rig.opts, rig.state, bits);
+}
+
+void
+dmrHeader(Rig& rig, const uint8_t* header, int crcOk) {
+    uint8_t bytes[12];
+    uint8_t bits[96];
+    DSD_MEMCPY(bytes, header, sizeof(bytes));
+    for (size_t i = 0; i < 96U; ++i) {
+        bits[i] = static_cast<uint8_t>((bytes[i / 8U] >> (7U - i % 8U)) & 1U);
+    }
+    dmr_dheader(rig.opts, rig.state, bytes, bits, static_cast<uint32_t>(crcOk), 0);
+}
+
+/* An MNIS LOCN report through the real DMR data path: a standard header, the DPF 15 MNIS extension and three data
+ * blocks, the MNIS CRC32 over its span. */
+void
+sendMnisLocn(Rig& rig, const char* report) {
+    uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+    DSD_MEMCPY(pdu + 7, report, strlen(report));
+    const uint8_t header[12] = {0x02, 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
+    uint8_t span[42] = {0};
+    DSD_MEMCPY(span, pdu + 3, 38);
+    uint8_t bits[8 * 42];
+    for (size_t i = 0; i < sizeof(span) * 8U; ++i) {
+        bits[i] = static_cast<uint8_t>((span[(i / 8U) ^ 1U] >> (7U - i % 8U)) & 1U);
+    }
+    const uint32_t crc = ComputeCrc32Bit(bits, static_cast<uint32_t>(sizeof(span) * 8U - 32U));
+    for (size_t i = 0; i < 4U; ++i) {
+        pdu[42 + i] = static_cast<uint8_t>(crc >> (24U - i * 8U));
+    }
+    dmrHeader(rig, header, 1);
+    dmrHeader(rig, pdu, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        dmr_block_assembler(rig.opts, rig.state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+/* NMEA sentences with their checksums, one bit per byte as nmea_sentence_checker() reads a payload. */
+void
+sendNmea(Rig& rig, const QList<QByteArray>& bodies) {
+    QByteArray payload;
+    for (const QByteArray& body : bodies) {
+        uint8_t sum = 0U;
+        for (const char c : body) {
+            sum ^= static_cast<uint8_t>(c);
+        }
+        payload += '$' + body + '*' + QByteArray::number(sum, 16).rightJustified(2, '0').toUpper() + "\r\n";
+    }
+    std::vector<uint8_t> bits(static_cast<size_t>(payload.size()) * 8U);
+    for (size_t i = 0; i < bits.size(); i++) {
+        bits[i] = static_cast<uint8_t>(
+            (static_cast<uint8_t>(payload.at(static_cast<qsizetype>(i / 8U))) >> (7U - i % 8U)) & 1U);
+    }
+    (void)nmea_sentence_checker(rig.opts, rig.state, bits.data(), 0U, static_cast<int>(payload.size()), 1, nullptr);
+}
+
+/* Every record of @p bytes that holds any of @p parts (bytes of the report) carries its producer's label, so the
+ * redaction removes it whole, live and stored; returns how many there were. */
+int
+checkReportRecords(const QByteArray& bytes, const QStringList& parts, const char* what) {
+    QTemporaryDir dir;
+    int found = 0;
+    for (const QString& record : streamRecords(bytes, dir.path())) {
+        if (record == QLatin1String("[redacted position]")) {
+            found++;
+            continue;
+        }
+        const bool holds =
+            std::any_of(parts.cbegin(), parts.cend(), [&record](const QString& part) { return record.contains(part); });
+        checkLabelled(!holds, QByteArray(what) + ": a record of the report was kept: " + record.toUtf8());
+    }
+    for (const QByteArray& line : bytes.split('\n')) {
+        const QString text = QString::fromUtf8(line);
+        const bool holds =
+            std::any_of(parts.cbegin(), parts.cend(), [&text](const QString& part) { return text.contains(part); });
+        if (holds) {
+            checkLabelled(DiagnosticsLog::namesPositionProducerForTest(text),
+                          QByteArray(what) + ": a record of the report carries no producer label: " + line);
+        }
+    }
+    return found;
+}
+
+} // namespace producers
+
+/* Issue #800, D10: the redaction rests on the producer's label, not on the shape of what the air delivered. Each
+ * decoder that prints received report text is driven through its real path, and every line it prints that holds a
+ * byte of the report carries its producer's label: a CRC-valid D-STAR D-PRS report split across superframes, so its
+ * GPS data blocks print a part of the record each ("12  z2230.00N/04500.00", "EA mobile": no shape gives them away),
+ * an MNIS LOCN report's own text, and the checked NMEA sentences of a data payload. */
+static void
+realProducersLabelReceivedPositions() {
+    using namespace producers;
+    {
+        Rig rig;
+        rig.state->synctype = DSD_SYNC_DSTAR_VOICE_POS;
+        const QByteArray body("N0CALL>API51,DSTAR*:/1012  z2230.00N/04500.00EA mobile\r");
+        const QByteArray record =
+            "$$CRC" + QByteArray::number(x25(body), 16).rightJustified(4, '0').toUpper() + ',' + body;
+        const qsizetype first = record.indexOf("12  z");
+        const qsizetype second = record.indexOf("EA mobile");
+        const QByteArray bytes = printed([&]() {
+            sendDstarSuperframe(rig, record.left(first));
+            DSD_FPRINTF(stderr, "\n");
+            sendDstarSuperframe(rig, record.mid(first, second - first));
+            DSD_FPRINTF(stderr, "\n");
+            sendDstarSuperframe(rig, record.mid(second));
+        });
+        check(rig.admitted() == 1, "D-STAR: the split report is a checked position");
+        check(bytes.contains("12  z2230.00N/04500.00") && bytes.contains("EA mobile"),
+              "D-STAR: the GPS data blocks print a part of the record each");
+        const int removed = checkReportRecords(
+            bytes, {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("mobile"), QStringLiteral("API51")},
+            "D-STAR");
+        check(removed >= 3, "D-STAR: each GPS data line is removed");
+    }
+    {
+        Rig rig;
+        rig.opts->aggressive_framesync = 1;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        const QByteArray bytes = printed([&]() { sendMnisLocn(rig, "A120000171126N2230.0000E04500.0000"); });
+        check(rig.admitted() == 1, "LOCN: the report is a checked position");
+        check(checkReportRecords(bytes, {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("A120000")},
+                                 "LOCN")
+                  >= 2,
+              "LOCN: the report's text and its decode are removed");
+    }
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() {
+            sendNmea(rig, {QByteArray("GPGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1"),
+                           QByteArray("GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A")});
+        });
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("GPGSA"), QStringLiteral("GPRMC")},
+                  "NMEA")
+                  >= 1,
+              "NMEA: the checked sentences are removed");
     }
 }
 
@@ -2847,6 +3090,7 @@ main(int argc, char** argv) {
     negativeMeasurementsDoNotCarryKeys();
     measurementCorpusSurvives();
     receivedPositionsAreRemoved();
+    realProducersLabelReceivedPositions();
     measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
     everyExemptionYieldsToArgumentEcho();

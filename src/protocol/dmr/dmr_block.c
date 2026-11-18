@@ -1352,6 +1352,21 @@ dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
     return (mnis_type == 0x33U || mnis_type == 0x88U) ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA;
 }
 
+/* An MNIS LOCN report's own text, as utf8_to_text() shows text (a padding NUL as '_', another control byte as '-'),
+ * under a label that names it: the text is a position report, whatever shape its fields take, so the diagnostics log
+ * removes the line (issue #800, D10). */
+static void
+dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
+    DSD_FPRINTF(stderr, "\n LOCN Text: ");
+    for (uint16_t i = 0; i < len; i++) {
+        if (text[i] >= 0x20U && text[i] < 0x7FU) {
+            DSD_FPRINTF(stderr, "%c", text[i]);
+        } else {
+            DSD_FPRINTF(stderr, "%c", text[i] == 0U ? '_' : '-');
+        }
+    }
+}
+
 static void
 dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, uint32_t msrc,
                                     uint32_t mdst, uint16_t mnis_ip_id) {
@@ -1367,8 +1382,8 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // `len` already counts only the octets available at +7, so nothing further comes off it.
         // Upstream subtracted the CRC32 bit-reordering loop's `offset` here, which is a constant
         // for locating confirmed-data DBSN octets and has no bearing on a text length; the
-        // dmr_locn() call on the next line passes the same pointer with the unadjusted length.
-        utf8_to_text(ctx->state, 0, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        // dmr_locn() call below passes the same pointer with the unadjusted length.
+        dmr_block_print_locn_text(ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
         // An admitted position is staged for this notice by dmr_locn() itself, never the text alone.
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
     }

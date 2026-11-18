@@ -1552,7 +1552,8 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
         return 1U;
     }
     if (pkt.checked > 0 && packet_verified == 1) {
-        DSD_FPRINTF(stderr, "%s", pkt.text);
+        /* Labelled: the sentences can hold a position in any form (issue #800, D10). */
+        DSD_FPRINTF(stderr, " NMEA: %s", pkt.text);
     } else if (pkt.checked > 0) {
         DSD_FPRINTF(stderr, " NMEA Withheld (CRC ERR);");
     }

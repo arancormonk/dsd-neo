@@ -1137,13 +1137,19 @@ test_type1_mnis_short_pdu_length_underflow_guard(void) {
         (void)remove(cap.path);
         return 1;
     }
-    (void)remove(cap.path);
+    static char printed[8192];
+    if (dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+        return 1;
+    }
 
-    // 12 octets arrived and the payload starts at +7, so 5 is the most that can ever be readable.
-    const uint16_t max_readable = (uint16_t)(sizeof(block) - 7U);
-    if (g_utf8_calls == 0U || g_utf8_last_len > max_readable) {
-        DSD_FPRINTF(stderr, "mnis-short-pdu: payload handler got len %u, more than the %u octets received\n",
-                    g_utf8_last_len, max_readable);
+    // 12 octets arrived and the payload starts at +7, so 5 is the most that can ever be readable. The LOCN report's
+    // text prints under its own label (issue #800, D10), one character per octet handed over.
+    const size_t max_readable = sizeof(block) - 7U;
+    const char* text = strstr(printed, "\n LOCN Text: ");
+    const size_t shown = text != NULL ? strcspn(text + strlen("\n LOCN Text: "), "\n\x1b") : 0U;
+    if (text == NULL || shown > max_readable) {
+        DSD_FPRINTF(stderr, "mnis-short-pdu: payload handler got len %zu, more than the %zu octets received\n", shown,
+                    max_readable);
         rc = 1;
     }
     return rc;
@@ -1193,17 +1199,22 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
         (void)remove(cap.path);
         return 1;
     }
-    (void)remove(cap.path);
+    static char printed[8192];
+    if (dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+        return 1;
+    }
 
     // 24 octets assembled, the payload starts at +7, the CRC32 trailer is 4 and there are no pad
-    // octets, so all 13 remaining octets are readable. The old code handed over 1.
-    if (g_utf8_calls != 1U || g_utf8_last_len != 13U) {
-        DSD_FPRINTF(stderr, "mnis-locn-len: expected one 13 octet text call, got %u calls len %u\n", g_utf8_calls,
-                    g_utf8_last_len);
+    // octets, so all 13 remaining octets are readable. The old code handed over 1. The report's text prints under its
+    // own label (issue #800, D10), never as a "UTF8 Text" dump.
+    const char* text = strstr(printed, "\n LOCN Text: ");
+    if (text == NULL || strncmp(text + strlen("\n LOCN Text: "), "ABCDEFGHIJKLM", 13U) != 0
+        || text[strlen("\n LOCN Text: ") + 13U] == '^') {
+        DSD_FPRINTF(stderr, "mnis-locn-len: expected the 13 octet report text from the +7 payload offset\n");
         rc = 1;
     }
-    if (g_utf8_first_byte != 0x41U) {
-        DSD_FPRINTF(stderr, "mnis-locn-len: text started at %02X, not at the +7 payload offset\n", g_utf8_first_byte);
+    if (g_utf8_calls != 0U) {
+        DSD_FPRINTF(stderr, "mnis-locn-len: the report text went out as %u UTF8 Text dump(s)\n", g_utf8_calls);
         rc = 1;
     }
     // dmr_locn() stages an admitted position itself; the slot text is never staged as the notice's GPS (issue #800).
