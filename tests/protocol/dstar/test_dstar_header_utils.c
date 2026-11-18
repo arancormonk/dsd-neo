@@ -197,9 +197,10 @@ test_soft_data_header_preserves_callsigns(void) {
     assert(strcmp(call.source_text, "N0CALL /TST") == 0);
 }
 
-/* Issue #800: only a header whose CRC passed and whose MY field names a callsign names the transmission a D-PRS record
- * belongs to. processDSTAR_HD() marks every RF header's transmission unnamed (DSTAR_PROCESS); the decode names it. A
- * blank MY field names no one, though the call keeps the callsign of the transmission before it. */
+/* Issue #800: only a header whose CRC passed and whose MY field names a callsign names the transmission's call
+ * (dsd_state::dstar_tx_call_epoch), the only call its slow data reaches. processDSTAR_HD() leaves every RF header's
+ * transmission naming none (DSTAR_PROCESS); the decode names it. A blank MY field names no one, though the call keeps
+ * the callsign of the transmission before it. */
 static void
 test_soft_header_decode_names_the_dprs_source_only_with_a_callsign(void) {
     static dsd_state state;
@@ -209,25 +210,46 @@ test_soft_header_decode_names_the_dprs_source_only_with_a_callsign(void) {
     state.min = -1.0F;
     state.center = 0.0F;
     state.max = 1.0F;
-    state.dstar_dprs_source_unchecked = 1U;
     build_encoded_header_fixture(soft_rx, 0x00U);
     assert(dstar_header_decode_soft(&state, soft_rx) == 1);
-    assert(state.dstar_dprs_source_unchecked == 0U);
+    const uint64_t named = get_dstar_call(&state).epoch;
+    assert(named != 0U && state.dstar_tx_call_epoch == named);
 
-    state.dstar_dprs_source_unchecked = 1U;
+    state.dstar_tx_call_epoch = 0U;
     build_encoded_header_fixture_my(soft_rx, 0x00U, 0, "            ");
     assert(dstar_header_decode_soft(&state, soft_rx) == 1);
-    assert(state.dstar_dprs_source_unchecked == 1U);
+    assert(state.dstar_tx_call_epoch == 0U);
     assert(strcmp(get_dstar_call(&state).source_text, "N0CALL /TST") == 0);
 
     /* Only the suffix: no callsign either. */
     build_encoded_header_fixture_my(soft_rx, 0x00U, 0, "        /TST");
     assert(dstar_header_decode_soft(&state, soft_rx) == 1);
-    assert(state.dstar_dprs_source_unchecked == 1U);
+    assert(state.dstar_tx_call_epoch == 0U);
 
     build_encoded_header_fixture_ex(soft_rx, 0x00U, 1);
     assert(dstar_header_decode_soft(&state, soft_rx) == 0);
-    assert(state.dstar_dprs_source_unchecked == 1U);
+    assert(state.dstar_tx_call_epoch == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
+/* Issue #800: a suffix with a blank MY field is no caller. On a fresh call the RF header's suffix alone never becomes
+ * the call's source: the call is anonymous, as its D-PRS records are. */
+static void
+test_soft_header_decode_suffix_alone_is_no_source(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture_my(soft_rx, 0x00U, 0, "        TEST");
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.source_text[0] == '\0');
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(state.dstar_tx_call_epoch == 0U);
     dsd_state_ext_free_all(&state);
 }
 
@@ -420,18 +442,13 @@ set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]) {
     }
 }
 
-// Open a D-STAR voice call on the slot, as a decoded header followed by a voice frame's sync leaves it: slow-data detail
-// reaches the history row only through an open call (issue #575 follow-up).
+// Open a D-STAR voice call on the slot, as a decoded header (dstar_header_observe()) followed by a voice frame's sync
+// leaves it: slow-data detail reaches the history row only through the call its transmission's header named (issue
+// #575 follow-up, issue #800).
 static void
 open_dstar_call(dsd_opts* opts, dsd_state* state) {
-    dsd_call_observation observation;
-    DSD_MEMSET(&observation, 0, sizeof(observation));
-    observation.protocol = DSD_SYNC_DSTAR_VOICE_POS;
-    observation.slot = 0U;
-    observation.kind = DSD_CALL_KIND_VOICE;
-    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "N0CALL");
-    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "CQCQCQ");
-    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dstar_header_observe(state, DSD_SYNC_DSTAR_VOICE_POS, 0, "RPT2TST", "RPT1TST", "CQCQCQ", "N0CALL      ");
+    assert(state->dstar_tx_call_epoch != 0U);
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -510,9 +527,9 @@ test_slow_data_text_by_mini_header(void) {
 }
 
 /* Slow data decodes after a single unconfirmed sync, so its text reaches a history row only from a confirmed D-STAR
- * transmission and only through an open D-STAR call (issue #800). A DMR call still open on slot 0 takes none of it,
- * confirmed or not: a filler block then a 0x42 text block leaves the DMR row as it was. An open D-STAR call takes it
- * only once the transmission is confirmed. */
+ * transmission and only through the D-STAR call its header named (issue #800). A DMR call still open on slot 0 takes
+ * none of it, confirmed or not: a filler block then a text block 0 leaves the DMR row as it was. The named D-STAR call
+ * takes it only once the transmission is confirmed. */
 static void
 test_slow_data_text_needs_a_confirmed_dstar_call(void) {
     static dsd_opts opts;
@@ -529,7 +546,7 @@ test_slow_data_text_needs_a_confirmed_dstar_call(void) {
     dmr.kind = DSD_CALL_KIND_GROUP_VOICE;
     assert(dsd_call_state_observe(&state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    static const uint8_t minis[2] = {0x66, 0x42};
+    static const uint8_t minis[2] = {0x66, 0x40};
     static const char* const data[2] = {"fffff", "HELLO"};
     for (int confirmed = 0; confirmed < 2; confirmed++) {
         state.dstar_confirmed = confirmed;
@@ -747,6 +764,7 @@ main(void) {
     test_soft_data_header_preserves_callsigns();
     test_soft_header_decode_reports_a_failed_crc();
     test_soft_header_decode_names_the_dprs_source_only_with_a_callsign();
+    test_soft_header_decode_suffix_alone_is_no_source();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();

@@ -249,8 +249,56 @@ M17printIpSource(unsigned long long int src) {
     }
 }
 
+/* ---- The LSF assembled from LICH chunks (state.h m17_lich_assembly) ---- */
+
+#define M17_LICH_ALL_CHUNKS 0x3FU
+
+/* The slot 0 ACTIVE M17 call's epoch: the transmission a chunk is heard in; 0 when there is none. */
+static uint64_t
+m17_lich_call_epoch(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_M17(call.protocol))
+               ? call.epoch
+               : 0U;
+}
+
+/* 1 while everything the assembly's first chunk was heard under still holds: the same transmission, confirmation and
+ * reception generation. */
+static int
+m17_lich_binding_holds(const dsd_state* state, const m17_lich_assembly* a) {
+    return a->call_epoch == m17_lich_call_epoch(state) && a->confirmed == (uint8_t)m17_confirm_is_confirmed(state)
+           && dsd_position_origin_matches(state, &a->origin);
+}
+
+/* Empty the assembly: its chunks and what they were bound to. */
+static void
+m17_lich_reset(dsd_state* state) {
+    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
+}
+
+/* Chunk @p counter is about to be stored: what the assembly holds from another transmission, confirmation or reception
+ * is dropped first, and a first chunk binds it. */
+static void
+m17_lich_note_chunk(const dsd_opts* opts, dsd_state* state, uint8_t counter) {
+    m17_lich_assembly* a = &state->m17_lich;
+    if (a->held != 0U && !m17_lich_binding_holds(state, a)) {
+        m17_lich_reset(state);
+    }
+    if (a->held == 0U) {
+        a->call_epoch = m17_lich_call_epoch(state);
+        a->confirmed = (uint8_t)m17_confirm_is_confirmed(state);
+        dsd_position_origin_capture(opts, state, &a->origin);
+    }
+    a->held |= (uint8_t)(1U << counter);
+}
+
 static void
 M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
+    /* All six chunks under one binding (m17_lich_note_chunk() reset the assembly at any change): only then is the LSF
+       one transmission's, heard on one reception, and only then may its CRC make it the carrier's identity. */
+    const int whole = state->m17_lich.held == M17_LICH_ALL_CHUNKS && m17_lich_binding_holds(state, &state->m17_lich);
     uint8_t lsf_packed[M17_LSF_BYTES];
     DSD_MEMSET(lsf_packed, 0, sizeof(lsf_packed));
 
@@ -264,14 +312,14 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
     if (crc_err == 0U || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0U, &k_m17_rf_carrier);
+        M17decodeLSF(opts, state, crc_err == 0U && whole, &k_m17_rf_carrier);
     }
 
     if (opts->payload == 1) {
         M17printLSF(lsf_packed, crc_ext, crc_cmp);
     }
 
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    m17_lich_reset(state);
 
     if (crc_err != 0U) {
         DSD_FPRINTF(stderr, " EMB LSF CRC ERR");
@@ -579,6 +627,34 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
  * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
  * call may be another station's. Nothing else in M17 carries a position (D13).
  */
+/* What tells one GNSS META report's transmission from another's (dsd_state::m17_gnss_tx_kind and the fields after it). */
+typedef struct {
+    uint8_t kind;
+    uint64_t id;
+    uint64_t epoch;
+    uint64_t src;
+    uint64_t gen;
+} m17_gnss_tx_key;
+
+/* 1 when the META now held repeats the last admitted one within the same transmission, sender and reception. */
+static int
+m17_gnss_is_repeat(const dsd_state* state, const m17_gnss_tx_key* key) {
+    return state->m17_gnss_tx_kind == key->kind && state->m17_gnss_tx_id == key->id
+           && state->m17_gnss_tx_epoch == key->epoch && state->m17_gnss_tx_src == key->src
+           && state->m17_gnss_tx_gen == key->gen
+           && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
+}
+
+static void
+m17_gnss_note_admitted(dsd_state* state, const m17_gnss_tx_key* key) {
+    state->m17_gnss_tx_kind = key->kind;
+    state->m17_gnss_tx_id = key->id;
+    state->m17_gnss_tx_epoch = key->epoch;
+    state->m17_gnss_tx_src = key->src;
+    state->m17_gnss_tx_gen = key->gen;
+    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+}
+
 static void
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
@@ -599,22 +675,27 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed for
        this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended
        (stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. An LSF that
-       observed no call has no epoch. */
-    const uint8_t tx_kind = carrier->network ? 2U : 1U;
-    const uint64_t epoch = active ? call.epoch : 0U;
-    const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
-    if (state->m17_gnss_tx_kind == tx_kind && state->m17_gnss_tx_id == tx_id && state->m17_gnss_tx_epoch == epoch
-        && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0) {
+       observed no call has no epoch, so the checked sender is part of the key too (two stations reusing one stream ID
+       are two transmissions), and the reception generation: a repeat is only ever one heard on the same reception. */
+    m17_gnss_tx_key key;
+    key.kind = carrier->network ? 2U : 1U;
+    key.epoch = active ? call.epoch : 0U;
+    key.id = carrier->network ? (uint64_t)carrier->stream_id : key.epoch;
+    key.src = res->src;
+    dsd_position_origin heard;
+    dsd_position_origin_capture(opts, state, &heard);
+    key.gen = heard.gen;
+    if (m17_gnss_is_repeat(state, &key)) {
         return;
     }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return;
     }
     /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
-    state->m17_gnss_tx_kind = (carrier->network || tx_id != 0U) ? tx_kind : 0U;
-    state->m17_gnss_tx_id = tx_id;
-    state->m17_gnss_tx_epoch = epoch;
-    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+    if (!carrier->network && key.id == 0U) {
+        key.kind = 0U;
+    }
+    m17_gnss_note_admitted(state, &key);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
@@ -702,6 +783,7 @@ m17_process_lich(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bit
         if (lich_reserve != 0U) {
             DSD_FPRINTF(stderr, "LICH RSV:%02X ", lich_reserve);
         }
+        m17_lich_note_chunk(opts, state, lich_counter);
         for (int i = 0; i < M17_LICH_CHUNK_BITS; i++) {
             state->m17_lsf[((size_t)lich_counter * M17_LICH_CHUNK_BITS) + i] = lich_decoded[i];
         }
@@ -1540,7 +1622,7 @@ m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t*
     (void)viterbi_decode(lsf_bytes, m17_depunc, M17_LSF_TYPE2_BITS);
     DSD_MEMCPY(lsf_packed, lsf_bytes + 1, M17_LSF_BYTES);
 
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    m17_lich_reset(state);
     DSD_UNPACK_ARRAY_TO_BITS(lsf_packed, state->m17_lsf, M17_LSF_BYTES);
 
     const uint16_t crc_ext = (uint16_t)((lsf_packed[M17_LSF_LSD_BYTES] << 8) + lsf_packed[M17_LSF_LSD_BYTES + 1]);
@@ -2726,7 +2808,7 @@ m17_str_handle_tx_active(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
         m17_str_reset_tx_idle_state(ctx);
         ctx->new_lsf = 1;
         DSD_MEMSET(ctx->state->m17_meta, 0, sizeof(ctx->state->m17_meta));
-        DSD_MEMSET(ctx->state->m17_lsf, 0, sizeof(ctx->state->m17_lsf));
+        m17_lich_reset(ctx->state);
     }
 }
 
@@ -2758,7 +2840,7 @@ m17_str_handle_tx_idle(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
     m17_str_flush_eot_if_needed(ctx, frame);
     ctx->new_lsf = 1;
     DSD_MEMSET(ctx->state->m17_meta, 0, sizeof(ctx->state->m17_meta));
-    DSD_MEMSET(ctx->state->m17_lsf, 0, sizeof(ctx->state->m17_lsf));
+    m17_lich_reset(ctx->state);
 }
 
 static void
@@ -3586,7 +3668,7 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
     uint8_t pkt_packed[50];
     uint8_t pkt_bytes[48];
 
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    m17_lich_reset(state);
     DSD_MEMSET(m17_soft_bits, 0, sizeof(m17_soft_bits));
     DSD_MEMSET(m17_depunc, 0, sizeof(m17_depunc));
 

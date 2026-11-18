@@ -53,8 +53,16 @@ typedef enum {
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
 #define DSTAR_CONFIRM_WEAK_OBSERVES 2U
 
-/** @brief Forget everything learned about the current transmission, the D-PRS record being collected included. */
+/** @brief Forget everything learned about the current transmission (dstar_tx_begin() included): the carrier ended. */
 void dstar_confirm_reset(dsd_state* state);
+
+/**
+ * @brief A transmission boundary (an RF header, decoded or not, or the carrier's end): the next transmission begins.
+ * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets (state.h
+ * dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS record and the text
+ * message being assembled. Confirmation is left to dstar_confirm_reset().
+ */
+void dstar_tx_begin(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void dstar_confirm_begin_frame(dsd_state* state);

@@ -1969,7 +1969,8 @@ suite runs under this compiler.
   slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go through
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
   to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
-  its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
+  its call -- D-STAR slow-data text and APRS (and those only through the call their transmission's checked header named,
+  `dstar_slow_data.c`), the NXDN alias and DCR call sign memory -- reaches a row only through
   `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
   a call of the detail's own protocol family (the caller passes the sync type it decoded under: D-STAR text never
   lands on a DMR call still open on the slot), and
@@ -2517,7 +2518,8 @@ suite runs under this compiler.
   detail lines take their label from `dsd_event_gps_detail_label()`, none when `gps_s` already starts with `GPS:`, as
   DMR embedded GPS, UDT NMEA, Motorola APX and M17 text does, so the line has one; tests `P25_P1_HARRIS_GPS`,
   `DMR_FLCO_MONO_CRC_SCOPE`),
-  `dsd_event_set_open_call_position()` (D-STAR slow data), `dsd_event_stage_position()` (the next data notice;
+  `dsd_event_set_open_call_position()` (D-STAR slow data, through the call its transmission's header named),
+  `dsd_event_stage_position()` (the next data notice;
   `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol class,
   `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, so an anonymous Phase 2 report never lands on an
@@ -2652,17 +2654,31 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission). The epoch is the call the same LSF observed: an LSF that observes none (a stream of data type 0)
-    is bound to no transmission, whatever M17 call is still ACTIVE on the slot, so each such RF report is admitted
-    again and none touches that call's row. The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    transmission; and by the checked LSF's sender and the reception generation, so two stations reusing one stream ID
+    with no call between them, or one report heard again on another reception, are two reports). The epoch is the call
+    the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
+    call is still ACTIVE on the slot, so each such RF report is admitted again and none touches that call's row. An LSD
+    assembled from LICH chunks (`m17_lich_assembly`) is bound from its first chunk to the transmission (the ACTIVE M17
+    call's epoch, 0 none; an LSF frame, a packet frame, an EOT and the carrier's end empty it), the confirmation
+    (`m17_confirmed`) and the reception generation; a chunk heard after any of them changed resets it, and only an LSD
+    holding all six chunks under one binding, its CRC passed, names a call or carries a position (`-F` may still show
+    the rest). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
-    `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
-    only when the record arrived within that call. Each slow-data block goes by its own mini-header: only GPS blocks
-    (0x3n) feed the record and the `GPS DATA:` display, only text blocks (0x40-0x43) the 20-character message, each at
-    its place. Slow data decodes after a single unconfirmed sync, so the message reaches a history row only once the
-    transmission is confirmed (`dstar_confirm.h`) and only through an open D-STAR call; until then it is display text
-    alone. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
+    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display, only text blocks
+    (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
+    rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
+    transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
+    `dstar_tx_begin()`), the call a checked header of that transmission named (`dstar_tx_call_epoch`, 0 none), the
+    confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
+    produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
+    the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
+    the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
+    Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
+    header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
+    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
@@ -2686,9 +2702,10 @@ suite runs under this compiler.
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
     checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
-    header, whatever its CRC, drops the half-collected D-PRS record and leaves D-PRS records anonymous
-    (`dstar_dprs_source_unchecked`) until a checked header, on RF or in the slow data, names the transmission's MY
-    callsign (a checked header with a blank MY field names no one and leaves them anonymous too). Tests:
+    header, whatever its CRC, begins another transmission (`dstar_tx_begin()`: the half-assembled D-PRS record and text
+    message are dropped) whose slow data reaches no call, its D-PRS records anonymous, until a checked header, on RF or
+    in the slow data, names the transmission's MY callsign (`dstar_tx_call_epoch`; a checked header with a blank MY
+    field names no one and leaves them anonymous too). Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
     `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.

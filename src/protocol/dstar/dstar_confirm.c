@@ -21,8 +21,19 @@ dstar_confirm_reset(dsd_state* state) {
     state->dstar_confirmed = 0;
     state->dstar_confirm_weak_streak = 0;
     state->dstar_confirm_frame_evidence = 0;
-    /* A D-PRS record half collected belongs to the transmission being forgotten. */
+    /* What slow data was assembling belongs to the transmission being forgotten. */
+    dstar_tx_begin(state);
+}
+
+void
+dstar_tx_begin(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dstar_tx_seq++;
+    state->dstar_tx_call_epoch = 0U;
     DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+    DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
 }
 
 void

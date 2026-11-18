@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -188,20 +189,8 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         DSD_FPRINTF(stderr, " SRC: %s", ctx->str4);
         dstar_sd_print_header_flags(ctx->sd_bytes[1]);
         if ((ctx->sd_bytes[1] & 0x80U) == 0U) {
-            int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
-            dsd_call_observation observation = {
-                .protocol = protocol,
-                .slot = 0U,
-                .kind = DSD_CALL_KIND_VOICE,
-            };
-            DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", ctx->str4);
-            DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", ctx->str3);
-            DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
-            DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
-            (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-            /* The transmission's own callsign is on the call: a D-PRS record of it may name it again. A blank MY
-               field names no one, so the callsign the call still carries is another transmission's. */
-            state->dstar_dprs_source_unchecked = dstar_callsign_present(ctx->str4, 8U) ? 0U : 1U;
+            const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
+            dstar_header_observe(state, protocol, 0, ctx->str1, ctx->str2, ctx->str3, ctx->str4);
         }
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
@@ -361,25 +350,41 @@ dstar_aprs_text(const dstar_aprs_position* pos, char* out, size_t cap) {
     }
 }
 
-static int
-dstar_dprs_active_call(const dsd_state* state, dsd_call_snapshot* call) {
-    return dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
-           && DSD_SYNC_IS_DSTAR(call->protocol);
+/* ---- What slow data is bound to (state.h dstar_sd_binding), and the only call it reaches ---- */
+
+/* Capture what an assembly's first byte or block is heard under. */
+static void
+dstar_sd_bind(const dsd_opts* opts, const dsd_state* state, dstar_sd_binding* b) {
+    DSD_MEMSET(b, 0, sizeof(*b));
+    b->tx = state->dstar_tx_seq;
+    b->call_epoch = state->dstar_tx_call_epoch;
+    b->confirmed = (uint8_t)dstar_confirm_is_confirmed(state);
+    dsd_position_origin_capture(opts, state, &b->origin);
 }
 
-/* The slot 0 call a record is bound to: the ACTIVE D-STAR call's epoch, 0 when there is none. */
-static uint64_t
-dstar_dprs_call_epoch(const dsd_state* state) {
-    dsd_call_snapshot call;
-    return dstar_dprs_active_call(state, &call) ? call.epoch : 0U;
+/* 1 while everything @p b was captured under still holds: the same transmission, the same call named by its checked
+ * header (or still none), the same confirmation and the same reception generation. Anything else, the reset. */
+static int
+dstar_sd_binding_holds(const dsd_state* state, const dstar_sd_binding* b) {
+    return b->tx == state->dstar_tx_seq && b->call_epoch == state->dstar_tx_call_epoch
+           && b->confirmed == (uint8_t)dstar_confirm_is_confirmed(state)
+           && dsd_position_origin_matches(state, &b->origin);
+}
+
+/* The call slow data bound by @p b may reach: the slot 0 call a checked header of its transmission named, still
+ * ACTIVE and D-STAR's. No other call -- one the transmission's header did not name, one left ACTIVE by the
+ * transmission before (its terminator missed), an anonymous one -- is the transmission's. */
+static int
+dstar_sd_bound_call(const dsd_state* state, const dstar_sd_binding* b, dsd_call_snapshot* call) {
+    return b->call_epoch != 0U && dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_DSTAR(call->protocol) && call->epoch == b->call_epoch;
 }
 
 /*
- * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call it was heard
- * in, which only a header whose CRC-16/X.25 passed names (dstar_header.c and the slow-data header above), and only
- * when the whole record arrived within that call. A record begun outside an active call has no checked source, and
- * neither has one completed after an RF header (another transmission began, maybe another radio's) until a checked
- * header names the transmission's MY callsign (dsd_state::dstar_dprs_source_unchecked).
+ * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call a checked
+ * header of the record's transmission named before the record's first byte (dstar_header_observe()), and it reaches
+ * only that call's row. A record bound to no named call (late entry, an RF header that failed its CRC, a blank MY
+ * field) has no checked source and reaches no row; the feed still takes it, anonymous.
  */
 static void
 dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {
@@ -392,19 +397,19 @@ dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_posi
     fix.lat_e7 = dstar_aprs_e7(pos->lat_deg, pos->lat_min, pos->lat_hund, pos->lat_hemi == 'S');
     fix.lon_e7 = dstar_aprs_e7(pos->lon_deg, pos->lon_min, pos->lon_hund, pos->lon_hemi == 'W');
     dsd_call_snapshot call;
-    int source_verified = 0;
-    if (a->epoch != 0U && state->dstar_dprs_source_unchecked == 0U && dstar_dprs_active_call(state, &call)
-        && call.epoch == a->epoch && call.source_text[0] != '\0') {
+    const int on_call = dstar_sd_bound_call(state, &a->bind, &call) && call.source_text[0] != '\0';
+    if (on_call) {
         DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", call.source_text);
-        source_verified = 1;
     }
-    if (dsd_position_admit(opts, state, &fix, 1, source_verified, &a->origin) == DSD_POSITION_REFUSED) {
+    if (dsd_position_admit(opts, state, &fix, 1, on_call, &a->bind.origin) == DSD_POSITION_REFUSED) {
         return;
     }
     dstar_aprs_text(pos, state->dstar_gps, sizeof(state->dstar_gps));
     DSD_FPRINTF(stderr, "\n %s;", state->dstar_gps);
-    // The display keeps the position either way; the history row takes it only through an open call.
-    (void)dsd_event_set_open_call_position(state, 0U, &fix, state->dstar_gps);
+    // The display keeps the position either way; the history row takes it only through the transmission's call.
+    if (on_call) {
+        (void)dsd_event_set_open_call_position(state, 0U, &fix, state->dstar_gps);
+    }
 }
 
 /* A record through its CR: only a CRC-16/X.25 over the text after "$$CRCxxxx," (CR included) that equals the four
@@ -412,6 +417,11 @@ dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_posi
 static void
 dstar_dprs_complete(const dsd_opts* opts, dsd_state* state) {
     const dstar_dprs_assembly* a = &state->dstar_dprs;
+    /* Checked before the record counts as anything, evidence included: one assembled under another transmission,
+       call, confirmation or reception proves nothing about this carrier. */
+    if (!dstar_sd_binding_holds(state, &a->bind)) {
+        return;
+    }
     if (a->len <= DSTAR_DPRS_PREFIX_LEN || a->text[DSTAR_DPRS_PREFIX_LEN - 1] != ',') {
         DSD_FPRINTF(stderr, " D-PRS (FORMAT ERR)");
         return;
@@ -439,21 +449,22 @@ dstar_dprs_reset(dstar_dprs_assembly* a) {
     DSD_MEMSET(a, 0, sizeof(*a));
 }
 
-/* A record starts at "$$CRC": bound to the call active now and to the reception it was heard on. */
+/* A record starts at "$$CRC", under the binding its first byte (the hunt's) was captured with. */
 static void
-dstar_dprs_begin(const dsd_opts* opts, dsd_state* state) {
+dstar_dprs_begin(dsd_state* state) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
     DSD_MEMCPY(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN);
     a->len = DSTAR_DPRS_TAG_LEN;
     a->collecting = 1U;
-    a->epoch = dstar_dprs_call_epoch(state);
-    dsd_position_origin_capture(opts, state, &a->origin);
 }
 
 /* One GPS data byte while no record is being collected: the last five bytes are kept to find "$$CRC". */
 static void
 dstar_dprs_hunt(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
+    if (a->len == 0U) {
+        dstar_sd_bind(opts, state, &a->bind);
+    }
     if (a->len == DSTAR_DPRS_TAG_LEN) {
         for (int i = 1; i < DSTAR_DPRS_TAG_LEN; i++) {
             a->text[i - 1] = a->text[i];
@@ -462,7 +473,7 @@ dstar_dprs_hunt(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     }
     a->text[a->len++] = byte;
     if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
-        dstar_dprs_begin(opts, state);
+        dstar_dprs_begin(state);
     }
 }
 
@@ -501,17 +512,16 @@ dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     } else if (a->len >= 2U * DSTAR_DPRS_TAG_LEN
                && memcmp(a->text + a->len - DSTAR_DPRS_TAG_LEN, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
         DSD_FPRINTF(stderr, " D-PRS (NO CR)");
-        dstar_dprs_begin(opts, state);
+        dstar_dprs_begin(state);
     }
 }
 
-/* Feed the superframe's GPS blocks (as received, before any display clean-up) to the record. A record begun in another
- * call is not this one's. One begun before any call was active (late entry: the call opens once the transmission is
- * confirmed) is kept: it names no checked source, and is published as unverified. */
+/* Feed the superframe's GPS blocks (as received, before any display clean-up) to the record. What was assembled under
+ * a binding that no longer holds (another transmission, named call, confirmation or reception) is dropped first. */
 static void
 dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
-    if (a->collecting && a->epoch != 0U && a->epoch != dstar_dprs_call_epoch(state)) {
+    if (a->len != 0U && !dstar_sd_binding_holds(state, &a->bind)) {
         dstar_dprs_reset(a);
     }
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
@@ -549,20 +559,31 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
 
 /* Each block by its own mini-header: a text block's five characters go to their place in the message, and nothing of
  * another block (GPS data among them) ever does. A block 0 starts a new message; a later block of the message fills its
- * place in the one being shown. Returns 1 when the superframe held a text block. */
+ * place in the one being shown. A message assembled under a binding that no longer holds is dropped before this
+ * superframe's blocks: none of it is this message's. Returns 1 when the superframe held a text block. */
 static int
-dstar_sd_collect_text(dsd_state* state, const uint8_t* raw) {
+dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
     char* const msg = state->dstar_txt;
+    dstar_text_assembly* t = &state->dstar_text;
     int any = 0;
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
         unsigned place = 0U;
         if (!dstar_sd_text_block(raw, b, &place)) {
             continue;
         }
+        if (t->places != 0U && !dstar_sd_binding_holds(state, &t->bind)) {
+            t->places = 0U;
+            msg[0] = '\0';
+        }
+        if (t->places == 0U) {
+            dstar_sd_bind(opts, state, &t->bind);
+        }
         size_t len = strnlen(msg, DSTAR_SD_TEXT_CHARS);
         if (place == 0U) {
             len = 0U;
+            t->places = 0U;
         }
+        t->places |= (uint8_t)(1U << place);
         for (; len < DSTAR_SD_TEXT_CHARS; len++) {
             msg[len] = ' ';
         }
@@ -585,10 +606,13 @@ dstar_sd_collect_text(dsd_state* state, const uint8_t* raw) {
 static void
 dstar_sd_handle_text_message(dsd_state* state) {
     DSD_FPRINTF(stderr, " TEXT: %s", state->dstar_txt);
-    // The display keeps the text either way. Slow data decodes after a single unconfirmed sync, so the history row takes
-    // it only once the transmission is confirmed (dstar_confirm.h), and only through an open D-STAR call: another
-    // protocol's call still open on the slot is no row of this text.
-    if (dstar_confirm_is_confirmed(state)) {
+    // The display keeps the text either way. The text carries no check of its own: the history row takes it only when
+    // every block of it, its first (place 0) among them, was heard while the transmission was confirmed
+    // (dstar_confirm.h) under one binding, and only through the call a checked header of that transmission named.
+    const dstar_text_assembly* t = &state->dstar_text;
+    dsd_call_snapshot call;
+    if (t->bind.confirmed != 0U && (t->places & 1U) != 0U && dstar_sd_binding_holds(state, &t->bind)
+        && dstar_sd_bound_call(state, &t->bind, &call)) {
         const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
         (void)dsd_event_set_open_call_detail(state, 0U, protocol, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
     }
@@ -617,8 +641,8 @@ dstar_sd_handle_gps_data(const uint8_t* raw) {
 
 /* A superframe that is no header: its text blocks and its GPS blocks, each chosen by its own mini-header. */
 static void
-dstar_sd_handle_non_header(dsd_state* state, const dstar_sd_ctx* ctx) {
-    const int text = dstar_sd_collect_text(state, ctx->payload);
+dstar_sd_handle_non_header(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx) {
+    const int text = dstar_sd_collect_text(opts, state, ctx->payload);
     if (text) {
         dstar_sd_handle_text_message(state);
     }
@@ -675,7 +699,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     if (ctx.sd_bytes[0] == 0x55) {
         dstar_sd_handle_header_format(state, &ctx);
     } else {
-        dstar_sd_handle_non_header(state, &ctx);
+        dstar_sd_handle_non_header(opts, state, &ctx);
     }
     dstar_sd_collect_gps(opts, state, ctx.payload);
 

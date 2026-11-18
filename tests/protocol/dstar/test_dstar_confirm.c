@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -66,15 +67,22 @@ main(void) {
     run_frame(state, 0);
     expect("confirmation survives empty frames", dstar_confirm_is_confirmed(state), 1);
 
-    /* The reset forgets the transmission whole: a D-PRS record its slow data was collecting too (issue #800 2.10). */
+    /* The reset forgets the transmission whole: what its slow data was assembling too, and the call its header named
+       (issue #800 2.10); the next transmission is another one. */
     state->dstar_dprs.collecting = 1U;
     state->dstar_dprs.len = 12U;
-    state->dstar_dprs.epoch = 7U;
+    state->dstar_dprs.bind.call_epoch = 7U;
+    state->dstar_text.places = 3U;
+    state->dstar_tx_call_epoch = 7U;
+    const uint32_t tx = state->dstar_tx_seq;
     dstar_confirm_reset(state);
     expect("reset clears confirmation", dstar_confirm_is_confirmed(state), 0);
     expect("reset forgets the D-PRS record", state->dstar_dprs.collecting, 0);
     expect("reset empties the D-PRS record", state->dstar_dprs.len, 0);
-    expect("reset unbinds the D-PRS record", state->dstar_dprs.epoch != 0U, 0);
+    expect("reset unbinds the D-PRS record", state->dstar_dprs.bind.call_epoch != 0U, 0);
+    expect("reset forgets the text message", state->dstar_text.places, 0);
+    expect("reset forgets the named call", state->dstar_tx_call_epoch != 0U, 0);
+    expect("reset begins another transmission", state->dstar_tx_seq != tx, 1);
 
     /* One unchecked superframe is not enough; the second running is. */
     run_frame(state, DSTAR_EVIDENCE_WEAK);

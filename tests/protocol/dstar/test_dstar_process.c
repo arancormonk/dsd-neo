@@ -550,10 +550,11 @@ test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
     assert(slow_data_calls == 0);
 }
 
-/* Issue #800 2.10: every RF header opens a transmission, whether its CRC passed or not, so a D-PRS record the one
- * before it left half collected is forgotten (a record missing only its CR would otherwise be finished by this
- * transmission and published as its position), and no D-PRS record names a source until a checked header names the
- * transmission's MY callsign (dstar_dprs_source_unchecked; the real header decode clears it: DSTAR_HEADER_UTILS). */
+/* Issue #800 2.10: every RF header opens a transmission (dsd_state::dstar_tx_seq), whether its CRC passed or not, so
+ * what slow data the one before it left half assembled -- a D-PRS record (one missing only its CR would otherwise be
+ * finished by this transmission and published as its position) or a text message -- is forgotten, and no slow data
+ * reaches a call until a checked header names the transmission's MY callsign (dsd_state::dstar_tx_call_epoch; the
+ * real header decode names it: DSTAR_DPRS). */
 static void
 test_every_header_forgets_a_half_collected_dprs_record(void) {
     static dsd_opts opts;
@@ -567,16 +568,20 @@ test_every_header_forgets_a_half_collected_dprs_record(void) {
         header_decode_soft_result = verified;
         state.dstar_dprs.collecting = 1U;
         state.dstar_dprs.len = 12U;
-        state.dstar_dprs.epoch = 7U;
+        state.dstar_dprs.bind.call_epoch = 7U;
         DSD_MEMCPY(state.dstar_dprs.text, "$$CRC9E3E,N0", 12U);
-        state.dstar_dprs_source_unchecked = 0U;
+        state.dstar_text.places = 1U;
+        state.dstar_tx_seq = 3U;
+        state.dstar_tx_call_epoch = 7U;
 
         assert(processDSTAR_HD(&opts, &state) == verified);
         /* The stub decode names no callsign, so neither outcome names the transmission. */
-        assert(state.dstar_dprs_source_unchecked == 1U);
+        assert(state.dstar_tx_seq == 4U);
+        assert(state.dstar_tx_call_epoch == 0U);
         assert(state.dstar_dprs.collecting == 0U);
         assert(state.dstar_dprs.len == 0U);
-        assert(state.dstar_dprs.epoch == 0U);
+        assert(state.dstar_dprs.bind.call_epoch == 0U);
+        assert(state.dstar_text.places == 0U);
     }
     header_decode_soft_result = 1;
 }
