@@ -7420,7 +7420,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   if that attach's input fails to start. What one drop takes is bounded, and no drop waits for audio: the sound-card input (per backend:
   PulseAudio on Linux and macOS, what the client holds, at most 2 s of frames at the stream's rate, exact to one
   32-frame read (up to 31 frames past it), no read begun after 250 ms; PortAudio on Windows, one snapshot of what is
-  available; AAudio on Android, at most 96000 frames and no read begun after 250 ms; see the platform audio entry), the
+  available, at most 2 s of frames at the stream's rate and no read begun after 250 ms; AAudio on Android, at most 96000 frames and no read begun after 250 ms; see the platform audio entry), the
   UDP ring (what it holds: at least 1 s at 48 kHz) and the TCP reader and socket, and stdin when it is a pipe or socket
   (21 buffers of 19200 bytes, about 4 s of 48 kHz mono, and no refill but the first after 250 ms).
   Files, stdin from a file and RTL-family streams are left alone, and `pcm_input_generation` and the analog and
@@ -10879,8 +10879,9 @@ Notes:
   drop (it was captured last). The decoder's own reads (`pulse_record_read()`) wait for the source as `pa_simple_read()`
   did. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read is
   left in the stream. PortAudio
-  (Windows) reads one snapshot of what `Pa_GetStreamReadAvailable()` reports (at most its input buffer, with no cap of
-  its own; an error count is an error), less the frames kept, each read asking for no more than the stream reports
+  (Windows) reads one snapshot of what `Pa_GetStreamReadAvailable()` reports (an error count is an error), less the
+  frames kept, at most 2 s of frames at the stream's rate and no read begun 250 ms or more after its first
+  (`test_input_discard_is_bounded()`), each read asking for no more than the stream reports
   available just before it (a blocking `Pa_ReadStream()` of frames no longer held would wait for new capture, without
   end on a source that stopped), and ends when it holds none. AAudio (Android) reads with no wait what the device wrote
   and no read took (`AAudioStream_getFramesWritten()` less `AAudioStream_getFramesRead()`), less the frames kept, at

@@ -192,6 +192,8 @@ static int16_t g_overrun_next;
 static signed long g_overrun_available;
 /* From the overrun on, the backend's allocations fail (g_backend_alloc_fails). */
 static int g_overrun_runs_out_of_memory;
+/* How far the test's clock moves at each read: a driver's slow reads. */
+static uint64_t g_read_advances_ns;
 
 PaDeviceIndex
 Pa_GetDefaultInputDevice(void) {
@@ -288,6 +290,7 @@ PaError
 Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     (void)stream;
     PaError result = paNoError;
+    g_discard_now_ns += g_read_advances_ns;
     if (g_overrun_at_read > 0) {
         g_overrun_at_read--;
         if (g_overrun_at_read == 0) {
@@ -707,6 +710,37 @@ test_input_discard_never_reads_past_what_is_held(void) {
     g_default_input = paNoDevice;
 }
 
+/* Issue #834: what one discard drops is bounded as documented (docs/cli.md) and as the other sound-card inputs bound it:
+   at most 2 s of frames at the stream's rate, however much the driver holds, and no read begun 250 ms or more after
+   the discard's first, however slow the driver's reads. What the bounds leave stays in the device. */
+static void
+test_input_discard_is_bounded(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_read_available = 200000;
+    int dropped = discard_at(in, g_discard_now_ns);
+    if (dropped != 96000 || g_read_available != 104000) {
+        DSD_FPRINTF(stderr, "a discard of 200000 frames dropped %d, %ld left (expected 96000, 104000)\n", dropped,
+                    g_read_available);
+    }
+    assert(dropped == 96000 && g_read_available == 104000);
+    /* Each read takes 100 ms: reads begin at 0, 100 and 200 ms, and none at 300 ms. */
+    g_read_available = 10000;
+    g_read_advances_ns = 100000000U;
+    dropped = discard_at(in, g_discard_now_ns);
+    g_read_advances_ns = 0U;
+    if (dropped != 3 * 256 || g_read_available != 10000 - 3 * 256) {
+        DSD_FPRINTF(stderr, "a discard of slow reads dropped %d, %ld left (expected %d, %d)\n", dropped,
+                    g_read_available, 3 * 256, 10000 - 3 * 256);
+    }
+    assert(dropped == 3 * 256 && g_read_available == 10000 - 3 * 256);
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
 int
 main(void) {
     assert(dsd_audio_init() == 0);
@@ -717,6 +751,7 @@ main(void) {
     test_input_discard_stops_at_an_overrun();
     test_input_discard_without_memory_loses_no_new_audio();
     test_input_discard_never_reads_past_what_is_held();
+    test_input_discard_is_bounded();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");
     return 0;
