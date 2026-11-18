@@ -5134,6 +5134,13 @@ soapy_capture_event_bytes(const struct rtl_device* dev, size_t elements) {
     return 0U;
 }
 
+/* The stream arguments setupStream() gets for @p dev's driver. */
+static SoapySDR::Kwargs
+soapy_stream_args_for(const struct rtl_device* dev) {
+    (void)dev;
+    return SoapySDR::Kwargs();
+}
+
 /* Set up and activate the RX stream, under soapy_lock: 0, activateStream()'s error code, or -EIO for any other
  * failure. @p io_mtu_elems takes the stream's MTU when the driver reports one. Throws what the driver throws. */
 static int
@@ -5154,7 +5161,7 @@ soapy_open_stream_locked(struct rtl_device* dev, size_t* io_mtu_elems) {
         return -EIO;
     }
     std::vector<size_t> channels(1, 0);
-    SoapySDR::Kwargs args;
+    const SoapySDR::Kwargs args = soapy_stream_args_for(dev);
     dev->soapy_stream = dev->soapy_dev->setupStream(SOAPY_SDR_RX, stream_format, channels, args);
     if (!dev->soapy_stream) {
         DSD_FPRINTF(stderr, "SoapySDR: setupStream returned null.\n");
@@ -12597,6 +12604,9 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
     setSampleRate(const int, const size_t, const double rate) override {
         fake_->rate_writes++;
         fake_->rate_hz = rate;
+        if (fake_->rate_write_throws) {
+            throw std::runtime_error("sample rate write failed");
+        }
     }
 
     double
@@ -12617,7 +12627,16 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
     void
     setBandwidth(const int, const size_t, const double bw) override {
         fake_->bandwidth_writes++;
+        if (fake_->bandwidth_write_throws > 0) {
+            fake_->bandwidth_write_throws--;
+            throw std::runtime_error("bandwidth write failed");
+        }
         fake_->last_bandwidth_hz = bw;
+    }
+
+    double
+    getBandwidth(const int, const size_t) const override {
+        return fake_->readback_bandwidth_hz > 0.0 ? fake_->readback_bandwidth_hz : fake_->last_bandwidth_hz;
     }
 
     std::vector<double>
@@ -12742,6 +12761,39 @@ rtl_device_test_soapy_device(struct input_ring_state* ring, const rtl_device_tes
     (void)ring;
     (void)driver;
     return nullptr;
+#endif
+}
+
+extern "C" void
+rtl_device_test_soapy_device_set_driver_key(struct rtl_device* dev, const char* driver_key) {
+#ifdef USE_SOAPYSDR
+    if (dev) {
+        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), driver_key);
+        soapy_select_profile_locked(dev);
+    }
+#else
+    (void)dev;
+    (void)driver_key;
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_stream_args(const struct rtl_device* dev, char* out, size_t out_size) {
+#ifdef USE_SOAPYSDR
+    if (!dev || !out || out_size == 0U) {
+        return -1;
+    }
+    std::string text;
+    for (const auto& kv : soapy_stream_args_for(dev)) {
+        text += (text.empty() ? "" : ",") + kv.first + "=" + kv.second;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", text.c_str());
+    return 0;
+#else
+    (void)dev;
+    (void)out;
+    (void)out_size;
+    return -1;
 #endif
 }
 

@@ -109,6 +109,12 @@ int dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq
 int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
 int rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune,
                                      int buffered_backend, uint32_t min_bytes);
+/* The retune mute, in bytes, the stream arms on @p dev at @p sample_rate_hz with the configured window (a buffered
+ * backend when @p buffered_backend), as controller_arm_retune_mute() sizes it. */
+int rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
+                                                 int buffered_backend);
+/* While @p on, the open's input-ring sizing fails as when its memory is not there. Set while no stream runs. */
+void rtl_stream_test_fail_input_ring_sizing(int on);
 int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,
@@ -410,6 +416,12 @@ struct rtl_device* rtl_device_test_soapy_device(struct input_ring_state* ring,
                                                 const rtl_device_test_soapy_driver* driver);
 /* rtl_device_destroy() it, and detach the driver. */
 void rtl_device_test_soapy_device_free(struct rtl_device* dev);
+/* Key @p dev (an rtl_device_test_soapy_device()) as the driver named @p driver_key, as the real device's
+ * getDriverKey() does; set before the device starts. */
+void rtl_device_test_soapy_device_set_driver_key(struct rtl_device* dev, const char* driver_key);
+/* The stream arguments @p dev passes to setupStream() for its driver, as "key=value[,key=value...]" in @p out ("" for
+ * none). Returns 0, or -1 without SoapySDR or for bad arguments. */
+int rtl_device_test_soapy_stream_args(const struct rtl_device* dev, char* out, size_t out_size);
 /* Run one control transaction on @p dev that holds its soapy_lock for @p ms, as a slow driver call does. 0 on
  * success. */
 int rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms);
@@ -717,6 +729,12 @@ typedef struct {
     /* The bandwidth last set (0: none), and the rate getSampleRate() reports (0: the rate last set). */
     double last_bandwidth_hz;
     double readback_rate_hz;
+    /* setSampleRate() takes the rate, then throws, as a driver whose write fails after it moved the rate does. */
+    int rate_write_throws;
+    /* The next bandwidth_write_throws setBandwidth() calls throw without taking the bandwidth. */
+    int bandwidth_write_throws;
+    /* The bandwidth getBandwidth() reports (0: the bandwidth last set), as a driver whose filter write did not take. */
+    double readback_bandwidth_hz;
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);

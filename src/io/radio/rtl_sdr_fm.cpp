@@ -6181,13 +6181,19 @@ retune_mute_backend_is_buffered(void) {
     return 0;
 }
 
+/* The retune mute in bytes at @p sample_rate_hz on the open device, for a buffered backend when @p buffered_backend. */
 static int
-retune_mute_bytes_for_rate(uint32_t sample_rate_hz, int post_retune) {
+retune_mute_bytes(uint32_t sample_rate_hz, int post_retune, int buffered_backend) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     uint64_t mute_ms = retune_mute_window_ms(cfg ? cfg->retune_mute_ms : 0, cfg ? cfg->retune_mute_ms_is_set : 0,
-                                             post_retune, retune_mute_backend_is_buffered());
+                                             post_retune, buffered_backend);
     uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
     return retune_mute_bytes_for_window(sample_rate_hz, mute_ms, min_bytes);
+}
+
+static int
+retune_mute_bytes_for_rate(uint32_t sample_rate_hz, int post_retune) {
+    return retune_mute_bytes(sample_rate_hz, post_retune, retune_mute_backend_is_buffered());
 }
 
 static void
@@ -10289,12 +10295,26 @@ stream_open_finalize_rate_chain(RadioSourceKind source_kind, const dsd_opts* opt
 
 /* An input ring with the default ring's time capacity at @p rate_hz (input_ring_capacity_for_rate()), allocated only
  * when the stream's ring is smaller; the open runs it before any thread starts. */
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The open's input-ring sizing fails as when its memory is not there (rtl_stream_test_fail_input_ring_sizing()). */
+static int g_test_fail_input_ring_sizing = 0;
+#endif
+
+static int
+input_ring_sizing_test_fails(void) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    return g_test_fail_input_ring_sizing;
+#else
+    return 0;
+#endif
+}
+
 static int
 stream_open_size_input_for_rate(uint32_t rate_hz) {
     const size_t capacity = input_ring_capacity_for_rate(rate_hz);
     if (capacity > input_ring.capacity) {
         input_ring_destroy(&input_ring);
-        if (input_ring_init(&input_ring, capacity) != 0) {
+        if (input_ring_sizing_test_fails() || input_ring_init(&input_ring, capacity) != 0) {
             LOG_ERROR("Failed to size the input ring for %u Hz.\n", rate_hz);
             return -1;
         }
@@ -14923,6 +14943,21 @@ rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int c
                                  int buffered_backend, uint32_t min_bytes) {
     uint64_t mute_ms = retune_mute_window_ms(cfg_mute_ms, cfg_mute_ms_is_set, post_retune, buffered_backend);
     return retune_mute_bytes_for_window(sample_rate_hz, mute_ms, (uint64_t)min_bytes);
+}
+
+extern "C" int
+rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
+                                             int buffered_backend) {
+    struct rtl_device* const outer = rtl_device_handle;
+    rtl_device_handle = dev;
+    const int bytes = retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
+    rtl_device_handle = outer;
+    return bytes;
+}
+
+extern "C" void
+rtl_stream_test_fail_input_ring_sizing(int on) {
+    g_test_fail_input_ring_sizing = on ? 1 : 0;
 }
 
 extern "C" int
