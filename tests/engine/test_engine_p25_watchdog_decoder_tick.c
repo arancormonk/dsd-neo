@@ -54,14 +54,19 @@ static atomic_int g_off_thread_tunes;
 static atomic_int g_last_tune_hz;
 
 /* The rigctl peer, replaced through the linker (--wrap): ordinary names here, the __wrap_ names the linker wants as
-   their assembler names. */
-extern bool rigctl_set_freq(dsd_socket_t sockfd, long int freq) __asm__("__wrap_SetFreq");
-extern bool rigctl_set_modulation(dsd_socket_t sockfd, int bandwidth) __asm__("__wrap_SetModulation");
+   their assembler names, which spell out the target's prefix for C names (an underscore on 32-bit Windows and on
+   macOS), as the compiler would. */
+#define WRAP_ASM_STR2(x)    #x
+#define WRAP_ASM_STR(x)     WRAP_ASM_STR2(x)
+#define WRAP_ASM_NAME(name) WRAP_ASM_STR(__USER_LABEL_PREFIX__) name
+extern bool rigctl_set_freq(dsd_socket_t sockfd, long int freq) __asm__(WRAP_ASM_NAME("__wrap_SetFreq"));
+extern bool rigctl_set_modulation(dsd_socket_t sockfd, int bandwidth) __asm__(WRAP_ASM_NAME("__wrap_SetModulation"));
 extern bool rigctl_set_modulation_kind(dsd_socket_t sockfd, int kind,
-                                       int bandwidth) __asm__("__wrap_SetModulationKind");
+                                       int bandwidth) __asm__(WRAP_ASM_NAME("__wrap_SetModulationKind"));
 extern bool rigctl_set_scan_row_modulation(dsd_socket_t sockfd, int kind,
-                                           int bandwidth) __asm__("__wrap_SetScanRowModulation");
-extern void rigctl_mark_session_passband(dsd_socket_t sockfd, int kind) __asm__("__wrap_RigctlMarkSessionPassband");
+                                           int bandwidth) __asm__(WRAP_ASM_NAME("__wrap_SetScanRowModulation"));
+extern void rigctl_mark_session_passband(dsd_socket_t sockfd,
+                                         int kind) __asm__(WRAP_ASM_NAME("__wrap_RigctlMarkSessionPassband"));
 
 bool
 rigctl_set_freq(dsd_socket_t sockfd, long int freq) {
