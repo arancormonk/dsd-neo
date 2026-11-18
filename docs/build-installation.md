@@ -42,8 +42,12 @@ Package hints:
   Airspy HF+ modules. `SoapySDR.dll` looks for modules relative to its own folder, so a `dsd-neo.exe` run from the
   build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set it to
   `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
-  `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. Never mix the two: a
-  Release module does not load into a Debug `SoapySDR.dll`, nor the reverse. `SoapySDRUtil.exe` is built for Release
+  `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. The modules' own DLLs
+  (`hackrf.dll`, `airspyhf.dll`) are not copied next to `dsd-neo.exe`, since only the modules use them, so also put
+  the same triplet's DLL folder first on `PATH`: `vcpkg_installed\x64-windows-dynamic-release\bin` for Release,
+  `vcpkg_installed\x64-windows-dynamic\debug\bin` for Debug. Without it the modules are found but fail to load
+  (`LoadLibrary() failed`). Never mix the two: a Release module does not load into a Debug `SoapySDR.dll`, nor the
+  reverse. `SoapySDRUtil.exe` is built for Release
   only (`vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\`). The release zip lays all of this out by
   itself ([soapysdr.md](soapysdr.md) section 0a).
 - Android: see [Android Cross Builds](#android-cross-builds).

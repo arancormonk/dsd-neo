@@ -61,7 +61,7 @@ What dsd-neo does with each (none of this is tested on real hardware yet):
   as its lowest rate and recommend 8 MS/s or more. dsd-neo halves 10 MS/s down to the DSP bandwidth, as it does for an
   Airspy. Its filter opens to 5.5 MHz (see Tuner filter below). That is 20 MB/s over USB, 80 MB/s for a cf32
   `--iq-capture`, and a 32 MiB input buffer (about 419 ms at 10 MS/s). `soapy_profile = "generic"` keeps the old
-  behaviour, the rate nearest the request (2 MS/s, or 1 MS/s at the 72 kHz DSP bandwidth). Gains: `LNA`, `VGA` and the
+  behaviour, the listed rate nearest the request: 1 or 2 MS/s, depending on the DSP bandwidth. Gains: `LNA`, `VGA` and the
   14 dB `AMP`; set them with `soapy_gains` (for example `soapy_gains = "LNA:24,VGA:20,AMP:0"`), and keep `AMP` off
   near strong transmitters. Skip silent channels checks it at 10 MS/s.
 - **Airspy HF+ and HF+ Discovery** get the generic profile (they used to be taken for an Airspy) and the device's
@@ -176,15 +176,24 @@ SoapySDR: opened the profile's 1750000 Hz bandwidth to 5500000 Hz for the channe
 ```
 
 The SDRplay and ADALM-Pluto figures come from their drivers' filter lists; they are not tested on those radios. An
-explicit `soapy_bandwidth_hz` (or `DSD_NEO_TUNER_BW_HZ`) is applied as the radio takes it. If that is narrower, dsd-neo
-warns once for that filter and rate:
+explicit `soapy_bandwidth_hz` (or `DSD_NEO_TUNER_BW_HZ`) is applied as the radio takes it. dsd-neo judges the filter the
+radio reports after the write (where its driver reports one): if that is narrower, whether you set it, the radio kept
+its old filter, or even its widest filter is too narrow, dsd-neo warns once for that filter and rate:
 
 ```text
 SoapySDR: bandwidth 5000000 Hz is narrower than 5072000 Hz, which keeps the channel (2500000 Hz off centre, a quarter of the 10000000 Hz sample rate) at every DSP bandwidth.
 ```
 
 A filter a little narrower than that figure can still keep a narrower DSP bandwidth's channel whole; the figure is for
-the widest. `soapy_bandwidth_hz = 0` leaves the filter to the driver.
+the widest. `soapy_bandwidth_hz = 0` leaves the filter to the driver. With `DSD_NEO_DISABLE_FS4_SHIFT=1` the capture is
+tuned on the channel itself, so none of this applies: profile filters stay as they are and nothing is warned about.
+
+**Retunes.** A radio can still hand over samples from before a retune; dsd-neo drops the first 120 ms after one. A
+HackRF's driver queues 15 buffers of samples by default (about 197 ms at 10 MS/s, on top of about 52 ms the USB
+transfers hold), so dsd-neo asks it for 4 (`buffers=4`): with the transfers that is about 105 ms at 10 MS/s, inside the
+120 ms. At a lower rate (`soapy_profile = "generic"`) the same samples take longer, and dsd-neo drops as many as the
+queue can hold. The cost is a smaller cushion when the computer falls behind: past about 52 ms the HackRF driver drops
+samples and dsd-neo logs an overflow.
 
 Minimal config (recommended):
 

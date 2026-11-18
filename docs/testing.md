@@ -1105,7 +1105,7 @@ the step's `iq_step_l`/`iq_step_m`. It reads each sidecar back through the repla
 | `DECODE_IQ_P25P2_CC_AIRSPY_375K` | `p25p2_cc` at 375,000 Hz under `-f2`: at least 8 SACCH (10). The capture is remodulated audio with no RS-checkable payload, so this is DUID-FEC-level evidence only, and weak. |
 | `DECODE_IQ_DMR_VOICE_AIRSPY_312K` | `dmr_voice_synth`'s first 2 s at 312,500 Hz under `-fs`: at least 10 voice bursts (16, less one superframe) and the voice header. FSK modes ran right at these rates before the step too; this is the control. |
 | `DECODE_IQ_TETRA_CALL_AIRSPY_375K` | `tetra_call_real_air_72k`'s first 2 s at 375,000 Hz under `-fT -Z` at a 72 kHz DSP bandwidth (`L/M=96/125`): at least 66 identities and 23 TCH/FS bursts whose CRC passed (70 and 25), with no rate warning. |
-| `DECODE_IQ_TETRA_CALL_SOAPY_156K` | The same excerpt at 156,250 Hz, where a HackRF at 10 MS/s through SoapySDR is after six half-band passes, its sidecar naming `source_backend` `soapy`: the replay runs one more pass (`base_decim=2`) to 78,125 Hz and the `576/625` step, a ratio no other case runs; the same thresholds (it decodes 70 and 24). Partial-chain coverage only: it does not run a live 10 MS/s ingest or the Fs/4 tuning before the passes. |
+| `DECODE_IQ_TETRA_CALL_SOAPY_156K` | The same excerpt at 156,250 Hz, where a HackRF at 10 MS/s through SoapySDR is after six half-band passes, its sidecar naming `source_backend` `soapy`: the replay runs one more pass (`base_decim=2`) to 78,125 Hz and the `576/625` step, a ratio no other case runs; the same thresholds (it decodes 70 and 24). Its cell identity comes from the native-rate recording (`REFERENCE_FIXTURE` in `iq_decode_check.cmake`: that run's first identity is the value, and every identity this run decodes must be it), so no identifier is typed into the case. Partial-chain coverage only: it does not run a live 10 MS/s ingest or the Fs/4 tuning before the passes. |
 | `DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM` | `p25p1_cqpsk_vc` at 375,000 Hz: fast, realtime, short-read and jitter legs of the replay determinism harness decode line for line the same (below). `_STALLED_SINK` (where the harness can wrap the audio device) adds a sink that stalls. |
 
 A SoapySDR device that picks its own rate is tested without hardware through a stand-in driver
@@ -1114,10 +1114,10 @@ key, a configured profile and bandwidth, and a read-back that differs from the r
 `IO_RTL_DEVICE_SOAPY_RATE` models SoapyHackRF, SoapySDRPlay3, SoapyPlutoSDR, SoapyLMS7 and SoapyAirspyHF from their
 sources (rates, opened filters, the explicit-bandwidth warning, a stream open's capture and input ring through
 `rtl_stream_test_open_radio_capture()`, the filter on retunes). `IO_SOAPY_STREAM_LOSS`'s
-`retune_mute_covers_hackrf_backlog` feeds the reader a HackRF's stale backlog after a retune at 10 MS/s (libhackrf's
-four transfers in flight and one queued SoapyHackRF buffer, 65.5 ms) and checks that the 120 ms mute a buffered backend
-arms lets none of it into the input ring. These are the drivers' source bounds, not measured latency: a reader that
-falls behind can leave up to 15 queued buffers, which only a real HackRF can show.
+`retune_mute_covers_hackrf_backlog` feeds the reader a HackRF's whole stale backlog after a retune: the driver's queue
+at the depth dsd-neo gives it (the `buffers` stream argument, read from the device) and libhackrf's four transfers in
+flight, at 10 MS/s and at 2 MS/s, and checks that the mute the stream arms on that device lets none of it into the input
+ring and the samples after it through. These are the drivers' source bounds, not measured latency.
 
 `ENGINE_AIRSPY_FORCED_RATE_*` (`tests/engine/test_engine_airspy_forced_rate.cpp`, Airspy builds with GNU or Clang
 outside macOS) run the same samples live. They link the private test-hook archives in a linker group
