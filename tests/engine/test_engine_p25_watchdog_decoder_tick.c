@@ -5,7 +5,8 @@
  * owns dsd_state and dsd_opts and makes every tune. The real watchdog thread runs beside this thread, which does what the
  * decoder does: it writes what a sync accept writes and reads what the hunt reads, outside the P25 SM tick guard, and
  * services the beats. A voice channel followed here is released by a watchdog-paced tick, which returns to the control
- * channel through the rigctl peer: every frequency the peer is sent comes from this thread. ThreadSanitizer checks the
+ * channel through the rigctl peer: every frequency the peer is sent comes from this thread, and so does every write of
+ * the release (the symbol profile, the tuned flag, the active slot, the payload crypto fields of both slots). ThreadSanitizer checks the
  * rest in its build. Only the rigctl peer is replaced, so GNU ld and lld only. */
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
@@ -13,6 +14,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -33,7 +35,7 @@
 #include "engine_hooks_install.h"
 #include "test_env.h"
 
-enum { VOICE_CHANNEL = 0x1234, TALKGROUP = 1234, SOURCE = 42, WAIT_MS = 5000 };
+enum { VOICE_CHANNEL = 0x1234, TALKGROUP = 1234, SOURCE = 42, WAIT_MS = 5000, NO_CARRIER_EVERY = 16 };
 
 static const long CC_FREQ_HZ = 851000000L;
 static const long VC_FREQ_HZ = 852000000L;
@@ -98,15 +100,19 @@ __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
 
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
-/* What the hunt does between frames, outside the guard: a sync accept's writes and the reads its matchers, VC timers
-   and P25 tick gate make. Returns the reads folded together, so none is optimized away. */
+/* What the decoder does between frames, outside the guard: a sync accept's writes, the reads the hunt's matchers, VC
+   timers and P25 tick gate make, and now and then a no-carrier pass's reset, which zeroes the payload crypto fields
+   (ALG, KID, MI, both slots) a release zeroes too. Returns the reads folded together, so none is optimized away. */
 static long
 hunt_step(dsd_opts* opts, dsd_state* state, int round) {
     state->lastsynctype = (round & 1) != 0 ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
     dsd_mark_cc_sync(state);
+    if (round % NO_CARRIER_EVERY == 0) {
+        dsd_engine_reset_no_carrier_state(opts, state);
+    }
     return (long)opts->trunk_is_tuned + state->rf_mod + state->samplesPerSymbol + state->symbolCenter
            + state->p25_p2_active_slot + state->sps_hunt_idx + state->p25_p2_audio_allowed[0]
-           + (long)state->last_vc_sync_time;
+           + (long)state->last_vc_sync_time + state->payload_algid + state->payload_keyidR;
 }
 
 /* A followed voice channel the watchdog's beat releases: every tune of it, the grant's and the return's, is this
