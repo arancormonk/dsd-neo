@@ -2545,7 +2545,8 @@ suite runs under this compiler.
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
     short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
-    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC), else the fix time is
+    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
+    century closest to the decode clock's date as an RMC's), else the fix time is
     unknown, so two reports that differ only in time are not folded as a repeat.
   - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
     `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
@@ -2571,7 +2572,9 @@ suite runs under this compiler.
     A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
     sentence there is kept as text but chosen as no report), is the report / the same packet, whose
     header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
-    type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
+    date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
+    replayed capture keeps its own century). A CRC-failed packet keeps no sentence text. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
     plain text (P25 SAP 48's text fallback), whether or not its sentences pass.
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data

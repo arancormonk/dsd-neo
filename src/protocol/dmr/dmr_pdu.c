@@ -1876,9 +1876,10 @@ typedef struct {
     uint8_t hour;
     uint8_t minute;
     uint8_t second;
-    uint8_t year; // two digits, 20YY
+    uint16_t year; // the full year (dsd_gps_two_digit_year_date()), with `time`
     uint8_t month;
     uint8_t day;
+    int64_t days;      // the date's days since 1970-01-01, with `time`
     uint8_t lat;       // a latitude field was read
     uint8_t lon;       // a longitude field was read
     uint8_t lat_valid; // and its value is in range
@@ -1902,7 +1903,8 @@ dmr_locn_digits(const uint8_t* p, size_t n, uint32_t* out) {
 }
 
 // `A` hhmmss DDMMYY at p[0]. Returns 1 when the twelve characters are digits (the field is a time field), and sets
-// the time only when the date and time exist.
+// the time only when the date and time exist. The two-digit year is read in the century that puts the date closest to
+// its reception on the decode clock (as an NMEA RMC's).
 static int
 dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
     uint32_t v[6];
@@ -1911,14 +1913,15 @@ dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
             return 0;
         }
     }
-    d->time = (uint8_t)dmr_pdu_datetime_valid((uint16_t)(2000U + v[5]), (uint16_t)v[4], (uint16_t)v[3], (uint16_t)v[0],
-                                              (uint16_t)v[1], (uint16_t)v[2]);
+    int64_t year = 0;
+    d->time = (uint8_t)(v[0] <= 23U && v[1] <= 59U && v[2] <= 59U
+                        && dsd_gps_two_digit_year_date(v[5], v[4], v[3], (int64_t)dsd_decode_time(), &year, &d->days));
     d->hour = (uint8_t)v[0];
     d->minute = (uint8_t)v[1];
     d->second = (uint8_t)v[2];
     d->day = (uint8_t)v[3];
     d->month = (uint8_t)v[4];
-    d->year = (uint8_t)v[5];
+    d->year = d->time ? (uint16_t)year : (uint16_t)(2000U + v[5]);
     return 1;
 }
 
@@ -1984,8 +1987,7 @@ dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_da
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %u;", (unsigned)source);
     if (d->time) {
-        DSD_FPRINTF(stderr, " 20%02u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute,
-                    d->second);
+        DSD_FPRINTF(stderr, " %04u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute, d->second);
     }
     DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %u ", (unsigned)source);
     if (withheld == NULL) {
@@ -2012,7 +2014,7 @@ dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const d
     fix->lon_e7 = d->lon_e7;
     if (d->time) {
         fix->fix_time_s =
-            dmr_pdu_unix_time((uint16_t)(2000U + d->year), d->month, d->day, d->hour, d->minute, d->second);
+            (d->days * 86400) + ((int64_t)d->hour * 3600) + ((int64_t)d->minute * 60) + (int64_t)d->second;
     }
     fix->flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
     fix->source_id = source;

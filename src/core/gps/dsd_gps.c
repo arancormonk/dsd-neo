@@ -1354,7 +1354,7 @@ nmea_packet_take(nmea_packet* pkt, const uint8_t* bytes, const nmea_sentence_spa
     pkt->checked++;
     nmea_packet_append_text(pkt, bytes, s);
     nmea_fix f;
-    nmea_parse_fix((const char*)bytes + s->start, s->len, &f);
+    nmea_parse_fix((const char*)bytes + s->start, s->len, (int64_t)dsd_decode_time(), &f);
     if (f.type == NMEA_TYPE_OTHER) {
         return;
     }

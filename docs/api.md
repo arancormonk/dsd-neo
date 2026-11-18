@@ -491,7 +491,7 @@ kept again.
 | `lat`, `lon` | Degrees, seven decimals, north and east positive. |
 | `alt_dm`, `err_m`, `speed_dkmh`, `heading_ddeg` | Altitude in decimetres, position error in metres, speed in 0.1 km/h, heading in 0.1 degree (`0`-`3599`). `null` when the report did not carry it. |
 | `age_class`, `sats` | The LIP "time elapsed" code and the satellites in use; `null` when not sent. |
-| `fix_time` | The report's own UTC time (Unix seconds), `null` when it carried none. |
+| `fix_time` | The report's own UTC time (Unix seconds), `null` when it carried none. A date sent with a two-digit year (NMEA RMC, DMR LOCN) is read in the century that puts it closest to when it was received, so within 50 years of it (a replayed capture: of the capture's time). |
 | `source_id`, `target_id`, `source_text` | The sending radio (`0` for none), the target (`0` for none), and the callsign for D-STAR and M17 (empty otherwise). |
 | `label` | The source's name from the imported lists or a learned alias when the report was kept; empty when none. |
 | `sender_scope`, `reception_scope`, `identity_freq_hz` | The sender's system and the system the report was heard on: `kind` `0` none, `1` P25 (`a` WACN, `b` system ID), `2` DMR, `3` NXDN, `4` TETRA (`a` MCC, `b` MNC), `5` P25 NAC only (`a` NAC), `64` EDACS (`a` is `65536` plus the site, `b` `65536` plus the system, each `0` when not known), `65` a control channel (`a` its frequency in Hz), `66` a tuned frequency (`a` in Hz). They differ only for a TETRA radio of another network. `identity_freq_hz` is the tuned frequency when the sender scope is a NAC only (two systems can share a NAC), else `0`. A track is the protocol family, `sender_scope`, `identity_freq_hz` and `source_id` or `source_text`. |

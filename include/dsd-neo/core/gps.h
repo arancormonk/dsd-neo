@@ -154,6 +154,17 @@ void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits
 void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
                       const dsd_gps_address* addr, int type);
 
+/**
+ * @brief A date sent with a two-digit year (NMEA RMC, DMR LOCN): the century that puts @p day / @p month / @p yy closest
+ * to @p receive_utc_s (Unix seconds on the decode clock when the report was received), so the date is within 50 years
+ * of its reception. A century in which the day is no calendar date (29 February) is no candidate.
+ *
+ * @return 1 with the full year in @p year_out and the date's days since 1970-01-01 in @p days_out (either may be
+ *         NULL); 0 when @p yy is over 99 or no century gives a calendar date.
+ */
+int dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t receive_utc_s, int64_t* year_out,
+                                int64_t* days_out);
+
 /** @brief The user data bits a binary UDT NMEA report's fields span: short format through the seconds code, long format
  * through the course over ground (TS 102 361-4 Figures B.23, B.24). */
 enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };

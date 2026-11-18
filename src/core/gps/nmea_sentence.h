@@ -75,7 +75,9 @@ typedef struct {
     int32_t alt_dm;        /**< GGA altitude above mean sea level, decimetres; DSD_POSITION_ALT_UNKNOWN */
     uint16_t speed_dkmh;   /**< RMC speed over ground, 0.1 km/h; DSD_POSITION_SPEED_UNKNOWN */
     uint16_t heading_ddeg; /**< RMC course over ground, 0.1 degree true (0-3599); DSD_POSITION_HEADING_UNKNOWN */
-    int64_t fix_time_s; /**< RMC date and time as Unix seconds (years 2000-2099); 0 when either is missing or invalid */
+    /** RMC date and time as Unix seconds, its two-digit year in the century closest to the receive date
+     * (dsd_gps_two_digit_year_date()); 0 when either is missing or invalid */
+    int64_t fix_time_s;
     /** Why the sentence gives no position ("" when measured_fix and has_position are both 1). */
     const char* refusal;
 } nmea_fix;
@@ -86,13 +88,15 @@ typedef struct {
  * @param sentence The sentence from its '$' through its checksum digits (a span nmea_next_sentence() returned with
  *        NMEA_SENTENCE_OK); only the text before the '*' is read.
  * @param len Its length in bytes.
+ * @param receive_utc_s When the sentence was received, Unix seconds on the decode clock: the RMC date's two-digit year
+ *        is read in the century that puts the date closest to it.
  * @param out Filled whatever the sentence is (NMEA_TYPE_OTHER for any sentence but RMC and GGA).
  *
  * Every field is range-checked before it is converted, and an invalid one is unknown, never normalised: latitude
  * degrees <= 90, longitude degrees <= 180, minutes <= 59, the boundary degree only with zero minutes; hour <= 23,
  * minute <= 59, second <= 59, month 1-12, day within its month; a course of 360 degrees or more is unknown.
  */
-void nmea_parse_fix(const char* sentence, size_t len, nmea_fix* out);
+void nmea_parse_fix(const char* sentence, size_t len, int64_t receive_utc_s, nmea_fix* out);
 
 /** 1 when @p year-@p month-@p day is a calendar date (month 1-12, day within its month), else 0. */
 int nmea_civil_date_valid(int64_t year, uint32_t month, uint32_t day);

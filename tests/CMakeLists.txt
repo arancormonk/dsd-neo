@@ -15644,6 +15644,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15677,6 +15678,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15707,6 +15709,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15739,6 +15742,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15771,6 +15775,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15803,6 +15808,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15836,6 +15842,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15866,6 +15873,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15899,6 +15907,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15932,6 +15941,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15962,6 +15972,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15987,6 +15998,7 @@ add_executable(
     protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -16018,6 +16030,7 @@ add_executable(
     protocol/dmr/test_dmr_lrrp_event_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -16049,6 +16062,7 @@ add_executable(
     protocol/dmr/test_dmr_udp_comp_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -16076,6 +16090,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -16105,6 +16120,7 @@ add_executable(
     test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
