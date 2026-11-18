@@ -902,6 +902,8 @@ dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
             ctx->state->data_header_valid[ctx->slot] =
                 (uint8_t)(ctx->crc_correct != 0 && ctx->irrecoverable_errors == 0);
             ctx->state->data_header_crc_invalid[ctx->slot] = ctx->crc_flags;
+            // An MBC header begins no data packet: a data block after it binds to no data header (issue #800).
+            DSD_MEMSET(&ctx->state->dmr_data_origin[ctx->slot & 1U], 0, sizeof(ctx->state->dmr_data_origin[0]));
             dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2);
             break;
         case 0x05: dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2); break;

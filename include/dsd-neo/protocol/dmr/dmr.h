@@ -133,7 +133,8 @@ void dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t 
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest,
               const uint8_t* DMR_PDU, uint8_t pdu_crc_ok);
-void dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
+/** Decode a DMR LOCN text location report; returns 1 when its position was admitted (dsd_position_admit()). */
+int dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 
 void dmr_alg_reset(dsd_opts* opts, dsd_state* state);
 void dmr_alg_refresh(dsd_opts* opts, dsd_state* state);

@@ -841,12 +841,14 @@ p25_read_pdu_data_fields(const uint8_t* input) {
     return pdu;
 }
 
+/* The user data octets of a packet of @p len octets: less its header, its CRC32 and its @p pad octets; none when the
+ * packet is shorter (issue #800, fail closed: a header or CRC octet is never user data). */
 static int
 p25_pdu_payload_len(int len, uint8_t pad) {
     if (len > (12 + 4 + pad)) {
         return len - (12 + 4 + pad);
     }
-    return len;
+    return 0;
 }
 
 static int
@@ -922,7 +924,9 @@ p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFi
         p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
         status.json_emitted = 1;
     }
-    status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), input + ptr);
+    /* Exactly the user data left at the cursor (p25_pdu_payload_span()), so the IPv4 whole-datagram check never
+       counts a pad or CRC octet as part of the datagram (issue #800, fail closed). */
+    status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)p25_pdu_payload_span(len, ptr), input + ptr);
     return status;
 }
 
@@ -1004,7 +1008,9 @@ p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataF
     P25PduDecodeStatus status = {0};
     uint8_t* payload = input + ptr;
     switch (pdu->sap) {
-        case 0: status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); return status;
+        case 0:
+            status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)p25_pdu_payload_span(len, ptr), payload);
+            return status;
         case 4: return p25_handle_sap4_packet_data(opts, state, pdu, input, len, ptr, encrypted);
         case 6: p25_handle_sap6_sndcp_data(opts, state, pdu, payload, len, ptr, encrypted); break;
         case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;

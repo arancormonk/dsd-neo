@@ -20,6 +20,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -592,6 +593,17 @@ dmr_dheader_arms_assembler(const dmr_dheader_fields* f) {
     }
 }
 
+/* The standard data header that armed the lane and the burst now on it are one transmission's (issue #800, fail
+   closed): the reception the header was heard on still holds (dsd_position_origin_matches()), and the burst is the same
+   sender kind on the same over-the-air slot (dsd_position_dmr_air_same()). Two bursts whose own checks passed are not
+   one packet by their CRCs alone: the single-slot decoder carries both slots on one lane, and a direct-mode header is
+   not the repeater-mode packet that follows it. */
+static int
+dmr_data_header_binds(const dsd_state* state, uint8_t slot) {
+    return dsd_position_origin_matches(state, &state->dmr_data_origin[slot & 1U])
+           && dsd_position_dmr_air_same(state->dmr_data_air[slot & 1U], dsd_position_dmr_air(state));
+}
+
 // A standard header starts a new packet: confirmed mode and a proprietary header belong to the one they
 // were signalled in, and an interrupted packet must not lend them to this one. The format handlers set
 // confirmed mode again; an MNIS P_HEAD that follows sets data_p_head. A proprietary header continues the
@@ -605,11 +617,15 @@ dmr_dheader_start_packet(dsd_state* state, uint8_t slot, const dmr_dheader_field
 }
 
 // A header that does not arm the assembler disarms it, so a stray continuation after it cannot complete
-// the packet it interrupted. A proprietary header leaves the standard header's arming alone.
+// the packet it interrupted. A proprietary header leaves the standard header's arming alone when it is that header's
+// transmission's (dmr_data_header_binds()); heard in another burst source, slot or reception it disarms it (issue #800,
+// fail closed).
 static void
 dmr_dheader_set_armed(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
     if (f->dpf != 15) {
         state->data_header_valid[slot] = dmr_dheader_arms_assembler(f);
+    } else if (!dmr_data_header_binds(state, slot)) {
+        state->data_header_valid[slot] = 0;
     }
 }
 
@@ -656,8 +672,10 @@ dmr_dheader_classified(dsd_opts* opts, dsd_state* state, uint8_t* dheader, uint8
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
         state->dmr_data_checked_group[slot] = (uint8_t)(f.gi == 1);
-        // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3).
+        // The assembly's first fragment: where a position report it carries was heard (spec 2.3 step 3), and the
+        // burst its blocks must share (dmr_data_header_binds()).
         dsd_position_origin_capture(opts, state, &state->dmr_data_origin[slot & 1U]);
+        state->dmr_data_air[slot & 1U] = dsd_position_dmr_air(state);
     } else {
         // A proprietary header keeps the previous transmission's source/target on purpose, but
         // that pair must not go on selecting a decryption key: drop the group qualifier so the
@@ -1142,6 +1160,9 @@ typedef struct {
     uint32_t crc_computed;
     uint32_t crc_extracted;
     uint32_t irrecoverable_errors;
+    /* Type 1: the end (exclusive) of the octets the packet CRC32 covers in dmr_pdu_sf (dmr_block_type1_update_crc()),
+       0 when none was computed. No payload decoder reads past it (issue #800, fail closed). */
+    uint16_t crc_end;
     uint8_t dmr_pdu_sf_bits[8 * 24 * 129];
     uint8_t mbc_crc_good[2];
 } dmr_block_assembler_ctx;
@@ -1266,6 +1287,7 @@ dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr) {
         return;
     }
     const uint16_t crc_bytes = (uint16_t)(ctr - overhead);
+    ctx->crc_end = (uint16_t)(skip + crc_bytes);
     ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
     dmr_block_type1_pack_crc_bits(pdu + skip, crc_bytes, ctx->dmr_pdu_sf_bits);
     const uint32_t crc_bits = ((uint32_t)(crc_bytes + 1U) & ~1U) * 8U;
@@ -1352,11 +1374,17 @@ dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
     return (mnis_type == 0x33U || mnis_type == 0x88U) ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA;
 }
 
+/* The most of an MNIS LOCN report's text the console echoes; the decoder reads all of it. */
+#define DMR_BLOCK_LOCN_TEXT_ECHO_MAX 150U
+
 /* An MNIS LOCN report's own text, as utf8_to_text() shows text (a padding NUL as '_', another control byte as '-'),
  * under a label that names it: the text is a position report, whatever shape its fields take, so the diagnostics log
  * removes the line (issue #800, D10). */
 static void
 dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
+    if (len > DMR_BLOCK_LOCN_TEXT_ECHO_MAX) {
+        len = DMR_BLOCK_LOCN_TEXT_ECHO_MAX;
+    }
     DSD_FPRINTF(stderr, "\n LOCN Text: ");
     for (uint16_t i = 0; i < len; i++) {
         if (text[i] >= 0x20U && text[i] < 0x7FU) {
@@ -1365,6 +1393,23 @@ dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
             DSD_FPRINTF(stderr, "%c", text[i] == 0U ? '_' : '-');
         }
     }
+}
+
+/* The user data octets from @p start that the packet's own CRC32 covered (issue #800, fail closed): the octets the
+ * blocks carried less the CRC32 and the @p poc pad octets, and never past the CRC's span (ctx->crc_end), which for
+ * Motorola's compressed MNIS data leaves out the octet just before the CRC32. A pad count larger than the data
+ * (possible only from a header accepted under relaxed CRC) is ignored, so the header still prints. */
+static uint16_t
+dmr_block_type1_checked_len(const dmr_block_assembler_ctx* ctx, uint16_t start, uint8_t poc) {
+    const uint16_t received = dmr_block_type1_received_octets(ctx);
+    uint16_t end = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
+    if (end >= start && poc <= (uint16_t)(end - start)) {
+        end = (uint16_t)(end - poc);
+    }
+    if (end > ctx->crc_end) {
+        end = ctx->crc_end;
+    }
+    return (end > start) ? (uint16_t)(end - start) : 0U;
 }
 
 static void
@@ -1383,13 +1428,13 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // Upstream subtracted the CRC32 bit-reordering loop's `offset` here, which is a constant
         // for locating confirmed-data DBSN octets and has no bearing on a text length; the
         // dmr_locn() call below passes the same pointer with the unadjusted length.
-        // The report's text only from a packet whose checks passed (not RAS), else only with -Z: a failed report
-        // prints no part of its position (dsd_gps_report_content_printable()).
-        if (dsd_gps_report_content_printable(ctx->state->event_crc_invalid[ctx->slot] == 0U, ctx->opts->payload)) {
+        // An admitted position is staged for this notice by dmr_locn() itself, never the text alone. The report's
+        // text is a position in any form, so it prints only once its position was admitted (not for a failed check,
+        // a refusal or a report with no position read), else only with -Z (issue #800, fail closed).
+        const int admitted = dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        if (admitted || ctx->opts->payload == 1) {
             dmr_block_print_locn_text(ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
         }
-        // An admitted position is staged for this notice by dmr_locn() itself, never the text alone.
-        dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
     }
 
     // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,
@@ -1422,23 +1467,16 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
 
 static void
 dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
-    uint16_t byte_count = ctx->state->data_byte_ctr[ctx->slot];
-    uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    // The payload starts at octet 7 of the stored proprietary header and the CRC32 trailer sits
-    // at the end, so 11 octets are never payload. A short PDU would wrap this subtraction to
-    // ~65k and then clamp to 150, handing the payload handlers a length far past the received
-    // bytes; treat it as empty instead.
-    uint16_t avail = (byte_count > 11U) ? (uint16_t)(byte_count - 11U) : 0U;
-    // Relaxed decoding may accept an unverified pad count. Bound it by received octets.
-    uint16_t len = (poc <= avail) ? (uint16_t)(avail - poc) : avail;
+    // The payload starts at octet 7 of the stored proprietary header and runs to the pad octets, within the span the
+    // packet CRC32 covered: Motorola's compressed data leaves the octet before the CRC32 out of it, so that octet is
+    // never payload (dmr_block_type1_checked_len()). The whole checked payload goes to the decoders; only the console
+    // echo of a LOCN report's text is bounded.
+    const uint16_t len = dmr_block_type1_checked_len(ctx, 7U, ctx->state->data_block_poc[ctx->slot]);
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
     uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
     uint16_t mnis_ip_id;
 
-    if (len > 150) {
-        len = 150;
-    }
     DSD_FPRINTF(stderr, "\n SRC(MNIS): %08d; ", msrc);
     DSD_FPRINTF(stderr, "\n DST(MNIS): %08d; ", mdst);
     dmr_block_type1_print_mnis_type(mnis_type);
@@ -1524,16 +1562,10 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     }
 
     uint8_t sap = ctx->state->data_header_sap[ctx->slot];
-    // TS 102 361-1 9.3.22: the user data is what the blocks carried less the CRC32 and the pad octets.
-    // SAP 3 has no length of its own (TS 102 361-3 table 7.2 derives the UDP length from it). A pad
-    // count larger than the data, possible only from a header accepted under relaxed CRC, is ignored
-    // as on the MNIS path, so the header still prints.
-    const uint16_t received = dmr_block_type1_received_octets(ctx);
-    uint16_t len = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
-    const uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    if (poc <= len) {
-        len = (uint16_t)(len - poc);
-    }
+    // TS 102 361-1 9.3.22: the user data is what the blocks carried less the CRC32 and the pad octets
+    // (dmr_block_type1_checked_len()). SAP 3 has no length of its own (TS 102 361-3 table 7.2 derives the UDP
+    // length from it).
+    const uint16_t len = dmr_block_type1_checked_len(ctx, 0U, ctx->state->data_block_poc[ctx->slot]);
 
     if (sap == 4) {
         decode_ip_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
@@ -1905,6 +1937,15 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 
     UNUSED(databurst);
     dmr_block_assembler_init_ctx(&ctx, opts, state, block_bytes, block_len, type);
+    if ((ctx.type == 1 || ctx.is_udt) && state->data_header_valid[ctx.slot] == 1
+        && !dmr_data_header_binds(state, ctx.slot)) {
+        // A block from another slot, sender or reception than the header that armed the lane is not this packet's:
+        // the packet is dropped, and the block with it (its own header was missed).
+        DSD_FPRINTF(stderr, "\n Slot %d - Data block not from its header's slot or reception; packet dropped;",
+                    ctx.slot + 1);
+        dmr_block_assembler_reset_type1(&ctx);
+        return;
+    }
     if (ctx.type == 1) {
         dmr_block_assembler_handle_type1(&ctx);
     } else if (ctx.type == 2) {

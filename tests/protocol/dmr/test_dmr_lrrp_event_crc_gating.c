@@ -187,7 +187,7 @@ expect_staged(const dsd_state* state, int want, uint8_t kind, int32_t lat_e7, in
 static uint16_t
 build_ipv4_udp_lrrp(uint8_t packet[64], uint16_t port) {
     // POINT_2D response from DMR_LRRP_CRC_GATING: lat 11.25, lon 45.
-    static const uint8_t payload[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t payload[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     const uint16_t udp_len = (uint16_t)(8 + sizeof payload);
     const uint16_t ip_len = (uint16_t)(20 + udp_len);
     DSD_MEMSET(packet, 0, 64);

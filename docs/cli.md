@@ -597,12 +597,20 @@ does.
   - A report shorter than its fields: a UDT NMEA report whose pad nibbles leave less than its format's 80 (short) or
     112 (long) bits prints `truncated` and gives no position.
   - An LRRP position after a token whose layout is not confirmed (0x50, 0x52, 0x54, 0x68, 0x6A or an unknown
-    token): the report prints `Position: (suppressed; layout not confirmed)`.
+    token): the report prints `Position: (suppressed; layout not confirmed)`. An LRRP document that declares more
+    than its packet holds: `Position suppressed (incomplete document)`. A data packet whose IP datagram declares more
+    than the packet's user data holds (`Incomplete Datagram; not decoded;`): a pad or CRC octet never completes it.
+  - A DMR data packet whose blocks came in another slot, from another kind of sender (a direct-mode header, then
+    repeater-mode blocks) or after a retune: `Data block not from its header's slot or reception; packet dropped;`. A
+    DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
+    whose last digit would be in it gives no position.
 
   A position on the equator or the prime meridian is written; earlier versions dropped it.
 
   The source column is the radio ID only when it came from checked content, else `00000000`. DMR embedded GPS takes
-  the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it.
+  the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it,
+  in a burst from the same kind of sender on the same slot: a repeater-mode burst after a direct-mode call whose
+  terminator was missed is `0` until a checked LC of the new transmission names its radio.
   P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
   never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
   messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked
@@ -2356,8 +2364,9 @@ setting, shown apart from what is received, and it is off by default: then the o
   Positions never come from content `-F` let through. A DMR or P25 data report (LRRP, LOCN, LIP, UDT NMEA, ASCII
   NMEA) or a DMR embedded GPS LC whose check failed, or that was accepted as RAS, still prints, and its data notice is
   kept marked `[CRC ERR]` or `[RAS]`, but without coordinates (`Position: (suppressed; CRC ERR)`) or any other part
-  of the report (an MNIS LOCN report's text, a time, speed, heading, position error or reason), which only `-Z`
-  prints: nothing reaches
+  of the report (an MNIS LOCN report's text, a time, speed, heading, position error or reason; an LRRP report's notice
+  text carries speed and heading only for a position that was used), which only `-Z` prints. An MNIS LOCN report's
+  text prints without `-Z` only once its position was used: nothing reaches
   History's position, `-L` or the API, and a failed P25 location-service (SAP 48) packet keeps none of its payload,
   NMEA sentences or text: it prints `P25 Location Service: payload withheld (CRC ERR);` instead. A DMR USBD LIP
   reply whose CRC failed leaves no notice at all. A position heard during a P25 Phase 2 call that was followed from a

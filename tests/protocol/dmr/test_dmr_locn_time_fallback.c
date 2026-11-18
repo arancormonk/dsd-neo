@@ -92,7 +92,7 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 }
 
 // Under test
-void dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
+int dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU);
 
 static int
 expect_nonempty(const char* buf, const char* tag) {

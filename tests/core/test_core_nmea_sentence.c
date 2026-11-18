@@ -674,7 +674,7 @@ test_p25_sap48_long_payload(void) {
 /* An LRRP POINT_2D response (lat 11.25, lon 45) in IPv4/UDP to port 4001, as a SAP 0 packet from LLID 1234. */
 static void
 p25_ip_lrrp(void) {
-    static const uint8_t doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     uint8_t pdu[128];
     DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
@@ -698,6 +698,47 @@ p25_ip_lrrp(void) {
     ip[25] = (uint8_t)udp_len;
     DSD_MEMCPY(ip + 28, doc, sizeof doc);
     p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + ip_len + 4U));
+}
+
+/* Issue #800, fail closed: a P25 SAP 0 packet hands the IPv4 decoder exactly its user data, never a pad or CRC octet.
+ * The datagram (an LRRP POINT_2D response to UDP 4001 from LLID 1234) declares a total length one octet longer than
+ * the user data, and that last octet is the first of seven pad octets: the datagram is incomplete and gives no
+ * position. The same datagram whole in the user data gives one. */
+static void
+test_p25_ip_exact_payload(void) {
+    static const uint8_t doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    for (int cut = 0; cut <= 1; cut++) {
+        reset_fixture();
+        uint8_t pdu[128];
+        DSD_MEMSET(pdu, 0, sizeof pdu);
+        const uint16_t udp_len = (uint16_t)(8U + sizeof doc);
+        const uint16_t ip_len = (uint16_t)(20U + udp_len);
+        const uint8_t pad = cut ? 7U : 0U;
+        const size_t user = (size_t)ip_len - (size_t)cut;
+        pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
+        pdu[1] = 0;    /* SAP 0: IP packet data */
+        pdu[4] = 0x04;
+        pdu[5] = 0xD2; /* LLID 1234 */
+        pdu[6] = 0x05;
+        pdu[7] = pad;
+        uint8_t* ip = pdu + 12;
+        ip[0] = 0x45;
+        ip[3] = (uint8_t)ip_len;
+        ip[8] = 64;
+        ip[9] = 17;
+        ip[12] = 10;
+        ip[15] = 111;
+        ip[16] = 10;
+        ip[19] = 222;
+        ip[20] = ip[22] = 0x0F;
+        ip[21] = ip[23] = 0xA1; /* UDP 4001 */
+        ip[25] = (uint8_t)udp_len;
+        DSD_MEMCPY(ip + 28, doc, sizeof doc); /* the last octet (0) is the first pad octet when cut */
+        p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + user + pad + 4U));
+        dsd_position_fix recs[4];
+        CHECK(feed_records(recs, 4) == (cut ? 0 : 1));
+        CHECK(!cut || notice_row()->pos.valid == 0U);
+    }
 }
 
 static void
@@ -894,6 +935,7 @@ main(void) {
     test_p25_sap48_reserved_source();
     test_p25_sap48_long_payload();
     test_p25_origin();
+    test_p25_ip_exact_payload();
     test_p25_destination();
     test_producer_reads_the_century_from_the_decode_clock();
 

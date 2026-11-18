@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -145,6 +146,8 @@ test_capture_blocks_through_live_decoder(void) {
     state.event_history_s = history;
     state.currentslot = 0U;
     state.data_header_valid[0] = 1U;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_format[0] = 13U;
     state.data_header_sap[0] = 10U;
     state.data_header_blocks[0] = 5U;

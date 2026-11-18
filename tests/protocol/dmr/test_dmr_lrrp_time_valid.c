@@ -138,7 +138,7 @@ main(void) {
     int i = 0;
     DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[i++] = 0x07; // response
-    pdu[i++] = 24;   // message_len
+    pdu[i++] = 0;    // the document length, set below
     pdu[i++] = 0x22; // pattern
     pdu[i++] = 0x00;
 
@@ -163,6 +163,7 @@ main(void) {
     pdu[i++] = 0x7E; // hour: high nibble 0x7 -> 7 + (1<<4)=23; minute low nibble 0xE => 56 base
     pdu[i++] = 0xFA; // minute top bits=3 -> +3 -> 59; seconds=0x3A -> 58
 
+    pdu[1] = (uint8_t)(i - 2); // the whole document: one cut short gives no position
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 111, /*dst*/ 222, pdu, 1);
 
     dsd_test_capture_stderr_end(&cap);

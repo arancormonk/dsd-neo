@@ -104,7 +104,7 @@ file_size_nonzero(const char* path) {
 static int
 failed_report_prints_no_content(dsd_opts* opts, dsd_state* st) {
     // POINT_2D, then a timestamp (token 0x34): 2026-06-15 12:00:00 UTC.
-    static const uint8_t pdu[] = {0x07, 24,   0x22, 0x00, 0x66, 0x10, 0x00, 0x00, 0x00, 0x20,
+    static const uint8_t pdu[] = {0x07, 17,   0x22, 0x00, 0x66, 0x10, 0x00, 0x00, 0x00, 0x20,
                                   0x00, 0x00, 0x00, 0x34, 0x1F, 0xA9, 0x9E, 0xC0, 0x00, 0x00};
 
     static const struct {
@@ -162,7 +162,7 @@ main(void) {
     int i = 0;
     DSD_MEMSET(pdu, 0, sizeof pdu);
     pdu[i++] = 0x07; // response
-    pdu[i++] = 12;   // payload length (clamped by decoder anyway)
+    pdu[i++] = 11;   // the document length: TRIGGER pattern (2) + POINT_2D (9)
     pdu[i++] = 0x22; // pattern
     pdu[i++] = 0x00;
 

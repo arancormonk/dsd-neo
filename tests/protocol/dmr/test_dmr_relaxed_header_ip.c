@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
@@ -320,7 +321,7 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     g_utf8_first_byte = input ? input[0] : 0U;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
@@ -329,6 +330,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     // As the real decoder leaves the slot text after a report it did not admit (issue #800).
     DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s",
                  "NMEA / LOCN; Source: 1 Position suppressed (CRC ERR);");
+    return 0;
 }
 
 static void
@@ -782,6 +784,8 @@ test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
     opts.dmr_crc_relaxed_default = 0;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = 4;
@@ -815,6 +819,8 @@ run_type1_pdu_for_sap(uint8_t sap, const uint8_t block[12]) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = sap;
@@ -868,6 +874,8 @@ run_type1_mnis_pdu_captured(const uint8_t pdu[24], uint8_t poc, const char* cap_
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1120,6 +1128,8 @@ test_type1_mnis_short_pdu_length_underflow_guard(void) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_block_counter[0] = 1;
     state.data_header_format[0] = 2;
@@ -1183,6 +1193,8 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1252,6 +1264,8 @@ test_type1_mnis_notice_labels_match_observation(void) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1382,6 +1396,8 @@ test_type1_encrypted_notice_reports_missing_key(void) {
     opts.aggressive_framesync = 1;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = 4;
@@ -1413,6 +1429,8 @@ test_type2_rejects_out_of_bounds_aggregate_length(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_block_counter[0] = 9;
     state.data_block_crc_valid[0][0] = 1;
 
@@ -1690,6 +1708,8 @@ test_irrecoverable_header_resets_data_state(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     state.currentslot = 1;
     state.data_header_valid[1] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[1]);
     state.data_p_head[1] = 1;
     state.data_conf_data[1] = 1;
     state.data_block_counter[1] = 9;
@@ -2151,6 +2171,8 @@ run_type1_length_case(uint8_t sap, uint8_t width, uint8_t blocks, uint8_t poc, u
     state.event_history_s = history;
     state.currentslot = slot;
     state.data_header_valid[slot] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[slot]);
     state.data_header_blocks[slot] = blocks;
     state.data_header_format[slot] = 2;
     state.data_header_sap[slot] = sap;

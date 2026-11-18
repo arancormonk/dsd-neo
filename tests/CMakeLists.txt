@@ -15225,6 +15225,34 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         NAME DMR_USBD_INBOUND_SYNC
         COMMAND dsd-neo_test_dmr_usbd_inbound_sync
     )
+    add_executable(
+        dsd-neo_test_dmr_data_header_air
+        protocol/dmr/test_dmr_data_header_air.c
+        test_support/dmr_bptc_test_encoder.c
+    )
+    target_include_directories(
+        dsd-neo_test_dmr_data_header_air
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_dmr_data_header_air
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder, and
+        # NXDN needs core back: one group, so a linker that reads archives once in order (GNU ld) resolves both ways.
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_dmr_data_header_air
+        PRIVATE
+            "LINKER:--wrap=getDibitSoft"
+            "LINKER:--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(NAME DMR_DATA_HEADER_AIR COMMAND dsd-neo_test_dmr_data_header_air)
 endif()
 add_executable(
     dsd-neo_test_dmr_flco_mono_crc_scope

@@ -1926,7 +1926,10 @@ suite runs under this compiler.
   its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
   defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
   `--lrrp-extra-port` ports are part of it. The IPv4 path dispatches only a whole datagram
-  (`decode_ip_pdu_whole()`, issue #800 fail closed): an IPv4 fragment (More Fragments set or a nonzero offset) is not
+  (`decode_ip_pdu_whole()`, issue #800 fail closed), judged against exactly the user data its caller hands over: the
+  DMR packet's octets less the CRC32 and the pad octets (`dmr_block_type1_checked_len()`), a P25 packet's user data left
+  at the cursor after its optional headers, never a pad or CRC octet (`p25_pdu_payload_span()`; a packet shorter than
+  its header, CRC32 and pad octets has none, `p25_pdu_payload_len()`; test `CORE_NMEA_SENTENCE`). An IPv4 fragment (More Fragments set or a nonzero offset) is not
   reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
   quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
   service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
@@ -2596,7 +2599,17 @@ suite runs under this compiler.
     reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
     0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
     at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
-    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
+    parse, and a resync-guessed position is never published. Every caller hands `dmr_lrrp()` its whole checked payload
+    (an MNIS one of any length; only the console echo of a LOCN report's text is bounded), and a position comes only
+    from the whole declared document: one that declares more than the payload holds gives none (`Position suppressed
+    (incomplete document)`), since the shape that ranks highest may be in the part missing. The LRRP summary (the
+    packet's notice text) carries the speed and heading of an admitted report only, as admission left them; a failed,
+    refused or incomplete report's motion prints only in the `-Z` details (tests `DMR_EVENT_CRC`,
+    `DMR_LRRP_RESPONSE_TOKEN_LENGTHS`). An MNIS payload (`dmr_block_type1_handle_mnis()`) ends where the packet CRC32's
+    span ends: Motorola's compressed data leaves the octet just before the CRC32 out of the CRC
+    (`dmr_block_type1_update_crc()`), so that octet is never payload, and no DMR packet service reads past the span its
+    CRC covered (`dmr_block_type1_checked_len()`). A checked MNIS LOCN report's text (`LOCN Text:`) prints only once
+    `dmr_locn()` admitted its position, else only with `-Z`. UDT NMEA needs Q=1 and the format's fields (80 bits
     short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length, and a
     short report is read no further than its 80 bits). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
@@ -2637,7 +2650,11 @@ suite runs under this compiler.
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
     transmission (a healed fade keeps it); the received identity's epoch (`dsd_received_identity::epoch`, moved by
     another access code, system, site or family; a trunk follow keeps it) is the one it was learned under (the
-    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); and the
+    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); for DMR, the
+    burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
+    `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
+    a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
+    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
     the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
@@ -2723,6 +2740,15 @@ suite runs under this compiler.
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
+  - DMR packet binding (`dmr_data_header_binds()` in `dmr_block.c`, fail closed). A data block, and a DPF 15 header
+    that extends a standard one, belongs to the standard data header that armed its lane only when it came on the
+    reception that header's origin still matches and in a burst of the same identity (`dmr_data_air[slot]`,
+    `dsd_position_dmr_air()`): the sender kind by its sync word (BS-sourced, MS-sourced, direct mode) and, on the
+    single-slot decoder, the over-the-air slot (proven by the CACH, named by a direct-mode sync word; an MS-sourced burst
+    has none to prove, decided limit; a BS-sourced lane still Checking binds nothing). Otherwise the packet is dropped
+    (`Data block not from its header's slot or reception; packet dropped;`), so a header's radio never names another
+    transmission's blocks; an MBC header clears the origin, so no data block binds to it (test `DMR_DATA_HEADER_AIR`,
+    through the real single-slot data path).
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
     DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
     `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU

@@ -16,6 +16,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -1542,6 +1543,8 @@ test_protected_td_lc_shape_does_not_wipe_data_session(void) {
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = 4;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_conf_data[0] = 1;
     state.data_block_poc[0] = 3;
     state.data_byte_ctr[0] = 42;
