@@ -12644,7 +12644,15 @@ Private per-protocol modules worth knowing about:
     `dmr_sm_note_operator_leave()` judges it from the receiver the machine read before the tune (unknown, as at a
     timed-out walk's late landing, counts as leaving) and leaves the carrier as a follow does. Under P25 or NXDN
     trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
-    does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. Tests:
+    does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. The decoder thread
+    alone writes the left calls' decryption and the hold: it does so in its frames and in the no-carrier pass, which
+    runs outside the P25 SM tick guard. A tune the P25 watchdog makes on its own thread (a grant, a return to the
+    control channel, whose release forgets the privacy) only asks for it, under the guard
+    (`dsd_engine_dmr_leave()`, `dsd_state::dmr_leave_pending`, outside every snapshot copy range), and the decoder
+    thread applies the request before its next frame (`dsd_engine_apply_dmr_leave()`: in `processFrame()`, after the
+    synced frame's ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state), as it
+    applies the received identity's drop; a run's start clears one an earlier run left (`ENGINE_TRUNK_RETUNE_REGRESSION`
+    `check_dmr_leave_waits_for_the_decoder()`, `ENGINE_PROTOCOL_DISPATCH`). Tests:
     `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
     `test_dmr_rest_move_leaves_no_call_crypto()`, `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the
     carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming

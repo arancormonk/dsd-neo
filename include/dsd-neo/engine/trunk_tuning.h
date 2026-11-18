@@ -64,6 +64,21 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  * was lost: the backend tune (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and
  * app-control's io_control leg.
  */
+/** dsd_state::dmr_leave_pending: the calls' decryption goes (dmr_forget_call_decryption()), the FID staying. */
+#define DSD_DMR_LEAVE_DECRYPTION 1U
+/** dsd_state::dmr_leave_pending: their privacy goes too, the FID included (dmr_forget_call_privacy()). */
+#define DSD_DMR_LEAVE_PRIVACY    2U
+
+/**
+ * @brief Apply what a tune off the decoder thread that left a carrier asked of the DMR calls (dsd_state::
+ * dmr_leave_pending): their decryption or privacy goes, and each slot's voice is held (dmr_enc_class_hold()). Decoder
+ * thread, under the P25 SM tick guard or where no watchdog tick runs: before each frame, after the synced frame's
+ * ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state.
+ *
+ * @return 1 when something was pending, 0 otherwise.
+ */
+int dsd_engine_apply_dmr_leave(dsd_state* state);
+
 void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
                                    const dsd_input_cut* mark);
 /**

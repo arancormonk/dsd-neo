@@ -3767,6 +3767,8 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    /* Nor does a leave an earlier run's watchdog tune asked for hold this run's first landing. */
+    state->dmr_leave_pending = 0U;
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
     /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once
@@ -4162,6 +4164,7 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
        the next transmission. */
     dsd_rxid_apply_trunk_tune(state);
     dmr_ras_reset(state);
+    (void)dsd_engine_apply_dmr_leave(state);
     dsd_rxid_mark_stale(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -4346,6 +4349,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     if (dsd_rxid_apply_trunk_tune(state)) {
         dmr_ras_reset(state);
     }
+    (void)dsd_engine_apply_dmr_leave(state);
     return frame_dispatchable;
 }
 

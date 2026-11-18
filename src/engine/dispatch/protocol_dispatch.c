@@ -9,6 +9,7 @@
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -53,6 +54,11 @@ processFrame(dsd_opts* opts, dsd_state* state) {
        left's RAS evidence goes with it. */
     if (dsd_rxid_apply_trunk_tune(state)) {
         dmr_ras_reset(state);
+    }
+    /* So does what such a retune left of the DMR calls' decryption (dsd_engine_apply_dmr_leave()): one load while
+       nothing waits. */
+    if (state->dmr_leave_pending != 0U) {
+        (void)dsd_engine_apply_dmr_leave(state);
     }
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {

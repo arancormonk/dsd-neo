@@ -16394,6 +16394,8 @@ main(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* This thread decodes, as a run marks its thread (dsd_engine_run()): its tunes are the decoder thread's. */
+    dsd_engine_set_decoder_thread(1);
 
     dsd_call_observation observation = {0};
     observation.protocol = DSD_SYNC_P25P1_POS;

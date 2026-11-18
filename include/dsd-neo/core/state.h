@@ -3300,6 +3300,12 @@ struct dsd_state {
        thread where no watchdog tick runs; outside every snapshot copy range (ui_snapshot.c pins it), so no frontend
        copy reads it. */
     uint8_t rx_id_trunk_tune_pending;
+    /* What a tune off the decoder thread (the P25 watchdog's) that left a carrier asks the decoder thread to forget of
+       the DMR calls' decryption, and hold their voice for (dsd_engine_apply_dmr_leave()): 0 nothing, else
+       DSD_DMR_LEAVE_* bits. The decoder thread writes those fields in its frames and in the no-carrier pass, which runs
+       outside the P25 SM tick guard, so no other thread writes them. Written under the guard by the watchdog, read and
+       cleared by the decoder thread under it, before each frame; outside every snapshot copy range. */
+    uint8_t dmr_leave_pending;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];

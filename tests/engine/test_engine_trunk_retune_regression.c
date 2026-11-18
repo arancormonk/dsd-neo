@@ -2805,6 +2805,77 @@ check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* What a tune that left a carrier forgets of the DMR calls' decryption, and the hold on their voice
+   (dmr_forget_call_decryption(), dmr_forget_call_privacy(), dmr_enc_class_hold()), is the decoder thread's to write:
+   it reads and writes them in its frames and in the no-carrier pass, which runs outside the P25 SM tick guard. The P25
+   watchdog's tunes, a grant and a return to the control channel, run on its own thread and only ask for it
+   (dsd_state::dmr_leave_pending), which the decoder thread applies before its next frame
+   (dsd_engine_apply_dmr_leave()). The decoder thread's own tunes forget at once, as before. */
+static void
+seed_left_dmr_call(dsd_state* state) {
+    state->dmr_so = 0x40;
+    state->dmr_soR = 0x40;
+    state->dmr_fid = 0x10;
+    state->dmr_fidR = 0x10;
+    state->dmr_enc_class_held[0] = 0U;
+    state->dmr_enc_class_held[1] = 0U;
+}
+
+static void
+check_dmr_leave_waits_for_the_decoder(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    for (int kind = 0; kind < 3; kind++) {
+        opts->trunk_is_tuned = kind == 1 ? 1 : 0;
+        state->p25_cc_freq = 851000000;
+        state->trunk_cc_freq = 851000000;
+        state->p25_vc_freq[0] = 853000000;
+        opts->rtlsdr_center_freq = kind == 1 ? 853000000U : 851000000U;
+        opts->rigctl_sent_freq_hz = opts->rtlsdr_center_freq;
+        state->dmr_leave_pending = 0U;
+        seed_left_dmr_call(state);
+        g_setfreq_result = true;
+        state->frame_dispatch_active = 0;
+        if (kind < 2) {
+            dsd_engine_set_decoder_thread(0);
+            g_tick_guard_held = 1;
+        }
+        if (kind == 1) {
+            /* the watchdog's return to the control channel: the release forgets the left calls' privacy */
+            assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        } else {
+            /* a grant: the watchdog's (0), then the decoder thread's own (2) */
+            assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        g_tick_guard_held = 0;
+        dsd_engine_set_decoder_thread(1);
+        if (kind < 2) {
+            if (state->dmr_so != 0x40 || state->dmr_enc_class_held[0] != 0U || state->dmr_leave_pending == 0U) {
+                DSD_FPRINTF(stderr,
+                            "the watchdog's %s wrote the DMR calls' decryption on its own thread (SO %u, held %u, "
+                            "pending %u)\n",
+                            kind == 1 ? "return" : "grant", (unsigned)state->dmr_so,
+                            (unsigned)state->dmr_enc_class_held[0], (unsigned)state->dmr_leave_pending);
+            }
+            assert(state->dmr_so == 0x40 && state->dmr_soR == 0x40);
+            assert(state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+            assert(state->dmr_leave_pending != 0U);
+            /* The decoder thread's next frame applies it. */
+            assert(dsd_engine_apply_dmr_leave(state) == 1);
+            assert(state->dmr_leave_pending == 0U);
+            assert(dsd_engine_apply_dmr_leave(state) == 0);
+        } else {
+            assert(state->dmr_leave_pending == 0U);
+        }
+        assert(state->dmr_so == 0 && state->dmr_soR == 0);
+        assert(state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        /* The release forgets the FID too; a grant's leave keeps it for the left calls' rows. */
+        assert(kind == 1 ? state->dmr_fid == 0 : state->dmr_fid == 0x10);
+    }
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
+}
+
 /* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
 static void
 auto_probe_session(dsd_opts* opts, dsd_state* state) {
@@ -3173,6 +3244,7 @@ main(void) {
     check_departures_close_orphaned_recordings(opts, state);
     check_rxid_decoder_tunes(opts, state);
     check_rxid_tunes_reset_dmr_ras(opts, state);
+    check_dmr_leave_waits_for_the_decoder(opts, state);
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

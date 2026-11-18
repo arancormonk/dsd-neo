@@ -281,6 +281,42 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_note_chain_change(before, after);
 }
 
+/* The DMR calls of a carrier the receiver left: their decryption (DSD_DMR_LEAVE_DECRYPTION) or privacy
+   (DSD_DMR_LEAVE_PRIVACY) goes, and each slot's voice is held until its next call says whether it is encrypted. */
+static void
+dsd_engine_dmr_leave_now(dsd_state* state, unsigned int what) {
+    if (what & DSD_DMR_LEAVE_PRIVACY) {
+        dmr_forget_call_privacy(state);
+    } else {
+        dmr_forget_call_decryption(state);
+    }
+    dmr_enc_class_hold(state);
+}
+
+/* The decoder thread writes those fields in its frames and in the no-carrier pass, outside the P25 SM tick guard, so a
+   tune off it (the P25 watchdog's, which holds the guard) only asks for them (dsd_state::dmr_leave_pending), and the
+   decoder thread applies the request before its next frame (dsd_engine_apply_dmr_leave()), as it applies the received
+   identity's drop. A tune a frame's handler makes runs inside that frame, on the decoder thread, and leaves at once. */
+static void
+dsd_engine_dmr_leave(dsd_state* state, unsigned int what) {
+    if (!s_decoder_thread && !state->frame_dispatch_active) {
+        state->dmr_leave_pending = (uint8_t)(state->dmr_leave_pending | what);
+        return;
+    }
+    dsd_engine_dmr_leave_now(state, what);
+}
+
+int
+dsd_engine_apply_dmr_leave(dsd_state* state) {
+    if (!state || state->dmr_leave_pending == 0U) {
+        return 0;
+    }
+    const unsigned int what = state->dmr_leave_pending;
+    state->dmr_leave_pending = 0U;
+    dsd_engine_dmr_leave_now(state, what);
+    return 1;
+}
+
 void
 dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -306,10 +342,10 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     // first LC decodes. Nor does the next call key from the left calls' talkgroups. Until each slot's next call says
     // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). A release whose caller
     // judges the move itself (dsd_trunk_tuning_caller_judges(): a trunk-scan forced advance, whose park judges it, and
-    // a carrier boundary) leaves both to that caller, so the move is judged once.
+    // a carrier boundary) leaves both to that caller, so the move is judged once. Off the decoder thread (the P25
+    // watchdog's return) both wait for the decoder thread's next frame (dsd_engine_dmr_leave()).
     if (!dsd_trunk_tuning_caller_judges()) {
-        dmr_forget_call_privacy(state);
-        dmr_enc_class_hold(state);
+        dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_PRIVACY);
     }
     state->payload_algid = 0;
     state->payload_algidR = 0;
@@ -1177,15 +1213,15 @@ dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
    (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). A
    tune its caller judges (dsd_trunk_tuning_caller_judges(): the DMR machine's own, which this reading can disagree
    with on a composite control channel, a trunk-scan park, a return to the control channel, an operator's manual move)
-   is left to that caller, so every move is judged once. */
+   is left to that caller, so every move is judged once. Off the decoder thread (the P25 watchdog's tunes) the DMR part
+   waits for the decoder thread's next frame (dsd_engine_dmr_leave()). */
 static void
 dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
         if (!dsd_trunk_tuning_caller_judges()) {
-            dmr_forget_call_decryption(state);
-            dmr_enc_class_hold(state);
+            dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_DECRYPTION);
         }
     }
 }

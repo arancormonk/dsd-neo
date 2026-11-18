@@ -515,6 +515,17 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* From engine/trunk_tuning.c: what a watchdog tune left of the DMR calls, applied as the real one applies it. */
+int
+dsd_engine_apply_dmr_leave(dsd_state* state) {
+    if (!state || state->dmr_leave_pending == 0U) {
+        return 0;
+    }
+    state->dmr_leave_pending = 0U;
+    dmr_enc_class_hold(state);
+    return 1;
+}
+
 /* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
 int
 dsd_engine_scan_tune_moved(void) {
