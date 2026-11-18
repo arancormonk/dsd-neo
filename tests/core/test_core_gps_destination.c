@@ -173,9 +173,9 @@ test_udt_nmea(void) {
     reset_fixture(DSD_SYNC_DMR_BS_DATA_POS);
     const dsd_gps_address to_group = {.source_id = SOURCE, .target_id = GROUP_A, .target_group = 1U};
     const dsd_gps_address to_unit = {.source_id = SOURCE, .target_id = UNIT_B, .target_group = 0U};
-    nmea_iec_61162_1(&g_opts, &g_state, nmea, &to_group, 2);
+    nmea_iec_61162_1(&g_opts, &g_state, nmea, NMEA_UDT_LONG_BITS, &to_group, 2);
     advance_1s();
-    nmea_iec_61162_1(&g_opts, &g_state, nmea, &to_unit, 2);
+    nmea_iec_61162_1(&g_opts, &g_state, nmea, NMEA_UDT_LONG_BITS, &to_unit, 2);
     expect_two_destinations("UDT NMEA", SOURCE);
 }
 

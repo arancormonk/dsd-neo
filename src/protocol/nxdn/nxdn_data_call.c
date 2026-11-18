@@ -9,7 +9,9 @@
  * The header's binding (issue #800 B6): a payload is attributed to the checked header that opened its assembly, never
  * to an earlier one. The binding holds the reception and carrier the header was heard on and when; another reception
  * (a retune, a RAN or system change), another carrier, or NXDN_DATA_HEADER_HOLD_MS on the decode clock ends it, and
- * so do a failed FACCH2/UDCH or FACCH3/UDCH2 CRC (nxdn_deperm.c) and a rejected header (nxdn_element.c).
+ * so do a rejected header (nxdn_element.c) and a message lost on any channel that can carry a header (nxdn_deperm.c):
+ * a failed FACCH2/UDCH, FACCH3/UDCH2 or CAC CRC, or a FACCH1 none of whose copies passed. A SACCH cannot hold a
+ * header (26 or 72 bits against 79 and 88), so its failure ends nothing.
  */
 
 #include <dsd-neo/core/position.h>

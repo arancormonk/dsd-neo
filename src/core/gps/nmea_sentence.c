@@ -10,6 +10,7 @@
 
 #include "nmea_sentence.h"
 
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/position.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -147,11 +148,13 @@ nmea_is_digit(char c) {
 }
 
 /* A number written as digits, an optional '.', and more digits: its integer part (at most @p max_int digits, at least
- * one) and its first @p keep fraction digits as an integer (zero-padded; further digits are dropped). */
+ * one) and its first @p keep fraction digits as an integer (zero-padded; further digits are dropped, but whether any
+ * fraction digit at all is nonzero is kept). */
 typedef struct {
     uint32_t whole;
     uint32_t frac;
     size_t int_digits;
+    uint8_t frac_nonzero; /* some fraction digit, kept or dropped, is not 0 */
 } nmea_number;
 
 static int
@@ -159,6 +162,7 @@ nmea_parse_number(const nmea_field* f, size_t max_int, size_t keep, nmea_number*
     size_t i = 0U;
     out->whole = 0U;
     out->frac = 0U;
+    out->frac_nonzero = 0U;
     while (i < f->n && nmea_is_digit(f->p[i])) {
         if (i >= max_int) {
             return 0;
@@ -178,6 +182,9 @@ nmea_parse_number(const nmea_field* f, size_t max_int, size_t keep, nmea_number*
         for (i++; i < f->n; i++) {
             if (!nmea_is_digit(f->p[i])) {
                 return 0;
+            }
+            if (f->p[i] != '0') {
+                out->frac_nonzero = 1U;
             }
             if (kept < keep) {
                 out->frac = (out->frac * 10U) + (uint32_t)(f->p[i] - '0');
@@ -205,7 +212,7 @@ enum {
 
 /* ddmm.m... (latitude, @p deg_digits 2, @p max_deg 90) or dddmm.m... (longitude, 3, 180) and its hemisphere letter. The
  * components are checked before anything is converted: degrees <= max, minutes <= 59, the boundary degree only with
- * zero minutes and fraction. */
+ * zero minutes and a fraction whose every digit is 0, those past the kept precision included. */
 static int
 nmea_parse_coordinate(const nmea_field* value, const nmea_field* hemi, size_t deg_digits, uint32_t max_deg,
                       const char* signs, int32_t* out_e7) {
@@ -215,7 +222,7 @@ nmea_parse_coordinate(const nmea_field* value, const nmea_field* hemi, size_t de
     }
     const uint32_t deg = num.whole / 100U;
     const uint32_t min = num.whole % 100U;
-    if (deg > max_deg || min > 59U || (deg == max_deg && (min != 0U || num.frac != 0U))) {
+    if (deg > max_deg || min > 59U || (deg == max_deg && (min != 0U || num.frac_nonzero))) {
         return 0;
     }
     int sign = 0;
@@ -303,23 +310,62 @@ nmea_parse_time_of_day(const nmea_field* f) {
     return ((int64_t)hh * 3600) + ((int64_t)mm * 60) + (int64_t)ss;
 }
 
-/* ddmmyy: days since 1970-01-01 (years 2000-2099), or -1 when malformed or out of range. */
 static int64_t
-nmea_parse_date(const nmea_field* f) {
+nmea_floor_div(int64_t a, int64_t b) {
+    return (a >= 0) ? a / b : -((-a + b - 1) / b);
+}
+
+int
+dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t receive_utc_s, int64_t* year_out,
+                            int64_t* days_out) {
+    if (yy > 99U) {
+        return 0;
+    }
+    const int64_t ref_days = nmea_floor_div(receive_utc_s, 86400);
+    /* The receive year, near enough to pick the centuries around it (146097 days are 400 Gregorian years). */
+    const int64_t ref_year = 1970 + nmea_floor_div(ref_days * 400, 146097);
+    const int64_t base = ref_year - (((ref_year % 100) + 100) % 100);
+    int found = 0;
+    int64_t best_year = 0;
+    int64_t best_days = 0;
+    int64_t best_gap = 0;
+    for (int64_t c = base - 100; c <= base + 100; c += 100) {
+        const int64_t year = c + (int64_t)yy;
+        if (!nmea_civil_date_valid(year, month, day)) {
+            continue;
+        }
+        const int64_t days = nmea_days_from_civil(year, month, day);
+        const int64_t gap = days >= ref_days ? days - ref_days : ref_days - days;
+        if (!found || gap < best_gap) {
+            found = 1;
+            best_year = year;
+            best_days = days;
+            best_gap = gap;
+        }
+    }
+    if (found && year_out != NULL) {
+        *year_out = best_year;
+    }
+    if (found && days_out != NULL) {
+        *days_out = best_days;
+    }
+    return found;
+}
+
+/* ddmmyy: 1 with the days since 1970-01-01 in @p days_out, the year in the century closest to @p receive_utc_s; 0 when
+   malformed or out of range. */
+static int
+nmea_parse_date(const nmea_field* f, int64_t receive_utc_s, int64_t* days_out) {
     if (f->n != 6U) {
-        return -1;
+        return 0;
     }
     nmea_number num;
     if (!nmea_parse_number(f, 6U, 0U, &num) || num.int_digits != 6U) {
-        return -1;
+        return 0;
     }
     const uint32_t dd = num.whole / 10000U;
     const uint32_t mo = (num.whole / 100U) % 100U;
-    const int64_t year = 2000 + (int64_t)(num.whole % 100U);
-    if (!nmea_civil_date_valid(year, mo, dd)) {
-        return -1;
-    }
-    return nmea_days_from_civil(year, mo, dd);
+    return dsd_gps_two_digit_year_date(num.whole % 100U, mo, dd, receive_utc_s, NULL, days_out);
 }
 
 /* ---- RMC and GGA ---- */
@@ -355,7 +401,7 @@ nmea_read_rmc_motion(const nmea_fields* fields, nmea_fix* out) {
 
 /* $--RMC,time,status,lat,N/S,lon,E/W,speed kn,course,date,magvar,E/W[,mode[,nav status]] */
 static void
-nmea_read_rmc(const nmea_fields* fields, nmea_fix* out) {
+nmea_read_rmc(const nmea_fields* fields, int64_t receive_utc_s, nmea_fix* out) {
     out->type = NMEA_TYPE_RMC;
     if (fields->count < 10U) {
         out->refusal = "RMC too short";
@@ -377,8 +423,8 @@ nmea_read_rmc(const nmea_fields* fields, nmea_fix* out) {
     }
     nmea_read_rmc_motion(fields, out);
     const int64_t tod = nmea_parse_time_of_day(nmea_get(fields, 1U));
-    const int64_t days = nmea_parse_date(nmea_get(fields, 9U));
-    if (tod >= 0 && days >= 0) {
+    int64_t days = 0;
+    if (tod >= 0 && nmea_parse_date(nmea_get(fields, 9U), receive_utc_s, &days)) {
         out->fix_time_s = (days * 86400) + tod;
     }
 }
@@ -438,7 +484,7 @@ nmea_formatter(const nmea_field* address) {
 }
 
 void
-nmea_parse_fix(const char* sentence, size_t len, nmea_fix* out) {
+nmea_parse_fix(const char* sentence, size_t len, int64_t receive_utc_s, nmea_fix* out) {
     if (out == NULL) {
         return;
     }
@@ -459,7 +505,7 @@ nmea_parse_fix(const char* sentence, size_t len, nmea_fix* out) {
     nmea_fields fields;
     nmea_split(sentence, len, &fields);
     switch (nmea_formatter(nmea_get(&fields, 0U))) {
-        case NMEA_TYPE_RMC: nmea_read_rmc(&fields, out); break;
+        case NMEA_TYPE_RMC: nmea_read_rmc(&fields, receive_utc_s, out); break;
         case NMEA_TYPE_GGA: nmea_read_gga(&fields, out); break;
         default: return;
     }

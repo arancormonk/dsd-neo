@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -139,8 +140,15 @@ static const locn_case k_locn_cases[] = {
     {"latitude 99", "N9930.0000E04500.0000", 0, 0, 0, NULL},
     {"past the pole", "N9000.0001E04500.0000", 0, 0, 0, NULL},
     {"past the date line", "W18000.0001N1000.0000", 0, 0, 0, NULL},
+    // A fraction digit past the four the format keeps still counts at the boundary; zeros do not.
+    {"past the pole, fifth digit", "N9000.00001E04500.0000", 0, 0, 0, NULL},
+    {"past the date line, sixth digit", "E18000.000001N1000.0000", 0, 0, 0, NULL},
+    {"boundary, zero digits on", "N9000.000000E04500.0000", 1, 900000000, 450000000, NULL},
     // A non-digit is no field at all (it used to shift by a negative amount).
     {"non-digit", "N/430.0000E04500.0000", 0, 0, 0, ""},
+    // The separator is a '.': any other character there is no coordinate field, on either axis.
+    {"latitude separator", "N2230X1234E04500.0000", 0, 0, 0, ""},
+    {"longitude separator", "N2230.0000E04500,0000", 0, 0, 0, ""},
 };
 
 static int
@@ -259,6 +267,30 @@ run_locn_fix_time_cases(dsd_opts* opts, dsd_state* st) {
         DSD_FPRINTF(stderr, "LOCN fix time: %d reports kept, want 4 (the later time is no repeat)\n", n);
         rc = 1;
     }
+
+    /* The two-digit year is read in the century that puts the date closest to its reception (the decode clock): a
+       capture from 1995 replayed keeps 1994, and prints it so. */
+    dsd_decode_clock_use_test(801964800ULL * 1000000000ULL); /* 1995-06-01 */
+    dsd_event_stage_clear(st, 0);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_locn_century") != 0) {
+        return 1;
+    }
+    static const char old_report[] = "A123519230394N2230.0000E04500.0000";
+    uint8_t pdu[64];
+    DSD_MEMCPY(pdu, old_report, sizeof old_report - 1U);
+    dmr_locn(opts, st, (uint16_t)(sizeof old_report - 1U), pdu);
+    dsd_test_capture_stderr_end(&cap);
+    char err[1024];
+    if (dsd_test_capture_stderr_read(&cap, err, sizeof err) != 0) {
+        return 1;
+    }
+    const dsd_position_fix* fix = dsd_event_staged_position(st, 0);
+    if (fix->rev == 0U || fix->fix_time_s != 764426119 || strstr(err, "1994/03/23 12:35:19") == NULL) {
+        DSD_FPRINTF(stderr, "LOCN century: fix_time %lld, stderr '%s'\n", (long long)fix->fix_time_s, err);
+        rc = 1;
+    }
+    dsd_decode_clock_use_system();
     dsd_state_ext_free_all(st);
     return rc;
 }

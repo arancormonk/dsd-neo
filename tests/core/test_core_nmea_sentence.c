@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,13 +52,21 @@ sentence(char* out, size_t cap, const char* body, const char* tail) {
     DSD_SNPRINTF(out, cap, "$%s*%02X%s", body, sum, tail);
 }
 
+/* The receive time the parser reads an RMC date's two-digit year against: 2026-06-15 12:00:00 UTC. */
+enum { RECEIVED_2026 = 1781524800 };
+
 static nmea_fix
-parse_body(const char* body) {
+parse_body_at(const char* body, int64_t receive_utc_s) {
     char s[160];
     sentence(s, sizeof s, body, "");
     nmea_fix f;
-    nmea_parse_fix(s, strlen(s), &f);
+    nmea_parse_fix(s, strlen(s), receive_utc_s, &f);
     return f;
+}
+
+static nmea_fix
+parse_body(const char* body) {
+    return parse_body_at(body, RECEIVED_2026);
 }
 
 /* ---- Framing: one sentence at a time, each with its own checksum ---- */
@@ -183,6 +192,30 @@ test_rmc_fields(void) {
     CHECK(parse_body("GPRMC,120000,A,2230.0,N,04500.0,E,,,290225,,,A").fix_time_s == 0); /* not a leap year */
 }
 
+/* The two-digit year is read in the century that puts the date closest to its reception, so within 50 years of it. */
+static void
+test_rmc_century(void) {
+    /* The canonical example sentence, checksum and all, is from 1994, not 2094. */
+    nmea_fix f;
+    static const char canonical[] = "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A";
+    nmea_parse_fix(canonical, strlen(canonical), RECEIVED_2026, &f);
+    CHECK(f.has_position && f.fix_time_s == 764426119); /* 1994-03-23 12:35:19 UTC */
+
+    CHECK(parse_body("GPRMC,000000,A,2230.0,N,04500.0,E,,,010170,,,A").fix_time_s == 3155760000LL); /* 2070 */
+    CHECK(parse_body("GPRMC,000000,A,2230.0,N,04500.0,E,,,010180,,,A").fix_time_s == 315532800);    /* 1980 */
+    CHECK(parse_body("GPRMC,000000,A,2230.0,N,04500.0,E,,,290200,,,A").fix_time_s == 951782400);    /* 2000, leap */
+    /* Received in 2080: year 10 is 2110, 30 years on, not 2010, 70 years back. */
+    CHECK(parse_body_at("GPRMC,000000,A,2230.0,N,04500.0,E,,,010110,,,A", 3484425600LL).fix_time_s == 4417977600LL);
+
+    int64_t year = 0;
+    int64_t days = 0;
+    CHECK(dsd_gps_two_digit_year_date(94U, 3U, 23U, RECEIVED_2026, &year, &days) == 1 && year == 1994);
+    /* 29 February 00 received in 2144: 2100 is closest but has no 29 February, nor has 2200, so it is 2000. */
+    CHECK(dsd_gps_two_digit_year_date(0U, 2U, 29U, 5490892800LL /* 2144-01-01 */, &year, &days) == 1 && year == 2000);
+    CHECK(dsd_gps_two_digit_year_date(100U, 1U, 1U, RECEIVED_2026, &year, &days) == 0);
+    CHECK(dsd_gps_two_digit_year_date(26U, 2U, 30U, RECEIVED_2026, &year, &days) == 0);
+}
+
 static void
 test_coordinate_bounds(void) {
     /* Components are checked before conversion: minutes 60 is no 61st minute, it is invalid. */
@@ -195,6 +228,14 @@ test_coordinate_bounds(void) {
     CHECK(f.has_position && f.lat_e7 == -900000000 && f.lon_e7 == -1800000000);
     CHECK(!parse_body("GPRMC,120000,A,9000.0001,N,04500.0,E,,,150626,,,A").has_position);
     CHECK(!parse_body("GPRMC,120000,A,2230.0,N,18000.0001,E,,,150626,,,A").has_position);
+    /* Any nonzero fraction digit past the boundary, those beyond the kept 1e-7 minute included (GGA as RMC). */
+    CHECK(!parse_body("GPGGA,120000,9000.00000001,N,04500.0,E,1,05,1.0,10.0,M,,M,,").has_position);
+    CHECK(!parse_body("GPRMC,120000,A,2230.0,N,18000.000000000009,W,,,150626,,,A").has_position);
+    f = parse_body("GPGGA,120000,9000.000000000000,N,18000.00000000,E,1,05,1.0,10.0,M,,M,,");
+    CHECK(f.has_position && f.lat_e7 == 900000000 && f.lon_e7 == 1800000000);
+    /* Below the boundary, digits beyond the kept precision are dropped as before. */
+    f = parse_body("GPRMC,120000,A,4500.12345678,N,04500.0,E,,,150626,,,A");
+    CHECK(f.has_position && f.lat_e7 == 450020576); /* 45 + 0.1234567 / 60, rounded */
     /* Field shape: ddmm / dddmm, digits, a hemisphere letter. */
     CHECK(!parse_body("GPRMC,120000,A,230.0,N,04500.0,E,,,150626,,,A").has_position);
     CHECK(!parse_body("GPRMC,120000,A,2230.0,N,4500.0,E,,,150626,,,A").has_position);
@@ -389,6 +430,24 @@ test_producer_sentence_choice(void) {
     CHECK(feed_records(recs, 4) == 1);
     CHECK(recs[0].heading_ddeg == DSD_POSITION_HEADING_UNKNOWN && recs[0].alt_dm == 100);
 
+    /* An active RMC at exactly 0, 0 is no candidate: the packet's GGA is the report, and the RMC's text is kept. One
+       zero coordinate is a position. */
+    reset_fixture();
+    char z[128];
+    sentence(z, sizeof z, "GPRMC,120000,A,0000.0000,N,00000.0000,E,001.0,045.0,150626,,,A", "\r\n");
+    DSD_SNPRINTF(buf, sizeof buf, "%s%s", g, z);
+    CHECK(check_payload(buf, 55U, 1) == 1U);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].lat_e7 == 100000000 && recs[0].lon_e7 == 200000000 && recs[0].alt_dm == 100);
+    CHECK(strstr(notice_row()->text_message, "$GPRMC,120000,A,0000.0000") != NULL);
+
+    reset_fixture();
+    sentence(z, sizeof z, "GPRMC,120000,A,0000.0000,N,02000.0000,E,001.0,045.0,150626,,,A", "\r\n");
+    DSD_SNPRINTF(buf, sizeof buf, "%s%s", g, z);
+    CHECK(check_payload(buf, 55U, 1) == 1U);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].lat_e7 == 0 && recs[0].lon_e7 == 200000000 && recs[0].heading_ddeg == 450U);
+
     /* No measured fix at all: a notice with the text, no position, no -L row. */
     reset_fixture();
     DSD_SNPRINTF(buf, sizeof buf, "%s", r);
@@ -398,6 +457,20 @@ test_producer_sentence_choice(void) {
     char lfile[512];
     read_lrrp_file(lfile, sizeof lfile);
     CHECK(lfile[0] == '\0');
+}
+
+/* Through the producer: the decode clock is the receive time, so a capture from 1995 replayed now keeps its year. */
+static void
+test_producer_reads_the_century_from_the_decode_clock(void) {
+    reset_fixture();
+    dsd_decode_clock_use_test(801964800ULL * 1000000000ULL); /* 1995-06-01 */
+    char s[128];
+    sentence(s, sizeof s, "GPRMC,123519,A,2230.0000,N,04500.0000,E,,,230394,,,A", "\r\n");
+    CHECK(check_payload(s, 1234U, 1) == 1U);
+    dsd_position_fix recs[4];
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].fix_time_s == 764426119);
+    dsd_decode_clock_use_system();
 }
 
 /* ---- P25 SAP 48 through the packet path ---- */
@@ -449,6 +522,33 @@ test_p25_sap48(void) {
     }
     CHECK(strstr(dsd_event_staged_text(&g_state, 0), "GPRMC") == NULL);
     CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "GPRMC") == NULL);
+
+    /* Line ends before the first sentence are the parser's framing: the payload is NMEA. A checked sentence after them
+       is the report; a failed one is never text (2.4). */
+    char framed[160];
+    DSD_SNPRINTF(framed, sizeof framed, "\r\n%s", s);
+    reset_fixture();
+    p25_sap48(framed, 0);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].source_id == 1234U && recs[0].lat_e7 == 225000000);
+    CHECK(notice_row()->pos.valid == 1U);
+
+    reset_fixture();
+    p25_sap48("\n\r$GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A*00\r\n", 0);
+    CHECK(feed_records(recs, 4) == 0);
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &g_history[0].Event_History_Items[i];
+        CHECK(strstr(row->text_message, "GPRMC") == NULL && strstr(row->text_message, "2230") == NULL);
+        CHECK(strstr(row->gps_s, "GPRMC") == NULL && strstr(row->gps_s, "2230") == NULL);
+    }
+    CHECK(strstr(dsd_event_staged_text(&g_state, 0), "GPRMC") == NULL);
+    CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "GPRMC") == NULL);
+
+    /* Plain text is still text. */
+    reset_fixture();
+    p25_sap48("HELLO", 0);
+    CHECK(feed_records(recs, 4) == 0);
+    CHECK(strstr(notice_row()->text_message, "HELLO") != NULL || strstr(notice_row()->gps_s, "HELLO") != NULL);
 }
 
 /* ---- P25: a report is admitted against the reception its MDPU's header was heard on (issue #800 2.3 step 3) ---- */
@@ -503,6 +603,17 @@ test_p25_origin(void) {
             CHECK(kept == (retune ? 0 : 1));
             CHECK(kept != 1 || recs[0].kind == (lrrp ? DSD_POS_DMR_LRRP : DSD_POS_NMEA));
             CHECK(kept != 1 || recs[0].protocol == DSD_SYNC_P25P1_POS);
+            if (!lrrp && retune) {
+                /* Nothing of a packet that began on another reception goes in under this one: no sentence text, no
+                   NMEA notice, nothing staged for the next notice. */
+                for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+                    const Event_History* row = &g_history[0].Event_History_Items[i];
+                    CHECK(strstr(row->text_message, "2230") == NULL && strstr(row->gps_s, "2230") == NULL);
+                    CHECK(strstr(row->event_string, "NMEA SRC") == NULL);
+                }
+                CHECK(strstr(dsd_event_staged_text(&g_state, 0), "2230") == NULL);
+                CHECK(strstr(dsd_event_staged_gps(&g_state, 0), "2230") == NULL);
+            }
         }
     }
 }
@@ -605,6 +716,7 @@ main(void) {
 
     test_framing();
     test_rmc_fields();
+    test_rmc_century();
     test_coordinate_bounds();
     test_gga_fields();
     test_producer_publishes_checked_rmc();
@@ -614,6 +726,7 @@ main(void) {
     test_p25_sap48();
     test_p25_origin();
     test_p25_destination();
+    test_producer_reads_the_century_from_the_decode_clock();
 
     dsd_state_ext_free_all(&g_state);
     (void)remove(g_lpath);

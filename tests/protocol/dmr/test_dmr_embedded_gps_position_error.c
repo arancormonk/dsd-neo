@@ -235,7 +235,7 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
         const uint64_t revision = st->event_history_s[0].revision;
-        nmea_iec_61162_1(opts, st, bits, &(const dsd_gps_address){.source_id = 900001U}, 2);
+        nmea_iec_61162_1(opts, st, bits, NMEA_UDT_LONG_BITS, &(const dsd_gps_address){.source_id = 900001U}, 2);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.500000", "nmea-iec-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.250000", "nmea-iec-lon");

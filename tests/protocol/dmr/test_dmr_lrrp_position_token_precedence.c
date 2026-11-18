@@ -239,6 +239,28 @@ main(void) {
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
     rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "integer variant precedence");
 
+    // A shape at exactly 0, 0 is no position: it does not outrank the document's other shape, whose position wins.
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.currentslot = 0;
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    i = 0;
+    pdu[i++] = 0x07; // Immediate Location Response
+    pdu[i++] = 20;   // payload length: CIRCLE_2D (11) + POINT_2D (9)
+    pdu[i++] = 0x51; // CIRCLE_2D at 0, 0
+    i += 8;
+    pdu[i++] = 0x01; // radius: integer 1
+    pdu[i++] = 0x00;
+    pdu[i++] = 0x66; // POINT_2D
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lat_p3d >> (8 * b));
+    }
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lon_p3d >> (8 * b));
+    }
+    expected_from_raw(lat_p3d, lon_p3d, &exp_lat, &exp_lon);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
+    rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "zero shape skipped");
+
     // Unknown LRRP message types still carry usable position payloads in the field.
     DSD_MEMSET(&st, 0, sizeof st);
     st.currentslot = 0;

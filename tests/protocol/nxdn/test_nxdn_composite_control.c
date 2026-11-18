@@ -99,6 +99,22 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     return 0U;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    /* The real framing: line ends, then '$' or '!'. */
+    for (int i = 0; input != NULL && i < len_bytes; i++) {
+        unsigned octet = 0U;
+        for (int b = 0; b < 8; b++) {
+            octet = (octet << 1) | (input[(i * 8) + b] & 1U);
+        }
+        if (octet != (unsigned)'\r' && octet != (unsigned)'\n') {
+            return octet == (unsigned)'$' || octet == (unsigned)'!';
+        }
+    }
+    return 0;
+}
+
 /* Two sites of one Global system: system 2, sites 0x21 and 0x22. */
 enum {
     SITE_A = (2 << 12) | 0x21,

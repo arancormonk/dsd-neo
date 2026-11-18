@@ -698,6 +698,10 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
 
     if (crc == 0) {
         NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));
+    } else {
+        /* A CAC carries data call headers and blocks: the failed one may have been a header that replaced the bound
+           one, so no payload may assemble under the old one (issue #800 B6). */
+        nxdn_data_call_drop_header(state);
     }
     state->nxdn_frame_foreign = was_foreign;
     nxdn_print_cac_payload(opts, m_data);
@@ -1185,16 +1189,72 @@ nxdn_message_type_resets_call(uint8_t message_type) {
     return message_type == 0x08U || message_type == 0x11U || message_type == 0xE8U;
 }
 
+static void
+nxdn_print_facch1_payload(const dsd_opts* opts, const uint8_t* m_data, uint16_t crc, uint16_t check) {
+    if (opts->payload != 1) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, " FACCH1 Payload ");
+    for (int i = 0; i < 12; i++) {
+        DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+    }
+    if (crc != check) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " (CRC ERR)");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+/*
+ * A decoded FACCH1 copy: @p frame is 1 or 2 for the two copies of one message (both halves of the frame carry it), 0
+ * for a single copy.
+ */
+void
+nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint16_t crc,
+                   uint16_t check, uint8_t frame) {
+    static uint8_t facch1_storage[12];
+    /* Whether the transmission was confirmed when the first copy's content was decoded: a copy decoded before then had
+       its publication withheld (nxdn_confirm.c), so the second copy is no repeat of what was published. */
+    static int facch1_confirmed;
+    /* Whether the first of two copies failed its CRC. */
+    static int facch1_first_failed;
+
+    state->data_header_format[0] = 3;
+    if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    } else if (frame != 1U && (frame == 0U || facch1_first_failed)) {
+        /* No copy of this message decoded: it may have been a data call header that replaced the bound one, so no
+           payload may assemble under the old one (issue #800 B6). */
+        nxdn_data_call_drop_header(state);
+    }
+    facch1_first_failed = frame == 1U && crc != check;
+    /* The second FACCH1 copy repeats the first: decoded once. Unless the first was decoded before the transmission was
+       confirmed, which withheld what it would publish, and this copy confirmed it (an isolated frame's second check):
+       then this copy's content is the one that publishes. */
+    const int repeat = frame == 2U && memcmp(facch1_storage, m_data, sizeof(facch1_storage)) == 0;
+    const int duplicate = repeat && (facch1_confirmed || !nxdn_confirm_is_confirmed(state));
+    DSD_MEMSET(facch1_storage, 0, sizeof(facch1_storage));
+    facch1_confirmed = 0;
+    if (frame == 1U) {
+        DSD_MEMCPY(facch1_storage, m_data, sizeof(facch1_storage));
+    }
+    if (crc == check && !duplicate) {
+        if (frame == 1U) {
+            facch1_confirmed = nxdn_confirm_is_confirmed(state);
+        }
+        NXDN_Elements_Content_decode(opts, state, trellis_buf, 96U);
+    }
+
+    nxdn_print_facch1_payload(opts, m_data, crc, check);
+}
+
 /*
  * Soft-decision FACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
  */
 void
 nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t frame) {
-    static uint8_t facch1_storage[12];
-    /* Whether the transmission was confirmed when the first copy's content was decoded: a copy decoded before then had
-       its publication withheld (nxdn_confirm.c), so the second copy is no repeat of what was published. */
-    static int facch1_confirmed;
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
     uint8_t depunc[192];
@@ -1230,39 +1290,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
         check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
     }
 
-    state->data_header_format[0] = 3;
-    if (crc == check) {
-        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
-    }
-    /* The second FACCH1 copy repeats the first: decoded once. Unless the first was decoded before the transmission was
-       confirmed, which withheld what it would publish, and this copy confirmed it (an isolated frame's second check):
-       then this copy's content is the one that publishes. */
-    const int repeat = frame == 2U && memcmp(facch1_storage, m_data, sizeof(facch1_storage)) == 0;
-    const int duplicate = repeat && (facch1_confirmed || !nxdn_confirm_is_confirmed(state));
-    DSD_MEMSET(facch1_storage, 0, sizeof(facch1_storage));
-    facch1_confirmed = 0;
-    if (frame == 1U) {
-        DSD_MEMCPY(facch1_storage, m_data, sizeof(facch1_storage));
-    }
-    if (crc == check && !duplicate) {
-        if (frame == 1U) {
-            facch1_confirmed = nxdn_confirm_is_confirmed(state);
-        }
-        NXDN_Elements_Content_decode(opts, state, trellis_buf, sizeof(trellis_buf));
-    }
-
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\n");
-        DSD_FPRINTF(stderr, " FACCH1 Payload ");
-        for (int i = 0; i < 12; i++) {
-            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
-        }
-        if (crc != check) {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " (CRC ERR)");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-    }
+    nxdn_handle_facch1(opts, state, trellis_buf, m_data, crc, check, frame);
 }
 
 /*

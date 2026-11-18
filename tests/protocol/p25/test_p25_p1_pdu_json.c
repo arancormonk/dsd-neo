@@ -137,6 +137,12 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    return input != NULL && len_bytes > 0 && convert_bits_into_output(input, 8) == (uint64_t)'$';
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)len;
     (void)input;

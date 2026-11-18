@@ -166,7 +166,9 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                 const dsd_gps_address* addr, int type) {
+    (void)bit_count;
     (void)opts;
     (void)input;
     g_nmea_calls++;

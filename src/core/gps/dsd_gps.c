@@ -239,6 +239,9 @@ typedef struct {
     uint8_t reason_is_user_data;
 } lip_fields;
 
+/* TS 100 392-18-1 Table 6.94: "Emergency condition is detected". */
+enum { LIP_REASON_EMERGENCY = 2U };
+
 static void
 lip_fields_from_usbd(const uint8_t* input, lip_fields* f) {
     f->time_elapsed = (uint8_t)convert_bits_into_output(input + 4, 2);
@@ -291,6 +294,11 @@ lip_parse_short_report(const uint8_t* bits, size_t bit_count, lip_short_report* 
     lip_fields f;
     lip_fields_from_short_report(bits, &f);
     lip_fields_to_report(&f, out);
+    if (!f.reason_is_user_data && f.reason == LIP_REASON_EMERGENCY) {
+        /* The short report's own reason for sending (Table 6.94). A DMR USBD reply's 3-bit reason is another table
+           (TS 102 361-4 Table 6.80), where no code means an emergency. */
+        out->flags = (uint16_t)(out->flags | DSD_POS_FLAG_EMERGENCY);
+    }
     return 1;
 }
 
@@ -796,8 +804,15 @@ udt_nmea_print_position(uint8_t crc_flags, const udt_nmea_fields* f, int in_rang
 }
 
 void
-nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                 const dsd_gps_address* addr, int type) {
     const int slot = state->currentslot & 1;
+    const size_t needed = type == 1 ? (size_t)NMEA_UDT_SHORT_BITS : (size_t)NMEA_UDT_LONG_BITS;
+    if (bit_count < needed) {
+        /* The pad nibbles are not user data: a field they would hold was never sent. */
+        DSD_FPRINTF(stderr, " truncated (%zu of %zu bits);", bit_count, needed);
+        return;
+    }
 
     //NOTE: The Only difference between Short (type == 1) and Long Format (type == 2)
     //is the utc_ss3 on short vs utc_ss6 and inclusion of COG value on long
@@ -1339,9 +1354,15 @@ nmea_packet_take(nmea_packet* pkt, const uint8_t* bytes, const nmea_sentence_spa
     pkt->checked++;
     nmea_packet_append_text(pkt, bytes, s);
     nmea_fix f;
-    nmea_parse_fix((const char*)bytes + s->start, s->len, &f);
+    nmea_parse_fix((const char*)bytes + s->start, s->len, (int64_t)dsd_decode_time(), &f);
     if (f.type == NMEA_TYPE_OTHER) {
         return;
+    }
+    if (f.measured_fix && f.has_position && f.lat_e7 == 0 && f.lon_e7 == 0) {
+        /* Exactly 0, 0 is never a position (admission refuses it): it must not displace another sentence's fix. One
+           zero coordinate is a place like any other. */
+        f.measured_fix = 0;
+        f.refusal = "position 0, 0";
     }
     if (!f.measured_fix || !f.has_position) {
         if (pkt->refusal == NULL) {
@@ -1485,6 +1506,29 @@ nmea_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_pa
     }
 }
 
+/* The payload's octets (one bit per byte in @p input), at most NMEA_PAYLOAD_MAX_BYTES of them; returns the count. */
+static size_t
+nmea_payload_octets(const uint8_t* input, int len_bytes, uint8_t* bytes) {
+    const size_t n =
+        ((size_t)len_bytes < (size_t)NMEA_PAYLOAD_MAX_BYTES) ? (size_t)len_bytes : (size_t)NMEA_PAYLOAD_MAX_BYTES;
+    for (size_t i = 0U; i < n; i++) {
+        bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
+    }
+    return n;
+}
+
+int
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    if (input == NULL || len_bytes <= 0) {
+        return 0;
+    }
+    uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
+    const size_t n = nmea_payload_octets(input, len_bytes, bytes);
+    size_t pos = 0U;
+    nmea_sentence_span s;
+    return nmea_next_sentence(bytes, n, &pos, &s) == 1;
+}
+
 uint8_t
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                       int packet_verified, const dsd_position_origin* origin) {
@@ -1494,14 +1538,19 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     const uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
     uint8_t bytes[NMEA_PAYLOAD_MAX_BYTES];
     DSD_MEMSET(bytes, 0, sizeof(bytes));
-    const size_t n = ((size_t)len_bytes < sizeof(bytes)) ? (size_t)len_bytes : sizeof(bytes);
-    for (size_t i = 0U; i < n; i++) {
-        bytes[i] = (uint8_t)convert_bits_into_output(input + (i * 8U), 8);
-    }
+    const size_t n = nmea_payload_octets(input, len_bytes, bytes);
 
     nmea_packet pkt;
     DSD_MEMSET(&pkt, 0, sizeof(pkt));
     nmea_packet_scan(bytes, n, &pkt);
+    if (pkt.checked > 0 && origin != NULL && !dsd_position_origin_matches(state, origin)) {
+        /* The packet began on another reception (a retune or a trunk scan switch since its header): nothing of it, its
+           sentences' text and its notice included, belongs to the one the receiver is on now. */
+        DSD_FPRINTF(stderr, " NMEA Withheld (reception changed);");
+        state->dmr_lrrp_source[slot_idx] = 0U;
+        state->dmr_lrrp_target[slot_idx] = 0U;
+        return 1U;
+    }
     if (pkt.checked > 0 && packet_verified == 1) {
         DSD_FPRINTF(stderr, "%s", pkt.text);
     } else if (pkt.checked > 0) {

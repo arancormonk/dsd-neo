@@ -1235,6 +1235,7 @@ typedef struct {
     uint32_t lon_raw;
     uint8_t have_pos;
     uint8_t pos_rank;
+    uint8_t pos_zero;        // the position is exactly 0, 0 (dmr_lrrp_zero_pair())
     dmr_lrrp_number radius;  // metres
     dmr_lrrp_number alt;     // metres
     dmr_lrrp_number alt_acc; // metres
@@ -1291,6 +1292,18 @@ dmr_lrrp_be32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+static void dmr_lrrp_fill_coordinates(uint32_t lat_raw, uint32_t lon_raw, dsd_position_fix* fix);
+
+// Whether a shape's coordinates are exactly 0, 0 as the record would hold them: never a position (admission refuses
+// it), so such a shape does not take the place of another shape's position, whatever their ranks. One zero coordinate
+// is a place.
+static int
+dmr_lrrp_zero_pair(uint32_t lat_raw, uint32_t lon_raw) {
+    dsd_position_fix fix;
+    dmr_lrrp_fill_coordinates(lat_raw, lon_raw, &fix);
+    return fix.lat_e7 == 0 && fix.lon_e7 == 0;
+}
+
 // A shape token at p[0] with `avail` bytes from it. Returns the bytes it takes, or 0 when it is malformed or cut.
 static size_t
 dmr_lrrp_parse_shape(const uint8_t* p, size_t avail, const dmr_lrrp_shape* shape, dmr_lrrp_parse_result* r) {
@@ -1311,8 +1324,11 @@ dmr_lrrp_parse_shape(const uint8_t* p, size_t avail, const dmr_lrrp_shape* shape
         }
         used += n;
     }
-    if (r->pos_rank > shape->rank) {
+    /* A shape at 0, 0 is kept only while no other shape gave a position (it is then refused as a position). */
+    const uint8_t zero = (uint8_t)dmr_lrrp_zero_pair(dmr_lrrp_be32(p + 1), dmr_lrrp_be32(p + 5));
+    if (!r->have_pos || zero < r->pos_zero || (zero == r->pos_zero && r->pos_rank > shape->rank)) {
         r->pos_rank = shape->rank;
+        r->pos_zero = zero;
         r->lat_raw = dmr_lrrp_be32(p + 1);
         r->lon_raw = dmr_lrrp_be32(p + 5);
         r->have_pos = 1U;
@@ -1860,9 +1876,10 @@ typedef struct {
     uint8_t hour;
     uint8_t minute;
     uint8_t second;
-    uint8_t year; // two digits, 20YY
+    uint16_t year; // the full year (dsd_gps_two_digit_year_date()), with `time`
     uint8_t month;
     uint8_t day;
+    int64_t days;      // the date's days since 1970-01-01, with `time`
     uint8_t lat;       // a latitude field was read
     uint8_t lon;       // a longitude field was read
     uint8_t lat_valid; // and its value is in range
@@ -1886,7 +1903,8 @@ dmr_locn_digits(const uint8_t* p, size_t n, uint32_t* out) {
 }
 
 // `A` hhmmss DDMMYY at p[0]. Returns 1 when the twelve characters are digits (the field is a time field), and sets
-// the time only when the date and time exist.
+// the time only when the date and time exist. The two-digit year is read in the century that puts the date closest to
+// its reception on the decode clock (as an NMEA RMC's).
 static int
 dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
     uint32_t v[6];
@@ -1895,30 +1913,47 @@ dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
             return 0;
         }
     }
-    d->time = (uint8_t)dmr_pdu_datetime_valid((uint16_t)(2000U + v[5]), (uint16_t)v[4], (uint16_t)v[3], (uint16_t)v[0],
-                                              (uint16_t)v[1], (uint16_t)v[2]);
+    int64_t year = 0;
+    d->time = (uint8_t)(v[0] <= 23U && v[1] <= 59U && v[2] <= 59U
+                        && dsd_gps_two_digit_year_date(v[5], v[4], v[3], (int64_t)dsd_decode_time(), &year, &d->days));
     d->hour = (uint8_t)v[0];
     d->minute = (uint8_t)v[1];
     d->second = (uint8_t)v[2];
     d->day = (uint8_t)v[3];
     d->month = (uint8_t)v[4];
-    d->year = (uint8_t)v[5];
+    d->year = d->time ? (uint16_t)year : (uint16_t)(2000U + v[5]);
     return 1;
 }
 
-// One coordinate: `deg_digits` degree digits, two minute digits, a separator, four digits of 1/10000 minute, after
-// the hemisphere letter at p[0]. Returns 1 when they are digits (the field is a coordinate field); *valid says
-// whether the value is in range (degrees <= max_deg, the boundary only with zero minutes, minutes <= 59).
+// Whether any of the digits that run on from p[0] (at most `avail` bytes) is not 0: fraction digits past the four
+// the format keeps.
 static int
-dmr_locn_parse_coord(const uint8_t* p, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7, uint8_t* valid) {
+dmr_locn_more_digits_nonzero(const uint8_t* p, size_t avail) {
+    for (size_t i = 0; i < avail && p[i] >= '0' && p[i] <= '9'; i++) {
+        if (p[i] != '0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// One coordinate: `deg_digits` degree digits, two minute digits, the '.' separator, four digits of 1/10000 minute,
+// after the hemisphere letter at p[0], with `avail` bytes from p[0]. Returns 1 when they have that shape (the field is
+// a coordinate field); *valid says whether the value is in range (degrees <= max_deg, minutes <= 59, the boundary only
+// with zero minutes and a fraction whose every digit is 0, any that run on past the four included).
+static int
+dmr_locn_parse_coord(const uint8_t* p, size_t avail, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7,
+                     uint8_t* valid) {
     uint32_t deg = 0U;
     uint32_t min = 0U;
     uint32_t frac = 0U;
-    if (!dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
-        || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
+    const size_t end = 8U + deg_digits;
+    if (avail < end || !dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
+        || p[3 + deg_digits] != (uint8_t)'.' || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
         return 0;
     }
-    *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && min == 0U && frac == 0U)));
+    const int boundary_ok = min == 0U && frac == 0U && !dmr_locn_more_digits_nonzero(p + end, avail - end);
+    *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && boundary_ok)));
     if (*valid) {
         // degrees + (minutes + frac / 10000) / 60, in 1e-7 degree, rounded
         const int64_t value = (int64_t)deg * 10000000 + ((int64_t)(min * 10000U + frac) * 100 + 3) / 6;
@@ -1935,14 +1970,14 @@ dmr_locn_parse_field(const uint8_t* pdu, uint16_t len, uint16_t i, dmr_locn_data
         return dmr_locn_parse_time(pdu + i, d) ? 13U : 1U;
     }
     if ((c == 0x4E || c == 0x53) && (uint16_t)(i + 9U) < len) {
-        if (!dmr_locn_parse_coord(pdu + i, 2U, 90U, c == 0x53, &d->lat_e7, &d->lat_valid)) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 2U, 90U, c == 0x53, &d->lat_e7, &d->lat_valid)) {
             return 1U;
         }
         d->lat = 1;
         return 10U;
     }
     if ((c == 0x45 || c == 0x57) && (uint16_t)(i + 10U) < len) {
-        if (!dmr_locn_parse_coord(pdu + i, 3U, 180U, c == 0x57, &d->lon_e7, &d->lon_valid)) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 3U, 180U, c == 0x57, &d->lon_e7, &d->lon_valid)) {
             return 1U;
         }
         d->lon = 1;
@@ -1968,8 +2003,7 @@ dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_da
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %u;", (unsigned)source);
     if (d->time) {
-        DSD_FPRINTF(stderr, " 20%02u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute,
-                    d->second);
+        DSD_FPRINTF(stderr, " %04u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute, d->second);
     }
     DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %u ", (unsigned)source);
     if (withheld == NULL) {
@@ -1996,7 +2030,7 @@ dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const d
     fix->lon_e7 = d->lon_e7;
     if (d->time) {
         fix->fix_time_s =
-            dmr_pdu_unix_time((uint16_t)(2000U + d->year), d->month, d->day, d->hour, d->minute, d->second);
+            (d->days * 86400) + ((int64_t)d->hour * 3600) + ((int64_t)d->minute * 60) + (int64_t)d->second;
     }
     fix->flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
     fix->source_id = source;

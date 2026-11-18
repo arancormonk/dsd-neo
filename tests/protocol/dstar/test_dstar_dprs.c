@@ -450,6 +450,28 @@ test_lost_cr_costs_only_its_record(void) {
     rig_close(&r);
 }
 
+/* A record that lost its CR runs into the bound while the next record's "$$CRC" is arriving: whatever part of the tag
+ * the long record already held, or none, the next record still decodes; only the long one is lost. */
+static void
+test_tag_across_the_bound(void) {
+    for (size_t at = DSTAR_DPRS_RECORD_MAX - 4U; at <= DSTAR_DPRS_RECORD_MAX; at++) {
+        rig r;
+        rig_open(&r);
+        open_call(&r, "N0CALL");
+        char text[DSTAR_DPRS_RECORD_MAX + sizeof(k_vector)];
+        DSD_MEMSET(text, 'x', sizeof(text));
+        DSD_MEMCPY(text, "$$CRC0000,", 10U);
+        DSD_MEMCPY(text + at, k_vector, sizeof(k_vector) - 1U);
+        send_gps(&r, text, at + sizeof(k_vector) - 1U, 0);
+        dsd_position_fix f[2];
+        if (feed_records(&r, f, 2U) != 1) {
+            DSD_FPRINTF(stderr, "tag at %zu across the bound: no record\n", at);
+            g_failures++;
+        }
+        rig_close(&r);
+    }
+}
+
 /* Late entry: a record begun before any call was active, whose call opens mid-record, is kept. Its CRC proves the
  * transmission; its position names no checked source, so the named call's row does not take it. */
 static void
@@ -482,6 +504,7 @@ main(void) {
     test_tag_straddles_blocks();
     test_malformed_records();
     test_lost_cr_costs_only_its_record();
+    test_tag_across_the_bound();
     test_late_entry_record_kept_unverified();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);

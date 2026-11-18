@@ -74,6 +74,8 @@ void nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* t
 void nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint16_t crc);
 void nxdn_handle_pich_tch(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                           uint16_t crc, uint16_t check, uint8_t lich);
+void nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
+                        uint16_t crc, uint16_t check, uint8_t frame);
 void nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint16_t crc, uint16_t check, uint8_t type);
 

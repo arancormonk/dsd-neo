@@ -413,7 +413,8 @@ run_udt_nmea_case(const dsd_opts* opts, dsd_state* state, const char* path, cons
     if (dsd_test_capture_stderr_begin(&cap, "udt_nmea") != 0) {
         return 0;
     }
-    nmea_iec_61162_1(opts, state, nmea, &(const dsd_gps_address){.source_id = 123456}, c->type);
+    nmea_iec_61162_1(opts, state, nmea, c->type == 1 ? NMEA_UDT_SHORT_BITS : NMEA_UDT_LONG_BITS,
+                     &(const dsd_gps_address){.source_id = 123456}, c->type);
     dsd_test_capture_stderr_end(&cap);
     char output[2048];
     if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
@@ -573,7 +574,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         }
         state->event_crc_invalid[0] = invalid;
         state->dmr_embedded_gps[0][0] = '\0';
-        nmea_iec_61162_1(opts, state, nmea, &(const dsd_gps_address){.source_id = 123456}, 2);
+        nmea_iec_61162_1(opts, state, nmea, NMEA_UDT_LONG_BITS, &(const dsd_gps_address){.source_id = 123456}, 2);
         if (!expect_rows(path, !invalid, "00123456", "-22.500000", "-45.000000", 0, 0, NULL, "UDT NMEA")) {
             return 7 + invalid * 2;
         }

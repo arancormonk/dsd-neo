@@ -2548,10 +2548,13 @@ suite runs under this compiler.
     report takes the UDT header's source, destination and I/G bit as a `dsd_gps_address`, LIP over UDP the
     datagram's source and destination, qualified as a group like LRRP's). LRRP
     reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
-    0x67, 0x69, 0x6B, 0x6C and document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
-    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
+    0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
+    at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
+    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
-    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC), else the fix time is
+    specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
+    century closest to the decode clock's date as an RMC's), else the fix time is
     unknown, so two reports that differ only in time are not folded as a repeat.
   - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
     `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
@@ -2574,13 +2577,19 @@ suite runs under this compiler.
     `p25_sm_checked_call_identity()` (P25 SM below).
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
-    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet, whose
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
+    sentence there is kept as text but chosen as no report), is the report / the same packet, whose
     header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
-    type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text.
+    type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
+    date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
+    replayed capture keeps its own century). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass.
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
     call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
-    `nxdn_data_carrier_seq`; a failed FACCH2/UDCH or FACCH3/UDCH2 CRC, a rejected header, another reception or
-    carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
+    `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,
+    FACCH3/UDCH2 or CAC CRC, a FACCH1 none of whose copies passed -- a rejected header, another reception or carrier,
+    or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
     names its destination. Its own notice.
   - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
@@ -2590,7 +2599,10 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
-    only when the record arrived within that call. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
+    only when the record arrived within that call. Each slow-data block goes by its own mini-header: only GPS blocks
+    (0x3n) feed the record and the `DATA:` display, only text blocks (0x40-0x43) the 20-character message, each at its
+    place. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go on
+    to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
@@ -2598,10 +2610,15 @@ suite runs under this compiler.
     `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
     and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
     `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
-    retune, target switch or reception change came in between. `-L` rows: LRRP and LOCN through
+    retune, target switch or reception change came in between. Such a report publishes nothing of its own under the
+    reception the receiver is on now: no text, no staged GPS and no notice of its own (`nmea_sentence_checker()` and
+    `sds_lip_report()` test the origin before they stage anything; the other producers stage only what admission
+    admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
     `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
     always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
-    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. The records keyed to a call epoch or
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
+    bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
+    from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
     transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
     call, the last admitted M17 META) are cleared when the call state starts over
     (`call_state_forget_epoch_records()`: a new call-state extension restarts the epochs at 1, as another engine run on
@@ -12676,7 +12693,8 @@ evidence (`air_ksg`: per network, the set of KSG numbers its signalling named; `
 the encryption mode
 of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
 and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
-and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44, and the party
+its MAC address names, so two messages' parts to two parties never make one message) and the D-MM
 STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
@@ -13447,7 +13465,8 @@ single "current call".
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
-  reception its first part arrived on. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  reception its first part arrived on, its parts addressed to one SSI (parts addressed by an event label alone name
+  no party, so their message's position is refused as `recipient unknown`). Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label

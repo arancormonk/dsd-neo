@@ -64,8 +64,9 @@ typedef struct {
     uint32_t err_m;              /**< Table 6.93: codes 0..5 are 2 m..200 km, 6 is 200 km (a lower bound), 7 is 0 */
     uint16_t speed_dkmh;         /**< 0.1 km/h (Table 6.51); 126 is 1043 km/h (a lower bound), 127 is unknown */
     uint16_t heading_ddeg;       /**< 0.1 degree (Table 6.45): code x 225; 15 is 3375 and ambiguous */
-    uint16_t flags;              /**< dsd_position_flag: SPEED_LOWER_BOUND, ERR_LOWER_BOUND, HEADING_AMBIGUOUS and
-                                   VALIDITY_UNKNOWN (position error 7, decision D11) */
+    uint16_t flags;              /**< dsd_position_flag: SPEED_LOWER_BOUND, ERR_LOWER_BOUND, HEADING_AMBIGUOUS,
+                                   VALIDITY_UNKNOWN (position error 7, decision D11) and EMERGENCY (reason for sending 2,
+                                   "Emergency condition is detected", Table 6.94; never from user-defined data) */
     uint8_t time_elapsed;        /**< Table 6.111 code 0..3 (dsd_position_fix::age_class) */
     uint8_t position_error;      /**< Table 6.93 code 0..7 */
     uint8_t velocity_code;       /**< Table 6.51 code 0..127 */
@@ -145,11 +146,29 @@ void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits
                      const dsd_gps_address* addr);
 /**
  * @brief A binary NMEA report carried by a DMR UDT (TS 102 361-4 Annex B.3.6, Tables B.6/B.7; @p type 1 short, 2 long),
- * addressed by @p addr (the UDT header's source, destination and I/G bit). As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope, an admitted report staged for the slot's
- * next data notice, its text in dsd_state::dmr_embedded_gps.
+ * addressed by @p addr (the UDT header's source, destination and I/G bit). @p bit_count is the user data the UDT
+ * carried, its pad nibbles left out: a report shorter than its format's fields (NMEA_UDT_SHORT_BITS,
+ * NMEA_UDT_LONG_BITS) is truncated and gives nothing. As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope,
+ * an admitted report staged for the slot's next data notice, its text in dsd_state::dmr_embedded_gps.
  */
-void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr,
-                      int type);
+void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                      const dsd_gps_address* addr, int type);
+
+/**
+ * @brief A date sent with a two-digit year (NMEA RMC, DMR LOCN): the century that puts @p day / @p month / @p yy closest
+ * to @p receive_utc_s (Unix seconds on the decode clock when the report was received), so the date is within 50 years
+ * of its reception. A century in which the day is no calendar date (29 February) is no candidate.
+ *
+ * @return 1 with the full year in @p year_out and the date's days since 1970-01-01 in @p days_out (either may be
+ *         NULL); 0 when @p yy is over 99 or no century gives a calendar date.
+ */
+int dsd_gps_two_digit_year_date(uint32_t yy, uint32_t month, uint32_t day, int64_t receive_utc_s, int64_t* year_out,
+                                int64_t* days_out);
+
+/** @brief The user data bits a binary UDT NMEA report's fields span: short format through the seconds code, long format
+ * through the course over ground (TS 102 361-4 Figures B.23, B.24). */
+enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
+
 /**
  * @brief Decode the ASCII NMEA 0183 sentences of a data payload (P25 SAP 48, NXDN data call format 0x06).
  *
@@ -162,11 +181,23 @@ void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
  * @param packet_verified 1 when the packet's own check passed: then the position and the packet's source and
  *        destination (the slot's dmr_lrrp_source / dmr_lrrp_target, qualified by dmr_data_checked_group) may be
  *        published; otherwise no position and no sentence text is kept.
- * @param origin The reception the packet's first fragment was heard on (a multi-fragment packet), or NULL.
- * @return 1 when at least one sentence passed its checksum, else 0.
+ * @param origin The reception the packet's first fragment was heard on (a multi-fragment packet), or NULL. When the
+ *        receiver is no longer on it (dsd_position_origin_matches()), nothing of the packet is published: no position,
+ *        no sentence text and no notice.
+ * @return 1 when at least one sentence passed its checksum (the packet is handled, its notice emitted or withheld),
+ *         else 0.
  */
 uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
                               int packet_verified, const struct dsd_position_origin* origin);
+/**
+ * @brief Whether a data payload is framed as NMEA 0183 the way nmea_sentence_checker() reads it: after any line ends
+ * (CR, LF), its first octet starts a sentence ('$' or '!'). Such a payload is NMEA whether or not its sentences pass
+ * their checksums, so none of it is ever kept as plain text.
+ *
+ * @param input The payload, one bit per byte, MSB first.
+ * @param len_bytes Octets of payload.
+ */
+int nmea_payload_framed(const uint8_t* input, int len_bytes);
 /** The bits an NXDN GPS report (nxdn_gps_report()) reads after its 0xFFFC marker: through the UTC seconds. */
 #define DSD_NXDN_GPS_REPORT_BITS 264U
 /**

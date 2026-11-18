@@ -273,6 +273,10 @@ void tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state);
 /** @brief The SSI the MAC PDU of @p sdu names in the clear (tetra_mac_address), 0 for none or a NULL @p sdu. */
 uint32_t tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu);
 
+/** @brief Whether the MAC PDU of @p sdu names an SSI in the clear, and that SSI in @p ssi (tetra_calls_addressed_ssi()):
+ * 0 for an event label or usage marker alone, an encrypted short identity, no address, or a NULL @p sdu. */
+int tetra_calls_addressed_ssi_known(const tetra_mac_sdu* sdu, uint32_t* ssi);
+
 /** @brief The TETRA sync type the decoder is on, as the canonical calls and the notices carry it (the current burst's,
  * else the last one's, else DSD_SYNC_TETRA_NDB_POS). */
 int tetra_calls_protocol(const dsd_state* state);

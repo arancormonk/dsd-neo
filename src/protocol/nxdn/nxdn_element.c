@@ -1256,17 +1256,14 @@ nxdn_dcall_handle_reverse_gps(const dsd_opts* opts, dsd_state* state, const stru
 static void
 nxdn_dcall_handle_crc_ok(dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
     const uint8_t opcode = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0], 8);
-    const uint8_t nmea = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 8, 8);
     const uint32_t reverse = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0], 24);
+    /* The sentences run from the octet after the opcode to the CRC32, which is not part of them; framed as their
+       parser reads them, line ends before the first sentence included. */
+    const int nmea_len = ctx->total_bytes - 1 - 4;
 
-    if (opcode == 0x06U && (nmea == (uint8_t)'$' || nmea == (uint8_t)'!')) {
-        /* The sentences run from the octet after the opcode to the CRC32, which is not part of them. */
-        const int nmea_len = ctx->total_bytes - 1 - 4;
-        if (nmea_len > 0) {
-            DSD_FPRINTF(stderr, "\n ");
-            (void)nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, nmea_len, 1,
-                                        &state->nxdn_data_origin);
-        }
+    if (opcode == 0x06U && nmea_payload_framed(state->dmr_pdu_sf[0] + 8, nmea_len)) {
+        DSD_FPRINTF(stderr, "\n ");
+        (void)nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, nmea_len, 1, &state->nxdn_data_origin);
     } else if (reverse == 0U && ctx->total_bytes > 8) {
         nxdn_dcall_handle_reverse_gps(opts, state, ctx);
     } else if (ctx->have_events) {
