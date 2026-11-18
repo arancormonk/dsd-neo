@@ -8821,6 +8821,9 @@ Key public headers:
   `Interlocked*` shim, so one patch file builds everywhere. Tests: `VENDORED_LIBAIRSPY_TRANSFERS` (MSVC included) and
   `DESKTOP_LIBAIRSPY_TRANSFERS`, the pinned upstream source with the patch, registered when
   `DSD_TEST_DESKTOP_USB_SOURCES` names a `tools/usb_dependency_patches.sh fetch-all` tree (Linux and macOS CI).
+  The Windows ZIP's libairspyhf (for SoapyAirspyHF) had the same bounded stop and gets the same fix from its own
+  patch, `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch` (no Android copy; the overlay
+  records its digest). Test: `DESKTOP_LIBAIRSPYHF_TRANSFERS`, from the same fetch-all tree.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in

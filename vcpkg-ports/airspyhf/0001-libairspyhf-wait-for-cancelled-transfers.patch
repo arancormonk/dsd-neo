@@ -1,0 +1,377 @@
+libairspyhf: wait for cancelled transfers before freeing or reusing them
+
+A stop cancelled the transfers, polled for events at most once per transfer
+with a 50 us timeout, joined the transfer and consumer threads, and polled
+once more with a zero timeout. libusb calls a cancelled transfer back later
+with LIBUSB_TRANSFER_CANCELLED and owns it and its buffer until then, so
+transfers could still be in flight when airspyhf_stop() returned.
+airspyhf_close() then freed them, and a restart (airspyhf_start() after a
+stop, as a sample-rate change does) resubmitted them: freeing a transfer
+libusb still owns is undefined behaviour, and libusb refuses to submit one
+as busy. A failed submission at start left the transfers already submitted
+the same way.
+
+The device already counted its live transfers, but on plain fields: the
+count was read on the caller's thread and changed by callbacks on whichever
+thread handles events, and a callback dropped it before resubmitting, so it
+could touch zero while a transfer was on its way back to libusb. The count
+is now atomic. A start reserves the whole batch before the first
+submission, and a failed submission gives back its own slot and those of
+the transfers never submitted. The callback keeps the slot when it
+resubmits; any other outcome (stopping, a failed status or resubmission)
+gives it back as its last touch of the device. The stop's bounded polls are
+replaced by a wait: cancel the transfers and handle events until the count
+is zero, with no timeout, since libusb guarantees each callback. Each pass
+cancels again, in case a callback on another thread resubmitted before it
+saw the stop; a poll that keeps failing backs off 1 ms instead of spinning.
+
+A stream that ended by itself (a failed transfer or event poll, or the
+sample callback asking to stop) left its threads unjoined and its other
+transfers in flight. airspyhf_start() now reaps it first, as a stop would,
+before it resets any state or resubmits anything.
+
+streaming and stop_requested become atomic too. The caller's stop, the
+transfer thread, the consumer thread and the callbacks all read and write
+them, which was a data race on plain volatile fields; ThreadSanitizer
+reports it as soon as a test drives the library's own threads.
+
+Every access to the count and the two flags goes through a small shim:
+C11 <stdatomic.h>, or the Interlocked functions on MSVC, whose C compiler
+has no <stdatomic.h> without /experimental:c11atomics. dsd-neo applies this
+patch to the libairspyhf it builds for its Windows release. airspyhf.c has
+CRLF line endings, which the patch keeps.
+
+Generated against airspyhf 24fe8ffcb00b14f827268bbad89ae1392de055e5.
+
+diff --git a/libairspyhf/src/airspyhf.c b/libairspyhf/src/airspyhf.c
+index a4400f6..e5b1c45 100644
+--- a/libairspyhf/src/airspyhf.c
++++ b/libairspyhf/src/airspyhf.c
+@@ -34,6 +34,52 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
+ #include <libusb.h>
+ #include <pthread.h>
+ #include <math.h>
++#ifndef _WIN32
++#include <unistd.h>
++#endif
++
++/* streaming, stop_requested and the transfer count are shared by the
++ * caller's thread, the transfer and consumer threads and the libusb
++ * callbacks, so every access goes through these. MSVC's C compiler has no
++ * <stdatomic.h> without /experimental:c11atomics, so it uses the Interlocked
++ * functions (windows.h comes in through libusb.h). Every access is
++ * sequentially consistent either way. */
++#if defined(_MSC_VER)
++typedef volatile LONG shared_int;
++
++static int shared_load(shared_int* value)
++{
++	return (int)InterlockedCompareExchange(value, 0, 0);
++}
++
++static void shared_store(shared_int* value, int new_value)
++{
++	InterlockedExchange(value, new_value);
++}
++
++static void shared_add(shared_int* value, int delta)
++{
++	InterlockedExchangeAdd(value, delta);
++}
++#else
++#include <stdatomic.h>
++typedef atomic_int shared_int;
++
++static int shared_load(shared_int* value)
++{
++	return atomic_load(value);
++}
++
++static void shared_store(shared_int* value, int new_value)
++{
++	atomic_store(value, new_value);
++}
++
++static void shared_add(shared_int* value, int delta)
++{
++	atomic_fetch_add(value, delta);
++}
++#endif
+ 
+ #include "iqbalancer.h"
+ #include "airspyhf.h"
+@@ -120,13 +166,15 @@ typedef struct airspyhf_device
+ 	airspyhf_complex_float_t vec;
+ 	struct iq_balancer_t *iq_balancer;
+ 	uint32_t transfer_count;
+-	int32_t transfer_live;
++	/* transfers libusb still owns (submitted, not called back for good);
++	 * a callback runs on whichever thread handles events */
++	shared_int transfer_live;
+ 	uint32_t buffer_size;
+ 	uint32_t dropped_buffers;
+ 	uint32_t dropped_buffers_queue[RAW_BUFFER_COUNT];
+ 	airspyhf_complex_int16_t *received_samples_queue[RAW_BUFFER_COUNT];
+-	volatile bool streaming;
+-	volatile bool stop_requested;
++	shared_int streaming;
++	shared_int stop_requested;
+ 	volatile int received_samples_queue_head;
+ 	volatile int received_samples_queue_tail;
+ 	volatile int received_buffer_count;
+@@ -150,7 +198,6 @@ static int airspyhf_config_read(airspyhf_device_t* device, uint8_t *buffer, uint
+ static int cancel_transfers(airspyhf_device_t* device)
+ {
+ 	uint32_t transfer_index;
+-	struct timeval canceltv = { 0, 50 };
+ 
+ 	if (device->transfers != NULL)
+ 	{
+@@ -162,9 +209,6 @@ static int cancel_transfers(airspyhf_device_t* device)
+ 			}
+ 		}
+ 
+-		for (transfer_index = 0; transfer_index < device->transfer_count && device->transfer_live > 0; transfer_index++)
+-			libusb_handle_events_timeout_completed(device->usb_context, &canceltv, NULL);
+-
+ 		return AIRSPYHF_SUCCESS;
+ 	}
+ 	else
+@@ -272,6 +316,10 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
+ 
+ 	if (device->transfers != NULL)
+ 	{
++		/* Every transfer takes its slot before it is submitted, so the count
++		 * cannot reach zero while the rest are still going out. */
++		shared_store(&device->transfer_live, (int)device->transfer_count);
++
+ 		for (transfer_index = 0; transfer_index<device->transfer_count; transfer_index++)
+ 		{
+ 			device->transfers[transfer_index]->endpoint = endpoint_address;
+@@ -280,10 +328,11 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
+ 			error = libusb_submit_transfer(device->transfers[transfer_index]);
+ 			if (error != 0)
+ 			{
++				/* this transfer and the ones never submitted give their
++				 * slots back */
++				shared_add(&device->transfer_live, -(int)(device->transfer_count - transfer_index));
+ 				return AIRSPYHF_ERROR;
+ 			}
+-			else
+-				device->transfer_live++;
+ 		}
+ 		return AIRSPYHF_SUCCESS;
+ 	}
+@@ -376,13 +425,13 @@ static void* consumer_threadproc(void *arg)
+ 
+ 	pthread_mutex_lock(&device->consumer_mp);
+ 
+-	while (device->streaming && !device->stop_requested)
++	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+-		while (device->received_buffer_count == 0 && device->streaming && !device->stop_requested)
++		while (device->received_buffer_count == 0 && shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 		{
+ 			pthread_cond_wait(&device->consumer_cv, &device->consumer_mp);
+ 		}
+-		if (!device->streaming || device->stop_requested)
++		if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
+ 		{
+ 			break;
+ 		}
+@@ -405,28 +454,36 @@ static void* consumer_threadproc(void *arg)
+ 
+ 		if (device->callback(&transfer) != 0)
+ 		{
+-			device->streaming = false;
++			shared_store(&device->streaming, false);
+ 		}
+ 
+ 		pthread_mutex_lock(&device->consumer_mp);
+ 		device->received_buffer_count--;
+ 	}
+ 
+-	device->streaming = false;
++	shared_store(&device->streaming, false);
+ 
+ 	pthread_mutex_unlock(&device->consumer_mp);
+ 
+ 	return NULL;
+ }
+ 
++/* A transfer is back for good: called back and not resubmitted. This must be
++ * the callback's last touch of the device, since at zero a stop may go on to
++ * free the transfers. */
++static void transfer_returned(airspyhf_device_t* device)
++{
++	shared_add(&device->transfer_live, -1);
++}
++
+ static void LIBUSB_CALL airspyhf_libusb_transfer_callback(struct libusb_transfer* usb_transfer)
+ {
+ 	airspyhf_complex_int16_t *temp;
+ 	airspyhf_device_t* device = (airspyhf_device_t*) usb_transfer->user_data;
+ 	
+-	device->transfer_live--;
+-	if (!device->streaming || device->stop_requested)
++	if (!shared_load(&device->streaming) || shared_load(&device->stop_requested))
+ 	{
++		transfer_returned(device);
+ 		return;
+ 	}
+ 
+@@ -457,14 +514,14 @@ static void LIBUSB_CALL airspyhf_libusb_transfer_callback(struct libusb_transfer
+ 
+ 		if (libusb_submit_transfer(usb_transfer) != 0)
+ 		{
+-			device->streaming = false;
++			shared_store(&device->streaming, false);
++			transfer_returned(device);
+ 		}
+-		else
+-			device->transfer_live ++;
+ 	}
+ 	else
+ 	{
+-		device->streaming = false;
++		shared_store(&device->streaming, false);
++		transfer_returned(device);
+ 	}
+ }
+ 
+@@ -480,29 +537,52 @@ static void* transfer_threadproc(void* arg)
+ 
+ #endif
+ 
+-	while (device->streaming && !device->stop_requested)
++	while (shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+ 		error = libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL);
+ 		if (error < 0)
+ 		{
+ 			if (error != LIBUSB_ERROR_INTERRUPTED)
+-				device->streaming = false;
++				shared_store(&device->streaming, false);
+ 		}
+ 	}
+ 
+-	device->streaming = false;
++	shared_store(&device->streaming, false);
+ 
+ 	return NULL;
+ }
+ 
+-static int kill_io_threads(airspyhf_device_t* device)
++/* libusb calls a cancelled transfer back later, and owns it and its buffer
++ * until then: wait for every callback before anything frees or resubmits a
++ * transfer. There is no timeout, since each callback is guaranteed. Each pass
++ * cancels again, in case a callback on another thread resubmitted before it
++ * saw the stop; a transfer that is not in flight only returns
++ * LIBUSB_ERROR_NOT_FOUND. */
++static void wait_for_transfers(airspyhf_device_t* device)
+ {
+-	struct timeval timeout = { 0, 0 };
++	struct timeval timeout = { 0, 500000 };
+ 
+-	if (device->stop_requested)
++	while (shared_load(&device->transfer_live) > 0)
+ 	{
+-		device->stop_requested = false;
+-		device->streaming = false;
++		cancel_transfers(device);
++		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
++		{
++			/* a poll that keeps failing must not spin */
++#ifdef _WIN32
++			Sleep(1);
++#else
++			usleep(1000);
++#endif
++		}
++	}
++}
++
++static int kill_io_threads(airspyhf_device_t* device)
++{
++	if (shared_load(&device->stop_requested))
++	{
++		shared_store(&device->stop_requested, false);
++		shared_store(&device->streaming, false);
+ 		cancel_transfers(device);
+ 
+ 		pthread_mutex_lock(&device->consumer_mp);
+@@ -518,21 +598,30 @@ static int kill_io_threads(airspyhf_device_t* device)
+ 			device->consumer_thread_running = false;
+ 		}
+ 
+-		libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL);
++		wait_for_transfers(device);
+ 	}
+ 
+ 	return AIRSPYHF_SUCCESS;
+ }
+ 
++/* A stream that ended by itself (a failed transfer or event poll, or the
++ * sample callback asking to stop) leaves its threads to join, and transfers
++ * that may still be in flight: reap it as a stop would. */
++static void reap_ended_stream(airspyhf_device_t* device)
++{
++	shared_store(&device->stop_requested, true);
++	kill_io_threads(device);
++}
++
+ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb_fn callback)
+ {
+ 	int result;
+ 	pthread_attr_t attr;
+ 
+-	if (!device->streaming && !device->stop_requested)
++	if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
+ 	{
+ 		device->callback = callback;
+-		device->streaming = true;
++		shared_store(&device->streaming, true);
+ 
+ 		result = prepare_transfers(device, LIBUSB_ENDPOINT_IN | AIRSPYHF_ENDPOINT_IN, (libusb_transfer_cb_fn)airspyhf_libusb_transfer_callback);
+ 		if (result != AIRSPYHF_SUCCESS)
+@@ -987,8 +1076,8 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
+ 	lib_device->callback = NULL;
+ 	lib_device->transfer_count = 16;
+ 	lib_device->buffer_size = SAMPLES_TO_TRANSFER * sizeof(airspyhf_complex_int16_t);
+-	lib_device->streaming = false;
+-	lib_device->stop_requested = false;
++	shared_store(&lib_device->streaming, false);
++	shared_store(&lib_device->stop_requested, false);
+ 
+ 	lib_device->supported_samplerates = NULL;
+ 	lib_device->samplerate_architectures = NULL;
+@@ -1309,6 +1398,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+ {
+ 	int result;
+ 
++	/* A stream that ended by itself is reaped first: its consumer may still
++	 * use the state reset below, and its transfers may still be in flight. */
++	if (!shared_load(&device->streaming) && !shared_load(&device->stop_requested))
++	{
++		reap_ended_stream(device);
++	}
++
+ 	memset(device->dropped_buffers_queue, 0, RAW_BUFFER_COUNT * sizeof(uint32_t));
+ 	device->dropped_buffers = 0;
+ 
+@@ -1335,13 +1431,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+ 
+ int ADDCALL airspyhf_is_streaming(airspyhf_device_t* device)
+ {
+-	return device->streaming && !device->stop_requested;
++	return shared_load(&device->streaming) && !shared_load(&device->stop_requested);
+ }
+ 
+ int ADDCALL airspyhf_stop(airspyhf_device_t* device)
+ {
+ 	int result1, result2;
+-	device->stop_requested = true;
++	shared_store(&device->stop_requested, true);
+ 	result1 = airspyhf_set_receiver_mode(device, RECEIVER_MODE_OFF);
+ 	result2 = kill_io_threads(device);
+ 

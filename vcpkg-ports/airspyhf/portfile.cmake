@@ -8,11 +8,36 @@
 # PThreads4W as libairspy; the GPL-2.0 tools and their LGPL getopt are not built.
 vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 
+# dsd-neo's libairspyhf patch: the stop waits for every cancelled USB transfer
+# before the transfers are freed or resubmitted (the patch header has the
+# details; upstream has no fix at this commit). It is the series
+# tools/usb_dependency_patches.sh applies to the source the
+# DESKTOP_LIBAIRSPYHF_TRANSFERS test builds, so the digest is recorded here:
+# tools/check_vcpkg_overlay_pins.sh (guardrails CI and pre-push) fails while it
+# is stale and --fix records the new one; the check below only runs when the
+# binary cache misses. airspyhf.c has CRLF line endings, so the patch carries
+# carriage returns, which file(READ) drops: the digest comes from the file
+# itself. The series is that one patch, so its digest is the series digest.
+set(DSD_NEO_PATCH_SERIES 0001-libairspyhf-wait-for-cancelled-transfers.patch)
+set(DSD_NEO_PATCH_SERIES_SHA256
+    19755eb08541b3e5875f157c015c770cf152520a0bd201371670c79569ae60ba
+)
+set(dsd_neo_patches "${CMAKE_CURRENT_LIST_DIR}/${DSD_NEO_PATCH_SERIES}")
+file(SHA256 "${dsd_neo_patches}" dsd_neo_series_sha256)
+if(NOT dsd_neo_series_sha256 STREQUAL DSD_NEO_PATCH_SERIES_SHA256)
+    message(
+        FATAL_ERROR
+        "The libairspyhf patch series changed (SHA256 ${dsd_neo_series_sha256}); "
+        "run tools/check_vcpkg_overlay_pins.sh --fix"
+    )
+endif()
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO airspy/airspyhf
     REF 24fe8ffcb00b14f827268bbad89ae1392de055e5
     SHA512 5aaf05b3817159419268937f5ae99201b5ea81fbcd8c58b5102d83874aec93e5e18be518959d4495ef387a542362db6818212a599a89f96cc6736734c70f77a6
+    PATCHES ${dsd_neo_patches}
 )
 file(
     COPY "${CMAKE_CURRENT_LIST_DIR}/CMakeLists.txt"

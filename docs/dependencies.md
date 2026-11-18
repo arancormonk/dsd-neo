@@ -92,7 +92,11 @@ build against the overlays' libraries (`soapy-airspy` against the held
 `airspy` overlay below). libairspyhf is pinned to an untagged commit on
 purpose: its only release tag, 1.6.8, dates from 2020, and the fixes since
 (a hang when a device is unplugged, a use-after-free) are on master; the library
-sources have not changed since the 1.8.1 version bump. The macOS DMG bundles
+sources have not changed since the 1.8.1 version bump. The overlay applies
+dsd-neo's `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch`,
+which upstream has no equivalent of at that commit: like libairspy's `0001`, it
+makes a stop wait until libusb has called back every cancelled USB transfer,
+so a close or a sample-rate change never frees or resubmits one in flight. The macOS DMG bundles
 Homebrew's SoapySDR and no modules. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
 SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker

@@ -19867,11 +19867,13 @@ endif()
 # Android app's copies. DESKTOP_* build the pinned upstream sources with the
 # patches the Windows, AppImage and macOS releases carry, from the tree that
 # tools/usb_dependency_patches.sh fetch-all writes, when
-# DSD_TEST_DESKTOP_USB_SOURCES names it.
+# DSD_TEST_DESKTOP_USB_SOURCES names it; that tree also holds the libairspyhf the
+# Windows release builds for SoapyAirspyHF, whose stop, close and restart wait
+# for cancelled transfers the same way.
 set(DSD_TEST_DESKTOP_USB_SOURCES
     ""
     CACHE PATH
-    "Patched desktop libairspy and librtlsdr sources (tools/usb_dependency_patches.sh fetch-all)"
+    "Patched desktop libairspy, librtlsdr and libairspyhf sources (tools/usb_dependency_patches.sh fetch-all)"
 )
 
 function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
@@ -19948,6 +19950,47 @@ function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
     )
 endfunction()
 
+# libairspyhf has no vendored copy, so its test runs only on the desktop tree. The
+# library keeps upstream style and is built without the project warnings, as the
+# vcpkg port builds it, but with the sanitizers, so ThreadSanitizer sees its
+# threads. The test links it against stub libusb entry points.
+function(dsd_neo_add_libairspyhf_test airspyhf_src threads)
+    set(_lib dsd-neo_test_desktop_libairspyhf)
+    add_library(
+        ${_lib}
+        STATIC
+        ${airspyhf_src}/airspyhf.c
+        ${airspyhf_src}/iqbalancer.c
+    )
+    set_property(TARGET ${_lib} PROPERTY LINK_LIBRARIES "")
+    target_include_directories(${_lib} SYSTEM PUBLIC ${airspyhf_src})
+    target_include_directories(
+        ${_lib}
+        SYSTEM
+        PRIVATE "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
+    )
+    # Without it airspyhf.h declares the API __declspec(dllimport) on Windows.
+    target_compile_definitions(${_lib} PUBLIC STATIC_AIRSPYHFPLUS)
+    target_link_libraries(
+        ${_lib}
+        PRIVATE dsd-neo_sanitizers ${threads} ${DSD_NEO_TEST_MATH_LIB}
+    )
+
+    set(_target dsd-neo_test_desktop_libairspyhf_transfers)
+    add_executable(${_target} io/test_desktop_libairspyhf_transfers.c)
+    target_include_directories(
+        ${_target}
+        SYSTEM
+        PRIVATE "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
+    )
+    target_link_libraries(
+        ${_target}
+        PRIVATE ${_lib} dsd-neo_platform ${threads}
+    )
+    add_test(NAME DESKTOP_LIBAIRSPYHF_TRANSFERS COMMAND ${_target})
+    set_tests_properties(DESKTOP_LIBAIRSPYHF_TRANSFERS PROPERTIES TIMEOUT 120)
+endfunction()
+
 set(_dsd_neo_usb_test_threads "")
 if(NOT ANDROID AND NOT CYGWIN)
     if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -19977,14 +20020,18 @@ if(_dsd_neo_usb_test_threads)
             "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspy/libairspy/src/airspy.c"
         )
         set(_desktop_rtlsdr "${DSD_TEST_DESKTOP_USB_SOURCES}/librtlsdr")
+        set(_desktop_airspyhf
+            "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspyhf/libairspyhf/src"
+        )
         if(
             NOT EXISTS "${_desktop_airspy}"
             OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
+            OR NOT EXISTS "${_desktop_airspyhf}/airspyhf.c"
         )
             message(
                 FATAL_ERROR
                 "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
-                "libairspy/ and librtlsdr/ trees; create them with "
+                "libairspy/, librtlsdr/ and libairspyhf/ trees; create them with "
                 "tools/usb_dependency_patches.sh fetch-all"
             )
         endif()
@@ -19992,6 +20039,10 @@ if(_dsd_neo_usb_test_threads)
             desktop
             "${_desktop_airspy}"
             "${_desktop_rtlsdr}"
+            "${_dsd_neo_usb_test_threads}"
+        )
+        dsd_neo_add_libairspyhf_test(
+            "${_desktop_airspyhf}"
             "${_dsd_neo_usb_test_threads}"
         )
     endif()

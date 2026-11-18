@@ -4428,7 +4428,10 @@ Android app's patched copies on all three. The `backend-matrix (both, …)` legs
 and the macOS job also build their `DESKTOP_*` twins against the pinned upstream
 sources with the patches the AppImage and the DMG ship: they run
 `tools/usb_dependency_patches.sh fetch-all <dir>` and configure with
-`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally.
+`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally. That
+tree also holds the patched libairspyhf the Windows ZIP builds for SoapyAirspyHF;
+`DESKTOP_LIBAIRSPYHF_TRANSFERS` drives it against the same kind of stub libusb,
+and runs only there, since the library has no vendored copy.
 
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,

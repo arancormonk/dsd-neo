@@ -15,3 +15,6 @@ tests/fixtures/iq/*.iq binary
 # (tools/usb_dependency_patches.sh): LF on every platform, so a Windows checkout
 # hashes the same.
 android/third_party/patches/*.patch text eol=lf
+# libairspyhf's airspyhf.c has CRLF line endings, so its patch carries CRLF in
+# its source lines and LF in the rest: no line-ending conversion at all.
+vcpkg-ports/airspyhf/*.patch -text

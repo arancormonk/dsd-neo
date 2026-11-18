@@ -231,7 +231,10 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
 - **libairspyhf** (Youssef Touil, Ian Gilmour, Benjamin Vernoux, Michael Ossmann, Jared Boone, Leif Asbrink,
   https://github.com/airspy/airspyhf) - BSD-3-Clause for the library sources; a `master` commit that reports 1.8.1
   (the only release tag, 1.6.8, is from 2020), library only (`libairspyhf/src`). The repository's GPL-2.0 tools and
-  their LGPL getopt are not built. Notice, with every source-header holder and `LICENSE.BSD`,
+  their LGPL getopt are not built. It carries one project patch, kept beside the overlay:
+  `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch` makes stop, close and restart wait
+  until libusb has called back every cancelled transfer before freeing or resubmitting any
+  (`tools/usb_dependency_patches.sh`). Notice, with every source-header holder and `LICENSE.BSD`,
   `vcpkg-ports/airspyhf/copyright`, shipped as `licenses/libairspyhf-BSD-3-Clause.txt`.
 - **libusb** (https://github.com/libusb/libusb) - LGPL-2.1-or-later; vcpkg's 1.0.30 port at the manifest baseline,
   `libusb-1.0.dll`, which librtlsdr, libairspy, libhackrf and libairspyhf load. Its COPYING is the one retained in

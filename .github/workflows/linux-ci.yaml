@@ -182,9 +182,10 @@ jobs:
             echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
-      # The DESKTOP_* transfer tests build these, the sources the AppImage ships;
-      # the `both` legs (x86_64 and arm64) run them.
-      - name: Fetch the patched libairspy and librtlsdr sources
+      # The DESKTOP_* transfer tests build these: the libairspy and librtlsdr
+      # the AppImage ships, and the libairspyhf the Windows ZIP ships. The
+      # `both` legs (x86_64 and arm64) run them.
+      - name: Fetch the patched libairspy, librtlsdr and libairspyhf sources
         if: env.CI_RUN_CHECK == 'true' && matrix.variant == 'both'
         run: tools/usb_dependency_patches.sh fetch-all "$RUNNER_TEMP/desktop-usb"
 
