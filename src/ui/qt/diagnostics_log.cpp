@@ -102,14 +102,15 @@ withoutFragment(QByteArray text) {
     return text;
 }
 
-/** @brief Up to @p limit trailing bytes of the file at @p path; empty if it cannot be read. */
+/** @brief Up to @p limit trailing bytes of the file at @p path; empty if it cannot be read, and then @p failed (when
+ * given) is set. */
 QByteArray
-readTail(const QString& path, qint64 limit) {
+readTail(const QString& path, qint64 limit, bool* failed = nullptr) {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    if (file.size() > limit && !file.seek(file.size() - limit)) {
+    if (!file.open(QIODevice::ReadOnly) || (file.size() > limit && !file.seek(file.size() - limit))) {
+        if (failed != nullptr) {
+            *failed = true;
+        }
         return {};
     }
     return file.readAll();
@@ -923,16 +924,41 @@ storedRecords(const QByteArray& text) {
 /**
  * @brief Puts the scrubbed @p records in place of the segment at @p path when they differ from @p stored, what it held:
  * rewritten, or removed when the rewrite fails, so no record the load removed stays on the device (issue #800, D10).
+ * The rewritten segment keeps the modification time it had, so the scrub never restarts its seven days
+ * (cleanDirectory()).
  */
 void
 replaceStoredRecords(const QString& path, const QByteArray& stored, const QByteArray& records) {
     if (records == stored) {
         return;
     }
+    const QDateTime modified = QFileInfo(path).lastModified();
     const bool replaced = records.isEmpty() ? QFile::remove(path) : replaceFile(path, records);
-    if (!replaced && QFileInfo::exists(path)) {
+    if (!replaced) {
+        if (QFileInfo::exists(path)) {
+            (void)QFile::remove(path);
+        }
+        return;
+    }
+    QFile file(path);
+    if (!records.isEmpty() && modified.isValid() && file.open(QIODevice::Append)) {
+        (void)file.setFileTime(modified, QFileDevice::FileModificationTime);
+    }
+}
+
+/**
+ * @brief Up to @p limit trailing bytes of the stored segment at @p path, for loadSegments(). A segment file that exists
+ * but cannot be read cannot be scrubbed, so it is removed (issue #800, D10, fail closed); anything else at the path
+ * (a folder) is left alone.
+ */
+QByteArray
+readStoredSegment(const QString& path, qint64 limit) {
+    bool failed = false;
+    QByteArray bytes = readTail(path, limit, &failed);
+    if (failed && QFileInfo(path).isFile()) {
         (void)QFile::remove(path);
     }
+    return bytes;
 }
 
 /**
@@ -1345,8 +1371,8 @@ DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) con
     const QString prevPath = filePath(segments.previous);
     const qint64 limit = segments.limit;
     const qint64 total = 2 * limit;
-    const QByteArray prevStored = readTail(prevPath, 2 * total);
-    const QByteArray tailStored = readTail(tailPath, 2 * total);
+    const QByteArray prevStored = readStoredSegment(prevPath, 2 * total);
+    const QByteArray tailStored = readStoredSegment(tailPath, 2 * total);
     QByteArray prev = withoutFragment(prevStored);
     QByteArray tail = withoutFragment(tailStored);
     const bool split = prev.size() > limit || tail.size() > limit;

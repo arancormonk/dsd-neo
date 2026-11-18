@@ -17436,13 +17436,18 @@ Qt Quick frontend (`src/ui/qt`):
   holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
   carries the label.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
-  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file (only the load
+  does, below). It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
   it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
   - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
-  - splits an older build's single tail at line starts.
+  - splits an older build's single tail at line starts;
+  - scrubs every stored record (`storedRecords()`, issue #800, D10) and writes back a segment the scrub changed, with
+    its old modification time, so the scrub never restarts the seven days (`replaceStoredRecords()`; the segment is
+    removed when the rewrite fails); a segment file that exists but cannot be read is removed (fail closed: it cannot
+    be scrubbed).
 
   Host, session and process records (issue #782) also go to a store of their own, so decoder output cannot push them
   out: `m_hostRing` (`kHostRingLimit`, 500) and the segment pair `host.prev.log`/`host.log`, each at most

@@ -2070,6 +2070,40 @@ storedPositionsLeaveTheFiles() {
             checkLabelled(!saved.contains(line.toUtf8()), "split kept on disk: " + line.toUtf8());
         }
     }
+    {
+        // A scrubbed segment keeps its modification time: six days old before the load, six days old after it, so it
+        // still expires on day seven.
+        QTemporaryDir dir;
+        const QString path = dir.filePath("tail.prev.log");
+        writeFile(path, storeOf("[stderr] [info] "));
+        const QDateTime sixDaysAgo = QFileInfo(path).lastModified().addDays(-6);
+        {
+            QFile file(path);
+            check(file.open(QIODevice::Append) && file.setFileTime(sixDaysAgo, QFileDevice::FileModificationTime),
+                  "fixture time not set");
+        }
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        checkScrubbed(path, "aged segment");
+        check(qAbs(QFileInfo(path).lastModified().secsTo(sixDaysAgo)) <= 1, "the scrub restarted the expiry");
+    }
+    {
+        // A segment that cannot be read cannot be scrubbed, so it goes. Where the file stays readable (run as root),
+        // the case is skipped.
+        QTemporaryDir dir;
+        const QString path = dir.filePath("tail.log");
+        writeFile(path, storeOf("[stderr] [info] "));
+        check(QFile::setPermissions(path, QFileDevice::Permissions()), "fixture permissions not set");
+        QFile probe(path);
+        if (probe.open(QIODevice::ReadOnly)) {
+            probe.close();
+        } else {
+            g_clock = 0;
+            DiagnosticsLog log(dir.path(), manualOptions());
+            check(!QFileInfo::exists(path), "an unreadable segment stayed on disk");
+        }
+        (void)QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
 }
 
 namespace producers {
