@@ -14,6 +14,7 @@
 #include <QList>
 #include <QString>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <limits>
@@ -166,15 +167,13 @@ set_row_gps_units(CallHistoryModel::Row& row, QList<GpsUnit> units) {
  * (call_history_gps_adopts(): the later reading of a fragment wins), else beside them. */
 void
 merge_gps_unit(QList<GpsUnit>& units, const GpsUnit& unit) {
-    for (GpsUnit& held : units) {
-        if (gps_units_same_fragment(held, unit)) {
-            if (gps_unit_adopts(held, unit)) {
-                held = unit;
-            }
-            return;
-        }
+    const auto held = std::find_if(units.begin(), units.end(),
+                                   [&unit](const GpsUnit& u) { return gps_units_same_fragment(u, unit); });
+    if (held == units.end()) {
+        units.append(unit);
+    } else if (gps_unit_adopts(*held, unit)) {
+        *held = unit;
     }
-    units.append(unit);
 }
 
 /** @brief Whether @p kind is a dsd_position_scope_kind a record can hold: an alias scope kind or a feed-only one. */
