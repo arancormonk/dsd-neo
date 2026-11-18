@@ -7,6 +7,8 @@
  * readiness query is wrapped (GNU ld --wrap) so that the decoder thread tries its refill between the query and the
  * count: the mark must still count each byte once, and the drop that follows must keep every sample that came after
  * the mark. The monotonic clock is wrapped too, so a drop can be paused past its time cap before its first refill.
+ * The read itself is wrapped as well, so a read of a descriptor that is not a stream can block as a Windows console's
+ * does, after its readiness said it would not.
  */
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -18,10 +20,12 @@
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "test_platform_pcm_stream_mark_seams.h"
+#include "test_support.h"
 
 static int g_failures = 0;
 
@@ -203,8 +207,82 @@ test_pause_before_the_first_refill(void) {
     (void)close(fds[1]);
 }
 
+/* A read of g_console_fd blocks, as an idle Windows console's _read() does once its readiness said it was ready, until
+   released or 3 s on the real clock. */
+static atomic_int g_console_fd = -1;
+static atomic_int g_console_in_read;
+static atomic_int g_console_release;
+
+ssize_t
+mark_read(int fd, void* buf, size_t count) {
+    if (fd == atomic_load(&g_console_fd)) {
+        atomic_store(&g_console_in_read, 1);
+        const uint64_t start = mark_real_time_monotonic_ms();
+        while (!atomic_load(&g_console_release) && mark_real_time_monotonic_ms() - start < 3000U) {
+            dsd_sleep_ms(1U);
+        }
+    }
+    return mark_real_read(fd, buf, count);
+}
+
+static DSD_THREAD_RETURN_TYPE
+decoder_console_read(void* arg) {
+    int16_t s = 0;
+    (void)dsd_pcm_stream_read_wait((dsd_pcm_stream*)arg, &s, 0U);
+    DSD_THREAD_RETURN;
+}
+
+/* Issue #834: stdin that is no stream (a console, a regular file) holds no backlog a retune could drop, and a read of
+   it may block while the reader holds its refill lock: a Windows console reads as ready at once, then its _read()
+   waits for a key. A watchdog's mark of such an input must not wait on that read before it sends its tune: it counts
+   nothing and takes no lock. */
+static void
+test_mark_never_waits_on_a_console_read(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-pcm-console");
+    if (fd < 0) {
+        check(0, "a temp file for the console");
+        return;
+    }
+    const int16_t sample = 7;
+    check(dsd_write(fd, &sample, sizeof sample) == (ssize_t)sizeof sample, "a sample in the file");
+    (void)lseek(fd, 0, SEEK_SET);
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fd);
+    check(stream != NULL, "open on the file");
+    atomic_store(&g_console_in_read, 0);
+    atomic_store(&g_console_release, 0);
+    atomic_store(&g_console_fd, fd);
+    dsd_thread_t decoder;
+    if (stream == NULL || dsd_thread_create(&decoder, decoder_console_read, stream) != 0) {
+        check(0, "the decoder thread for the console");
+        atomic_store(&g_console_fd, -1);
+        dsd_pcm_stream_close(stream);
+        (void)close(fd);
+        (void)remove(path);
+        return;
+    }
+    while (!atomic_load(&g_console_in_read)) {
+        dsd_sleep_ms(1U);
+    }
+    const uint64_t start = mark_real_time_monotonic_ms();
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    const uint64_t took = mark_real_time_monotonic_ms() - start;
+    atomic_store(&g_console_release, 1);
+    (void)dsd_thread_join(decoder);
+    atomic_store(&g_console_fd, -1);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a mark of a console in a read returns at once (took %llu ms, counted %llu)",
+                 (unsigned long long)took, (unsigned long long)cut.arrived);
+    check(took < 1000U && cut.arrived == 0U, what);
+    dsd_pcm_stream_close(stream);
+    (void)close(fd);
+    (void)remove(path);
+}
+
 int
 main(void) {
+    test_mark_never_waits_on_a_console_read();
     test_pipe_mark_during_refill();
     test_socket_mark_during_refill();
     test_pause_before_the_first_refill();

@@ -18315,6 +18315,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             -Wl,--wrap=dsd_fd_readable_bytes
             -Wl,--wrap=dsd_socket_readable_bytes
             -Wl,--wrap=dsd_time_monotonic_ms
+            -Wl,--wrap=dsd_read
     )
     add_test(
         NAME PLATFORM_PCM_STREAM_MARK

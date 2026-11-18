@@ -1780,8 +1780,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     exists `dsd_pcm_stream_socket_arrived()` counts the socket as the reader will start from it (a TCP reconnect's
     opening). The count and each refill (the
     read and the bytes-read-in update) take the reader's own lock, so a count never sees a refill's bytes on both sides
-    or on neither; a sample read from the buffer takes no lock. `PLATFORM_PCM_STREAM_MARK` runs a refill inside the
-    count's readiness query (a GNU ld `--wrap` seam).
+    or on neither; a sample read from the buffer takes no lock. A descriptor that is no pipe, FIFO or socket (a regular
+    file, a console: `dsd_pcm_stream::queues`, set at the open) counts 0 and takes no lock, since its read may block
+    holding it (a Windows console reads as ready, then waits for a key) and a watchdog's mark must not wait on that
+    before it sends its tune. `PLATFORM_PCM_STREAM_MARK` runs a refill inside the count's readiness query, and blocks a
+    file's read as a console's (GNU ld `--wrap` seams).
     `dsd_pcm_stream_discard_through()` drops the whole samples the reader and its descriptor held at a rigctl retune's
     mark, read without a wait, one bounded pass at a time (at most 21 buffers of 19200 bytes: about 4 s of 48 kHz mono,
     2 s of stereo; and no refill after 250 ms on the monotonic clock), keeps every byte that arrived after the mark, and

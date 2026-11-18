@@ -34,6 +34,9 @@ enum { PCM_STREAM_RETRY = 0, PCM_STREAM_WOULD_BLOCK = 1, PCM_STREAM_FAILURE = 2 
 struct dsd_pcm_stream {
     int fd;            /* the descriptor read: stdin, or a POSIX socket's; -1 for a Windows socket */
     dsd_socket_t sock; /* the socket waited on, or DSD_INVALID_SOCKET for a descriptor */
+    /* A socket, pipe or FIFO (dsd_fd_is_stream()), set at the open: input queues there, so a backlog mark counts it and
+       a retune's drop discards from it. A descriptor nothing feeds (a regular file, a console) holds no backlog. */
+    int queues;
     int ended;
     size_t pos;       /* the next unread byte */
     size_t len;       /* the bytes held */
@@ -50,10 +53,15 @@ struct dsd_pcm_stream {
 };
 
 /* The stream's count for a backlog mark (<dsd-neo/platform/input_backlog.h>): the bytes read in so far and those the
-   descriptor or socket holds ready, between two refills. A descriptor that is not a stream holds none. */
+   descriptor or socket holds ready, between two refills. A descriptor that queues nothing counts 0, without the refill
+   lock: its read may block while the reader holds that lock (a Windows console reads as ready, then waits for a key),
+   and the watchdog's mark must not wait on it before it sends its tune. Its drop discards nothing anyway. */
 static uint64_t
 pcm_stream_arrived(const void* queue) {
     dsd_pcm_stream* stream = (dsd_pcm_stream*)queue;
+    if (!stream->queues) {
+        return 0U;
+    }
     dsd_mutex_lock(&stream->fill_mu);
     const long ready = stream->sock != DSD_INVALID_SOCKET ? dsd_socket_readable_bytes(stream->sock)
                                                           : dsd_fd_readable_bytes(stream->fd);
@@ -83,6 +91,7 @@ pcm_stream_alloc(int fd, dsd_socket_t sock) {
     }
     stream->fd = fd;
     stream->sock = sock;
+    stream->queues = sock != DSD_INVALID_SOCKET || dsd_fd_is_stream(fd);
     stream->ended = PCM_STREAM_OPEN;
     /* The input the decoder reads from now on: a rigctl retune's drop is measured on it. */
     dsd_input_backlog_attach(stream, pcm_stream_arrived);
@@ -288,8 +297,7 @@ long
 dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut) {
     /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
        queued stream, and a read could wait or take the rest of a file. */
-    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))
-        || !dsd_input_backlog_cut_applies(cut, stream)) {
+    if (stream == NULL || !stream->queues || !dsd_input_backlog_cut_applies(cut, stream)) {
         return 0;
     }
     /* Only whole samples that had arrived by the mark go; a part of one stays, so the samples after it stay whole. A
