@@ -740,7 +740,11 @@ Generated (do not edit/commit):
       frequency before the first step, a step that forgot the landing and then failed, an input switch) against the
       stay's own start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_call_seq`, set by
       `dsd_engine_scan_y_stay_begin()` at the run's start, a -Y scan's start and every landing forget), so the session's
-      INPUT reason shows on an idle start frequency and goes while a call is heard there (`quiet_fill_no_check()`). A
+      INPUT reason shows on an idle start frequency and goes while a call is heard there (`quiet_fill_no_check()`).
+      Activity that ends a -Y visit's suspended check (a carrier, which a short transmission no tone check admitted
+      also has, or checked content) keeps the suspension's reason for that visit (`scan_quiet_check::suspension_kept`,
+      while the facts it was found on stand), so the status still says why the row is unchecked until a call explains
+      the visit (`test_y_quiet_no_check_outlasts_an_unqualified_carrier()`). A
       raw sync, which NXDN48 and dPMR pass on noise, is no
       call, and neither is the hangtime anchor: the scan stamps it itself at a landing and when a hold is released, and
       X2-TDMA never stamps it. Never for a trunked target. CHECKING covers every phase of a check under way:

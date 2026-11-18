@@ -608,8 +608,14 @@ typedef struct {
     int refused;
     uint32_t refused_generation;
     /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 R6): its session's or
-       its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension. */
+       its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension, but a
+       suspension that activity ended (suspension_kept). */
     uint8_t reason;
+    /* A -Y visit's check was SUSPENDED when activity heard on the visit ended it (DONE): the suspension's reason stays,
+       for the visit's no-check status only, while the facts it was found on stand (revisions). Activity is no call: a
+       short carrier that no tone check admitted still leaves the visit unchecked, and the status hides only once a call
+       explains the visit (quiet_fill_no_check()). */
+    int suspension_kept;
     /* What the last capture read showed of the receiver (TUNER, RATE, or NONE for one it checks), on the input it was
        read on (receiver_input, receiver_device): the session's reason, which outranks a channel's, for a visit that
        never reads a capture (no class to judge) or still waits for its own. */
@@ -680,6 +686,7 @@ quiet_end(scan_quiet_check* c, scan_quiet_phase phase) {
     }
     c->phase = phase;
     c->reason = (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
+    c->suspension_kept = 0;
     c->refused = 0;
 }
 
@@ -692,6 +699,21 @@ static int
 quiet_key_equal(const scan_quiet_visit_key* a, const scan_quiet_visit_key* b) {
     return a->owner == b->owner && a->index == b->index && a->session == b->session && a->epoch == b->epoch
            && a->tune_request == b->tune_request;
+}
+
+/* Activity heard on the visit @p key ends its check (DONE). A -Y visit's own suspension keeps its reason for the visit's
+   status (scan_quiet_check::suspension_kept), which a call heard on the stay hides. A trunk target's status shows its
+   suspension only, as before. */
+static void
+quiet_end_by_activity(scan_quiet_check* c, const scan_quiet_visit_key* key) {
+    const int suspended =
+        c->phase == SCAN_QUIET_SUSPENDED && c->key.owner == SCAN_QUIET_OWNER_Y && quiet_key_equal(&c->key, key);
+    const uint8_t reason = c->reason;
+    quiet_end(c, SCAN_QUIET_DONE);
+    if (suspended) {
+        c->suspension_kept = 1;
+        c->reason = reason;
+    }
 }
 
 static uint8_t
@@ -1162,7 +1184,7 @@ quiet_publication_ends_visit(const dsd_opts* opts, const dsd_state* state, const
     if (owner->activity_seq == c->activity_seq) {
         return 0;
     }
-    quiet_end(c, SCAN_QUIET_DONE);
+    quiet_end_by_activity(c, &e->key);
     c->key = e->key;
     return 1;
 }
@@ -1534,14 +1556,30 @@ quiet_check_names(const dsd_engine_scan_owner* owner, const scan_quiet_check* c,
            && quiet_visit_on_air(owner, c);
 }
 
+/* Whether the visit's check stands SUSPENDED for its status: suspended now, or ended by activity while suspended on facts
+   that still stand (scan_quiet_check::suspension_kept). */
+static int
+quiet_suspension_stands(const dsd_opts* opts, const dsd_state* state, const scan_quiet_check* c) {
+    if (c->phase == SCAN_QUIET_SUSPENDED) {
+        return 1;
+    }
+    if (c->phase != SCAN_QUIET_DONE || !c->suspension_kept) {
+        return 0;
+    }
+    scan_quiet_revisions now_rev;
+    scan_quiet_revisions_read(opts, state, &now_rev);
+    return quiet_revisions_equal(&now_rev, &c->revisions);
+}
+
 /* The receiver's reason for the visit, which outranks the channel's: its own capture's refusal, else the last capture's
-   verdict, which stands for a visit that never reads one or still waits for its own. NONE while a check runs on. */
+   verdict, which stands for a visit that never reads one or still waits for its own. NONE while a check runs on.
+   @p suspended: quiet_suspension_stands(). */
 static uint8_t
-quiet_visit_receiver_reason(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (c->phase == SCAN_QUIET_SUSPENDED && quiet_capture_reason(c->reason)) {
+quiet_visit_receiver_reason(const dsd_opts* opts, const scan_quiet_check* c, int suspended) {
+    if (suspended && quiet_capture_reason(c->reason)) {
         return c->reason;
     }
-    if (c->phase == SCAN_QUIET_SUSPENDED || c->phase == SCAN_QUIET_WAIT_CAPTURE) {
+    if (suspended || c->phase == SCAN_QUIET_WAIT_CAPTURE) {
         return quiet_receiver_reason_now(opts, c);
     }
     return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
@@ -1556,13 +1594,14 @@ quiet_timing_fill_check(const dsd_opts* opts, dsd_state* state, const scan_quiet
     if (!c || !quiet_check_names(owner, c, ref)) {
         return; /* no check of this visit yet */
     }
-    const uint8_t receiver = quiet_visit_receiver_reason(opts, c);
+    const int suspended = quiet_suspension_stands(opts, state, c);
+    const uint8_t receiver = quiet_visit_receiver_reason(opts, c, suspended);
     if (receiver != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
         quiet_warn_capture(opts, state, c, receiver);
         quiet_fill_no_check(state, ref, report, receiver);
         return;
     }
-    if (c->phase == SCAN_QUIET_SUSPENDED && quiet_channel_reason(c->reason)) {
+    if (suspended && quiet_channel_reason(c->reason)) {
         quiet_warn_channel(opts, c, ref);
         quiet_fill_no_check(state, ref, report, c->reason);
         return;

@@ -15588,6 +15588,46 @@ test_y_quiet_analog_call_explains_the_stay(void) {
     return rc;
 }
 
+/* issue #834: a -Y row refused for its width shows "No check: width" while its visit has carried no call. A short
+   carrier that ends before its tone check admits a call is activity, which ends the visit's measurement, but no call:
+   the status stays until a call is heard there (docs/trunk-scan.md), or until an edit changes the facts the visit was
+   refused on (@p edited), as its check is over for the visit. */
+static int
+test_y_quiet_no_check_outlasts_an_unqualified_carrier(int edited) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 512012500L) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a row refused for its width", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    /* A carrier heard, which ends before any call is admitted: the visit's measurement is over. */
+    dsd_engine_scan_quiet_note_activity(state);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a short unqualified carrier ended", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    if (edited) {
+        dsd_engine_scan_quiet_note_change(state);
+    } else {
+        state->scan_y_call_seq++; /* an admitted call explains the visit */
+    }
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, edited ? "an edit since" : "a call was heard", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status after an unqualified carrier, edited %d\n", edited);
+    }
+    return rc;
+}
+
 /* issue #834 R10: a -Y row refused for its width starts again on the same visit once the width is edited, through the
    frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
    once per change. */
@@ -16636,6 +16676,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_input_shows_until_a_call();
     rc |= test_y_quiet_analog_call_explains_the_stay();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
+    rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
+    rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);
