@@ -148,8 +148,13 @@ dmr_sd_pdu_store_text(dsd_state* state, uint8_t slot, const char* text) {
     dsd_event_stage_text(state, slot, text);
 }
 
+// A raw dump, like every payload dump, only with the payload option (-Z): its bytes can be a position (LOCN), which
+// the default output and the diagnostics log never show.
 static void
-dmr_sd_pdu_print_raw(const uint8_t* dmr_pdu, uint16_t len) {
+dmr_sd_pdu_print_raw(const dsd_opts* opts, const uint8_t* dmr_pdu, uint16_t len) {
+    if (opts->payload != 1) {
+        return;
+    }
     DSD_FPRINTF(stderr, "\n Short Data Raw: ");
     for (uint16_t i = 0; i < len; i++) {
         DSD_FPRINTF(stderr, "[%02X]", dmr_pdu[i]);
@@ -216,7 +221,7 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
             char detail[96];
             DSD_SNPRINTF(detail, sizeof(detail), "DD format 0x%02X; raw/unsupported encoding; ", dd_format);
             dsd_append(summary, sizeof(summary), detail);
-            dmr_sd_pdu_print_raw(dmr_pdu, len);
+            dmr_sd_pdu_print_raw(opts, dmr_pdu, len);
             // An admitted LOCN position is staged for this packet's notice by dmr_locn() itself.
             dmr_locn(opts, state, len, dmr_pdu);
         }

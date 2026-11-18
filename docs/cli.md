@@ -216,8 +216,10 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
   scaffold; this keeps existing invocations working without restoring its provider/threading layer.
-- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, and an NXDN
-  frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints nothing.
+- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated, the raw
+  bytes of DMR short data in a format dsd-neo does not decode (`Short Data Raw`) and of NXDN UDCH data with their ASCII
+  form (`UDCH Data`), and an NXDN frame sync whose LICH then fails (`Sync: NXDN96 LICH ERR`), which otherwise prints
+  nothing.
   With `--frontend terminal` / `-N`, redirect stderr to capture them:
   `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
   to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.

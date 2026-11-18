@@ -17021,11 +17021,14 @@ Qt Quick frontend (`src/ui/qt`):
   record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`): a line
   matching `kPositionMarkers` (one entry per producer's position or position-message print: `Lat:`/`Lon:`, `GPS`,
   `GNSS`, `LRRP`, `LOCN`, `NMEA` and raw RMC/GGA/GLL/GNS/VTG sentences, LIP, `Location Service`, `Position`, APRS,
-  D-PRS and `$$CRC`, Cellocator, the LOCN hemisphere form and D-STAR GPS `DATA:` blocks), a pair of decimal degrees
-  with at least four places (not followed by a unit), or a degrees-and-minutes pair. Payload bytes printed on such a
-  line go with it. A stored tail is redacted again when it is loaded (`seedRing()`), so an older build's log never
-  reaches Copy or Share with one. Raw dumps under generic prefixes (`-Z`: DMR PDU, P25 MBT, M17 LSF and packet bytes)
-  are kept and can hold an encoded position. Keep `kPositionMarkers` in step with the producers' print text, and give
+  D-PRS and `$$CRC`, Cellocator, the LOCN hemisphere form with its latitude and longitude fields in either order and
+  anything between them, the D-PRS `ddmm.hhN?dddmm.hhE` form with any symbol table character, and D-STAR GPS `DATA:`
+  and `_UNK:` slow-data blocks), a pair of decimal degrees with at least four places (not followed by a unit), or a
+  degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it). Payload bytes printed on such
+  a line go with it. A stored tail is redacted again when it is loaded (`seedRing()`), so an older build's log never
+  reaches Copy or Share with one. Raw dumps under generic prefixes (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN
+  `UDCH Data`, P25 MBT, M17 LSF and packet bytes) are kept and can hold an encoded position; without `-Z` no decoder
+  prints a position-bearing payload in a form the markers cannot recognise. Keep `kPositionMarkers` in step with the producers' print text, and give
   a new position print a line in `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`). The persistent
   tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every

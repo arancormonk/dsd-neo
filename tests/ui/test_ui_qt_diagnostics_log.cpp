@@ -1835,11 +1835,20 @@ receivedPositionsAreRemoved() {
         QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
         QStringLiteral(" TIME: 12:00:00 UTC; (22.500000, 45.000000)"),
         QStringLiteral(" Report 7: !2230.00N/04500.00E>"),
-        // dmr_block.c MNIS LOCN: the report's own text, the hemisphere before each number.
+        // dmr_block.c MNIS LOCN: the report's own text, the hemisphere before each number, the fields in either order
+        // and with anything between them (dmr_locn_parse_fields() takes both).
         QStringLiteral(" UTF8 Text: A123456070826N2230.0000E04500.0000"),
+        QStringLiteral(" UTF8 Text: E04500.0000N2230.0000"),
+        QStringLiteral(" UTF8 Text: W04500.0000-_A123456070826_S2230.0000"),
+        QStringLiteral(" UTF8 Text: N2230.0000,E04500.0000"),
+        // NMEA minutes with no fraction (nmea_parse_coordinate() reads them), and D-PRS with an overlay symbol table.
+        QStringLiteral(" 2230,N,04500,E,0.0"),
+        QStringLiteral(" 1200z2230.00N104500.00E>test"),
+        QStringLiteral(" 2230.00SD04500.00W-"),
         // dstar_slow_data.c GPS data blocks, a part of a D-PRS record or NMEA sentence each.
         QStringLiteral(" DATA: N/04500.00E>test"),
         QStringLiteral(" _UNK:  DATA: .00N/04500.00E>test"),
+        QStringLiteral(" _UNK:  .00N/04500.00E>test"),
     };
     QTemporaryDir dir;
     {

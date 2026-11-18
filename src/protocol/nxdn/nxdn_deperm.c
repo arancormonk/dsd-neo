@@ -496,8 +496,13 @@ nxdn_print_facch2_udch_name(uint8_t type) {
     }
 }
 
+// A raw dump, like every payload dump, only with the payload option (-Z): a data call's bytes, and their ASCII form,
+// can be a position (NMEA or a GPS report), which the default output and the diagnostics log never show.
 static void
-nxdn_print_udch_data(const uint8_t* m_data) {
+nxdn_print_udch_data(const dsd_opts* opts, const uint8_t* m_data) {
+    if (opts->payload != 1) {
+        return;
+    }
     DSD_FPRINTF(stderr, "\n UDCH Data: ");
     for (int i = 0; i < 24; i++) {
         DSD_FPRINTF(stderr, "%02X", m_data[i]);
@@ -572,7 +577,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
         NXDN_Elements_Content_decode(opts, state, f2u_message_buffer, (size_t)(199 - 8 - 15));
     }
     if (type == 0 && crc == check) {
-        nxdn_print_udch_data(m_data);
+        nxdn_print_udch_data(opts, m_data);
     }
 
     nxdn_print_facch2_udch_payload(opts, m_data, crc, check, type);

@@ -623,6 +623,39 @@ test_destination_from_header(void) {
     }
 }
 
+/* Issue #800 D10: a UDCH's raw bytes and their ASCII form (a data call's NMEA text, a GPS report) are a payload dump,
+ * printed only with the payload option (-Z): the ASCII line splits a sentence into pieces no redaction of the
+ * diagnostics log can read as a position. */
+static void
+test_udch_dump_needs_payload_option(void) {
+    for (int payload = 0; payload <= 1; payload++) {
+        reset_fixture();
+        g_opts.payload = payload;
+        uint8_t e[F2_ELEMENTS];
+        header_elements(e, 100U, 900U, 1U, 1U, 0U);
+        uint8_t trellis[208];
+        uint8_t m_data[32];
+        DSD_MEMSET(trellis, 0, sizeof trellis);
+        DSD_MEMSET(m_data, 0, sizeof m_data);
+        put_bits(trellis, 2, g_ran, 6);
+        DSD_MEMCPY(trellis + 8, e, F2_ELEMENTS);
+        static const char kText[] = "N,04500.000,E,0.0,0.0,17";
+        DSD_MEMCPY(m_data, kText, sizeof kText - 1U);
+        dsd_test_capture_stderr cap;
+        const int captured = dsd_test_capture_stderr_begin(&cap, "nxdn_udch_dump") == 0;
+        nxdn_handle_facch2_udch(&g_opts, &g_state, trellis, m_data, 0U, 0U, 0U);
+        static char printed[16384];
+        printed[0] = '\0';
+        if (captured) {
+            (void)dsd_test_capture_stderr_end(&cap);
+            (void)dsd_test_capture_stderr_read(&cap, printed, sizeof printed);
+        }
+        CHECK(captured);
+        const int dumped = strstr(printed, "UDCH Data") != NULL || strstr(printed, "04500.000") != NULL;
+        CHECK(dumped == payload);
+    }
+}
+
 int
 main(void) {
     int fd = dsd_test_mkstemp(g_lpath, sizeof g_lpath, "nxdn_gps_dispatch");
@@ -644,6 +677,7 @@ main(void) {
     test_binding_ran_from_every_channel();
     test_nmea_data_call();
     test_destination_from_header();
+    test_udch_dump_needs_payload_option();
 
     dsd_state_ext_free_all(&g_state);
     (void)remove(g_lpath);
