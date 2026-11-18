@@ -10,6 +10,8 @@
 #include "diagnostics_log.h"
 #include "ui_controller.h"
 
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <Qt>
 // WP0's C export payload uses a flexible array; only its fixed header is read in C++.
 #if defined(__GNUC__)
@@ -55,9 +57,28 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistory
         m_session = m_host->sessionState();
         connect(m_host, &DecoderHost::sessionStateChanged, this, &UiController::onSessionStateChanged);
     }
+    if (auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, &UiController::onApplicationStateChanged);
+    }
 }
 
-UiController::~UiController() = default;
+UiController::~UiController() {
+    // The GUI thread reads no more snapshots through this controller.
+    wipeSnapshotKeys();
+}
+
+void
+UiController::wipeSnapshotKeys() {
+    dsd_app_snapshot_consumer_wipe_keys();
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+}
+
+void
+UiController::onApplicationStateChanged(Qt::ApplicationState state) {
+    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
+        wipeSnapshotKeys();
+    }
+}
 
 // WP-S2: attachment consumption and target lookup happen outside this pure decision.
 void

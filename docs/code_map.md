@@ -4891,13 +4891,16 @@ The snapshots outlive the session (`snapshot.h`), so `dsd_app_frontend_runtime_s
 cleared and nothing can publish them again (`dsd_app_snapshot_wipe_keys()`, `DSD_SECURE_ZERO`): the published copy at
 once, the consumer's at its own thread's next read, which then copies the published state again. The terminal UI
 thread reads no more once it exits, so it wipes its own buffer then (`dsd_app_snapshot_consumer_wipe_keys()`, after
-curses closes); Qt and Android keep polling, so theirs goes at their next read. Everything else in the last snapshot
+curses closes); Qt and Android keep polling, so theirs goes at their next read, and also when the app is suspended or
+hidden and when its `UiController` goes (`UiController::wipeSnapshotKeys()`, on the GUI thread): Android pauses that
+thread in the background, so a session stopped from the notification would otherwise leave the keys and API keys it
+last read there for hours. Everything else in the last snapshot
 stays. The options snapshots carry the rdio-scanner API key and URL (a URL can carry credentials) and the RadioReference
 API key (`rdio_api_key`, `rdio_api_url`, `rr_app_key`), which a running frontend reads from its copy (the terminal UI's
 RadioReference panel and its config save); the API token never reaches them (zeroed at each publish). The stop wipes
 them the same way (`dsd_app_opts_snapshot_wipe_keys()`, `dsd_app_opts_snapshot_consumer_wipe_keys()` at the
-terminal UI thread's exit), and the rest of the options stays. Tests: `CORE_KEY_DIRECT`,
-`APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `UI_ASYNC_LIFECYCLE`.
+terminal UI thread's exit, and the Qt GUI thread's suspension and controller teardown), and the rest of the options
+stays. Tests: `CORE_KEY_DIRECT`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `UI_ASYNC_LIFECYCLE`, `UI_QT_CONTROLLER`.
 
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25

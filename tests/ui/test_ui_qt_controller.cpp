@@ -323,6 +323,47 @@ test_history_handoff_after_resume_without_redraw() {
     free(state);
 }
 
+// The GUI thread reads the snapshots through one buffer each (snapshot.h). Off screen (Android suspends it in the
+// background) it may read none for hours, so a session stopped meanwhile, from the notification, would leave the last
+// keys and API keys it read in those buffers: they go when the app is suspended or hidden, and when the controller
+// goes, without waiting for a next read.
+static void
+test_gui_snapshot_buffers_keep_no_key_off_screen() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    for (int c = 0; c < 2; ++c) {
+        state.K = 0x5A5AULL;
+        state.R = 0x0102030405ULL;
+        DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+        const dsd_state* snapshot = nullptr;
+        const dsd_opts* opts_snapshot = nullptr;
+        {
+            dsd_qt::UiController controller(nullptr, nullptr, nullptr, nullptr);
+            dsd_app_frontend_runtime_start(&opts, &state);
+            snapshot = dsd_app_get_latest_snapshot();
+            opts_snapshot = dsd_app_get_latest_opts_snapshot();
+            check(snapshot != nullptr && snapshot->K == 0x5A5AULL && opts_snapshot != nullptr
+                  && strcmp(opts_snapshot->rr_app_key, "rr-test-key") == 0);
+            if (c == 0) {
+                Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+                dsd_app_frontend_runtime_stop();
+            }
+        }
+        if (c == 1) {
+            dsd_app_frontend_runtime_stop();
+        }
+        // No read since: the buffers the GUI thread last read hold no key.
+        check(snapshot != nullptr && snapshot->K == 0ULL && snapshot->R == 0ULL);
+        check(opts_snapshot != nullptr && opts_snapshot->rr_app_key[0] == '\0');
+        Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+    }
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    state.K = state.R = 0ULL;
+    freeState(&state);
+}
+
 // Reproduce the options-publication/redraw gap during Android input startup.
 static void
 test_startup_options_wait_for_redraw() {
@@ -1960,6 +2001,7 @@ main(int argc, char** argv) {
     test_session_end_saves_after_final_ingest();
     test_unit_activity_follows_the_session();
     test_startup_options_wait_for_redraw();
+    test_gui_snapshot_buffers_keep_no_key_off_screen();
     test_metrics_age_without_decoder_redraw();
     test_target_change_publishes_once();
     test_target_change_drops_sync_hold();
