@@ -690,9 +690,12 @@ typedef struct {
     uint16_t cog;    /* long format: course over ground, degrees 0..359 */
 } udt_nmea_fields;
 
+/* The fields of @p type's format only: a short report (NMEA_UDT_SHORT_BITS) ends with its seconds code, so the long
+ * format's seconds and course are not read from it (they would lie past its user data). */
 static void
-udt_nmea_read(const uint8_t* input, udt_nmea_fields* f) {
+udt_nmea_read(const uint8_t* input, int type, udt_nmea_fields* f) {
     // uint8_t nmea_c = input[0];  //encrypted -- checked before we get here
+    DSD_MEMSET(f, 0, sizeof(*f));
     f->ns = input[1];
     f->ew = input[2];
     f->q = input[3];
@@ -705,7 +708,10 @@ udt_nmea_read(const uint8_t* input, udt_nmea_fields* f) {
     f->eminf = (uint16_t)convert_bits_into_output(&input[52], 14);
     f->utc_hh = (uint8_t)convert_bits_into_output(&input[66], 5);
     f->utc_mm = (uint8_t)convert_bits_into_output(&input[71], 6);
-    f->utc_ss3 = (uint8_t)convert_bits_into_output(&input[77], 3);
+    if (type == 1) {
+        f->utc_ss3 = (uint8_t)convert_bits_into_output(&input[77], 3);
+        return;
+    }
     f->utc_ss6 = (uint8_t)convert_bits_into_output(&input[77], 6);
     f->cog = (uint16_t)convert_bits_into_output(&input[103], 9);
 }
@@ -822,7 +828,7 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, s
     // uint8_t mfid = (uint8_t)convert_bits_into_output(&input[88], 8); //on type 3, last octet of first block carries MFID
 
     udt_nmea_fields f;
-    udt_nmea_read(input, &f);
+    udt_nmea_read(input, type, &f);
     const char* deg_glyph = dsd_degrees_glyph();
     const uint8_t crc_flags = state->event_crc_invalid[slot];
     const int in_range = udt_nmea_position_in_range(&f);
