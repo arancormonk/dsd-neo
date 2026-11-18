@@ -717,9 +717,14 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
    as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
    the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
    failed check, a protected LC or an FEC failure says nothing. */
+static int
+dmr_flco_ends_voice_hold(const dmr_flco_ctx* ctx) {
+    return ctx->CRCCorrect == 1U && ctx->voice_slot_known && dmr_flco_lc_readable(ctx);
+}
+
 static void
 dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
-    if (ctx->CRCCorrect != 1U || !ctx->voice_slot_known || !dmr_flco_lc_readable(ctx)) {
+    if (!dmr_flco_ends_voice_hold(ctx)) {
         return;
     }
     dmr_enc_class_release_hold(ctx->state, ctx->voice_slot);
@@ -729,12 +734,32 @@ dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
 /* A voice LC that passed its check in a shape the decoder reads no privacy from (Tait FID 0x58, an unknown FID, the
    Motorola and Hytera FLCOs it does not parse: dmr_flco_handle_motorola_or_tait(),
    dmr_flco_handle_hytera_unknown_or_fid()) says as much as such a call ever says: its voice is judged from then on as
-   on a first landing, not held. */
+   on a first landing, not held. On a held slot the classification and the live FID and service options came from no
+   check of the call's (dmr_flco_sync_active_call_state()), so they go first, as on a first landing. A Kirisun LC (FID
+   0x0A) takes that path too, but the decoder reads its privacy bit (dmr_flco_detect_kirisun_le()): the slot is
+   classified by it before the hold ends, so an encrypted Kirisun call is not played as clear. */
 static void
 dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
-    if (ctx->unk == 1U && ctx->type != 2U) {
-        dmr_flco_release_voice_hold(ctx);
+    if (ctx->unk != 1U || ctx->type == 2U) {
+        return;
     }
+    if (dmr_flco_ends_voice_hold(ctx) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+        dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+        unsigned int fid = 0U;
+        unsigned int so = 0U;
+        if (ctx->fid == 0x0AU) {
+            fid = ctx->fid;
+            so = dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, ctx->type == 1U);
+        }
+        if (ctx->voice_slot == 0U) {
+            ctx->state->dmr_fid = fid;
+            ctx->state->dmr_so = so;
+        } else {
+            ctx->state->dmr_fidR = fid;
+            ctx->state->dmr_soR = so;
+        }
+    }
+    dmr_flco_release_voice_hold(ctx);
 }
 
 static void

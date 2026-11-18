@@ -3365,7 +3365,10 @@ suite runs under this compiler.
 
   What ends a hold: each slot's encryption is unknown until that slot's call says, by
   - an LC that passed its check (`CRCCorrect`, a RAS acceptance under `-F` included, header or embedded; a shape the
-    decoder reads no privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says);
+    decoder reads no privacy from, such as Tait FID 0x58 or an unknown FID, says as much as such a call ever says: on
+    the held slot what was classified and the live FID and service options go first, as on a first landing, and a
+    Kirisun LC (FID 0x0A, read on that path too) then classifies the slot by its own privacy bit,
+    `dmr_flco_release_unread_voice_hold()`);
   - a PI header naming a cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one
     forcing no classification either, a Hytera Enhanced one too: `dmr_pi_note_verified_first()` ends the hold);
   - a Hytera Enhanced LC whose own checksum passed, which names its cipher as such a PI header does.

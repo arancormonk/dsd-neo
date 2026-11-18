@@ -4093,6 +4093,47 @@ test_dmr_hold_unread_lc_shape(char frame[4][24]) {
     return rc;
 }
 
+/* A checked LC in a shape the decoder reads no privacy from ends a hold on what the call says, never on what data no
+   check passed left on the slot. A Kirisun voice LC header (FID 0x0A) asking for encryption ends it encrypted: with no
+   key the frame is muted, not played as clear. A Tait one (FID 0x58) after an embedded Motorola LC whose checksum
+   failed (FID 0x10, privacy bit) ends it as on a first landing that heard only the Tait LC: the frame plays as it came,
+   not muted by the failed LC's privacy bit. */
+static int
+test_dmr_hold_unread_lc_classifies_the_slot(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("an unread LC shape: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int c = 0; c < 2; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        char recorded[49] = {0};
+        if (c == 0) {
+            dmr_hop_voice_lc(opts, state, 0x0AU, 0x40U, 303U);
+            rc |= expect_true("an encrypted Kirisun LC after a hop: the slot reads encrypted, held no more",
+                              state->dmr_enc_class_held[0] == 0U && (state->dmr_so & 0x40U) != 0U);
+            rc |=
+                expect_true("an encrypted Kirisun LC after a hop: with no key the frame is muted, not played as clear",
+                            !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        } else {
+            dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x40U, 303U);
+            dmr_hop_voice_lc(opts, state, 0x58U, 0x00U, 303U);
+            rc |= expect_true("a Tait LC after a failed Motorola LC: the failed LC's FID and privacy bit go",
+                              state->dmr_enc_class_held[0] == 0U && state->dmr_so == 0U && state->dmr_fid == 0U);
+            rc |= expect_true("a Tait LC after a failed Motorola LC: the frame plays as it came",
+                              dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                  && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        }
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Each slot's hold is its own: only that slot's LC or PI header ends it. */
 static int
 test_dmr_hold_per_slot(void) {
@@ -4615,6 +4656,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_failed_embedded_lc(frame);
     rc |= test_dmr_hold_failed_embedded_lc_privacy_bit(frame);
     rc |= test_dmr_hold_unread_lc_shape(frame);
+    rc |= test_dmr_hold_unread_lc_classifies_the_slot(frame);
     rc |= test_dmr_hold_per_slot();
     rc |= test_dmr_hold_mono_trunked_slot2_header(frame);
     rc |= test_dmr_mono_trunked_lc_stays_on_its_slot();
