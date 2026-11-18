@@ -560,16 +560,16 @@ test_concatenated_one_recipient(void) {
     session_close(&s);
 }
 
-/* Issue #800 (g62-r9): an SMI and an SSI may hold one value and still be two identities (EN 300 392-1 clauses 7.3.2,
- * 7.3.3). Part 2 of a report addressed to SMI 257 and part 1 of another addressed to SSI 257, with the same sender and
- * reference, assemble into nothing; the SSI's message completes from its own part 2. */
+/* Issue #800 (g62-r9): an SMI or a USSI and an SSI may hold one value and still be two identities (EN 300 392-1
+ * clauses 7.3.2, 7.3.3). Part 2 of a report addressed by @p addr_type to 257 and part 1 of another addressed to SSI 257,
+ * with the same sender and reference, assemble into nothing; the SSI's message completes from its own part 2. */
 static void
-test_concatenated_smi_and_ssi_are_two_parties(void) {
+concatenated_other_space_is_another_party(uint32_t addr_type) {
     const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
     const ttb_block other = lip_short(LAT_MINUS_22, LON_MINUS_45, 1, 10, 4);
     session s = session_open();
     ttb_block c = sds_concat_part(SENDER_SSI, 0, 5, 2, other.bits + 40, other.n - 40);
-    send_sds_to(&s, TETRA_MAC_ADDR_SMI, ADDRESSED, &c, 0, 0);
+    send_sds_to(&s, addr_type, ADDRESSED, &c, 0, 0);
     c = sds_concat_part(SENDER_SSI, 0, 5, 1, lip.bits, 40);
     send_sds(&s, &c, 0, 0);
     assert(strstr(s.log, "TETRA SDS LIP") == NULL);
@@ -584,6 +584,15 @@ test_concatenated_smi_and_ssi_are_two_parties(void) {
     assert(strstr(s.log, "dst_SSI=257 short location report; LIP: 22.50000") != NULL);
     assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000);
     session_close(&s);
+}
+
+/* concatenated_other_space_is_another_party() for an SMI and for a USSI (a migrating radio's home SSI). */
+static void
+test_concatenated_smi_and_ssi_are_two_parties(void) {
+    static const uint32_t other_spaces[2] = {TETRA_MAC_ADDR_SMI, TETRA_MAC_ADDR_USSI};
+    for (size_t k = 0U; k < 2U; k++) {
+        concatenated_other_space_is_another_party(other_spaces[k]);
+    }
 }
 
 /* Two concatenated messages from one sender to one party can share a reference. A part 1 with the same bits as the

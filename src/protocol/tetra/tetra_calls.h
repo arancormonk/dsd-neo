@@ -280,13 +280,14 @@ uint32_t tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu);
 /** @brief The identity space of the party a MAC PDU names (tetra_calls_addressed_party()). */
 typedef enum {
     TETRA_CALLS_PARTY_NONE = 0, /**< no address, an event label or usage marker alone, an encrypted short identity */
-    TETRA_CALLS_PARTY_SSI = 1,  /**< a short subscriber identity (SSI, USSI, or one with an event label or marker) */
+    TETRA_CALLS_PARTY_SSI = 1,  /**< a short subscriber identity (SSI, or one with an event label or usage marker) */
     TETRA_CALLS_PARTY_SMI = 2,  /**< a short management identity: may equal an SSI in number, yet is another identity */
+    TETRA_CALLS_PARTY_USSI = 3, /**< an unexchanged SSI: a migrating radio's home SSI, another network's numbering */
 } tetra_calls_party;
 
 /** @brief The identity the MAC PDU of @p sdu names in the clear and its identity space, its 24-bit value in @p value
- * (0 for none); TETRA_CALLS_PARTY_NONE for a NULL @p sdu. An SMI and an SSI of one value are two parties (EN 300 392-1
- * clauses 7.3.2, 7.3.3). */
+ * (0 for none); TETRA_CALLS_PARTY_NONE for a NULL @p sdu. An SSI, an SMI and a USSI of one value are three parties
+ * (EN 300 392-1 clauses 7.3.2, 7.3.3: a USSI numbers a migrating radio in its home network). */
 tetra_calls_party tetra_calls_addressed_party(const tetra_mac_sdu* sdu, uint32_t* value);
 
 /** @brief The TETRA sync type the decoder is on, as the canonical calls and the notices carry it (the current burst's,

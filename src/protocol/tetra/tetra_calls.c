@@ -2621,7 +2621,13 @@ tetra_calls_addressed_party(const tetra_mac_sdu* sdu, uint32_t* value) {
     uint32_t ssi = 0;
     tetra_calls_party party = TETRA_CALLS_PARTY_NONE;
     if (sdu_ssi(sdu, &ssi)) {
-        party = address_is_smi(&sdu->addr) ? TETRA_CALLS_PARTY_SMI : TETRA_CALLS_PARTY_SSI;
+        if (address_is_smi(&sdu->addr)) {
+            party = TETRA_CALLS_PARTY_SMI;
+        } else if (sdu->addr.type == TETRA_MAC_ADDR_USSI) {
+            party = TETRA_CALLS_PARTY_USSI;
+        } else {
+            party = TETRA_CALLS_PARTY_SSI;
+        }
     }
     if (value) {
         *value = party != TETRA_CALLS_PARTY_NONE ? ssi : 0u;
