@@ -621,6 +621,74 @@ test_idle_nfm_radio_yields_without_shutdown(void) {
     free(state);
     free(opts);
 }
+
+/* A live RTL stream's hunt read that came back idle (DSD_RTL_READ_IDLE) services the beat, and a tick there that
+   retuned leaves the read at once, as a quiet PCM read does; one whose tune the receiver refused reads on. */
+static int g_idle_reads_left;
+static int g_idle_reads;
+
+static int
+fake_idle_then_sample_rtl_read(void* context, float* out, uint8_t* flags, size_t count, int* got, int wants) {
+    (void)context;
+    (void)count;
+    g_idle_reads++;
+    if ((wants & DSD_RTL_READ_WANT_IDLE_BOUND) != 0 && g_idle_reads_left > 0) {
+        g_idle_reads_left--;
+        *got = 0;
+        return DSD_RTL_READ_IDLE;
+    }
+    out[0] = 0.5f;
+    if (flags) {
+        flags[0] = 0U;
+    }
+    *got = 1;
+    return 0;
+}
+
+static void
+run_idle_rtl_hunt_read(int beat, int* interrupted, unsigned* symbols) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 1;
+    state->rtl_ctx = (void*)&g_idle_reads; /* Opaque to the fake. */
+    const dsd_rtl_stream_io_hooks hooks = {.read_ex2 = fake_idle_then_sample_rtl_read};
+    dsd_rtl_stream_io_hooks_set(&hooks);
+    install_watchdog_service();
+    exitflag = 0;
+    g_idle_reads = 0;
+    g_idle_reads_left = 5;
+    g_beat = beat;
+    (void)getSymbol(opts, state, 0);
+    *interrupted = state->input_interrupted;
+    *symbols = state->symbolcnt;
+    g_beat = BEAT_NONE;
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_rtl_stream_io_hooks_set(NULL);
+    free(state);
+    free(opts);
+}
+
+static void
+test_an_idle_rtl_hunt_read_leaves_when_its_tick_retunes(void) {
+    int interrupted = 0;
+    unsigned symbols = 0U;
+    run_idle_rtl_hunt_read(BEAT_MOVES, &interrupted, &symbols);
+    if (interrupted != 1 || symbols != 0U || g_idle_reads != 1) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: an idle RTL hunt read whose tick retuned did not leave (interrupted %d, symbols %u, reads "
+                    "%d)\n",
+                    interrupted, symbols, g_idle_reads);
+        g_failures++;
+    }
+    run_idle_rtl_hunt_read(BEAT_REFUSED, &interrupted, &symbols);
+    if (interrupted != 0 || symbols != 1U || g_services == 0) {
+        DSD_FPRINTF(stderr, "FAIL: an idle RTL hunt read left for a refused tune (interrupted %d, symbols %u)\n",
+                    interrupted, symbols);
+        g_failures++;
+    }
+}
 #endif
 
 int
@@ -640,6 +708,7 @@ main(void) {
     test_a_tcp_reconnect_services_the_beat();
 #ifdef USE_RADIO
     test_idle_nfm_radio_yields_without_shutdown();
+    test_an_idle_rtl_hunt_read_leaves_when_its_tick_retunes();
 #endif
     dsd_runtime_set_controls_pending(NULL);
     dsd_net_audio_input_hooks_set(NULL);
