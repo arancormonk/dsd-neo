@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../src/core/util/key_set_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 

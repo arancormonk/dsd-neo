@@ -20,7 +20,6 @@
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
