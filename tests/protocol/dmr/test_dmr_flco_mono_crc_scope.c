@@ -251,6 +251,66 @@ test_checked_lc_attribution(dsd_opts* opts, dsd_state* state, const char* path) 
     return failed;
 }
 
+/* The embedded GPS of a call whose checked voice LC named its radio is on the call's row through dmr_flco()'s real
+   path; when the call ends the event log writes the row's GPS line with exactly one "GPS:" label, though the row's
+   text (shown alone in History) starts with its own. */
+static int
+test_event_log_gps_label(dsd_opts* opts, dsd_state* state, const char* lrrp_path) {
+    int failed = 0;
+    Event_History_I* history = calloc(2, sizeof *history);
+    char event_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(event_path, sizeof event_path, "mono_gps_label");
+    if (history == NULL || fd < 0) {
+        free(history);
+        return 1;
+    }
+    dsd_close(fd);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof *state);
+    for (int slot = 0; slot < 2; ++slot) {
+        init_event_history(&history[slot], 0, 255);
+    }
+    state->event_history_s = history;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", event_path);
+    uint8_t bits[96];
+    uint32_t errors = 0;
+    voice_lc(bits, 1001U);
+    dmr_flco(opts, state, bits, 1, &errors, 1);
+    gps_lc(bits);
+    CHECK(truncate_output(lrrp_path));
+    dmr_flco(opts, state, bits, 1, &errors, 3);
+    CHECK(strncmp(history[0].Event_History_Items[0].gps_s, "GPS: ", 5) == 0);
+    CHECK(dsd_call_state_end_ex(state, 0U, 1.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    FILE* file = dsd_fopen_private(event_path, "r");
+    int gps_lines = 0;
+    int labels = 0;
+    char line[512];
+    while (file != NULL && fgets(line, sizeof line, file) != NULL) {
+        if (strstr(line, "22.50000") != NULL) {
+            gps_lines++;
+            for (const char* at = strstr(line, "GPS:"); at != NULL; at = strstr(at + 1, "GPS:")) {
+                labels++;
+            }
+        }
+    }
+    if (file != NULL) {
+        (void)fclose(file);
+    }
+    if (gps_lines != 1 || labels != 1) {
+        DSD_FPRINTF(stderr, "\nevent log GPS label: %d line(s), %d label(s)\n", gps_lines, labels);
+        failed = 1;
+    }
+    opts->event_out_file[0] = '\0';
+    (void)remove(event_path);
+    dsd_state_ext_free_all(state);
+    state->event_history_s = NULL;
+    free(history);
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -279,6 +339,7 @@ main(void) {
     failed |= test_gps_scope(&opts, &state, path, DSD_CRC_RAS_UNVERIFIED, 0);
     failed |= test_gps_scope(&opts, &state, path, 0, (uint8_t)(DSD_CRC_FAILED | DSD_CRC_RAS_UNVERIFIED));
     failed |= test_checked_lc_attribution(&opts, &state, path);
+    failed |= test_event_log_gps_label(&opts, &state, path);
     dsd_state_ext_free_all(&state);
     (void)remove(path);
     return failed;

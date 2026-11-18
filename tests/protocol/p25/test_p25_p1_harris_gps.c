@@ -475,7 +475,8 @@ test_terminator(void) {
         char want[512];
         DSD_SNPRINTF(label, sizeof label, "%s: the event log gains the row's GPS line with its stamp", tag);
         if (item != NULL) {
-            DSD_SNPRINTF(want, sizeof want, "%.19s GPS: %s ", item->event_string, item->gps_s);
+            // One "GPS:" label: the APX text carries its own.
+            DSD_SNPRINTF(want, sizeof want, "%.19s %s%s ", item->event_string, apx ? "" : "GPS: ", item->gps_s);
         } else {
             want[0] = '\0';
         }
@@ -483,6 +484,70 @@ test_terminator(void) {
         expect_true(label, item != NULL && lines >= 2 && strcmp(last, want) == 0);
         if (strcmp(last, want) != 0) {
             DSD_FPRINTF(stderr, "event log: %s (want %s)\n", last, want);
+        }
+        (void)remove(event_path);
+        fixture_close(&f);
+    }
+}
+
+/* Occurrences of @p needle in @p hay. */
+static int
+count_of(const char* hay, const char* needle) {
+    int n = 0;
+    for (const char* at = strstr(hay, needle); at != NULL; at = strstr(at + 1, needle)) {
+        n++;
+    }
+    return n;
+}
+
+/* A position sent during the call (Motorola APX, L3Harris) is on the call's row when the call ends: the event log's
+ * GPS line for it, written with the row, carries exactly one "GPS:" label whatever the stored text starts with. */
+static void
+test_event_log_one_label(void) {
+    for (int apx = 0; apx <= 1; apx++) {
+        fixture f;
+        fixture_open(&f);
+        char event_path[DSD_TEST_PATH_MAX];
+        const int event_fd = dsd_test_mkstemp(event_path, sizeof event_path, "harris_gps_label");
+        if (event_fd < 0) {
+            DSD_FPRINTF(stderr, "mkstemp failed\n");
+            exit(2);
+        }
+        (void)dsd_close(event_fd);
+        DSD_SNPRINTF(f.opts->event_out_file, sizeof f.opts->event_out_file, "%s", event_path);
+        (void)start_call(&f, TG_A, SRC_A);
+        if (apx) {
+            const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+            send_lc(&f, 0x06, 0x90, apx_lc, 0);
+        } else {
+            body_fields b = fields_default();
+            uint8_t body[BODY_OCTETS];
+            make_body(&b, body);
+            send_update(&f, LCO_A_ODD, LCO_B_ODD, body);
+        }
+        end_call(&f);
+        const char* tag = apx ? "APX" : "Harris";
+        char label[96];
+        const Event_History* item = row_of(&f, SRC_A);
+        DSD_SNPRINTF(label, sizeof label, "%s in the call: its row takes it", tag);
+        expect_true(label, item != NULL && item->pos.valid == 1U && item->gps_s[0] != '\0');
+        FILE* fp = dsd_fopen_private(event_path, "r");
+        int gps_lines = 0;
+        int labels = 0;
+        char line[512];
+        while (fp != NULL && fgets(line, sizeof line, fp) != NULL) {
+            if (strstr(line, apx ? "22.500003" : "22.500000") != NULL) {
+                gps_lines++;
+                labels += count_of(line, "GPS:");
+            }
+        }
+        if (fp != NULL) {
+            fclose(fp);
+        }
+        DSD_SNPRINTF(label, sizeof label, "%s in the call: one event log GPS line with one label", tag);
+        expect_true(label, gps_lines == 1 && labels == 1);
+        if (gps_lines != 1 || labels != 1) {
+            DSD_FPRINTF(stderr, "%s: %d GPS line(s), %d label(s)\n", tag, gps_lines, labels);
         }
         (void)remove(event_path);
         fixture_close(&f);
@@ -656,6 +721,7 @@ main(void) {
     test_alias_between_halves();
     test_ended_call();
     test_terminator();
+    test_event_log_one_label();
     test_checks();
     test_fields();
     dsd_decode_clock_use_system();

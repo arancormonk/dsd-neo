@@ -2506,7 +2506,10 @@ suite runs under this compiler.
   `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
   ends before it dispatches its own link control; both take the `dsd_opts` the event log is written through, and a
   position written into a row that already committed appends the row's `GPS:` line to `-J` with the row's own stamp,
-  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`),
+  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`; the `-J` and terminal history GPS
+  detail lines take their label from `dsd_event_gps_detail_label()`, none when `gps_s` already starts with `GPS:`, as
+  DMR embedded GPS, UDT NMEA, Motorola APX and M17 text does, so the line has one; tests `P25_P1_HARRIS_GPS`,
+  `DMR_FLCO_MONO_CRC_SCOPE`),
   `dsd_event_set_open_call_position()` (D-STAR slow data), `dsd_event_stage_position()` (the next data notice;
   `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the

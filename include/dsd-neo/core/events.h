@@ -42,6 +42,22 @@ dsd_event_systype_has_slots(int systype) {
     return DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype);
 }
 
+/**
+ * The label a row's GPS detail line (the event log's and the terminal history's) puts before Event_History::gps_s:
+ * "GPS: ", or none when the text already starts with that label (DMR embedded GPS, UDT NMEA, Motorola APX and M17 GNSS
+ * keep "GPS: " in their text, which History shows on its own), so the line carries exactly one.
+ */
+static inline const char*
+dsd_event_gps_detail_label(const char* gps_text) {
+    static const char k_label[] = "GPS:";
+    for (size_t i = 0U; i + 1U < sizeof k_label; i++) {
+        if (gps_text == NULL || gps_text[i] != k_label[i]) {
+            return "GPS: ";
+        }
+    }
+    return "";
+}
+
 /** Opaque guard for serializing event-history mutations with telemetry snapshots. */
 typedef struct {
     void* opaque;

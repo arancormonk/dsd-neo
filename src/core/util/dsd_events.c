@@ -405,7 +405,8 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
                                     row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias,
                                     row->crc_invalid);
-    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps, row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, dsd_event_gps_detail_label(row->gps_s), row->gps_s,
+                                    wanted.gps, row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal,
                                     row->crc_invalid);
     fflush(event_log_file);

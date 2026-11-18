@@ -2472,7 +2472,8 @@ ui_history_render_single_slot_item(const Event_History* item, const ui_history_r
     if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, dsd_event_gps_detail_label(item->gps_s),
+                                      item->gps_s)) {
         return;
     }
     (void)ui_history_print_detail_line(ctx->history_stop_y, NULL, "DSD-neo: ", item->internal_str);
@@ -2504,7 +2505,8 @@ ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const 
     if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, dsd_event_gps_detail_label(item->gps_s),
+                                      item->gps_s)) {
         return;
     }
     (void)ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "DSD-neo: ", item->internal_str);
