@@ -267,6 +267,16 @@ idle_poll_locked(void) {
     }
 }
 
+/* A completed transfer carries a fixed sawtooth, so the library's DSP works on defined samples. */
+static void
+fill_samples(struct libusb_transfer* transfer) {
+    int16_t* samples = (int16_t*)(void*)transfer->buffer;
+    const int count = transfer->length / (int)sizeof(int16_t);
+    for (int i = 0; i < count; ++i) {
+        samples[i] = (int16_t)(i % 2001 - 1000);
+    }
+}
+
 /* An event poll: under the event lock, it calls back one transfer that is due on the polling thread, or waits about
  * 1 ms when none is. While another thread handles events it waits about 1 ms for the lock and returns, as a libusb
  * event waiter does. */
@@ -310,6 +320,9 @@ libusb_handle_events_timeout_completed(libusb_context* ctx, struct timeval* tv, 
     /* libusb hands the transfer back here; from now on the library owns it. */
     transfer->status = status;
     transfer->actual_length = status == LIBUSB_TRANSFER_COMPLETED ? transfer->length : 0;
+    if (status == LIBUSB_TRANSFER_COMPLETED) {
+        fill_samples(transfer);
+    }
     transfer->callback(transfer);
     pthread_mutex_unlock(&g_events_mu);
     /* Pace the stream a little, outside the lock, so a stop does not wait behind a busy poller. */
@@ -747,6 +760,38 @@ drain_cancels_a_late_resubmit(int on_other_thread) {
     close_case(name, dev);
 }
 
+/* The stub's one sample rate: the open falls back to libairspyhf's default rate, zero IF. */
+enum { kStubSampleRate = 768000, kRetunes = 40, kRetuneBaseHz = 1234000, kRetuneStepHz = 10000 };
+
+/* Retunes while streaming with the library's DSP on. At the stub's zero-IF rate the consumer thread runs the IQ balancer
+ * and the fine-tuning rotation on every block, so each setter whose state that thread reads (the frequency and its
+ * calibration, the IQ correction point and the balancer settings, DSP on or off, the sample rate and its filter gain)
+ * runs here while blocks flow. ThreadSanitizer (tsan-debug) reports any of them that races the consumer, and every
+ * build checks that blocks keep coming. */
+static void
+live_retune_with_dsp(void) {
+    const char* name = "live_retune_with_dsp";
+    airspyhf_device_t* dev = open_case(name);
+    expect(name, airspyhf_set_lib_dsp(dev, 1) == AIRSPYHF_SUCCESS, "DSP on");
+    expect(name, airspyhf_is_low_if(dev) == 0, "the stub's rate is zero IF, so the IQ balancer runs");
+    stream_run(name, dev, "start");
+    for (int i = 0; i < kRetunes; ++i) {
+        const int base = read_counter(&g_samples);
+        const uint32_t freq_hz = (uint32_t)(kRetuneBaseHz + i * kRetuneStepHz);
+        expect(name, airspyhf_set_freq(dev, freq_hz) == AIRSPYHF_SUCCESS, "retune");
+        expect(name, airspyhf_set_calibration(dev, (i % 3) * 100) == AIRSPYHF_SUCCESS, "calibration");
+        expect(name, airspyhf_set_optimal_iq_correction_point(dev, (i % 2) ? 0.25f : -0.25f) == AIRSPYHF_SUCCESS,
+               "IQ correction point");
+        expect(name, airspyhf_iq_balancer_configure(dev, 2, 4, 2, 16) == AIRSPYHF_SUCCESS, "IQ balancer settings");
+        expect(name, airspyhf_set_lib_dsp(dev, (uint8_t)(i % 4 != 3)) == AIRSPYHF_SUCCESS, "DSP on or off");
+        expect(name, airspyhf_set_samplerate(dev, kStubSampleRate) == AIRSPYHF_SUCCESS, "sample rate");
+        expect(name, wait_for_samples(base + 2), "blocks keep coming after the retune");
+    }
+    hold_stream();
+    expect(name, airspyhf_stop(dev) == AIRSPYHF_SUCCESS, "stop");
+    close_case(name, dev);
+}
+
 int
 main(void) {
 #ifdef _WIN32
@@ -764,6 +809,7 @@ main(void) {
     failed_resubmit_returns_its_slot();
     drain_cancels_a_late_resubmit(0);
     drain_cancels_a_late_resubmit(1);
+    live_retune_with_dsp();
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d expectation(s) failed\n", g_failures);

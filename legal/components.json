@@ -713,7 +713,7 @@
       "notices": [
         "vcpkg-ports/airspyhf/copyright"
       ],
-      "assessment": "Pinned master commit (version 1.8.1) of the library (airspyhf.dll) in the Windows ZIP, built from libairspyhf/src only with project patch 0001 (vcpkg-ports/airspyhf/), which waits for cancelled USB transfers; the repository's GPL-2.0 tools and LGPL getopt are not built. The shipped notice (licenses/libairspyhf-BSD-3-Clause.txt) carries every source-header holder and LICENSE.BSD.",
+      "assessment": "Pinned master commit (version 1.8.1) of the library (airspyhf.dll) in the Windows ZIP, built from libairspyhf/src only with project patch 0001 (vcpkg-ports/airspyhf/), which waits for cancelled USB transfers and applies a retune between sample blocks; the repository's GPL-2.0 tools and LGPL getopt are not built. The shipped notice (licenses/libairspyhf-BSD-3-Clause.txt) carries every source-header holder and LICENSE.BSD.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",

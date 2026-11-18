@@ -1,4 +1,4 @@
-libairspyhf: wait for cancelled transfers before freeing or reusing them
+libairspyhf: wait for cancelled transfers, and retune between sample blocks
 
 A stop cancelled the transfers, polled for events at most once per transfer
 with a 50 us timeout, joined the transfer and consumer threads, and polled
@@ -34,6 +34,18 @@ sample callback asking to stop) left its threads unjoined and its other
 transfers in flight. airspyhf_start() now reaps it first, as a stop would,
 before it resets any state or resubmits anything.
 
+Retuning while streaming raced the consumer thread. airspyhf_set_freq() and
+the other setters (calibration, sample rate, the IQ correction point and
+balancer settings, the DSP switch) write the fine-tuning shift, sample rate,
+filter gain and DSP flags, and reset or reconfigure the IQ balancer, while the
+consumer reads those fields and runs the balancer on every block, all on
+plain fields. A new mutex, held by the consumer while it converts a block and
+by each setter while it changes what the conversion reads, puts every change
+between two blocks; airspyhf_set_freq_double() hands the balancer reset and
+the new shift over together. The setters take it only around those writes,
+never across a USB request, so a slow control transfer never holds up the
+samples, and the consumer pays one uncontended lock per block.
+
 streaming and stop_requested become atomic too. The caller's stop, the
 transfer thread, the consumer thread and the callbacks all read and write
 them, which was a data race on plain volatile fields; ThreadSanitizer
@@ -48,7 +60,7 @@ CRLF line endings, which the patch keeps.
 Generated against airspyhf 24fe8ffcb00b14f827268bbad89ae1392de055e5.
 
 diff --git a/libairspyhf/src/airspyhf.c b/libairspyhf/src/airspyhf.c
-index a4400f6..059e0d2 100644
+index a4400f6..4b45dd4 100644
 --- a/libairspyhf/src/airspyhf.c
 +++ b/libairspyhf/src/airspyhf.c
 @@ -34,6 +34,52 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
@@ -104,7 +116,19 @@ index a4400f6..059e0d2 100644
  
  #include "iqbalancer.h"
  #include "airspyhf.h"
-@@ -120,13 +166,15 @@ typedef struct airspyhf_device
+@@ -100,6 +146,11 @@ typedef struct airspyhf_device
+ 	bool consumer_thread_running;
+ 	pthread_cond_t consumer_cv;
+ 	pthread_mutex_t consumer_mp;
++	/* the consumer holds it while it converts a block; a setter takes it to
++	 * change what the conversion reads (the fine-tuning shift, sample rate,
++	 * filter gain, DSP switches and the IQ balancer), so each change lands
++	 * between two blocks */
++	pthread_mutex_t dsp_mp;
+ 	uint32_t supported_samplerate_count;
+ 	uint32_t *supported_samplerates;
+ 	uint8_t *samplerate_architectures;
+@@ -120,13 +171,15 @@ typedef struct airspyhf_device
  	airspyhf_complex_float_t vec;
  	struct iq_balancer_t *iq_balancer;
  	uint32_t transfer_count;
@@ -123,7 +147,7 @@ index a4400f6..059e0d2 100644
  	volatile int received_samples_queue_head;
  	volatile int received_samples_queue_tail;
  	volatile int received_buffer_count;
-@@ -150,7 +198,6 @@ static int airspyhf_config_read(airspyhf_device_t* device, uint8_t *buffer, uint
+@@ -150,7 +203,6 @@ static int airspyhf_config_read(airspyhf_device_t* device, uint8_t *buffer, uint
  static int cancel_transfers(airspyhf_device_t* device)
  {
  	uint32_t transfer_index;
@@ -131,7 +155,7 @@ index a4400f6..059e0d2 100644
  
  	if (device->transfers != NULL)
  	{
-@@ -162,9 +209,6 @@ static int cancel_transfers(airspyhf_device_t* device)
+@@ -162,9 +214,6 @@ static int cancel_transfers(airspyhf_device_t* device)
  			}
  		}
  
@@ -141,7 +165,7 @@ index a4400f6..059e0d2 100644
  		return AIRSPYHF_SUCCESS;
  	}
  	else
-@@ -272,6 +316,10 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
+@@ -272,6 +321,10 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
  
  	if (device->transfers != NULL)
  	{
@@ -152,7 +176,7 @@ index a4400f6..059e0d2 100644
  		for (transfer_index = 0; transfer_index<device->transfer_count; transfer_index++)
  		{
  			device->transfers[transfer_index]->endpoint = endpoint_address;
-@@ -280,10 +328,11 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
+@@ -280,10 +333,11 @@ static int prepare_transfers(airspyhf_device_t* device, const uint_fast8_t endpo
  			error = libusb_submit_transfer(device->transfers[transfer_index]);
  			if (error != 0)
  			{
@@ -166,7 +190,7 @@ index a4400f6..059e0d2 100644
  		}
  		return AIRSPYHF_SUCCESS;
  	}
-@@ -376,13 +425,13 @@ static void* consumer_threadproc(void *arg)
+@@ -376,13 +430,13 @@ static void* consumer_threadproc(void *arg)
  
  	pthread_mutex_lock(&device->consumer_mp);
  
@@ -183,7 +207,17 @@ index a4400f6..059e0d2 100644
  		{
  			break;
  		}
-@@ -405,28 +454,36 @@ static void* consumer_threadproc(void *arg)
+@@ -395,7 +449,9 @@ static void* consumer_threadproc(void *arg)
+ 
+ 		sample_count = device->buffer_size / sizeof(airspyhf_complex_int16_t);
+ 
++		pthread_mutex_lock(&device->dsp_mp);
+ 		convert_samples(device, input_samples, device->output_buffer, sample_count);
++		pthread_mutex_unlock(&device->dsp_mp);
+ 
+ 		transfer.device = device;
+ 		transfer.ctx = device->ctx;
+@@ -405,28 +461,36 @@ static void* consumer_threadproc(void *arg)
  
  		if (device->callback(&transfer) != 0)
  		{
@@ -224,7 +258,7 @@ index a4400f6..059e0d2 100644
  		return;
  	}
  
-@@ -457,14 +514,14 @@ static void LIBUSB_CALL airspyhf_libusb_transfer_callback(struct libusb_transfer
+@@ -457,14 +521,14 @@ static void LIBUSB_CALL airspyhf_libusb_transfer_callback(struct libusb_transfer
  
  		if (libusb_submit_transfer(usb_transfer) != 0)
  		{
@@ -243,7 +277,7 @@ index a4400f6..059e0d2 100644
  	}
  }
  
-@@ -480,29 +537,52 @@ static void* transfer_threadproc(void* arg)
+@@ -480,29 +544,52 @@ static void* transfer_threadproc(void* arg)
  
  #endif
  
@@ -276,12 +310,9 @@ index a4400f6..059e0d2 100644
  {
 -	struct timeval timeout = { 0, 0 };
 +	struct timeval timeout = { 0, 500000 };
- 
--	if (device->stop_requested)
++
 +	while (shared_load(&device->transfer_live) > 0)
- 	{
--		device->stop_requested = false;
--		device->streaming = false;
++	{
 +		cancel_transfers(device);
 +		if (libusb_handle_events_timeout_completed(device->usb_context, &timeout, NULL) < 0)
 +		{
@@ -294,17 +325,20 @@ index a4400f6..059e0d2 100644
 +		}
 +	}
 +}
-+
+ 
+-	if (device->stop_requested)
 +static int kill_io_threads(airspyhf_device_t* device)
 +{
 +	if (shared_load(&device->stop_requested))
-+	{
+ 	{
+-		device->stop_requested = false;
+-		device->streaming = false;
 +		shared_store(&device->stop_requested, false);
 +		shared_store(&device->streaming, false);
  		cancel_transfers(device);
  
  		pthread_mutex_lock(&device->consumer_mp);
-@@ -518,25 +598,37 @@ static int kill_io_threads(airspyhf_device_t* device)
+@@ -518,25 +605,37 @@ static int kill_io_threads(airspyhf_device_t* device)
  			device->consumer_thread_running = false;
  		}
  
@@ -345,7 +379,7 @@ index a4400f6..059e0d2 100644
  			return result;
  		}
  
-@@ -550,6 +642,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
+@@ -550,6 +649,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
  		result = pthread_create(&device->consumer_thread, &attr, consumer_threadproc, device);
  		if (result != 0)
  		{
@@ -353,7 +387,7 @@ index a4400f6..059e0d2 100644
  			return AIRSPYHF_ERROR;
  		}
  		device->consumer_thread_running = true;
-@@ -557,6 +650,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
+@@ -557,6 +657,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
  		result = pthread_create(&device->transfer_thread, &attr, transfer_threadproc, device);
  		if (result != 0)
  		{
@@ -361,7 +395,7 @@ index a4400f6..059e0d2 100644
  			return AIRSPYHF_ERROR;
  		}
  		device->transfer_thread_running = true;
-@@ -987,8 +1081,8 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
+@@ -987,8 +1088,8 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
  	lib_device->callback = NULL;
  	lib_device->transfer_count = 16;
  	lib_device->buffer_size = SAMPLES_TO_TRANSFER * sizeof(airspyhf_complex_int16_t);
@@ -372,7 +406,50 @@ index a4400f6..059e0d2 100644
  
  	lib_device->supported_samplerates = NULL;
  	lib_device->samplerate_architectures = NULL;
-@@ -1309,6 +1403,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+@@ -1065,6 +1166,7 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
+ 
+ 	pthread_cond_init(&lib_device->consumer_cv, NULL);
+ 	pthread_mutex_init(&lib_device->consumer_mp, NULL);
++	pthread_mutex_init(&lib_device->dsp_mp, NULL);
+ 
+ 	lib_device->freq_hz = 0;
+ 	lib_device->freq_khz = 0;
+@@ -1155,6 +1257,7 @@ int ADDCALL airspyhf_close(airspyhf_device_t* device)
+ 
+ 		pthread_cond_destroy(&device->consumer_cv);
+ 		pthread_mutex_destroy(&device->consumer_mp);
++		pthread_mutex_destroy(&device->dsp_mp);
+ 
+ 		free(device);
+ 	}
+@@ -1214,8 +1317,10 @@ int ADDCALL airspyhf_set_samplerate(airspyhf_device_t* device, uint32_t samplera
+ 		return AIRSPYHF_ERROR;
+ 	}
+ 
++	pthread_mutex_lock(&device->dsp_mp);
+ 	device->current_samplerate = device->supported_samplerates[samplerate];
+ 	device->is_low_if = device->samplerate_architectures[samplerate];
++	pthread_mutex_unlock(&device->dsp_mp);
+ 
+ 	libusb_clear_halt(device->usb_device, LIBUSB_ENDPOINT_IN | 1);
+ 
+@@ -1270,6 +1375,7 @@ int ADDCALL airspyhf_set_samplerate(airspyhf_device_t* device, uint32_t samplera
+ 		sizeof(uint8_t),
+ 		LIBUSB_CTRL_TIMEOUT_MS);
+ 
++	pthread_mutex_lock(&device->dsp_mp);
+ 	if (result == sizeof(uint8_t))
+ 	{
+ 		device->filter_gain = powf(10.0f, (float) gain * -0.05f);
+@@ -1278,6 +1384,7 @@ int ADDCALL airspyhf_set_samplerate(airspyhf_device_t* device, uint32_t samplera
+ 	{
+ 		device->filter_gain = 1.0;
+ 	}
++	pthread_mutex_unlock(&device->dsp_mp);
+ 
+ 	airspyhf_set_freq_double(device, device->freq_hz);
+ 	
+@@ -1309,6 +1416,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
  {
  	int result;
  
@@ -386,7 +463,7 @@ index a4400f6..059e0d2 100644
  	memset(device->dropped_buffers_queue, 0, RAW_BUFFER_COUNT * sizeof(uint32_t));
  	device->dropped_buffers = 0;
  
-@@ -1335,13 +1436,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+@@ -1335,13 +1449,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
  
  int ADDCALL airspyhf_is_streaming(airspyhf_device_t* device)
  {
@@ -401,4 +478,62 @@ index a4400f6..059e0d2 100644
 +	shared_store(&device->stop_requested, true);
  	result1 = airspyhf_set_receiver_mode(device, RECEIVER_MODE_OFF);
  	result2 = kill_io_threads(device);
+ 
+@@ -1370,8 +1484,9 @@ int ADDCALL airspyhf_set_freq_double(airspyhf_device_t* device, const double fre
+ 	double adjusted_freq_hz = freq_hz * (1.0e9 + device->calibration_ppb) * 1.0e-9;
+ 	uint32_t lo_low_khz = device->is_low_if ? MIN_LOW_IF_LO : MIN_ZERO_IF_LO;
+ 	uint32_t freq_khz = MAX(lo_low_khz, (uint32_t)round((adjusted_freq_hz + if_shift) * 1e-3));
++	int lo_changed = device->freq_khz != freq_khz;
+ 
+-	if (device->freq_khz != freq_khz)
++	if (lo_changed)
+ 	{
+ 		buf[0] = (uint8_t)((freq_khz >> 24) & 0xff);
+ 		buf[1] = (uint8_t)((freq_khz >> 16) & 0xff);
+@@ -1409,12 +1524,17 @@ int ADDCALL airspyhf_set_freq_double(airspyhf_device_t* device, const double fre
+ 		{
+ 			device->freq_delta_hz = (((int8_t)buf[3] << 16) | (buf[2] << 8) | buf[1]) * 1e3 / (1 << buf[0]);
+ 		}
+-
+-		iq_balancer_set_optimal_point(device->iq_balancer, device->optimal_point);
+ 	}
+ 
+ 	device->freq_hz = freq_hz;
++
++	pthread_mutex_lock(&device->dsp_mp);
++	if (lo_changed)
++	{
++		iq_balancer_set_optimal_point(device->iq_balancer, device->optimal_point);
++	}
+ 	device->freq_shift = adjusted_freq_hz - freq_khz * 1e3 + device->freq_delta_hz;
++	pthread_mutex_unlock(&device->dsp_mp);
+ 
+ 	return AIRSPYHF_SUCCESS;
+ }
+@@ -1578,20 +1698,26 @@ int ADDCALL airspyhf_flash_configuration(airspyhf_device_t* device)
+ 
+ int ADDCALL airspyhf_set_optimal_iq_correction_point(airspyhf_device_t* device, float w)
+ {
++	pthread_mutex_lock(&device->dsp_mp);
+ 	device->optimal_point = w;
+ 	iq_balancer_set_optimal_point(device->iq_balancer, device->optimal_point);
++	pthread_mutex_unlock(&device->dsp_mp);
+ 	return AIRSPYHF_SUCCESS;
+ }
+ 
+ int ADDCALL airspyhf_iq_balancer_configure(airspyhf_device_t* device, int buffers_to_skip, int fft_integration, int fft_overlap, int correlation_integration)
+ {
++	pthread_mutex_lock(&device->dsp_mp);
+ 	iq_balancer_configure(device->iq_balancer, buffers_to_skip, fft_integration, fft_overlap, correlation_integration);
++	pthread_mutex_unlock(&device->dsp_mp);
+ 	return AIRSPYHF_SUCCESS;
+ }
+ 
+ int ADDCALL airspyhf_set_lib_dsp(airspyhf_device_t* device, const uint8_t flag)
+ {
++	pthread_mutex_lock(&device->dsp_mp);
+ 	device->enable_dsp = flag;
++	pthread_mutex_unlock(&device->dsp_mp);
+ 	return AIRSPYHF_SUCCESS;
+ }
  

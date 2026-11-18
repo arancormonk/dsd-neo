@@ -8823,7 +8823,11 @@ Key public headers:
   `DSD_TEST_DESKTOP_USB_SOURCES` names a `tools/usb_dependency_patches.sh fetch-all` tree (Linux and macOS CI).
   The Windows ZIP's libairspyhf (for SoapyAirspyHF) had the same bounded stop and gets the same fix from its own
   patch, `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch` (no Android copy; the overlay
-  records its digest). Test: `DESKTOP_LIBAIRSPYHF_TRANSFERS`, from the same fetch-all tree.
+  records its digest). That patch also guards the library's DSP state with a mutex the consumer thread holds per
+  block, so `airspyhf_set_freq()` and the other DSP setters (calibration, sample rate, IQ correction point and
+  balancer settings, DSP switch) land between blocks; the setters never hold it across a USB request. Test:
+  `DESKTOP_LIBAIRSPYHF_TRANSFERS`, from the same fetch-all tree (its live-retune case needs the tsan-debug preset to
+  catch a race).
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in
