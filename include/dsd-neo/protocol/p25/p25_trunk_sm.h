@@ -101,14 +101,16 @@ enum {
 };
 
 /* The identity of a slot's canonical call as the state machine and the Phase 2 voice users last named it, and which of
- * its fields are checked. */
+ * its fields are checked, under which reception. */
 typedef struct {
-    uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
-    uint32_t source;  // Source RID, 0 = none
-    uint32_t target;  // Talkgroup (group) or destination RID (private)
-    uint8_t kind;     // dsd_call_kind of the published call
-    uint8_t is_group; // 1 when target is a talkgroup
-    uint8_t checked;  // P25_SM_IDENTITY_CHECKED_* bits
+    uint64_t epoch;    // Canonical call epoch the identity was published under; 0 = none
+    uint32_t source;   // Source RID, 0 = none
+    uint32_t target;   // Talkgroup (group) or destination RID (private)
+    uint32_t rx_epoch; // dsd_state::rx_id epoch the checked flags were earned under (a flag of another one is dropped)
+    int32_t protocol;  // DSD_SYNC_* of the published call
+    uint8_t kind;      // dsd_call_kind of the published call
+    uint8_t is_group;  // 1 when target is a talkgroup
+    uint8_t checked;   // P25_SM_IDENTITY_CHECKED_* bits
     uint8_t reserved;
 } p25_sm_published_identity;
 
@@ -239,6 +241,7 @@ typedef struct {
                                 // The suppressed transmission occupies the carrier with no assignment, epoch,
                                 // or audio trace, so this is the only evidence of it that survives the teardown.
     uint8_t identity_checked;   // P25_SM_IDENTITY_CHECKED_* bits for src, ota_tg/dst and is_group (assignment)
+    uint32_t identity_rx_epoch; // dsd_state::rx_id epoch the assignment was accepted under: its flags count only there
     p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
@@ -695,18 +698,23 @@ int p25_sm_slot_grant_since(int slot, uint32_t grant_seq);
 uint32_t p25_sm_slot_grant_seq(int slot);
 
 /**
- * @brief The checked identity of a slot's ACTIVE canonical call (issue #800, spec 2.19).
+ * @brief The checked identity of a slot's ACTIVE canonical call a report of @p report_protocol may borrow (issue #800,
+ * spec 2.19).
  *
  * The identity counts only while the slot's canonical call is ACTIVE, is the epoch the state machine last published
  * an identity for, still has that identity's source, target and kind, all three came from checked content (a field
- * inherited from an earlier assignment keeps that assignment's verdict), and it names a source.
+ * inherited from an earlier assignment keeps that assignment's verdict, and only under the reception it was accepted
+ * under), and it names a source; and only by the attribution rule (dsd_position_attribution_grant()): the call is of
+ * the report's protocol class (a Phase 1 call never names a Phase 2 report's sender) and the reception has not changed
+ * since the flags were earned.
  *
  * @param state Decoder state (canonical call state).
  * @param slot Slot index (0 or 1).
+ * @param report_protocol DSD_SYNC_* of the report that borrows the identity.
  * @param[out] out The published identity; zeroed when none counts.
  * @return 1 when the call's source, target and kind are checked provenance, 0 otherwise.
  */
-int p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_published_identity* out);
+int p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protocol, p25_sm_published_identity* out);
 
 /**
  * @brief Record an identity a decoded message named for a slot's canonical call (issue #800, spec 2.19).

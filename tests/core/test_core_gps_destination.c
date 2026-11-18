@@ -15,6 +15,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -235,10 +236,11 @@ embedded_on_call(uint32_t target, int group, const uint8_t* lc) {
     CHECK(dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0);
     dsd_call_snapshot call;
     CHECK(dsd_call_state_get(&g_state, 0U, &call) > 0);
-    g_state.dmr_lc_checked_transmission[0] = dsd_call_snapshot_transmission(&call);
-    g_state.dmr_lc_checked_source[0] = SOURCE;
-    g_state.dmr_lc_checked_target[0] = target;
-    g_state.dmr_lc_checked_group[0] = (uint8_t)group;
+    dsd_position_attribution_call view;
+    CHECK(dsd_position_attribution_call_from_slot(&g_state, 0U, &view) == 1);
+    CHECK(dsd_position_attribution_learn(&g_state, &view, SOURCE, target, group,
+                                         DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION, &g_state.dmr_lc_attribution[0])
+          == 1);
     dmr_embedded_gps(&g_opts, &g_state, lc);
 }
 
@@ -266,7 +268,7 @@ test_dmr_embedded(void) {
     dsd_position_fix recs[2];
     dsd_position_feed_meta meta;
     CHECK(dsd_position_feed_copy_since(&g_state, 0U, recs, 2, &meta) == 1 && recs[0].target_id == GROUP_A);
-    g_state.dmr_lc_checked_target[0] = UNIT_B;
+    g_state.dmr_lc_attribution[0].target = UNIT_B;
     advance_1s();
     set_bits_msb(lc, 20, 3, 2); /* another report */
     dmr_embedded_gps(&g_opts, &g_state, lc);

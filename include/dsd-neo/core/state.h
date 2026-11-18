@@ -21,6 +21,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -575,19 +576,6 @@ typedef struct {
     uint64_t stored_mono_ms; /* dsd_decode_now_mono_ms() when stored */
     dsd_position_origin origin;
 } p25_p1_harris_gps_part_a;
-
-/**
- * The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
- * named for the call of @c epoch, while that call was ACTIVE with this source (issue #800, spec 2.2): the checked
- * provenance a GPS link control of the same transmission takes its source, target and group flag from. One left by
- * another engine run matches no call of the next (dsd_state::call_epoch_floor).
- */
-typedef struct {
-    uint64_t epoch; /* 0: none */
-    uint32_t source;
-    uint32_t target;
-    uint8_t group;
-} p25_p1_lc_checked_identity;
 
 /** Fragments in one Kenwood NXDN talker alias, and the text octets they carry (the last two octets of fragment 4 are
  * not text). */
@@ -2193,18 +2181,15 @@ struct dsd_state {
        block was read. A position report the packet carries (LRRP, SAP 48 NMEA) is admitted against it, so a retune or
        received-identity change before the last block refuses it. */
     dsd_position_origin p25_mdpu_origin;
-    /* Per slot: the call transmission (dsd_call_snapshot_transmission()) whose source a checked full LC named (a voice
-       LC header or a late-entry embedded LC whose own check passed, not a RAS acceptance; dmr_flco), that source, and
-       the target the same LC named for the call (0 when the call's target was not it) with whether it is a talkgroup.
-       The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source,
-       and names the target only while the call still has it.
+    /* Per slot: the evidence a checked full LC (a voice LC header or a late-entry embedded LC whose own check passed,
+       not a RAS acceptance; dmr_flco) gave for the source of the slot's ACTIVE call, and for its target while the call
+       had that target, bound to the call's transmission and the reception it was heard under. The embedded GPS LC
+       borrows it only through dsd_position_attribution_grant() (<dsd-neo/core/position_attribution.h>): never across a
+       relock to another colour code, another system or another transmission.
        Cleared by every voice LC header (a new transmission: only that header, checked, names its source) and at every
        carrier change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a
        user's move); one left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
-    uint64_t dmr_lc_checked_transmission[2];
-    uint32_t dmr_lc_checked_source[2];
-    uint32_t dmr_lc_checked_target[2];
-    uint8_t dmr_lc_checked_group[2];
+    dsd_position_attribution dmr_lc_attribution[2];
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
@@ -2380,9 +2365,12 @@ struct dsd_state {
        are not checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed), and its GPS and
        voice-user identity are not checked provenance (issue #800, spec 2.20). */
     uint8_t p25_p1_lcw_soft;
-    p25_p1_harris_gps_part_a p25_p1_harris_part_a;   /* L3Harris GPS Part A waiting for its Part B */
-    p25_p1_lc_checked_identity p25_p1_lc_checked_id; /* the hard-decoded voice-user identity of the call */
-    unsigned int p25_p2_soft_ess_ok;                 // soft ESS corrections
+    p25_p1_harris_gps_part_a p25_p1_harris_part_a; /* L3Harris GPS Part A waiting for its Part B */
+    /* The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
+       named for slot 0's ACTIVE Phase 1 call: the evidence a GPS link control of that call borrows its source, target
+       and group flag by (dsd_position_attribution_grant()). Cleared by every HDU. */
+    dsd_position_attribution p25_p1_lc_attribution;
+    unsigned int p25_p2_soft_ess_ok; // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
     //iden freq storage for frequency calculations
@@ -3486,12 +3474,8 @@ dsd_state_note_carrier_change(dsd_state* state) {
     dsd_state_forget_sync_join_histories(state);
     /* The DMR checked-LC source names a radio of the carrier left (another system after a target switch or a move):
        no embedded GPS fix of the next reception is attributed by it (issue #800). */
-    for (int slot = 0; slot < 2; slot++) {
-        state->dmr_lc_checked_transmission[slot] = 0U;
-        state->dmr_lc_checked_source[slot] = 0U;
-        state->dmr_lc_checked_target[slot] = 0U;
-        state->dmr_lc_checked_group[slot] = 0U;
-    }
+    dsd_position_attribution_clear(&state->dmr_lc_attribution[0]);
+    dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

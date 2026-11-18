@@ -6,6 +6,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -522,9 +523,17 @@ test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* pa
     state->currentslot = 1;
     state->event_crc_invalid[1] = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-        state->dmr_lc_checked_transmission[1] =
-            cases[i].epoch_matches ? dsd_call_snapshot_transmission(&call) : dsd_call_snapshot_transmission(&call) + 1U;
-        state->dmr_lc_checked_source[1] = cases[i].checked_source;
+        dsd_position_attribution_call view;
+        if (!dsd_position_attribution_call_from_slot(state, 1U, &view)) {
+            return 100;
+        }
+        view.source = cases[i].checked_source;
+        if (!cases[i].epoch_matches) {
+            view.transmission++;
+        }
+        // Learned as the checked LC saw the call: its own source, or another one, of this or an earlier transmission.
+        (void)dsd_position_attribution_learn(state, &view, cases[i].checked_source, 0U, 0,
+                                             DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION, &state->dmr_lc_attribution[1]);
         if (!truncate_output(path)) {
             return 100;
         }
@@ -559,8 +568,7 @@ test_embedded_attribution(const dsd_opts* opts, dsd_state* state, const char* pa
         }
     }
     (void)dsd_call_state_end(state, 1U, 0.0);
-    state->dmr_lc_checked_transmission[1] = 0U;
-    state->dmr_lc_checked_source[1] = 0U;
+    dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
     return 0;
 }
 

@@ -19,6 +19,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1094,18 +1095,20 @@ dmr_embedded_gps_protocol(const dsd_state* state) {
 }
 
 /* The embedded GPS LC's attribution (spec 2.2): the slot's ACTIVE DMR call (a call of another protocol still open on
- * the slot is not the one this burst belongs to), and whether a checked full LC of that call's transmission (a voice
- * LC header or a late-entry LC, not a RAS acceptance) named its source. */
+ * the slot is not the one this burst belongs to), and the source, target and group flag a checked full LC of that call's
+ * transmission (a voice LC header or a late-entry LC, not a RAS acceptance) named under this reception, by the
+ * attribution rule (dsd_position_attribution_grant()). */
 static int
-dmr_embedded_gps_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call, int* source_verified) {
-    *source_verified = 0;
+dmr_embedded_gps_call(const dsd_state* state, uint8_t slot, int report_protocol, dsd_call_snapshot* call,
+                      dsd_position_attribution* granted) {
+    dsd_position_attribution_clear(granted);
     if (dsd_call_state_get(state, slot, call) <= 0 || call->phase != DSD_CALL_PHASE_ACTIVE
         || !DSD_SYNC_IS_DMR(call->protocol)) {
         return 0;
     }
-    *source_verified = call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX
-                       && state->dmr_lc_checked_transmission[slot] == dsd_call_snapshot_transmission(call)
-                       && state->dmr_lc_checked_source[slot] == (uint32_t)call->ota_source_id;
+    dsd_position_attribution_call view;
+    (void)dsd_position_attribution_call_from_slot(state, slot, &view);
+    (void)dsd_position_attribution_grant(state, &state->dmr_lc_attribution[slot], &view, report_protocol, granted);
     return 1;
 }
 
@@ -1118,15 +1121,12 @@ typedef struct {
 
 static int
 dmr_embedded_gps_admit(const dsd_opts* opts, dsd_state* state, uint8_t slot, dmr_embedded_gps_admission* a) {
-    int source_verified = 0;
-    a->has_call = dmr_embedded_gps_call(state, slot, &a->call, &source_verified);
     a->fix.protocol = (uint8_t)dmr_embedded_gps_protocol(state);
-    a->fix.source_id = source_verified ? (uint32_t)a->call.ota_source_id : 0U;
-    // The same checked LC's destination, while the call still names it.
-    if (source_verified && state->dmr_lc_checked_target[slot] != 0U
-        && a->call.ota_target_id == (uint64_t)state->dmr_lc_checked_target[slot]) {
-        gps_fill_target(&a->fix, state->dmr_lc_checked_target[slot], state->dmr_lc_checked_group[slot]);
-    }
+    dsd_position_attribution granted;
+    a->has_call = dmr_embedded_gps_call(state, slot, a->fix.protocol, &a->call, &granted);
+    const int source_verified = granted.source != 0U;
+    a->fix.source_id = granted.source;
+    gps_fill_target(&a->fix, granted.target, granted.group);
     return dsd_position_admit(opts, state, &a->fix, 1, source_verified, NULL) != DSD_POSITION_REFUSED;
 }
 

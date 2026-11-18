@@ -4175,6 +4175,7 @@ dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_c
     }
     out->epoch = call.epoch;
     out->source_id = call.ota_source_id;
+    out->target_id = call.ota_target_id;
     out->protocol = call.protocol;
     out->slot = slot;
     out->valid = 1U;

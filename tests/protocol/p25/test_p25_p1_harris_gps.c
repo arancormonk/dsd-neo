@@ -16,11 +16,13 @@
  * made up.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -512,6 +514,64 @@ test_terminator(void) {
     }
 }
 
+/* The attribution rule's reception (issue #800, dsd_position_attribution_grant()): a checked NID can change the NAC
+ * without ending the call, and the voice-user identity named under the old NAC is not the sender of a GPS link control
+ * heard under the new one, in the call (L3Harris pair, Motorola APX) or in its terminator. The position still counts,
+ * anonymous; under an unchanged NAC the same sequence names the call's source. */
+static void
+test_reception_change(void) {
+    for (int terminator = 0; terminator <= 1; terminator++) {
+        for (int apx = 0; apx <= 1; apx++) {
+            for (int change = 0; change <= 1; change++) {
+                fixture f;
+                fixture_open(&f);
+                dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+                (void)start_call(&f, TG_A, SRC_A);
+                if (change) {
+                    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x294U);
+                }
+                body_fields b = fields_default();
+                uint8_t body[BODY_OCTETS];
+                make_body(&b, body);
+                const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+                if (!apx) {
+                    send_lc(&f, LCO_A_ODD, MFID_HARRIS, body, 0);
+                }
+                if (terminator) {
+                    dsd_event_closing_call closing;
+                    expect_true("reception: call captured", dsd_event_capture_closing_call(f.st, 0U, &closing) == 1);
+                    end_call(&f);
+                    if (apx) {
+                        send_terminator_lc(&f, 0x06, 0x90, apx_lc, &closing);
+                    } else {
+                        send_terminator_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, &closing);
+                    }
+                } else if (apx) {
+                    send_lc(&f, 0x06, 0x90, apx_lc, 0);
+                } else {
+                    send_lc(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0);
+                }
+                char label[160];
+                DSD_SNPRINTF(label, sizeof label, "%s %s, %s NAC", terminator ? "terminator" : "in-call",
+                             apx ? "APX" : "Harris", change ? "another" : "the same");
+                dsd_position_fix fix;
+                const int kept = feed_next(&f, &fix);
+                const uint32_t want = change ? 0U : SRC_A;
+                if (!kept || fix.source_id != want || fix.target_id != (change ? 0U : TG_A)
+                    || ((fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U) != (change != 0)) {
+                    DSD_FPRINTF(stderr, "FAIL: %s: kept %d source %u target %u flags %04X\n", label, kept,
+                                kept ? fix.source_id : 0U, kept ? fix.target_id : 0U, kept ? fix.flags : 0U);
+                    g_fail = 1;
+                }
+                char last[256];
+                expect_true(label,
+                            lrrp_rows(&f, last) == 1 && strstr(last, change ? "\t00000000\t" : "\t00003001\t") != NULL);
+                fixture_close(&f);
+            }
+        }
+    }
+}
+
 /* Occurrences of @p needle in @p hay. */
 static int
 count_of(const char* hay, const char* needle) {
@@ -830,6 +890,7 @@ main(void) {
     test_alias_between_halves();
     test_ended_call();
     test_terminator();
+    test_reception_change();
     test_event_log_one_label();
     test_checks();
     test_uncorrectable_verdict();

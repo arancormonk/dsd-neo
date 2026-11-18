@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -187,16 +188,13 @@ p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source
     if (!ctx->lc_hard || !p25_source_id_is_subscriber(source)) {
         return;
     }
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(ctx->state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || call.ota_source_id != source || call.ota_target_id != target) {
+    dsd_position_attribution_call call;
+    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &call) || !DSD_SYNC_IS_P25P1(call.protocol)
+        || call.target != (uint64_t)target) {
         return;
     }
-    p25_p1_lc_checked_identity* id = &ctx->state->p25_p1_lc_checked_id;
-    id->epoch = call.epoch;
-    id->source = source;
-    id->target = target;
-    id->group = group;
+    (void)dsd_position_attribution_learn(ctx->state, &call, source, target, group, DSD_POSITION_ATTRIBUTION_BIND_EPOCH,
+                                         &ctx->state->p25_p1_lc_attribution);
 }
 
 /* A link control reaches the trunk state machine with its identity checked only when it was hard-decoded (spec 2.20); a
@@ -894,51 +892,53 @@ p25_lcw_handle_unknown_standard(const p25_lcw_ctx* ctx) {
 }
 
 /* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
- * else slot 0's ACTIVE call, never an ended one. */
+ * else slot 0's ACTIVE Phase 1 call, never an ended one. */
 typedef struct {
-    uint64_t epoch; /* 0: no call */
-    uint32_t source;
+    dsd_position_attribution_call view;    /* open 0: no call */
     const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
 } p25_lcw_gps_call;
 
 static void
 p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (ctx->closing != NULL && ctx->closing->valid) {
-        out->epoch = ctx->closing->epoch;
-        out->source = ctx->closing->source_id <= UINT32_MAX ? (uint32_t)ctx->closing->source_id : 0U;
+    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
         out->closing = ctx->closing;
         return;
     }
     /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
        rides on. */
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && DSD_SYNC_IS_P25P1(call.protocol)) {
-        out->epoch = call.epoch;
-        out->source = call.ota_source_id <= UINT32_MAX ? (uint32_t)call.ota_source_id : 0U;
+    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &out->view)
+        || !DSD_SYNC_IS_P25P1(out->view.protocol)) {
+        DSD_MEMSET(&out->view, 0, sizeof(out->view));
     }
 }
 
+/* The call's source as the Part A pairing compares it: 0 when none fits 32 bits. */
+static uint32_t
+p25_lcw_gps_call_source(const p25_lcw_gps_call* call) {
+    return call->view.source <= UINT32_MAX ? (uint32_t)call->view.source : 0U;
+}
+
 /* A GPS report's provenance (spec 2.2): the position is checked when its link control(s) passed a hard RS decode
- * (@p pos_verified); the source, target and group flag when a hard-decoded voice-user link control of this call named
- * them (p25_lcw_note_checked_identity()). */
+ * (@p pos_verified); the source, target and group flag by the attribution rule from the evidence a hard-decoded
+ * voice-user link control of this call gave (p25_lcw_note_checked_identity(), dsd_position_attribution_grant()). */
 static void
 p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int pos_verified,
                        const dsd_position_origin* origin, dsd_gps_report_ctx* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->origin = origin;
-    out->call_epoch = call->epoch;
+    out->call_epoch = call->view.epoch;
     out->closing = call->closing;
-    out->source_id = call->source;
+    out->source_id = p25_lcw_gps_call_source(call);
     out->protocol = DSD_SYNC_IS_P25P1(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P1_POS;
     out->slot = 0U;
     out->pos_verified = pos_verified ? 1U : 0U;
-    const p25_p1_lc_checked_identity* id = &ctx->state->p25_p1_lc_checked_id;
-    if (call->epoch != 0U && call->source != 0U && id->epoch == call->epoch && id->source == call->source) {
+    dsd_position_attribution granted;
+    if (dsd_position_attribution_grant(ctx->state, &ctx->state->p25_p1_lc_attribution, &call->view, out->protocol,
+                                       &granted)) {
         out->source_verified = 1U;
-        out->target_id = id->target;
-        out->target_group = id->group;
+        out->target_id = granted.target;
+        out->target_group = granted.group;
     }
 }
 
@@ -1127,8 +1127,8 @@ p25_lcw_harris_gps_part_a(p25_lcw_ctx* ctx, uint8_t even) {
     }
     a->even = even;
     a->hard = ctx->lc_hard;
-    a->source = call.source;
-    a->epoch = call.epoch;
+    a->source = p25_lcw_gps_call_source(&call);
+    a->epoch = call.view.epoch;
     a->stored_mono_ms = dsd_decode_now_mono_ms();
     dsd_position_origin_capture(ctx->opts, ctx->state, &a->origin);
     a->valid = 1U;
@@ -1147,7 +1147,7 @@ p25_lcw_harris_gps_unpaired(const p25_p1_harris_gps_part_a* a, const p25_lcw_gps
     if (a->even != even) {
         return "GPS Part A of another update";
     }
-    if (a->epoch != call->epoch || a->source != call->source) {
+    if (a->epoch != call->view.epoch || a->source != p25_lcw_gps_call_source(call)) {
         return "GPS Part A of another call";
     }
     const uint64_t now_ms = dsd_decode_now_mono_ms();

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -549,12 +550,12 @@ main(void) {
     // The slot's call 900001's source was named by a checked full LC of this transmission: the embedded fix is its.
     {
         seed_active_call(&st, 0U, 900001U);
-        dsd_call_snapshot call;
-        if (dsd_call_state_get(&st, 0U, &call) <= 0) {
+        dsd_position_attribution_call call;
+        if (!dsd_position_attribution_call_from_slot(&st, 0U, &call)
+            || !dsd_position_attribution_learn(&st, &call, 900001U, 0U, 0, DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION,
+                                               &st.dmr_lc_attribution[0])) {
             return 100;
         }
-        st.dmr_lc_checked_transmission[0] = dsd_call_snapshot_transmission(&call);
-        st.dmr_lc_checked_source[0] = 900001U;
     }
 
     // pos_err == 5: less than or equal to 200km (200000m)

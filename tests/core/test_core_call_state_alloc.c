@@ -14,11 +14,12 @@
  * state knows none of them: it never gives out an epoch twice on one state, so none of them matches a later call. */
 static void
 set_epoch_records(dsd_state* state, uint64_t epoch) {
-    state->dmr_lc_checked_transmission[0] = epoch;
-    state->dmr_lc_checked_source[0] = 1001U;
-    state->p25_p1_lc_checked_id.epoch = epoch;
-    state->p25_p1_lc_checked_id.source = 1001U;
-    state->p25_p1_lc_checked_id.target = 100U;
+    state->dmr_lc_attribution[0].call_epoch = epoch;
+    state->dmr_lc_attribution[0].transmission = epoch;
+    state->dmr_lc_attribution[0].source = 1001U;
+    state->p25_p1_lc_attribution.call_epoch = epoch;
+    state->p25_p1_lc_attribution.source = 1001U;
+    state->p25_p1_lc_attribution.target = 100U;
     state->p25_p1_harris_part_a.valid = 1U;
     state->p25_p1_harris_part_a.epoch = epoch;
     state->dstar_dprs.collecting = 1U;
@@ -32,8 +33,8 @@ set_epoch_records(dsd_state* state, uint64_t epoch) {
 
 static int
 epoch_records_set(const dsd_state* state, uint64_t epoch) {
-    return state->dmr_lc_checked_transmission[0] == epoch && state->dmr_lc_checked_source[0] == 1001U
-           && state->p25_p1_lc_checked_id.epoch == epoch && state->p25_p1_harris_part_a.valid == 1U
+    return state->dmr_lc_attribution[0].transmission == epoch && state->dmr_lc_attribution[0].source == 1001U
+           && state->p25_p1_lc_attribution.call_epoch == epoch && state->p25_p1_harris_part_a.valid == 1U
            && state->dstar_dprs.collecting == 1U && state->dstar_dprs.epoch == epoch && state->m17_gnss_tx_kind == 1U
            && state->m17_gnss_tx_id == epoch && state->m17_gnss_tx_epoch == epoch
            && state->m17_gnss_meta_admitted[0] == 0x12U;
@@ -70,7 +71,7 @@ main(void) {
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1 && snapshot.epoch == 3U);
     assert(epoch_records_set(state, 2U));
-    assert(dsd_call_snapshot_transmission(&snapshot) != state->dmr_lc_checked_transmission[0]);
+    assert(dsd_call_snapshot_transmission(&snapshot) != state->dmr_lc_attribution[0].transmission);
     // The other slot's sequence goes on from its own floor (none yet).
     observation.slot = 1U;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -86,10 +87,10 @@ main(void) {
 
     // A copy or a restore carries the source's epoch sequence, and raises the destination's floor with it: a later
     // extension of the destination goes on from there.
-    clone->dmr_lc_checked_transmission[1] = 1U;
-    clone->dmr_lc_checked_source[1] = 1001U;
+    clone->dmr_lc_attribution[1].transmission = 1U;
+    clone->dmr_lc_attribution[1].source = 1001U;
     assert(dsd_call_state_copy_to_state(clone, state) == 1);
-    assert(clone->dmr_lc_checked_transmission[1] == 1U && clone->dmr_lc_checked_source[1] == 1001U);
+    assert(clone->dmr_lc_attribution[1].transmission == 1U && clone->dmr_lc_attribution[1].source == 1001U);
     assert(clone->call_epoch_floor[0] == 3U && clone->call_epoch_floor[1] == 1U);
     dsd_call_state_snapshot calls;
     assert(dsd_call_state_copy_snapshot(state, &calls) >= 0);
@@ -105,7 +106,7 @@ main(void) {
     assert(dsd_call_state_get(restored, 0U, &snapshot) == 1 && snapshot.epoch == 4U);
     // Every carrier change (a carrier boundary, a trunk-scan target switch, a scan step, a user's move) forgets it.
     dsd_state_note_carrier_change(restored);
-    assert(restored->dmr_lc_checked_transmission[0] == 0U && restored->dmr_lc_checked_source[0] == 0U);
+    assert(restored->dmr_lc_attribution[0].transmission == 0U && restored->dmr_lc_attribution[0].source == 0U);
     dsd_state_ext_free_all(restored);
     free(restored);
 
