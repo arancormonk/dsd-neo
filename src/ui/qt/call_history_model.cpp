@@ -1358,6 +1358,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         row.row.gpsOrd = walk.sessionOrd;
         row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
+        row.row.fragmentVers.insert(row.row.fragments.constLast(), static_cast<quint64>(ring.commit_rev));
         row.isUpdate = verdict == SeenAdvanced;
         row.again = verdict == SeenAgain;
         row.key = key;
@@ -1704,6 +1705,33 @@ notices_same_delivery(const CallHistoryModel::Row& existing, const CallHistoryMo
            && rows_identity_compatible(existing, row) && !raw_texts_differ(existing.targetText, row.targetText);
 }
 
+/**
+ * @brief Whether @p row is a reading of one fragment that is older than a reading of it @p existing already folded in
+ * (Row::fragmentVers): the ring's commit_rev when each was read orders two readings of one fragment.
+ */
+bool
+reading_is_stale(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (row.fragments.size() != 1) {
+        return false;
+    }
+    const auto read = row.fragmentVers.constFind(row.fragments.constFirst());
+    const auto held = existing.fragmentVers.constFind(row.fragments.constFirst());
+    return read != row.fragmentVers.constEnd() && held != existing.fragmentVers.constEnd()
+           && held.value() > read.value();
+}
+
+/** @brief The newest reading's version of each fragment in @p held or @p read. Built aside, as the fragment list is
+ * (unionFragments()). */
+QHash<QString, quint64>
+newest_fragment_versions(const QHash<QString, quint64>& held, const QHash<QString, quint64>& read) {
+    QHash<QString, quint64> versions = held;
+    for (auto it = read.constBegin(); it != read.constEnd(); ++it) {
+        quint64& version = versions[it.key()];
+        version = qMax(version, it.value());
+    }
+    return versions;
+}
+
 } // namespace
 
 int
@@ -1732,10 +1760,20 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows, bool sameReception) {
 
 void
 CallHistoryModel::foldRow(Row& existing, const Row& row) {
+    // A reading of a fragment older than one the row already folded (a spill line replayed over a newer save) knows
+    // nothing the newer one did not, and what it says otherwise is older: it changes nothing.
+    if (reading_is_stale(existing, row)) {
+        unionFragments(existing, row.fragments);
+        return;
+    }
     // A row keeps one radio and that radio's name. The merge never folds two known sources, but an update found by
     // its fragment (ingestRow()) is not merged again: a fragment of unknown source that joined one radio's row and
-    // then learned another radio keeps the row's radio, so it must not bring that other radio's name.
-    if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
+    // then learned another radio keeps the row's radio, so it must not bring that other radio's number or name.
+    // Another radio is another number, another callsign (D-STAR and M17 rows have no number) or another sender
+    // system, the rule the row's texts and position follow (fold_payload()). Judged before anything below fills in
+    // the row's identity.
+    const bool sameRadio = fragment_identity_compatible(existing, row);
+    if (sameRadio) {
         merge_source_label(existing, row);
     }
     // Before the source below: what the fragment may give depends on the radio the row named until now.
@@ -1768,7 +1806,7 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     existing.enc = existing.enc || row.enc;
     existing.emergency = existing.emergency || row.emergency;
-    if (existing.src == 0) {
+    if (existing.src == 0 && sameRadio) {
         existing.src = row.src;
     }
     drop_anonymous_gps_of_named(existing);
@@ -1777,6 +1815,7 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     existing.session = qMax(existing.session, row.session);
     // The fragment's recordings are the merged row's now.
     unionFragments(existing, row.fragments);
+    existing.fragmentVers = newest_fragment_versions(existing.fragmentVers, row.fragmentVers);
 }
 
 int
@@ -2530,6 +2569,14 @@ row_from_json(const QJsonObject& obj) {
             row.fragments.append(key);
         }
     }
+    // Issue #800: the newest reading's version of each of those fragments; absent in stores older builds wrote.
+    const QJsonObject versions = obj.value(QLatin1String("frv")).toObject();
+    for (auto it = versions.constBegin(); it != versions.constEnd(); ++it) {
+        const qint64 version = it.value().toInteger(0);
+        if (version > 0 && row.fragments.contains(it.key())) {
+            row.fragmentVers.insert(it.key(), static_cast<quint64>(version));
+        }
+    }
     return row;
 }
 
@@ -2608,6 +2655,13 @@ row_to_json(const CallHistoryModel::Row& row) {
     }
     if (!row.fragments.isEmpty()) {
         obj.insert(QLatin1String("fr"), QJsonArray::fromStringList(row.fragments));
+    }
+    if (!row.fragmentVers.isEmpty()) {
+        QJsonObject versions;
+        for (auto it = row.fragmentVers.constBegin(); it != row.fragmentVers.constEnd(); ++it) {
+            versions.insert(it.key(), static_cast<qint64>(it.value()));
+        }
+        obj.insert(QLatin1String("frv"), versions);
     }
     return obj;
 }

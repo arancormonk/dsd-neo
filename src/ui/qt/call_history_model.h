@@ -483,6 +483,19 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool anonymous = false; // names no source a row could check (Event_History::pos.anonymous)
     };
 
+    /** @brief One fragment's GPS text and the position it describes, with the fragment and reading they came from
+     * (issue #800, 2.7): its start, push stamp and slot, its run's session ordinal and the ring's commit_rev when it
+     * was read (Row::gpsWhen..gpsVer). */
+    struct GpsUnit {
+        QString text;
+        Position pos;
+        qint64 when = 0;
+        qulonglong seq = 0;
+        int slot = 0;
+        qint64 ord = 0;
+        quint64 ver = 0;
+    };
+
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
     struct Row {
         qint64 when = 0;
@@ -573,6 +586,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Every ring fragment the row absorbed, as call_history_fragment_key()s: its own, and each one a merge folded
          * in (load folding too). Persisted (`fr`); rows older builds wrote have none, and no recordings either. */
         QStringList fragments;
+        /* Issue #800. The version of the newest reading of each fragment the row folded in: the ring's commit_rev when
+         * it was read, which every change of a committed ring row moves and nothing resets. A reading of a fragment
+         * older than one the row already holds (a spill line replayed over a newer save) is stale and folds in
+         * nothing (foldRow()), so no older label, message, frequency or code comes back. Persisted (`frv`) for the
+         * fragments whose version is known. */
+        QHash<QString, quint64> fragmentVers;
         /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
          * (Event_History::systype; -1 when not known), the source and target text as received (src_str, tgt_str:
          * callsigns, dial strings), the sender's system (pos.scope with its discriminator) and where it was heard
@@ -603,6 +622,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int gpsSlot = 0;
         qint64 gpsOrd = 0;
         quint64 gpsVer = 0;
+        /* The GPS units of the row's other fragments, one per fragment, beside the one shown above, which is the best
+         * of them all (call_history_gps_adopts()). So a fragment whose newer reading loses its fix gives way to the
+         * best remaining fragment's, whatever order the readings arrive in. Persisted (`gpsAlt`) when there are any. */
+        QList<GpsUnit> gpsOthers;
         /* Detail text a store an older build wrote held (the notice's message or GPS string), shown while the row
          * has neither of the two above. */
         QString legacyDetail;

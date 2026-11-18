@@ -302,6 +302,39 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     return 0;
 }
 
+/* Issue #800 D10: the raw dump of an unsupported short-data format holds the LOCN bytes, one bracketed byte at a time,
+ * which no redaction of the diagnostics log can read as a position. It is printed only with the payload option (-Z),
+ * like every other payload dump. */
+static int
+short_data_raw_dump_needs_payload_option(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+    for (int payload = 0; payload <= 1; ++payload) {
+        opts->payload = payload;
+        state->currentslot = 0;
+        state->data_header_format[0] = 13;
+        state->data_header_dd_format[0] = 0x00;
+        state->event_crc_invalid[0] = 0U;
+        dsd_event_stage_clear(state, 0);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "short_data_raw") != 0) {
+            return 110;
+        }
+        dmr_sd_pdu_process(opts, state, (uint16_t)(sizeof locn - 1), locn, 1U);
+        (void)dsd_test_capture_stderr_end(&cap);
+        static char output[8192];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 111;
+        }
+        const int dumped = strstr(output, "Short Data Raw") != NULL || strstr(output, "[4E][32][32][33][30]") != NULL;
+        if (dumped != payload) {
+            DSD_FPRINTF(stderr, "\nShort Data Raw with -Z %d: %s\n", payload, output);
+            return 112 + payload;
+        }
+    }
+    opts->payload = 0;
+    return 0;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -328,6 +361,9 @@ main(void) {
     state.currentslot = 0;
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     int rc = run_cases(&opts, &state, path);
+    if (rc == 0) {
+        rc = short_data_raw_dump_needs_payload_option(&opts, &state);
+    }
     remove(path);
     free(state.event_history_s);
     state.event_history_s = NULL;

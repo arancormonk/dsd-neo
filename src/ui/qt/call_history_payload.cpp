@@ -7,11 +7,14 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
+#include <QList>
 #include <QString>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <limits>
@@ -67,35 +70,110 @@ row_names_source(const CallHistoryModel::Row& row) {
     return row.src != 0 || !row.sourceText.simplified().isEmpty();
 }
 
-/**
- * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
- * protocol family and sender system, and the same radio.
- *
- * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
- * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios.
- */
-bool
-fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    if (!call_history_protocols_compatible(existing.protocol, row.protocol)
-        || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
-        return false;
-    }
-    if (row_names_source(existing) && !row_names_source(row)) {
-        return false;
-    }
-    return !(existing.src != 0 && row.src != 0 && existing.src != row.src)
-           && !raw_texts_differ(existing.sourceText, row.sourceText);
+using GpsUnit = CallHistoryModel::GpsUnit;
+
+/** @brief Where a GPS unit stands in the order that picks a merged row's one (call_history_gps_adopts()). */
+CallHistoryPositionKey
+gps_key(const GpsUnit& unit) {
+    CallHistoryPositionKey key;
+    key.keyed = unit.pos.valid && unit.ord > 0 && unit.pos.rev > 0U;
+    key.ord = unit.ord;
+    key.rev = unit.pos.rev;
+    key.version = unit.ver;
+    return key;
 }
 
-/** @brief Where a row's GPS unit stands in the order that picks a merged row's one (call_history_gps_adopts()). */
-CallHistoryPositionKey
-gps_key(const CallHistoryModel::Row& row) {
-    CallHistoryPositionKey key;
-    key.keyed = row.pos.valid && row.gpsOrd > 0 && row.pos.rev > 0U;
-    key.ord = row.gpsOrd;
-    key.rev = row.pos.rev;
-    key.version = row.gpsVer;
-    return key;
+/** @brief Whether a GPS unit holds anything: GPS text, a position, or both. */
+bool
+gps_unit_known(const GpsUnit& unit) {
+    return !unit.text.isEmpty() || unit.pos.valid;
+}
+
+/** @brief Whether @p incoming replaces @p stored (both known) as the better GPS unit (call_history_gps_adopts()). */
+bool
+gps_unit_adopts(const GpsUnit& stored, const GpsUnit& incoming) {
+    return call_history_gps_adopts(true, gps_key(stored), provenance(stored.when, stored.seq, stored.slot), true,
+                                   gps_key(incoming), provenance(incoming.when, incoming.seq, incoming.slot));
+}
+
+/** @brief Whether two GPS units are readings of one fragment: the same provenance and session ordinal. */
+bool
+gps_units_same_fragment(const GpsUnit& a, const GpsUnit& b) {
+    return call_history_provenance_compare(provenance(a.when, a.seq, a.slot), provenance(b.when, b.seq, b.slot)) == 0
+           && a.ord == b.ord;
+}
+
+/** @brief The GPS unit a row shows (its gps* fields). */
+GpsUnit
+shown_gps_unit(const CallHistoryModel::Row& row) {
+    GpsUnit unit;
+    unit.text = row.gpsText;
+    unit.pos = row.pos;
+    unit.when = row.gpsWhen;
+    unit.seq = row.gpsSeq;
+    unit.slot = row.gpsSlot;
+    unit.ord = row.gpsOrd;
+    unit.ver = row.gpsVer;
+    return unit;
+}
+
+/** @brief Every GPS unit a row holds, one per fragment: the one it shows (when known), then its others. */
+QList<GpsUnit>
+row_gps_units(const CallHistoryModel::Row& row) {
+    QList<GpsUnit> units;
+    const GpsUnit shown = shown_gps_unit(row);
+    if (gps_unit_known(shown)) {
+        units.append(shown);
+    }
+    for (const GpsUnit& other : row.gpsOthers) {
+        if (gps_unit_known(other)) {
+            units.append(other);
+        }
+    }
+    return units;
+}
+
+/**
+ * @brief Give @p row the GPS units @p units (one per fragment): it shows the best of them (call_history_gps_adopts(),
+ * a total order between two fragments, so the choice does not depend on the order of @p units) and keeps the rest.
+ * With none it shows none.
+ */
+void
+set_row_gps_units(CallHistoryModel::Row& row, QList<GpsUnit> units) {
+    if (units.isEmpty()) {
+        row.gpsText.clear();
+        row.pos = CallHistoryModel::Position();
+        row.gpsOthers.clear();
+        return;
+    }
+    qsizetype best = 0;
+    for (qsizetype i = 1; i < units.size(); i++) {
+        if (gps_unit_adopts(units.at(best), units.at(i))) {
+            best = i;
+        }
+    }
+    const GpsUnit shown = units.takeAt(best);
+    row.gpsText = shown.text;
+    row.pos = shown.pos;
+    row.gpsWhen = shown.when;
+    row.gpsSeq = shown.seq;
+    row.gpsSlot = shown.slot;
+    row.gpsOrd = shown.ord;
+    row.gpsVer = shown.ver;
+    row.gpsOthers = units;
+}
+
+/** @brief Put @p unit among @p units: in place of an earlier reading of its fragment that it replaces
+ * (call_history_gps_adopts(): the later reading of a fragment wins), else beside them. */
+void
+merge_gps_unit(QList<GpsUnit>& units, const GpsUnit& unit) {
+    const auto held = std::find_if(units.begin(), units.end(),
+                                   [&unit](const GpsUnit& u) { return gps_units_same_fragment(u, unit); });
+    if (held == units.end()) {
+        units.append(unit);
+    } else if (gps_unit_adopts(*held, unit)) {
+        *held = unit;
+    }
 }
 
 /** @brief Whether @p kind is a dsd_position_scope_kind a record can hold: an alias scope kind or a feed-only one. */
@@ -187,7 +265,76 @@ position_to_json(const CallHistoryModel::Position& pos, QJsonObject& obj) {
     obj.insert(QLatin1String("pos"), stored);
 }
 
+/** @brief The GPS units a store kept beside the one a row shows (`gpsAlt`): each as the row's own gps* fields are
+ * stored, a part without its provenance taking the row's; one that holds nothing is dropped. */
+QList<CallHistoryModel::GpsUnit>
+gps_units_from_json(const QJsonValue& value, const CallHistoryModel::Row& row) {
+    QList<CallHistoryModel::GpsUnit> units;
+    for (const QJsonValue& entry : value.toArray()) {
+        const QJsonObject stored = entry.toObject();
+        CallHistoryModel::GpsUnit unit;
+        unit.text = stored.value(QLatin1String("gps")).toString();
+        unit.pos = position_from_json(stored);
+        unit.when = json_i64_or(stored, "gpsWhen", row.when);
+        unit.seq = static_cast<qulonglong>(json_i64_or(stored, "gpsSeq", static_cast<qint64>(row.seq)));
+        unit.slot = static_cast<int>(json_i64_or(stored, "gpsSlot", row.slot));
+        unit.ord = qMax<qint64>(json_i64_or(stored, "gpsOrd", 0), 0);
+        unit.ver = static_cast<quint64>(qMax<qint64>(json_i64_or(stored, "gpsVer", 0), 0));
+        if (!unit.text.isEmpty() || unit.pos.valid) {
+            units.append(unit);
+        }
+    }
+    return units;
+}
+
+/** @brief Store @p units (`gpsAlt`) as a row's own gps* fields are stored; nothing when there are none. */
+void
+gps_units_to_json(const QList<CallHistoryModel::GpsUnit>& units, QJsonObject& obj) {
+    if (units.isEmpty()) {
+        return;
+    }
+    QJsonArray stored;
+    for (const CallHistoryModel::GpsUnit& unit : units) {
+        QJsonObject entry;
+        if (!unit.text.isEmpty()) {
+            entry.insert(QLatin1String("gps"), unit.text);
+        }
+        position_to_json(unit.pos, entry);
+        entry.insert(QLatin1String("gpsWhen"), unit.when);
+        entry.insert(QLatin1String("gpsSeq"), static_cast<qint64>(unit.seq));
+        entry.insert(QLatin1String("gpsSlot"), unit.slot);
+        entry.insert(QLatin1String("gpsOrd"), unit.ord);
+        if (unit.ver != 0U) {
+            entry.insert(QLatin1String("gpsVer"), static_cast<qint64>(unit.ver));
+        }
+        stored.append(entry);
+    }
+    obj.insert(QLatin1String("gpsAlt"), stored);
+}
+
 } // namespace
+
+/**
+ * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
+ * protocol family and sender system, and the same radio.
+ *
+ * An anonymous fragment never enriches a row that names its source, and a fragment that names another source than the
+ * row's keeps them to itself: the row keeps its original radio (foldRow()), so a position never crosses radios. The
+ * row's source label follows the same rule (foldRow()): a fragment of another radio, by number, callsign or sender
+ * system, never names the row.
+ */
+bool
+fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (!call_history_protocols_compatible(existing.protocol, row.protocol)
+        || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
+        return false;
+    }
+    if (row_names_source(existing) && !row_names_source(row)) {
+        return false;
+    }
+    return !(existing.src != 0 && row.src != 0 && existing.src != row.src)
+           && !raw_texts_differ(existing.sourceText, row.sourceText);
+}
 
 /** @brief Keep the newest kMaxSessionOrdinals of @p rings, by ordinal. */
 void
@@ -302,9 +449,14 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
 
 void
 drop_anonymous_gps_of_named(CallHistoryModel::Row& row) {
-    if (row.pos.valid && row.pos.anonymous && row_names_source(row)) {
-        row.gpsText.clear();
-        row.pos = CallHistoryModel::Position();
+    if (!row_names_source(row)) {
+        return;
+    }
+    QList<GpsUnit> units = row_gps_units(row);
+    const qsizetype held = units.size();
+    units.removeIf([](const GpsUnit& unit) { return unit.pos.valid && unit.pos.anonymous; });
+    if (units.size() != held) {
+        set_row_gps_units(row, units);
     }
 }
 
@@ -348,6 +500,7 @@ take_gps(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
     to.gpsSlot = from.gpsSlot;
     to.gpsOrd = from.gpsOrd;
     to.gpsVer = from.gpsVer;
+    to.gpsOthers = from.gpsOthers;
 }
 
 void
@@ -364,28 +517,34 @@ take_message(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
  * Each only from a fragment of the row's radio (fragment_identity_compatible()). A row that names no source yet and
  * learns one from @p row first forgets what its anonymous fragments gave it: those were no messages or positions of the
  * radio it now names. So any order of the same fragments gives the same row. The message is the newest fragment's, as
- * the source label is; the GPS text and position are the fragment's with the greatest session ordinal and rev
- * (call_history_gps_adopts()).
+ * the source label is (a stale reading of a fragment folds in nothing: foldRow()). The row keeps each fragment's GPS
+ * unit, its latest reading, and shows the best (call_history_gps_adopts(): the greatest session ordinal and rev): when
+ * a fragment's newer reading loses its fix, the best remaining fragment's shows, in any order.
  */
 void
 fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    // A fragment of another radio names nothing on the row (foldRow()), so the row keeps what its fragments gave it.
+    if (!fragment_identity_compatible(existing, row)) {
+        return;
+    }
     if (!row_names_source(existing) && row_names_source(row)) {
         existing.messageText.clear();
         existing.gpsText.clear();
         existing.pos = CallHistoryModel::Position();
-    }
-    if (!fragment_identity_compatible(existing, row)) {
-        return;
+        existing.gpsOthers.clear();
     }
     if (call_history_fold_adopts(!existing.messageText.isEmpty(),
                                  provenance(existing.msgWhen, existing.msgSeq, existing.msgSlot),
                                  !row.messageText.isEmpty(), provenance(row.msgWhen, row.msgSeq, row.msgSlot))) {
         take_message(existing, row);
     }
-    if (call_history_gps_adopts(row_gps_known(existing), gps_key(existing),
-                                provenance(existing.gpsWhen, existing.gpsSeq, existing.gpsSlot), row_gps_known(row),
-                                gps_key(row), provenance(row.gpsWhen, row.gpsSeq, row.gpsSlot))) {
-        take_gps(existing, row);
+    const QList<GpsUnit> incoming = row_gps_units(row);
+    if (!incoming.isEmpty()) {
+        QList<GpsUnit> units = row_gps_units(existing);
+        for (const GpsUnit& unit : incoming) {
+            merge_gps_unit(units, unit);
+        }
+        set_row_gps_units(existing, units);
     }
 }
 
@@ -467,6 +626,7 @@ row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.gpsSlot = static_cast<int>(json_i64_or(obj, "gpsSlot", row.slot));
     row.gpsOrd = qMax<qint64>(json_i64_or(obj, "gpsOrd", 0), 0);
     row.gpsVer = static_cast<quint64>(qMax<qint64>(json_i64_or(obj, "gpsVer", 0), 0));
+    row.gpsOthers = gps_units_from_json(obj.value(QLatin1String("gpsAlt")), row);
     if (row.messageText.isEmpty() && row.gpsText.isEmpty()) {
         row.legacyDetail = obj.value(QLatin1String("detail")).toString();
     }
@@ -504,6 +664,7 @@ row_payload_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         if (row.gpsVer != 0U) {
             obj.insert(QLatin1String("gpsVer"), static_cast<qint64>(row.gpsVer));
         }
+        gps_units_to_json(row.gpsOthers, obj);
     }
     if (row.messageText.isEmpty() && row.gpsText.isEmpty() && !row.legacyDetail.isEmpty()) {
         obj.insert(QLatin1String("detail"), row.legacyDetail);

@@ -15560,17 +15560,25 @@ Qt Quick frontend (`src/ui/qt`):
       Capacity Plus / EDACS, then a full system) must be equal; a weaker one joins a stronger one of its family, and the
       row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
-    - Fold (`fold_payload()`, `fill_identity()`): a fragment gives the row its texts, position, sender scope, protocol
-      and target and source texts only when it names the same radio (`fragment_identity_compatible()`): an anonymous
-      fragment never enriches a named row, one naming another radio keeps its texts to itself, and the texts anonymous
-      fragments gave are dropped when the row learns its radio. The reception scope folds by strength from any
+    - Fold (`fold_payload()`, `fill_identity()`, `foldRow()`): a fragment gives the row its texts, position, sender
+      scope, protocol, target and source texts, source number and source label only when it names the same radio
+      (`fragment_identity_compatible()`): an anonymous fragment never enriches a named row, and one naming another
+      radio (another number, callsign or sender system; also an update found by its fragment, which is not merged
+      again) keeps all of them to itself and leaves the row's own as they were. The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
       unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
       `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
       wins with or without a position, so the core's text-only GPS write applies while an older spill line (keyed or
       text-only) replayed over a newer save never does. A store without `gpsVer` falls back to the keys, and the same
-      fragment read again with no key takes what it says. The session ordinal is persisted per ring
+      fragment read again with no key takes what it says. The row keeps every fragment's GPS unit, the latest reading
+      of each (`Row::gpsOthers` beside the one shown), and shows the best of them: when the shown fragment's newer
+      reading drops its fix, the best remaining fragment's fix shows, whatever order the readings arrive in and after
+      a reload; a named row drops only its anonymous units. A whole reading older than one the row already folded from
+      the same fragment (`Row::fragmentVers`, the ring's `commit_rev` of the newest reading of each fragment) is stale
+      and folds in nothing (`foldRow()`), so an older spill line never brings back a label, message, frequency or code
+      the fragment has replaced since. The session ordinal is persisted per ring
       (`callHistory/sessionOrd/next` and `/rings`, the newest 64), given the first time a ring is read; the background
       tap takes a reserved block of 1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at
       every stop, so a later run's fix wins whatever order the fragments are read in.
@@ -15579,7 +15587,8 @@ Qt Quick frontend (`src/ui/qt`):
       is read once more. A repeated notice (`notices_same_delivery()`) must match the texts, the fix (coordinates,
       error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
-      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, each only when known (`detail` only for a legacy text); spill lines
+      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
+      `frv` (fragment key to reading version), each only when known (`detail` only for a legacy text); spill lines
       add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
@@ -17052,11 +17061,14 @@ Qt Quick frontend (`src/ui/qt`):
   record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`): a line
   matching `kPositionMarkers` (one entry per producer's position or position-message print: `Lat:`/`Lon:`, `GPS`,
   `GNSS`, `LRRP`, `LOCN`, `NMEA` and raw RMC/GGA/GLL/GNS/VTG sentences, LIP, `Location Service`, `Position`, APRS,
-  D-PRS and `$$CRC`, Cellocator, the LOCN hemisphere form and D-STAR GPS `DATA:` blocks), a pair of decimal degrees
-  with at least four places (not followed by a unit), or a degrees-and-minutes pair. Payload bytes printed on such a
-  line go with it. A stored tail is redacted again when it is loaded (`seedRing()`), so an older build's log never
-  reaches Copy or Share with one. Raw dumps under generic prefixes (`-Z`: DMR PDU, P25 MBT, M17 LSF and packet bytes)
-  are kept and can hold an encoded position. Keep `kPositionMarkers` in step with the producers' print text, and give
+  D-PRS and `$$CRC`, Cellocator, the LOCN hemisphere form with its latitude and longitude fields in either order and
+  anything between them, the D-PRS `ddmm.hhN?dddmm.hhE` form with any symbol table character, and D-STAR GPS `DATA:`
+  and `_UNK:` slow-data blocks), a pair of decimal degrees with at least four places (not followed by a unit), or a
+  degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it). Payload bytes printed on such
+  a line go with it. A stored tail is redacted again when it is loaded (`seedRing()`), so an older build's log never
+  reaches Copy or Share with one. Raw dumps under generic prefixes (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN
+  `UDCH Data`, P25 MBT, M17 LSF and packet bytes) are kept and can hold an encoded position; without `-Z` no decoder
+  prints a position-bearing payload in a form the markers cannot recognise. Keep `kPositionMarkers` in step with the producers' print text, and give
   a new position print a line in `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`). The persistent
   tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
   `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every

@@ -641,8 +641,10 @@ holdsKeyLabel(const QString& text) {
  * names the decoder paths whose print text it matches (at the time of writing); keep it in step when they change. A
  * record matching any entry is removed whole, its raw payload bytes with it when the path prints them on that line.
  * Dumps that do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw",
- * D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before the decode that names the
- * PDU, and most carry no position. A contiguous run of ten or more hex digits is redacted anyway (redact()).
+ * NXDN "UDCH Data", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept: they come before the decode
+ * that names the PDU, and most carry no position. Without -Z no decoder prints a position-bearing payload in a form
+ * these entries cannot recognise (dmr_pdu.c "Short Data Raw" and nxdn_deperm.c "UDCH Data" are -Z only). A contiguous
+ * run of ten or more hex digits is redacted anyway (redact()).
  */
 // One QRegularExpression fragment per entry; the comment names the decoder paths whose print text it matches.
 const char* const kPositionMarkers[] = {
@@ -671,11 +673,19 @@ const char* const kPositionMarkers[] = {
     "\\bAPRS\\b|\\bDPRS\\b|\\$\\$CRC",
     // dmr_pdu.c and dsd_gps.c Cellocator time and location
     "\\bCellocator\\b",
-    // dmr_pdu.c LOCN text, the hemisphere before each number (dmr_block.c MNIS LOCN prints it as UTF8 Text)
-    "[NS][0-9]{4}\\.[0-9]+\\s*[EW][0-9]{5}\\.[0-9]+",
+    // dmr_pdu.c LOCN text (dmr_locn_parse_fields()), the hemisphere before each number: a latitude field and a
+    // longitude field in either order, anything between them (dmr_block.c MNIS LOCN and raw short data print it as
+    // UTF8 Text); any character at the separator
+    "[NS][0-9]{4}.[0-9]{4}.*[EW][0-9]{5}.[0-9]{4}|[EW][0-9]{5}.[0-9]{4}.*[NS][0-9]{4}.[0-9]{4}",
+    // dstar_slow_data.c D-PRS (dstar_aprs_parse()): ddmm.hhN, the symbol table (an overlay letter or digit, or '/' or
+    // '\\'), dddmm.hhE
+    "[0-9]{4}\\.[0-9]{2}[NS].[0-9]{5}\\.[0-9]{2}[EW]",
     // dstar_slow_data.c GPS data blocks as they arrive, a part of a record at a time; not TETRA's "DATA: 0x...;" or
     // "DATA: N bits;" notice, NXDN's -Z "DATA: <hex>" dump or M17's A_DATA
     "(?<!\\w)DATA: (?!0x|[0-9A-F]{2,}(?:\\s|$))",
+    // dstar_slow_data.c slow data that opens with no known block type: GPS data blocks a record or sentence began in
+    // an earlier superframe ("_UNK:" is D-STAR's alone)
+    "\\b_UNK:",
 };
 
 /**
@@ -683,7 +693,8 @@ const char* const kPositionMarkers[] = {
  *
  * A record matching kPositionMarkers, or holding a pair of decimal degrees with at least four places (the producers
  * print five or six; a frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA,
- * APRS), so a line a decoder adds later is still covered by its numbers. A marker can stand on a record with no
+ * APRS; the minutes' fraction is optional, as nmea_parse_coordinate() reads it), so a line a decoder adds later is still
+ * covered by its numbers. A marker can stand on a record with no
  * coordinates ("LIP: truncated;"); the record goes too. The device's own location is never logged.
  */
 bool
@@ -699,7 +710,8 @@ holdsReceivedPosition(const QString& text) {
         QStringLiteral("(?<![0-9.])[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9])\\s*(?:\\x{00B0}|deg)?\\s*[NSns]?\\s*[,/;]?\\s*"
                        "[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9.])(?!\\s*(?:[kMG]?Hz|dB|ppm|ms\\b|s\\b|%))"));
     static const QRegularExpression minutes(QStringLiteral(
-        "(?<![0-9])[0-9]{4}\\.[0-9]+\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}\\.[0-9]+\\s*,?\\s*[EW]\\b"));
+        "(?<![0-9])[0-9]{4}(?:\\.[0-9]*)?\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}(?:\\.[0-9]*)?\\s*,?\\s*"
+        "[EW]\\b"));
     return text.contains(markers) || text.contains(degrees) || text.contains(minutes);
 }
 
