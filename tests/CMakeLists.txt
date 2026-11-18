@@ -5388,6 +5388,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
@@ -5414,6 +5415,46 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
     add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
+
+    # #800: the location feed GPS roaming and the map share (idempotent named leases over the host's one feed, a
+    # restart once per foreground epoch move with the notice first, host replacement, permission changes), and the
+    # one-shot location broker (overlapping requesters, cancel, stale ids, an answer inside the call), each over a
+    # scripted host.
+    foreach(_location_case IN ITEMS feed requests)
+        string(TOUPPER "${_location_case}" _location_case_upper)
+        add_executable(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            ui/test_ui_qt_location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/qt
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE QT_NO_KEYWORDS
+        )
+        set_target_properties(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PROPERTIES AUTOMOC ON
+        )
+        add_test(
+            NAME UI_QT_LOCATION_${_location_case_upper}
+            COMMAND dsd-neo_test_ui_qt_location_${_location_case}
+        )
+    endforeach()
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
@@ -5998,6 +6039,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6059,6 +6101,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6116,6 +6159,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/sign_in_autofill.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6427,6 +6471,9 @@ if(DSD_ENABLE_QT_UI)
             # Issue #786: GPS roaming's executor and its decision core, which Main drives.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+            # Issue #800: the location feed roaming shares, and the one-shot location broker.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.

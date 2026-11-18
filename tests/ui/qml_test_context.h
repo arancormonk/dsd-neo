@@ -96,6 +96,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -120,6 +121,8 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "location_feed.h"
+#include "location_requests.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -3552,6 +3555,77 @@ class ReadingMap : public QQmlPropertyMap {
 };
 
 /**
+ * @brief #800: the host the production one-shot broker (`locationRequests`) asks. Each request goes to whichever host
+ * `decoderHost` names now (the readings map, which records the call, or a lifecycle host), and their answers come
+ * back through it, so a case still answers a request with decoderHost.locationResult() or locationCancelled().
+ */
+class LocationRelayHost : public dsd_qt::DecoderHost {
+    Q_OBJECT
+
+  public:
+    LocationRelayHost(std::function<QObject*()> current, QObject* parent) : m_current(std::move(current)) {
+        setParent(parent);
+    }
+
+    /* Pass on the answers of the readings map and of each lifecycle host. */
+    void
+    follow(ReadingMap* readings, const QList<dsd_qt::DecoderHost*>& hosts) {
+        connect(readings, &ReadingMap::locationResult, this, &DecoderHost::locationResult);
+        connect(readings, &ReadingMap::locationCancelled, this, &DecoderHost::locationCancelled);
+        for (dsd_qt::DecoderHost* host : hosts) {
+            connect(host, &DecoderHost::locationResult, this, &DecoderHost::locationResult);
+            connect(host, &DecoderHost::locationCancelled, this, &DecoderHost::locationCancelled);
+        }
+    }
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return QString();
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    void
+    requestCurrentLocation(qint64 requestId) override {
+        forward("requestCurrentLocation", requestId);
+    }
+
+    void
+    requestSiteLocation(qint64 requestId) override {
+        forward("requestSiteLocation", requestId);
+    }
+
+    void
+    cancelLocationRequest(qint64 requestId) override {
+        forward("cancelLocationRequest", requestId);
+    }
+
+  private:
+    /* The readings map has no requestCurrentLocation(): such a call is dropped there, as no case answers it. */
+    void
+    forward(const char* method, qint64 requestId) {
+        QObject* host = m_current();
+        if (host != nullptr && host != this) {
+            (void)QMetaObject::invokeMethod(host, method, Q_ARG(qint64, requestId));
+        }
+    }
+
+    std::function<QObject*()> m_current;
+};
+
+/**
  * @brief Issue #708: the `recordings` store the screens read, as a map a case writes (`recordings.lowSpace = true`)
  * plus its calls, kept oldest first as {name, ...}.
  *
@@ -3779,24 +3853,30 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
   public:
     explicit RadioReferenceRecorder(QObject* parent) : QQmlPropertyMap(this, parent) {}
 
+    /* #800: as the model does, the lookup asks the one-shot broker as "radioReference" (a request pending elsewhere
+     * is given up), and a cancel gives its request up. */
     Q_INVOKABLE void
     lookupNearby() {
         nearbyCalls++;
-        (void)nextLocationRequestId();
-        insert(QStringLiteral("busy"), true);
-    }
-
-    Q_INVOKABLE qint64
-    nextLocationRequestId() {
         cancel();
-        static qint64 nextId = 0;
-        Q_EMIT locationRequestAllocated(++nextId);
-        return nextId;
+        if (m_requests != nullptr) {
+            m_locationId = m_requests->requestCurrent(QStringLiteral("radioReference"));
+        }
+        insert(QStringLiteral("busy"), true);
     }
 
     Q_INVOKABLE void
     cancel() {
+        if (m_requests != nullptr && m_locationId != 0) {
+            m_requests->cancel(m_locationId);
+        }
+        m_locationId = 0;
         insert(QStringLiteral("busy"), false);
+    }
+
+    void
+    setLocationRequests(dsd_qt::LocationRequests* requests) {
+        m_requests = requests;
     }
 
     /* The sign-in form's two model calls. The readings (hasPassword, credentialsReady, accountState) stay the case's
@@ -3814,8 +3894,10 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
 
     int nearbyCalls = 0;
     int accountChecks = 0;
-  Q_SIGNALS:
-    void locationRequestAllocated(qint64 requestId);
+
+  private:
+    dsd_qt::LocationRequests* m_requests = nullptr;
+    qint64 m_locationId = 0;
 };
 
 /**
@@ -5437,13 +5519,16 @@ class Setup : public QObject {
                 m_backup->setHost(m_lifecycle_host); // the model's session gate follows the host the case runs on
             }
             m_lifecycle_host->startRunning = start_running;
-            // #786: roaming runs over the host the case runs on, from a fresh start each time.
+            // #786: roaming runs over the host the case runs on, from a fresh start each time, as does the feed it
+            // shares (#800).
             m_site_roaming->setHost(nullptr);
+            m_location_feed->setHost(m_lifecycle_host);
             m_site_roaming->setHost(m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
         } else {
             m_site_roaming->setHost(nullptr);
+            m_location_feed->setHost(nullptr);
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
         }
@@ -7294,6 +7379,18 @@ class Setup : public QObject {
         m_site_roaming = new dsd_qt::SiteRoaming(app_prefs, saved_systems, engine);
         m_site_roaming->setClock([this] { return m_roaming_now; });
         ctx->setContextProperty(QStringLiteral("siteRoaming"), m_site_roaming);
+        /* #800: the production location feed roaming shares, over the host roaming runs on (useLifecycleHost()), and
+         * the production one-shot broker, which asks whichever host `decoderHost` names through a relay. */
+        m_location_feed = new dsd_qt::LocationFeed(engine);
+        m_site_roaming->setLocationFeed(m_location_feed);
+        ctx->setContextProperty(QStringLiteral("locationFeed"), m_location_feed);
+        auto* location_relay = new LocationRelayHost(
+            [ctx] { return ctx->contextProperty(QStringLiteral("decoderHost")).value<QObject*>(); }, engine);
+        location_relay->follow(m_host_readings, {m_import_host, m_initializing_host});
+        m_location_requests = new dsd_qt::LocationRequests(engine);
+        m_location_requests->setHost(location_relay);
+        m_radio_reference_recorder->setLocationRequests(m_location_requests);
+        ctx->setContextProperty(QStringLiteral("locationRequests"), m_location_requests);
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
@@ -7406,6 +7503,8 @@ class Setup : public QObject {
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;
     dsd_qt::SiteRoaming* m_site_roaming = nullptr;
+    dsd_qt::LocationFeed* m_location_feed = nullptr;
+    dsd_qt::LocationRequests* m_location_requests = nullptr;
     qint64 m_roaming_now = 1000000;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();

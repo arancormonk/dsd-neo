@@ -65,6 +65,8 @@ target_sources(
         site_groups.cpp # WP-D4
         site_roaming.cpp # Issue #786
         site_roaming_controller.cpp # Issue #786
+        location_feed.cpp # Issue #800
+        location_requests.cpp # Issue #800
         saved_system_cards.cpp
         saved_systems_model.cpp
         scan_avoid_list_model.cpp

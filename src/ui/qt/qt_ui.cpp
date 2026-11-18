@@ -43,6 +43,8 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "location_feed.h"
+#include "location_requests.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "position_model.h"
@@ -395,12 +397,28 @@ publish_listen(QQmlContext* context, ListenPins* pins, SavedSystemsModel* system
     context->setContextProperty(QStringLiteral("savedSystemCards"), cards);
 }
 
-/* GPS site roaming (#786): its executor, over the host the session runs on. Main.qml feeds it the session and
-   carries out its switches. */
+/* #800: the one-shot location broker every "use my location" goes through (the RadioReference nearby lookup among
+   them), and the continuous location feed GPS roaming and the map share. Both after the RadioReference model, so the
+   model, which gives its request up as it goes, goes before them. */
+static LocationFeed*
+publish_location(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, QObject* owner) {
+    auto* requests = new LocationRequests(owner);
+    requests->setHost(host);
+    radioReference->setLocationRequests(requests);
+    context->setContextProperty(QStringLiteral("locationRequests"), requests);
+    auto* feed = new LocationFeed(owner);
+    feed->setHost(host);
+    context->setContextProperty(QStringLiteral("locationFeed"), feed);
+    return feed;
+}
+
+/* GPS site roaming (#786): its executor, over the host the session runs on and the location feed it shares with the
+   map (#800). Main.qml feeds it the session and carries out its switches. */
 static void
 publish_site_roaming(QQmlContext* context, DecoderHost* host, AppPrefs* prefs, SavedSystemsModel* systems,
-                     QObject* owner) {
+                     LocationFeed* feed, QObject* owner) {
     auto* roaming = new SiteRoaming(prefs, systems, owner);
+    roaming->setLocationFeed(feed);
     roaming->setHost(host);
     context->setContextProperty(QStringLiteral("siteRoaming"), roaming);
 }
@@ -539,7 +557,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     publish_listen(context, listenPins, systems, prefs, importedFiles, host, &engine);
-    publish_site_roaming(context, host, prefs, systems, &engine);
+    LocationFeed* locationFeed = publish_location(context, host, radioReference, &engine);
+    publish_site_roaming(context, host, prefs, systems, locationFeed, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     publish_app_context(context, host, radioReference, prefs, &engine);
 

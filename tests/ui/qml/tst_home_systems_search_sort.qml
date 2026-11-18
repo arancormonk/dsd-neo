@@ -516,7 +516,7 @@ Item {
             tap(button);
             var second = controls().locationId;
             verify(second > first);
-            radioReference.nextLocationRequestId(); // the site chooser asks
+            locationRequests.requestSite("siteChooser"); // the site chooser asks
             compare(controls().locationId, 0, "superseded");
             compare(hostCallsNamed("cancelLocationRequest").pop().id, second);
             decoderHost.locationResult(second, true, 41.6, -93.6, 25, savedSystems.realtimeNowMs(), false, "", "", "");
