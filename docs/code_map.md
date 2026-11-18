@@ -15785,9 +15785,14 @@ Qt Quick frontend (`src/ui/qt`):
       folds in anything): one protocol class (`call_history_position_class()`, the core's
       `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
       reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: both scopes
-      known and equal with one discriminator, or the same received identity epoch of one ring, `Row::rxEpoch` and
+      known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
       `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
-      receptions, and an unknown side never matches across epochs or decoder runs). The merge of the conversation is
+      receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
+      to its first fragment still folded in (gate g62-r8): a new reading of that fragment is judged as the row's own
+      reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
+      alias neither withdraws its fix nor moves it to another fragment's phase; after every fold the fixes the row
+      keeps are only those of fragments heard on its reception now (`requalify_row_gps()`), so a row rebuilt onto the
+      other P25 phase (its anchor withdrawn) keeps no fix of the first. The merge of the conversation is
       not gated: a call heard on 450 MHz with only a tuned-frequency scope and a fragment under a NAC on 451 MHz are one
       row, which keeps its 450 MHz reception and none of the other carrier's fix; a Phase 1 row takes no Phase 2 fix.
     - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each

@@ -593,6 +593,25 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     drop_anonymous_gps_of_named(row);
 }
 
+QString
+gps_fragment_stamp(qint64 ord, int slot, qulonglong seq) {
+    return QStringLiteral("%1:%2:%3").arg(ord).arg(slot).arg(seq);
+}
+
+void
+drop_gps_units_of_stamps(CallHistoryModel::Row& row, const QSet<QString>& stamps) {
+    if (stamps.isEmpty()) {
+        return;
+    }
+    QList<GpsUnit> units = row_gps_units(row);
+    const qsizetype held = units.size();
+    units.removeIf(
+        [&stamps](const GpsUnit& unit) { return stamps.contains(gps_fragment_stamp(unit.ord, unit.slot, unit.seq)); });
+    if (units.size() != held) {
+        set_row_gps_units(row, units);
+    }
+}
+
 void
 drop_anonymous_gps_of_named(CallHistoryModel::Row& row) {
     if (!row_names_source(row)) {

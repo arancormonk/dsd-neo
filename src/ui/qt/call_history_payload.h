@@ -20,6 +20,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
+#include <QSet>
 #include <QString>
 #include <QtGlobal>
 #include <dsd-neo/core/state.h>
@@ -79,6 +80,14 @@ void row_take_payload(CallHistoryModel::Row& row, const Event_History* item);
 /** @brief A row that names its source keeps no anonymous position (issue #800, spec 2.14): an anonymous report and its
  * GPS text go once the row names a source, as the core drops them (dsd_event_pos_requalify_row()). */
 void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
+
+/** @brief The key of the fragment a GPS unit came from, as drop_gps_units_of_stamps() reads it: its run's session
+ * ordinal @p ord (0 when not known), its slot and its push stamp (call_history_same_fragment()). */
+QString gps_fragment_stamp(qint64 ord, int slot, qulonglong seq);
+
+/** @brief Take from @p row the GPS units of the fragments whose keys (gps_fragment_stamp()) are in @p stamps (issue
+ * #800): the row shows the best remaining one, or none. */
+void drop_gps_units_of_stamps(CallHistoryModel::Row& row, const QSet<QString>& stamps);
 
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
