@@ -13714,8 +13714,9 @@ single "current call".
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
   reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
-  so a message sent again whole completes), its parts addressed to one SSI (parts addressed by an event label alone name
-  no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
+  so a message sent again whole completes), its parts addressed to one party, by value and identity space
+  (`tetra_calls_addressed_party()`: an SMI and an SSI of one value are two parties, so their parts never join; parts
+  addressed by an event label alone name no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
   the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling

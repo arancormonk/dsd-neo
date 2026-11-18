@@ -888,12 +888,13 @@ typedef struct {
     uint8_t type;     /* 1 for an SSI or TSI calling party; the reserved type identifier otherwise */
 } sds_concat_sender;
 
-/* The party a concatenation part is addressed to: the SSI its MAC PDU names in the clear (tetra_calls_addressed_ssi()),
- * or none known (an event label alone, an encrypted short identity). A message's parts are its sender's to one party:
- * parts of two messages that share a sender and reference but go to two parties are never assembled into one. */
+/* The party a concatenation part is addressed to: the identity its MAC PDU names in the clear and its identity space
+ * (tetra_calls_addressed_party(): an SSI, an SMI, or none known: an event label alone, an encrypted short identity). A
+ * message's parts are its sender's to one party: parts of two messages that share a sender and reference but go to two
+ * parties -- an SMI and an SSI of one value among them -- are never assembled into one. */
 typedef struct {
-    uint32_t ssi;
-    uint8_t known;
+    uint32_t value;
+    uint8_t space; /* tetra_calls_party */
 } sds_concat_party;
 
 /* One message being reassembled; the parts are stored packed, MSB first. */
@@ -957,7 +958,7 @@ sds_concat_same_sender(const sds_concat_sender* a, const sds_concat_sender* b) {
 
 static int
 sds_concat_same_party(const sds_concat_party* a, const sds_concat_party* b) {
-    return a->known == b->known && a->ssi == b->ssi;
+    return a->space == b->space && a->value == b->value;
 }
 
 /* The context collecting @p part's message (the same sender, addressed party, reference and transport): the matching
@@ -1341,7 +1342,7 @@ sds_reassemble(const mle_ctx* ctx, tetra_sds_data* d, sds_concat_status* concat)
     DSD_MEMSET(&part, 0, sizeof part);
     part.data = tetra_bits_reader(ctx->bits, d->concat.data_pos + d->concat.data_bits, d->concat.data_pos);
     part.src = sds_concat_sender_of(ctx->ts, &d->calling);
-    part.dst.known = (uint8_t)tetra_calls_addressed_ssi_known(ctx->sdu, &part.dst.ssi);
+    part.dst.space = (uint8_t)tetra_calls_addressed_party(ctx->sdu, &part.dst.value);
     part.payload_pid = d->concat.payload_pid;
     part.reference = d->concat.reference;
     part.with_transport = d->concat.with_transport;
@@ -1444,7 +1445,7 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
         DSD_SNPRINTF(out->position, sizeof out->position, "%s", "carrier not proven");
         return 0;
     }
-    if (d->concat_present && !tetra_calls_addressed_ssi_known(ctx->sdu, NULL)) {
+    if (d->concat_present && tetra_calls_addressed_party(ctx->sdu, NULL) == TETRA_CALLS_PARTY_NONE) {
         /* Parts are assembled per addressed party (sds_concat_find()); with none named, nothing shows that the parts
            of the message went to one party, so they may be two reports' halves. */
         DSD_SNPRINTF(out->position, sizeof out->position, "%s", "recipient unknown");

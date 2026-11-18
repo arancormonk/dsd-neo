@@ -558,6 +558,32 @@ test_concatenated_one_recipient(void) {
     session_close(&s);
 }
 
+/* Issue #800 (g62-r9): an SMI and an SSI may hold one value and still be two identities (EN 300 392-1 clauses 7.3.2,
+ * 7.3.3). Part 2 of a report addressed to SMI 257 and part 1 of another addressed to SSI 257, with the same sender and
+ * reference, assemble into nothing; the SSI's message completes from its own part 2. */
+static void
+test_concatenated_smi_and_ssi_are_two_parties(void) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    const ttb_block other = lip_short(LAT_MINUS_22, LON_MINUS_45, 1, 10, 4);
+    session s = session_open();
+    ttb_block c = sds_concat_part(SENDER_SSI, 0, 5, 2, other.bits + 40, other.n - 40);
+    send_sds_to(&s, TETRA_MAC_ADDR_SMI, ADDRESSED, &c, 0, 0);
+    c = sds_concat_part(SENDER_SSI, 0, 5, 1, lip.bits, 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "TETRA SDS LIP") == NULL);
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 0);
+    char lfile[512];
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+
+    c = sds_concat_part(SENDER_SSI, 0, 5, 2, lip.bits + 40, lip.n - 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "dst_SSI=257 short location report; LIP: 22.50000") != NULL);
+    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000);
+    session_close(&s);
+}
+
 /* Two concatenated messages from one sender to one party can share a reference. A part 1 with the same bits as the
  * one held but another payload PID is another message's part 1, never a repeat: the message held is discarded, and
  * the part 2 that follows completes nothing, so no LIP position is read from bits a PID 64 message sent. With the
@@ -720,6 +746,7 @@ main(void) {
     test_undecoded();
     test_concatenated();
     test_concatenated_one_recipient();
+    test_concatenated_smi_and_ssi_are_two_parties();
     test_concatenated_first_part_pid();
     test_sender_network_labels();
     test_mac_fragmented_report();
