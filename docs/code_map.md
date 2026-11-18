@@ -15755,7 +15755,11 @@ Qt Quick frontend (`src/ui/qt`):
       whose system the core resolves in place is read again and its fragment checked against the row again; an entry
       without one (an older build's, or `load()`'s seed) takes the first read's without counting it as a change, as
       the site text digest does. A repeated notice (`notices_same_delivery()`) must match the texts, the fix
-      (coordinates, error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      (coordinates, error, flags, kind), the raw target and identity. Against a notice an older build stored (one
+      `detail`, no message or GPS text) the texts compared are the ones that build would have stored
+      (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
+      replay after an upgrade gives the stored row its parts rather than logging it again; two rows of this build
+      compare their whole detail line. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each

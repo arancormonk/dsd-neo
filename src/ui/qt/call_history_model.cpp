@@ -2267,14 +2267,54 @@ fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
 }
 
+/** @brief Whether @p row is a notice an older build stored: one detail (legacyDetail), no text message or GPS text. */
+bool
+notice_is_legacy(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() && row.gpsText.isEmpty() && !row.legacyDetail.isEmpty();
+}
+
+/** @brief The one detail an older build stored for notice @p row: its text message when it has one, else its GPS text
+ * (that build's row_take_name()). */
+QString
+legacy_notice_detail(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() ? row.gpsText : row.messageText;
+}
+
+/** @brief The name an older build gave notice @p row: its summary, or with none its one detail
+ * (legacy_notice_detail()) where this build names it by its whole detail line. */
+QString
+legacy_notice_name(const CallHistoryModel::Row& row) {
+    const QString detail = row_detail_text(row);
+    return !detail.isEmpty() && row.name == detail ? legacy_notice_detail(row) : row.name;
+}
+
+/**
+ * @brief Whether notices @p a and @p b carry one name and detail (issue #800, B2). Two rows of this build compare their
+ * whole detail line; against a row an older build stored, the other row's text is what that build would have stored
+ * (legacy_notice_detail(), legacy_notice_name()), so a replay after an upgrade finds the stored row and gives it its
+ * parts (absorbRepeatedNotice()).
+ */
+bool
+notice_texts_same(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    const bool aLegacy = notice_is_legacy(a);
+    const bool bLegacy = notice_is_legacy(b);
+    if (aLegacy == bLegacy) {
+        return a.name == b.name && row_detail_text(a) == row_detail_text(b);
+    }
+    const CallHistoryModel::Row& legacy = aLegacy ? a : b;
+    const CallHistoryModel::Row& current = aLegacy ? b : a;
+    return legacy.name == legacy_notice_name(current) && legacy.legacyDetail == legacy_notice_detail(current);
+}
+
 /**
  * @brief Whether notice @p row is the delivery the logged notice @p existing is, decoded again: field for field, the
- * fix included (issue #800: the same text with another position is another delivery).
+ * fix included (issue #800: the same text with another position is another delivery); the texts as notice_texts_same()
+ * compares them.
  */
 bool
 notices_same_delivery(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src && existing.name == row.name
-           && row_detail_text(existing) == row_detail_text(row) && positions_same_fix(existing.pos, row.pos)
+    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+           && notice_texts_same(existing, row) && positions_same_fix(existing.pos, row.pos)
            && existing.systemName == row.systemName && existing.systemUid == row.systemUid
            && existing.channel == row.channel && receive_services_compatible(existing, row)
            && rows_identity_compatible(existing, row) && !raw_texts_differ(existing.targetText, row.targetText);

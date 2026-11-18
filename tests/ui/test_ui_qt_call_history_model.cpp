@@ -5571,6 +5571,71 @@ test_cleared_fix_leaves_single_fragment_row(void) {
     expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* Issue #800, B2: a notice an older build stored kept one detail, the text message when there was one, else the GPS
+ * text, and named an unsummarised notice by it. Re-delivered from a fresh ring after an upgrade (a replay), the same
+ * delivery now carries its message and its GPS text apart: it is matched against the field that build chose, so it
+ * joins the stored row and gives it its parts rather than logging a second row. A delivery whose message differs is
+ * another one. Rows of this build still compare in full. */
+void
+test_repeated_legacy_notice_matches_its_detail(void) {
+    resetStorage();
+    const time_t when = kCaptureStart + 90;
+    const char* sentence = "$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C";
+    const auto deliver = [&](RingFixture& ring, int slot, time_t at, const char* summary, const char* message) {
+        Event_History* item = ring.commitNotice(slot, at, summary);
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", message);
+        return with_gps(item, "GPS: 22.50000, 45.00000", 225000000, 450000000, 3U);
+    };
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: two notices are logged", model.count() == 2);
+    } // destructor flushes the stores
+    // Rewritten as the older build stored them: one detail, the message, and an unsummarised notice named by it.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (qsizetype i = 0; i < rows.size(); i++) {
+        QJsonObject legacy = rows.at(i).toObject();
+        for (const QString& key : legacy.keys()) {
+            if (key.startsWith(QLatin1String("msg")) || key.startsWith(QLatin1String("gps"))
+                || key == QLatin1String("pos") || key == QLatin1String("fr") || key == QLatin1String("frv")) {
+                legacy.remove(key);
+            }
+        }
+        legacy.insert(QLatin1String("detail"), QString::fromLatin1(sentence));
+        if (legacy.value(QLatin1String("name")).toString() != QLatin1String("NMEA from 44")) {
+            legacy.insert(QLatin1String("name"), QString::fromLatin1(sentence));
+        }
+        rows.replace(i, legacy);
+    }
+    expect("legacy notice: the older store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel model;
+        expect("legacy notice: the stored rows show their one detail",
+               model.count() == 2 && detail_of(model, 0) == QLatin1String(sentence)
+                   && detail_of(model, 1) == QLatin1String(sentence));
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: the deliveries heard again log no new row", model.count() == 2);
+        expect("legacy notice: the stored rows gain their message and GPS text",
+               model.count() == 2
+                   && detail_of(model, 0)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000")
+                   && detail_of(model, 1)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000"));
+        // Another message at the same stamp is another delivery.
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", "Another message");
+        model.refresh(ring.state);
+        expect("legacy notice: a delivery with another message is another row", model.count() == 3);
+    }
+}
+
 /* Issue #800, B5: on the single-slot DMR decoder a fragment whose over-the-air slot was still pending merges into a
  * slot-1 call. When a later reading of it proves slot 2, that update (found by its fragment, never merged again) is
  * held to the receive-service rule the merge applies: it is another service's, so its part and its fix are taken back
@@ -7237,6 +7302,7 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_repeated_legacy_notice_matches_its_detail();
     test_site_roles_and_text();
     test_site_survives_save_and_reload();
     test_store_without_site_keys_loads_unknown();
