@@ -785,7 +785,10 @@ SiteRoaming::ensureStream(bool need) {
         m_streamOn = true;
         m_streamState.clear();
         forgetMeasurement();
-        m_feed->acquire(LocationFeed::roamingLease());
+        if (!m_feed->acquire(LocationFeed::roamingLease())) {
+            m_streamOn = false; // a feed with no host to lease from: nothing follows, and the next pass asks again
+            return;
+        }
         const QVariantMap standing = m_feed->record();
         if (!standing.isEmpty()) {
             onStreamUpdate(standing);

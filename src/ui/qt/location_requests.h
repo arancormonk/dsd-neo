@@ -71,18 +71,19 @@ class LocationRequests : public QObject {
     bool busy() const;
 
   Q_SIGNALS:
+    /** @brief `pendingRequester`/`busy` changed: once per request, a request that replaces another included. */
     void pendingChanged();
     /**
      * @brief The answer to @p requester's request @p requestId: {fixOk, lat, lon, accuracyM, fixAtMs (epoch ms),
      * geocodeOk, postalCode, countryCode, error}, as DecoderHost::locationResult() carries them.
      */
     void answered(const QString& requester, qint64 requestId, const QVariantMap& result);
-    /** @brief @p requester's request @p requestId ended unanswered: the platform cancelled it, or a newer one took over. */
+    /** @brief @p requester's request @p requestId ended unanswered: the platform cancelled it, or a newer one did. */
     void ended(const QString& requester, qint64 requestId);
 
   private:
     qint64 begin(const QString& requester, bool forSites);
-    void giveUp();
+    void giveUp(bool notify);
     void onResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                   bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);
     void onCancelled(qint64 requestId);

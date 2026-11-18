@@ -155,13 +155,13 @@ check_overlapping_requesters() {
           "overlap: the newer request gives the older one up at the platform first");
     check(log.events == QStringList{QStringLiteral("ended:siteChooser:%1").arg(chooser)},
           "overlap: the chooser hears its request ended");
-    check(requests.pendingRequester() == QStringLiteral("savedSystems") && changes == 3,
-          "overlap: Nearest's is pending (a change for the chooser's going, and for Nearest's)");
+    check(requests.pendingRequester() == QStringLiteral("savedSystems") && changes == 2,
+          "overlap: Nearest's is pending, one change per request (a replacement too)");
     host.answer(chooser, 10.0);
     check(log.events.size() == 1, "overlap: the given-up request's answer is dropped");
     host.answer(nearest, 10.5);
     check(log.events.last() == QStringLiteral("answered:savedSystems:%1").arg(nearest) && !requests.busy()
-              && requests.pendingRequester().isEmpty() && changes == 4,
+              && requests.pendingRequester().isEmpty() && changes == 3,
           "overlap: Nearest gets its answer by its id, and nothing is pending");
     const QVariantMap result = log.results.last();
     check(result.value("fixOk").toBool() && near(result.value("lat").toDouble(), 10.5)

@@ -8,6 +8,7 @@
  * record that never outlives the feed. The host is scripted; coordinates are made up.
  */
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -298,17 +299,75 @@ check_record_notifies() {
     check(changes == 2, "record: no change when there was none to clear");
 }
 
+void
+app_state(Qt::ApplicationState state) {
+    Q_EMIT qGuiApp->applicationStateChanged(state);
+}
+
+/* The map alone holds the feed across a trip to the background: leaving clears the record at once, and coming back
+ * starts the feed again by itself (no consumer call), notice first. */
+void
+check_background_cycle_map_only() {
+    FakeHost host;
+    LocationFeed feed;
+    feed.setHost(&host);
+    Log log(feed, host);
+    feed.acquire(map());
+    host.emitFix(10, 10.0);
+    app_state(Qt::ApplicationInactive);
+    check(!feed.record().isEmpty(), "background: a dialog on top keeps the record");
+    app_state(Qt::ApplicationSuspended);
+    check(feed.record().isEmpty() && feed.active(), "background: leaving clears the record, the lease stays");
+    host.epochValue = 1; // the platform withdrew the feed and moved the epoch
+    app_state(Qt::ApplicationActive);
+    check(host.starts == 2 && host.stops == 0 && log.events.last() == QStringLiteral("moved:1@1"),
+          "background: back on screen, the feed starts again by itself, notice first");
+    host.emitFix(20, 10.1);
+    check(feed.record().value("measurementNs").toLongLong() == 20, "background: the new epoch's fix is the record");
+    app_state(Qt::ApplicationActive);
+    check(host.starts == 2, "background: Active again while on screen does nothing");
+
+    // Hidden with no epoch move (the feed was not withdrawn): the host is asked once to say where it stands again.
+    app_state(Qt::ApplicationHidden);
+    app_state(Qt::ApplicationActive);
+    check(host.starts == 3 && feed.record().isEmpty(), "background: no move, the host is asked to repeat");
+    // Nothing held: nothing starts on return.
+    feed.release(map());
+    app_state(Qt::ApplicationSuspended);
+    host.epochValue = 2;
+    app_state(Qt::ApplicationActive);
+    check(host.starts == 3 && host.stops == 1, "background: no lease, nothing starts");
+}
+
+/* A consumer that already looked after the return (roaming's own pass) started the feed in the new epoch: Active adds
+ * no second start. */
+void
+check_background_return_seen_first() {
+    FakeHost host;
+    LocationFeed feed;
+    feed.setHost(&host);
+    feed.acquire(roaming());
+    host.emitFix(10, 10.0);
+    app_state(Qt::ApplicationSuspended);
+    host.epochValue = 1;
+    feed.acquire(roaming()); // roaming's tick ran first
+    app_state(Qt::ApplicationActive);
+    check(host.starts == 2, "background: once per epoch whoever looks first");
+}
+
 } // namespace
 
 int
 main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     check_both_consumers();
     check_either_leaving();
     check_foreground_cycles();
     check_host_replacement();
     check_permission_change();
     check_record_notifies();
+    check_background_cycle_map_only();
+    check_background_return_seen_first();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

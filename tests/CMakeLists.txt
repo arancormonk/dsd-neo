@@ -5415,6 +5415,10 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
     add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
+    set_tests_properties(
+        UI_QT_SITE_ROAMING
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 
     # #800: the location feed GPS roaming and the map share (idempotent named leases over the host's one feed, a
     # restart once per foreground epoch move with the notice first, host replacement, permission changes), and the
@@ -5453,6 +5457,10 @@ if(DSD_ENABLE_QT_UI)
         add_test(
             NAME UI_QT_LOCATION_${_location_case_upper}
             COMMAND dsd-neo_test_ui_qt_location_${_location_case}
+        )
+        set_tests_properties(
+            UI_QT_LOCATION_${_location_case_upper}
+            PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         )
     endforeach()
 

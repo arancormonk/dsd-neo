@@ -31,7 +31,7 @@ LocationRequests::setHost(DecoderHost* host) {
     if (m_host == host) {
         return;
     }
-    giveUp(); // on the old host, which is still m_host here
+    giveUp(true); // on the old host, which is still m_host here
     if (m_host != nullptr) {
         disconnect(m_host, nullptr, this, nullptr);
     }
@@ -90,7 +90,7 @@ LocationRequests::begin(const QString& requester, bool forSites) {
     if (requester.isEmpty() || m_host == nullptr) {
         return 0;
     }
-    giveUp();
+    giveUp(false); // one pendingChanged() for the replacement, below
     const qint64 id = next_request_id();
     m_id = id;
     m_requester = requester;
@@ -105,9 +105,10 @@ LocationRequests::begin(const QString& requester, bool forSites) {
     return id;
 }
 
-/* The pending request, if any, is given up: the platform cancels it and its requester hears it ended. */
+/* The pending request, if any, is given up: the platform cancels it and its requester hears it ended. @p notify is
+ * false when a new request replaces it at once, which emits the one pendingChanged() for both. */
 void
-LocationRequests::giveUp() {
+LocationRequests::giveUp(bool notify) {
     if (m_id == 0) {
         return;
     }
@@ -118,7 +119,9 @@ LocationRequests::giveUp() {
     if (m_host != nullptr) {
         m_host->cancelLocationRequest(id);
     }
-    Q_EMIT pendingChanged();
+    if (notify) {
+        Q_EMIT pendingChanged();
+    }
     Q_EMIT ended(requester, id);
 }
 

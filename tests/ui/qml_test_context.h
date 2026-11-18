@@ -3613,11 +3613,15 @@ class LocationRelayHost : public dsd_qt::DecoderHost {
     }
 
   private:
-    /* The readings map has no requestCurrentLocation(): such a call is dropped there, as no case answers it. */
+    /* The readings map has no requestCurrentLocation(): such a call goes nowhere there, as no case answers it. */
     void
     forward(const char* method, qint64 requestId) {
         QObject* host = m_current();
-        if (host != nullptr && host != this) {
+        if (host == nullptr || host == this) {
+            return;
+        }
+        const QByteArray signature = QByteArray(method) + "(qint64)";
+        if (host->metaObject()->indexOfMethod(signature.constData()) >= 0) {
             (void)QMetaObject::invokeMethod(host, method, Q_ARG(qint64, requestId));
         }
     }

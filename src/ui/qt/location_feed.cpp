@@ -5,11 +5,18 @@
 
 #include "location_feed.h"
 
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include "decoder_host.h"
 
 namespace dsd_qt {
 
-LocationFeed::LocationFeed(QObject* parent) : QObject(parent) {}
+LocationFeed::LocationFeed(QObject* parent) : QObject(parent) {
+    // Inactive is still on screen (a dialog, such as the permission prompt, on top); only Hidden and Suspended are not.
+    if (QGuiApplication* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, &LocationFeed::onApplicationState);
+    }
+}
 
 LocationFeed::~LocationFeed() = default;
 
@@ -43,14 +50,14 @@ LocationFeed::host() const {
     return m_host;
 }
 
-void
+bool
 LocationFeed::acquire(const QString& name) {
     if (name.isEmpty() || m_host == nullptr) {
-        return;
+        return false;
     }
     if (m_leases.contains(name)) {
         noteForeground();
-        return;
+        return m_leases.contains(name); // a consumer leaving on the notice may be this one
     }
     const bool first = m_leases.isEmpty();
     m_leases.insert(name);
@@ -60,6 +67,7 @@ LocationFeed::acquire(const QString& name) {
     } else {
         noteForeground();
     }
+    return m_leases.contains(name);
 }
 
 void
@@ -134,6 +142,34 @@ LocationFeed::stopFeed() {
     clearRecord();
     if (m_host != nullptr) {
         m_host->stopLocationStream();
+    }
+}
+
+/* Leaving the foreground: what the feed last said goes at once (the platform withdraws the feed as well). Coming back:
+ * the epoch decides; a return with no move seen, whose record leaving cleared, asks the host to say it again. */
+void
+LocationFeed::onApplicationState(Qt::ApplicationState state) {
+    if (state == Qt::ApplicationHidden || state == Qt::ApplicationSuspended) {
+        if (!m_away) {
+            m_away = true;
+            m_epochAtLeave = m_epoch;
+            m_recordDroppedAtLeave = !m_record.isEmpty();
+        }
+        clearRecord();
+        return;
+    }
+    if (state != Qt::ApplicationActive || !m_away) {
+        return;
+    }
+    m_away = false;
+    if (m_host == nullptr || m_leases.isEmpty()) {
+        return;
+    }
+    const qint64 before = m_epoch;
+    noteForeground();
+    if (m_host != nullptr && !m_leases.isEmpty() && m_epoch == before && before == m_epochAtLeave
+        && m_recordDroppedAtLeave) {
+        m_host->startLocationStream();
     }
 }
 

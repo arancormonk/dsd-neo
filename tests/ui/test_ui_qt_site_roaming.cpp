@@ -10,6 +10,7 @@
  */
 #include <QCoreApplication>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QList>
 #include <QObject>
 #include <QPair>
@@ -2029,6 +2030,45 @@ check_feed_map_sees_the_foreground_move_first() {
           "feed: roaming's own look keeps that fix and starts nothing more");
 }
 
+/* The app goes to the background and back with roaming and the map on the feed: the feed's own return (Active) is the
+ * first look, roaming handles the move before the restart, and the order of today holds: one start for the epoch, the
+ * candidate gone, the new epoch's first fix counted and kept. */
+void
+check_feed_background_cycle() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    rig.running();
+    rig.nearB(0);
+    rig.nearB(10000);
+    shared.feed.acquire(LocationFeed::mapLease());
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+    check(shared.feed.record().isEmpty(), "feed: nothing from before the background reads as live");
+    rig.host.epochValue = 1;
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+    check(rig.host.streamStarts == 2 && rig.roaming.reason() == SiteRoaming::NoFix,
+          "feed: back on screen, one start, roaming's candidate gone first");
+    rig.nearA(1000);
+    rig.tick(500);
+    check(rig.roaming.state() == SiteRoaming::Following && rig.host.streamStarts == 2 && rig.host.streamStops == 0,
+          "feed: the first fix after the return counts, and nothing starts twice");
+}
+
+/* A shared feed with no host refuses roaming's lease: roaming does not take itself for following one, and takes the
+ * lease on a later pass once the feed has a host. */
+void
+check_feed_refused_lease() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    shared.feed.setHost(nullptr);
+    rig.running();
+    shared.settle();
+    check(rig.host.streamStarts == 0 && !shared.feed.active(), "feed: no lease without a host");
+    shared.feed.setHost(&rig.host);
+    rig.tick(1000);
+    check(rig.host.streamStarts == 1 && shared.feed.holds(LocationFeed::roamingLease()),
+          "feed: the next pass takes the lease");
+}
+
 } // namespace
 
 int
@@ -2051,7 +2091,7 @@ main(int argc, char** argv) {
     check_invalid_settings();
     check_call_wait();
 
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv); // the location feed follows the application state (#800)
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(QStringLiteral("site-roaming-%1").arg(QCoreApplication::applicationPid()));
     dsd_test_qt_isolate_paths();
@@ -2079,6 +2119,8 @@ main(int argc, char** argv) {
     check_feed_pending_switch_while_map_acquires();
     check_feed_roaming_joins_the_map();
     check_feed_map_sees_the_foreground_move_first();
+    check_feed_background_cycle();
+    check_feed_refused_lease();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

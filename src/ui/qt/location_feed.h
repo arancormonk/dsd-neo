@@ -14,15 +14,19 @@
  *    changes nothing, except that it looks at the foreground epoch (below).
  *  - release(name) drops it; the last lease leaving stops the feed. Releasing a lease not held does nothing.
  *  - The platform stops the feed itself whenever the app leaves the foreground (DecoderHost::foregroundEpoch() moves).
- *    noteForeground(), which acquire() runs too, reads the epoch: on a move with any lease held it emits
- *    foregroundMoved() first and then starts the feed once again for every lease. A consumer that handles the move
- *    itself (SiteRoaming) therefore sees the notice before the first fix of the new epoch.
+ *    The feed watches the application state for that itself, so no consumer has to: leaving the foreground (Hidden or
+ *    Suspended) clears `record` at once, so no fix from before can read as live, and coming back (Active) runs
+ *    noteForeground(). noteForeground(), which acquire() runs too, reads the epoch: on a move with any lease held it
+ *    emits foregroundMoved() first and then starts the feed once again for every lease. A consumer that handles the
+ *    move itself (SiteRoaming) therefore sees the notice before the first fix of the new epoch. A return with no move
+ *    seen whose record was cleared on leaving asks the host once more, so it repeats where the feed stands.
  *  - setHost() with another host drops every lease, stops the old host's feed and emits leasesDropped().
  *
  * Every locationStreamUpdate() of the host is passed on as updated() in the order it came, only while a lease is held.
  * The latest one is kept as `record` so a consumer joining a running feed reads where it stands; it is cleared
- * whenever the feed stops or starts again (recordChanged(), never updated()). Nothing here is ever saved: a stream fix is never a saved fix (the clocks
- * differ, and the privacy policy says stream readings are not stored). Qt thread only.
+ * whenever the feed stops or starts again or the app leaves the foreground (recordChanged(), never updated()).
+ * Nothing here is ever saved: a stream fix is never a saved fix (the clocks differ, and the privacy policy says
+ * stream readings are not stored). Qt thread only.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_LOCATION_FEED_H_
@@ -33,6 +37,7 @@
 #include <QSet>
 #include <QString>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -64,12 +69,15 @@ class LocationFeed : public QObject {
     LocationFeed(const LocationFeed&) = delete;
     LocationFeed& operator=(const LocationFeed&) = delete;
 
-    /** @brief The host whose feed this owns. Another host drops every lease (leasesDropped()) and stops the old feed. */
+    /** @brief The host whose feed this owns. Another one drops every lease (leasesDropped()) and stops the old feed. */
     void setHost(DecoderHost* next);
     DecoderHost* host() const;
 
-    /** @brief Take the lease @p name (non-empty); the first one starts the feed. Idempotent; runs noteForeground(). */
-    Q_INVOKABLE void acquire(const QString& name);
+    /**
+     * @brief Take the lease @p name (non-empty); the first one starts the feed. Idempotent; runs noteForeground().
+     * @return Whether the lease is held: false with no host (nothing to lease) or an empty name.
+     */
+    Q_INVOKABLE bool acquire(const QString& name);
     /** @brief Drop the lease @p name; the last one stops the feed. A lease not held: nothing happens. */
     Q_INVOKABLE void release(const QString& name);
     /** @brief Whether the lease @p name is held. */
@@ -99,12 +107,18 @@ class LocationFeed : public QObject {
     void startFeed();
     void stopFeed();
     void clearRecord();
+    void onApplicationState(Qt::ApplicationState state);
 
     QPointer<DecoderHost> m_host;
     QSet<QString> m_leases;
     QVariantMap m_record;
     /* The foreground epoch the feed last started in; -1 when it could not be read then. */
     qint64 m_epoch = -1;
+    /* Out of the foreground (Hidden or Suspended) since the last Active; m_epoch then, and whether leaving cleared a
+     * record. */
+    bool m_away = false;
+    qint64 m_epochAtLeave = -1;
+    bool m_recordDroppedAtLeave = false;
 };
 
 } // namespace dsd_qt
