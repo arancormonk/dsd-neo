@@ -3776,6 +3776,21 @@ class FakeRecordings : public dsd_qt::CallRecordingProvider {
         }
         return false;
     }
+
+    QList<QStringList>
+    recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override {
+        QList<QStringList> names;
+        for (const QStringList& fragments : fragmentsPerRow) {
+            QStringList row;
+            for (const QString& fragment : fragments) {
+                if (recorded.contains(fragment)) {
+                    row.append(fragment);
+                }
+            }
+            names.append(row);
+        }
+        return names;
+    }
 };
 
 /* The fragment key of the newest row @p slot committed. */
@@ -6386,13 +6401,18 @@ test_fragment_on_another_system_withdraws_call_fields(void) {
                reloaded.count() == 1 && part_fields_of(reloaded, 0) == alone);
     }
 
-    // The reception scope the withdrawn fragment strengthened goes back to what the rest knew.
+    // The reception scope the withdrawn fragment strengthened goes back to what the rest knew. An update is judged
+    // against what the row's other fragments gave: here the other fragment's sender system, which the update's
+    // contradicts (its NAC-only reception alone would agree with either system).
     resetStorage();
     RingFixture ring;
     CallHistoryModel model;
     Event_History* a = ring.commit(0, 80672U, 8672U, when, when + 3);
     a->systype = DSD_SYNC_P25P1_POS;
     with_rx(a, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+    a->pos.scope.kind = DSD_POS_SCOPE_P25;
+    a->pos.scope.a = 0xBEE00U;
+    a->pos.scope.b = 0x1A3U;
     Event_History* b = ring.commit(0, 80672U, 8672U, when - 6, when + 1);
     b->systype = DSD_SYNC_P25P1_POS;
     with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
@@ -6402,6 +6422,9 @@ test_fragment_on_another_system_withdraws_call_fields(void) {
                && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when - 6));
     b = &ring.rings[0].Event_History_Items[1];
     with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+    b->pos.scope.kind = DSD_POS_SCOPE_P25;
+    b->pos.scope.a = 0xBEE00U;
+    b->pos.scope.b = 0x1A4U;
     ring.touchCommitted(0);
     model.refresh(ring.state);
     model.startSaveForTest();
@@ -6449,6 +6472,283 @@ test_fragment_on_another_system_withdraws_call_fields(void) {
                older.count() == 1 && older.data(older.index(0), CallHistoryModel::FreqHzRole).toLongLong() == 0
                    && older.data(older.index(0), CallHistoryModel::AccessCodeRole).toString().isEmpty());
     }
+}
+
+/* B2/B5: a fragment withdrawn from its row (its reading names another system) is another call's, so its recording is
+ * not the row's: the row's recording roles, recordingsForUid(), the export's recording names and uidForFragment() leave
+ * it out, live and after a reload, while the row keeps the fragment's key to know its later readings. A reading that
+ * agrees again gives the recording back. */
+void
+test_withdrawn_fragment_recordings(void) {
+    const time_t when = 1754706900;
+    resetStorage();
+    RingFixture ring;
+    FakeRecordings recordings;
+    QString joined;
+    qint64 uid = 0;
+    {
+        CallHistoryModel model;
+        model.setRecordingProvider(&recordings);
+        Event_History* a = ring.commit(0, 80681U, 8681U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        Event_History* b = ring.commit(0, 80681U, 8681U, when + 5, when + 8);
+        b->systype = DSD_SYNC_P25P1_POS;
+        with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+        joined = newest_fragment(ring, 0);
+        recordings.recorded = {joined};
+        model.refresh(ring.state);
+        uid = uid_at(model, 0);
+        expect("withdrawn recording: the NAC-only fragment joins the call with its recording",
+               model.count() == 1 && has_recording(model, 0) && model.recordingsForUid(uid).size() == 1
+                   && qRound64(model.uidForFragment(joined)) == uid);
+        b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        const QList<CallHistoryModel::ExportRow> exported = model.exportRows({0});
+        expect("withdrawn recording: the row no longer offers the other system's recording",
+               model.count() == 1 && !has_recording(model, 0)
+                   && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().isEmpty()
+                   && model.recordingsForUid(uid).isEmpty());
+        expect("withdrawn recording: the export names no recording of it",
+               exported.size() == 1 && exported.at(0).recordingNames.isEmpty());
+        expect("withdrawn recording: its recording names no row", qRound64(model.uidForFragment(joined)) == 0);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel reloaded;
+        reloaded.setRecordingProvider(&recordings);
+        expect("withdrawn recording: the same after a reload", reloaded.count() == 1 && !has_recording(reloaded, 0)
+                                                                   && reloaded.recordingsForUid(uid).isEmpty()
+                                                                   && qRound64(reloaded.uidForFragment(joined)) == 0);
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        reloaded.refresh(ring.state);
+        expect("withdrawn recording: a reading that agrees again gives the recording back",
+               reloaded.count() == 1 && has_recording(reloaded, 0) && reloaded.recordingsForUid(uid).size() == 1
+                   && qRound64(reloaded.uidForFragment(joined)) == uid);
+    }
+}
+
+/** Everything row @p row shows that a fragment can give it: its sender, label and detail (message and GPS) beside the
+ * call fields (part_fields_of()), as one line to compare. */
+QString
+contribution_fields_of(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return QStringLiteral("session=%1 src=%2 label=%3 detail=%4 %5")
+        .arg(model.data(idx, CallHistoryModel::SessionRole).toLongLong())
+        .arg(model.data(idx, CallHistoryModel::SrcRole).toULongLong())
+        .arg(model.data(idx, CallHistoryModel::SourceNameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::DetailRole).toString())
+        .arg(part_fields_of(model, row));
+}
+
+/* B2/B5, one model for every field: a fragment's contribution is its part (FragmentPart), keyed by its ring identity,
+ * and the row is the fold of its parts. A P25 row of unknown source heard on one full system merges a NAC-only
+ * fragment, heard in the next decode session, that names the radio and gives the row its label, message, fix,
+ * frequency, access code, site, service, flags, span and session. When that fragment's later reading names another system, the row shows exactly what its own
+ * fragment alone gave it, the radio included, live and when the withdrawal comes after a reload; nothing of it is
+ * saved; and a later fragment naming the row's real radio joins the row and names it. */
+void
+test_fragment_contributions_withdraw_together(void) {
+    const time_t when = 1754707000;
+    for (int reloadFirst = 0; reloadFirst < 2; reloadFirst++) {
+        resetStorage();
+        RingFixture ring;
+        auto model = std::make_unique<CallHistoryModel>();
+        Event_History* a = ring.commit(0, 80691U, 0U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(a, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        model->refresh(ring.state);
+        const QString alone = contribution_fields_of(*model, 0);
+        // Heard in the next decode session: the row becomes that session's too, while the fragment is its own.
+        model->beginSession();
+        Event_History* f = ring.commit(0, 80691U, 8691U, when + 5, when + 12);
+        f->systype = DSD_SYNC_P25P1_POS;
+        with_rx(f, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+        RingFixture::carrier(f, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+        with_gps(f, "GPS: F", 225000000, 450000000, 9U);
+        f->pos.scope.kind = DSD_POS_SCOPE_P25_NAC;
+        f->pos.scope.a = 0x293U;
+        f->pos.identity_freq_hz = 453000000;
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Copy F");
+        DSD_SNPRINTF(f->s_name, sizeof(f->s_name), "%s", "Alias F");
+        DSD_SNPRINTF(f->service_label, sizeof(f->service_label), "%s", "Service F");
+        f->receive_identity.known = 1;
+        f->receive_identity.kind = DSD_RECEIVE_NAC;
+        f->receive_identity.value = 0x293U;
+        f->site_id.family = DSD_RXID_FAMILY_P25;
+        f->site_id.valid = DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+        f->site_id.p25_sysid = 0x1A3U;
+        f->site_id.p25_rfss = 1U;
+        f->site_id.p25_site = 2U;
+        f->emergency = 1U;
+        f->enc = 1U;
+        model->refresh(ring.state);
+        expect("contributions: the NAC-only fragment joins the call and names its radio",
+               model->count() == 1 && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8691U
+                   && model->data(model->index(0), CallHistoryModel::SessionRole).toLongLong() == model->session()
+                   && model->data(model->index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias F")
+                   && detail_of(*model, 0) == QStringLiteral("Copy F · GPS: F"));
+        if (reloadFirst != 0) {
+            model->startSaveForTest();
+            model->waitForSaveForTest();
+            model.reset();
+            model = std::make_unique<CallHistoryModel>();
+            expect("contributions: the merged row reloads with its radio",
+                   model->count() == 1
+                       && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8691U);
+        }
+        f = &ring.rings[0].Event_History_Items[1];
+        with_rx(f, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        f->freq_hz = 453000000;
+        f->pos.scope.kind = DSD_POS_SCOPE_P25;
+        f->pos.scope.a = 0xBEE00U;
+        f->pos.scope.b = 0x1A4U;
+        f->pos.identity_freq_hz = 0;
+        ring.touchCommitted(0);
+        model->refresh(ring.state);
+        const QString after = model->count() == 1 ? contribution_fields_of(*model, 0) : QStringLiteral("<rows>");
+        expect(reloadFirst != 0 ? "contributions: after a reload, the withdrawn fragment gives back every field"
+                                : "contributions: the withdrawn fragment gives back every field, its radio included",
+               after == alone);
+        if (after != alone) {
+            DSD_FPRINTF(stderr, "  want %s\n  got  %s\n", alone.toUtf8().constData(), after.toUtf8().constData());
+        }
+        model->startSaveForTest();
+        model->waitForSaveForTest();
+        model.reset();
+        const QJsonObject stored = stored_row_with(80691U, 0U);
+        expect("contributions: nothing the withdrawn fragment gave is saved",
+               !stored.isEmpty() && stored.value(QLatin1String("srcName")).toString().isEmpty()
+                   && !stored.contains(QLatin1String("msg")) && !stored.contains(QLatin1String("gps"))
+                   && !stored.contains(QLatin1String("pos")) && !stored.contains(QLatin1String("sscope"))
+                   && !stored.contains(QLatin1String("service")));
+        model = std::make_unique<CallHistoryModel>();
+        expect("contributions: the rebuilt row is the one reloaded",
+               model->count() == 1 && contribution_fields_of(*model, 0) == alone);
+        Event_History* c = ring.commit(0, 80691U, 8692U, when + 4, when + 8);
+        c->systype = DSD_SYNC_P25P1_POS;
+        with_rx(c, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        model->refresh(ring.state);
+        expect("contributions: a fragment naming the row's real radio joins the row and names it",
+               model->count() == 1 && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8692U);
+    }
+}
+
+/* B2: what a fragment gave is its own by its ring identity, not by its start, push stamp and slot alone, which two
+ * decoder runs replaying one call share. A call replayed in two rings at once: the first ring's fragment gives the row
+ * a message, a label and a fix; the second ring's fragment, with the same stamps but none of them, later names another
+ * system. Its withdrawal leaves the first ring's message, label and fix on the row, live and after a reload. */
+void
+test_fragment_withdrawal_keeps_other_ring_payload(void) {
+    const time_t when = 1754707100;
+    resetStorage();
+    RingFixture first;
+    RingFixture second;
+    {
+        CallHistoryModel model;
+        Event_History* a = first.commit(0, 80693U, 8693U, when, when + 4);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        DSD_SNPRINTF(a->text_message, sizeof(a->text_message), "%s", "Copy A");
+        DSD_SNPRINTF(a->s_name, sizeof(a->s_name), "%s", "Alias A");
+        with_gps(a, "GPS: A", 100000000, 200000000, 3U);
+        model.refresh(first.state);
+        Event_History* b = second.commit(0, 80693U, 8693U, when, when + 4);
+        b->systype = DSD_SYNC_P25P1_POS;
+        with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+        model.refresh(second.state);
+        expect("other ring: the two rings' fragments are one call with the first ring's message and label",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy A · GPS: A")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias A"));
+        b = &second.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        second.touchCommitted(0);
+        model.refresh(second.state);
+        expect("other ring: the second ring's withdrawal leaves the first ring's message and label",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy A · GPS: A")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias A"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("other ring: the same after a reload",
+           reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("Copy A · GPS: A")
+               && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Alias A"));
+}
+
+/* B4: an update found by its fragment is not merged again, so its destination is checked again too. An M17 callsign
+ * fragment with no destination yet joins one caller's call to DEST-ONE under the service both name; when its later
+ * reading names DEST-TWO and carries a message, that message is not shown on DEST-ONE's row, live and after a
+ * reload, and its earlier contribution goes. An update is judged against what the row's other fragments gave: a
+ * fragment that gave the row its only destination and later names another simply names that one. */
+void
+test_fragment_update_rechecks_destination(void) {
+    const time_t when = 1754707200;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* a = ring.commit(0, 0U, 0U, when, when + 3, "DEST-ONE");
+        a->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "N0CALL");
+        DSD_SNPRINTF(a->service_label, sizeof(a->service_label), "%s", "Club CAN 3");
+        Event_History* f = ring.commit(0, 0U, 0U, when + 4, when + 7, "");
+        f->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+        DSD_SNPRINTF(f->service_label, sizeof(f->service_label), "%s", "Club CAN 3");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Hello");
+        model.refresh(ring.state);
+        expect("destination: the fragment with no destination joins the call and gives it its message",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Hello"));
+        f = &ring.rings[0].Event_History_Items[1];
+        DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+        f->event_time = when + 9;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("destination: another destination's message and span stay off the row",
+               model.count() == 1 && detail_of(model, 0).isEmpty()
+                   && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 3);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel reloaded;
+        expect("destination: the same after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
+
+    resetStorage();
+    RingFixture own;
+    CallHistoryModel model;
+    Event_History* a = own.commit(0, 0U, 0U, when, when + 3, "");
+    a->systype = DSD_SYNC_M17_STR_POS;
+    DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "N0CALL");
+    Event_History* f = own.commit(0, 0U, 0U, when + 4, when + 7, "DEST-ONE");
+    f->systype = DSD_SYNC_M17_STR_POS;
+    DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+    model.refresh(own.state);
+    expect("destination: a fragment gives the row its only destination", model.count() == 1);
+    f = &own.rings[0].Event_History_Items[1];
+    DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+    DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+    own.touchCommitted(0);
+    model.refresh(own.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("destination: its later reading names its new destination on the row",
+           model.count() == 1 && detail_of(model, 0) == QStringLiteral("For two") && rows.size() == 1
+               && rows.at(0).toObject().value(QLatin1String("tgtText")).toString() == QStringLiteral("DEST-TWO"));
 }
 
 /* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
@@ -6766,6 +7066,10 @@ main(int argc, char** argv) {
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
     test_fragment_on_another_system_withdraws_call_fields();
+    test_withdrawn_fragment_recordings();
+    test_fragment_contributions_withdraw_together();
+    test_fragment_withdrawal_keeps_other_ring_payload();
+    test_fragment_update_rechecks_destination();
     test_json_field_fits_judges_conversion();
     test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();
