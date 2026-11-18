@@ -389,6 +389,24 @@ test_producer_sentence_choice(void) {
     CHECK(feed_records(recs, 4) == 1);
     CHECK(recs[0].heading_ddeg == DSD_POSITION_HEADING_UNKNOWN && recs[0].alt_dm == 100);
 
+    /* An active RMC at exactly 0, 0 is no candidate: the packet's GGA is the report, and the RMC's text is kept. One
+       zero coordinate is a position. */
+    reset_fixture();
+    char z[128];
+    sentence(z, sizeof z, "GPRMC,120000,A,0000.0000,N,00000.0000,E,001.0,045.0,150626,,,A", "\r\n");
+    DSD_SNPRINTF(buf, sizeof buf, "%s%s", g, z);
+    CHECK(check_payload(buf, 55U, 1) == 1U);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].lat_e7 == 100000000 && recs[0].lon_e7 == 200000000 && recs[0].alt_dm == 100);
+    CHECK(strstr(notice_row()->text_message, "$GPRMC,120000,A,0000.0000") != NULL);
+
+    reset_fixture();
+    sentence(z, sizeof z, "GPRMC,120000,A,0000.0000,N,02000.0000,E,001.0,045.0,150626,,,A", "\r\n");
+    DSD_SNPRINTF(buf, sizeof buf, "%s%s", g, z);
+    CHECK(check_payload(buf, 55U, 1) == 1U);
+    CHECK(feed_records(recs, 4) == 1);
+    CHECK(recs[0].lat_e7 == 0 && recs[0].lon_e7 == 200000000 && recs[0].heading_ddeg == 450U);
+
     /* No measured fix at all: a notice with the text, no position, no -L row. */
     reset_fixture();
     DSD_SNPRINTF(buf, sizeof buf, "%s", r);

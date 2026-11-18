@@ -1350,6 +1350,12 @@ nmea_packet_take(nmea_packet* pkt, const uint8_t* bytes, const nmea_sentence_spa
     if (f.type == NMEA_TYPE_OTHER) {
         return;
     }
+    if (f.measured_fix && f.has_position && f.lat_e7 == 0 && f.lon_e7 == 0) {
+        /* Exactly 0, 0 is never a position (admission refuses it): it must not displace another sentence's fix. One
+           zero coordinate is a place like any other. */
+        f.measured_fix = 0;
+        f.refusal = "position 0, 0";
+    }
     if (!f.measured_fix || !f.has_position) {
         if (pkt->refusal == NULL) {
             pkt->refusal = f.refusal;

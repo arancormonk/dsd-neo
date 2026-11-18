@@ -2540,7 +2540,8 @@ suite runs under this compiler.
     report takes the UDT header's source, destination and I/G bit as a `dsd_gps_address`, LIP over UDP the
     datagram's source and destination, qualified as a group like LRRP's). LRRP
     reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
-    0x67, 0x69, 0x6B, 0x6C and document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
+    at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
     parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
     short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
@@ -2567,7 +2568,8 @@ suite runs under this compiler.
     `p25_sm_checked_call_identity()` (P25 SM below).
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
-    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, is the report / the same packet, whose
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
+    sentence there is kept as text but chosen as no report), is the report / the same packet, whose
     header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
     type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever

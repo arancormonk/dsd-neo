@@ -1235,6 +1235,7 @@ typedef struct {
     uint32_t lon_raw;
     uint8_t have_pos;
     uint8_t pos_rank;
+    uint8_t pos_zero;        // the position is exactly 0, 0 (dmr_lrrp_zero_pair())
     dmr_lrrp_number radius;  // metres
     dmr_lrrp_number alt;     // metres
     dmr_lrrp_number alt_acc; // metres
@@ -1291,6 +1292,18 @@ dmr_lrrp_be32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+static void dmr_lrrp_fill_coordinates(uint32_t lat_raw, uint32_t lon_raw, dsd_position_fix* fix);
+
+// Whether a shape's coordinates are exactly 0, 0 as the record would hold them: never a position (admission refuses
+// it), so such a shape does not take the place of another shape's position, whatever their ranks. One zero coordinate
+// is a place.
+static int
+dmr_lrrp_zero_pair(uint32_t lat_raw, uint32_t lon_raw) {
+    dsd_position_fix fix;
+    dmr_lrrp_fill_coordinates(lat_raw, lon_raw, &fix);
+    return fix.lat_e7 == 0 && fix.lon_e7 == 0;
+}
+
 // A shape token at p[0] with `avail` bytes from it. Returns the bytes it takes, or 0 when it is malformed or cut.
 static size_t
 dmr_lrrp_parse_shape(const uint8_t* p, size_t avail, const dmr_lrrp_shape* shape, dmr_lrrp_parse_result* r) {
@@ -1311,8 +1324,11 @@ dmr_lrrp_parse_shape(const uint8_t* p, size_t avail, const dmr_lrrp_shape* shape
         }
         used += n;
     }
-    if (r->pos_rank > shape->rank) {
+    /* A shape at 0, 0 is kept only while no other shape gave a position (it is then refused as a position). */
+    const uint8_t zero = (uint8_t)dmr_lrrp_zero_pair(dmr_lrrp_be32(p + 1), dmr_lrrp_be32(p + 5));
+    if (!r->have_pos || zero < r->pos_zero || (zero == r->pos_zero && r->pos_rank > shape->rank)) {
         r->pos_rank = shape->rank;
+        r->pos_zero = zero;
         r->lat_raw = dmr_lrrp_be32(p + 1);
         r->lon_raw = dmr_lrrp_be32(p + 5);
         r->have_pos = 1U;
