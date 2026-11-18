@@ -92,7 +92,11 @@ if(DEFINED REFERENCE_FIXTURE)
         ERROR_VARIABLE _reference_err
         TIMEOUT 110
     )
-    string(REGEX MATCH "${EXPECTED}" _reference_value "${_reference_out}\n${_reference_err}")
+    string(
+        REGEX MATCH "${EXPECTED}"
+        _reference_value
+        "${_reference_out}\n${_reference_err}"
+    )
     if(NOT "${_reference_rc}" STREQUAL "0" OR _reference_value STREQUAL "")
         message(
             FATAL_ERROR
@@ -128,7 +132,12 @@ if(NOT _reference_value STREQUAL "")
     # Every value this run decoded for the field is the reference's: the count of
     # any value and of the reference value agree, and the latter is what counts.
     dsd_test_count_regex_matches(_any_value_count "${EXPECTED}" "${_all}")
-    string(REGEX REPLACE "([][+.*()^$?|\\])" "\\\\\\1" _reference_regex "${_reference_value}")
+    string(
+        REGEX REPLACE "([][+.*()^$?|\\])"
+        "\\\\\\1"
+        _reference_regex
+        "${_reference_value}"
+    )
     dsd_test_count_regex_matches(_reference_count "${_reference_regex}" "${_all}")
     if(NOT _any_value_count EQUAL _reference_count)
         message(
