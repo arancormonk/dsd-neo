@@ -84,6 +84,20 @@ class InventoryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 legal.add_spdx(document, self.inventory, self.pins, platform)
 
+    def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
+        # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
+        # SoapySDRUtil.exe, so only its SBOM names it.
+        appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8")
+        self.assertIn("-DENABLE_APPS=OFF", appimage)
+        for platform in legal.PLATFORMS:
+            document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+            legal.add_spdx(document, self.inventory, self.pins, platform)
+            names = [p["name"] for p in document["packages"]]
+            with self.subTest(platform=platform):
+                self.assertEqual("SoapySDR" in names, platform in ("linux", "windows"), names)
+                self.assertEqual([n for n in names if "SoapySDRUtil" in n],
+                                 ["SoapySDRUtil"] if platform == "windows" else [])
+
     def test_scanner_records_are_preserved_and_conflicting_licenses_fail(self):
         scanner = {"SPDXID": "SPDXRef-scanned-library", "name": "library"}
         document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": [scanner.copy()]}

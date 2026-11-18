@@ -558,7 +558,7 @@
     },
     {
       "id": "soapysdr",
-      "name": "SoapySDR and SoapySDRUtil",
+      "name": "SoapySDR",
       "paths": [
         "vcpkg-ports/soapysdr/",
         "LICENSES/BSL-1.0.txt",
@@ -577,11 +577,42 @@
         "LICENSES/BSL-1.0.txt",
         "LICENSES/SoapySDR-COPYRIGHT.txt"
       ],
-      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR) and the Windows ZIP (SoapySDR.dll, plus SoapySDRUtil.exe from the soapysdr overlay's tools feature). The BSL-1.0 text names no holder; SoapySDR-COPYRIGHT.txt lists every holder the compiled library and SoapySDRUtil sources name (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan) and SoapySDRUtil's public-domain MSVC getopt.h from mingw-w64. The macOS DMG bundles Homebrew's build, which this record does not cover.",
+      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR, without SoapySDR's programs) and the Windows ZIP (SoapySDR.dll). The BSL-1.0 text names no holder; SoapySDR-COPYRIGHT.txt lists every holder the compiled library and SoapySDRUtil sources name (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan) and SoapySDRUtil's public-domain MSVC getopt.h from mingw-w64. The macOS DMG bundles Homebrew's build, which this record does not cover.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-11-17",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+        "LICENSES/SoapySDR-COPYRIGHT.txt": "e4a78d26416963f91128ea1b92d993571ac3fb0b797ac5cbf217f3c90a6ab598"
+      },
+      "pin": "SOAPY_SDR_SHA"
+    },
+    {
+      "id": "soapysdr-util",
+      "name": "SoapySDRUtil",
+      "paths": [
+        "vcpkg-ports/soapysdr/",
+        "LICENSES/BSL-1.0.txt",
+        "LICENSES/SoapySDR-COPYRIGHT.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "BSL-1.0",
+      "license_concluded": "BSL-1.0",
+      "notices": [
+        "LICENSES/BSL-1.0.txt",
+        "LICENSES/SoapySDR-COPYRIGHT.txt"
+      ],
+      "assessment": "SoapySDR's device tool, SoapySDRUtil.exe in bin\\ of the Windows ZIP, built by the soapysdr overlay's tools feature from the commit SoapySDR.dll comes from; its MSVC getopt.h is mingw-w64's public-domain file. SoapySDR-COPYRIGHT.txt lists the holders its sources name. The AppImage builds SoapySDR without its programs.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
       "notice_sha256": {
         "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
         "LICENSES/SoapySDR-COPYRIGHT.txt": "e4a78d26416963f91128ea1b92d993571ac3fb0b797ac5cbf217f3c90a6ab598"

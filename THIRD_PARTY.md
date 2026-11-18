@@ -212,8 +212,8 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   https://github.com/pothosware/SoapySDR) - BSL-1.0; license text `LICENSES/BSL-1.0.txt`, installed as
   `licenses/BSL-1.0.txt`. The license text names no holder, so `LICENSES/SoapySDR-COPYRIGHT.txt`, installed as
   `licenses/SoapySDR-COPYRIGHT.txt`, lists every copyright line of the sources the library and SoapySDRUtil are
-  compiled from. The Windows ZIP and the AppImage build the 0.8.1 release commit (`SOAPY_SDR_SHA`). The ZIP's
-  `SoapySDRUtil.exe` comes from the `soapysdr` overlay's `tools` feature; its MSVC `getopt.h` is mingw-w64's
+  compiled from. The Windows ZIP and the AppImage build the 0.8.1 release commit (`SOAPY_SDR_SHA`); the AppImage
+  builds the library alone. The ZIP's `SoapySDRUtil.exe` comes from the `soapysdr` overlay's `tools` feature; its MSVC `getopt.h` is mingw-w64's
   public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
 - **SoapyAirspy** (Charles J. Cliffe, https://github.com/pothosware/SoapyAirspy) - MIT; release 0.2.1, built against
   the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. Notice

@@ -216,6 +216,9 @@ class SoapyModulePackaging(unittest.TestCase):
         expected = {
             "soapysdr": (["linux", "windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt",
                                                                             "LICENSES/SoapySDR-COPYRIGHT.txt"]),
+            # SoapySDR's program, which only the Windows ZIP carries (the AppImage builds no programs).
+            "soapysdr-util": (["windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt",
+                                                                       "LICENSES/SoapySDR-COPYRIGHT.txt"]),
             "soapy-airspy": (["windows"], "MIT", "SOAPY_AIRSPY_SHA", ["vcpkg-ports/soapy-airspy/copyright"]),
             "soapy-hackrf": (["windows"], "MIT", "SOAPY_HACKRF_SHA", ["vcpkg-ports/soapy-hackrf/copyright"]),
             "libhackrf": (["windows"], "BSD-3-Clause", "HACKRF_SHA", ["vcpkg-ports/hackrf/copyright"]),

@@ -19,7 +19,7 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
             "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "windows-libusb",
-            "pthreads4w", "msvc-runtime", "vcpkg-ports"}
+            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util"}
 
 
 def read_inventory(root=ROOT):
