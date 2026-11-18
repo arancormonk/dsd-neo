@@ -21,15 +21,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-long __real_dsd_fd_readable_bytes(int fd);
-long __wrap_dsd_fd_readable_bytes(int fd);
-long __real_dsd_socket_readable_bytes(dsd_socket_t sock);
-long __wrap_dsd_socket_readable_bytes(dsd_socket_t sock);
-uint64_t __real_dsd_time_monotonic_ms(void);
-uint64_t __wrap_dsd_time_monotonic_ms(void);
-// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+#include "test_platform_pcm_stream_mark_seams.h"
 
 static int g_failures = 0;
 
@@ -46,11 +38,11 @@ static atomic_int g_clock_jumps;
 static uint64_t g_clock_offset_ms;
 
 uint64_t
-__wrap_dsd_time_monotonic_ms(void) {
+mark_time_monotonic_ms(void) {
     if (atomic_load(&g_clock_jumps)) {
         g_clock_offset_ms += 300U;
     }
-    return __real_dsd_time_monotonic_ms() + g_clock_offset_ms;
+    return mark_real_time_monotonic_ms() + g_clock_offset_ms;
 }
 
 /* The decoder thread's refill, started from inside the mark's readiness query. */
@@ -79,15 +71,15 @@ refill_during_query(void) {
 }
 
 long
-__wrap_dsd_fd_readable_bytes(int fd) {
-    const long ready = __real_dsd_fd_readable_bytes(fd);
+mark_fd_readable_bytes(int fd) {
+    const long ready = mark_real_fd_readable_bytes(fd);
     refill_during_query();
     return ready;
 }
 
 long
-__wrap_dsd_socket_readable_bytes(dsd_socket_t sock) {
-    const long ready = __real_dsd_socket_readable_bytes(sock);
+mark_socket_readable_bytes(dsd_socket_t sock) {
+    const long ready = mark_real_socket_readable_bytes(sock);
     refill_during_query();
     return ready;
 }

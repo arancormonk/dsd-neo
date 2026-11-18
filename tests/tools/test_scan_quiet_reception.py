@@ -10,6 +10,7 @@
 These run in seconds and never start a decoder.
 """
 
+import importlib
 import math
 import os
 from pathlib import Path
@@ -28,7 +29,7 @@ except ImportError:
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import scan_quiet_reception as rx  # noqa: E402
+rx = importlib.import_module("scan_quiet_reception")
 
 
 class WidthRows(unittest.TestCase):

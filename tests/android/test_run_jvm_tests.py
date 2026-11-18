@@ -8,6 +8,7 @@ ANDROID_*_JVM test failed with "Improperly specified VM option". The options now
 launchers put on the java command line. These run in milliseconds and start no JVM.
 """
 
+import importlib
 import os
 from pathlib import PureWindowsPath
 import subprocess
@@ -15,7 +16,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import run_jvm_tests as runner  # noqa: E402
+runner = importlib.import_module("run_jvm_tests")
 
 # What cmd.exe splits a batch file's arguments at, outside double quotes.
 BATCH_DELIMITERS = " \t,;="

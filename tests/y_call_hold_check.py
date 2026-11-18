@@ -132,7 +132,11 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
             steps.append((t, match.group(5)))
     if landed is None:
         return ["the host never landed row zero"], {}
-    rel = lambda t: t - landed  # noqa: E731
+
+    def rel(t):
+        """@p t counted from the landing."""
+        return t - landed
+
     call = [(rel(t), p, q) for t, p, q in syncs if rel(t) <= call_s + 0.3]
     if not call:
         return ["no sync in the call"], {}

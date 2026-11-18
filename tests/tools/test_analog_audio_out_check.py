@@ -6,6 +6,7 @@ The host prints with "\\n", which Windows writes as CRLF. The ANALOG AUDIO OUT p
 checker must read a CRLF end as one newline or it finds no line on Windows. Stdlib only; runs no host.
 """
 
+import importlib
 import os
 import sys
 import unittest
@@ -14,7 +15,7 @@ from pathlib import Path
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT / "tests"))
 
-import analog_audio_out_check as check  # noqa: E402
+check = importlib.import_module("analog_audio_out_check")
 
 METRIC = "ANALOG METRIC: captured_ms=4980.0 rms_dbfs=-18.42 tone_snr_db=31.20 "
 AUDIO_OUT = "ANALOG AUDIO OUT: rate_hz=48000 samples=239040"

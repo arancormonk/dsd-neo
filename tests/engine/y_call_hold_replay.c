@@ -37,6 +37,7 @@
 
 #include "scan_landing.h"
 #include "scan_owner.h"
+#include "y_call_hold_replay_seams.h"
 
 static int g_landed = 0;
 static uint64_t g_yield_epoch_seen = 0U;
@@ -79,20 +80,12 @@ land_row_zero(dsd_state* state) {
     DSD_FPRINTF(stderr, "YHOLD landed t=%.3f\n", state->last_cc_sync_time_m);
 }
 
-// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-int __real_getFrameSync(dsd_opts* opts, dsd_state* state);
-int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
-int __real_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
-int __wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
-int __real_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders);
-int __wrap_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders);
-
 int
-__wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
+yhold_get_frame_sync(dsd_opts* opts, dsd_state* state) {
     if (!g_landed) {
         land_row_zero(state);
     }
-    const int synctype = __real_getFrameSync(opts, state);
+    const int synctype = yhold_real_get_frame_sync(opts, state);
     if (synctype > DSD_SYNC_NONE) {
         DSD_FPRINTF(stderr, "YHOLD sync t=%.3f proven=%u partial=%u anchor=%lld\n", dsd_decode_now_mono_s(),
                     state->scan_y_content_seq, state->scan_y_partial_seq, (long long)state->last_cc_sync_time);
@@ -117,22 +110,20 @@ note_step(const dsd_state* state) {
 
 /* A typed list's step. */
 int
-__wrap_dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
+yhold_channel_scan_step(dsd_opts* opts, dsd_state* state) {
     note_step(state);
-    return __real_dsd_engine_channel_scan_step(opts, state);
+    return yhold_real_channel_scan_step(opts, state);
 }
 
 /* An untyped list's step looks for its next row first (no_carrier_step_scanner_mode_if_needed(), placeholders kept);
    the resume that skips them is no step. */
 int
-__wrap_dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders) {
+yhold_untyped_find_row(const dsd_state* state, int from_roll, int skip_placeholders) {
     if (!skip_placeholders && g_landed) {
         note_step(state);
     }
-    return __real_dsd_engine_scan_untyped_find_row(state, from_roll, skip_placeholders);
+    return yhold_real_untyped_find_row(state, from_roll, skip_placeholders);
 }
-
-// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 int
 main(int argc, char** argv) {

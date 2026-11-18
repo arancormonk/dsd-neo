@@ -11,6 +11,8 @@ These run in seconds and never start a decoder or serve a scene.
 """
 
 import contextlib
+import importlib
+import importlib.util
 import io
 import os
 import sys
@@ -18,9 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-try:
-    import numpy  # noqa: F401
-except ImportError:
+if importlib.util.find_spec("numpy") is None:
     # The tool needs numpy; without it this is a skip CTest reports (SKIP_RETURN_CODE 77), not a pass.
     print(f"SKIP: tools/bench_scan_skip_silent.py needs numpy, which {sys.executable} does not have")
     sys.exit(77)
@@ -28,7 +28,7 @@ except ImportError:
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import bench_scan_skip_silent as bench  # noqa: E402
+bench = importlib.import_module("bench_scan_skip_silent")
 
 
 def parse(*argv):
