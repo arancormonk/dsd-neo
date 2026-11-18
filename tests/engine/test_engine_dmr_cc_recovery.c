@@ -966,7 +966,10 @@ release_barrier(void) {
 }
 
 static DSD_THREAD_RETURN_TYPE
-resume_skip_flush(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    resume_skip_flush(void* opaque) {
     (void)opaque;
     dsd_mutex_lock(&g_skip_flush.mutex);
     while (!g_skip_flush.skip_started) {
@@ -1037,7 +1040,10 @@ seed_skip_watchdog_call(void) {
 /* The tick a watchdog beat asks for, in flight on a thread of its own: in production the decoder thread runs it
    (p25_sm_watchdog_service()), and commands drained beside one still meet the guard it holds. */
 static DSD_THREAD_RETURN_TYPE
-watchdog_tick_in_flight(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    watchdog_tick_in_flight(void* opaque) {
     (void)opaque;
     p25_sm_try_tick(&g_opts, &g_state);
     DSD_THREAD_RETURN;

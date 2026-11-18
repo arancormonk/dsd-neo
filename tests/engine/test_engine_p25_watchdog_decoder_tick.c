@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 #include "engine_hooks_install.h"
 #include "test_env.h"
@@ -51,15 +52,18 @@ static atomic_int g_tunes;
 static atomic_int g_off_thread_tunes;
 static atomic_int g_last_tune_hz;
 
-// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
-bool __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth);
-bool __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth);
-bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
-void __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
+/* The rigctl peer, replaced through the linker (--wrap): ordinary names here, the __wrap_ names the linker wants as
+   their assembler names. */
+extern bool rigctl_set_freq(dsd_socket_t sockfd, long int freq) __asm__("__wrap_SetFreq");
+extern bool rigctl_set_modulation(dsd_socket_t sockfd, int bandwidth) __asm__("__wrap_SetModulation");
+extern bool rigctl_set_modulation_kind(dsd_socket_t sockfd, int kind,
+                                       int bandwidth) __asm__("__wrap_SetModulationKind");
+extern bool rigctl_set_scan_row_modulation(dsd_socket_t sockfd, int kind,
+                                           int bandwidth) __asm__("__wrap_SetScanRowModulation");
+extern void rigctl_mark_session_passband(dsd_socket_t sockfd, int kind) __asm__("__wrap_RigctlMarkSessionPassband");
 
 bool
-__wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
+rigctl_set_freq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     if (!t_decoder_thread) {
         atomic_store(&g_off_thread_tunes, 1);
@@ -70,14 +74,14 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
 }
 
 bool
-__wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
+rigctl_set_modulation(dsd_socket_t sockfd, int bandwidth) {
     (void)sockfd;
     (void)bandwidth;
     return true;
 }
 
 bool
-__wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
+rigctl_set_modulation_kind(dsd_socket_t sockfd, int kind, int bandwidth) {
     (void)sockfd;
     (void)kind;
     (void)bandwidth;
@@ -85,7 +89,7 @@ __wrap_SetModulationKind(dsd_socket_t sockfd, int kind, int bandwidth) {
 }
 
 bool
-__wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
+rigctl_set_scan_row_modulation(dsd_socket_t sockfd, int kind, int bandwidth) {
     (void)sockfd;
     (void)kind;
     (void)bandwidth;
@@ -93,26 +97,25 @@ __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth) {
 }
 
 void
-__wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
+rigctl_mark_session_passband(dsd_socket_t sockfd, int kind) {
     (void)sockfd;
     (void)kind;
 }
 
-// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-
 /* What the decoder does between frames, outside the guard: a sync accept's writes, the reads the hunt's matchers, VC
    timers and P25 tick gate make, and now and then a no-carrier pass's reset, which zeroes the payload crypto fields
    (ALG, KID, MI, both slots) a release zeroes too. Returns the reads folded together, so none is optimized away. */
-static long
+static uint64_t
 hunt_step(dsd_opts* opts, dsd_state* state, int round) {
     state->lastsynctype = (round & 1) != 0 ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
     dsd_mark_cc_sync(state);
     if (round % NO_CARRIER_EVERY == 0) {
         dsd_engine_reset_no_carrier_state(opts, state);
     }
-    return (long)opts->trunk_is_tuned + state->rf_mod + state->samplesPerSymbol + state->symbolCenter
-           + state->p25_p2_active_slot + state->sps_hunt_idx + state->p25_p2_audio_allowed[0]
-           + (long)state->last_vc_sync_time + state->payload_algid + state->payload_keyidR;
+    return (uint64_t)opts->trunk_is_tuned + (uint64_t)state->rf_mod + (uint64_t)state->samplesPerSymbol
+           + (uint64_t)state->symbolCenter + (uint64_t)state->p25_p2_active_slot + (uint64_t)state->sps_hunt_idx
+           + (uint64_t)state->p25_p2_audio_allowed[0] + (uint64_t)state->last_vc_sync_time
+           + (uint64_t)state->payload_algid + (uint64_t)state->payload_keyidR;
 }
 
 /* A followed voice channel the watchdog's beat releases: every tune of it, the grant's and the return's, is this
@@ -136,7 +139,7 @@ check_release_tunes_on_decoder(dsd_opts* opts, dsd_state* state) {
 
     p25_sm_watchdog_start(opts, state);
     const double started_s = dsd_realtime_mono_s();
-    long folded = 0;
+    uint64_t folded = 0U;
     int round = 0;
     while (atomic_load(&g_tunes) == grant_tunes && dsd_realtime_mono_s() - started_s < WAIT_MS / 1000.0) {
         folded += hunt_step(opts, state, round++);
@@ -154,7 +157,8 @@ check_release_tunes_on_decoder(dsd_opts* opts, dsd_state* state) {
 
     int failed = 0;
     if (atomic_load(&g_tunes) == grant_tunes || atomic_load(&g_last_tune_hz) != CC_FREQ_HZ) {
-        DSD_FPRINTF(stderr, "FAIL: no return to the control channel within %d ms (%ld)\n", WAIT_MS, folded);
+        DSD_FPRINTF(stderr, "FAIL: no return to the control channel within %d ms (%llu)\n", WAIT_MS,
+                    (unsigned long long)folded);
         failed = 1;
     }
     if (atomic_load(&g_off_thread_tunes) != 0) {
@@ -169,17 +173,26 @@ check_release_tunes_on_decoder(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A beat that finds the guard held stays asked for: the holder here is another thread, which takes the guard, says so,
-   and holds it until this thread has looked. Every wait is bounded. */
+   and holds it until this thread acknowledges that it has looked. Both sides wait on one fixture deadline, which only
+   ends a fixture that broke: no wait of its own changes the interleaving under test. */
 static atomic_int g_held;
 static atomic_int g_looked;
+static double g_fixture_deadline_s;
+
+static int
+fixture_time_left(void) {
+    return dsd_realtime_mono_s() < g_fixture_deadline_s;
+}
 
 static DSD_THREAD_RETURN_TYPE
-hold_guard(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    hold_guard(void* opaque) {
     (void)opaque;
     p25_sm_tick_guard_enter();
     atomic_store(&g_held, 1);
-    const double started_s = dsd_realtime_mono_s();
-    while (atomic_load(&g_looked) == 0 && dsd_realtime_mono_s() - started_s < WAIT_MS / 1000.0) {
+    while (atomic_load(&g_looked) == 0 && fixture_time_left()) {
         dsd_sleep_ms(1U);
     }
     p25_sm_tick_guard_leave();
@@ -190,23 +203,30 @@ static int
 check_busy_guard_keeps_the_beat(dsd_opts* opts, dsd_state* state) {
     atomic_store(&g_held, 0);
     atomic_store(&g_looked, 0);
+    g_fixture_deadline_s = dsd_realtime_mono_s() + 60.0;
     p25_sm_watchdog_request_tick();
     dsd_thread_t holder;
     if (dsd_thread_create(&holder, hold_guard, NULL) != 0) {
         DSD_FPRINTF(stderr, "FAIL: the guard holder did not start\n");
         return 1;
     }
-    const double started_s = dsd_realtime_mono_s();
-    while (atomic_load(&g_held) == 0 && dsd_realtime_mono_s() - started_s < WAIT_MS / 1000.0) {
+    while (atomic_load(&g_held) == 0 && fixture_time_left()) {
         dsd_sleep_ms(1U);
     }
     int failed = 0;
     if (atomic_load(&g_held) == 0) {
         DSD_FPRINTF(stderr, "FAIL: the guard holder never took the guard\n");
         failed = 1;
-    } else if (p25_sm_watchdog_service(opts, state) != 0 || !p25_sm_watchdog_tick_wanted()) {
-        DSD_FPRINTF(stderr, "FAIL: a held guard lost the beat\n");
-        failed = 1;
+    } else {
+        /* The holder keeps the guard until the acknowledgement below, so this service meets it held. */
+        const int serviced = p25_sm_watchdog_service(opts, state);
+        if (!fixture_time_left()) {
+            DSD_FPRINTF(stderr, "FAIL: the fixture deadline passed\n");
+            failed = 1;
+        } else if (serviced != 0 || !p25_sm_watchdog_tick_wanted()) {
+            DSD_FPRINTF(stderr, "FAIL: a held guard lost the beat\n");
+            failed = 1;
+        }
     }
     atomic_store(&g_looked, 1);
     dsd_thread_join(holder);

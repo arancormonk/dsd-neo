@@ -44,6 +44,7 @@
 #include <string.h>
 
 #include "commands_internal.h"
+#include "dsd-neo/platform/platform.h"
 #include "engine_hooks_install.h"
 #include "test_support.h"
 
@@ -172,7 +173,10 @@ release_barrier(void) {
 }
 
 static DSD_THREAD_RETURN_TYPE
-resume_flush(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    resume_flush(void* opaque) {
     (void)opaque;
     const double deadline = dsd_realtime_mono_s() + 10.0;
     /* Neither observation publishes the drain's writes to the watchdog. In the
@@ -331,7 +335,10 @@ submit_phase(void) {
 /* The tick a watchdog beat asks for, in flight on a thread of its own: the decoder thread runs it in production
    (p25_sm_watchdog_service()), and a command drained beside one still waits for the guard it holds. */
 static DSD_THREAD_RETURN_TYPE
-tick_in_flight(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    tick_in_flight(void* opaque) {
     (void)opaque;
     p25_sm_try_tick(&g_opts, &g_state);
     DSD_THREAD_RETURN;
@@ -492,7 +499,10 @@ remove_wav_guard_file(const char* name, void* user) {
 }
 
 static DSD_THREAD_RETURN_TYPE
-release_guard_once_waited(void* opaque) {
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    release_guard_once_waited(void* opaque) {
     (void)opaque;
     const double deadline = dsd_realtime_mono_s() + 10.0;
     while (dsd_app_command_test_policy_guard_waits() <= g_wav_guard_baseline) {
