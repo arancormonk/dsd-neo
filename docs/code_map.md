@@ -2619,7 +2619,10 @@ suite runs under this compiler.
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
     the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
-    `p25_slot_bind_reception()`). The other producers name the sender from the report's own carrier
+    `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
+    inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
+    `p25_sm_verdicts_now()`, which counts none earned under another reception (test `P25_P2_HARRIS_GPS`). The other
+    producers name the sender from the report's own carrier
     (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
     the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
   - A P25 special address (`$FFFFFC`-`$FFFFFF`: FNE use, System Default, Registration Default, ALL units; the table

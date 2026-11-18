@@ -1104,6 +1104,48 @@ test_retune_rebinds_identity(void) {
     }
 }
 
+/* Issue #800, fail closed: a verdict counts only under the reception it was earned under, whichever record a voice
+ * start reuses it from. A trunked call stays ACTIVE while a checked network update names another system; an
+ * addressless MAC_ACTIVE then keeps the call's talker for display, but neither the canonical call's record nor the
+ * assignment lends it the verdict the old system gave. A later source-less message (a MAC_ACTIVE or a SACCH voice user
+ * naming only the talkgroup) checks the target and kind under the new system, never the source: the next report stays
+ * anonymous until a checked message names the talker there. The call is established by a PTT, or by a SACCH voice user
+ * before any PTT. */
+static void
+test_reception_change_reuse(void) {
+    for (int variant = 0; variant < 4; variant++) {
+        const int by_voice_user = (variant & 1) != 0;
+        const int then_voice_user = (variant & 2) != 0;
+        char tag[128];
+        DSD_SNPRINTF(tag, sizeof tag, "reuse after a reception change (%s, then a source-less %s)",
+                     by_voice_user ? "voice user" : "ptt", then_voice_user ? "voice user" : "mac_active");
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+        group_grant(&f, SRC_A, 1);
+        if (by_voice_user) {
+            sacch_group_voice_user(&f, TG_A, SRC_A);
+        } else {
+            mac_ptt(&f, TG_A, SRC_A);
+        }
+        send_gps(&f, 0);
+        expect_report(&f, "reuse: before", SRC_A, TG_A, 1);
+        const uint32_t before = f.st->rx_id.epoch;
+        network_status(&f, 0x1A4U);
+        expect_true("reuse: reception changed", f.st->rx_id.epoch != before);
+        mac_active_addressless(&f);
+        if (then_voice_user) {
+            sacch_group_voice_user(&f, TG_A, 0U);
+        } else {
+            mac_active(&f, TG_A, 0U);
+        }
+        expect_true("reuse: call still names the talker", slot0_call_names(TG_A, SRC_A, f.st));
+        send_gps(&f, 0);
+        expect_report(&f, tag, 0U, 0U, 0);
+        fixture_close(&f);
+    }
+}
+
 /* Issue #800: an anonymous Phase 2 report stays off a Phase 1 call. A conventional Phase 1 group call whose voice user
  * named no source is still ACTIVE on slot 0 (its terminator missed); a Phase 2 L3Harris report gets no call epoch and
  * goes to the feed and -L anonymous, but never onto the Phase 1 call's history row. */
@@ -1227,6 +1269,7 @@ main(void) {
     test_addressless_active_after_other_talkgroup();
     test_special_address_source();
     test_retune_rebinds_identity();
+    test_reception_change_reuse();
     test_anonymous_phase2_report_stays_off_phase1_row();
     dsd_decode_clock_use_system();
     if (g_fail) {
