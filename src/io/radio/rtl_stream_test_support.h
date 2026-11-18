@@ -738,6 +738,8 @@ typedef struct {
     int bandwidth_write_throws;
     /* The bandwidth getBandwidth() reports (0: the bandwidth last set), as a driver whose filter write did not take. */
     double readback_bandwidth_hz;
+    /* getBandwidth() calls so far. */
+    int bandwidth_reads;
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);

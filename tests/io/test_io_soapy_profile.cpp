@@ -520,6 +520,34 @@ test_returned_values_are_advertised(void) {
     return rc;
 }
 
+/* A stepped range's last point is its last whole step at or below the maximum, and a rate either the list or a range
+ * holds is the rate, not the nearest listed one. */
+static int
+test_points_stay_inside_the_advertised_ranges(void) {
+    int rc = 0;
+    bool adjusted = false;
+    bool supported = false;
+    rc |= expect_point("widest 1 Hz step of a range below the floor",
+                       dsdneo::soapy_floor_bandwidth(5072000.0, {{200000.0, 5e6, 1.0}}), 5e6);
+    rc |= expect_point("widest 1000 Hz step of a range whose maximum is not a step",
+                       dsdneo::soapy_floor_bandwidth(1072000.0, {{200000.0, 999999.0, 1000.0}}), 999000.0);
+    rc |= expect_point("nearest of a 1 Hz stepped range above its maximum",
+                       dsdneo::soapy_nearest_in_ranges(6e6, {{200000.0, 5e6, 1.0}}, &supported), 5e6);
+    const dsdneo::SoapyProfile& hackrf = dsdneo::soapy_profile_by_id(SoapyProfileId::Hackrf);
+    rc |= expect_point("preference 1 Hz above a 1 Hz stepped range's maximum",
+                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{2e6, 9999999.0, 1.0}}, &adjusted),
+                       9999999.0);
+    rc |= expect_point("a range rate the list omits",
+                       dsdneo::soapy_nearest_sample_rate(10e6, {2e6, 8e6, 20e6}, {{2e6, 20e6, 0.0}}, &adjusted), 10e6);
+    if (adjusted) {
+        DSD_FPRINTF(stderr, "a range rate the list omits is reported as adjusted\n");
+        rc = 1;
+    }
+    rc |= expect_point("a rate neither holds goes to the nearest listed",
+                       dsdneo::soapy_nearest_sample_rate(21e6, {2e6, 8e6, 20e6}, {{2e6, 20e6, 0.0}}, &adjusted), 20e6);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -533,6 +561,7 @@ main(void) {
     rc |= test_profile_sample_rate();
     rc |= test_offset_channel_floor();
     rc |= test_returned_values_are_advertised();
+    rc |= test_points_stay_inside_the_advertised_ranges();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();
     rc |= test_settings_parser_rejects_invalid_items();

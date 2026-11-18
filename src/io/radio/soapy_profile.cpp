@@ -230,6 +230,26 @@ detect_profile_from_text(const std::string& text, SoapyProfileId* out_id) {
     return true;
 }
 
+/* Rates and bandwidths within this of each other are the same: drivers report them as doubles from integer tables. */
+constexpr double kSoapyExactHz = 1.0;
+
+/* Floating-point error in a range's step arithmetic, far below any step a driver advertises. */
+constexpr double kSoapyRoundingHz = 1e-3;
+
+/* The last point of @p range: its maximum, or its last whole step at or below the maximum. A step that passes the
+ * maximum by no more than rounding error is the maximum. */
+double
+range_last_point(const SoapyRange& range) {
+    if (!(range.step > 0.0) || range.maximum < range.minimum) {
+        return range.maximum;
+    }
+    double steps = std::floor((range.maximum - range.minimum) / range.step);
+    if (range.minimum + (steps + 1.0) * range.step - range.maximum <= kSoapyRoundingHz) {
+        steps += 1.0;
+    }
+    return std::min(range.minimum + std::max(0.0, steps) * range.step, range.maximum);
+}
+
 double
 snap_to_step(double value, const SoapyRange& range) {
     if (range.step <= 0.0 || range.maximum < range.minimum) {
@@ -240,11 +260,8 @@ snap_to_step(double value, const SoapyRange& range) {
     if (snapped < range.minimum) {
         snapped = range.minimum;
     }
-    if (snapped > range.maximum) {
-        /* The last whole step, not the maximum, which need not be one. */
-        snapped = range.minimum + std::floor((range.maximum - range.minimum) / range.step) * range.step;
-    }
-    return snapped;
+    /* The last whole step, not the maximum, which need not be one. */
+    return std::min(snapped, range_last_point(range));
 }
 
 double
@@ -452,54 +469,7 @@ soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges,
     return best;
 }
 
-double
-soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
-                          const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
-    if (out_adjusted) {
-        *out_adjusted = false;
-    }
-    if (requested <= 0.0) {
-        return requested;
-    }
-    if (!listed_rates.empty()) {
-        double best = listed_rates.front();
-        double best_error = std::fabs(best - requested);
-        for (double rate : listed_rates) {
-            double error = std::fabs(rate - requested);
-            if (error < best_error) {
-                best = rate;
-                best_error = error;
-            }
-        }
-        if (out_adjusted && std::fabs(best - requested) > 0.5) {
-            *out_adjusted = true;
-        }
-        return best;
-    }
-
-    bool supported = false;
-    double nearest = soapy_nearest_in_ranges(requested, ranges, &supported);
-    if (supported && out_adjusted && std::fabs(nearest - requested) > 0.5) {
-        *out_adjusted = true;
-    }
-    return supported ? nearest : requested;
-}
-
 namespace {
-
-/* Rates and bandwidths within this of each other are the same: drivers report them as doubles from integer tables. */
-constexpr double kSoapyExactHz = 1.0;
-
-/* The last point of @p range: its maximum, or the last whole step below it. */
-double
-range_last_point(const SoapyRange& range) {
-    if (!(range.step > 0.0)) {
-        return range.maximum;
-    }
-    /* A maximum within kSoapyExactHz of a step is that step. */
-    const double steps = std::floor((range.maximum - range.minimum + kSoapyExactHz) / range.step);
-    return range.minimum + std::max(0.0, steps) * range.step;
-}
 
 /* The point of @p range within kSoapyExactHz of @p value in @p out_hz (a step, or any value a range with no step holds,
  * its ends included), or false when it has none. */
@@ -512,7 +482,8 @@ range_point_near(double value, const SoapyRange& range, double* out_hz) {
     double point = std::min(std::max(value, range.minimum), range.maximum);
     if (range.step > 0.0) {
         point = range.minimum + std::round((value - range.minimum) / range.step) * range.step;
-        if (std::fabs(point - value) > kSoapyExactHz || point > range_last_point(range) + kSoapyExactHz) {
+        point = std::min(std::max(point, range.minimum), range_last_point(range));
+        if (std::fabs(point - value) > kSoapyExactHz) {
             return false;
         }
     }
@@ -556,6 +527,47 @@ soapy_rate_supported_point(double rate_hz, const std::vector<double>& listed_rat
 
 } // namespace
 
+double
+soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
+                          const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
+    if (out_adjusted) {
+        *out_adjusted = false;
+    }
+    if (requested <= 0.0) {
+        return requested;
+    }
+    /* A rate the list or a range holds is that rate; drivers that list a few rates may also advertise a range. */
+    double point = 0.0;
+    if (soapy_rate_supported_point(requested, listed_rates, ranges, &point)) {
+        if (out_adjusted) {
+            *out_adjusted = std::fabs(point - requested) > 0.5;
+        }
+        return point;
+    }
+    if (!listed_rates.empty()) {
+        double best = listed_rates.front();
+        double best_error = std::fabs(best - requested);
+        for (double rate : listed_rates) {
+            double error = std::fabs(rate - requested);
+            if (error < best_error) {
+                best = rate;
+                best_error = error;
+            }
+        }
+        if (out_adjusted && std::fabs(best - requested) > 0.5) {
+            *out_adjusted = true;
+        }
+        return best;
+    }
+
+    bool supported = false;
+    double nearest = soapy_nearest_in_ranges(requested, ranges, &supported);
+    if (supported && out_adjusted && std::fabs(nearest - requested) > 0.5) {
+        *out_adjusted = true;
+    }
+    return supported ? nearest : requested;
+}
+
 bool
 soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
                              const std::vector<SoapyRange>& ranges) {
@@ -579,17 +591,19 @@ soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const s
 
 bool
 soapy_driver_stream_queue(const std::string& driver_key, SoapyStreamQueue* out) {
-    /* SoapyHackRF's BUF_LEN (262,144 bytes of CS8) and libhackrf's TRANSFER_COUNT (4), each buffer a USB transfer. */
+    /* SoapyHackRF's BUF_LEN (262,144 bytes of CS8) and libhackrf's TRANSFER_COUNT (4), each buffer a USB transfer;
+       SoapyHackRF's MTU is one buffer, so a reader holds at most one between its read and the mute. */
     constexpr size_t kHackrfBufferSamples = 131072U;
     constexpr size_t kHackrfTransfersInFlight = 4U;
     constexpr size_t kHackrfQueueBuffers = 4U;
+    constexpr size_t kReaderBlocks = 1U;
     static_assert(kHackrfQueueBuffers == 4U, "the queue depth asked for is the one the backlog counts");
     if (!out || !equals_ci(driver_key, "hackrf")) {
         return false;
     }
     out->arg_key = "buffers";
     out->arg_value = "4";
-    out->backlog_samples = (kHackrfQueueBuffers + kHackrfTransfersInFlight) * kHackrfBufferSamples;
+    out->backlog_samples = (kHackrfQueueBuffers + kHackrfTransfersInFlight + kReaderBlocks) * kHackrfBufferSamples;
     return true;
 }
 

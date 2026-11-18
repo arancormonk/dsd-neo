@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <complex>
 #include <dsd-neo/core/constants.h>
@@ -10690,10 +10691,15 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
             actual = dev->soapy_dev->getSampleRate(SOAPY_SDR_RX, 0);
             return 0;
         });
-        if (rc == 0 && actual > 0.0) {
-            uint32_t rounded = (uint32_t)std::lround(actual);
-            dev->rate = rounded;
-            return (int)rounded;
+        if (rc == 0 && dsd::io::radio::rtl_is_finite(actual) && actual > 0.0) {
+            /* Checked before it is narrowed: a read-back past INT_MAX Hz is no capture rate, so it reports INT_MAX,
+               which every capture ceiling refuses, and the rate the device was given stays. */
+            if (actual >= (double)INT_MAX) {
+                return INT_MAX;
+            }
+            const int rounded = (int)std::lround(actual);
+            dev->rate = (uint32_t)rounded;
+            return rounded;
         }
 #endif
         return (dev->rate > 0) ? (int)dev->rate : -1;
@@ -11302,7 +11308,7 @@ static double
 soapy_bandwidth_readback_locked(struct rtl_device* dev, double written_hz) {
     try {
         const double reported_hz = dev->soapy_dev->getBandwidth(SOAPY_SDR_RX, 0);
-        if (std::isfinite(reported_hz) && reported_hz > 0.0) {
+        if (dsd::io::radio::rtl_is_finite(reported_hz) && reported_hz > 0.0) {
             return reported_hz;
         }
     } catch (const std::exception&) {
@@ -11312,15 +11318,18 @@ soapy_bandwidth_readback_locked(struct rtl_device* dev, double written_hz) {
     return written_hz;
 }
 
+/* Whether a filter notice can apply: only the Fs/4 offset channel's needs are judged. */
+static bool
+soapy_bandwidth_notice_applies(const struct rtl_device* dev) {
+    return fs4_shift_capture_active(dev) && dev->rate != 0U;
+}
+
 /* The notice for the filter the driver runs (@p running_hz) once the write took, once per filter and rate: a profile
  * default opened (@p opened) to keep the channel says so; any filter, default or explicit, narrower than the Fs/4
- * offset channel needs is warned about. */
+ * offset channel needs is warned about. The caller checks soapy_bandwidth_notice_applies() first. */
 static void
 soapy_note_bandwidth(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice, bool opened,
                      double running_hz) {
-    if (!fs4_shift_capture_active(dev) || dev->rate == 0U) {
-        return;
-    }
     const bool cuts = dsdneo::soapy_bandwidth_cuts_offset(running_hz, (double)dev->rate);
     if ((!cuts && !opened) || !soapy_bandwidth_notice_is_new(dev, running_hz)) {
         return;
@@ -11368,7 +11377,10 @@ rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::So
     if (!opened && std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
         DSD_FPRINTF(stderr, "SoapySDR: adjusted bandwidth from %d Hz to %.0f Hz.\n", choice.bandwidth_hz, applied_hz);
     }
-    soapy_note_bandwidth(dev, choice, opened, soapy_bandwidth_readback_locked(dev, applied_hz));
+    /* The read-back is a driver round trip, made only when a notice can follow. */
+    if (soapy_bandwidth_notice_applies(dev)) {
+        soapy_note_bandwidth(dev, choice, opened, soapy_bandwidth_readback_locked(dev, applied_hz));
+    }
     return 0;
 }
 #endif
@@ -12664,6 +12676,7 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     double
     getBandwidth(const int, const size_t) const override {
+        fake_->bandwidth_reads++;
         return fake_->readback_bandwidth_hz > 0.0 ? fake_->readback_bandwidth_hz : fake_->last_bandwidth_hz;
     }
 

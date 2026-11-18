@@ -29,6 +29,7 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
@@ -466,6 +467,79 @@ test_rollback_restores_saved_rate(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 }
 
+/* A HackRF listing 2 and 10 MS/s that delivers 2 MS/s at the start, asked for 10, then honours 10 on a hop: the ring
+ * sized for 2 MS/s refuses the hop, and the rollback puts the device back on the 2 MS/s it delivered, checked by its
+ * read-back, instead of writing the 10 MS/s it was asked for again and stopping the stream. */
+void
+test_rollback_restores_delivered_rate(void) {
+    static const double both[] = {2e6, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = both;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    fake.readback_rate_hz = 2e6;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    expect_eq("the start runs the 2 MS/s delivered", got.capture_rate_hz, 2000000.0);
+    fake.readback_rate_hz = 0.0;
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        kCenterHz + 25000U, 72000, &got)
+                                       == 0);
+    expect_true("the retune to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("the device goes back on the 2 MS/s it delivered", fake.rate_hz, 2000000.0);
+    expect_eq("the stream goes back on 2 MS/s", got.capture_rate_hz, 2000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A driver that reads back 2.4 GS/s for a 2 MS/s write delivers more than any ring holds: the open is refused, and a
+ * hop that reads it back is refused too, never taken for a device that reported no rate. */
+void
+test_oversized_readback_refused(void) {
+    static const double only_2m[] = {2e6};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = only_2m;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = 2.4e9;
+    const rtl_stream_test_capture_result opened = open_on(&fake);
+    expect_true("an open that reads back 2.4 GS/s is refused", opened.rc != 0);
+
+    fake.readback_rate_hz = 0.0;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    fake.readback_rate_hz = 2.4e9;
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        kCenterHz + 25000U, 72000, &got)
+                                       == 0);
+    expect_true("a hop that reads back 2.4 GS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("the stream stays on 2 MS/s", got.capture_rate_hz, 2000000.0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 /* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
  * read back, and the ring is sized for it. */
 void
@@ -480,6 +554,22 @@ test_advertised_above_ceiling_delivers_within(void) {
     expect_true("a device that delivers 8 MS/s starts", got.rc == 0);
     expect_eq("it runs the read-back", got.capture_rate_hz, 8000000.0);
     expect_eq("its ring holds 8 MS/s", (double)got.input_ring_capacity_floats, 8388608.0);
+
+    /* An advertised rate the DSP chain cannot use is only a request: the chain is planned on the rate read back. */
+    static const double unusable[] = {12288100.0};
+    fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = unusable;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = 8e6;
+    const rtl_stream_test_capture_result unusable_got = open_on(&fake);
+    expect_true("a device advertising an unusable rate that delivers 8 MS/s starts", unusable_got.rc == 0);
+    expect_eq("it runs the 8 MS/s read back", unusable_got.capture_rate_hz, 8000000.0);
+    /* Within the ceiling, a device that delivers a rate the chain cannot use is refused once it reads it back. */
+    static const double unusable_within[] = {3072025.0};
+    fake.listed_rates = unusable_within;
+    fake.readback_rate_hz = 0.0;
+    expect_true("one that delivers the unusable rate is refused", open_on(&fake).rc != 0);
 }
 
 /* An input ring that cannot be sized for the rate leaves the stream's working ring in place, so the open fails cleanly
@@ -530,6 +620,57 @@ test_bandwidth_notices_follow_readback(void) {
         DSD_FPRINTF(stderr, "FAIL a filter that does not keep the channel is called opened; log:\n%s\n", log);
         g_failures++;
     }
+}
+
+/* An SDRplay listing only 10 MS/s whose filters stop at 1 MHz, narrower than the Fs/4 channel needs. */
+rtl_device_test_soapy_gain_fake
+narrow_filter_fake(void) {
+    static const double only_10m[] = {10e6};
+    static const double narrow[] = {200000.0, 1000000.0};
+    rtl_device_test_soapy_gain_fake fake = sdrplay_fake();
+    fake.listed_rates = only_10m;
+    fake.listed_rate_count = 1U;
+    fake.bandwidths = narrow;
+    fake.bandwidth_count = 2U;
+    return fake;
+}
+
+/* Infinity from its bit pattern: the global fast-math option warns on INFINITY. */
+double
+positive_infinity(void) {
+    const uint64_t bits = UINT64_C(0x7FF0000000000000);
+    double value = 0.0;
+    DSD_MEMCPY(&value, &bits, sizeof value);
+    return value;
+}
+
+/* A driver whose getBandwidth() reports infinity has reported nothing: the filter written is judged, and the 1 MHz
+ * filter at 10 MS/s is warned about. */
+void
+test_nonfinite_bandwidth_readback(void) {
+    rtl_device_test_soapy_gain_fake fake = narrow_filter_fake();
+    fake.readback_bandwidth_hz = positive_infinity();
+    dsd_test_capture_stderr cap;
+    expect_true("stderr capture begins", dsd_test_capture_stderr_begin(&cap, "soapy_rate") == 0);
+    (void)program(&fake, 1536000U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    expect_true("stderr capture reads", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+    expect_true("an infinite read-back falls back to the filter written",
+                strstr(log, "1000000 Hz is narrower than 5072000 Hz") != nullptr);
+}
+
+/* With the Fs/4 shift off no filter notice applies, so a filter write is not followed by a read-back: a network
+ * driver would pay a round trip on every retune for nothing. */
+void
+test_no_bandwidth_readback_without_fs4(void) {
+    rtl_device_test_soapy_gain_fake fake = narrow_filter_fake();
+    const int saved = disable_fs4_shift;
+    disable_fs4_shift = 1;
+    (void)program(&fake, 1536000U);
+    disable_fs4_shift = saved;
+    expect_true("the filter is written", fake.bandwidth_writes > 0);
+    expect_eq("getBandwidth() calls with the Fs/4 shift off", (double)fake.bandwidth_reads, 0.0);
 }
 
 /* The opened filter is reported once the driver took it: a write that throws says nothing, and the retry that takes
@@ -620,11 +761,15 @@ main(int argc, char** argv) {
         {"filter_follows_rate", test_filter_follows_rate_on_retune},
         {"write_programs_asked_rate", test_write_programs_asked_rate},
         {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},
+        {"rollback_restores_delivered_rate", test_rollback_restores_delivered_rate},
         {"advertised_above_ceiling", test_advertised_above_ceiling_delivers_within},
+        {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
         {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},
         {"opened_notice_after_write", test_opened_notice_after_write},
         {"failed_rate_write_reapplies_filter", test_failed_rate_write_reapplies_filter},
+        {"nonfinite_bandwidth_readback", test_nonfinite_bandwidth_readback},
+        {"no_bandwidth_readback_without_fs4", test_no_bandwidth_readback_without_fs4},
     };
 
     /* An argument runs that case alone. */

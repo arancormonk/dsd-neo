@@ -346,7 +346,9 @@ int32_t rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shif
  *
  * USB backend returns the actual rate reported by librtlsdr
  * (which may differ slightly from the requested value). The rtl_tcp
- * backend returns the last programmed value.
+ * backend returns the last programmed value. A SoapySDR read-back of
+ * INT_MAX Hz or more returns INT_MAX, a rate above every capture ceiling,
+ * so it is refused rather than taken for a device that reported none.
  *
  * @param dev RTL-SDR device handle.
  * @return Sample rate in Hz (non-negative) or negative on error.

@@ -807,10 +807,12 @@ overflow_marks_gap_and_capture(input_ring_state* shared) {
 
 /* What a HackRF can still hand over after a retune, by its sources: libhackrf keeps four transfers of 131,072 samples
  * in flight, and SoapyHackRF queues up to the "buffers" stream argument of them (15 when none is given), dropping the
- * oldest when the reader falls behind. A reader descheduled across a hop meets all of it. */
+ * oldest when the reader falls behind. A reader descheduled across a hop meets all of it, after the block it may hold
+ * from a read made before the mute was armed. */
 constexpr size_t kHackrfBufferSamples = 131072U;
 constexpr size_t kHackrfTransfersInFlight = 4U;
 constexpr size_t kSoapyHackrfDefaultBuffers = 15U;
+constexpr size_t kReaderBlocks = 1U;
 constexpr float kStaleMarker = 0.75f;
 
 /* A CF32 driver that delivers nothing until armed, then @p stale backlog samples (kStaleMarker on I) and @p clean
@@ -882,7 +884,9 @@ expect_retune_mute_covers_hackrf_queue(uint32_t rate_hz) {
     rtl_device* dev = rtl_device_test_soapy_device(own_ring.get(), &driver);
     assert(dev);
     rtl_device_test_soapy_device_set_driver_key(dev, "HackRF");
-    g_backlog.stale = (hackrf_queue_buffers(dev) + kHackrfTransfersInFlight) * kHackrfBufferSamples;
+    /* The driver's queue and USB transfers, and the block a reader paused between its read and the mute holds (the
+       driver's MTU is one buffer): each comes out of the mute once the retune armed it. */
+    g_backlog.stale = (hackrf_queue_buffers(dev) + kHackrfTransfersInFlight + kReaderBlocks) * kHackrfBufferSamples;
     const int mute_bytes = rtl_stream_test_retune_mute_bytes_for_device(dev, rate_hz, 0, 1);
     const size_t mute_samples = (size_t)mute_bytes / 2U;
     /* Enough new samples to come out past the mute either way. */

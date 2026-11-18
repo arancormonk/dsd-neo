@@ -132,15 +132,17 @@ double soapy_profile_sample_rate(const SoapyProfile& profile, double requested, 
 
 /* A driver whose receive queue dsd-neo bounds at setupStream(), so a retune's mute can swallow all of it. */
 struct SoapyStreamQueue {
-    const char* arg_key;    /* the stream argument that sets the queue depth */
-    const char* arg_value;  /* the depth dsd-neo asks for */
-    size_t backlog_samples; /* what the driver can still hold after a retune: that queue and its transfers in flight */
+    const char* arg_key;   /* the stream argument that sets the queue depth */
+    const char* arg_value; /* the depth dsd-neo asks for */
+    /* What can still reach the mute from before a retune: that queue, its transfers in flight, and the block a reader
+       paused between its read and the mute holds (one MTU, a buffer). */
+    size_t backlog_samples;
 };
 
 /* The receive queue of the driver keyed @p driver_key (getDriverKey(), any case) in @p out, or false for a driver whose
  * queue dsd-neo does not set. SoapyHackRF queues 15 buffers of 131,072 samples unless told otherwise ("buffers"), and
  * libhackrf keeps 4 more in flight: about 249 ms at 10 MS/s, longer than the 120 ms retune mute. dsd-neo asks for 4,
- * which leaves 8 buffers (105 ms at 10 MS/s). */
+ * which with the reader's block leaves 9 buffers (118 ms at 10 MS/s). */
 bool soapy_driver_stream_queue(const std::string& driver_key, SoapyStreamQueue* out);
 
 /* The narrowest tuner filter that keeps the channel whole at every DSP bandwidth while the capture runs the Fs/4
