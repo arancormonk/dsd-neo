@@ -4876,6 +4876,75 @@ test_dmr_mono_discards_pi_for_the_other_slot(char frame[4][24]) {
     return rc;
 }
 
+/* Without trunking the single-slot decoder judges both slots' voice on one lane, whose hold and classification belong
+   to the over-the-air slot whose own checked word set them. After a hop holds both slots, slot 1's checked clear LC
+   lets slot 1's voice play; when the lane moves to slot 2 without a retune (proven, or still Checking after slot 2's
+   first burst), slot 2's voice is held until its own checked LC, and slot 2's LCs that failed their check do not touch
+   slot 1's classification. Slot 2's checked LC makes the lane slot 2's: slot 1's voice is then held in turn until its
+   own checked LC. */
+static int
+test_dmr_mono_lane_hold_per_slot(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("-fr lane hold: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_slot = 0;
+    dmr_enc_class_hold(state); /* As a hop or carrier boundary holds both slots. */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_TS1;
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 101U);
+    char recorded[49] = {0};
+    rc |= expect_true("-fr lane hold: slot 1's checked clear LC lets its voice play",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+
+    /* The lane moves to slot 2: its first burst names slot 2 (Checking), then two do (proven). */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_TS2;
+    rc |= expect_true("-fr lane hold: slot 2's first voice on the lane is held, not played on slot 1's verdict",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    rc |= expect_true("-fr lane hold: slot 2's voice stays held once the lane is proven on slot 2",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    /* Two of slot 2's embedded LCs that failed their check, asking for privacy. */
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x00U, 0x40U, 202U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x00U, 0x40U, 202U);
+    rc |= expect_true("-fr lane hold: slot 2's failed LCs end no hold",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_TS1;
+    rc |= expect_true("-fr lane hold: back on slot 1, its voice plays as clear: slot 2's failed LCs left its verdict",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+
+    /* Slot 2 again, now with its own checked clear embedded LC. */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_TS2;
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x00U, 0x00U, 202U);
+    rc |= expect_true("-fr lane hold: slot 2's own checked LC lets its voice play",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_TS1;
+    rc |= expect_true("-fr lane hold: then slot 1's voice is held, the lane being slot 2's",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x00U, 0x00U, 101U);
+    rc |= expect_true("-fr lane hold: until slot 1's own checked LC",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
    slot. A slot 1 one heard while lane 0 carries a slot 2 call resets slot 1's packet, never slot 2's; a slot 2 one,
    with the lane on a slot 1 call or idle (where it is folded onto lane 0), resets slot 2's, never slot 1's. */
@@ -4978,6 +5047,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
+    rc |= test_dmr_mono_lane_hold_per_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;

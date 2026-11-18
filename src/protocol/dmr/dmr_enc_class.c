@@ -27,6 +27,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_mono_lane.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/state_fwd.h"
@@ -88,6 +89,12 @@ dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int stron
 void
 dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
+    /* On the single-slot decoder's lane, a word of another slot than the one the lane's classification described
+       replaces it: the lane is held again, for that slot's word to end (or not, for a cipher it cannot judge). */
+    if (idx == 0U && dmr_mono_lane_owned_by_other_slot(state, state->dmr_mono_lane_word_slot)) {
+        state->dmr_enc_class_held[0] = 1U;
+        state->dmr_mono_lane_owner = 0U;
+    }
     state->dmr_enc_class[idx] = encrypted ? DMR_ENC_CLASS_ENC : DMR_ENC_CLASS_CLEAR;
     state->dmr_enc_class_est[idx] = 1U;
     state->dmr_enc_class_pending[idx] = DMR_ENC_CLASS_NONE;
@@ -100,11 +107,17 @@ dmr_enc_class_hold(dsd_state* state) {
     }
     state->dmr_enc_class_held[0] = 1U;
     state->dmr_enc_class_held[1] = 1U;
+    state->dmr_mono_lane_owner = 0U;
 }
 
 void
 dmr_enc_class_release_hold(dsd_state* state, uint8_t slot) {
-    state->dmr_enc_class_held[dmr_enc_class_slot_index(slot)] = 0U;
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    state->dmr_enc_class_held[idx] = 0U;
+    if (idx == 0U) {
+        /* The single-slot decoder's lane now describes the call of the word that ended its hold (0 outside one). */
+        state->dmr_mono_lane_owner = state->dmr_mono_lane_word_slot;
+    }
 }
 
 /* The slot's classification only: a hold stays until the slot's call says (a terminator or a no-carrier pass on the

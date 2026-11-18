@@ -3429,8 +3429,15 @@ suite runs under this compiler.
   (`dsd_state::dmr_mono_slot1_data_crypto`, `dmr_data_swap_in_slot1_data_crypto()`), so a data header neither resets
   nor replaces the lane call's crypto; its AES IV is expanded apart from the voice IV, MI and frame counter
   (`dmr_block_crypto_prepare_aes_iv()`), and its data terminator resets the packet on its own slot. A voice LC header
-  still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Under trunking
-  nothing is folded.
+  still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Lane 0's hold
+  and classification belong to the over-the-air slot whose own word ended the hold (`dsd_state::dmr_mono_lane_owner`,
+  set by `dmr_enc_class_release_hold()` from `dsd_state::dmr_mono_lane_word_slot`: a standalone burst's CACH slot, an
+  embedded LC's the lane's, `dmr_mono_lane_voice_slot()`). The other slot's voice on the lane, once the lane moved
+  there without a retune (proven, or Checking after a checked TACT named it), is held as on a held slot
+  (`dmr_mono_lane_owned_by_other_slot()` in `mbe_dmr_slot_judge()`); that slot's LC whose check failed classifies
+  nothing, and its checked LC forgets the lane's classification, classifies it by its own word and makes the lane its
+  slot's. A word of the other slot that sets the classification without a check of the call's (`dmr_enc_class_force()`)
+  holds the lane again. Under trunking nothing is folded.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
@@ -12487,7 +12494,9 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 
 Key public headers (selection):
 
-- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
+- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
+  `<dsd-neo/protocol/dmr/dmr_mono_lane.h>` (which over-the-air slot the single-slot lane's hold belongs to; the
+  vocoder's judge reads it)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
