@@ -601,7 +601,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
-        (void)dsd_event_enrich_position(state, 0U, call.epoch, &fix, text);
+        (void)dsd_event_enrich_position(opts, state, 0U, call.epoch, &fix, text);
     }
 }
 

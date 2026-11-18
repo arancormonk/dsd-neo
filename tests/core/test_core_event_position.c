@@ -128,7 +128,7 @@ test_active_call_push_and_snapshot(void) {
     reset_fixture();
     const uint64_t epoch = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_position_fix f = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "GPS 22.5 45.0") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "GPS 22.5 45.0") == 1);
     expect_row_fix(row(0), &f, "GPS 22.5 45.0");
     end_call(DSD_CALL_END_TERMINATOR);
     assert(row(1)->source_id == 111U);
@@ -141,11 +141,11 @@ test_active_call_push_and_snapshot(void) {
 
     /* An ended call takes no position from the active-call writer; a report that admission never stamped is no
        input. */
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "late") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "late") == 0);
     dsd_position_fix raw = f;
     raw.rev = 0U;
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &raw, "raw") == -1);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, NULL) == -1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &raw, "raw") == -1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, NULL) == -1);
     expect_row_fix(row(1), &f, "GPS 22.5 45.0");
 }
 
@@ -155,7 +155,7 @@ test_typed_source_rule(void) {
     reset_fixture();
     const uint64_t epoch = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_position_fix other = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 222U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &other, "other radio") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &other, "other radio") == 0);
     dsd_position_fix anon;
     dsd_position_fix_init(&anon);
     anon.kind = DSD_POS_DMR_EMBEDDED;
@@ -165,13 +165,13 @@ test_typed_source_rule(void) {
     anon.lon_e7 = 200000000;
     assert(dsd_position_admit(&g_opts, &g_state, &anon, 1, 0, NULL) != DSD_POSITION_REFUSED);
     assert((anon.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U && anon.source_id == 0U);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &anon, "unverified") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &anon, "unverified") == 0);
     const dsd_position_fix p25 = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &p25, "another protocol") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &p25, "another protocol") == 0);
     assert(row(0)->pos.valid == 0U && row(0)->gps_s[0] == '\0');
     /* DMR base and mobile bursts are one family. */
     const dsd_position_fix ms = admitted(DSD_SYNC_DMR_MS_VOICE, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &ms, "same radio") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &ms, "same radio") == 1);
 
     /* A call that names no source takes an anonymous report. */
     reset_fixture();
@@ -180,7 +180,7 @@ test_typed_source_rule(void) {
     anon.source_id = 111U;
     anon.flags = 0U;
     assert(dsd_position_admit(&g_opts, &g_state, &anon, 1, 0, NULL) != DSD_POSITION_REFUSED);
-    assert(dsd_event_enrich_position(&g_state, 0U, nameless, &anon, "anonymous") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, nameless, &anon, "anonymous") == 1);
     expect_row_fix(row(0), &anon, "anonymous");
 }
 
@@ -193,18 +193,18 @@ test_newest_rev_wins(void) {
     dsd_position_fix newer = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 100000000, 200000000);
     assert(newer.rev > older.rev);
     newer.rx_time_s = older.rx_time_s - 3600; /* the wall clock stepped back an hour between the two */
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &newer, "newer") == 1);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &older, "older") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &newer, "newer") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &older, "older") == 0);
     expect_row_fix(row(0), &newer, "newer");
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &newer, "newer again") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &newer, "newer again") == 0);
 
     reset_fixture();
     const uint64_t epoch2 = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     dsd_position_fix first = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
     dsd_position_fix second = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 100000000, 200000000);
     second.rx_time_s = first.rx_time_s; /* one second */
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch2, &first, "first") == 1);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch2, &second, "second") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch2, &first, "first") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch2, &second, "second") == 1);
     expect_row_fix(row(0), &second, "second");
 }
 
@@ -223,8 +223,8 @@ test_same_number_two_scopes(void) {
     dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
     const dsd_position_fix there = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
     assert(there.rev > here.rev && there.reception_scope.b != here.reception_scope.b);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &there, "there") == 0);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &here, "here") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &there, "there") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &here, "here") == 1);
     expect_row_fix(row(0), &here, "here");
     /* Pinned: another carrier's record does not move it, and the commit keeps it. */
     dsd_event_sync_slot(&g_opts, &g_state, 0U);
@@ -238,11 +238,11 @@ test_same_number_two_scopes(void) {
     const uint64_t unknown = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_NONE);
     const dsd_position_fix same = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &same, "same carrier") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, unknown, &same, "same carrier") == 1);
     dsd_rxid_reset(&g_state);
     dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x222U);
     const dsd_position_fix elsewhere = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, unknown, &elsewhere, "elsewhere") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, unknown, &elsewhere, "elsewhere") == 0);
     expect_row_fix(row(0), &same, "same carrier");
 }
 
@@ -266,7 +266,7 @@ test_reception_scope_refines_mid_call(void) {
     assert(g_state.rx_id.epoch == record_epoch);
     const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
     assert(f.reception_scope.kind == DSD_POS_SCOPE_P25);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "GPS") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "GPS") == 1);
     dsd_event_sync_slot(&g_opts, &g_state, 0U);
     assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25 && row(0)->rx_scope.scope.b == 0x111U);
     assert(row(0)->rx_scope.identity_freq_hz == 0);
@@ -310,9 +310,9 @@ test_declined_position_keeps_crc_marking(void) {
     const uint64_t epoch = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_position_fix older = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
     const dsd_position_fix newer = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 100000000, 200000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &newer, "newer") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &newer, "newer") == 1);
     g_state.event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &older, "older") == 0);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &older, "older") == 0);
     g_state.event_crc_invalid[0] = 0U;
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&g_state, 0U, &call) == 1);
@@ -328,14 +328,14 @@ test_declined_position_keeps_crc_marking(void) {
     end_call(DSD_CALL_END_TERMINATOR);
     const dsd_position_fix first = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
     const dsd_position_fix second = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &second, "second") == 1);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &second, "second") == 1);
     const uint64_t commit_rev = history[0].commit_rev;
     g_state.event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &first, "first") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &first, "first") == 0);
     assert((row(1)->crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
     assert(history[0].commit_rev == commit_rev + 1U);
     /* Nothing new to mark: no committed-row change. */
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &first, "first") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &first, "first") == 0);
     assert(history[0].commit_rev == commit_rev + 1U);
     g_state.event_crc_invalid[0] = 0U;
     expect_row_fix(row(1), &second, "second");
@@ -364,7 +364,7 @@ test_foreign_sender_enriches_its_call(void) {
     f.sender_scope.b = 7U;
     assert(dsd_position_admit(&g_opts, &g_state, &f, 1, 1, NULL) != DSD_POSITION_REFUSED);
     assert(f.sender_scope.a == 902U && f.reception_scope.a == 901U);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "LIP 22.5 45.0") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "LIP 22.5 45.0") == 1);
     expect_row_fix(row(0), &f, "LIP 22.5 45.0");
     assert(row(0)->pos.scope.a == 902U && row(0)->rx_scope.scope.a == 901U);
 }
@@ -425,7 +425,7 @@ test_text_only_after_gps(void) {
     const uint64_t epoch = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     dsd_rxid_note_dmr_t3_syscode(&g_state, 0x0A3FU);
     const dsd_position_fix f = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "GPS A") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "GPS A") == 1);
     assert(dsd_event_enrich_text(&g_state, 0U, epoch, "hello") == 1);
     expect_row_fix(row(0), &f, "GPS A");
     assert(strcmp(row(0)->text_message, "hello") == 0);
@@ -445,14 +445,14 @@ merge_case(int newer_first, int second_text_only) {
     const dsd_position_fix* first = newer_first ? &newer : &older;
     const dsd_position_fix* second = newer_first ? &older : &newer;
     const uint64_t epoch1 = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch1, first, newer_first ? "newer" : "older") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch1, first, newer_first ? "newer" : "older") == 1);
     end_call(DSD_CALL_END_SYNC_LOSS);
     const uint64_t epoch2 = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     assert(epoch2 != epoch1);
     if (second_text_only) {
         assert(dsd_event_enrich_gps(&g_state, 0U, epoch2, "text only") == 1);
     } else {
-        assert(dsd_event_enrich_position(&g_state, 0U, epoch2, second, newer_first ? "older" : "newer") == 1);
+        assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch2, second, newer_first ? "older" : "newer") == 1);
     }
     end_call(DSD_CALL_END_SYNC_LOSS);
     assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
@@ -502,7 +502,7 @@ anonymous_on_nameless(int protocol, uint64_t epoch, const char* text) {
     anon.lon_e7 = 200000000;
     assert(dsd_position_admit(&g_opts, &g_state, &anon, 1, 0, NULL) != DSD_POSITION_REFUSED);
     assert((anon.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &anon, text) == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &anon, text) == 1);
     assert(row(0)->pos.valid == 1U && row(0)->pos.anonymous == 1U);
     return anon;
 }
@@ -543,7 +543,7 @@ test_anonymous_position_leaves_a_named_row(void) {
     dprs.lat_e7 = 100000000;
     dprs.lon_e7 = 200000000;
     assert(dsd_position_admit(&g_opts, &g_state, &dprs, 1, 0, NULL) != DSD_POSITION_REFUSED);
-    assert(dsd_event_enrich_position(&g_state, 0U, dstar, &dprs, "DPRS anonymous") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, dstar, &dprs, "DPRS anonymous") == 1);
     fill_source(DSD_SYNC_DSTAR_HD_POS, 0U, "N0CALL");
     assert(row(0)->pos.valid == 0U && row(0)->gps_s[0] == '\0');
 
@@ -552,7 +552,7 @@ test_anonymous_position_leaves_a_named_row(void) {
     const uint64_t named = observe(DSD_SYNC_P25P1_POS, 3001U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     assert(named != 0U);
     const dsd_position_fix own = admitted(DSD_SYNC_P25P1_POS, 3001U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, named, &own, "own fix") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, named, &own, "own fix") == 1);
     assert(row(0)->pos.anonymous == 0U);
     dsd_event_sync_slot(&g_opts, &g_state, 0U);
     expect_row_fix(row(0), &own, "own fix");
@@ -570,22 +570,22 @@ test_closing_call(void) {
     assert(closing.valid == 1U && closing.epoch == epoch && closing.source_id == 111U);
     end_call(DSD_CALL_END_TERMINATOR);
     const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
-    assert(dsd_event_enrich_position(&g_state, 0U, epoch, &f, "after the end") == 0);
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &f, "terminator GPS") == 1);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "after the end") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &f, "terminator GPS") == 1);
     assert(row(1)->source_id == 111U);
     expect_row_fix(row(1), &f, "terminator GPS");
     /* Another radio's report is not the closing call's. */
     const dsd_position_fix other = admitted(DSD_SYNC_P25P1_POS, 222U, 100000000, 200000000);
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &other, "other") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &other, "other") == 0);
     /* Once the next call began, the capture enriches nothing. */
     (void)observe(DSD_SYNC_P25P1_POS, 333U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_position_fix late = admitted(DSD_SYNC_P25P1_POS, 111U, 100000000, 200000000);
-    assert(dsd_event_enrich_position_closing(&g_state, &closing, &late, "late") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &closing, &late, "late") == 0);
     expect_row_fix(row(1), &f, "terminator GPS");
     dsd_event_closing_call none;
     reset_fixture();
     assert(dsd_event_capture_closing_call(&g_state, 0U, &none) == 0 && none.valid == 0U);
-    assert(dsd_event_enrich_position_closing(&g_state, &none, &f, "nothing") == 0);
+    assert(dsd_event_enrich_position_closing(NULL, &g_state, &none, &f, "nothing") == 0);
 }
 
 /* Staged and explicit data notices: the report goes in with its text only for the notice's own source, and every

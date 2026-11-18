@@ -2502,8 +2502,11 @@ suite runs under this compiler.
   Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
   admitted record: `dsd_event_enrich_position()` (the slot's ACTIVE call of an epoch),
   `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
-  ends before it dispatches its own link control), `dsd_event_set_open_call_position()` (D-STAR slow data),
-  `dsd_event_stage_position()` (the next data notice; `Event_History_Staged::pos_fix` keeps the whole record) and
+  ends before it dispatches its own link control; both take the `dsd_opts` the event log is written through, and a
+  position written into a row that already committed appends the row's `GPS:` line to `-J` with the row's own stamp,
+  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`),
+  `dsd_event_set_open_call_position()` (D-STAR slow data), `dsd_event_stage_position()` (the next data notice;
+  `Event_History_Staged::pos_fix` keeps the whole record) and
   `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol family; the
   report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
   report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its

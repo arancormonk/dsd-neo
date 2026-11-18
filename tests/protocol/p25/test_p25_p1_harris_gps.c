@@ -401,14 +401,42 @@ row_of(const fixture* f, uint32_t src) {
     return NULL;
 }
 
+/* The event log's last line, without its line end; 0 when the log has none. */
+static int
+event_log_last_line(const char* path, char last[512]) {
+    FILE* fp = dsd_fopen_private(path, "r");
+    last[0] = '\0';
+    if (fp == NULL) {
+        return 0;
+    }
+    int lines = 0;
+    char line[512];
+    while (fgets(line, sizeof line, fp) != NULL) {
+        lines++;
+        line[strcspn(line, "\r\n")] = '\0';
+        DSD_SNPRINTF(last, 512, "%s", line);
+    }
+    fclose(fp);
+    return lines;
+}
+
 /* N2 terminator exception: the TDULC ends the call before its own link control is dispatched, and an L3Harris Part B
- * or a Motorola APX report in it belongs to that call: its ENDED row takes the position, and -L keeps its checked
- * source. Through the real decoders, admission, history writer and location file. */
+ * or a Motorola APX report in it belongs to that call: its ENDED row takes the position, -L keeps its checked source,
+ * and the event log, which wrote the row's line at the end, gains the row's GPS line with the row's own stamp. Through
+ * the real decoders, admission, history writer, event log and location file. */
 static void
 test_terminator(void) {
     for (int apx = 0; apx <= 1; apx++) {
         fixture f;
         fixture_open(&f);
+        char event_path[DSD_TEST_PATH_MAX];
+        const int event_fd = dsd_test_mkstemp(event_path, sizeof event_path, "harris_gps_events");
+        if (event_fd < 0) {
+            DSD_FPRINTF(stderr, "mkstemp failed\n");
+            exit(2);
+        }
+        (void)dsd_close(event_fd);
+        DSD_SNPRINTF(f.opts->event_out_file, sizeof f.opts->event_out_file, "%s", event_path);
         const uint64_t epoch = start_call(&f, TG_A, SRC_A);
         body_fields b = fields_default();
         uint8_t body[BODY_OCTETS];
@@ -443,6 +471,20 @@ test_terminator(void) {
         DSD_SNPRINTF(label, sizeof label, "%s: the ended call's row takes it", tag);
         expect_true(label, item != NULL && item->pos.valid == 1U && item->pos.rev == fix.rev
                                && strstr(item->gps_s, lat) != NULL && strstr(item->gps_s, lon) != NULL);
+        char last[512];
+        char want[512];
+        DSD_SNPRINTF(label, sizeof label, "%s: the event log gains the row's GPS line with its stamp", tag);
+        if (item != NULL) {
+            DSD_SNPRINTF(want, sizeof want, "%.19s GPS: %s ", item->event_string, item->gps_s);
+        } else {
+            want[0] = '\0';
+        }
+        const int lines = event_log_last_line(event_path, last);
+        expect_true(label, item != NULL && lines >= 2 && strcmp(last, want) == 0);
+        if (strcmp(last, want) != 0) {
+            DSD_FPRINTF(stderr, "event log: %s (want %s)\n", last, want);
+        }
+        (void)remove(event_path);
         fixture_close(&f);
     }
 }
