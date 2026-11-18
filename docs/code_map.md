@@ -2772,7 +2772,8 @@ suite runs under this compiler.
     voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked RF header with DATA
     set opens its data call but names no call for slow data; a checked slow-data
     header with DATA set names no call and opens none, and revokes what a header heard before named
-    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared, the record and message assembled under it dropped), so a voice
+    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared; the record and message assembled under that naming drop at
+    their next use by the binding rule, while an anonymous one, assembled while nothing was named, goes on), so a voice
     call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the

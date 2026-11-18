@@ -931,6 +931,27 @@ test_data_header_revokes_the_voice_naming(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9 review): a checked DATA header takes back only what an earlier header named. In a data-flagged
+ * transmission nothing is named, so an anonymous D-PRS record whose bytes straddle the next DATA header superframe
+ * completes and reaches the feed (anonymous), as it does across a blank-MY voice header. */
+static void
+test_data_header_keeps_an_anonymous_record(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0DATA", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("data header confirms", r.state->dstar_confirmed, 1);
+    const size_t half = 25U;
+    send_gps(&r, k_vector, half, 0);
+    send_superframe(&r, bytes);
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    dsd_position_fix f[2];
+    expect_int("record across the data header admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record across the data header names nobody", f[0].source_text, "");
+    rig_close(&r);
+}
+
 /* Issue #800 (g62-r8): a rebroadcast header fills nine of a superframe's ten blocks; the tenth may be a text block.
  * It is read like any other text block: the message's first block ("HELLO"), heard after the header that names
  * N0TEXT, starts the message, and with the rest of it the whole message reaches N0TEXT's row. */
@@ -1038,6 +1059,7 @@ main(void) {
     test_new_message_starts_empty();
     test_data_header_names_no_voice_call();
     test_data_header_revokes_the_voice_naming();
+    test_data_header_keeps_an_anonymous_record();
     test_text_block_after_a_header();
     test_missed_first_block_starts_a_new_message();
     test_header_blocks_are_never_text_or_gps();

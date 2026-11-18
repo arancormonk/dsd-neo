@@ -44,7 +44,8 @@ dstar_tx_unname(dsd_state* state) {
     }
     state->dstar_tx_call_epoch = 0U;
     DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
-    dstar_sd_state_clear(state);
+    /* What was assembled under the naming resets at its next use (its binding names a call no longer named); what was
+       assembled under none (anonymous) is no part of it and goes on. */
 }
 
 void
