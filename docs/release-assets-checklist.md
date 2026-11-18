@@ -26,10 +26,12 @@ resource bundle, so they travel with the binary rather than as a separate file.
 
 - [ ] Download `dsd-neo-linux-x86_64-portable-*.AppImage`.
   - [ ] Extract with `./dsd-neo-linux-x86_64-portable-*.AppImage --appimage-extract`.
-  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files.
+  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files, plus
+        `licenses/codec2-LGPL-2.1.txt` and `licenses/codec2-NOTICES.txt` for the codec2 library the AppImage bundles
+        (the AppImage job fails the build if either is missing).
 - [ ] Download `dsd-neo-linux-aarch64-portable-*.AppImage`.
   - [ ] Extract with `--appimage-extract` on aarch64 or in a container.
-  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files.
+  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files and the two codec2 notices.
 
 ### macOS (DMG)
 
@@ -48,7 +50,17 @@ resource bundle, so they travel with the binary rather than as a separate file.
   - [ ] Confirm every file in `bin/` and `lib/` (except `bin/dlls-manifest.txt`) is one a record in
         `legal/components.json` lists under `windows_release`, and that `share/doc/dsd-neo/` holds every notice
         those records name (for the libraries vcpkg builds, `licenses/<port>-copyright.txt`, the copyright file the
-        port installs); `tools/windows/verify_release_tree.ps1` refuses a file without a record or a missing notice.
+        port installs, and the notices of their sources listed below); `tools/windows/verify_release_tree.ps1` refuses
+        a file without a record or a missing notice.
+  - [ ] Confirm `share/doc/dsd-neo/licenses/` holds the notices of the sources the vcpkg-built libraries are compiled
+        from that their ports' copyright files lack: `codec2-LGPL-2.1.txt`, `codec2-NOTICES.txt`,
+        `portaudio-NOTICES.txt`, `LicenseRef-PDCurses-Public-Domain.txt`, `OpenSSL-AUTHORS.md`, `OpenSSL-NOTICES.txt`,
+        `LicenseRef-OpenSSL-KISA-SEED.txt`, `curl-NOTICES.txt`, `expat-NOTICES.txt`,
+        `libsndfile-GSM610-COPYRIGHT.txt`, `libsndfile-ALAC-Apache-2.0.txt`, `LicenseRef-Sun-G72x.txt`,
+        `libsndfile-NOTICES.txt`, `libvorbis-lpc-NOTICE.txt`, `opus-NOTICES.txt`, `mp3lame-LGPL-2.1.txt`,
+        `mp3lame-README.txt`, `mp3lame-LICENSE.txt`, `mp3lame-NOTICES.txt`, `mpg123-AUTHORS.txt` and
+        `mpg123-NOTICES.txt`. When a vcpkg baseline or overlay pin moves, review these against the new sources
+        (`legal/components.json` names where each comes from).
   - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll` and `HackRFSupport.dll`, and that `bin/`
         holds `hackrf.dll` and `SoapySDRUtil.exe` beside `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and
         `pthreadVC3.dll`.
@@ -70,8 +82,10 @@ resource bundle, so they travel with the binary rather than as a separate file.
   - [ ] `unzip -l` shows all required files under `assets/doc/dsd-neo/`, plus
         `licenses/libusb-LGPL-2.1-or-later.txt` and
         `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
-        libraries, and `licenses/ibm-plex-OFL-1.1.txt` for the fonts
-        compiled into the Qt resource bundle
+        libraries, `licenses/codec2-LGPL-2.1.txt` and
+        `licenses/codec2-NOTICES.txt` for the codec2 library it links, and
+        `licenses/ibm-plex-OFL-1.1.txt` for the fonts compiled into the Qt
+        resource bundle
         (`cmake/stage_android_package.cmake` stages them; `android-ci` fails the
         build if any are missing).
   - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty

@@ -1,0 +1,157 @@
+Opus (https://opus-codec.org/, https://github.com/xiph/opus) copyright notices for the Windows
+opus.dll: release 1.6.1, tag v1.6.1 (archive https://github.com/xiph/opus/archive/v1.6.1.tar.gz,
+SHA512
+b9a504f8576c977df57caee808412ab95e7424e9a64e3dd4045f05616c3ed58706bc3549195b61e25721e299547509d15206d246d96f1a307b82562b703b412c),
+as vcpkg's opus port builds it for x64 (floating point, no deep-learning code). opus-copyright.txt,
+Opus's COPYING, carries the BSD-3-Clause license and its holders. These sources compiled into the
+library also name holders COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo,
+Parrot and John Ridges); each file's header is reproduced up to its license text. Of these,
+silk/LPC_fit.c, silk/NSQ.h and silk/x86/NSQ_del_dec_avx2.c carry COPYING's three-clause license; the
+others carry its first two clauses, as celt/x86/pitch_sse.c words them after the list, unmodified.
+
+celt/cpu_support.h
+    Copyright (c) 2010 Xiph.Org Foundation
+    Copyright (c) 2013 Parrot
+
+celt/mathops.c
+    Copyright (c) 2002-2008 Jean-Marc Valin
+    Copyright (c) 2007-2008 CSIRO
+    Copyright (c) 2007-2009 Xiph.Org Foundation
+    Copyright (c) 2024 Arm Limited
+    Written by Jean-Marc Valin
+
+celt/mathops.h
+    Copyright (c) 2002-2008 Jean-Marc Valin
+    Copyright (c) 2007-2008 CSIRO
+    Copyright (c) 2007-2009 Xiph.Org Foundation
+    Copyright (c) 2024 Arm Limited
+    Written by Jean-Marc Valin, and Yunho Huh
+
+celt/x86/celt_lpc_sse.h
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/celt_lpc_sse4_1.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/pitch_sse.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/pitch_sse.h
+    Copyright (c) 2013 Jean-Marc Valin and John Ridges
+    Copyright (c) 2014, Cisco Systems, INC MingXiang WeiZhou MinPeng YanWang
+
+celt/x86/pitch_sse2.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/pitch_sse4_1.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/x86_celt_map.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/x86cpu.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+celt/x86/x86cpu.h
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+include/opus_projection.h
+    Copyright (c) 2017 Google Inc.
+    Written by Andrew Allen
+
+silk/LPC_fit.c
+    Copyright (c) 2013, Koen Vos. All rights reserved.
+
+silk/NSQ.h
+    Copyright (c) 2014 Vidyo.
+    Copyright (c) 2006-2011, Skype Limited. All rights reserved.
+
+silk/x86/NSQ_del_dec_avx2.c
+    Copyright (c) 2021 Google Inc.
+
+silk/x86/NSQ_del_dec_sse4_1.c
+    Copyright (c) 2014-2020, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang FrancisQuiers
+
+silk/x86/NSQ_sse4_1.c
+    Copyright (c) 2014-2020, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang FrancisQuiers
+
+silk/x86/SigProc_FIX_sse.h
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+silk/x86/VAD_sse4_1.c
+    Copyright (c) 2014-2020, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang FrancisQuiers
+
+silk/x86/VQ_WMat_EC_sse4_1.c
+    Copyright (c) 2014-2020, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang FrancisQuiers
+
+silk/x86/main_sse.h
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+silk/x86/x86_silk_map.c
+    Copyright (c) 2014, Cisco Systems, INC
+    Written by XiangMingZhu WeiZhou MinPeng YanWang
+
+src/mapping_matrix.c
+    Copyright (c) 2017 Google Inc.
+    Written by Andrew Allen
+
+src/mapping_matrix.h
+    Copyright (c) 2017 Google Inc.
+    Written by Andrew Allen
+
+src/opus.c
+    Copyright (c) 2011 Xiph.Org Foundation, Skype Limited
+    Copyright (c) 2024 Arm Limited
+    Written by Jean-Marc Valin and Koen Vos
+
+src/opus_decoder.c
+    Copyright (c) 2010 Xiph.Org Foundation, Skype Limited
+    Copyright (c) 2024 Arm Limited
+    Written by Jean-Marc Valin and Koen Vos
+
+src/opus_projection_decoder.c
+    Copyright (c) 2017 Google Inc.
+    Written by Andrew Allen
+
+src/opus_projection_encoder.c
+    Copyright (c) 2017 Google Inc.
+    Written by Andrew Allen
+
+----- celt/x86/pitch_sse.c, lines 4-25 -----
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions
+   are met:
+
+   - Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+   - Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
+   OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

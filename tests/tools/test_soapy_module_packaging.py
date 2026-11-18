@@ -74,6 +74,65 @@ VCPKG_PORT_COPIES = {
     "portaudio": "ports/portaudio at port-version 8",
 }
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
+# The libraries vcpkg builds for the Windows ZIP -> {name under licenses/: where staging takes it from}. Each carries
+# the copyright file its port installs and the notices of its pinned sources that file lacks.
+VCPKG_LIBRARY_NOTICES = {
+    "codec2.dll": {"codec2-copyright.txt": "vcpkg:codec2", "codec2-LGPL-2.1.txt": "repo:LICENSES/codec2-LGPL-2.1.txt",
+                   "codec2-NOTICES.txt": "repo:LICENSES/codec2-NOTICES.txt"},
+    "portaudio.dll": {"portaudio-copyright.txt": "vcpkg:portaudio",
+                      "portaudio-NOTICES.txt": "repo:packaging/windows/portaudio-NOTICES.txt"},
+    "pdcurses.dll": {"LicenseRef-PDCurses-Public-Domain.txt": "repo:LICENSES/LicenseRef-PDCurses-Public-Domain.txt"},
+    "libcrypto-3-x64.dll": {"openssl-copyright.txt": "vcpkg:openssl",
+                            "OpenSSL-AUTHORS.md": "repo:packaging/windows/OpenSSL-AUTHORS.md",
+                            "OpenSSL-NOTICES.txt": "repo:packaging/windows/OpenSSL-NOTICES.txt",
+                            "LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"},
+    "libcurl.dll": {"curl-copyright.txt": "vcpkg:curl", "curl-NOTICES.txt": "repo:packaging/windows/curl-NOTICES.txt"},
+    "libexpat.dll": {"expat-copyright.txt": "vcpkg:expat",
+                     "expat-NOTICES.txt": "repo:packaging/windows/expat-NOTICES.txt"},
+    "z.dll": {"zlib-copyright.txt": "vcpkg:zlib"},
+    "sndfile.dll": {"libsndfile-copyright.txt": "vcpkg:libsndfile",
+                    "libsndfile-GSM610-COPYRIGHT.txt": "repo:packaging/windows/libsndfile-GSM610-COPYRIGHT.txt",
+                    "libsndfile-ALAC-Apache-2.0.txt": "repo:packaging/windows/libsndfile-ALAC-Apache-2.0.txt",
+                    "LicenseRef-Sun-G72x.txt": "repo:LICENSES/LicenseRef-Sun-G72x.txt",
+                    "libsndfile-NOTICES.txt": "repo:packaging/windows/libsndfile-NOTICES.txt"},
+    "flac.dll": {"libflac-copyright.txt": "vcpkg:libflac"},
+    "ogg.dll": {"libogg-copyright.txt": "vcpkg:libogg"},
+    "vorbis.dll": {"libvorbis-copyright.txt": "vcpkg:libvorbis",
+                   "libvorbis-lpc-NOTICE.txt": "repo:packaging/windows/libvorbis-lpc-NOTICE.txt"},
+    "opus.dll": {"opus-copyright.txt": "vcpkg:opus", "opus-NOTICES.txt": "repo:packaging/windows/opus-NOTICES.txt"},
+    "libmp3lame.dll": {"mp3lame-copyright.txt": "vcpkg:mp3lame",
+                       "mp3lame-LGPL-2.1.txt": "repo:android/third_party/libusb/COPYING",
+                       "mp3lame-README.txt": "repo:packaging/windows/mp3lame-README.txt",
+                       "mp3lame-LICENSE.txt": "repo:packaging/windows/mp3lame-LICENSE.txt",
+                       "mp3lame-NOTICES.txt": "repo:packaging/windows/mp3lame-NOTICES.txt"},
+    "mpg123.dll": {"mpg123-copyright.txt": "vcpkg:mpg123",
+                   "mpg123-AUTHORS.txt": "repo:packaging/windows/mpg123-AUTHORS.txt",
+                   "mpg123-NOTICES.txt": "repo:packaging/windows/mpg123-NOTICES.txt"},
+}
+# Words each library's notices must hold: the notices and holders of its compiled sources its port's file lacks.
+VCPKG_LIBRARY_WORDS = {
+    "codec2.dll": ("Copyright (c) 2003-2010, Mark Borgerding", "Copyright (c) 2017-2018 Mozilla",
+                   "Copyright (C) 2006, Matthew C. Valenti", "Copyright (C) 2018 James C. Ahlstrom",
+                   "Copyright (C) 2010 Perens LLC", "Copyright (C) 2016 Jeroen Vreeken",
+                   "Neither the author nor the names of any contributors", BSD_BINARY_CLAUSE.replace(" notice", ""),
+                   "GNU General Public License version 2.1", "GNU LESSER GENERAL PUBLIC LICENSE"),
+    "portaudio.dll": ("Andrew Baldwin", "Robert Marsanyi", "David Viens", "Dmitry Kostjuchenko"),
+    "pdcurses.dll": ("The files in this directory are released to the public domain.",),
+    "libcrypto-3-x64.dll": ("Eric A. Young, Tim J. Hudson", "KISA(Korea Information Security Agency)",
+                            "CC0 Public Domain Dedication", "Cryptography Research, Inc.", "Ribose Inc.",
+                            "Kungliga Tekniska", "Richard Levitte", "Intel Corporation", "CloudFlare, Inc.",
+                            "This is the list of OpenSSL authors for copyright purposes."),
+    "libcurl.dll": ("Linus Nielsen Feltzing", "Steve Holme", "Florin Petriuc", "Evgeny Grin", "Markus Moeller",
+                    "Marc Hoersken", "Mark Salisbury"),
+    "libexpat.dll": ("Thai Open Source Software Center Ltd", "Karl Waclawek", "Sebastian Pipping", "Rhodri James"),
+    "sndfile.dll": ("Technische Universitaet Berlin", "Apache License", "Sun Microsystems, Inc.",
+                    "Copyright (c) 2011 Apple Inc.", "Xiph.Org Foundation and contributors", "Arthur Taylor"),
+    "vorbis.dll": ('Technische Universita"t Berlin', "preserved without modification"),
+    "opus.dll": ("Cisco Systems, INC", "Google Inc.", "Arm Limited", "Koen Vos", "Vidyo", "Parrot", "John Ridges"),
+    "libmp3lame.dll": ("Mark Taylor", "Takehiro Tominaga", "Robert Hegemann", "David Robinson and Glen Sawyer",
+                       "Ron Mayer", "Michael Hipp", "GNU LESSER GENERAL PUBLIC LICENSE"),
+    "mpg123.dll": ("Thorsten Glaser", "Mikko Tommila", "Michael Hipp"),
+}
 # The end-user notice the ZIP carries with the Visual C++ runtime DLLs, its source and the license the record names.
 RUNTIME_NOTICE = "licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt"
 RUNTIME_NOTICE_SOURCE = "packaging/windows/LicenseRef-Microsoft-Visual-CPP-Runtime.txt"
@@ -90,6 +149,10 @@ WINDOWS_RELEASE_FILES = (
 
 def read(path):
     return (ROOT / path).read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def read_bytes(path):
+    return (ROOT / path).read_bytes().replace(b"\r\n", b"\n")
 
 
 def normalized(text):
@@ -349,12 +412,37 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn("Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot "
                       "'share/doc/dsd-neo/legal/components.json')", read("tools/windows/verify_release_tree.ps1"))
 
+    def test_codec2_notices_ship_with_every_package_that_carries_codec2(self):
+        # The Windows ZIP, the APK and the AppImage carry codec2 from the pinned commit, and each carries its LGPL 2.1
+        # text and its holders' and BSD notices: LICENSES/ is installed whole by the desktop packages' legal component
+        # and copied whole into the APK, and each package's check requires both files.
+        component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "codec2")
+        self.assertEqual(sorted(component["platforms"]), ["android", "linux", "windows"])
+        self.assertEqual(component["notices"], ["LICENSES/codec2-LGPL-2.1.txt", "LICENSES/codec2-NOTICES.txt"])
+        self.assertEqual(component["pin"], "CODEC2_SHA")
+        self.assertIn("DIRECTORY LICENSES/", read("CMakeLists.txt"))
+        self.assertIn('file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_doc_dir}/licenses")',
+                      read("cmake/stage_android_package.cmake"))
+        appimage = re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split()
+        android = re.search(r"required=\(\n(.*?)\n\s*\)", read(".github/workflows/android-ci.yaml"), re.S).group(1).split()
+        checklist = read("docs/release-assets-checklist.md")
+        for name in ("licenses/codec2-LGPL-2.1.txt", "licenses/codec2-NOTICES.txt"):
+            with self.subTest(notice=name):
+                self.assertIn(name, appimage)
+                self.assertIn(name, android)
+                self.assertIn(name, checklist)
+        # The LGPL text is codec2's own COPYING, unmodified.
+        self.assertEqual([line.strip() for line in read("LICENSES/codec2-LGPL-2.1.txt").splitlines()[:2]],
+                         ["GNU LESSER GENERAL PUBLIC LICENSE", "Version 2.1, February 1999"])
+
     def test_portaudio_overlay_keeps_asio_out(self):
         # PortAudio 19.7 compiles the Steinberg ASIO SDK in whenever it finds one, whatever PA_USE_ASIOSDK says.
         _, portfile = self.port("portaudio")
         windows = portfile[portfile.index("if(VCPKG_TARGET_IS_WINDOWS)"):portfile.index("elseif(")]
         self.assertIn("-DPA_USE_ASIO=OFF\n", windows)
         self.assert_pinned(portfile, "PortAudio/portaudio", "PORTAUDIO", dynamic_only=False)
+        self.assertEqual(next(c for c in json.loads(read("legal/components.json"))["components"]
+                              if c["id"] == "portaudio")["pin"], "PORTAUDIO_SHA")
 
     def test_vcpkg_port_copies_keep_the_vcpkg_notice(self):
         # vcpkg's MIT license asks that its notice stay with copies of its files: the overlays copied from its ports
@@ -401,12 +489,21 @@ class SoapyModulePackaging(unittest.TestCase):
                     for notice, source in notices.items():
                         self.assertRegex(notice, r"^(licenses/|legal/|[A-Z_.]+$)")
                         self.assertRegex(source, sources)
-        # The libraries vcpkg builds from its own ports ship the copyright file the port installs.
-        for name, port in (("portaudio.dll", "portaudio"), ("sndfile.dll", "libsndfile"), ("z.dll", "zlib"),
-                           ("libcrypto-3-x64.dll", "openssl"), ("libcurl.dll", "curl"), ("codec2.dll", "codec2")):
+        # The libraries vcpkg builds from its own ports ship the copyright file the port installs, where it is
+        # upstream's, and the notices and holders of their pinned sources that file lacks.
+        for name, expected in VCPKG_LIBRARY_NOTICES.items():
             with self.subTest(file=name):
                 (component, notices), = records[name]
-                self.assertEqual(notices, {f"licenses/{port}-copyright.txt": f"vcpkg:{port}"})
+                self.assertEqual(notices, {"licenses/" + key: value for key, value in expected.items()})
+                text = ""
+                for source in expected.values():
+                    if source.startswith("repo:"):
+                        text += read_bytes(source[5:]).decode("utf-8") + "\n"
+                for words in VCPKG_LIBRARY_WORDS.get(name, ()):
+                    self.assertIn(words, text)
+                # On a case-insensitive file system no new notice may replace the port's copyright file.
+                self.assertEqual(len({key.lower() for key in notices}), len(notices))
+        self.assertEqual(records["vorbisenc.dll"], records["vorbis.dll"])
         # dsd-neo.exe carries every component compiled into it.
         embedded = {component for component, _ in records["dsd-neo.exe"]}
         self.assertEqual(embedded, {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay", "mixed-origins",
@@ -651,8 +748,9 @@ for name in ("ISC.txt", "LicenseRef-ETSI-EN-300-395-2-data.txt", "legal/status.m
 
 # The DLLs of the fake vcpkg tree and what each imports.
 DEPENDENCIES = {
-    "dsd-neo.exe": ["rtlsdr.dll", "airspy.dll", "SoapySDR.dll", "portaudio.dll", "VCRUNTIME140.dll", "KERNEL32.dll",
-                    "api-ms-win-crt-runtime-l1-1-0.dll"],
+    "dsd-neo.exe": ["rtlsdr.dll", "airspy.dll", "SoapySDR.dll", "portaudio.dll", "codec2.dll", "sndfile.dll",
+                    "libcrypto-3-x64.dll", "VCRUNTIME140.dll", "KERNEL32.dll", "api-ms-win-crt-runtime-l1-1-0.dll"],
+    "sndfile.dll": ["opus.dll", "KERNEL32.dll"],
     "rtlsdr.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "airspy.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "hackrf.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
@@ -662,9 +760,11 @@ DEPENDENCIES = {
     "SoapySDRUtil.exe": ["SoapySDR.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "KERNEL32.dll"],
 }
 INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "SoapySDR.dll", "libusb-1.0.dll", "pthreadVC3.dll",
-                 "portaudio.dll", "unused.dll")
+                 "portaudio.dll", "codec2.dll", "sndfile.dll", "opus.dll", "libcrypto-3-x64.dll", "unused.dll")
 # The copyright file vcpkg's portaudio port installs, which the ZIP carries as licenses/portaudio-copyright.txt.
 PORTAUDIO_COPYRIGHT = b"PortAudio Portable Real-Time Audio Library\r\nCopyright (c) 1999-2011 Ross Bencina, Phil Burk\r\n"
+# The copyright files the other ports of the fake tree install.
+PORT_COPYRIGHTS = {port: f"{port} copyright file\r\n".encode() for port in ("codec2", "libsndfile", "opus", "openssl")}
 # The Visual C++ runtime the binaries import, which staging takes from the toolset's redistributable folder of the
 # Visual Studio that vswhere finds, never from vcpkg's bin\.
 RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
@@ -902,6 +1002,9 @@ class SoapyReleaseScripts(unittest.TestCase):
             (installed / "bin" / name).write_bytes(pe_image(name.encode()))
         (installed / "share/portaudio").mkdir(parents=True)
         (installed / "share/portaudio/copyright").write_bytes(PORTAUDIO_COPYRIGHT)
+        for port, text in PORT_COPYRIGHTS.items():
+            (installed / "share" / port).mkdir(parents=True)
+            (installed / "share" / port / "copyright").write_bytes(text)
         (installed / "include/SoapySDR").mkdir(parents=True)
         (installed / "include/SoapySDR/Version.h").write_text(
             '#pragma once\r\n#define SOAPY_SDR_API_VERSION 0x00080000\r\n#define SOAPY_SDR_ABI_VERSION "0.8"\r\n')
@@ -968,8 +1071,22 @@ class SoapyReleaseScripts(unittest.TestCase):
         for source, shipped in WINDOWS_NOTICES.items():
             self.assertEqual((licenses / shipped).read_bytes(), (ROOT / source).read_bytes(), shipped)
         self.assertEqual((licenses / "BSL-1.0.txt").read_bytes(), (ROOT / "LICENSES/BSL-1.0.txt").read_bytes())
-        # A library vcpkg builds from its own port: the ZIP carries the copyright file the port installs.
+        # A library vcpkg builds from its own port: the ZIP carries the copyright file the port installs, and the
+        # notices of its pinned sources from the repository (codec2's kiss_fft and Mozilla notices, libsndfile's GSM
+        # 06.10, ALAC and G.72x terms, the holders of Opus's x86 code, OpenSSL's AUTHORS.md and KISA's terms).
         self.assertEqual((licenses / "portaudio-copyright.txt").read_bytes(), PORTAUDIO_COPYRIGHT)
+        for port, text in PORT_COPYRIGHTS.items():
+            self.assertEqual((licenses / f"{port}-copyright.txt").read_bytes(), text)
+        for name in ("portaudio.dll", "codec2.dll", "sndfile.dll", "opus.dll", "libcrypto-3-x64.dll"):
+            shipped = ""
+            for notice, source in VCPKG_LIBRARY_NOTICES[name].items():
+                with self.subTest(file=name, notice=notice):
+                    if source.startswith("repo:"):
+                        self.assertEqual((licenses / notice).read_bytes(), (ROOT / source[5:]).read_bytes())
+                        shipped += (licenses / notice).read_text(encoding="utf-8") + "\n"
+            for words in VCPKG_LIBRARY_WORDS[name]:
+                with self.subTest(file=name, words=words):
+                    self.assertIn(words, shipped)
         # The Visual C++ runtime the tree carries comes with Microsoft's terms for it.
         self.assertEqual((stage / "share/doc/dsd-neo" / RUNTIME_NOTICE).read_bytes(),
                          (ROOT / RUNTIME_NOTICE_SOURCE).read_bytes())

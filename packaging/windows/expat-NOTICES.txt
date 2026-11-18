@@ -1,0 +1,265 @@
+Expat (https://github.com/libexpat/libexpat) copyright notices for the Windows libexpat.dll: release
+2.9.0, tag R_2_9_0 (archive https://github.com/libexpat/libexpat/archive/R_2_9_0.tar.gz, SHA512
+b4820866070eb2b6ea910ac7737cdc6bdec36462d4cf056dd1d84615a81cbafa88e4060c3c496207e60adc180086125f4aee5be8da5184867a1b40ae4e182d78),
+as vcpkg's expat port builds it: expat/lib/xcs.c, xmlparse.c, xmlrole.c, xmltok.c (with
+xmltok_impl.c and xmltok_ns.c) and random_rand_s.c, and the headers they include. Each file is under
+the MIT license of expat-copyright.txt (siphash.h: CC0-1.0, also in that file); its holder lines
+follow, paths relative to expat/.
+
+lib/ascii.h
+    Copyright (c) 1999-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2007      Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2017      Sebastian Pipping <sebastian@pipping.org>
+
+lib/asciitab.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2017      Sebastian Pipping <sebastian@pipping.org>
+
+lib/expat.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2000-2005 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2001-2002 Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002-2016 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2016      Cristian Rodríguez <crrodriguez@opensuse.org>
+    Copyright (c) 2016      Thomas Beutlich <tc@tbeu.de>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2022      Thijs Schreijer <thijs@thijsschreijer.nl>
+    Copyright (c) 2023      Hanno Böck <hanno@gentoo.org>
+    Copyright (c) 2023      Sony Corporation / Snild Dolkow <snild@sony.com>
+    Copyright (c) 2024      Taichi Haradaguchi <20001722@ymail.ne.jp>
+    Copyright (c) 2025      Matthew Fernandez <matthew.fernandez@gmail.com>
+    Copyright (c) 2026      Braian Plaku <braianplaku@gmail.com>
+
+lib/expat_external.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2000-2004 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2001-2002 Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002-2006 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2016      Cristian Rodríguez <crrodriguez@opensuse.org>
+    Copyright (c) 2016-2025 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2018      Yury Gribov <tetra2005@gmail.com>
+    Copyright (c) 2026      Matthew Fernandez <matthew.fernandez@gmail.com>
+    Copyright (c) 2026      Braian Plaku <braianplaku@gmail.com>
+
+lib/fallthrough.h
+    Copyright (c) 2026 Nick Begg <nick@stunttruck.net>
+
+lib/hash_table.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/iasciitab.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2017      Sebastian Pipping <sebastian@pipping.org>
+
+lib/internal.h
+    Copyright (c) 2002-2003 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2002-2006 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2003      Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2018      Yury Gribov <tetra2005@gmail.com>
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2023-2024 Sony Corporation / Snild Dolkow <snild@sony.com>
+    Copyright (c) 2024      Taichi Haradaguchi <20001722@ymail.ne.jp>
+    Copyright (c) 2026      Matthew Wozniczka <mattheww@simba.com>
+    Copyright (c) 2026      Braian Plaku <braianplaku@gmail.com>
+    Copyright (c) 2026      Florian Schmaus <florian.schmaus@codasip.com>
+
+lib/latin1tab.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2017      Sebastian Pipping <sebastian@pipping.org>
+
+lib/nametab.h
+    Copyright (c) 2000 Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2017 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_arc4random.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_arc4random_buf.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_dev_urandom.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_getentropy.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_getrandom.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_rand_s.c
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2019-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2019      Ben Wagner <bungeman@chromium.org>
+    Copyright (c) 2019      Vadim Zeitlin <vadim@zeitlins.org>
+    Copyright (c) 2026      Matthew Fernandez <matthew.fernandez@gmail.com>
+
+lib/random_rand_s.h
+    Copyright (c) 2019 David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/utf8tab.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2017      Sebastian Pipping <sebastian@pipping.org>
+
+lib/winconfig.h
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2005      Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2017-2023 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2023      Orgad Shaneh <orgad.shaneh@audiocodes.com>
+
+lib/xcs.c
+    Copyright (c) 2022-2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/xcs.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/xmlparse.c
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2000-2006 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2001-2002 Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002-2016 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2005-2009 Steven Solie <steven@solie.ca>
+    Copyright (c) 2016      Eric Rahm <erahm@mozilla.com>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2016      Gaurav <g.gupta@samsung.com>
+    Copyright (c) 2016      Thomas Beutlich <tc@tbeu.de>
+    Copyright (c) 2016      Gustavo Grieco <gustavo.grieco@imag.fr>
+    Copyright (c) 2016      Pascal Cuoq <cuoq@trust-in-soft.com>
+    Copyright (c) 2016      Ed Schouten <ed@nuxi.nl>
+    Copyright (c) 2017-2022 Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2017      Václav Slavík <vaclav@slavik.io>
+    Copyright (c) 2017      Viktor Szakats <commit@vsz.me>
+    Copyright (c) 2017      Chanho Park <chanho61.park@samsung.com>
+    Copyright (c) 2017      Rolf Eike Beer <eike@sf-mail.de>
+    Copyright (c) 2017      Hans Wennborg <hans@chromium.org>
+    Copyright (c) 2018      Anton Maklakov <antmak.pub@gmail.com>
+    Copyright (c) 2018      Benjamin Peterson <benjamin@python.org>
+    Copyright (c) 2018      Marco Maggi <marco.maggi-ipsu@poste.it>
+    Copyright (c) 2018      Mariusz Zaborski <oshogbo@vexillium.org>
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2019-2020 Ben Wagner <bungeman@chromium.org>
+    Copyright (c) 2019      Vadim Zeitlin <vadim@zeitlins.org>
+    Copyright (c) 2021      Donghee Na <donghee.na@python.org>
+    Copyright (c) 2022      Samanta Navarro <ferivoz@riseup.net>
+    Copyright (c) 2022      Jeffrey Walton <noloader@gmail.com>
+    Copyright (c) 2022      Jann Horn <jannh@google.com>
+    Copyright (c) 2022      Sean McBride <sean@rogue-research.com>
+    Copyright (c) 2023      Owain Davies <owaind@bath.edu>
+    Copyright (c) 2023-2024 Sony Corporation / Snild Dolkow <snild@sony.com>
+    Copyright (c) 2024-2025 Berkay Eren Ürün <berkay.ueruen@siemens.com>
+    Copyright (c) 2024      Hanno Böck <hanno@gentoo.org>
+    Copyright (c) 2025-2026 Matthew Fernandez <matthew.fernandez@gmail.com>
+    Copyright (c) 2025      Atrem Borovik <polzovatellllk@gmail.com>
+    Copyright (c) 2025      Alfonso Gregory <gfunni234@gmail.com>
+    Copyright (c) 2026      Rosen Penev <rosenp@gmail.com>
+    Copyright (c) 2026      Francesco Bertolaccini
+    Copyright (c) 2026      Christian Ng <christianrng@berkeley.edu>
+    Copyright (c) 2026      Nick Begg <nick@stunttruck.net>
+    Copyright (c) 2026      Kartik Kenchi <netliomax25@gmail.com>
+    Copyright (c) 2026      Haris Hussain <hextheshadow0x@gmail.com>
+    Copyright (c) 2026      Evgeny Kotkov <kotkov@apache.org>
+    Copyright (c) 2026      Darren Carreras <carrerasdarren@gmail.com>
+    Copyright (c) 2026      Alberto Maschietto <albertomaschietto9@gmail.com>
+    Copyright (c) 2026      Zeyou Liu <zeyouliu@tencent.com>
+    Copyright (c) 2026      Stan Ulbrych <stan@python.org>
+    Copyright (c) 2026      Braian Plaku <braianplaku@gmail.com>
+    Copyright (c) 2026      Filippo Tedeschi <filippotedeschi98@gmail.com>
+    Copyright (c) 2026      Junki Lee <junkilee80@gmail.com>
+
+lib/xmlrole.c
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002-2006 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2002-2003 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2005-2009 Steven Solie <steven@solie.ca>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2021      Donghee Na <donghee.na@python.org>
+    Copyright (c) 2025      Alfonso Gregory <gfunni234@gmail.com>
+
+lib/xmlrole.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2017-2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/xmltok.c
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2001-2003 Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2002      Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002-2016 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2005-2009 Steven Solie <steven@solie.ca>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2016      Pascal Cuoq <cuoq@trust-in-soft.com>
+    Copyright (c) 2016      Don Lewis <truckman@apache.org>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2017      Alexander Bluhm <alexander.bluhm@gmx.net>
+    Copyright (c) 2017      Benbuck Nason <bnason@netflix.com>
+    Copyright (c) 2017      José Gutiérrez de la Concha <jose@zeroc.com>
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2021      Donghee Na <donghee.na@python.org>
+    Copyright (c) 2022      Martin Ettl <ettl.martin78@googlemail.com>
+    Copyright (c) 2022      Sean McBride <sean@rogue-research.com>
+    Copyright (c) 2023      Hanno Böck <hanno@gentoo.org>
+    Copyright (c) 2025      Alfonso Gregory <gfunni234@gmail.com>
+    Copyright (c) 2026      Nick Begg <nick@stunttruck.net>
+    Copyright (c) 2026      Kartik Kenchi <netliomax25@gmail.com>
+    Copyright (c) 2026      Afonso Januário <afonso-januario@hotmail.com>
+
+lib/xmltok.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2002-2005 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+
+lib/xmltok_impl.c
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2002-2016 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
+    Copyright (c) 2018      Benjamin Peterson <benjamin@python.org>
+    Copyright (c) 2018      Anton Maklakov <antmak.pub@gmail.com>
+    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
+    Copyright (c) 2020      Boris Kolpackov <boris@codesynthesis.com>
+    Copyright (c) 2022      Martin Ettl <ettl.martin78@googlemail.com>
+    Copyright (c) 2026      Nick Begg <nick@stunttruck.net>
+    Copyright (c) 2026      Kartik Kenchi <netliomax25@gmail.com>
+
+lib/xmltok_impl.h
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2017-2019 Sebastian Pipping <sebastian@pipping.org>
+
+lib/xmltok_ns.c
+    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
+    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
+    Copyright (c) 2002      Greg Stein <gstein@users.sourceforge.net>
+    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
+    Copyright (c) 2002-2006 Karl Waclawek <karl@waclawek.net>
+    Copyright (c) 2017-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2025      Alfonso Gregory <gfunni234@gmail.com>

@@ -1,0 +1,245 @@
+codec2 (https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2)
+copyright notices for the codec2 library dsd-neo carries in the Windows ZIP (codec2.dll), the
+Android app and the Linux AppImage, all built from commit ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44
+(release 1.2.0; archive
+https://github.com/arancormonk/codec2/archive/ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44.tar.gz,
+SHA512
+57ccdacb2f6b7716fab642b3a401399f84b982b4a5edbd644931a4db6588e1f1ba2ea033537eebd5938a163c6c98522213ab6a987a1c3ed5c3c36fdab87773a7)
+with LPCNet off. The holder lines of every source in src/CMakeLists.txt's CODEC2_SRCS and of the
+src/ headers they include follow, then the license notices of the files whose terms are not codec2's
+own GNU Lesser General Public License 2.1, reproduced unmodified from the lines named. codec2's
+COPYING, the LGPL 2.1 text, is codec2-LGPL-2.1.txt (in the Windows ZIP also codec2-copyright.txt).
+
+Copyright (C) 1990-2010 David Rowe
+    src/sine.c
+Copyright (c) 2003-2004, Mark Borgerding
+    src/kiss_fftr.c
+Copyright (c) 2003-2010, Mark Borgerding
+    src/_kiss_fft_guts.h
+    src/kiss_fft.c
+Copyright (C) 2006, Matthew C. Valenti
+    src/mpdecode_core.c
+Copyright (C) 2009 David Rowe
+    src/comp.h
+    src/defines.h
+    src/interp.c
+    src/interp.h
+    src/lsp.c
+    src/lsp.h
+    src/nlp.c
+    src/nlp.h
+    src/phase.c
+    src/phase.h
+    src/postfilter.c
+    src/postfilter.h
+    src/sine.h
+Copyright (C) 2009-2012 David Rowe
+    src/lpc.c
+    src/lpc.h
+Copyright (C) 2010 David Rowe
+    src/codec2.c
+    src/codec2.h
+Copyright (C) 2010 Perens LLC <bruce@perens.com>
+    src/pack.c
+Copyright (C) 2012 David Rowe
+    src/codec2_fdmdv.h
+    src/codec2_fifo.c
+    src/codec2_fifo.h
+    src/codec2_internal.h
+    src/fdmdv.c
+    src/fdmdv_internal.h
+Copyright (C) 2013 David Rowe
+    src/golay23.h
+    src/machdep.h
+Copyright (C) 2014 David Rowe
+    src/freedv_api.c
+    src/freedv_api.h
+    src/freedv_api_internal.h
+Copyright (C) 2015 David Rowe
+    src/codec2_cohpsk.h
+    src/codec2_fm.h
+    src/cohpsk.c
+    src/cohpsk_internal.h
+    src/comp_prim.h
+    src/fm.c
+    src/linreg.c
+    src/linreg.h
+    src/modem_stats.c
+    src/modem_stats.h
+Copyright (C) 2016 David Rowe
+    src/fmfsk.c
+    src/fmfsk.h
+    src/freedv_vhf_framing.c
+    src/freedv_vhf_framing.h
+    src/fsk.h
+    src/modem_probe.h
+Copyright (C) 2016 Jeroen Vreeken
+    src/freedv_data_channel.c
+    src/freedv_data_channel.h
+Copyright (C) 2016 Tomas Härdin & David Rowe
+    src/golay23.c
+Copyright (C) 2016-2020 David Rowe
+    src/fsk.c
+Copyright (C) 2017 David Rowe
+    src/codec2_ofdm.h
+    src/ofdm_internal.h
+Copyright (c) 2017-2018 Mozilla
+    src/lpcnet_freq.c
+    src/lpcnet_freq.h
+Copyright (C) 2017-2020 David Rowe
+    src/ofdm.c
+Copyright (C) 2018 David Rowe
+    src/gp_interleaver.c
+    src/gp_interleaver.h
+    src/interldpc.c
+    src/interldpc.h
+Copyright (C) 2018 James C. Ahlstrom
+    src/filter.c
+    src/filter.h
+    src/filter_coef.h
+Copyright David Rowe 2017
+    src/mbest.c
+    src/mbest.h
+    src/newamp1.c
+    src/newamp1.h
+
+----- src/kiss_fft.c, lines 2-27 (BSD-3-Clause) -----
+
+Copyright (c) 2003-2010, Mark Borgerding
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.
+    * Neither the author nor the names of any contributors may be used to
+endorse or promote products derived from this software without specific prior
+written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----- src/kiss_fftr.c, lines 2-27 (BSD-3-Clause) -----
+
+Copyright (c) 2003-2004, Mark Borgerding
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.
+    * Neither the author nor the names of any contributors may be used to
+endorse or promote products derived from this software without specific prior
+written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----- src/lpcnet_freq.c, lines 8-31 (BSD-2-Clause) -----
+
+/* Copyright (c) 2017-2018 Mozilla */
+/*
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions
+   are met:
+
+   - Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+   - Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+   ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+   A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
+   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+   EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+   PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+   LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----- src/mpdecode_core.c, lines 683-701 (LGPL-2.1-or-later) -----
+
+   Copyright (C) 2006, Matthew C. Valenti
+
+   Last updated on May 6, 2006
+
+   Function DemodFSK is part of the Iterative Solutions
+   Coded Modulation Library. The Iterative Solutions Coded Modulation
+   Library is free software; you can redistribute it and/or modify it
+   under the terms of the GNU Lesser General Public License as published
+   by the Free Software Foundation; either version 2.1 of the License,
+   or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+----- src/varicode.c, lines 1-24 -----
+
+src/varicode.c, src/varicode.h and src/varicode_table.h grant their terms under "the GNU General
+Public License version 2.1". The Free Software Foundation has published no version 2.1 of the GNU
+General Public License. dsd-neo reads the grant as the GNU Lesser General Public License version
+2.1, the license of codec2's COPYING and the one its README.md names ("Codec 2 is an open source
+(LGPL 2.1) low bit rate speech codec"), and records these files as LGPL-2.1-only. The header of
+src/varicode.c follows, unmodified.
+
+//==========================================================================
+// Name:            varicode.h
+// Purpose:         Varicode encoded and decode functions
+// Created:         Nov 24, 2012
+// Authors:         David Rowe
+//
+// To test:
+//          $ gcc varicode.c -o varicode -DVARICODE_UNITTEST -Wall
+//          $ ./varicode
+//
+// License:
+//
+//  This program is free software; you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License version 2.1,
+//  as published by the Free Software Foundation.  This program is
+//  distributed in the hope that it will be useful, but WITHOUT ANY
+//  WARRANTY; without even the implied warranty of MERCHANTABILITY or
+//  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
+//  License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with this program; if not, see <http://www.gnu.org/licenses/>.
+//
+//==========================================================================

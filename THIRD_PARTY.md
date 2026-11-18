@@ -246,24 +246,47 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
 
 The Windows release ZIP also carries in `bin\` the libraries vcpkg builds at the manifest baseline in `vcpkg.json`,
 or from the project's overlays in `vcpkg-ports/`. For each one the ZIP carries the copyright file its port installs
-(`share/<port>/copyright` in vcpkg's tree) as `licenses/<port>-copyright.txt`. The licenses below are the ones each
-port's `vcpkg.json` declares; `legal/status.md` (RUNTIME-NOTICES) records that these files are not yet reviewed
-against the sources the DLLs are built from.
+(`share/<port>/copyright` in vcpkg's tree) as `licenses/<port>-copyright.txt`, except PDCurses, whose port installs
+vcpkg's own paraphrase. Each library was reviewed against the sources its DLL is compiled from, in the archive its
+port downloads; where the port's file lacks a holder or a license those sources carry, the ZIP also carries the
+notices named below, kept in `LICENSES/` and `packaging/windows/` and installed under `licenses/`. The licenses are
+the ones those sources carry; where a port's `vcpkg.json` declares another, `legal/components.json` says so.
 
-- **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, the commit `CODEC2_SHA` in
-  `tools/ci-dependency-pins.env`) - LGPL-2.1-or-later.
-- **PortAudio** (`portaudio.dll`; https://www.portaudio.com, release 19.7 through the `portaudio` overlay) - MIT.
-- **PDCurses** (`pdcurses.dll`; https://pdcurses.org/, release 3.9) - the port declares no license; its copyright file
-  is the LICENSE file vcpkg keeps with the port.
-- **OpenSSL** (`libcrypto-3-x64.dll`; https://www.openssl.org, release 3.6.5) - Apache-2.0.
-- **libcurl** (`libcurl.dll`; https://curl.se/, release 8.23.0) - curl AND ISC AND BSD-3-Clause.
+- **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2, the
+  commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND
+  BSD-2-Clause. The Android app links the same overlay's static library and the AppImage bundles a shared library
+  built from the same commit, so all three carry `licenses/codec2-LGPL-2.1.txt` (codec2's COPYING) and
+  `licenses/codec2-NOTICES.txt` (the holders, the kiss_fft and Mozilla BSD notices, the LGPL-2.1-or-later Valenti
+  notice, and the varicode files' "GNU General Public License version 2.1" grant, read as the LGPL 2.1 of codec2's
+  COPYING and README).
+- **PortAudio** (`portaudio.dll`; https://www.portaudio.com, release v19.7.0 through the `portaudio` overlay, pinned
+  as `PORTAUDIO_SHA`; built without ASIO) - MIT. `licenses/portaudio-NOTICES.txt` adds the holders of the Windows
+  host API sources.
+- **PDCurses** (`pdcurses.dll`; https://pdcurses.org/, release 3.9) - public domain,
+  `licenses/LicenseRef-PDCurses-Public-Domain.txt` (upstream's statements).
+- **OpenSSL** (`libcrypto-3-x64.dll`; https://www.openssl.org, release 3.6.5; no libssl, since libcurl uses
+  Schannel) - Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED. `licenses/OpenSSL-AUTHORS.md`,
+  `licenses/OpenSSL-NOTICES.txt` and `licenses/LicenseRef-OpenSSL-KISA-SEED.txt`.
+- **libcurl** (`libcurl.dll`; https://curl.se/, release 8.23.0, Schannel) - curl AND ISC.
+  `licenses/curl-NOTICES.txt`.
 - **Expat** (`libexpat.dll`; https://github.com/libexpat/libexpat, release 2.9.0) - MIT AND CC0-1.0.
+  `licenses/expat-NOTICES.txt`.
 - **zlib** (`z.dll`; https://www.zlib.net/, release 1.3.2) - Zlib.
-- **libsndfile** (`sndfile.dll`; https://github.com/erikd/libsndfile, release 1.2.2) - LGPL-2.1-or-later. It
-  loads **libFLAC** (`FLAC.dll`, 1.5.0, BSD-3-Clause), **libogg** (`ogg.dll`, 1.3.6, BSD-3-Clause), **libvorbis**
-  (`vorbis.dll` and `vorbisenc.dll`, 1.3.7, BSD-3-Clause), **Opus** (`opus.dll`, 1.6.1, BSD-3-Clause), **LAME**
-  (`libmp3lame.DLL`, 3.100, LGPL-2.0-only as the port declares it) and **mpg123** (`mpg123.dll`, 1.33.7,
-  LGPL-2.1-or-later).
+- **libsndfile** (`sndfile.dll`; https://github.com/libsndfile/libsndfile, release 1.2.2) - LGPL-2.1-or-later AND
+  LGPL-2.0-or-later AND Apache-2.0 AND BSD-3-Clause AND TU-Berlin-1.0 AND LicenseRef-Sun-G72x, for its bundled GSM
+  06.10, ALAC and G.72x codecs and Xiph.Org code. `licenses/libsndfile-GSM610-COPYRIGHT.txt`,
+  `licenses/libsndfile-ALAC-Apache-2.0.txt`, `licenses/LicenseRef-Sun-G72x.txt` and
+  `licenses/libsndfile-NOTICES.txt`. It loads:
+  - **libFLAC** (`FLAC.dll`, 1.5.0) - BSD-3-Clause.
+  - **libogg** (`ogg.dll`, 1.3.6) - BSD-3-Clause.
+  - **libvorbis** (`vorbis.dll` and `vorbisenc.dll`, 1.3.7) - BSD-3-Clause AND TU-Berlin-1.0;
+    `licenses/libvorbis-lpc-NOTICE.txt`.
+  - **Opus** (`opus.dll`, 1.6.1) - BSD-3-Clause AND BSD-2-Clause; `licenses/opus-NOTICES.txt`.
+  - **LAME** (`libmp3lame.DLL`, 3.100, with its mpglib decoder) - LGPL-2.0-or-later AND LGPL-2.1-or-later;
+    `licenses/mp3lame-LGPL-2.1.txt`, `licenses/mp3lame-README.txt`, `licenses/mp3lame-LICENSE.txt` and
+    `licenses/mp3lame-NOTICES.txt`.
+  - **mpg123** (`mpg123.dll`, 1.33.7) - LGPL-2.1-only AND MirOS; `licenses/mpg123-AUTHORS.txt` and
+    `licenses/mpg123-NOTICES.txt`.
 
 ## Windows Visual C++ Runtime
 

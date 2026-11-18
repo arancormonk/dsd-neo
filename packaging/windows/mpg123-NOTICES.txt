@@ -1,0 +1,39 @@
+mpg123 (https://www.mpg123.de/) release 1.33.7 (archive
+https://downloads.sourceforge.net/project/mpg123/mpg123/1.33.7/mpg123-1.33.7.tar.bz2, SHA512
+694743802bb7be0f4a39bf62e681ae0bfed769cb87dc6c5b6fb5f9245966631efb5c5b9bd58588f7af55ced5d020f97c8a54993e71b5295bc45ebd152473f40e):
+notices of code compiled into the Windows mpg123.dll besides the GNU LGPL 2.1 of
+mpg123-copyright.txt (the upstream COPYING). The contributors COPYING and the file headers refer to
+are in mpg123-AUTHORS.txt (the upstream AUTHORS). Reproduced unmodified from the lines named:
+
+----- src/libmpg123/icy2utf8.c, lines 1-25 (MirOS) -----
+
+/* mpg123 note: This is BSD-licensed code that is no problem for mpg123 usage under LGPL.
+   It's Free, understood? ;-) */
+
+/* Another note: This code is basically written by Thorsten Glaser,
+   Thomas Orgis did just some rearrangements and comments. */
+
+/*-
+ * Copyright (c) 2008
+ *	Thorsten Glaser <tg@mirbsd.org>
+ *
+ * Provided that these terms and disclaimer and all copyright notices
+ * are retained or reproduced in an accompanying document, permission
+ * is granted to deal in this work without restriction, including un-
+ * limited rights to use, publicly perform, distribute, sell, modify,
+ * merge, give away, or sublicence.
+ *
+ * This work is provided "AS IS" and WITHOUT WARRANTY of any kind, to
+ * the utmost extent permitted by applicable law, neither express nor
+ * implied; without malicious intent or gross negligence. In no event
+ * may a licensor, author or contributor be held liable for indirect,
+ * direct, other damage, loss, or other issues arising in any way out
+ * of dealing in the work, even if advised of the possibility of such
+ * damage or existence of a defect, except proven that it results out
+ * of said person's immediate fault when using the work as intended.
+ *-
+
+----- src/libmpg123/layer3.c, lines 1283-1284 -----
+
+	This piece of code is Copyright 1997 Mikko Tommila and is freely usable
+	by anybody. The algorithm itself is of course in the public domain.

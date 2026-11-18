@@ -163,8 +163,76 @@ class InventoryTests(unittest.TestCase):
                                   packages["msvc-runtime"]["licenseConcluded"]), (runtime, runtime))
                 self.assertNotIn("licenseComments", packages["msvc-runtime"])
                 self.assertIn("Do not modify them.", notices[runtime])
+            # The custom texts of the Windows libraries come from their retained files; codec2's varicode grant is
+            # read as the LGPL 2.1 and needs none.
+            for custom in ("LicenseRef-PDCurses-Public-Domain", "LicenseRef-OpenSSL-KISA-SEED", "LicenseRef-Sun-G72x"):
+                self.assertEqual(custom in notices, platform == "windows")
+                if platform == "windows":
+                    self.assertEqual(notices[custom], (ROOT / "LICENSES" / (custom + ".txt")).read_text(encoding="utf-8"))
+            self.assertFalse(any("codec2" in name for name in notices))
             with self.assertRaises(ValueError):
                 legal.add_spdx(document, self.inventory, self.pins, platform)
+
+    def test_sboms_carry_codec2_where_it_ships(self):
+        # The Windows ZIP (overlay DLL), the Android app (the same overlay, statically linked) and the AppImage (a
+        # shared library built from the same commit) carry codec2; the DMG's comes from Homebrew and is not recorded.
+        expression = "LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause"
+        for platform in legal.PLATFORMS:
+            document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+            legal.add_spdx(document, self.inventory, self.pins, platform)
+            packages = {p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-"): p for p in document["packages"]}
+            with self.subTest(platform=platform):
+                self.assertEqual("codec2" in packages, platform != "macos")
+                if platform != "macos":
+                    codec2 = packages["codec2"]
+                    self.assertEqual((codec2["licenseDeclared"], codec2["licenseConcluded"]), (expression, expression))
+                    self.assertEqual(codec2["versionInfo"], self.pins["CODEC2_SHA"])
+                    self.assertNotIn("licenseComments", codec2)
+        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
+        self.assertIn("grep -qE '(^| )codec2_create$'", android)
+        self.assertIn('build_dep https://github.com/arancormonk/codec2 "$codec2_sha"',
+                      (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8"))
+
+    def test_windows_library_records_follow_their_sources(self):
+        # The libraries vcpkg builds for the Windows ZIP: the license expression their pinned sources support, every
+        # notice the ZIP needs for them retained, and no open finding.
+        expected = {
+            "codec2": "LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause",
+            "portaudio": "MIT",
+            "pdcurses": "LicenseRef-PDCurses-Public-Domain",
+            "openssl": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
+            "curl": "curl AND ISC",
+            "expat": "MIT AND CC0-1.0",
+            "zlib": "Zlib",
+            "libsndfile": "LGPL-2.1-or-later AND LGPL-2.0-or-later AND Apache-2.0 AND BSD-3-Clause AND TU-Berlin-1.0 "
+                          "AND LicenseRef-Sun-G72x",
+            "libflac": "BSD-3-Clause",
+            "libogg": "BSD-3-Clause",
+            "libvorbis": "BSD-3-Clause AND TU-Berlin-1.0",
+            "opus": "BSD-3-Clause AND BSD-2-Clause",
+            "mp3lame": "LGPL-2.0-or-later AND LGPL-2.1-or-later",
+            "mpg123": "LGPL-2.1-only AND MirOS",
+        }
+        components = {c["id"]: c for c in self.inventory["components"]}
+        for ident, expression in expected.items():
+            component = components[ident]
+            with self.subTest(component=ident):
+                self.assertEqual((component["license_declared"], component["license_concluded"]),
+                                 (expression, expression))
+                self.assertEqual((component["copyright_permission"], component["gpl_compatibility"]),
+                                 ("notice-retained", "reviewed-terms"))
+                self.assertEqual(component["patent_status"], "not-cleared")
+                self.assertNotIn("finding", component)
+                self.assertNotIn("RUNTIME-NOTICES", component["assessment"])
+                shipped = {source.removeprefix("repo:") for source in component["windows_release"]["notices"].values()
+                           if source.startswith("repo:")}
+                self.assertEqual(shipped, set(component["notices"]))
+        self.assertEqual(json.loads((ROOT / "vcpkg-ports/codec2/vcpkg.json").read_text())["license"],
+                         expected["codec2"])
+        status = (ROOT / "legal/status.md").read_text(encoding="utf-8")
+        open_findings = status[status.index("## Findings requiring resolution"):status.index("## Resolved findings")]
+        runtime = next(line for line in open_findings.splitlines() if line.startswith("| RUNTIME-NOTICES |"))
+        self.assertNotIn("is not reviewed", runtime)
 
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries

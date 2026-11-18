@@ -1,0 +1,30 @@
+libsndfile 1.2.2 (archive https://github.com/libsndfile/libsndfile/archive/1.2.2.tar.gz, SHA512
+fb8b4d367240a8ac9d55be6f053cb19419890691c56a8552d1600d666257992b6e8e41a413a444c9f2d6c5d71406013222c92a3bfa67228944a26475444240a1):
+the G.72x sources src/G72x/g721.c, g723_16.c, g723_24.c, g723_40.c, g72x.c and g72x_priv.h carry
+this notice of Sun Microsystems, reproduced unmodified from src/G72x/g72x.c lines 1-25:
+
+/*
+ * This source code is a product of Sun Microsystems, Inc. and is provided
+ * for unrestricted use.  Users may copy or modify this source code without
+ * charge.
+ *
+ * SUN SOURCE CODE IS PROVIDED AS IS WITH NO WARRANTIES OF ANY KIND INCLUDING
+ * THE WARRANTIES OF DESIGN, MERCHANTIBILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE, OR ARISING FROM A COURSE OF DEALING, USAGE OR TRADE PRACTICE.
+ *
+ * Sun source code is provided with no support and without any obligation on
+ * the part of Sun Microsystems, Inc. to assist in its use, correction,
+ * modification or enhancement.
+ *
+ * SUN MICROSYSTEMS, INC. SHALL HAVE NO LIABILITY WITH RESPECT TO THE
+ * INFRINGEMENT OF COPYRIGHTS, TRADE SECRETS OR ANY PATENTS BY THIS SOFTWARE
+ * OR ANY PART THEREOF.
+ *
+ * In no event will Sun Microsystems, Inc. be liable for any lost revenue
+ * or profits or other special, indirect and consequential damages, even if
+ * Sun has been advised of the possibility of such damages.
+ *
+ * Sun Microsystems, Inc.
+ * 2550 Garcia Avenue
+ * Mountain View, California  94043
+ */
