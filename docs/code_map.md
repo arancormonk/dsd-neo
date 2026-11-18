@@ -20475,14 +20475,26 @@ the tree with the empty name it had then, and kept it once the sheet closed: its
 already was, which changes nothing. Diagnostics lines that arrived while the log streamed were nameless on Pause.
 `ReadableText` and every other gated name follow the rule (Diagnostics' rows keep no name while the log streams,
 from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
-Test: `tst_readable_text_gate.qml`. A delegate that is a control follows it in full (issue #800, device finding F1):
-its name, description, focusable state and its role (Button only while allowed, else StaticText, so no press is
-offered) all come from its gate. `CallRow`, `FilterPill`, the file browser's entries, the Map List's and Activity's
-rows do. Before, `CallRow` gated only the flag the view rewrites, so a screen pushed over the running session (Map,
-Diagnostics, Call recordings, the session's tools) left the Monitor's and History's recent calls reachable by TalkBack
-touch and swipe, named and pressable, as soon as a call landing underneath re-laid the rows out. Test:
-`tst_a11y_covered_screens.qml` (nothing under a pushed screen offers a name, focus or a press; rows are back on
-return).
+Test: `tst_readable_text_gate.qml`. A list view's write reaches only the root of each delegate (issue #800, device finding F1; a `Repeater` writes
+nothing), and it also makes a root with no accessible properties a bare node (`Client`, nameless, no actions). So a
+delegate that is a control keeps its accessible node on a child that fills it, never on the root, and gates that
+child itself (`Accessible.ignored`, name, description and focusable from `Navigation.allows()` and `visible`), as
+`plexComboRow` does: `CallRow`, the Map List's rows, Imports' file cards and the file browser's entries, each with a
+`node` property naming that child. The row's text sits inside the node (what a screen reader reaches is the text's
+own ancestor chain), the node is sized by binding to the row, not anchored (anchored, a list that put a reader's place
+back measured new rows before their text and landed a row off), and the root gates its own flag as well, so a cover
+with no re-layout leaves nothing of it. A shared control laid out by a view as its whole delegate sits in a plain,
+gated item (Talkgroups' category chips, each delegate's `pill`). A role
+switch is not enough: Qt offers Press for any item with an `onPressAction` handler, whatever its role, and the
+Android bridge makes a node with Press clickable, which TalkBack stops on with no text. Rows whose node is a
+`ReadableText` or a static text with a gated name (Diagnostics, Activity, channel review, scan-list preview) offer
+nothing once gated and stay as they are. Before, a screen pushed over the running session (Map, Diagnostics, Call
+recordings, the session's tools) left the Monitor's and History's recent calls named and pressable under it as soon
+as a call landing underneath re-laid them out, and a TalkBack touch on the map's canvas landed on one. With a screen
+reader on, the Map also moves the focus to its Back button on open, so TalkBack leaves the covered control that
+opened it at once. Tests: `tst_a11y_covered_screens.qml` (nothing under a pushed screen, nor the Map List under its
+sheet, offers a name, focus, a control's role or any action; a touch walk on the canvas finds nothing that does;
+rows are nodes again on return), `tst_a11y_talkgroups.qml` (chips under the edit sheet).
 
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while

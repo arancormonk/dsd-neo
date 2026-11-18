@@ -21,11 +21,11 @@ Rectangle {
     property string accessibleName: text
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && enabled && visible) || activeFocus
-    // From the gate, never from Accessible.ignored read back (the #830 rule):
-    // a pill a list view lays out (Talkgroups' chips) has that flag written
-    // with no change signal, and a covered one came back with its name and
-    // press (issue #800, F1).
-    Accessible.role: navigationAllowed && visible ? Accessible.Button : Accessible.StaticText
+    Accessible.role: Accessible.Button
+    // From the gate, never from Accessible.ignored read back (the #830 rule).
+    // A list view that lays pills out writes that flag on its delegate's root
+    // (issue #800, F1), so such a view wraps each pill in a plain item
+    // (Talkgroups' chips): the pill's own gate then holds.
     Accessible.name: navigationAllowed && visible ? accessibleName : ""
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control

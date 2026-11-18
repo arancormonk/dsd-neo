@@ -270,14 +270,14 @@ Item {
             });
             for (var i = 1; i < paths.length; ++i)
                 verify(entryRow(paths[i - 1]).y < entryRow(paths[i]).y, "the rows keep the order given: " + paths[i]);
-            compare(entryRow(paths[0]).Accessible.name, "Lists, folder");
-            compare(entryRow(paths[2]).Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9");
+            compare(entryRow(paths[0]).node.Accessible.name, "Lists, folder");
+            compare(entryRow(paths[2]).node.Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9");
             compare(screen.entrySubtitle(screen.entries[2]), "4.2 MB · Nov 9");
             var year = new Date(lastYear).getFullYear();
             compare(screen.entrySubtitle(screen.entries[3]), "4.2 MB · Nov 9, " + year, "another year's stamp shows its year");
-            compare(entryRow(paths[3]).Accessible.name, "old.csv, file, 4.2 MB, Nov 9, " + year);
+            compare(entryRow(paths[3]).node.Accessible.name, "old.csv, file, 4.2 MB, Nov 9, " + year);
             compare(screen.entrySubtitle(screen.entries[4]), "4.2 MB", "a file with no time shows its size only");
-            compare(entryRow(paths[4]).Accessible.name, "fat.csv, file, 4.2 MB");
+            compare(entryRow(paths[4]).node.Accessible.name, "fat.csv, file, 4.2 MB");
             compare(screen.entrySubtitle(screen.entries[0]), "", "a folder has no subtitle");
         }
 

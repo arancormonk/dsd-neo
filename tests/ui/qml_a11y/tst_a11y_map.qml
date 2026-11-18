@@ -135,7 +135,7 @@ Item {
             compare(count(screen, "LocationChanged"), 0, churn());
             compare(view.itemAtIndex(1), row, "the same row");
             compare(row.rowTrack, key, "for the same radio");
-            var node = testContext.accessibleNode(row);
+            var node = testContext.accessibleNode(row.node);
             verify(node.inTree && node.focusable);
             verify(node.name.indexOf("Unit") === 0 || node.name.indexOf("Radio") === 0 || node.name.indexOf("Unconfirmed") === 0, node.name);
         }

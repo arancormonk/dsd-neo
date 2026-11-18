@@ -400,10 +400,10 @@ Item {
             verify(actions !== null, "the action sheet is missing");
             var card = tc.list.itemAtIndex(1);
             verify(card !== null, "the second row has no delegate");
-            compare(card.Accessible.role, Accessible.Button);
+            compare(card.node.Accessible.role, Accessible.Button);
             // Named by its file, described by its kind and summary line.
-            compare(card.Accessible.name, importedFiles.get(1).name);
-            compare(card.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+            compare(card.node.Accessible.name, importedFiles.get(1).name);
+            compare(card.node.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
             // The badge, the name and the summary take no stop of their own:
             // the card reads them.
             var badge = findChild(card, "importsKindBadge");
@@ -415,7 +415,7 @@ Item {
             verify(findChild(card, "importsFileName").Accessible.ignored, "the name is read as the card's name");
             verify(findChild(card, "importsFileSummary").Accessible.ignored, "the summary is read in its description");
 
-            card.Accessible.pressAction();
+            card.node.Accessible.pressAction();
             verify(actions.visible, "the press opened no actions");
             compare(tc.screen.actionRow, 1);
             actions.visible = false;
@@ -439,7 +439,7 @@ Item {
             try {
                 tryVerify(function () { return kinds.visible; });
                 verify(!Ui.Navigation.allows(card), "the row is still allowed under the sheet");
-                card.Accessible.pressAction();
+                card.node.Accessible.pressAction();
                 // A key still reaching the row, as from focus it kept.
                 card.forceActiveFocus();
                 keyClick(Qt.Key_Return);

@@ -465,9 +465,9 @@ Item {
             historyView.filterText = "851.0125"
             tryCompare(tc.list, "count", 1)
             var row = tc.rowNamed(voice)
-            var spoken = row.Accessible.name + ", " + row.Accessible.description
+            var spoken = row.node.Accessible.name + ", " + row.node.Accessible.description
             compare(spoken.split("851.0125 MHz").length - 1, 1, spoken)
-            verify(tc.startsWith(row.Accessible.description, "851.0125 MHz · "), row.Accessible.description)
+            verify(tc.startsWith(row.node.Accessible.description, "851.0125 MHz · "), row.node.Accessible.description)
         }
 
         // Review focus: a long DMR line on a 360 px phone wraps between its
@@ -763,7 +763,7 @@ Item {
             tryCompare(row, "rightText", "")
             compare(findChild(row, "callRowTime").text, "")
             compare(row.accessibleName, name, "no time in the name")
-            compare(row.Accessible.description.indexOf(", ,"), -1, row.Accessible.description)
+            compare(row.node.Accessible.description.indexOf(", ,"), -1, row.node.Accessible.description)
         }
 
         function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {

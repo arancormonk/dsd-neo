@@ -87,8 +87,16 @@ Item {
         if (visible) {
             map.resetCameraUsedDevicePosition();
             Qt.callLater(screen.placeCamera);
+            // With a screen reader on, the focus goes to Back, a node: TalkBack
+            // follows only a focus change on one (issue #800, P9), so it no
+            // longer stays a moment on the covered control that opened the
+            // map. Without one, the screen takes it, as every pushed screen's.
             Qt.callLater(function () {
-                if (screen.visible && Navigation.allows(screen))
+                if (!screen.visible || !Navigation.allows(screen))
+                    return;
+                if (typeof screenReader !== "undefined" && screenReader !== null && screenReader.active)
+                    back.forceActiveFocus();
+                else
                     screen.forceActiveFocus();
             });
         } else {

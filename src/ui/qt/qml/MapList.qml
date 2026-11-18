@@ -207,17 +207,17 @@ Item {
             implicitHeight: Math.max(Theme.rowHeight, (gap ? gapLabels.implicitHeight : labels.implicitHeight) + 24)
             height: implicitHeight
 
-            // One node per row, read whole; its age at the pacer's step.
+            // One node per row, read whole; its age at the pacer's step. The
+            // node is a child that fills the row, never the row: the view
+            // writes Accessible.ignored on each row's root as it lays it out
+            // (issue #800, F1), and a row that was its own node came back
+            // into the tree under the position sheet as fixes landed.
             activeFocusOnTab: (navigationAllowed && !gap && visible) || activeFocus
-            Accessible.role: gap ? Accessible.StaticText : Accessible.Button
-            Accessible.name: navigationAllowed && visible ? pacer.spoken : ""
-            Accessible.description: navigationAllowed && visible ? (gap ? gapDetail : [model.emergency ? qsTr("Emergency") : "", what].concat(states).concat([selected ? qsTr("selected") : "", followed ? qsTr("followed on the map") : ""]).filter(function (part) {
-                return part.length > 0;
-            }).join(", ")) : ""
             readonly property bool navigationAllowed: Navigation.allows(row)
-            Accessible.focusable: navigationAllowed && visible
+            readonly property Item node: rowNode
+            // The root gates itself too: a cover with no re-layout leaves
+            // nothing of it; re-laid, it is a bare node offering nothing.
             Accessible.ignored: !navigationAllowed || !visible
-            Accessible.onPressAction: activate()
             function activate() {
                 if (!gap && Navigation.allows(row))
                     list.activated(model.trackId);
@@ -242,142 +242,161 @@ Item {
                 }
             }
 
-            Rectangle {
-                anchors.fill: parent
-                visible: row.selected
-                color: Theme.chipSelectedFill
-            }
+            Item {
+                id: rowNode
+                objectName: "mapRowNode"
+                // Sized by binding, not anchors: a row the view builds is measured at once.
+                width: row.width
+                height: row.height
+                readonly property bool reachable: row.navigationAllowed && row.visible
+                Accessible.role: row.gap ? Accessible.StaticText : Accessible.Button
+                Accessible.name: reachable ? pacer.spoken : ""
+                Accessible.description: reachable ? (row.gap ? row.gapDetail : [row.model.emergency ? qsTr("Emergency") : "", row.what].concat(row.states).concat([row.selected ? qsTr("selected") : "", row.followed ? qsTr("followed on the map") : ""]).filter(function (part) {
+                    return part.length > 0;
+                }).join(", ")) : ""
+                Accessible.focusable: reachable
+                Accessible.ignored: !reachable
+                Accessible.onPressAction: row.activate()
+                FocusFrame {}
 
-            Column {
-                id: labels
-                visible: !row.gap
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: 18
-                anchors.rightMargin: 18
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
+                // The row's text inside its node: the node's words are its lines'.
+                Rectangle {
+                    anchors.fill: parent
+                    visible: row.selected
+                    color: Theme.chipSelectedFill
+                }
 
-                // The name, with how long ago at its end (and the emergency
-                // tag before it). A long name is cut at its end; the age never.
-                Item {
-                    width: parent.width
-                    height: Math.max(nameText.implicitHeight, stamp.height)
+                Column {
+                    id: labels
+                    visible: !row.gap
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 18
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+
+                    // The name, with how long ago at its end (and the emergency
+                    // tag before it). A long name is cut at its end; the age never.
+                    Item {
+                        width: parent.width
+                        height: Math.max(nameText.implicitHeight, stamp.height)
+
+                        Text {
+                            id: nameText
+                            objectName: "mapRowName"
+                            anchors.left: parent.left
+                            anchors.right: stamp.left
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Util.oneLine(row.name)
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(16)
+                            font.weight: Font.DemiBold
+                            // Emergency outranks selection (the map's ruling): the
+                            // row's tint and description still say it is selected.
+                            color: row.model.emergency ? Theme.alert : row.selected ? Theme.cyan : Theme.textPrimary
+                        }
+
+                        Row {
+                            id: stamp
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 8
+
+                            EmergencyTag {
+                                objectName: "mapRowEmergency"
+                                visible: row.model.emergency === true
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            MapGlyph {
+                                objectName: "mapRowFollowed"
+                                visible: row.followed
+                                shape: "follow"
+                                color: Theme.cyan
+                                width: 16
+                                height: 16
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                objectName: "mapRowAge"
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: row.ageShown
+                                font.family: Theme.mono
+                                font.pixelSize: Theme.fontSize(12)
+                                color: Theme.textSubdued
+                            }
+                        }
+                    }
 
                     Text {
-                        id: nameText
-                        objectName: "mapRowName"
-                        anchors.left: parent.left
-                        anchors.right: stamp.left
-                        anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: Util.oneLine(row.name)
+                        objectName: "mapRowWhat"
+                        width: parent.width
+                        visible: text.length > 0
+                        text: row.what
                         textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
                         elide: Text.ElideRight
                         font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(16)
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textSecondary
+                    }
+
+                    Text {
+                        objectName: "mapRowStates"
+                        width: parent.width
+                        visible: text.length > 0
+                        text: row.states.join(" · ")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
                         font.weight: Font.DemiBold
-                        // Emergency outranks selection (the map's ruling): the
-                        // row's tint and description still say it is selected.
-                        color: row.model.emergency ? Theme.alert : row.selected ? Theme.cyan : Theme.textPrimary
-                    }
-
-                    Row {
-                        id: stamp
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 8
-
-                        EmergencyTag {
-                            objectName: "mapRowEmergency"
-                            visible: row.model.emergency === true
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        MapGlyph {
-                            objectName: "mapRowFollowed"
-                            visible: row.followed
-                            shape: "follow"
-                            color: Theme.cyan
-                            width: 16
-                            height: 16
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            objectName: "mapRowAge"
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: row.ageShown
-                            font.family: Theme.mono
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSubdued
-                        }
+                        color: Theme.textPrimary
                     }
                 }
 
-                Text {
-                    objectName: "mapRowWhat"
-                    width: parent.width
-                    visible: text.length > 0
-                    text: row.what
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    color: Theme.textSecondary
+                Column {
+                    id: gapLabels
+                    visible: row.gap
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 18
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+
+                    Text {
+                        objectName: "mapGapTitle"
+                        width: parent.width
+                        text: row.gapTitle
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        font.weight: Font.DemiBold
+                        color: Theme.textSecondary
+                    }
+                    Text {
+                        width: parent.width
+                        text: row.gapDetail
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        color: Theme.textSubdued
+                    }
                 }
 
-                Text {
-                    objectName: "mapRowStates"
-                    width: parent.width
-                    visible: text.length > 0
-                    text: row.states.join(" · ")
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    height: 1
+                    color: Theme.divider
                 }
-            }
-
-            Column {
-                id: gapLabels
-                visible: row.gap
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: 18
-                anchors.rightMargin: 18
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
-
-                Text {
-                    objectName: "mapGapTitle"
-                    width: parent.width
-                    text: row.gapTitle
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    font.weight: Font.DemiBold
-                    color: Theme.textSecondary
-                }
-                Text {
-                    width: parent.width
-                    text: row.gapDetail
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSubdued
-                }
-            }
-
-            Rectangle {
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: 18
-                height: 1
-                color: Theme.divider
             }
         }
     }

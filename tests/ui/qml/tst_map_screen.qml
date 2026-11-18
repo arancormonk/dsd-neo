@@ -238,7 +238,7 @@ Item {
             var described = [];
             for (var i = 0; i < list.count; i++) {
                 var row = list.itemAtIndex(i);
-                described.push(row.Accessible.name + " | " + row.Accessible.description);
+                described.push(row.node.Accessible.name + " | " + row.node.Accessible.description);
             }
             var all = described.join("\n");
             for (var w of ["Engine 7", "Format not confirmed by a published specification", "Medic 3", "Fix may be old or invalid",

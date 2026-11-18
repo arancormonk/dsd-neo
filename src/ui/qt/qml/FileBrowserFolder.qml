@@ -137,13 +137,14 @@ Item {
             readonly property bool inert: !folder && restartCloser.active
             readonly property bool navigationAllowed: Navigation.allows(entryRow)
             activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
-            // Gated, a plain text with no press (the #830 rule): the list view
-            // can write this row's ignored flag back to false.
-            Accessible.role: navigationAllowed && visible && live ? Accessible.Button : Accessible.StaticText
-            Accessible.name: navigationAllowed && live ? line : ""
-            Accessible.focusable: navigationAllowed && visible && live
+            // The entry's node is a child that fills it, never the entry: the
+            // view writes Accessible.ignored on each delegate's root as it lays
+            // it out (issue #800, F1), which put a covered entry back in the
+            // tree with its press.
+            readonly property Item node: entryNode
+            // The root gates itself too (a cover with no re-layout leaves
+            // nothing of it; re-laid, it is a bare node offering nothing).
             Accessible.ignored: !navigationAllowed || !visible || !live
-            Accessible.onPressAction: activate()
             function activate() {
                 if (live && Navigation.allows(entryRow))
                     browser.choose(entry);
@@ -160,124 +161,139 @@ Item {
                 anchors.margins: 0
             }
 
-            Rectangle {
-                anchors.fill: parent
-                radius: Theme.radiusButton
-                color: entryTap.pressed && entryRow.live ? Theme.chipSelectedFill : "transparent"
-            }
-
-            // Drawn marks, in the caret's stroke: a folder, or a page. Drawn
-            // on a 20 px grid and scaled with the text, so they keep their
-            // size beside the names at a large font.
             Item {
-                id: glyph
-                x: 8
-                anchors.verticalCenter: parent.verticalCenter
-                width: Theme.fontSize(20)
-                height: width
+                id: entryNode
+                objectName: "fileBrowserEntryNode"
+                // Sized by binding, not anchors: a row the view builds is measured at once.
+                width: entryRow.width
+                height: entryRow.height
+                readonly property bool reachable: entryRow.navigationAllowed && entryRow.visible && entryRow.live
+                Accessible.role: Accessible.Button
+                Accessible.name: reachable ? entryRow.line : ""
+                Accessible.focusable: reachable
+                Accessible.ignored: !reachable
+                Accessible.onPressAction: entryRow.activate()
+
+                // The entry's text inside its node: the node's words are its lines'.
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Theme.radiusButton
+                    color: entryTap.pressed && entryRow.live ? Theme.chipSelectedFill : "transparent"
+                }
+
+                // Drawn marks, in the caret's stroke: a folder, or a page. Drawn
+                // on a 20 px grid and scaled with the text, so they keep their
+                // size beside the names at a large font.
                 Item {
-                    width: 20
-                    height: 20
-                    scale: glyph.width / 20
-                    transformOrigin: Item.TopLeft
-                    Rectangle {
-                        visible: entryRow.folder
-                        x: 1
-                        y: 2
-                        width: 8
-                        height: 5
-                        radius: 1.5
-                        color: "transparent"
-                        border.width: 1.6
-                        border.color: Theme.textSecondary
-                    }
-                    Rectangle {
-                        visible: entryRow.folder
-                        x: 1
-                        y: 5
-                        width: 18
-                        height: 13
-                        radius: 2
-                        color: Theme.bg
-                        border.width: 1.6
-                        border.color: Theme.textSecondary
-                    }
-                    Rectangle {
-                        visible: !entryRow.folder
-                        x: 3
-                        y: 1
-                        width: 14
-                        height: 18
-                        radius: 2
-                        color: "transparent"
-                        border.width: 1.6
-                        border.color: Theme.textSecondary
-                    }
-                    Repeater {
-                        model: entryRow.folder ? 0 : 3
+                    id: glyph
+                    x: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Theme.fontSize(20)
+                    height: width
+                    Item {
+                        width: 20
+                        height: 20
+                        scale: glyph.width / 20
+                        transformOrigin: Item.TopLeft
                         Rectangle {
-                            required property int index
-                            x: 6
-                            y: 6 + index * 3.5
-                            width: index === 2 ? 5 : 8
-                            height: 1.5
-                            radius: 0.75
-                            color: Theme.textSecondary
+                            visible: entryRow.folder
+                            x: 1
+                            y: 2
+                            width: 8
+                            height: 5
+                            radius: 1.5
+                            color: "transparent"
+                            border.width: 1.6
+                            border.color: Theme.textSecondary
+                        }
+                        Rectangle {
+                            visible: entryRow.folder
+                            x: 1
+                            y: 5
+                            width: 18
+                            height: 13
+                            radius: 2
+                            color: Theme.bg
+                            border.width: 1.6
+                            border.color: Theme.textSecondary
+                        }
+                        Rectangle {
+                            visible: !entryRow.folder
+                            x: 3
+                            y: 1
+                            width: 14
+                            height: 18
+                            radius: 2
+                            color: "transparent"
+                            border.width: 1.6
+                            border.color: Theme.textSecondary
+                        }
+                        Repeater {
+                            model: entryRow.folder ? 0 : 3
+                            Rectangle {
+                                required property int index
+                                x: 6
+                                y: 6 + index * 3.5
+                                width: index === 2 ? 5 : 8
+                                height: 1.5
+                                radius: 0.75
+                                color: Theme.textSecondary
+                            }
                         }
                     }
                 }
-            }
 
-            Column {
-                id: labels
-                anchors.left: glyph.right
-                anchors.leftMargin: 14
-                anchors.right: entryCaret.visible ? entryCaret.left : parent.right
-                anchors.rightMargin: entryCaret.visible ? 12 : 8
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
+                Column {
+                    id: labels
+                    anchors.left: glyph.right
+                    anchors.leftMargin: 14
+                    anchors.right: entryCaret.visible ? entryCaret.left : parent.right
+                    anchors.rightMargin: entryCaret.visible ? 12 : 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
 
-                Text {
-                    objectName: "fileBrowserEntryName"
-                    width: parent.width
-                    text: entryRow.entry ? entryRow.entry.name : ""
-                    // A file's name as it is on the drive, never markup.
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(15)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                    Accessible.ignored: true
+                    Text {
+                        objectName: "fileBrowserEntryName"
+                        width: parent.width
+                        text: entryRow.entry ? entryRow.entry.name : ""
+                        // A file's name as it is on the drive, never markup.
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(15)
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                        Accessible.ignored: true
+                    }
+                    Text {
+                        width: parent.width
+                        visible: text.length > 0
+                        text: entryRow.entry ? browser.entrySubtitle(entryRow.entry) : ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(12)
+                        color: Theme.textSubdued
+                        Accessible.ignored: true
+                    }
                 }
-                Text {
-                    width: parent.width
-                    visible: text.length > 0
-                    text: entryRow.entry ? browser.entrySubtitle(entryRow.entry) : ""
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(12)
+                Caret {
+                    id: entryCaret
+                    visible: entryRow.folder
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    rotation: -90
                     color: Theme.textSubdued
-                    Accessible.ignored: true
                 }
-            }
-            Caret {
-                id: entryCaret
-                visible: entryRow.folder
-                anchors.right: parent.right
-                anchors.rightMargin: 8
-                anchors.verticalCenter: parent.verticalCenter
-                rotation: -90
-                color: Theme.textSubdued
-            }
-            Rectangle {
-                anchors.bottom: parent.bottom
-                anchors.left: labels.left
-                anchors.right: parent.right
-                height: 1
-                visible: entryRow.index < d.entries.length - 1 || d.more
-                color: Theme.divider
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: labels.left
+                    anchors.right: parent.right
+                    height: 1
+                    visible: entryRow.index < d.entries.length - 1 || d.more
+                    color: Theme.divider
+                }
             }
             GatedTapHandler {
                 id: entryTap

@@ -338,15 +338,14 @@ Item {
             readonly property bool inTree: Navigation.allows(fileRow) && visible
             // Held while focused: see OutlineButton.
             activeFocusOnTab: inTree || activeFocus
-            Accessible.role: Accessible.Button
-            // No name while out of the tree, as ReadableText: a refresh that
-            // lands while the screen is covered renames nothing.
-            Accessible.name: inTree ? fileRow.name : ""
-            // The kind badge's words first.
-            Accessible.description: inTree ? badge.label + " · " + summaryLine.text : ""
-            Accessible.focusable: inTree
+            // The card's node is a child that fills it, never the card: the
+            // view writes Accessible.ignored on each delegate's root as it lays
+            // it out (issue #800, F1), and a card that was its own node came
+            // back into the tree, a press, under the screen pushed over it.
+            readonly property Item node: cardNode
+            // The root gates itself too (a cover with no re-layout leaves
+            // nothing of it; re-laid, it is a bare node offering nothing).
             Accessible.ignored: !inTree
-            Accessible.onPressAction: activate()
             function activate() {
                 if (!visible || !Navigation.allows(fileRow))
                     return;
@@ -367,59 +366,77 @@ Item {
                 radius: Theme.radiusPanel
             }
 
-            Column {
-                id: rowColumn
+            Item {
+                id: cardNode
+                objectName: "importedFileNode"
+                // Sized by binding, not anchors: a row the view builds is measured at once.
+                width: fileRow.width
+                height: fileRow.height
+                Accessible.role: Accessible.Button
+                // No name while out of the tree, as ReadableText: a refresh that
+                // lands while the screen is covered renames nothing.
+                Accessible.name: fileRow.inTree ? fileRow.name : ""
+                // The kind badge's words first.
+                Accessible.description: fileRow.inTree ? badge.label + " · " + summaryLine.text : ""
+                Accessible.focusable: fileRow.inTree
+                Accessible.ignored: !fileRow.inTree
+                Accessible.onPressAction: fileRow.activate()
 
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Theme.cardPadding
-                spacing: 5
+                // The card's text inside its node: the node's words are its lines'.
+                Column {
+                    id: rowColumn
 
-                Item {
-                    width: parent.width
-                    height: Math.max(fileName.implicitHeight, badge.implicitHeight)
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Theme.cardPadding
+                    spacing: 5
+
+                    Item {
+                        width: parent.width
+                        height: Math.max(fileName.implicitHeight, badge.implicitHeight)
+
+                        Text {
+                            id: fileName
+                            objectName: "importsFileName"
+                            anchors.left: parent.left
+                            anchors.right: badge.left
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: fileRow.name
+                            // An imported file's own name: drawn as written.
+                            textFormat: Text.PlainText
+                            // Read as the card's name.
+                            Accessible.ignored: true
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(15)
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+
+                        CsvTypeBadge {
+                            id: badge
+                            objectName: "importsKindBadge"
+                            readAlone: false
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            type: fileRow.type
+                        }
+                    }
 
                     Text {
-                        id: fileName
-                        objectName: "importsFileName"
-                        anchors.left: parent.left
-                        anchors.right: badge.left
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: fileRow.name
-                        // An imported file's own name: drawn as written.
-                        textFormat: Text.PlainText
-                        // Read as the card's name.
+                        id: summaryLine
+                        objectName: "importsFileSummary"
+                        width: parent.width
+                        // Read in the card's description.
                         Accessible.ignored: true
+                        text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                         font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(15)
-                        font.weight: Font.DemiBold
-                        color: Theme.textPrimary
+                        font.pixelSize: Theme.fontSize(12)
+                        color: fileRow.accepted === 0 && !screen.emptyList(fileRow.type, fileRow.accepted, fileRow.skipped) ? Theme.magenta : Theme.textSubdued
                         elide: Text.ElideRight
                     }
-
-                    CsvTypeBadge {
-                        id: badge
-                        objectName: "importsKindBadge"
-                        readAlone: false
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        type: fileRow.type
-                    }
-                }
-
-                Text {
-                    id: summaryLine
-                    objectName: "importsFileSummary"
-                    width: parent.width
-                    // Read in the card's description.
-                    Accessible.ignored: true
-                    text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(12)
-                    color: fileRow.accepted === 0 && !screen.emptyList(fileRow.type, fileRow.accepted, fileRow.skipped) ? Theme.magenta : Theme.textSubdued
-                    elide: Text.ElideRight
                 }
             }
 
