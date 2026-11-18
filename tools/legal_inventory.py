@@ -19,7 +19,13 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
             "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "windows-libusb",
-            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util"}
+            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util", "codec2", "portaudio", "pdcurses",
+            "openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis", "opus", "mp3lame",
+            "mpg123"}
+# Where the Windows staging takes a notice the ZIP carries for a component: the repository, the configured build
+# tree, the copyright file a vcpkg port installs (share/<port>/copyright) or the legal CMake component (mbelib's).
+NOTICE_SOURCE = re.compile(r"(repo|build):(?!/)(?!.*(?:^|/)\.\.(?:/|$))[\w.+/-]+|vcpkg:[a-z0-9-]+|legal-component")
+RUNTIME_DLL = re.compile(r"(concrt|msvcp|vccorlib|vcruntime)140(_[a-z0-9_]+)?\.dll")
 
 
 def read_inventory(root=ROOT):
@@ -71,14 +77,39 @@ def validate(inventory, root=ROOT):
                 raise ValueError(f"Custom license has no retained text: {custom}")
         if "pin" in component and not re.fullmatch(r"[0-9a-f]{40}", pins.get(component["pin"], "")):
             raise ValueError(f"Missing immutable source revision: {ident}")
-        files = component.get("redistributable_files")
-        if files is not None and (not isinstance(files, list) or not files or len(set(files)) != len(files)
-                                  or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9_]+\.dll", name)
-                                             for name in files)):
-            raise ValueError(f"Redistributable files must be distinct lower-case DLL names: {ident}")
+        validate_windows_release(component, root)
     if ids != REQUIRED:
         raise ValueError("Reviewed component inventory changed; review required coverage")
     return pins
+
+
+def validate_windows_release(component, root=ROOT):
+    """Every component of the Windows ZIP lists the files it is in and the notices the ZIP carries for it."""
+    ident = component["id"]
+    shipped = "windows" in component["platforms"] and "binary" in component["distribution"]
+    release = component.get("windows_release")
+    if release is None:
+        if shipped:
+            raise ValueError(f"Windows binary component lists no release files: {ident}")
+        return
+    if not shipped:
+        raise ValueError(f"Only a component the Windows ZIP carries has release files: {ident}")
+    files = release.get("binaries")
+    if (not isinstance(files, list) or not files or len(set(files)) != len(files)
+            or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9_.+-]+\.(dll|exe)", name) for name in files)):
+        raise ValueError(f"Release files must be distinct lower-case .dll or .exe names: {ident}")
+    if ident == "msvc-runtime" and not all(RUNTIME_DLL.fullmatch(name) for name in files):
+        raise ValueError("The Visual C++ runtime record lists a file outside a toolset's runtime folder")
+    notices = release.get("notices")
+    if not isinstance(notices, dict):
+        raise ValueError(f"Release notices must map a path to its source: {ident}")
+    for notice, source in notices.items():
+        path = Path(notice)
+        if (path.is_absolute() or ".." in path.parts or "\\" in notice or not notice
+                or not isinstance(source, str) or not NOTICE_SOURCE.fullmatch(source)):
+            raise ValueError(f"Invalid release notice {notice!r} from {source!r}: {ident}")
+        if source.startswith("repo:") and source[5:] not in component["notices"]:
+            raise ValueError(f"Release notice is not a retained notice of the record: {source} ({ident})")
 
 
 def add_spdx(document, inventory, pins, platform):

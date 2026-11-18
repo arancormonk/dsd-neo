@@ -59,11 +59,42 @@ class InventoryTests(unittest.TestCase):
 
     def test_runtime_file_list_is_checked(self):
         # The Windows release scripts carry only the Visual C++ runtime DLLs this list names.
-        for files in ([], ["msvcp140.dll", "msvcp140.dll"], ["MSVCP140.dll"], ["bin/msvcp140.dll"], "msvcp140.dll"):
+        for files in ([], ["msvcp140.dll", "msvcp140.dll"], ["MSVCP140.dll"], ["bin/msvcp140.dll"], "msvcp140.dll",
+                      ["msvcp140.dll", "portaudio.dll"]):
             inventory = copy.deepcopy(self.inventory)
             runtime = next(c for c in inventory["components"] if c["id"] == "msvc-runtime")
-            runtime["redistributable_files"] = files
+            runtime["windows_release"]["binaries"] = files
             with self.subTest(files=files), self.assertRaises(ValueError):
+                legal.validate(inventory, ROOT)
+
+    def test_windows_release_records_are_checked(self):
+        # Each component of the Windows ZIP names the files it is in and the notices the ZIP carries for it, and where
+        # the staging takes each one from; a notice from the repository must be one the record retains.
+        def edit(ident, change):
+            inventory = copy.deepcopy(self.inventory)
+            change(next(c for c in inventory["components"] if c["id"] == ident))
+            return inventory
+
+        cases = {
+            "no release record": edit("portaudio", lambda c: c.pop("windows_release")),
+            "no file": edit("portaudio", lambda c: c["windows_release"].update(binaries=[])),
+            "a path for a file": edit("portaudio", lambda c: c["windows_release"].update(binaries=["bin/portaudio.dll"])),
+            "an upper-case file": edit("portaudio", lambda c: c["windows_release"].update(binaries=["PortAudio.dll"])),
+            "a notice outside the documentation": edit(
+                "portaudio", lambda c: c["windows_release"].update(notices={"../portaudio.txt": "vcpkg:portaudio"})),
+            "an unknown source": edit(
+                "portaudio", lambda c: c["windows_release"].update(notices={"licenses/p.txt": "web:portaudio"})),
+            "a repository notice the record does not retain": edit(
+                "soapy-airspy", lambda c: c["windows_release"]["notices"].update(
+                    {"licenses/extra.txt": "repo:LICENSES/ISC.txt"})),
+            "a missing repository notice": edit(
+                "soapy-airspy", lambda c: c["windows_release"]["notices"].update(
+                    {"licenses/extra.txt": "repo:LICENSES/missing.txt"})),
+            "a component the ZIP does not carry": edit(
+                "ibm-plex", lambda c: c.update(windows_release={"binaries": ["dsd-neo.exe"], "notices": {}})),
+        }
+        for label, inventory in cases.items():
+            with self.subTest(case=label), self.assertRaises(ValueError):
                 legal.validate(inventory, ROOT)
 
     def test_binary_sboms_preserve_uncertainty_and_dependency_identity(self):

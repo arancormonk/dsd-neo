@@ -239,6 +239,29 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   `packaging/windows/` and shipped as `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
   `licenses/PThreads4W-CONTRIBUTORS.txt`.
 
+## Windows Libraries Built by vcpkg
+
+The Windows release ZIP also carries in `bin\` the libraries vcpkg builds at the manifest baseline in `vcpkg.json`,
+or from the project's overlays in `vcpkg-ports/`. For each one the ZIP carries the copyright file its port installs
+(`share/<port>/copyright` in vcpkg's tree) as `licenses/<port>-copyright.txt`. The licenses below are the ones each
+port's `vcpkg.json` declares; `legal/status.md` (RUNTIME-NOTICES) records that these files are not yet reviewed
+against the sources the DLLs are built from.
+
+- **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, the commit `CODEC2_SHA` in
+  `tools/ci-dependency-pins.env`) - LGPL-2.1-or-later.
+- **PortAudio** (`portaudio.dll`; https://www.portaudio.com, release 19.7 through the `portaudio` overlay) - MIT.
+- **PDCurses** (`pdcurses.dll`; https://pdcurses.org/, release 3.9) - the port declares no license; its copyright file
+  is the LICENSE file vcpkg keeps with the port.
+- **OpenSSL** (`libcrypto-3-x64.dll`; https://www.openssl.org, release 3.6.5) - Apache-2.0.
+- **libcurl** (`libcurl.dll`; https://curl.se/, release 8.23.0) - curl AND ISC AND BSD-3-Clause.
+- **Expat** (`libexpat.dll`; https://github.com/libexpat/libexpat, release 2.9.0) - MIT AND CC0-1.0.
+- **zlib** (`z.dll`; https://www.zlib.net/, release 1.3.2) - Zlib.
+- **libsndfile** (`sndfile.dll`; https://github.com/erikd/libsndfile, release 1.2.2) - LGPL-2.1-or-later. It
+  loads **libFLAC** (`FLAC.dll`, 1.5.0, BSD-3-Clause), **libogg** (`ogg.dll`, 1.3.6, BSD-3-Clause), **libvorbis**
+  (`vorbis.dll` and `vorbisenc.dll`, 1.3.7, BSD-3-Clause), **Opus** (`opus.dll`, 1.6.1, BSD-3-Clause), **LAME**
+  (`libmp3lame.DLL`, 3.100, LGPL-2.0-only as the port declares it) and **mpg123** (`mpg123.dll`, 1.33.7,
+  LGPL-2.1-or-later).
+
 ## Windows Visual C++ Runtime
 
 - **Microsoft Visual C++ runtime** (Microsoft Corporation) - Microsoft's license terms, not an open-source license. The

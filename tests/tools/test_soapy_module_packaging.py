@@ -74,6 +74,14 @@ VCPKG_PORT_COPIES = {
     "portaudio": "ports/portaudio at port-version 8",
 }
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
+# The files the Windows ZIP carries in bin\ and lib\: those of the 2.12.1 ZIP (its file list, in its spellings) and
+# the SoapySDR program, modules and library added since. Each must be one a component record lists.
+WINDOWS_RELEASE_FILES = (
+    "dsd-neo.exe", "airspy.dll", "codec2.dll", "FLAC.dll", "libcrypto-3-x64.dll", "libcurl.dll", "libexpat.dll",
+    "libmp3lame.DLL", "libusb-1.0.dll", "mbe-neo.dll", "mpg123.dll", "MSVCP140.dll", "ogg.dll", "opus.dll",
+    "pdcurses.dll", "portaudio.dll", "pthreadVC3.dll", "rtlsdr.dll", "sndfile.dll", "SoapySDR.dll", "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll", "vorbis.dll", "vorbisenc.dll", "z.dll",
+    "SoapySDRUtil.exe", "hackrf.dll", "airspySupport.dll", "HackRFSupport.dll")
 
 
 def read(path):
@@ -97,6 +105,20 @@ def required_notices():
     """The notices every Windows release tree must hold under share/doc/dsd-neo, as the scripts list them."""
     match = re.search(r"\$script:ReleaseNotices = @\(([^\n]+)\)", read("tools/windows/release_tree_checks.psm1"))
     return re.findall(r"'([^']+)'", match.group(1))
+
+
+def windows_records(inventory=None):
+    """File name (lower case) -> [(component id, {notice under share/doc/dsd-neo: where staging takes it from})], from
+    the windows_release of each record in legal/components.json."""
+    if inventory is None:
+        inventory = json.loads(read("legal/components.json"))
+    records = {}
+    for component in inventory["components"]:
+        release = component.get("windows_release")
+        if release:
+            for name in release["binaries"]:
+                records.setdefault(name.lower(), []).append((component["id"], release["notices"]))
+    return records
 
 
 def job_block(workflow, job):
@@ -258,7 +280,7 @@ class SoapyModulePackaging(unittest.TestCase):
                          ("NOASSERTION", "NOASSERTION"))
         self.assertEqual((component["copyright_permission"], component["finding"]), ("unresolved", "MSVC-RUNTIME"))
         # The DLLs the 2.12.1 ZIP carried are on the list, and nothing that a toolset's CRT folder lacks.
-        files = component["redistributable_files"]
+        files = component["windows_release"]["binaries"]
         for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
             self.assertIn(name, files)
         for name in files:
@@ -307,21 +329,51 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn('"vcpkg-ports"', read("tools/legal_inventory.py"))
         self.assertIn("vcpkg-ports/LICENSE-vcpkg.txt", read("THIRD_PARTY.md"))
 
+    def test_every_release_file_has_a_component_record(self):
+        # Each file the ZIP carries maps to the components it is built from and the notices the ZIP carries for them;
+        # the release scripts refuse a file no record lists, and a tree without one of its notices.
+        records = windows_records()
+        sources = re.compile(r"^(repo:[^:]+|build:[^:]+|vcpkg:[a-z0-9-]+|legal-component)$")
+        for name in WINDOWS_RELEASE_FILES:
+            with self.subTest(file=name):
+                self.assertIn(name.lower(), records)
+                for _, notices in records[name.lower()]:
+                    for notice, source in notices.items():
+                        self.assertRegex(notice, r"^(licenses/|legal/|[A-Z_.]+$)")
+                        self.assertRegex(source, sources)
+        # The libraries vcpkg builds from its own ports ship the copyright file the port installs.
+        for name, port in (("portaudio.dll", "portaudio"), ("sndfile.dll", "libsndfile"), ("z.dll", "zlib"),
+                           ("libcrypto-3-x64.dll", "openssl"), ("libcurl.dll", "curl"), ("codec2.dll", "codec2")):
+            with self.subTest(file=name):
+                (component, notices), = records[name]
+                self.assertEqual(notices, {f"licenses/{port}-copyright.txt": f"vcpkg:{port}"})
+        # dsd-neo.exe carries every component compiled into it.
+        embedded = {component for component, _ in records["dsd-neo.exe"]}
+        self.assertEqual(embedded, {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay", "mixed-origins",
+                                    "ezpwd", "tiny-aes", "pffft", "tetra-crypto", "gqrx-scanner"})
+        stage = read("tools/windows/stage_release_tree.ps1")
+        self.assertIn("Assert-ReleaseBinaryRecords -TreeRoot $stage", stage)
+        self.assertIn("Assert-ReleaseBinaryRecords -TreeRoot $treeRoot", read("tools/windows/verify_release_tree.ps1"))
+
     def test_staging_ships_every_notice(self):
-        script = read("tools/windows/stage_release_tree.ps1")
         required = re.search(r"\$script:ReleaseNotices = @\(([^\n]+)\)",
                              read("tools/windows/release_tree_checks.psm1")).group(1)
-        self.assertIn("Assert-ReleaseNotices -DocDir $docDir", script)
+        self.assertIn("Assert-ReleaseNotices -DocDir $docDir", read("tools/windows/stage_release_tree.ps1"))
         self.assertIn("Assert-ReleaseNotices -DocDir (Join-Path $treeRoot 'share/doc/dsd-neo')",
                       read("tools/windows/verify_release_tree.ps1"))
+        shipped_from = {}
+        for entries in windows_records().values():
+            for _, notices in entries:
+                shipped_from.update(notices)
         for source, shipped in WINDOWS_NOTICES.items():
             with self.subTest(notice=shipped):
                 self.assertTrue((ROOT / source).is_file(), source)
-                self.assertIn(f"    '{source}' = '{shipped}'\n", script)
+                self.assertEqual(shipped_from[f"licenses/{shipped}"], f"repo:{source}")
                 self.assertIn(f"'licenses/{shipped}'", required)
         self.assertIn("'licenses/BSL-1.0.txt'", required)
         self.assertIn("'licenses/SoapySDR-COPYRIGHT.txt'", required)
-        self.assertIn("$expectedModules = @(" + ", ".join(f"'{m}'" for m in MODULE_FILES) + ")", script)
+        self.assertIn("$expectedModules = @(" + ", ".join(f"'{m}'" for m in MODULE_FILES) + ")",
+                      read("tools/windows/stage_release_tree.ps1"))
 
     def test_release_jobs_stage_and_verify(self):
         stage = "./tools/windows/stage_release_tree.ps1"
@@ -533,7 +585,7 @@ for name in ("ISC.txt", "LicenseRef-ETSI-EN-300-395-2-data.txt", "legal/status.m
 
 # The DLLs of the fake vcpkg tree and what each imports.
 DEPENDENCIES = {
-    "dsd-neo.exe": ["rtlsdr.dll", "airspy.dll", "SoapySDR.dll", "VCRUNTIME140.dll", "KERNEL32.dll",
+    "dsd-neo.exe": ["rtlsdr.dll", "airspy.dll", "SoapySDR.dll", "portaudio.dll", "VCRUNTIME140.dll", "KERNEL32.dll",
                     "api-ms-win-crt-runtime-l1-1-0.dll"],
     "rtlsdr.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "airspy.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
@@ -544,7 +596,9 @@ DEPENDENCIES = {
     "SoapySDRUtil.exe": ["SoapySDR.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "KERNEL32.dll"],
 }
 INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "SoapySDR.dll", "libusb-1.0.dll", "pthreadVC3.dll",
-                 "unused.dll")
+                 "portaudio.dll", "unused.dll")
+# The copyright file vcpkg's portaudio port installs, which the ZIP carries as licenses/portaudio-copyright.txt.
+PORTAUDIO_COPYRIGHT = b"PortAudio Portable Real-Time Audio Library\r\nCopyright (c) 1999-2011 Ross Bencina, Phil Burk\r\n"
 # The Visual C++ runtime the binaries import, which staging takes from the toolset's redistributable folder of the
 # Visual Studio that vswhere finds, never from vcpkg's bin\.
 RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
@@ -638,7 +692,7 @@ try {
 
 # A release tree's binaries and what each imports (dumpbin /DEPENDENTS).
 RELEASE_DEPENDENTS = dict(DEPENDENCIES, **{
-    "libusb-1.0.dll": ["KERNEL32.dll"], "pthreadVC3.dll": ["KERNEL32.dll"],
+    "libusb-1.0.dll": ["KERNEL32.dll"], "pthreadVC3.dll": ["KERNEL32.dll"], "portaudio.dll": ["KERNEL32.dll"],
     "MSVCP140.dll": ["VCRUNTIME140.dll", "KERNEL32.dll"], "VCRUNTIME140.dll": ["KERNEL32.dll"],
 })
 
@@ -756,14 +810,16 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 1, out + err)
         self.assertIn("did not finish within 5 s", out)
 
+    def write_dumpbin(self, tools, deps):
+        (tools / "dumpbin").write_text(FAKE_DUMPBIN.format(python=sys.executable, deps=deps), encoding="utf-8")
+        (tools / "dumpbin").chmod(0o755)
+
     def fake_tree(self):
         tools = self.work / "tools"
         tools.mkdir()
-        (tools / "dumpbin").write_text(FAKE_DUMPBIN.format(python=sys.executable, deps=DEPENDENCIES),
-                                       encoding="utf-8")
+        self.write_dumpbin(tools, DEPENDENCIES)
         (tools / "cmake").write_text(FAKE_CMAKE.format(python=sys.executable, root=str(ROOT)), encoding="utf-8")
-        for tool in ("dumpbin", "cmake"):
-            (tools / tool).chmod(0o755)
+        (tools / "cmake").chmod(0o755)
         build = self.work / "build"
         (build / "apps/dsd-cli/Release").mkdir(parents=True)
         (build / "apps/dsd-cli/Release/dsd-neo.exe").write_bytes(pe_image(b"dsd-neo", dll=False))
@@ -776,6 +832,8 @@ class SoapyReleaseScripts(unittest.TestCase):
         (installed / "bin").mkdir(parents=True)
         for name in INSTALLED_BIN:
             (installed / "bin" / name).write_bytes(pe_image(name.encode()))
+        (installed / "share/portaudio").mkdir(parents=True)
+        (installed / "share/portaudio/copyright").write_bytes(PORTAUDIO_COPYRIGHT)
         (installed / "include/SoapySDR").mkdir(parents=True)
         (installed / "include/SoapySDR/Version.h").write_text(
             '#pragma once\r\n#define SOAPY_SDR_API_VERSION 0x00080000\r\n#define SOAPY_SDR_ABI_VERSION "0.8"\r\n')
@@ -827,6 +885,8 @@ class SoapyReleaseScripts(unittest.TestCase):
         for source, shipped in WINDOWS_NOTICES.items():
             self.assertEqual((licenses / shipped).read_bytes(), (ROOT / source).read_bytes(), shipped)
         self.assertEqual((licenses / "BSL-1.0.txt").read_bytes(), (ROOT / "LICENSES/BSL-1.0.txt").read_bytes())
+        # A library vcpkg builds from its own port: the ZIP carries the copyright file the port installs.
+        self.assertEqual((licenses / "portaudio-copyright.txt").read_bytes(), PORTAUDIO_COPYRIGHT)
         log = normalized((tools / "cmake.log").read_text(encoding="utf-8"))
         self.assertEqual(log, f"--install {build} --prefix {stage} --component legal\n")
 
@@ -866,8 +926,24 @@ class SoapyReleaseScripts(unittest.TestCase):
                 self.assertIn(message, output)
                 repair()
                 shutil.rmtree(stage, ignore_errors=True)
-        # A module DLL the staging cannot find in bin\ or vcpkg's bin\ stops it, as for dsd-neo.exe.
         (installed / "include/SoapySDR/Version.h").write_text('#define SOAPY_SDR_ABI_VERSION "0.8"\n')
+        # A staged library whose notice is not where its record says, and a staged DLL no record lists.
+        copyright = installed / "share/portaudio/copyright"
+        copyright.unlink()
+        rc, output, stage = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"licenses/portaudio-copyright.txt of portaudio comes from {copyright}", output)
+        copyright.write_bytes(PORTAUDIO_COPYRIGHT)
+        shutil.rmtree(stage)
+        (installed / "bin/vendor.dll").write_bytes(pe_image(b"vendor"))
+        self.write_dumpbin(tools, dict(DEPENDENCIES, **{"dsd-neo.exe": DEPENDENCIES["dsd-neo.exe"] + ["vendor.dll"]}))
+        rc, output, stage = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("No component record", output)
+        self.assertIn(str(stage / "bin/vendor.dll"), output)
+        self.write_dumpbin(tools, DEPENDENCIES)
+        shutil.rmtree(stage)
+        # A module DLL the staging cannot find in bin\ or vcpkg's bin\ stops it, as for dsd-neo.exe.
         (installed / "bin/hackrf.dll").unlink()
         rc, output, _ = self.stage(tools, build, installed, windows)
         self.assertEqual(rc, 1, output)
@@ -922,12 +998,25 @@ class SoapyReleaseScripts(unittest.TestCase):
         return tools, root, windows
 
     def write_notices(self, root):
-        # The legal component's components.json, whose msvc-runtime record lists the runtime DLLs a tree may carry.
+        # The notices every tree carries and those the component records of its files name, and the legal
+        # component's components.json, which holds those records and the runtime DLLs a tree may carry.
         docs = root / "share/doc/dsd-neo"
-        for name in required_notices():
+        records = windows_records()
+        names = set(required_notices())
+        for path in [*(root / "bin").iterdir(), *(root / "lib").rglob("*")]:
+            for _, notices in records.get(path.name.lower(), []):
+                names.update(notices)
+        for name in names:
             (docs / name).parent.mkdir(parents=True, exist_ok=True)
             (docs / name).write_text(name + "\n")
         shutil.copyfile(ROOT / "legal/components.json", docs / "legal/components.json")
+
+    def record_files(self, root, *names):
+        """Lists more files in the tree's components.json, in a record with no notices."""
+        components = root / "share/doc/dsd-neo/legal/components.json"
+        inventory = json.loads(components.read_text(encoding="utf-8"))
+        inventory["components"].append({"id": "test-files", "windows_release": {"binaries": list(names), "notices": {}}})
+        components.write_text(json.dumps(inventory), encoding="utf-8")
 
     def write_report(self, tools):
         (tools / "report.json").write_text(json.dumps(self.report), encoding="utf-8")
@@ -1088,6 +1177,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         (bin_dir / "late.dll").rmdir()
         (bin_dir / "late.dll").write_bytes(b"MZ late")
         self.report["dependents"]["late.dll"] = ["KERNEL32.dll"]
+        self.record_files(root, "vendor.drv", "late.dll")
         for name in ("vendor.drv", "late.dll"):
             with self.subTest(unhardened=name):
                 self.report["unhardened"] = [name]
@@ -1097,6 +1187,28 @@ class SoapyReleaseScripts(unittest.TestCase):
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)
         self.assertIn(f"Windows PE hardening OK: {bin_dir / 'vendor.drv'}", output)
+
+    def test_verify_release_tree_needs_a_record_and_notices_for_every_file(self):
+        # Every file of bin\ and lib\ must be one a component record lists, and the tree must carry the notices of
+        # the records of its files.
+        tools, root, windows = self.release_tree()
+        for path in (root / "bin/vendor.dll", root / "lib/SoapySDR/vendor.txt"):
+            with self.subTest(file=path.name):
+                path.write_bytes(b"MZ vendor")
+                try:
+                    self.assert_verify_refuses(tools, root, windows, "No component record", str(path))
+                finally:
+                    path.unlink()
+        notice = root / "share/doc/dsd-neo/licenses/portaudio-copyright.txt"
+        notice.unlink()
+        self.assert_verify_refuses(tools, root, windows, f"portaudio.dll (portaudio): {notice}")
+        notice.write_text("")
+        self.assert_verify_refuses(tools, root, windows, f"portaudio.dll (portaudio): {notice}")
+        self.write_notices(root)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        self.assertIn("OK: every file in bin\\ and lib\\ has a component record, and the tree carries its notices",
+                      output)
 
     def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):
         # dsd-neo.exe's native Airspy input and librtlsdr must load the airspy.dll and libusb-1.0.dll the modules and

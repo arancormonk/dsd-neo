@@ -225,11 +225,12 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/{gpl}"', macos)
         self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/{patches}"', macos)
         self.assertIn(f" {gpl} {patches} ", macos)
-        windows = (ROOT / "tools/windows/stage_release_tree.ps1").read_text()
-        self.assertIn("Copy-Item -Force 'android/third_party/librtlsdr/COPYING' "
-                      "(Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop", windows)
-        self.assertIn("Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' "
-                      "(Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop", windows)
+        # The Windows staging copies the notices the record of each staged file names.
+        windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                       if c["id"] == "desktop-rtl")["windows_release"]
+        self.assertEqual(windows, {"binaries": ["rtlsdr.dll"],
+                                   "notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
+                                               patches: "repo:packaging/librtlsdr-PATCHES.txt"}})
         notices = (ROOT / "tools/windows/release_tree_checks.psm1").read_text()
         self.assertIn(f"'{gpl}','{patches}'", notices)
         self.assertIn("no transfer left, canceling", (ROOT / "tools/windows/verify_release_tree.ps1").read_text())
@@ -293,10 +294,11 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn("-DCMAKE_POLICY_VERSION_MINIMUM=3.5", build_dep)
         macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
         self.assertIn(" licenses/" + NOTICE + " ", macos)
-        windows = (ROOT / "tools/windows/stage_release_tree.ps1").read_text()
         self.assertIn("'licenses/" + NOTICE + "'", (ROOT / "tools/windows/release_tree_checks.psm1").read_text())
-        self.assertIn("Copy-Item -Force 'android/third_party/libairspy/LICENSE' "
-                      "(Join-Path $licenseDir '" + NOTICE + "') -ErrorAction Stop", windows)
+        windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                       if c["id"] == "airspy")["windows_release"]
+        self.assertEqual(windows, {"binaries": ["airspy.dll"],
+                                   "notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
         self.assert_windows_release_scripts()
 
     def assert_windows_release_scripts(self):

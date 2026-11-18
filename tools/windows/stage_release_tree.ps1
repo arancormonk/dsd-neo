@@ -3,10 +3,12 @@
 #   bin\                          dsd-neo.exe, SoapySDRUtil.exe and every DLL they and
 #                                 the SoapySDR modules load
 #   lib\SoapySDR\modules<ABI>\    the SoapySDR modules (exactly the expected ones)
-#   share\doc\dsd-neo\            the project's and every bundled component's notices
+#   share\doc\dsd-neo\            the project's notices and those of the components of
+#                                 every file in bin\ and lib\ (Get-ReleaseBinaryRecords:
+#                                 the windows_release of each record in
+#                                 legal/components.json)
 # windows-pr's Release build and windows-ci's release package both run it, and
-# verify_release_tree.ps1 checks what it leaves. Relative paths in the notice list
-# below are from the repository root.
+# verify_release_tree.ps1 checks what it leaves.
 [CmdletBinding()]
 param(
     # The configured CMake build directory (dsd-neo.exe under apps\dsd-cli).
@@ -29,20 +31,6 @@ Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 # SoapyAirspy and SoapyHackRF (vcpkg-ports/soapy-*). Anything else in the module
 # folder is an error, so a dependency change cannot add a module unseen.
 $expectedModules = @('airspySupport.dll', 'HackRFSupport.dll')
-# Windows-only notices of the SoapySDR load path: the modules, the libraries they
-# need, and the libusb and PThreads4W those libraries load (license texts and the
-# holders and contributors their sources name). SoapySDR's own notices come with the
-# legal component, from LICENSES/.
-$soapyNotices = [ordered]@{
-    'vcpkg-ports/soapy-airspy/copyright' = 'SoapyAirspy-MIT.txt'
-    'vcpkg-ports/soapy-hackrf/copyright' = 'SoapyHackRF-MIT.txt'
-    'vcpkg-ports/hackrf/copyright' = 'libhackrf-BSD-3-Clause.txt'
-    'android/third_party/libusb/COPYING' = 'libusb-LGPL-2.1-or-later.txt'
-    'packaging/windows/PThreads4W-LICENSE.txt' = 'PThreads4W-Apache-2.0.txt'
-    'packaging/windows/PThreads4W-NOTICE.txt' = 'PThreads4W-NOTICE.txt'
-    'packaging/windows/PThreads4W-CONTRIBUTORS.txt' = 'PThreads4W-CONTRIBUTORS.txt'
-    'packaging/windows/libusb-COPYRIGHT.txt' = 'libusb-COPYRIGHT.txt'
-}
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path
 $build = (Resolve-Path -LiteralPath $BuildDir).Path
@@ -118,19 +106,46 @@ try {
     cmake --install $build --prefix $stage --component legal
     if ($LASTEXITCODE -ne 0) { throw "Legal notice installation failed" }
     Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction Stop
-    Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction Stop
-    Copy-Item -Force (Join-Path $build 'pffft-licenses/pffft-LICENSE.txt'),(Join-Path $build 'pffft-licenses/pffft-NOTICES.txt') $licenseDir -ErrorAction Stop
-    Copy-Item -Force (Join-Path $build 'tetra_crypto-licenses/tetra_crypto-LICENSE.txt') $licenseDir -ErrorAction Stop
-    Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
-    # The bundled librtlsdr is GPL-2.0-or-later and built by the vcpkg overlay with the dsd-neo patches.
-    Copy-Item -Force 'android/third_party/librtlsdr/COPYING' (Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop
-    Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' (Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop
-    foreach ($source in $soapyNotices.Keys) {
-        Copy-Item -Force $source (Join-Path $licenseDir $soapyNotices[$source]) -ErrorAction Stop
-    }
 } finally {
     Pop-Location
 }
 
+# The notices of the components of every file staged in bin\ and lib\, from where
+# their records say: the repository (repo:), the build tree (build:, the downloaded
+# PFFFT's and TETRA_crypto's), the copyright file a vcpkg port installs (vcpkg:<port>,
+# share\<port>\copyright) or the legal component installed above (legal-component,
+# mbelib's). A file no record lists stops the staging.
+$componentsPath = Join-Path $repoRoot 'legal/components.json'
+$records = Get-ReleaseBinaryRecords -ComponentsPath $componentsPath
+foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
+    if (-not $records.ContainsKey($file.Name)) {
+        throw "No component record in $componentsPath lists $($file.FullName) (windows_release), so its notices are unknown: add the record before a release carries it"
+    }
+    foreach ($record in $records[$file.Name]) {
+        foreach ($notice in $record.Notices.Keys) {
+            $from = $record.Notices[$notice]
+            if ($from -eq 'legal-component') {
+                continue
+            }
+            if ($from -match '^repo:(.+)$') {
+                $source = Join-Path $repoRoot $Matches[1]
+            } elseif ($from -match '^build:(.+)$') {
+                $source = Join-Path $build $Matches[1]
+            } elseif ($from -match '^vcpkg:([a-z0-9-]+)$') {
+                $source = Join-Path $installed "share/$($Matches[1])/copyright"
+            } else {
+                throw "The notice $notice of $($record.Component) names a source staging does not know: '$from'"
+            }
+            if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "The notice $notice of $($record.Component) comes from $source, which is not a file"
+            }
+            $destination = Join-Path $docDir $notice
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -Force -LiteralPath $source -Destination $destination -ErrorAction Stop
+        }
+    }
+}
+
 Assert-ReleaseNotices -DocDir $docDir
+Assert-ReleaseBinaryRecords -TreeRoot $stage -ComponentsPath (Join-Path $docDir 'legal/components.json')
 Write-Host "Staged release tree: $stage"

@@ -184,7 +184,7 @@ function Get-DllKind {
     return 'Other'
 }
 
-# The Visual C++ runtime DLLs a release may carry: the redistributable_files of the
+# The Visual C++ runtime DLLs a release may carry: the windows_release binaries of the
 # msvc-runtime record in legal/components.json, which also names Microsoft's terms for
 # them. Staging reads the repository's record, the release check the one the tree
 # ships, so neither carries a runtime DLL the record does not list. Throws when the file
@@ -200,15 +200,113 @@ function Get-RecordedRuntimeFiles {
     }
     $records = @((Get-Content -Raw -LiteralPath $ComponentsPath | ConvertFrom-Json).components |
             Where-Object { $_.id -eq 'msvc-runtime' })
-    if ($records.Count -ne 1 -or -not ($records[0].PSObject.Properties.Name -contains 'redistributable_files')) {
+    if ($records.Count -ne 1 -or -not ($records[0].PSObject.Properties.Name -contains 'windows_release') -or
+        -not ($records[0].windows_release.PSObject.Properties.Name -contains 'binaries')) {
         throw "$ComponentsPath has no msvc-runtime record listing the Visual C++ runtime DLLs a release may carry"
     }
-    $files = @($records[0].redistributable_files | Where-Object { $_ -is [string] -and $_ -ne '' })
+    $files = @($records[0].windows_release.binaries | Where-Object { $_ -is [string] -and $_ -ne '' })
     if ($files.Count -eq 0) {
         throw "The msvc-runtime record in $ComponentsPath lists no Visual C++ runtime DLL"
     }
     $set = [System.Collections.Generic.HashSet[string]]::new([string[]]$files, [System.StringComparer]::OrdinalIgnoreCase)
     return , $set
+}
+
+# The component records of the files a Windows release carries: for each file name
+# (any case), the records in legal/components.json whose windows_release lists it, each
+# with its id and its notices: the path of each under share\doc\dsd-neo and where
+# staging takes it from (repo:<path>, build:<path>, vcpkg:<port>, or legal-component for
+# a notice the legal CMake component installs). Staging reads the repository's
+# inventory, the release check the one the tree ships.
+function Get-ReleaseBinaryRecords {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    if (!(Test-Path -LiteralPath $ComponentsPath -PathType Leaf)) {
+        throw "No component inventory at $ComponentsPath, so the components of the release's files are unknown"
+    }
+    $map = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($component in @((Get-Content -Raw -LiteralPath $ComponentsPath | ConvertFrom-Json).components)) {
+        if (-not ($component.PSObject.Properties.Name -contains 'windows_release')) {
+            continue
+        }
+        $notices = [ordered]@{}
+        foreach ($notice in @($component.windows_release.notices.PSObject.Properties)) {
+            $notices[$notice.Name] = [string]$notice.Value
+        }
+        $record = [pscustomobject]@{ Component = [string]$component.id; Notices = $notices }
+        foreach ($name in @($component.windows_release.binaries)) {
+            if (-not $map.ContainsKey($name)) {
+                $map[$name] = New-Object 'System.Collections.Generic.List[object]'
+            }
+            $map[$name].Add($record)
+        }
+    }
+    return , $map
+}
+
+# The files of a release tree that need a component record: every file in bin\ and
+# under lib\, except the DLL list stage_runtime_dlls.ps1 writes (bin\dlls-manifest.txt).
+function Get-ReleaseTreeFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TreeRoot
+    )
+
+    $files = @()
+    $bin = $null
+    foreach ($folder in @('bin', 'lib')) {
+        $path = Join-Path $TreeRoot $folder
+        if (Test-Path -LiteralPath $path -PathType Container) {
+            if ($folder -eq 'bin') {
+                $bin = (Get-Item -LiteralPath $path).FullName
+            }
+            $files += @(Get-ChildItem -LiteralPath $path -File -Recurse)
+        }
+    }
+    return @($files | Where-Object { -not ($_.Name -eq 'dlls-manifest.txt' -and $_.DirectoryName -eq $bin) } |
+            Sort-Object -Property FullName)
+}
+
+# Throws unless every file in the tree's bin\ and lib\ has a component record in the
+# inventory and every notice of those records is a non-empty file under
+# share\doc\dsd-neo: a file no record lists ships without its notices.
+function Assert-ReleaseBinaryRecords {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TreeRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    $records = Get-ReleaseBinaryRecords -ComponentsPath $ComponentsPath
+    $docDir = Join-Path $TreeRoot 'share/doc/dsd-neo'
+    $unrecorded = New-Object 'System.Collections.Generic.List[string]'
+    $missing = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $TreeRoot)) {
+        if (-not $records.ContainsKey($file.Name)) {
+            $unrecorded.Add($file.FullName)
+            continue
+        }
+        foreach ($record in $records[$file.Name]) {
+            foreach ($notice in $record.Notices.Keys) {
+                $path = Join-Path $docDir $notice
+                if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+                    $missing.Add("$($file.Name) ($($record.Component)): $path")
+                }
+            }
+        }
+    }
+    if ($unrecorded.Count -gt 0) {
+        throw "No component record in $ComponentsPath lists these files of the tree (windows_release), so their notices are unknown:`n$($unrecorded -join "`n")"
+    }
+    if ($missing.Count -gt 0) {
+        throw "Missing or empty notices of the components of the tree's files:`n$(@($missing | Sort-Object -Unique) -join "`n")"
+    }
 }
 
 # Fills $Buffer from the stream's position; $false when the file ends first.
@@ -395,5 +493,6 @@ function Invoke-IsolatedProcess {
 }
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
-    Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles, Test-PeImage, Test-DumpbinImageReport,
+    Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-ReleaseBinaryRecords, Get-ReleaseTreeFiles,
+    Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles, Test-PeImage, Test-DumpbinImageReport,
     Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess

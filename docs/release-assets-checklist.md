@@ -45,6 +45,10 @@ resource bundle, so they travel with the binary rather than as a separate file.
         `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/libusb-COPYRIGHT.txt`, `licenses/PThreads4W-Apache-2.0.txt`,
         `licenses/PThreads4W-NOTICE.txt` and `licenses/PThreads4W-CONTRIBUTORS.txt` (the release job refuses a staged
         tree or an unpacked ZIP without any of them).
+  - [ ] Confirm every file in `bin/` and `lib/` (except `bin/dlls-manifest.txt`) is one a record in
+        `legal/components.json` lists under `windows_release`, and that `share/doc/dsd-neo/` holds every notice
+        those records name (for the libraries vcpkg builds, `licenses/<port>-copyright.txt`, the copyright file the
+        port installs); `tools/windows/verify_release_tree.ps1` refuses a file without a record or a missing notice.
   - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll` and `HackRFSupport.dll`, and that `bin/`
         holds `hackrf.dll` and `SoapySDRUtil.exe` beside `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and
         `pthreadVC3.dll`.

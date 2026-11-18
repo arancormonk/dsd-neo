@@ -39,6 +39,14 @@
       "review_date": "2026-10-17",
       "notice_sha256": {
         "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373"
+      },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "LICENSE": "repo:LICENSE"
+        }
       }
     },
     {
@@ -71,6 +79,14 @@
       "review_date": "2026-10-17",
       "notice_sha256": {
         "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
       }
     },
     {
@@ -104,6 +120,15 @@
         "LICENSES/LicenseRef-BCH3-Noncommercial.txt": "94d2519fb091cf0062d17827e93066d5d5ce96ab0ecbcd86506c1cc28fafb568",
         "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
       },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
       "finding": "BCH-NONCOMMERCIAL"
     },
     {
@@ -136,6 +161,15 @@
       "notice_sha256": {
         "LICENSES/LicenseRef-Simon-Rockliff.txt": "4b7da1f90d745422950fc042deae8c102cbc1c4820f3d3697ad151e3468ab85e",
         "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
+      },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
       }
     },
     {
@@ -163,6 +197,12 @@
       "patent_status": "not-cleared",
       "review_date": "2026-10-17",
       "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {}
+      },
       "finding": "GOLAY-PERMISSION"
     },
     {
@@ -200,6 +240,15 @@
         "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373",
         "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf"
       },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
       "finding": "MIXED-PROVENANCE"
     },
     {
@@ -232,6 +281,15 @@
       "notice_sha256": {
         "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373",
         "src/third_party/ezpwd/lesser.txt": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+      },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
+        }
       }
     },
     {
@@ -262,6 +320,14 @@
       "review_date": "2026-10-17",
       "notice_sha256": {
         "LICENSES/Unlicense.txt": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+      },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
+        }
       }
     },
     {
@@ -289,6 +355,15 @@
       "patent_status": "not-cleared",
       "review_date": "2026-10-17",
       "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
+          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+        }
+      },
       "pin": "PFFFT_SHA"
     },
     {
@@ -317,6 +392,14 @@
       "patent_status": "not-cleared",
       "review_date": "2026-10-17",
       "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
+        }
+      },
       "pin": "TETRA_CRYPTO_SHA"
     },
     {
@@ -342,6 +425,24 @@
       "patent_status": "not-cleared",
       "review_date": "2026-10-19",
       "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "mbe-neo.dll"
+        ],
+        "notices": {
+          "licenses/mbelib-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/GPL-2.0-or-later.txt": "legal-component",
+          "licenses/mbelib-neo/ISC.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
+          "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
+          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/legal/components.json": "legal-component",
+          "licenses/mbelib-neo/legal/status.md": "legal-component",
+          "licenses/mbelib-neo/legal/patents.md": "legal-component"
+        }
+      },
       "finding": "MBELIB-ETSI",
       "pin": "MBELIB_NEO_SHA"
     },
@@ -435,6 +536,15 @@
         "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
         "packaging/librtlsdr-PATCHES.txt": "ac421aea8ffd8e777ce8e1d1132906b75db5404d19c0da61abb8da450942dbfb"
       },
+      "windows_release": {
+        "binaries": [
+          "rtlsdr.dll"
+        ],
+        "notices": {
+          "licenses/librtlsdr-GPL-2.0-or-later.txt": "repo:android/third_party/librtlsdr/COPYING",
+          "licenses/librtlsdr-PATCHES.txt": "repo:packaging/librtlsdr-PATCHES.txt"
+        }
+      },
       "pin": "RTL_SDR_SHA"
     },
     {
@@ -467,6 +577,14 @@
       "review_date": "2026-10-17",
       "notice_sha256": {
         "android/third_party/libairspy/LICENSE": "08489d02edaf8efbdd30ae84480f74b7668e874306a9732f1478407fc79b7262"
+      },
+      "windows_release": {
+        "binaries": [
+          "airspy.dll"
+        ],
+        "notices": {
+          "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
+        }
       },
       "pin": "AIRSPY_SHA"
     },
@@ -550,6 +668,15 @@
         "LICENSES/ISC.txt": "565b6df0f40cf5fcf705bcfeb24fec16ef0ddf8592e64e1f2ad99103b5dfcbaf",
         "LICENSES/gqrx-scanner-MIT.txt": "60f5949b4ea72345d07bf91d2c8923f1bb1ec5c0cfc8078694ac32ea520e8258"
       },
+      "windows_release": {
+        "binaries": [
+          "dsd-neo.exe"
+        ],
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt",
+          "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
+        }
+      },
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -586,6 +713,15 @@
         "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
         "LICENSES/SoapySDR-COPYRIGHT.txt": "e4a78d26416963f91128ea1b92d993571ac3fb0b797ac5cbf217f3c90a6ab598"
       },
+      "windows_release": {
+        "binaries": [
+          "soapysdr.dll"
+        ],
+        "notices": {
+          "licenses/BSL-1.0.txt": "repo:LICENSES/BSL-1.0.txt",
+          "licenses/SoapySDR-COPYRIGHT.txt": "repo:LICENSES/SoapySDR-COPYRIGHT.txt"
+        }
+      },
       "pin": "SOAPY_SDR_SHA"
     },
     {
@@ -617,6 +753,15 @@
         "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
         "LICENSES/SoapySDR-COPYRIGHT.txt": "e4a78d26416963f91128ea1b92d993571ac3fb0b797ac5cbf217f3c90a6ab598"
       },
+      "windows_release": {
+        "binaries": [
+          "soapysdrutil.exe"
+        ],
+        "notices": {
+          "licenses/BSL-1.0.txt": "repo:LICENSES/BSL-1.0.txt",
+          "licenses/SoapySDR-COPYRIGHT.txt": "repo:LICENSES/SoapySDR-COPYRIGHT.txt"
+        }
+      },
       "pin": "SOAPY_SDR_SHA"
     },
     {
@@ -643,6 +788,14 @@
       "review_date": "2026-11-17",
       "notice_sha256": {
         "vcpkg-ports/soapy-airspy/copyright": "700f04d7dccd93c683cafb461b7927c0d62e6e40577615fafb0757381c3a03de"
+      },
+      "windows_release": {
+        "binaries": [
+          "airspysupport.dll"
+        ],
+        "notices": {
+          "licenses/SoapyAirspy-MIT.txt": "repo:vcpkg-ports/soapy-airspy/copyright"
+        }
       },
       "pin": "SOAPY_AIRSPY_SHA"
     },
@@ -671,6 +824,14 @@
       "notice_sha256": {
         "vcpkg-ports/soapy-hackrf/copyright": "a8c5e976e00b8ca1ede15f3c99c6ae9902321259857ba742a5fd2ea56d5c4190"
       },
+      "windows_release": {
+        "binaries": [
+          "hackrfsupport.dll"
+        ],
+        "notices": {
+          "licenses/SoapyHackRF-MIT.txt": "repo:vcpkg-ports/soapy-hackrf/copyright"
+        }
+      },
       "pin": "SOAPY_HACKRF_SHA"
     },
     {
@@ -697,6 +858,14 @@
       "review_date": "2026-11-17",
       "notice_sha256": {
         "vcpkg-ports/hackrf/copyright": "827049c4fd4b3304831961d0e7d2546213fe103528df914b645baa23287582d6"
+      },
+      "windows_release": {
+        "binaries": [
+          "hackrf.dll"
+        ],
+        "notices": {
+          "licenses/libhackrf-BSD-3-Clause.txt": "repo:vcpkg-ports/hackrf/copyright"
+        }
       },
       "pin": "HACKRF_SHA"
     },
@@ -727,6 +896,15 @@
       "notice_sha256": {
         "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
         "packaging/windows/libusb-COPYRIGHT.txt": "e2fa5c205ba163c0ef0a1252f8476e64eaf112d7d967fdb94d5770d5204f7dde"
+      },
+      "windows_release": {
+        "binaries": [
+          "libusb-1.0.dll"
+        ],
+        "notices": {
+          "licenses/libusb-LGPL-2.1-or-later.txt": "repo:android/third_party/libusb/COPYING",
+          "licenses/libusb-COPYRIGHT.txt": "repo:packaging/windows/libusb-COPYRIGHT.txt"
+        }
       }
     },
     {
@@ -760,7 +938,455 @@
         "packaging/windows/PThreads4W-LICENSE.txt": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
         "packaging/windows/PThreads4W-NOTICE.txt": "ab620b4fe865583cca883b258f728f7f2234802f7c1b8d74fdb6a4dd2642ae2c",
         "packaging/windows/PThreads4W-CONTRIBUTORS.txt": "effb91775c0046810206ca4b1fcd5e9cac856b99bb54db80bab0069d14ef5eca"
+      },
+      "windows_release": {
+        "binaries": [
+          "pthreadvc3.dll"
+        ],
+        "notices": {
+          "licenses/PThreads4W-Apache-2.0.txt": "repo:packaging/windows/PThreads4W-LICENSE.txt",
+          "licenses/PThreads4W-NOTICE.txt": "repo:packaging/windows/PThreads4W-NOTICE.txt",
+          "licenses/PThreads4W-CONTRIBUTORS.txt": "repo:packaging/windows/PThreads4W-CONTRIBUTORS.txt"
+        }
       }
+    },
+    {
+      "id": "codec2",
+      "name": "codec2",
+      "paths": [
+        "vcpkg.json",
+        "vcpkg-ports/codec2/"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "codec2.dll in the Windows ZIP, which dsd-neo.exe loads for M17 voice, built by the codec2 overlay from the pinned arancormonk/codec2 commit. The ZIP carries the copyright file the overlay installs (share/codec2/copyright, the upstream COPYING) as licenses/codec2-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "codec2.dll"
+        ],
+        "notices": {
+          "licenses/codec2-copyright.txt": "vcpkg:codec2"
+        }
+      },
+      "finding": "RUNTIME-NOTICES",
+      "pin": "CODEC2_SHA"
+    },
+    {
+      "id": "portaudio",
+      "name": "PortAudio",
+      "paths": [
+        "vcpkg.json",
+        "vcpkg-ports/portaudio/"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "portaudio.dll in the Windows ZIP, dsd-neo.exe's audio input and output, built by the portaudio overlay (vcpkg's port at port-version 8, release 19.7). The ZIP carries the copyright file the port installs (share/portaudio/copyright, the upstream LICENSE.txt) as licenses/portaudio-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "portaudio.dll"
+        ],
+        "notices": {
+          "licenses/portaudio-copyright.txt": "vcpkg:portaudio"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "pdcurses",
+      "name": "PDCurses",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "pdcurses.dll in the Windows ZIP, dsd-neo.exe's terminal interface; vcpkg's pdcurses port at the manifest baseline (3.9), whose manifest declares no license. The ZIP carries the copyright file the port installs (share/pdcurses/copyright, a LICENSE file kept in vcpkg's port) as licenses/pdcurses-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "pdcurses.dll"
+        ],
+        "notices": {
+          "licenses/pdcurses-copyright.txt": "vcpkg:pdcurses"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "openssl",
+      "name": "OpenSSL libcrypto",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "libcrypto-3-x64.dll in the Windows ZIP; vcpkg's openssl port at the manifest baseline (3.6.5). The ZIP carries the copyright file the port installs (share/openssl/copyright, the upstream LICENSE.txt) as licenses/openssl-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "libcrypto-3-x64.dll"
+        ],
+        "notices": {
+          "licenses/openssl-copyright.txt": "vcpkg:openssl"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "curl",
+      "name": "libcurl",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "curl AND ISC AND BSD-3-Clause",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "libcurl.dll in the Windows ZIP; vcpkg's curl port at the manifest baseline (8.23.0). The ZIP carries the copyright file the port installs (share/curl/copyright: the upstream COPYING and the inet_ntop.c and inet_pton.c notice) as licenses/curl-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "libcurl.dll"
+        ],
+        "notices": {
+          "licenses/curl-copyright.txt": "vcpkg:curl"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "expat",
+      "name": "Expat",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "MIT AND CC0-1.0",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "libexpat.dll in the Windows ZIP; vcpkg's expat port at the manifest baseline (2.9.0). The ZIP carries the copyright file the port installs (share/expat/copyright) as licenses/expat-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "libexpat.dll"
+        ],
+        "notices": {
+          "licenses/expat-copyright.txt": "vcpkg:expat"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "zlib",
+      "name": "zlib",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "Zlib",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "z.dll in the Windows ZIP, which libcurl loads; vcpkg's zlib port at the manifest baseline (1.3.2). The ZIP carries the copyright file the port installs (share/zlib/copyright, the upstream LICENSE) as licenses/zlib-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "z.dll"
+        ],
+        "notices": {
+          "licenses/zlib-copyright.txt": "vcpkg:zlib"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "libsndfile",
+      "name": "libsndfile",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "sndfile.dll in the Windows ZIP, dsd-neo.exe's audio file reader and writer; vcpkg's libsndfile port at the manifest baseline (1.2.2) with its default external-libs and mpeg features. The ZIP carries the copyright file the port installs (share/libsndfile/copyright, the upstream COPYING) as licenses/libsndfile-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "sndfile.dll"
+        ],
+        "notices": {
+          "licenses/libsndfile-copyright.txt": "vcpkg:libsndfile"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "libflac",
+      "name": "libFLAC",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "FLAC.dll in the Windows ZIP, which libsndfile loads; vcpkg's libflac port at the manifest baseline (1.5.0). The ZIP carries the copyright file the port installs (share/libflac/copyright, the upstream COPYING.Xiph) as licenses/libflac-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "flac.dll"
+        ],
+        "notices": {
+          "licenses/libflac-copyright.txt": "vcpkg:libflac"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "libogg",
+      "name": "libogg",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "ogg.dll in the Windows ZIP, which libsndfile and its codecs load; vcpkg's libogg port at the manifest baseline (1.3.6). The ZIP carries the copyright file the port installs (share/libogg/copyright, the upstream COPYING) as licenses/libogg-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "ogg.dll"
+        ],
+        "notices": {
+          "licenses/libogg-copyright.txt": "vcpkg:libogg"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "libvorbis",
+      "name": "libvorbis",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "vorbis.dll and vorbisenc.dll in the Windows ZIP, which libsndfile loads; vcpkg's libvorbis port at the manifest baseline (1.3.7). The ZIP carries the copyright file the port installs (share/libvorbis/copyright, the upstream COPYING) as licenses/libvorbis-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "vorbis.dll",
+          "vorbisenc.dll"
+        ],
+        "notices": {
+          "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "opus",
+      "name": "Opus",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "opus.dll in the Windows ZIP, which libsndfile loads; vcpkg's opus port at the manifest baseline (1.6.1). The ZIP carries the copyright file the port installs (share/opus/copyright, the upstream COPYING) as licenses/opus-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "opus.dll"
+        ],
+        "notices": {
+          "licenses/opus-copyright.txt": "vcpkg:opus"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "mp3lame",
+      "name": "LAME",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "LGPL-2.0-only",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "libmp3lame.DLL in the Windows ZIP, which libsndfile loads; vcpkg's mp3lame port at the manifest baseline (3.100). The ZIP carries the copyright file the port installs (share/mp3lame/copyright, the upstream COPYING) as licenses/mp3lame-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "libmp3lame.dll"
+        ],
+        "notices": {
+          "licenses/mp3lame-copyright.txt": "vcpkg:mp3lame"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
+    },
+    {
+      "id": "mpg123",
+      "name": "mpg123",
+      "paths": [
+        "vcpkg.json"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "assessment": "mpg123.dll in the Windows ZIP, which libsndfile loads; vcpkg's mpg123 port at the manifest baseline (1.33.7). The ZIP carries the copyright file the port installs (share/mpg123/copyright, the upstream COPYING) as licenses/mpg123-copyright.txt. The declared license is the one the port's vcpkg.json gives. Whether that file names every holder and license of the sources the DLL is built from is not reviewed (RUNTIME-NOTICES); corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "mpg123.dll"
+        ],
+        "notices": {
+          "licenses/mpg123-copyright.txt": "vcpkg:mpg123"
+        }
+      },
+      "finding": "RUNTIME-NOTICES"
     },
     {
       "id": "msvc-runtime",
@@ -778,24 +1404,27 @@
       "license_declared": "NOASSERTION",
       "license_concluded": "NOASSERTION",
       "notices": [],
-      "redistributable_files": [
-        "concrt140.dll",
-        "msvcp140.dll",
-        "msvcp140_1.dll",
-        "msvcp140_2.dll",
-        "msvcp140_atomic_wait.dll",
-        "msvcp140_codecvt_ids.dll",
-        "vccorlib140.dll",
-        "vcruntime140.dll",
-        "vcruntime140_1.dll",
-        "vcruntime140_threads.dll"
-      ],
-      "assessment": "Microsoft's C and C++ runtime DLLs in bin\\ of the Windows ZIP, as many of redistributable_files as its binaries import (the 2.12.1 ZIP carried MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll). tools/windows/stage_runtime_dlls.ps1 copies them unmodified from the x64 runtime folder of the toolset that built the release, VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC<toolset>.CRT, and never from System32; it and verify_release_tree.ps1 refuse any other Visual C++ runtime DLL and the debug runtime. Terms: the Distributable Code section of the Microsoft Software License Terms for the Visual Studio edition used (https://visualstudio.microsoft.com/license-terms/), whose REDIST list lets a licensed Visual Studio user distribute the files of VC\\Redist except its debug_nonredist folders: \"Visual Studio Redistribution\" for Visual Studio 2026 and later (https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution) and \"Visual Studio 2022 Redistribution\" (https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution), both retrieved 2026-11-18. No Microsoft license text or notice is retained or shipped.",
+      "assessment": "Microsoft's C and C++ runtime DLLs in bin\\ of the Windows ZIP, as many of the files windows_release lists as its binaries import (the 2.12.1 ZIP carried MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll). tools/windows/stage_runtime_dlls.ps1 copies them unmodified from the x64 runtime folder of the toolset that built the release, VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC<toolset>.CRT, and never from System32; it and verify_release_tree.ps1 refuse any other Visual C++ runtime DLL and the debug runtime. Terms: the Distributable Code section of the Microsoft Software License Terms for the Visual Studio edition used (https://visualstudio.microsoft.com/license-terms/), whose REDIST list lets a licensed Visual Studio user distribute the files of VC\\Redist except its debug_nonredist folders: \"Visual Studio Redistribution\" for Visual Studio 2026 and later (https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution) and \"Visual Studio 2022 Redistribution\" (https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution), both retrieved 2026-11-18. No Microsoft license text or notice is retained or shipped.",
       "copyright_permission": "unresolved",
       "gpl_compatibility": "unresolved",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {},
+      "windows_release": {
+        "binaries": [
+          "concrt140.dll",
+          "msvcp140.dll",
+          "msvcp140_1.dll",
+          "msvcp140_2.dll",
+          "msvcp140_atomic_wait.dll",
+          "msvcp140_codecvt_ids.dll",
+          "vccorlib140.dll",
+          "vcruntime140.dll",
+          "vcruntime140_1.dll",
+          "vcruntime140_threads.dll"
+        ],
+        "notices": {}
+      },
       "finding": "MSVC-RUNTIME"
     },
     {

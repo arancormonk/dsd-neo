@@ -13,12 +13,15 @@
 #      (share\doc\dsd-neo\legal\components.json) does not list; the binaries are every
 #      .exe and .dll in bin\ and the module folder and every file they import, directly
 #      or not, and each passes check_release_hardening.ps1;
-#   3. dsd-neo.exe -h;
-#   4. SoapySDRUtil --check=<driver> finds each of the two drivers;
-#   5. SoapySDRUtil --info finds exactly the two modules under this root;
-#   6. dsd-neo.exe reaches each driver (it cannot open a device: there is none);
-#   7. without lib\, no driver is found;
-#   8. without bin\hackrf.dll, only the HackRF module fails to load.
+#   3. every file in bin\ and lib\ is one a component record of the tree's
+#      components.json lists (windows_release), and the tree carries the notices of
+#      those records;
+#   4. dsd-neo.exe -h;
+#   5. SoapySDRUtil --check=<driver> finds each of the two drivers;
+#   6. SoapySDRUtil --info finds exactly the two modules under this root;
+#   7. dsd-neo.exe reaches each driver (it cannot open a device: there is none);
+#   8. without lib\, no driver is found;
+#   9. without bin\hackrf.dll, only the HackRF module fails to load.
 # Each program runs in a fresh process from an empty working directory, with PATH
 # reduced to bin\ and the Windows folders and SOAPY_SDR_ROOT, SOAPY_SDR_PLUGIN_PATH
 # and DSD_NEO_CONFIG removed.
@@ -424,6 +427,8 @@ try {
     $recordedRuntime = Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
     Test-PatchedRtlsdr -Bin (Join-Path $treeRoot 'bin')
     $images = Test-LoadPath -TreeRoot $treeRoot -RecordedRuntime $recordedRuntime
+    Assert-ReleaseBinaryRecords -TreeRoot $treeRoot -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
+    Write-Host 'OK: every file in bin\ and lib\ has a component record, and the tree carries its notices'
     Test-Hardening -Images $images
     Test-Drivers -TreeRoot $treeRoot
     Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
