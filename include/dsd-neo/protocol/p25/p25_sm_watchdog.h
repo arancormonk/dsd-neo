@@ -86,12 +86,14 @@ int p25_sm_tick_guard_busy(void);
 /**
  * @brief Start the background watchdog thread (the beat that asks the decoder thread for ticks).
  *
- * No-op if already started. A thread that cannot start leaves the watchdog off (logged); a later start tries again.
+ * No-op if already started, or without the run's options and state. A thread that cannot start leaves the watchdog
+ * off (logged); a later start tries again. The thread touches neither: the decoder thread passes them to
+ * p25_sm_watchdog_service().
  *
- * @param opts Decoder options.
- * @param state Decoder state.
+ * @param opts Decoder options of the run.
+ * @param state Decoder state of the run.
  */
-void p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
+void p25_sm_watchdog_start(const dsd_opts* opts, const dsd_state* state);
 /** @brief Stop the background watchdog thread (safe to call when stopped). */
 void p25_sm_watchdog_stop(void);
 

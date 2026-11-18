@@ -159,7 +159,7 @@ static DSD_THREAD_RETURN_TYPE
 }
 
 void
-p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
+p25_sm_watchdog_start(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
