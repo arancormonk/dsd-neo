@@ -369,10 +369,18 @@ keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32
 
 void
 keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot) {
-    if (state != NULL) {
-        const uint8_t idx = slot & 1U;
-        state->dmr_tg_autoload.slot_tg[idx] = 0U;
-        DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key[idx], sizeof(state->dmr_tg_autoload.slot_key[idx]));
-        DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key_flags[idx], sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
+    if (state == NULL) {
+        return;
     }
+    const uint8_t idx = slot & 1U;
+    state->dmr_tg_autoload.slot_tg[idx] = 0U;
+    /* A copy is written only with its flags set (keyring_dmr_tg_autoload_key_of(): an imported zero key too), and wiped
+       with them, so flags all 0 mean the copy holds zeros already: a call whose talkgroup has no key misses on every
+       frame and is not wiped again each time, only on the change from a key to none. */
+    const uint8_t* flags = state->dmr_tg_autoload.slot_key_flags[idx];
+    if (flags[0] == 0U && flags[1] == 0U) {
+        return;
+    }
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key[idx], sizeof(state->dmr_tg_autoload.slot_key[idx]));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key_flags[idx], sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
 }

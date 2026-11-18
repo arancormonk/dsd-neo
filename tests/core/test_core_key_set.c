@@ -703,6 +703,35 @@ test_autoload_miss_wipes_its_copies(void) {
     return failed;
 }
 
+/* Forgetting a slot's talkgroup key wipes the copy its row shows on the change from a key to none, an imported zero key
+   (a copy of zeros whose flags say it is a key) included; a slot that holds none stays empty. */
+static int
+test_forget_slot_wipes_on_the_change_to_none(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    for (int zero_key = 0; zero_key <= 1; zero_key++) {
+        seed_slot_keyed_from_tg(state);
+        if (zero_key) {
+            DSD_MEMSET(state->dmr_tg_autoload.slot_key[0], 0, sizeof(state->dmr_tg_autoload.slot_key[0]));
+        }
+        keyring_dmr_tg_autoload_forget_slot(state, 0U);
+        if (!slot_key_copy_gone(state) || state->dmr_tg_autoload.slot_tg[0] != 0U) {
+            DSD_FPRINTF(stderr, "forgetting slot 1 kept its copy of %s key\n", zero_key ? "an imported zero" : "a");
+            failed = 1;
+        }
+        keyring_dmr_tg_autoload_forget_slot(state, 0U);
+        if (!slot_key_copy_gone(state) || state->dmr_tg_autoload.slot_tg[0] != 0U) {
+            DSD_FPRINTF(stderr, "forgetting an empty slot 1 left something in it\n");
+            failed = 1;
+        }
+    }
+    free_test_state(state);
+    return failed;
+}
+
 /* The final teardown wipes the keys the state holds, the autoload's copies of them included, whether or not a keyring
    armed the no-carrier unload. */
 static int
@@ -837,6 +866,9 @@ main(void) {
         return 1;
     }
     if (test_free_state_wipes_keys() != 0) {
+        return 1;
+    }
+    if (test_forget_slot_wipes_on_the_change_to_none() != 0) {
         return 1;
     }
     if (test_capture_install_roundtrip() != 0) {
