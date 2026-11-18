@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <climits>
 #include <cmath>
 #include <condition_variable>
 #include <dsd-neo/core/constants.h>
