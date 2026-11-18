@@ -12329,10 +12329,16 @@ Private per-protocol modules worth knowing about:
   repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
   by the target its call is judged by that names another target or kind, replaces that field in the assignment with
   its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
-  with the new talker, a new canonical epoch; test `P25_P2_HARRIS_GPS`), voice starts that change the call
-  (`p25_voice_start_commit_identity`) and ones that change nothing (`p25_voice_start_promote_identity`), the
-  trunk-off publication (`p25_sm_conventional_note_identity`), and Phase 2 MAC_SIGNAL voice users that observe the
-  canonical call themselves (`p25p2_vpdu_observe_voice()` → `p25_sm_note_call_identity()`, with the MAC CRC verdict).
+  with the new talker, a new canonical epoch, and `p25_grant_duplicate_start_new_call()` drops everything call-specific
+  the earlier talker left on the slot (ALG ID, key ID and MI, service options, talker alias) and classifies the new
+  call from the repeat's own service options alone, encryption pending when it carries none; test
+  `P25_P2_HARRIS_GPS`), voice starts that change the call (`p25_voice_start_commit_identity`) and ones that change
+  nothing (`p25_voice_start_promote_identity`), the trunk-off publication (`p25_sm_conventional_note_identity`), and
+  Phase 2 MAC_SIGNAL voice users that observe the canonical call themselves (`p25p2_vpdu_observe_voice()` →
+  `p25_sm_note_call_identity()`, with the MAC CRC verdict). A voice user also updates the slot's assignment
+  (`p25_slot_note_voice_user()`): naming the assignment's kind and target, it applies there as a repeated grant does,
+  so a later source-less MAC_ACTIVE inherits the latest talker with that voice user's verdict, never the grant's; naming
+  another kind or target, it drops the assignment's source, which no longer says who is talking.
   The record holds the call's current source, target and kind; `p25_sm_merge_published_identity()` keeps a flag only
   within the same epoch and value. Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
   older convenience emitters publish unchecked, and the event builders default to unchecked.

@@ -718,6 +718,130 @@ test_duplicate_grant_replaces_source(void) {
     }
 }
 
+/* MAC_PTT of TG_A by @p src, encrypted: ALG @p algid, KID @p kid, a made-up MI. */
+static void
+mac_ptt_encrypted(fixture* f, uint32_t src, uint8_t algid, uint16_t kid) {
+    uint8_t mac[18] = {0};
+    mac[0] = 0x20;
+    for (int i = 1; i <= 9; i++) {
+        mac[i] = (uint8_t)(0x10 + i);
+    }
+    mac[10] = algid;
+    mac[11] = (uint8_t)(kid >> 8);
+    mac[12] = (uint8_t)kid;
+    mac[13] = (uint8_t)(src >> 16);
+    mac[14] = (uint8_t)(src >> 8);
+    mac[15] = (uint8_t)src;
+    mac[16] = (uint8_t)(TG_A >> 8);
+    mac[17] = (uint8_t)TG_A;
+    send_facch(f, mac);
+}
+
+/* Group Voice Channel Grant - Explicit (0xC0) of TG_A by @p src on VC_CHANNEL, with the service options @p svc. */
+static void
+group_grant_svc(fixture* f, uint32_t src, uint8_t svc) {
+    const uint8_t grant[] = {0xC0,
+                             svc,
+                             (uint8_t)(VC_CHANNEL >> 8),
+                             (uint8_t)(VC_CHANNEL & 0xFFU),
+                             (uint8_t)(VC_CHANNEL >> 8),
+                             (uint8_t)(VC_CHANNEL & 0xFFU),
+                             (uint8_t)(TG_A >> 8),
+                             (uint8_t)TG_A,
+                             (uint8_t)(src >> 16),
+                             (uint8_t)(src >> 8),
+                             (uint8_t)src};
+    send_mac(f, 0, grant, sizeof grant, 1);
+}
+
+/* A repeated grant that names another talker starts that talker's call with none of the earlier talker's call-specific
+ * state: not its ALG ID, key ID or MI (even when the repeat's service options classify the call as the first grant's
+ * did), not its emergency service option, not its talker alias. Only what the repeat itself establishes (its service
+ * options) describes the new call. */
+static void
+test_duplicate_grant_new_talker_resets_call_state(void) {
+    fixture f;
+    fixture_open(&f);
+    group_grant_svc(&f, SRC_A, 0xC0); // emergency, encrypted
+    mac_ptt_encrypted(&f, SRC_A, 0x84, 0x1234);
+    dsd_call_snapshot call;
+    expect_true("first talker: encrypted call", dsd_call_state_get(f.st, 0U, &call) > 0 && call.ota_source_id == SRC_A
+                                                    && call.algid == 0x84 && call.kid == 0x1234
+                                                    && call.emergency == 1U);
+    DSD_SNPRINTF(f.st->generic_talker_alias[0], sizeof f.st->generic_talker_alias[0], "%s", "Unit A");
+
+    group_grant_svc(&f, SRC_B, 0x40); // the same carrier, slot and talkgroup (the duplicate path), still encrypted
+    expect_true("repeat naming another talker: its call", slot0_call_names(TG_A, SRC_B, f.st));
+    expect_true("repeat naming another talker: no inherited ALG/KID",
+                dsd_call_state_get(f.st, 0U, &call) > 0 && call.algid == 0U && call.kid == 0U
+                    && f.st->payload_algid == 0 && f.st->payload_keyid == 0 && f.st->payload_miP == 0U);
+    expect_true("repeat naming another talker: no inherited emergency", call.emergency == 0U);
+    expect_true("repeat naming another talker: crypto pending",
+                f.st->p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    expect_true("repeat naming another talker: no inherited alias", f.st->generic_talker_alias[0][0] == '\0');
+    fixture_close(&f);
+
+    // A repeat naming the same talker keeps the call's crypto.
+    fixture_open(&f);
+    group_grant_svc(&f, SRC_A, 0x40);
+    mac_ptt_encrypted(&f, SRC_A, 0x84, 0x1234);
+    group_grant_svc(&f, SRC_A, 0x40);
+    expect_true("repeat naming the same talker: keeps ALG/KID", dsd_call_state_get(f.st, 0U, &call) > 0
+                                                                    && call.ota_source_id == SRC_A && call.algid == 0x84
+                                                                    && call.kid == 0x1234);
+    fixture_close(&f);
+
+    // A repeat naming another talker with its own clear service options: the new call is clear.
+    fixture_open(&f);
+    group_grant_svc(&f, SRC_A, 0x40);
+    mac_ptt_encrypted(&f, SRC_A, 0x84, 0x1234);
+    group_grant_svc(&f, SRC_B, 0x00);
+    expect_true("repeat naming another clear talker: clear",
+                slot0_call_names(TG_A, SRC_B, f.st) && f.st->p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR
+                    && f.st->payload_algid == 0 && f.st->payload_keyid == 0);
+    fixture_close(&f);
+}
+
+/* A checked voice user naming another talker within the same assignment supersedes the grant's talker: a source-less
+ * MAC_ACTIVE that follows keeps the latest talker (with that voice user's verdict), never the grant's. */
+static void
+test_voice_user_supersedes_grant_talker(void) {
+    fixture f;
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    sacch_group_voice_user(&f, TG_A, SRC_B);
+    expect_true("voice user names the next talker", slot0_call_names(TG_A, SRC_B, f.st));
+    mac_active(&f, TG_A, 0U);
+    expect_true("source-less active keeps the voice user's talker", slot0_call_names(TG_A, SRC_B, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "source-less active after a voice user naming another talker", SRC_B, TG_A, 1);
+    fixture_close(&f);
+
+    // During voice: the grant's talker spoke first, then a voice user names the next one.
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    mac_ptt(&f, TG_A, SRC_A);
+    sacch_group_voice_user(&f, TG_A, SRC_B);
+    mac_active(&f, TG_A, 0U);
+    expect_true("during voice: source-less active keeps the voice user's talker", slot0_call_names(TG_A, SRC_B, f.st));
+    send_gps(&f, 0);
+    expect_report(&f, "during voice: source-less active after a voice user naming another talker", SRC_B, TG_A, 1);
+    fixture_close(&f);
+
+    // A voice user of another talkgroup on the slot leaves the assignment's talker unusable: the later source-less
+    // MAC_ACTIVE of the assignment's talkgroup names no one.
+    fixture_open(&f);
+    group_grant(&f, SRC_A, 1);
+    sacch_group_voice_user(&f, TG_A + 1U, SRC_B);
+    mac_active(&f, TG_A, 0U);
+    dsd_call_snapshot call;
+    expect_true("other talkgroup's voice user: the grant's talker is not inherited",
+                dsd_call_state_get(f.st, 0U, &call) > 0 && call.ota_source_id != SRC_A);
+    send_gps(&f, 0);
+    expect_report(&f, "other talkgroup's voice user, then a source-less active", 0U, 0U, 0);
+    fixture_close(&f);
+}
+
 /* On an FDMA carrier a repeat is matched by the target the call is judged by, so it can name another kind or target than
  * the assignment (a private call to radio TG_A on the group's carrier): each field it names with another value takes
  * that value with the repeat's own verdict. */
@@ -872,6 +996,8 @@ main(void) {
     test_checked_repeat_promotes();
     test_duplicate_grant_replaces_source();
     test_fdma_repeat_replaces_kind();
+    test_duplicate_grant_new_talker_resets_call_state();
+    test_voice_user_supersedes_grant_talker();
     test_sacch_voice_user();
     test_epoch_change();
     test_conventional();
