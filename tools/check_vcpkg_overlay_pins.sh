@@ -10,8 +10,9 @@ Usage: tools/check_vcpkg_overlay_pins.sh [--fix]
 
 Checks that the GitHub source pins of the vcpkg overlays (mbe-neo, codec2,
 rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) match
-tools/ci-dependency-pins.env, and that the airspy and rtlsdr overlays apply
-dsd-neo's patch series (tools/usb_dependency_patches.sh) with its current digest.
+tools/ci-dependency-pins.env, and that the airspy, rtlsdr and soapy-airspy
+overlays apply dsd-neo's patch series (tools/usb_dependency_patches.sh) with its
+current digest.
 With --fix, rewrites mirrored REF and SHA512 lines and the recorded patch digests
 in the overlay portfiles.
 USAGE
@@ -293,6 +294,7 @@ check_port "soapy-hackrf" "pothosware/SoapyHackRF" "SOAPY_HACKRF_SHA" "SOAPY_HAC
 check_port "hackrf" "greatscottgadgets/hackrf" "HACKRF_SHA" "HACKRF_TARBALL_SHA512"
 check_port_patches "rtlsdr" "librtlsdr"
 check_port_patches "airspy" "libairspy"
+check_port_patches "soapy-airspy" "soapyairspy"
 
 if [[ $fix -eq 1 && $fixed -eq 1 && $failed -eq 0 ]]; then
   exit 0

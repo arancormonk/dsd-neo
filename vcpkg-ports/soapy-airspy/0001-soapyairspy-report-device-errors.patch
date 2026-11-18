@@ -1,0 +1,206 @@
+SoapyAirspy: report the device's errors, and the settings it accepted
+
+The module ignored libairspy's result for every setting it writes, and
+updated what it reports before the write:
+
+- setFrequency() kept the new frequency and ignored airspy_set_freq(),
+  so a refused tune left the device on the old channel while
+  getFrequency() reported the new one.
+- setSampleRate() only kept the request, and getSampleRate() returned it.
+  activateStream() and a read with a rate change pending wrote it later
+  and ignored both airspy_set_samplerate() and airspy_start_rx():
+  activateStream() returned success for a stream that never started, or
+  that ran at the old rate.
+- setGain() and setGainMode() kept the new LNA, mixer, VGA or AGC
+  setting and ignored the write.
+
+Each write is now checked, and what the module reports changes only once
+the device has taken it. A refused setting throws std::runtime_error,
+which SoapySDR's C API turns into an error code. setSampleRate() writes
+the rate at once, so getSampleRate() returns a rate the device accepted;
+on a running stream it stops, writes and restarts, as a pending rate did,
+and a refused rate leaves the stream running on the rate it had.
+activateStream() and a read that applies a pending rate return
+SOAPY_SDR_STREAM_ERROR when the rate write or the start fails, and the
+rate stays pending. setGainMode() whose mixer AGC write fails puts the
+LNA AGC back as it was.
+
+dsd-neo applies this patch to the SoapyAirspy module it builds for its
+Windows release.
+
+Generated against SoapyAirspy 9a906cac218bf07a7acd31efa1f2954c3a44ea4b.
+
+diff --git a/Settings.cpp b/Settings.cpp
+index 3e45819..0523d61 100644
+--- a/Settings.cpp
++++ b/Settings.cpp
+@@ -176,11 +176,16 @@ bool SoapyAirspy::hasGainMode(const int direction, const size_t channel) const
+ 
+ void SoapyAirspy::setGainMode(const int direction, const size_t channel, const bool automatic)
+ {
++    if (airspy_set_lna_agc(dev, automatic?1:0) != AIRSPY_SUCCESS) {
++        throw std::runtime_error("airspy_set_lna_agc() failed");
++    }
++    if (airspy_set_mixer_agc(dev, automatic?1:0) != AIRSPY_SUCCESS) {
++        //put the LNA back, so the device keeps the mode read back
++        airspy_set_lna_agc(dev, agcMode?1:0);
++        throw std::runtime_error("airspy_set_mixer_agc() failed");
++    }
+     agcMode = automatic;
+ 
+-    airspy_set_lna_agc(dev, agcMode?1:0);
+-    airspy_set_mixer_agc(dev, agcMode?1:0);
+-
+     SoapySDR_logf(SOAPY_SDR_DEBUG, "Setting AGC: %s", automatic ? "Automatic" : "Manual");
+ }
+ 
+@@ -200,18 +205,24 @@ void SoapyAirspy::setGain(const int direction, const size_t channel, const std::
+ {
+     if (name == "LNA")
+     {
++        if (airspy_set_lna_gain(dev, uint8_t(value)) != AIRSPY_SUCCESS) {
++            throw std::runtime_error("airspy_set_lna_gain() failed");
++        }
+         lnaGain = uint8_t(value);
+-        airspy_set_lna_gain(dev, lnaGain);
+     }
+     else if (name == "MIX")
+     {
++        if (airspy_set_mixer_gain(dev, uint8_t(value)) != AIRSPY_SUCCESS) {
++            throw std::runtime_error("airspy_set_mixer_gain() failed");
++        }
+         mixerGain = uint8_t(value);
+-        airspy_set_mixer_gain(dev, mixerGain);
+     }
+     else if (name == "VGA")
+     {
++        if (airspy_set_vga_gain(dev, uint8_t(value)) != AIRSPY_SUCCESS) {
++            throw std::runtime_error("airspy_set_vga_gain() failed");
++        }
+         vgaGain = uint8_t(value);
+-        airspy_set_vga_gain(dev, vgaGain);
+     }
+ }
+ 
+@@ -255,10 +266,14 @@ void SoapyAirspy::setFrequency(
+ {
+     if (name == "RF")
+     {
+-        centerFrequency = (uint32_t) frequency;
++        const uint32_t freq = (uint32_t) frequency;
++        SoapySDR_logf(SOAPY_SDR_DEBUG, "Setting center freq: %d", freq);
++        //the frequency read back is the one the device has
++        if (airspy_set_freq(dev, freq) != AIRSPY_SUCCESS) {
++            throw std::runtime_error("airspy_set_freq() failed");
++        }
++        centerFrequency = freq;
+         resetBuffer = true;
+-        SoapySDR_logf(SOAPY_SDR_DEBUG, "Setting center freq: %d", centerFrequency);
+-        airspy_set_freq(dev, centerFrequency);
+     }
+ }
+ 
+@@ -307,12 +322,27 @@ SoapySDR::ArgInfoList SoapyAirspy::getFrequencyArgsInfo(const int direction, con
+ 
+ void SoapyAirspy::setSampleRate(const int direction, const size_t channel, const double rate)
+ {
+-    SoapySDR_logf(SOAPY_SDR_DEBUG, "Setting sample rate: %d", sampleRate);
++    const uint32_t newRate = (uint32_t) rate;
++    SoapySDR_logf(SOAPY_SDR_DEBUG, "Setting sample rate: %d", newRate);
++
++    //the rate goes to the device here, so the rate read back is one it
++    //accepted; a running stream restarts on it, as a pending rate did
++    const bool streaming = airspy_is_streaming(dev) != 0;
++    if (streaming && newRate == sampleRate) return;
++    if (streaming) airspy_stop_rx(dev);
+ 
+-    if (sampleRate != rate) {
+-        sampleRate = rate;
++    const bool applied = airspy_set_samplerate(dev, newRate) == AIRSPY_SUCCESS;
++    if (applied) {
++        sampleRate = newRate;
+         resetBuffer = true;
+-        sampleRateChanged.store(true);
++    }
++
++    //a refused rate leaves the stream running on the rate it had
++    if (streaming && startDevice() != AIRSPY_SUCCESS) {
++        throw std::runtime_error("airspy_start_rx() failed");
++    }
++    if (!applied) {
++        throw std::runtime_error("airspy_set_samplerate() failed");
+     }
+ }
+ 
+diff --git a/SoapyAirspy.hpp b/SoapyAirspy.hpp
+index 5686139..e78e325 100644
+--- a/SoapyAirspy.hpp
++++ b/SoapyAirspy.hpp
+@@ -205,6 +205,9 @@ public:
+ 
+ private:
+ 
++    //airspy_start_rx() with this module's callback
++    int startDevice(void);
++
+     //device handle
+     uint64_t serial;
+     struct airspy_device *dev;
+diff --git a/Streaming.cpp b/Streaming.cpp
+index e43bddf..8409f71 100644
+--- a/Streaming.cpp
++++ b/Streaming.cpp
+@@ -82,6 +82,11 @@ static int _rx_callback(airspy_transfer *t)
+     return self->rx_callback(t);
+ }
+ 
++int SoapyAirspy::startDevice(void)
++{
++    return airspy_start_rx(dev, &_rx_callback, (void *) this);
++}
++
+ int SoapyAirspy::rx_callback(airspy_transfer *t)
+ {
+     if (sampleRateChanged.load()) {
+@@ -193,11 +198,19 @@ int SoapyAirspy::activateStream(
+     resetBuffer = true;
+     bufferedElems = 0;
+     
++    //a rate or start the device refuses is an error, not a stream that
++    //never delivers
+     if (sampleRateChanged.load()) {
+-        airspy_set_samplerate(dev, sampleRate);
++        if (airspy_set_samplerate(dev, sampleRate) != AIRSPY_SUCCESS) {
++            SoapySDR_logf(SOAPY_SDR_ERROR, "airspy_set_samplerate(%u) failed", sampleRate);
++            return SOAPY_SDR_STREAM_ERROR;
++        }
+         sampleRateChanged.store(false);
+     }
+-    airspy_start_rx(dev, &_rx_callback, (void *) this);
++    if (startDevice() != AIRSPY_SUCCESS) {
++        SoapySDR_log(SOAPY_SDR_ERROR, "airspy_start_rx() failed");
++        return SOAPY_SDR_STREAM_ERROR;
++    }
+     
+     return 0;
+ }
+@@ -225,10 +238,17 @@ int SoapyAirspy::readStream(
+         return 0;
+     }
+     
++    //the pending rate stays pending until the device takes it
+     if (sampleRateChanged.load()) {
+         airspy_stop_rx(dev);
+-        airspy_set_samplerate(dev, sampleRate);
+-        airspy_start_rx(dev, &_rx_callback, (void *) this);
++        if (airspy_set_samplerate(dev, sampleRate) != AIRSPY_SUCCESS) {
++            SoapySDR_logf(SOAPY_SDR_ERROR, "airspy_set_samplerate(%u) failed", sampleRate);
++            return SOAPY_SDR_STREAM_ERROR;
++        }
++        if (startDevice() != AIRSPY_SUCCESS) {
++            SoapySDR_log(SOAPY_SDR_ERROR, "airspy_start_rx() failed");
++            return SOAPY_SDR_STREAM_ERROR;
++        }
+         sampleRateChanged.store(false);
+     }
+ 

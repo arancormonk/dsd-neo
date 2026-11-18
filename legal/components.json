@@ -781,7 +781,7 @@
       "notices": [
         "vcpkg-ports/soapy-airspy/copyright"
       ],
-      "assessment": "Pinned 0.2.1 SoapySDR module (airspySupport.dll) in the Windows ZIP, built against the airspy overlay; its upstream LICENSE.txt ships as licenses/SoapyAirspy-MIT.txt.",
+      "assessment": "Pinned 0.2.1 SoapySDR module (airspySupport.dll) in the Windows ZIP, built against the airspy overlay and with project patch 0001 (vcpkg-ports/soapy-airspy/), which reports the device's tuning, rate, gain and start failures; its upstream LICENSE.txt ships as licenses/SoapyAirspy-MIT.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
