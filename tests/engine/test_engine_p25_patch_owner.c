@@ -27,6 +27,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -62,7 +63,7 @@ near(double a, double b) {
 bool __wrap_SetFreq(dsd_socket_t sockfd, long int freq);
 bool __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
@@ -80,7 +81,11 @@ __wrap_SetModulation(dsd_socket_t sockfd, int bandwidth) {
 
 /* The app-control tunes reach the peer through io_control's rigctl leg, which takes every frequency here. */
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = 0U;

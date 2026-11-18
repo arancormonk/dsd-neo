@@ -54,9 +54,10 @@ void dsd_engine_set_decoder_thread(int is_decoder);
  * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
  * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune, and the samples the input
  * held at @p mark are dropped at the decoder thread's next input read (dsd_state::input_drop_pending,
- * dsd_symbol_apply_input_drop()); what arrived after it is kept. @p mark is the input's mark the leg took before it
- * sent the peer anything (dsd_input_backlog_mark()): a peer may move and send the new channel's audio before it
- * answers, and that audio came after the mark. Off the decoder thread (the P25 watchdog) the tune posts the mark and
+ * dsd_symbol_apply_input_drop()); what arrived after it is kept. @p mark is the input's mark the leg took immediately
+ * before it sent the frequency, after any passband request (dsd_input_backlog_mark()): the peer is on the old
+ * frequency until it takes the frequency, also while it answers a passband request, and it may move and send the new
+ * channel's audio before it answers the frequency, which audio came after the mark. Off the decoder thread (the P25 watchdog) the tune posts the mark and
  * a count, and both happen at the decoder thread's next input read (frame_sync_take_unflushed_retunes()), or at the
  * tune notice's reconcile if no read came first (dsd_frame_sync_apply_off_thread_tunes()).
  * Called by each rigctl leg, once its frequency request was answered RPRT 0, never for a request refused or whose reply

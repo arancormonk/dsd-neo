@@ -1430,9 +1430,6 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
     if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    /* Before the leg sends anything: the peer may move and send new audio before it answers. */
-    dsd_input_cut mark;
-    dsd_input_backlog_mark(&mark);
     const dsd_rigctl_passband passband = dsd_rigctl_passband_of(opts, NULL);
     if (dsd_rigctl_passband_captures(opts, &passband)) {
         const bool ok = SetScanRowModulation(opts->rigctl_sockfd, passband.kind, passband.bandwidth_hz);
@@ -1456,6 +1453,10 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
     legacy_tune_caches_expire_if_stale();
     if (freq != s_last_rigctl_freq) {
         const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
+           the old frequency while it answered the passband request above. */
+        dsd_input_cut mark;
+        dsd_input_backlog_mark(&mark);
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }

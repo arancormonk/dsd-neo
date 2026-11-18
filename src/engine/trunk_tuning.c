@@ -846,15 +846,19 @@ dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_state* st
     }
 }
 
-/* The rigctl leg of a tune: the modulation request, then the frequency. A tune that fails leaves the row on air where
- * it was, so what the modulation request changed on the peer is put back (RevertModulation()): an am row's AM
- * accepted before its frequency was refused, or the switch to AM that read the peer's own AM passband before the am
- * row's width was refused, would otherwise have the row still on air heard through AM, and an nfm row's own passband
- * accepted before its frequency was refused, through that passband (issue #526). */
+/* The rigctl leg of a tune: the modulation request, then the input's mark into @p mark (issue #834), then the
+ * frequency. A tune that fails leaves the row on air where it was, so what the modulation request changed on the peer
+ * is put back (RevertModulation()): an am row's AM accepted before its frequency was refused, or the switch to AM that
+ * read the peer's own AM passband before the am row's width was refused, would otherwise have the row still on air
+ * heard through AM, and an nfm row's own passband accepted before its frequency was refused, through that passband
+ * (issue #526). */
 static int
-dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
+dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq, dsd_input_cut* mark) {
     const dsd_rigctl_modulation before = CachedModulation(opts->rigctl_sockfd);
     if (dsd_engine_tune_rigctl_modulation(opts, state)) {
+        /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
+           the old frequency while it answered the modulation request. */
+        dsd_input_backlog_mark(mark);
         if (SetFreq(opts->rigctl_sockfd, freq)) {
             return 1;
         }
@@ -961,10 +965,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
-        /* Before the leg sends anything: the peer may move and send new audio before it answers. */
         dsd_input_cut mark;
-        dsd_input_backlog_mark(&mark);
-        if (!dsd_engine_tune_rigctl(opts, state, freq)) {
+        if (!dsd_engine_tune_rigctl(opts, state, freq, &mark)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_backend_rigctl_moved = 1;

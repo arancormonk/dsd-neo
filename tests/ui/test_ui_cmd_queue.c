@@ -63,6 +63,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -256,7 +257,7 @@ void __wrap_dsd_engine_legacy_tune_caches_forget(void);
 int __real_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 int __real_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
                                           uint64_t* out_pending_id);
 int __wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
@@ -447,7 +448,11 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 static int g_io_control_tune_seals_capture;
 
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = 0U;
@@ -488,7 +493,7 @@ __wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, ui
     if (state && state->rtl_ctx) {
         return __real_io_control_set_rtl_freq_tagged(opts, state, freq_hz, out_pending_id);
     }
-    return __wrap_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id);
+    return __wrap_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id, NULL);
 }
 
 /* A pending manual tune superseded by a tune app-control makes itself (issue #671): counted, and superseded for real.

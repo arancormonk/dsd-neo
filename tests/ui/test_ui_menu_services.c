@@ -592,7 +592,11 @@ static int g_io_control_set_freq_result = -1;
 static uint64_t g_io_control_pending_id = 0U;
 
 int
-io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                           dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_pending_id : 0U;

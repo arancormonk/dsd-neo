@@ -7301,9 +7301,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   EDACS analog voice reads a triplet), never inside the tune or a tick. The drop takes only what the input held before
   the leg asked the peer to move, never what arrived after it, also when the new channel's audio is what ended a read
   that was waiting then: the request carries a mark of the input (`dsd_state::input_drop_cut`,
-  `dsd_input_backlog_mark()` in `<dsd-neo/platform/input_backlog.h>`). Every leg takes that mark before it sends the
-  peer anything and installs it only once the peer answered `RPRT 0`: a peer may move and send the new channel's audio
-  before its reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg). A
+  `dsd_input_backlog_mark()` in `<dsd-neo/platform/input_backlog.h>`). Every leg takes that mark immediately before it
+  sends the frequency (`F`), after any passband request, and installs it only once the peer answered `RPRT 0`: the peer
+  is on the old frequency while it answers a passband request, so audio that arrives then goes
+  (`test_old_audio_while_the_passband_is_set()`), and a peer may move and send the new channel's audio before its
+  reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
+  leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
   refused request or a lost reply installs nothing. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP

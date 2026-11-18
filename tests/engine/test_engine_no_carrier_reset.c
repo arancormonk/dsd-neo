@@ -46,6 +46,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -1095,12 +1096,13 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
 }
 
 int __real_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
     if (g_rigctl_io_fake && opts && opts->use_rigctl == 1) {
         if (out_pending_id) {
             *out_pending_id = 0U;
@@ -1108,9 +1110,12 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
         g_rigctl_io_freq = freq_hz;
         opts->rigctl_sent_freq_hz = freq_hz;
         opts->rtlsdr_center_freq = freq_hz;
+        if (rigctl_mark) {
+            dsd_input_backlog_mark(rigctl_mark); /* as the real leg marks, immediately before the frequency */
+        }
         return 0;
     }
-    return __real_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id);
+    return __real_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id, rigctl_mark);
 }
 
 bool
@@ -5366,7 +5371,7 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     uint64_t pending_id = 0U;
     rc |= expect_true("late-failure-entry-times-out",
-                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U && opts->rtlsdr_center_freq == 981012500U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -5467,7 +5472,7 @@ rr_sync_case(int how) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     uint64_t pending_id = 0U;
     rc |= expect_true("rr-import-tune-times-out",
-                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -5619,7 +5624,7 @@ test_untyped_resume_settles_when_a_newer_tune_displaces_its_row(void) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     rc |= expect_true("displaced-newer-times-out",
-                      io_control_set_freq_tagged(opts, state, 977512500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 977512500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;

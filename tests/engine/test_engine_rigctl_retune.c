@@ -101,20 +101,25 @@ typedef struct {
     atomic_int f_mode;
     atomic_int f_taken; /* F requests answered RPRT 0 */
     /* The audio input's write end (-1: none). A peer that applies a frequency before it answers sends the new channel's
-       audio there first: two samples from f_audio_value, which then moves on by two. */
+       audio there first: two samples from f_audio_value (0: none), which then moves on by two. */
     atomic_int audio_fd;
     atomic_int f_audio_value;
+    /* A passband request (M) is answered while the peer is still on the old frequency: with m_audio_value non-zero the
+       old channel's next two samples, from m_audio_value, which then moves on by two, reach the audio input before the
+       reply does. m_taken counts the M requests. */
+    atomic_int m_audio_value;
+    atomic_int m_taken;
 } fake_rig;
 
-/* The peer has moved to the frequency it was asked for: the new channel's first two samples reach the audio input
-   before the reply does. */
+/* Two samples reach the audio input before the peer's reply does, numbered from *@p next_value (0: none): the new
+   channel's first two once it applied a frequency, the old channel's while it sets a passband. */
 static void
-fake_rig_send_new_audio(fake_rig* rig) {
+fake_rig_send_audio(fake_rig* rig, atomic_int* next_value) {
     const int fd = atomic_load(&rig->audio_fd);
-    if (fd < 0) {
+    if (fd < 0 || atomic_load(next_value) == 0) {
         return;
     }
-    const int value = atomic_fetch_add(&rig->f_audio_value, 2);
+    const int value = atomic_fetch_add(next_value, 2);
     const uint8_t b[4] = {(uint8_t)((unsigned)value & 0xFFU), (uint8_t)(((unsigned)value >> 8) & 0xFFU),
                           (uint8_t)((unsigned)(value + 1) & 0xFFU), (uint8_t)(((unsigned)(value + 1) >> 8) & 0xFFU)};
     (void)dsd_write(fd, b, sizeof b);
@@ -138,7 +143,12 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
             *freq = hz;
         }
         (void)atomic_fetch_add(&rig->f_taken, 1);
-        fake_rig_send_new_audio(rig);
+        fake_rig_send_audio(rig, &rig->f_audio_value);
+        return "RPRT 0\n";
+    }
+    if (line[0] == 'M') {
+        (void)atomic_fetch_add(&rig->m_taken, 1);
+        fake_rig_send_audio(rig, &rig->m_audio_value);
         return "RPRT 0\n";
     }
     if (line[0] == 'f') {
@@ -196,6 +206,8 @@ fake_rig_open(fake_rig* rig, dsd_opts* opts) {
     atomic_store(&rig->f_taken, 0);
     atomic_store(&rig->audio_fd, -1);
     atomic_store(&rig->f_audio_value, 0);
+    atomic_store(&rig->m_audio_value, 0);
+    atomic_store(&rig->m_taken, 0);
     rig->listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (rig->listener == DSD_INVALID_SOCKET) {
         return -1;
@@ -1571,7 +1583,7 @@ test_newest_cutoff_wins(void) {
     return rc;
 }
 
-/* ---- The cutoff is marked before the peer is asked to move (issue #834) ---- */
+/* ---- The cutoff is marked immediately before the frequency is sent (issue #834) ---- */
 
 /* A rigctl leg that asks the peer for @p hz: 1 when the peer took it. */
 typedef int (*rig_leg_fn)(dsd_opts* opts, dsd_state* state, long hz);
@@ -1633,9 +1645,9 @@ new_audio_case(dsd_opts* opts, dsd_state* state, fake_rig* rig, int fd, rig_leg_
     return rc;
 }
 
-/* Every rigctl leg marks the input before it sends the frequency, and installs that mark only once the peer took it:
-   a peer that moves and sends new audio before it answers loses none of it. A refused or lost request installs
-   nothing. */
+/* Every rigctl leg marks the input immediately before it sends the frequency, and installs that mark only once the
+   peer took it: a peer that moves and sends new audio before it answers loses none of it. A refused or lost request
+   installs nothing. */
 static int
 test_new_audio_before_the_reply(void) {
     rig_case c;
@@ -1683,6 +1695,67 @@ test_new_audio_before_the_reply(void) {
     rc |= expect_true("a lost reply drops nothing", pipe_next(opts) == 23 && state->symbol_clock_epoch == e);
     atomic_store(&c.rig.f_mode, RIG_TAKES);
     atomic_store(&c.rig.audio_fd, -1);
+
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* A peer that is slow to answer a passband request (M) is still on the old frequency while it does: the old channel's
+   audio that reaches the input then goes at the next read with what was queued before the tune, and the new channel's,
+   which reached it before the frequency's reply, is read. Every rigctl leg asks for a passband here (a -B on audio
+   input, a new one for each tune so the client's record of the peer skips none). */
+static int
+test_old_audio_while_the_passband_is_set(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("passband: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("stdin reader", 0);
+    }
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    atomic_store(&c.rig.f_audio_value, 1000);
+    atomic_store(&c.rig.m_audio_value, 500);
+    atomic_store(&c.rig.audio_fd, fds[1]);
+
+    static const struct {
+        rig_leg_fn leg;
+        long hz;
+        const char* what;
+    } k_legs[] = {
+        {leg_trunk, VC1_HZ, "passband, a trunk tune"},
+        {leg_watchdog, VC2_HZ, "passband, the watchdog's tune"},
+        {leg_io_control, VC3_HZ, "passband, an io_control tune"},
+        {leg_scan, VC1_HZ, "passband, a scan tune"},
+        {leg_cc_return, CC_HZ, "passband, a return"},
+        {leg_trunk, VC2_HZ, "passband, a grant after it"},
+        {leg_no_carrier_return, CC_HZ, "passband, the no-carrier return"},
+    };
+
+    for (size_t i = 0U; i < sizeof k_legs / sizeof k_legs[0]; i++) {
+        char label[200];
+        opts->setmod_bw = 6000 + (int)i * 500;
+        const int m_before = atomic_load(&c.rig.m_taken);
+        rc |= new_audio_case(opts, state, &c.rig, fds[1], k_legs[i].leg, k_legs[i].hz, k_legs[i].what);
+        DSD_SNPRINTF(label, sizeof label, "%s: the leg asked for a passband", k_legs[i].what);
+        rc |= expect_true(label, atomic_load(&c.rig.m_taken) > m_before);
+        if (k_legs[i].leg == leg_watchdog) {
+            (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+        }
+    }
+    atomic_store(&c.rig.audio_fd, -1);
+    opts->setmod_bw = 0;
 
     dsd_pcm_stream_close(opts->audio_in_stdin);
     opts->audio_in_stdin = NULL;
@@ -1797,6 +1870,7 @@ main(void) {
     rc |= test_stdin_backlog();
     rc |= test_newest_cutoff_wins();
     rc |= test_new_audio_before_the_reply();
+    rc |= test_old_audio_while_the_passband_is_set();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();

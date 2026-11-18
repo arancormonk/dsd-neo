@@ -16,9 +16,9 @@
  * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark's
  * time (dsd_input_cut::marked_ns, dsd_audio_discard_input()).
  *
- * Every mark is taken before the retune is asked for (before the rigctl leg sends anything), and used only once the
- * peer confirmed it: a peer may move and send the new channel's audio before its reply, and that audio must not count
- * as queued before the retune. The retune the P25 watchdog confirms off the decoder thread is held here, with the mark
+ * Every mark is taken immediately before the retune is asked for (before the rigctl leg sends the frequency, after any
+ * passband request, which the peer answers on the old frequency), and used only once the peer confirmed it: a peer may
+ * move and send the new channel's audio before its reply, and that audio must not count as queued before the retune. The retune the P25 watchdog confirms off the decoder thread is held here, with the mark
  * it took, until the decoder takes it (dsd_input_backlog_post(), dsd_input_backlog_take()). A connection being opened
  * (dsd_input_backlog_opening(): a TCP reconnect's, once it is made) is the measured input until its queue attaches,
  * which goes on from its count, so a mark taken in between is measured on it, and stands on the queue after the

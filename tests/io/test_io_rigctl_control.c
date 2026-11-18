@@ -15,6 +15,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
@@ -86,6 +87,17 @@ static const dsd_state* g_session_request_state;
    the scope's answer (dsd_channel_modes_rigctl_request_is_session()). */
 static int g_channel_modes_present;
 
+/* The input marks a manual tune took (io_control_set_freq_tagged()), and how many commands had been sent at the last. */
+static int g_mark_count;
+static size_t g_mark_after_commands;
+
+void
+dsd_input_backlog_mark(dsd_input_cut* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->order = (uint64_t)++g_mark_count;
+    g_mark_after_commands = g_command_count;
+}
+
 static void
 reset_stubs(void) {
     DSD_MEMSET(g_commands, 0, sizeof(g_commands));
@@ -129,6 +141,8 @@ reset_stubs(void) {
     g_session_request = 0;
     g_session_request_state = NULL;
     g_channel_modes_present = 0;
+    g_mark_count = 0;
+    g_mark_after_commands = 0U;
 }
 
 int
@@ -1385,6 +1399,28 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     assert(g_command_count == 1 && strcmp(g_commands[0], "F 851062500\n") == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
     assert(opts.rigctl_sent_freq_hz == 851050000U);
+
+    /* A tune given a mark (issue #834) marks the input once the passband is settled, immediately before the frequency:
+       the peer is on the old frequency while it answers the passband request. One given none marks nothing. */
+    assert(g_mark_count == 0);
+    reset_stubs();
+    opts.setmod_bw = 6250;
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    dsd_input_cut mark;
+    DSD_MEMSET(&mark, 0, sizeof(mark));
+    assert(io_control_set_freq_tagged(&opts, &state, 851087500U, NULL, &mark) == 0);
+    assert(g_command_count == 2);
+    assert(strncmp(g_commands[0], "M ", 2U) == 0);
+    assert(strcmp(g_commands[1], "F 851087500\n") == 0);
+    assert(g_mark_count == 1 && g_mark_after_commands == 1U && mark.order == 1U);
+    /* A refused passband fails the tune before the frequency: nothing is marked. */
+    reset_stubs();
+    opts.setmod_bw = 7500;
+    push_response("RPRT 1\n");
+    push_response("RPRT 1\n");
+    assert(io_control_set_freq_tagged(&opts, &state, 851100000U, NULL, &mark) == -1);
+    assert(g_mark_count == 0);
 
     reset_stubs();
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -2886,7 +2922,7 @@ test_io_control_set_freq_refuses_fixed_tuning(void) {
         push_response("RPRT 0\n");
 
         uint64_t pending_id = 7U;
-        assert(io_control_set_freq_tagged(&opts, &state, 851075000U, &pending_id) == -1);
+        assert(io_control_set_freq_tagged(&opts, &state, 851075000U, &pending_id, NULL) == -1);
         assert(pending_id == 0U);
         assert(g_command_count == 0);
         assert(g_rtl_tune_calls == 0);
@@ -2976,14 +3012,14 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
 
     uint64_t pending_id = UINT64_MAX;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    assert(io_control_set_freq_tagged(&opts, &state, 851125000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(&opts, &state, 851125000U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     const uint64_t first_id = g_rtl_tune_id;
     assert((first_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
     assert((uint32_t)first_id != 0U);
     assert(pending_id == first_id);
 
     pending_id = UINT64_MAX;
-    assert(io_control_set_freq_tagged(&opts, &state, 851150000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(&opts, &state, 851150000U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
     assert(g_rtl_tune_id != first_id);
     assert(pending_id == g_rtl_tune_id);
@@ -2992,7 +3028,7 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
     for (size_t i = 0; i < sizeof not_pending / sizeof not_pending[0]; i++) {
         g_rtl_tune_result = not_pending[i];
         pending_id = UINT64_MAX;
-        assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == not_pending[i]);
+        assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == not_pending[i]);
         assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
         assert(pending_id == 0U);
     }
@@ -3001,16 +3037,16 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
        stream reconciles its own copy; with no applied centre known the cache stays. */
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     opts.rtlsdr_center_freq = 851150000U;
-    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == RTL_STREAM_TUNE_FAILED);
     assert(opts.rtlsdr_center_freq == 851000000U);
     g_rtl_last_applied_freq = 0U;
     opts.rtlsdr_center_freq = 851150000U;
-    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == RTL_STREAM_TUNE_FAILED);
     assert(opts.rtlsdr_center_freq == 851150000U);
 
     /* A refusal before any backend runs says no request either. */
     pending_id = UINT64_MAX;
-    assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id) == -1);
+    assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id, NULL) == -1);
     assert(pending_id == 0U);
     return 0;
 }

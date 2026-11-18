@@ -19,6 +19,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -983,9 +984,10 @@ RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session
  * else -B is sent as it always was. Where the session runs the peer's own passband (-B 0, or the monitor with neither a
  * width nor -B) FM at 0 is asked for, best-effort: it undoes a passband this client set (a session width before a
  * switch to a digital mode, or one a refused live return left in force) with the passband read before it, and is a
- * no-op for a peer back on its own or never asked. */
+ * no-op for a peer back on its own or never asked. Once that is settled, and immediately before the frequency is sent,
+ * the input is marked into @p mark when given (io_control_set_freq_tagged()). */
 static int
-set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, dsd_input_cut* mark) {
     if (opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
         return -1;
     }
@@ -1006,6 +1008,9 @@ set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq
         }
     } else {
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    if (mark) {
+        dsd_input_backlog_mark(mark);
     }
     return rigctl_set_freq_hz(opts->rigctl_sockfd, freq_hz) ? 0 : -1;
 }
@@ -1082,7 +1087,8 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
  *         the controller last applied there (set_rtl_frequency()).
  */
 int
-io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                           dsd_input_cut* rigctl_mark) {
     if (out_pending_id) {
         *out_pending_id = 0U;
     }
@@ -1100,7 +1106,7 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
 
     int rc = -1;
     if (opts->use_rigctl == 1) {
-        rc = set_rigctl_frequency(opts, state, freq_hz);
+        rc = set_rigctl_frequency(opts, state, freq_hz, rigctl_mark);
         if (rc == 0) {
             opts->rigctl_sent_freq_hz = freq_hz;
         }

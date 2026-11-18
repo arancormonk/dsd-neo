@@ -22,6 +22,8 @@
 extern "C" {
 #endif
 
+struct dsd_input_cut;
+
 /**
  * @brief Tune the configured control backend without trunking bookkeeping, and say which RTL request is pending.
  *
@@ -33,6 +35,11 @@ extern "C" {
  * @param freq_hz Target in Hz, carried as the tuner path holds it (a 32-bit long cannot hold one past 2147.483647 MHz).
  * @param out_pending_id May be NULL. Set to the request's ID when an RTL tune timed out (RTL_STREAM_TUNE_TIMEOUT), its
  *                       completion still to come; 0 otherwise.
+ * @param rigctl_mark May be NULL. On the rigctl leg the audio input's mark (dsd_input_backlog_mark()), taken once the
+ *                    passband is settled, immediately before the frequency is sent (issue #834): the peer is on the
+ *                    old frequency until it takes that request, so audio that reaches the input while it answers a
+ *                    passband request is the old channel's. Set only when the rigctl leg returns 0; the RTL leg and a
+ *                    leg that fails before the frequency is sent mark nothing.
  * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code (-1 refused: no backend,
  *         no context, 0 Hz, or an input with fixed tuning, dsd_opts_input_has_fixed_tuning(), rigctl or not). Success
  *         caches the centre the controller applied in opts->rtlsdr_center_freq. An RTL timeout leaves an accepted
@@ -40,7 +47,8 @@ extern "C" {
  *         there, when it knows one: the receiver stayed on it, and a target an earlier tune's timeout cached, which
  *         this request may have coalesced over, was never reached.
  */
-int io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id);
+int io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                               struct dsd_input_cut* rigctl_mark);
 
 /**
  * @brief The RTL leg of io_control_set_freq_tagged() alone, whatever rigctl is configured: for a caller that tunes each
@@ -54,7 +62,7 @@ int io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint3
  */
 static inline int
 io_control_set_freq(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
-    return io_control_set_freq_tagged(opts, state, freq_hz, NULL);
+    return io_control_set_freq_tagged(opts, state, freq_hz, NULL, NULL);
 }
 
 void resumeScan(dsd_opts* opts, dsd_state* state);
