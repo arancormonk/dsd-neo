@@ -5444,63 +5444,110 @@ test_spill_text_only_replay_keeps_saved_position(void) {
 }
 
 /* 2.7: a merged row keeps each fragment's GPS unit. When the fragment whose fix it shows loses that fix (the core's
- * later text-only write), the row shows the best remaining fragment's fix, whatever order the readings come in, and
- * also after a reload. */
+ * later text-only write, or a write that clears its GPS text and position both), the row shows the best remaining
+ * fragment's fix, whatever order the readings come in, and also after a reload. A fragment whose GPS the core cleared
+ * keeps no unit on the row: its fix is neither shown nor saved. */
 void
 test_lost_fix_gives_way_to_remaining_fragment(void) {
     const time_t when = 1754703500;
-    for (int order = 0; order < 3; order++) {
-        resetStorage();
-        RingFixture ring;
-        CallHistoryModel model;
-        Event_History* a = with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
-        (void)a;
-        Event_History* b =
-            with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
-        a = &ring.rings[0].Event_History_Items[2];
-        b = &ring.rings[0].Event_History_Items[1];
-        if (order == 1) {
-            // Fragment A is read only after B lost its fix.
-            Event_History saved = *a;
-            DSD_MEMSET(a, 0, sizeof(*a));
-            model.refresh(ring.state);
-            DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
-            b->pos.valid = 0U;
-            ring.touchCommitted(0);
-            model.refresh(ring.state);
-            *a = saved;
-            ring.touchCommitted(0);
-            model.refresh(ring.state);
-        } else {
-            model.refresh(ring.state);
-            expect("2.7 lost fix: the higher rev shows first", model.count() == 1 && detail_of(model, 0) == "GPS: B");
-            if (order == 2) {
-                model.startSaveForTest();
-                model.waitForSaveForTest();
-                CallHistoryModel reloaded;
-                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
+    for (const char* lost : {"GPS: Protected", ""}) {
+        const bool cleared = lost[0] == '\0';
+        for (int order = 0; order < 3; order++) {
+            resetStorage();
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* a =
+                with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+            (void)a;
+            Event_History* b =
+                with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
+            a = &ring.rings[0].Event_History_Items[2];
+            b = &ring.rings[0].Event_History_Items[1];
+            if (order == 1) {
+                // Fragment A is read only after B lost its fix.
+                Event_History saved = *a;
+                DSD_MEMSET(a, 0, sizeof(*a));
+                model.refresh(ring.state);
+                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
                 b->pos.valid = 0U;
                 ring.touchCommitted(0);
-                reloaded.refresh(ring.state);
-                expect("2.7 lost fix: after a reload the remaining fix shows",
-                       reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
-                continue;
+                model.refresh(ring.state);
+                *a = saved;
+                ring.touchCommitted(0);
+                model.refresh(ring.state);
+            } else {
+                model.refresh(ring.state);
+                expect("2.7 lost fix: the higher rev shows first",
+                       model.count() == 1 && detail_of(model, 0) == "GPS: B");
+                if (order == 2) {
+                    model.startSaveForTest();
+                    model.waitForSaveForTest();
+                    CallHistoryModel reloaded;
+                    DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
+                    b->pos.valid = 0U;
+                    ring.touchCommitted(0);
+                    reloaded.refresh(ring.state);
+                    expect("2.7 lost fix: after a reload the remaining fix shows",
+                           reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
+                    reloaded.startSaveForTest();
+                    reloaded.waitForSaveForTest();
+                    const QJsonObject stored = stored_row_with(80401U, 8401U);
+                    expect("2.7 lost fix: after a reload the cleared fragment's fix is not saved",
+                           stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
+                               && stored.value(QLatin1String("gpsAlt")).toArray().size() == (cleared ? 0 : 1));
+                    continue;
+                }
+                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
+                b->pos.valid = 0U;
+                ring.touchCommitted(0);
+                model.refresh(ring.state);
             }
-            DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", "GPS: Protected");
-            b->pos.valid = 0U;
-            ring.touchCommitted(0);
-            model.refresh(ring.state);
+            expect(order == 0 ? "2.7 lost fix: the remaining fragment's fix shows"
+                              : "2.7 lost fix: the same row when the text-only reading comes first",
+                   model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: A"));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+            const QJsonObject stored = stored_row_with(80401U, 8401U);
+            expect(cleared ? "2.7 lost fix: the cleared fragment's fix is not saved"
+                           : "2.7 lost fix: the shown fix and the other fragment's text are stored",
+                   stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
+                       && stored.value(QLatin1String("gpsAlt")).toArray().size() == (cleared ? 0 : 1));
+            if (cleared) {
+                CallHistoryModel reloaded;
+                expect("2.7 lost fix: the cleared fragment's fix stays gone after a reload",
+                       reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
+            }
         }
-        expect(order == 0 ? "2.7 lost fix: the remaining fragment's fix shows"
-                          : "2.7 lost fix: the same row when the text-only reading comes first",
-               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: A"));
+    }
+}
+
+/* 2.7: one fragment's row whose GPS text and position the core clears (the report withdrawn) shows and saves no fix,
+ * live and after a reload. */
+void
+test_cleared_fix_leaves_single_fragment_row(void) {
+    const time_t when = 1754703700;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* call =
+            with_gps(ring.commit(0, 80411U, 8411U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        expect("2.7 cleared fix: the fix shows first", model.count() == 1 && detail_of(model, 0) == "GPS: A");
+        call->gps_s[0] = '\0';
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 cleared fix: the row shows no fix", model.count() == 1 && detail_of(model, 0).isEmpty());
         model.startSaveForTest();
         model.waitForSaveForTest();
-        const QJsonObject stored = stored_row_with(80401U, 8401U);
-        expect("2.7 lost fix: the shown fix and the other fragment's text are stored",
-               stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
-                   && stored.value(QLatin1String("gpsAlt")).toArray().size() == 1);
     }
+    const QJsonObject stored = stored_row_with(80411U, 8411U);
+    expect("2.7 cleared fix: no fix is saved", !stored.contains(QLatin1String("gps"))
+                                                   && !stored.contains(QLatin1String("pos"))
+                                                   && !stored.contains(QLatin1String("gpsAlt")));
+    CallHistoryModel reloaded;
+    expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
 /* B2: a spill line kept after a failed read replays an older reading of a fragment whose newer reading the save
@@ -6217,6 +6264,7 @@ main(int argc, char** argv) {
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();
     test_lost_fix_gives_way_to_remaining_fragment();
+    test_cleared_fix_leaves_single_fragment_row();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();

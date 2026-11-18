@@ -479,8 +479,9 @@ call_history_position_key_compare(const CallHistoryPositionKey& a, const CallHis
  * position) still applies while an older spill line replayed over a newer save never does. Otherwise the fragment with
  * the greatest key wins, whatever order the fragments arrive in. A keyed fragment beats one with no key (a row an older
  * build stored, a text-only GPS line, a ring of unknown run); between two with none, the newer fragment wins
- * (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something. A reading an older
- * store kept without a version: the same fragment read again with no key takes what it says now.
+ * (call_history_fold_adopts()), the rule every other field follows. Nothing never erases something here; a later
+ * reading of one fragment that holds nothing withdraws that fragment's unit instead (call_history_gps_withdraws()). A
+ * reading an older store kept without a version: the same fragment read again with no key takes what it says now.
  *
  * @param stored_known   The row holds GPS text or a position.
  * @param stored_key     Its key.
@@ -515,6 +516,32 @@ call_history_gps_adopts(bool stored_known, const CallHistoryPositionKey& stored_
         return incoming_key.keyed;
     }
     return order >= 0;
+}
+
+/**
+ * @brief Whether a reading of a fragment with no GPS text and no position withdraws the GPS unit a row holds of that
+ * fragment (issue #800, 2.7): the core cleared both (a report that no longer qualifies for the row), so the row no
+ * longer shows or saves them.
+ *
+ * Only a reading of the same fragment (the same provenance and ordinal), and only one at least as late as the held one
+ * by the rule call_history_gps_adopts() orders two readings of a fragment: by their versions when both are known, else
+ * the fragment read again takes what it says now. A reading of another fragment never withdraws anything.
+ *
+ * @param stored_key The held unit's key.
+ * @param stored     The fragment the held unit came from.
+ * @param reading_key The empty reading's key.
+ * @param reading     The fragment the empty reading came from.
+ */
+inline bool
+call_history_gps_withdraws(const CallHistoryPositionKey& stored_key, const CallHistoryProvenance& stored,
+                           const CallHistoryPositionKey& reading_key, const CallHistoryProvenance& reading) {
+    if (call_history_provenance_compare(reading, stored) != 0 || reading_key.ord != stored_key.ord) {
+        return false;
+    }
+    if (reading_key.version != 0U && stored_key.version != 0U) {
+        return reading_key.version >= stored_key.version;
+    }
+    return true;
 }
 
 /** @brief FNV-1a (32 bits) of @p len bytes, folded into @p hash. */

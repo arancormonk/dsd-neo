@@ -15575,7 +15575,9 @@ Qt Quick frontend (`src/ui/qt`):
       fragment read again with no key takes what it says. The row keeps every fragment's GPS unit, the latest reading
       of each (`Row::gpsOthers` beside the one shown), and shows the best of them: when the shown fragment's newer
       reading drops its fix, the best remaining fragment's fix shows, whatever order the readings arrive in and after
-      a reload; a named row drops only its anonymous units. A whole reading older than one the row already folded from
+      a reload. A later reading of one fragment with neither GPS text nor a position (the core withdrew its report)
+      withdraws that fragment's unit (`call_history_gps_withdraws()`), so its fix is neither shown nor saved; a named
+      row drops only its anonymous units. A whole reading older than one the row already folded from
       the same fragment (`Row::fragmentVers`, the ring's `commit_rev` of the newest reading of each fragment) is stale
       and folds in nothing (`foldRow()`), so an older spill line never brings back a label, message, frequency or code
       the fragment has replaced since. The session ordinal is persisted per ring

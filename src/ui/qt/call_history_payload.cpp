@@ -176,6 +176,16 @@ merge_gps_unit(QList<GpsUnit>& units, const GpsUnit& unit) {
     }
 }
 
+/** @brief Remove from @p units the unit of @p reading's fragment when @p reading, which holds no GPS text and no
+ * position, is a reading of it at least as late (call_history_gps_withdraws()). Returns whether one went. */
+bool
+withdraw_gps_unit(QList<GpsUnit>& units, const GpsUnit& reading) {
+    return units.removeIf([&reading](const GpsUnit& held) {
+        return call_history_gps_withdraws(gps_key(held), provenance(held.when, held.seq, held.slot), gps_key(reading),
+                                          provenance(reading.when, reading.seq, reading.slot));
+    }) > 0;
+}
+
 /** @brief Whether @p kind is a dsd_position_scope_kind a record can hold: an alias scope kind or a feed-only one. */
 bool
 scope_kind_valid(uint8_t kind) {
@@ -519,7 +529,8 @@ take_message(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
  * radio it now names. So any order of the same fragments gives the same row. The message is the newest fragment's, as
  * the source label is (a stale reading of a fragment folds in nothing: foldRow()). The row keeps each fragment's GPS
  * unit, its latest reading, and shows the best (call_history_gps_adopts(): the greatest session ordinal and rev): when
- * a fragment's newer reading loses its fix, the best remaining fragment's shows, in any order.
+ * a fragment's newer reading loses its fix, the best remaining fragment's shows, in any order. A newer reading with no
+ * GPS text and no position removes that fragment's unit (call_history_gps_withdraws()).
  */
 void
 fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -539,11 +550,15 @@ fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
         take_message(existing, row);
     }
     const QList<GpsUnit> incoming = row_gps_units(row);
+    QList<GpsUnit> units = row_gps_units(existing);
     if (!incoming.isEmpty()) {
-        QList<GpsUnit> units = row_gps_units(existing);
         for (const GpsUnit& unit : incoming) {
             merge_gps_unit(units, unit);
         }
+        set_row_gps_units(existing, units);
+    } else if (row.fragments.size() == 1 && withdraw_gps_unit(units, shown_gps_unit(row))) {
+        // A later reading of one fragment with neither GPS text nor a position: the core withdrew that fragment's
+        // report, so the row shows the best remaining fragment's, or none.
         set_row_gps_units(existing, units);
     }
 }

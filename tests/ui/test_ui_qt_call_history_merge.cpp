@@ -32,6 +32,7 @@ using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
 using dsd_qt::call_history_gps_adopts;
+using dsd_qt::call_history_gps_withdraws;
 using dsd_qt::call_history_merge_within_window;
 using dsd_qt::call_history_position_digest;
 using dsd_qt::call_history_position_values_valid;
@@ -644,6 +645,26 @@ test_gps_fold_total_order(void) {
     }
 }
 
+/* 2.7: a reading of a fragment with neither GPS text nor a position withdraws that fragment's unit only when it is the
+ * same fragment and not an older reading of it; a reading of another fragment, or an older one (a spill line from
+ * before the fix), withdraws nothing. */
+void
+test_gps_withdrawal(void) {
+    const CallHistoryPositionKey held = {true, 1, 9U, 20U};
+    const CallHistoryProvenance fragment = {200, 1U, 0};
+    const CallHistoryProvenance other = {300, 2U, 0};
+    expect("a later empty reading of the fragment withdraws it",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 25U}, fragment), true);
+    expect("an older empty reading of the fragment withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 12U}, fragment), false);
+    expect("an empty reading of another fragment withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 25U}, other), false);
+    expect("an empty reading of another run withdraws nothing",
+           call_history_gps_withdraws(held, fragment, {false, 2, 0U, 25U}, fragment), false);
+    expect("the fragment read again with no version takes what it says",
+           call_history_gps_withdraws(held, fragment, {false, 1, 0U, 0U}, fragment), true);
+}
+
 void
 test_identity_compatibility(void) {
     expect("P25 phases are one family", call_history_protocols_compatible(DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_NEG),
@@ -740,6 +761,7 @@ main(void) {
     test_seen_site_text_digest();
     test_site_fold_order_limit();
     test_gps_fold_total_order();
+    test_gps_withdrawal();
     test_identity_compatibility();
     test_digests_and_stored_position();
     if (g_failures != 0) {
