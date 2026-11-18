@@ -1017,6 +1017,24 @@ notice_summary(const Event_History* item) {
     return text.trimmed();
 }
 
+/** @brief The digest of a ring item's raw identity (call_history_identity_digest()), read from its fields as they are:
+ * the walk reads every committed row, and nothing is formatted here. */
+uint32_t
+item_identity_digest(const Event_History* item) {
+    CallHistoryScope rx;
+    rx.kind = item->rx_scope.scope.kind;
+    rx.a = item->rx_scope.scope.a;
+    rx.b = item->rx_scope.scope.b;
+    rx.freqHz = item->rx_scope.identity_freq_hz;
+    CallHistoryScope sender;
+    sender.kind = item->pos.scope.kind;
+    sender.a = item->pos.scope.a;
+    sender.b = item->pos.scope.b;
+    sender.freqHz = item->pos.identity_freq_hz;
+    return call_history_identity_digest(item->systype, item->rx_scope.resolved != 0U, rx, sender, item->src_str,
+                                        sizeof(item->src_str), item->tgt_str, sizeof(item->tgt_str));
+}
+
 /** @brief The frequency and access code a ring item was heard with; 0 for whatever is unknown. */
 struct ItemCarrier {
     qint64 freqHz = 0;
@@ -1226,7 +1244,8 @@ CallHistoryModel::absorbSeenCall(SeenState& seen, const SeenState& read) {
     return advanced || labelAdvanced || filled;
 }
 
-// Record the GPS text, text message and position @p read carries in @p seen; returns whether any changed (issue #800).
+// Record the GPS text, text message, position and raw identity @p read carries in @p seen; returns whether any changed
+// (issue #800). An identity digest not known on either side is no change (SeenState::identity).
 bool
 CallHistoryModel::absorbSeenTexts(SeenState& seen, const SeenState& read) {
     const bool changed =
@@ -1234,7 +1253,9 @@ CallHistoryModel::absorbSeenTexts(SeenState& seen, const SeenState& read) {
     seen.gpsText = read.gpsText;
     seen.messageText = read.messageText;
     seen.position = read.position;
-    return changed;
+    const bool resolved =
+        call_history_seen_absorb_site_text(&seen.identity, &seen.identityKnown, read.identity, read.identityKnown);
+    return changed || resolved;
 }
 
 int
@@ -1280,7 +1301,8 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     }
     const bool advanced = absorbSeenCall(*seen, read);
     const bool received = absorbSeenReceive(*seen, read);
-    const bool digestAdopted = !seen->siteTextKnown && read.siteTextKnown;
+    const bool digestAdopted =
+        (!seen->siteTextKnown && read.siteTextKnown) || (!seen->identityKnown && read.identityKnown);
     const bool sited = absorbSeenSite(*seen, read);
     const bool texted = absorbSeenTexts(*seen, read);
     if (!advanced && !received && !sited && !texted) {
@@ -1339,6 +1361,8 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         read.position =
             call_history_position_digest(item_position_valid(item), item->pos.lat_e7, item->pos.lon_e7, item->pos.err_m,
                                          item->pos.flags, item->pos.kind, item->pos.rev, item->pos.proc_instance);
+        read.identity = item_identity_digest(item);
+        read.identityKnown = true;
         // Must match keyFor() on the equivalent Row, or a relaunched UI would
         // re-ingest every row its predecessor already logged.
         const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
@@ -1612,6 +1636,23 @@ merge_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row&
     existing.sourceNameSlot = row.sourceNameSlot;
 }
 
+/**
+ * @brief Take back the source label @p row's one fragment gave @p existing, now that this reading's identity disagrees
+ * with the row's (fragment_identity_compatible()): a fragment that later names another system or radio was never the
+ * row's radio, so its name is not the row's (issue #800, B2). The row shows no label until a fragment of its radio
+ * names it again.
+ */
+void
+withdraw_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (row.fragments.size() == 1 && !existing.sourceName.isEmpty()
+        && call_history_provenance_compare(
+               provenance(existing.sourceNameWhen, existing.sourceNameSeq, existing.sourceNameSlot),
+               provenance(row.sourceNameWhen, row.sourceNameSeq, row.sourceNameSlot))
+               == 0) {
+        existing.sourceName.clear();
+    }
+}
+
 void
 take_freq(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
     to.freqHz = from.freqHz;
@@ -1775,6 +1816,8 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     const bool sameRadio = fragment_identity_compatible(existing, row);
     if (sameRadio) {
         merge_source_label(existing, row);
+    } else {
+        withdraw_source_label(existing, row);
     }
     // Before the source below: what the fragment may give depends on the radio the row named until now.
     fold_payload(existing, row);
@@ -2791,6 +2834,11 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     state.gpsText = digest("gpx");
     state.messageText = digest("msx");
     state.position = digest("psx");
+    // Absent in stores older builds wrote: not known, so the first read takes one (SeenState::identity).
+    state.identityKnown = json_field_fits(obj, "idx", &state.identity);
+    if (!state.identityKnown) {
+        state.identity = 0U;
+    }
     if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
         || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
         state.callChannel = 0U;
@@ -2912,6 +2960,9 @@ CallHistoryModel::seenEntryToJson(const SeenState& state) {
     digest("gpx", state.gpsText);
     digest("msx", state.messageText);
     digest("psx", state.position);
+    if (state.identityKnown) {
+        obj.insert(QLatin1String("idx"), static_cast<qint64>(state.identity));
+    }
     obj.insert(QLatin1String("session"), state.session);
     obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
     if (!state.twin.isEmpty()) {

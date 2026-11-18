@@ -715,6 +715,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* For a notice heard again: the logged notice (by keyFor()) it took as its twin, else empty.
          * Persisted, so a relaunched model knows the twins its ring has taken (m_noticeTwinsTaken). */
         QString twin;
+        /* Issue #800: the digest of the raw identity last read (call_history_identity_digest()). The core can resolve
+         * a committed voice row's reception or sender system in place, and the fragment must then be read again (its
+         * texts and position are checked against the row again, fold_payload()), so any change is an advance. Not
+         * known in an entry an older build stored or one load() seeded: the first read then takes the digest without
+         * counting as an advance, as the site text digest's (SeenSettled). Last, so load()'s seed leaves it unknown. */
+        uint32_t identity = 0;
+        bool identityKnown = false;
     };
 
     /**

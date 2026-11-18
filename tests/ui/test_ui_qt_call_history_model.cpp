@@ -6225,6 +6225,76 @@ test_late_position_rechecks_reception_system(void) {
     }
 }
 
+/* B2/B5: a fragment that gave a row its fix, message and source label while its identity agreed with the row's takes
+ * them back when its later reading names another reception system. A P25 call row heard on one full system merges a
+ * NAC-only fragment of the same radio that brings a fix, a message and a label; when that fragment's later reading
+ * names another full system, the row shows none of them (or the best remaining fragment's fix, when its own fragment
+ * has one), live, saved and after a reload. */
+void
+test_fragment_on_another_system_withdraws_payload(void) {
+    const time_t when = 1754706650;
+    for (int ownFix = 0; ownFix < 2; ownFix++) {
+        resetStorage();
+        RingFixture ring;
+        const QString shownAfter = ownFix != 0 ? QStringLiteral("GPS: A") : QString();
+        {
+            CallHistoryModel model;
+            Event_History* a = ring.commit(0, 80651U, 8651U, when, when + 3);
+            a->systype = DSD_SYNC_P25P1_POS;
+            with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            if (ownFix != 0) {
+                with_gps(a, "GPS: A", 100000000, 200000000, 3U);
+                a->pos.scope.kind = DSD_POS_SCOPE_P25;
+                a->pos.scope.a = 0xBEE00U;
+                a->pos.scope.b = 0x1A3U;
+            }
+            Event_History* b = ring.commit(0, 80651U, 8651U, when + 5, when + 8);
+            b->systype = DSD_SYNC_P25P1_POS;
+            with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+            with_gps(b, "GPS: B", 225000000, 450000000, 7U);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25_NAC;
+            b->pos.scope.a = 0x293U;
+            b->pos.identity_freq_hz = 452500000;
+            DSD_SNPRINTF(b->text_message, sizeof(b->text_message), "%s", "Copy B");
+            DSD_SNPRINTF(b->s_name, sizeof(b->s_name), "%s", "Alias B");
+            model.refresh(ring.state);
+            expect("withdraw: the NAC-only fragment joins the call and gives it its fix, message and label",
+                   model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy B · GPS: B")
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              == QStringLiteral("Alias B"));
+            b = &ring.rings[0].Event_History_Items[1];
+            with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25;
+            b->pos.scope.a = 0xBEE00U;
+            b->pos.scope.b = 0x1A4U;
+            b->pos.identity_freq_hz = 0;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect(ownFix != 0 ? "withdraw: another system's fragment gives way to the row's own fix"
+                               : "withdraw: another system's fragment leaves the row no fix and no message",
+                   model.count() == 1 && detail_of(model, 0) == shownAfter);
+            expect("withdraw: another system's fragment takes its label back",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              != QStringLiteral("Alias B"));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        const QJsonObject stored = stored_row_with(80651U, 8651U);
+        const QJsonObject pos = stored.value(QLatin1String("pos")).toObject();
+        const bool posSaved = stored.contains(QLatin1String("pos"));
+        expect("withdraw: the withdrawn fix, message and label are not saved",
+               !stored.contains(QLatin1String("msg")) && !stored.contains(QLatin1String("gpsAlt"))
+                   && stored.value(QLatin1String("srcName")).toString() != QStringLiteral("Alias B")
+                   && posSaved == (ownFix != 0) && (!posSaved || pos.value(QLatin1String("lat")).toInt() == 100000000));
+        CallHistoryModel reloaded;
+        expect("withdraw: the same after a reload",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == shownAfter
+                   && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                          != QStringLiteral("Alias B"));
+    }
+}
+
 /* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
  * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
 void
@@ -6402,6 +6472,7 @@ main(int argc, char** argv) {
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
     test_late_position_rechecks_reception_system();
+    test_fragment_on_another_system_withdraws_payload();
     test_partial_identity_joins_fuller();
     test_repeated_notice_compares_the_fix();
 
