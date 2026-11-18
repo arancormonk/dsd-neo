@@ -198,6 +198,24 @@ nmea_parse_number(const nmea_field* f, size_t max_int, size_t keep, nmea_number*
     return 1;
 }
 
+/* A count written as digits only (1 to @p max_digits of them): a field with a fraction, a sign or anything else is no
+ * count, so it stays unknown. */
+static int
+nmea_parse_count(const nmea_field* f, size_t max_digits, uint32_t* out) {
+    if (f->n == 0U || f->n > max_digits) {
+        return 0;
+    }
+    uint32_t value = 0U;
+    for (size_t i = 0U; i < f->n; i++) {
+        if (!nmea_is_digit(f->p[i])) {
+            return 0;
+        }
+        value = (value * 10U) + (uint32_t)(f->p[i] - '0');
+    }
+    *out = value;
+    return 1;
+}
+
 static int
 nmea_field_is(const nmea_field* f, char c) {
     return f->n == 1U && f->p[0] == c;
@@ -439,10 +457,11 @@ nmea_read_rmc(const nmea_fields* fields, int64_t receive_utc_s, nmea_fix* out) {
 
 static void
 nmea_read_gga_extras(const nmea_fields* fields, nmea_fix* out) {
-    nmea_number num;
-    if (nmea_parse_number(nmea_get(fields, 7U), 3U, 0U, &num) && num.whole < DSD_POSITION_SATS_NONE) {
-        out->sats = (uint8_t)num.whole;
+    uint32_t sats = 0U;
+    if (nmea_parse_count(nmea_get(fields, 7U), 3U, &sats) && sats < DSD_POSITION_SATS_NONE) {
+        out->sats = (uint8_t)sats;
     }
+    nmea_number num;
     const nmea_field* alt = nmea_get(fields, 9U);
     if (!nmea_field_is(nmea_get(fields, 10U), 'M') || alt->n == 0U) {
         return;

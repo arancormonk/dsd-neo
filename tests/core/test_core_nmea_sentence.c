@@ -260,6 +260,17 @@ test_gga_fields(void) {
     CHECK(f.fix_time_s == 0); /* GGA has no date */
     CHECK(f.speed_dkmh == DSD_POSITION_SPEED_UNKNOWN && f.heading_ddeg == DSD_POSITION_HEADING_UNKNOWN);
     CHECK(parse_body("GPGGA,120000,2230.0,N,04500.0,E,2,05,1.0,-12.5,M,,M,,").alt_dm == -125);
+    /* The satellite count is a whole number: one written with a fraction, a sign or no digits stays unknown, and the
+       otherwise valid position is kept. */
+    static const char* const k_bad_sats[] = {"08.5", "08.", "8.0", "+8", "-8", "8a", "1234", ""};
+    for (size_t i = 0U; i < sizeof k_bad_sats / sizeof k_bad_sats[0]; i++) {
+        char body[96];
+        DSD_SNPRINTF(body, sizeof body, "GPGGA,120000,2230.0,N,04500.0,E,1,%s,1.0,10.0,M,,M,,", k_bad_sats[i]);
+        f = parse_body(body);
+        CHECK(f.has_position && f.lat_e7 == 225000000);
+        CHECK(f.sats == DSD_POSITION_SATS_NONE);
+    }
+    CHECK(parse_body("GPGGA,120000,2230.0,N,04500.0,E,1,012,1.0,10.0,M,,M,,").sats == 12U);
     /* Quality 1-5 is a measured fix; 0 (none), 6 (dead reckoning), 7 (manual) and 8 (simulator) are not. */
     for (int q = '0'; q <= '9'; q++) {
         char body[96];
