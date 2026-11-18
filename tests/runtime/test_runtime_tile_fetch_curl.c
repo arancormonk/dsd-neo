@@ -509,6 +509,7 @@ test_result_mapping(void) {
         {CURLE_FILESIZE_EXCEEDED, DSD_TILE_FETCH_ERR_TOO_LARGE},
         {CURLE_WRITE_ERROR, DSD_TILE_FETCH_ERR_TOO_LARGE},
         {CURLE_ABORTED_BY_CALLBACK, DSD_TILE_FETCH_ERR_CANCELLED},
+        {CURLE_OUT_OF_MEMORY, DSD_TILE_FETCH_ERR_NOMEM},
     };
 
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {

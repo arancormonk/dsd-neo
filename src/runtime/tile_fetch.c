@@ -404,6 +404,9 @@ tf_status_from_curl(CURLcode code) {
     if (code == CURLE_ABORTED_BY_CALLBACK) {
         return DSD_TILE_FETCH_ERR_CANCELLED;
     }
+    if (code == CURLE_OUT_OF_MEMORY) {
+        return DSD_TILE_FETCH_ERR_NOMEM;
+    }
     if (code == CURLE_WRITE_ERROR || code == CURLE_FILESIZE_EXCEEDED) {
         /* A write or header callback hit its cap and returned 0, or the declared
          * length was already over the body cap. */
@@ -470,9 +473,15 @@ tf_transfer_free(tf_transfer* t) {
 static int
 tf_curl_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exchange* exchange) {
     (void)ctx;
-    if (!dsd_tile_fetch_available() || dsd_curl_global_ready() != 0) {
+    if (!dsd_tile_fetch_available()) {
         exchange->status = DSD_TILE_FETCH_ERR_UNSUPPORTED;
         tf_copy_text(exchange->error, sizeof(exchange->error), TF_UNAVAILABLE);
+        return -1;
+    }
+    if (dsd_curl_global_ready() != 0) {
+        /* The build has what it needs; libcurl failed to start at run time. */
+        exchange->status = DSD_TILE_FETCH_ERR_SETUP;
+        tf_copy_text(exchange->error, sizeof(exchange->error), "libcurl could not be initialized");
         return -1;
     }
 

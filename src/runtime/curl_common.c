@@ -18,6 +18,9 @@
 
 #ifdef USE_CURL
 #include <curl/curlver.h>
+#ifdef DSD_CURL_COMMON_TEST_HOOKS
+#include "curl_common_test_hooks.h"
+#endif
 
 /*
  * Tri-state rather than the plain function-local `static int` this replaced: the
@@ -417,7 +420,66 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return incoming;
 }
 
-#define DSD_CURL_CANCEL_POLL_MS 100
+#ifdef DSD_CURL_COMMON_TEST_HOOKS
+#define CC_MULTI_INIT          dsd_curl_test_multi_init
+#define CC_MULTI_ADD           dsd_curl_test_multi_add_handle
+#define CC_MULTI_REMOVE        dsd_curl_test_multi_remove_handle
+#define CC_MULTI_CLEANUP       dsd_curl_test_multi_cleanup
+#define CC_MULTI_PERFORM       dsd_curl_test_multi_perform
+#define CC_MULTI_INFO_READ     dsd_curl_test_multi_info_read
+#define CC_MULTI_POLL          dsd_curl_test_multi_poll
+#define CC_MULTI_WAIT          dsd_curl_test_multi_wait
+#define CC_MULTI_TIMEOUT       dsd_curl_test_multi_timeout
+#define CC_MULTI_SETOPT_LONG   dsd_curl_test_multi_setopt_long
+#define CC_RUNTIME_VERSION_NUM dsd_curl_test_runtime_version_num
+#define CC_SLEEP_MS            dsd_curl_test_sleep_ms
+#ifdef DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
+/* Lets a test build take the older-libcurl branches against current headers. */
+#define CC_CURL_VERSION_NUM DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
+#endif
+#else
+static CURLMcode
+dsd_curl_multi_setopt_long(CURLM* multi, CURLMoption option, long value) {
+    return curl_multi_setopt(multi, option, value);
+}
+
+static unsigned int
+dsd_curl_runtime_version_num(void) {
+    const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
+    return (info != NULL) ? info->version_num : 0U;
+}
+
+#define CC_MULTI_INIT          curl_multi_init
+#define CC_MULTI_ADD           curl_multi_add_handle
+#define CC_MULTI_REMOVE        curl_multi_remove_handle
+#define CC_MULTI_CLEANUP       curl_multi_cleanup
+#define CC_MULTI_PERFORM       curl_multi_perform
+#define CC_MULTI_INFO_READ     curl_multi_info_read
+#define CC_MULTI_POLL          curl_multi_poll
+#define CC_MULTI_WAIT          curl_multi_wait
+#define CC_MULTI_TIMEOUT       curl_multi_timeout
+#define CC_MULTI_SETOPT_LONG   dsd_curl_multi_setopt_long
+#define CC_RUNTIME_VERSION_NUM dsd_curl_runtime_version_num
+#define CC_SLEEP_MS            dsd_sleep_ms
+#endif
+
+#ifndef CC_CURL_VERSION_NUM
+#define CC_CURL_VERSION_NUM LIBCURL_VERSION_NUM
+#endif
+
+#define DSD_CURL_CANCEL_POLL_MS     100
+#define DSD_CURL_QUICK_EXIT_VERSION 0x081400U /* CURLMOPT_QUICK_EXIT landed in 8.20.0 */
+
+/**
+ * @brief The libcurl result for a failed multi-interface call.
+ *
+ * @param mc Multi result.
+ * @return CURLE_OUT_OF_MEMORY for an allocation failure, CURLE_FAILED_INIT otherwise.
+ */
+static CURLcode
+dsd_curl_code_from_multi(CURLMcode mc) {
+    return (mc == CURLM_OUT_OF_MEMORY) ? CURLE_OUT_OF_MEMORY : CURLE_FAILED_INIT;
+}
 
 /**
  * @brief Read the finished transfer's result off the multi handle.
@@ -428,8 +490,7 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
 static CURLcode
 dsd_curl_multi_result(CURLM* multi) {
     int left = 0;
-    for (const CURLMsg* msg = curl_multi_info_read(multi, &left); msg != NULL;
-         msg = curl_multi_info_read(multi, &left)) {
+    for (const CURLMsg* msg = CC_MULTI_INFO_READ(multi, &left); msg != NULL; msg = CC_MULTI_INFO_READ(multi, &left)) {
         if (msg->msg == CURLMSG_DONE) {
             return msg->data.result;
         }
@@ -437,43 +498,105 @@ dsd_curl_multi_result(CURLM* multi) {
     return CURLE_GOT_NOTHING;
 }
 
+/**
+ * @brief Let curl_multi_cleanup() leave a resolver thread that is still in a lookup.
+ *
+ * With the threaded resolver, cleanup otherwise joins that thread, which waits
+ * in getaddrinfo() until the system resolver answers or gives up - seconds, not
+ * the 100 ms the poll gives every other phase. CURLMOPT_QUICK_EXIT (8.20) makes
+ * libcurl forget the thread instead; it ends on its own when the lookup does,
+ * at the cost of that thread living on briefly. Needs both headers and the
+ * loaded library at 8.20 or later. A refusal changes nothing else: cleanup then
+ * joins the lookup, as it always did.
+ *
+ * @param multi Multi handle.
+ */
+static void
+dsd_curl_multi_quick_exit(CURLM* multi) {
+#if CC_CURL_VERSION_NUM >= 0x081400
+    if (CC_RUNTIME_VERSION_NUM() >= DSD_CURL_QUICK_EXIT_VERSION) {
+        (void)CC_MULTI_SETOPT_LONG(multi, CURLMOPT_QUICK_EXIT, 1L);
+    }
+#else
+    (void)multi;
+#endif
+}
+
+/**
+ * @brief Wait up to DSD_CURL_CANCEL_POLL_MS for the transfer to need attention.
+ *
+ * curl_multi_poll() (7.66) waits even when libcurl has no socket yet, and returns
+ * at once when libcurl wants to run again, so it needs no extra sleep. Before
+ * 7.66 curl_multi_wait() returns at once with no socket to wait on (a threaded
+ * lookup in progress), so that branch sleeps 10 ms when nothing was ready -
+ * except when libcurl asks to run now, where it neither waits nor sleeps.
+ *
+ * @param multi Multi handle.
+ * @return The multi result.
+ */
+static CURLMcode
+dsd_curl_multi_idle(CURLM* multi) {
+#if CC_CURL_VERSION_NUM >= 0x074200
+    return CC_MULTI_POLL(multi, NULL, 0U, DSD_CURL_CANCEL_POLL_MS, NULL);
+#else
+    long timeout_ms = -1;
+    if (CC_MULTI_TIMEOUT(multi, &timeout_ms) == CURLM_OK && timeout_ms == 0) {
+        return CURLM_OK;
+    }
+    int ready = 0;
+    const CURLMcode mc = CC_MULTI_WAIT(multi, NULL, 0U, DSD_CURL_CANCEL_POLL_MS, &ready);
+    if (mc == CURLM_OK && ready == 0) {
+        CC_SLEEP_MS(10U);
+    }
+    return mc;
+#endif
+}
+
+/**
+ * @brief Drive the transfer to its end, or to a cancel.
+ *
+ * @param multi     Multi handle holding the transfer.
+ * @param cancelled Predicate, or NULL for never.
+ * @param ctx       Passed to @p cancelled.
+ * @return The transfer's result.
+ */
+static CURLcode
+dsd_curl_multi_run(CURLM* multi, dsd_curl_cancel_fn cancelled, const void* ctx) {
+    for (;;) {
+        if (cancelled != NULL && cancelled(ctx) != 0) {
+            return CURLE_ABORTED_BY_CALLBACK;
+        }
+        int running = 0;
+        CURLMcode mc = CC_MULTI_PERFORM(multi, &running);
+        if (mc != CURLM_OK) {
+            return dsd_curl_code_from_multi(mc);
+        }
+        if (running == 0) {
+            return dsd_curl_multi_result(multi);
+        }
+        mc = dsd_curl_multi_idle(multi);
+        if (mc != CURLM_OK) {
+            return dsd_curl_code_from_multi(mc);
+        }
+    }
+}
+
 CURLcode
 dsd_curl_perform_cancellable(CURL* curl, dsd_curl_cancel_fn cancelled, const void* ctx) {
-    CURLM* multi = curl_multi_init();
+    CURLM* multi = CC_MULTI_INIT();
     if (multi == NULL) {
         return CURLE_OUT_OF_MEMORY;
     }
-    if (curl_multi_add_handle(multi, curl) != CURLM_OK) {
-        (void)curl_multi_cleanup(multi);
-        return CURLE_FAILED_INIT;
+    dsd_curl_multi_quick_exit(multi);
+    const CURLMcode added = CC_MULTI_ADD(multi, curl);
+    if (added != CURLM_OK) {
+        (void)CC_MULTI_CLEANUP(multi);
+        return dsd_curl_code_from_multi(added);
     }
 
-    CURLcode result = CURLE_FAILED_INIT;
-    for (;;) {
-        if (cancelled != NULL && cancelled(ctx) != 0) {
-            result = CURLE_ABORTED_BY_CALLBACK;
-            break;
-        }
-        int running = 0;
-        if (curl_multi_perform(multi, &running) != CURLM_OK) {
-            break;
-        }
-        if (running == 0) {
-            result = dsd_curl_multi_result(multi);
-            break;
-        }
-        int ready = 0;
-        if (curl_multi_wait(multi, NULL, 0U, DSD_CURL_CANCEL_POLL_MS, &ready) != CURLM_OK) {
-            break;
-        }
-        if (ready == 0) {
-            /* Older libcurl returns at once when it has no socket to wait on yet. */
-            dsd_sleep_ms(10U);
-        }
-    }
-
-    (void)curl_multi_remove_handle(multi, curl);
-    (void)curl_multi_cleanup(multi);
+    const CURLcode result = dsd_curl_multi_run(multi, cancelled, ctx);
+    (void)CC_MULTI_REMOVE(multi, curl);
+    (void)CC_MULTI_CLEANUP(multi);
     return result;
 }
 

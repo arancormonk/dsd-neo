@@ -7130,6 +7130,22 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(dsd-neo_test_runtime_tile_fetch PRIVATE dsd-neo_runtime)
+# On POSIX the executable answers its own getaddrinfo() (and can hold it), so the
+# test can cancel a fetch while its name lookup hangs.
+if(NOT WIN32)
+    target_sources(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE test_support/fake_getaddrinfo.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+    )
+endif()
 add_test(NAME RUNTIME_TILE_FETCH COMMAND dsd-neo_test_runtime_tile_fetch)
 
 add_executable(
@@ -7197,6 +7213,41 @@ if(DSD_HAS_CURL)
             NAME ${_tile_test}
             COMMAND dsd-neo_test_runtime_${_tile_target}
         )
+    endforeach()
+
+    # dsd_curl_perform_cancellable() branch by branch, its multi-interface calls
+    # routed through the test (DSD_CURL_COMMON_TEST_HOOKS). Built a second time
+    # with the curl version forced to 7.65 for the curl_multi_wait branch.
+    foreach(
+        _cc_variant
+        IN
+        ITEMS
+            "curl_cancellable;RUNTIME_CURL_CANCELLABLE;"
+            "curl_cancellable_pre_7_66;RUNTIME_CURL_CANCELLABLE_PRE_7_66;DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=0x074100"
+    )
+        list(GET _cc_variant 0 _cc_target)
+        list(GET _cc_variant 1 _cc_test)
+        list(GET _cc_variant 2 _cc_define)
+        add_executable(
+            dsd-neo_test_runtime_${_cc_target}
+            runtime/test_runtime_curl_cancellable.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE DSD_CURL_COMMON_TEST_HOOKS ${_cc_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(NAME ${_cc_test} COMMAND dsd-neo_test_runtime_${_cc_target})
     endforeach()
 endif()
 

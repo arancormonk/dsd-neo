@@ -395,8 +395,10 @@ dsd_rr_client* dsd_rr_client_create(const dsd_rr_client_config* config);
 /**
  * @brief Cancel everything, join the worker, and destroy the client.
  *
- * An in-flight transfer unwinds within about 100 ms in any phase, name lookup,
- * connect and TLS included, so this blocks only briefly.
+ * An in-flight transfer unwinds within about 100 ms during connect, TLS or the
+ * transfer, and also during a name lookup with libcurl 8.20 or later. With older
+ * libcurl a name lookup in progress holds this until the system resolver answers
+ * or gives up (its own timeout, seconds), so do not call it on a UI thread.
  *
  * @param client Client to destroy; NULL is a no-op.
  */

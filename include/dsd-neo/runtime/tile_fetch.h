@@ -65,7 +65,7 @@ typedef enum {
     DSD_TILE_FETCH_ERR_BAD_HEADER = 7,  /**< Cache-Control or Vary too long or malformed: cannot be cached safely. */
     DSD_TILE_FETCH_ERR_INVALID = 8,     /**< Bad request: not an https URL, bad conditional value, bad timeout. */
     DSD_TILE_FETCH_ERR_UNSUPPORTED = 9, /**< Built-in transport absent: no libcurl, or no asynchronous resolver. */
-    DSD_TILE_FETCH_ERR_SETUP = 10,      /**< A libcurl option was refused; the request was not sent. */
+    DSD_TILE_FETCH_ERR_SETUP = 10,      /**< libcurl failed to start or refused an option; nothing was sent. */
     DSD_TILE_FETCH_ERR_NOMEM = 11,      /**< Allocation failure. */
 } dsd_tile_fetch_status;
 
@@ -84,9 +84,14 @@ enum {
 /**
  * @brief Opaque cancellation flag shared between the fetching thread and any other.
  *
- * Setting it stops an in-flight built-in transfer within about 100 ms in any
- * phase (name lookup, connect, TLS, transfer), and makes a fetch that has not
- * started return DSD_TILE_FETCH_ERR_CANCELLED without sending anything.
+ * Setting it makes a fetch that has not started return
+ * DSD_TILE_FETCH_ERR_CANCELLED without sending anything, and stops an in-flight
+ * built-in transfer:
+ * - during connect, TLS or the transfer: within about 100 ms;
+ * - during a name lookup: within about 100 ms with libcurl 8.20 or later, which
+ *   leaves the stuck resolver thread to end on its own. With older libcurl the
+ *   fetch returns only once the system resolver answers or gives up (its own
+ *   timeout, seconds), so never wait for a fetch on a UI thread.
  */
 typedef struct dsd_tile_fetch_cancel dsd_tile_fetch_cancel;
 
@@ -167,6 +172,11 @@ struct dsd_tile_fetch_request {
  * whole fetch with DSD_TILE_FETCH_ERR_BAD_HEADER instead, because a lost
  * no-store or Vary: * would let the tile be cached against the server's wishes.
  * Interpretation (freshness, Retry-After as seconds or date) is the caller's.
+ *
+ * Earlier blocks (1xx, proxy CONNECT) are dropped, with one deliberate
+ * exception: a Cache-Control or Vary in them that cannot be carried still fails
+ * the fetch with DSD_TILE_FETCH_ERR_BAD_HEADER. Such a response is malformed
+ * anyway, and failing closed is the safe side.
  */
 typedef struct {
     dsd_tile_fetch_status status;
@@ -219,8 +229,9 @@ int dsd_tile_fetch_user_agent(char* out, size_t cap);
  * that is already set. The built-in transport is HTTPS only, follows no
  * redirect, sends If-None-Match / If-Modified-Since when given, sends no
  * Accept-Encoding, caps the body and the headers, and fails closed when any
- * libcurl option is refused. Bounded by the request's timeouts, and by about
- * 100 ms after the cancel token is set.
+ * libcurl option is refused. Bounded by the request's timeouts once the name
+ * is resolved; a name lookup is bounded by the system resolver. After the cancel
+ * token is set it returns as described for dsd_tile_fetch_cancel.
  *
  * @param req  Request.
  * @param resp Receives the result; always initialized, even on failure.

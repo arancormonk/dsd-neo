@@ -34,6 +34,9 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#ifdef DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+#include "fake_getaddrinfo.h"
+#endif
 #elif defined(USE_CURL)
 #include <curl/curl.h>
 #endif
@@ -678,9 +681,9 @@ canceller_thread(void* arg) {
 }
 
 /*
- * The assertion that catches a missing CURLOPT_NOPROGRESS 0 or xferinfo hook:
- * libcurl never calls the progress callback while NOPROGRESS is set, so the
- * cancel would do nothing and this would run into the 30 s total timeout.
+ * A real stalled TLS handshake, where libcurl calls no progress callback: the
+ * cancel must still land promptly through the shared multi-handle poll. (The
+ * NOPROGRESS / xferinfo wiring itself is pinned by RUNTIME_TILE_FETCH_CURL.)
  */
 static void
 test_loopback_stalled_transfer_cancelled(void) {
@@ -721,12 +724,116 @@ test_loopback_stalled_transfer_cancelled(void) {
     stall_server_stop(&server);
 }
 
+#ifdef DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+
+typedef struct {
+    dsd_tile_fetch_cancel* cancel;
+    atomic_int saw_held;
+    atomic_int fetch_done;
+    atomic_int released_early; /**< The safety release fired before the fetch returned. */
+} lookup_stall_arg;
+
+/* Cancels once the lookup is held in getaddrinfo(), or gives up after 2 s. */
+static DSD_THREAD_RETURN_TYPE
+lookup_canceller_thread(void* arg) {
+    lookup_stall_arg* a = (lookup_stall_arg*)arg;
+    for (int i = 0; i < 200 && dsd_fake_resolver_held() == 0; i++) {
+        dsd_sleep_ms(10U);
+    }
+    atomic_store(&a->saw_held, dsd_fake_resolver_held() > 0 ? 1 : 0);
+    dsd_sleep_ms(100U);
+    dsd_tile_fetch_cancel_request(a->cancel);
+    DSD_THREAD_RETURN;
+}
+
+/* Safety net: answers the held lookup after 3 s, so a cleanup that joins the
+ * resolver thread (no quick exit) ends the test as a failure, not a hang. */
+static DSD_THREAD_RETURN_TYPE
+lookup_releaser_thread(void* arg) {
+    lookup_stall_arg* a = (lookup_stall_arg*)arg;
+    for (int i = 0; i < 300 && atomic_load(&a->fetch_done) == 0; i++) {
+        dsd_sleep_ms(10U);
+    }
+    atomic_store(&a->released_early, atomic_load(&a->fetch_done) == 0 ? 1 : 0);
+    dsd_fake_resolver_hold(0);
+    DSD_THREAD_RETURN;
+}
+
+/*
+ * A cancel while the name lookup hangs. With libcurl 8.20 or later the helper
+ * sets CURLMOPT_QUICK_EXIT, so cleanup leaves the stuck resolver thread instead
+ * of joining it and the fetch returns promptly; without it the fetch would wait
+ * for getaddrinfo() (here, the 3 s safety release). This executable answers its
+ * own getaddrinfo() (fake_getaddrinfo.c) and holds it; it skips where libcurl is
+ * older than 8.20 or does not look names up through getaddrinfo().
+ */
+static void
+test_lookup_stall_cancelled(void) {
+    const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
+    if (!dsd_tile_fetch_available() || info == NULL || info->version_num < 0x081400U) {
+        DSD_FPRINTF(stderr, "SKIP: lookup-stall cancel (needs libcurl 8.20+ with an asynchronous resolver)\n");
+        return;
+    }
+    dsd_fake_resolver_reset(0x7F000001U, 0x7F000001U);
+    dsd_fake_resolver_hold(1);
+
+    lookup_stall_arg arg;
+    DSD_MEMSET(&arg, 0, sizeof(arg));
+    arg.cancel = dsd_tile_fetch_cancel_create();
+    atomic_store(&arg.saw_held, 0);
+    atomic_store(&arg.fetch_done, 0);
+    atomic_store(&arg.released_early, 0);
+    dsd_thread_t canceller;
+    dsd_thread_t releaser;
+    const int threads_ok = dsd_thread_create(&canceller, lookup_canceller_thread, &arg) == 0
+                           && dsd_thread_create(&releaser, lookup_releaser_thread, &arg) == 0;
+    expect("lookup-stall threads started", threads_ok);
+    if (!threads_ok) {
+        dsd_fake_resolver_hold(0);
+        return;
+    }
+
+    dsd_tile_fetch_request req;
+    DSD_MEMSET(&req, 0, sizeof(req));
+    char url[128];
+    (void)DSD_SNPRINTF(url, sizeof(url), "https://%s/7/64/42.png", DSD_FAKE_RESOLVER_HOST);
+    req.url = url;
+    req.cancel = arg.cancel;
+    dsd_tile_fetch_response resp;
+    const uint64_t started = dsd_realtime_mono_ms();
+    const dsd_tile_fetch_status st = dsd_tile_fetch(&req, &resp);
+    const uint64_t elapsed = dsd_realtime_mono_ms() - started;
+    atomic_store(&arg.fetch_done, 1);
+    (void)dsd_thread_join(canceller);
+    (void)dsd_thread_join(releaser);
+
+    if (atomic_load(&arg.saw_held) == 0) {
+        DSD_FPRINTF(stderr, "SKIP: lookup-stall cancel (libcurl did not resolve through getaddrinfo())\n");
+    } else {
+        expect_ll("cancelled lookup reports CANCELLED", (long long)st, DSD_TILE_FETCH_ERR_CANCELLED);
+        expect("cancel during a held lookup returns within ~1 s", elapsed < 1500U);
+        expect("the fetch did not wait for the lookup to be answered", atomic_load(&arg.released_early) == 0);
+    }
+    dsd_tile_fetch_response_free(&resp);
+    dsd_tile_fetch_cancel_destroy(arg.cancel);
+    /* Let the abandoned resolver thread see the release and end before exit. */
+    for (int i = 0; i < 200 && dsd_fake_resolver_held() > 0; i++) {
+        dsd_sleep_ms(10U);
+    }
+    dsd_sleep_ms(50U);
+}
+
+#endif /* DSD_TILE_FETCH_TEST_FAKE_RESOLVER */
+
 #endif /* USE_CURL && !DSD_PLATFORM_WIN_NATIVE */
 
 static void
 run_loopback_cases(void) {
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
     test_loopback_stalled_transfer_cancelled();
+#ifdef DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+    test_lookup_stall_cancelled();
+#endif
 #endif
 }
 

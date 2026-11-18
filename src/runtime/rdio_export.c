@@ -1005,7 +1005,8 @@ dsd_rdio_xferinfo_cb(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_
     return atomic_load(&g_rdio_upload_cancel) != 0 ? 1 : 0;
 }
 
-/* Cancel predicate for dsd_curl_perform_cancellable(): sees the user's Stop within about 100 ms in any phase. */
+/* Cancel predicate for dsd_curl_perform_cancellable(): it sees the user's Stop within about 100 ms. The attempt then
+ * returns as promptly, except for a name lookup under libcurl older than 8.20, which waits for the system resolver. */
 static int
 dsd_rdio_cancel_pred(const void* ctx) {
     (void)ctx;

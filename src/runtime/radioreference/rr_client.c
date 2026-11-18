@@ -885,8 +885,10 @@ dsd_rr_client_destroy(dsd_rr_client* client) {
     }
     if (client->running != NULL) {
         /*
-         * The in-flight transfer unwinds within about 100 ms in any phase
-         * (dsd_curl_perform_cancellable() polls the token), so this join is short.
+         * The in-flight transfer unwinds within about 100 ms
+         * (dsd_curl_perform_cancellable() polls the token), except for a name
+         * lookup under libcurl older than 8.20, which holds the join until the
+         * system resolver gives up.
          * That is deliberate and differs from dsd_rdio_upload_shutdown, which lets
          * its in-flight upload finish.
          */
