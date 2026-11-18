@@ -334,6 +334,73 @@ test_reacquired_position_keeps_reception(void) {
     }
 }
 
+/* Issue #800, fail closed: a terminator's GPS lands on the row its call is part of only when that row was heard on the
+ * report's reception. A conventional P25 call on 450 MHz loses sync and is reacquired on 451 MHz with the same NAC,
+ * talkgroup and source; the terminator ends (and commits) the reacquired segment, which merges into the 450 MHz row,
+ * before its own GPS link control is decoded. The report's origin epoch is the closing call's, but the row it would
+ * enrich is the 450 MHz one: no position. Heard on 450 MHz both times, the terminator's GPS does land. */
+static void
+test_closing_fix_checks_the_merged_row(void) {
+    for (int moved = 0; moved <= 1; moved++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        g_state.rx_id.family = DSD_RXID_FAMILY_P25;
+        g_state.rx_id.valid = DSD_RXID_ACCESS;
+        g_state.rx_id.access_kind = DSD_ACCESS_CODE_NAC;
+        g_state.rx_id.access = 0x293U;
+        const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC && row(1)->rx_scope.identity_freq_hz == 450000000);
+        if (moved) {
+            g_opts.rtlsdr_center_freq = 451000000U;
+        }
+        const uint64_t second = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        assert(second != first);
+        dsd_event_closing_call closing;
+        assert(dsd_event_capture_closing_call(&g_state, 0U, &closing) == 1 && closing.epoch == second);
+        end_call(DSD_CALL_END_TERMINATOR);
+        assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+        assert(row(1)->rx_scope.identity_freq_hz == 450000000);
+        const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+        assert((uint32_t)(f.origin_gen & 0xFFFFFFFFU) == g_state.rx_id.epoch);
+        const int written = dsd_event_enrich_position_closing(NULL, &g_state, &closing, &f, "terminator GPS");
+        if (moved) {
+            assert(written == 0 && row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+        } else {
+            assert(written == 1);
+            expect_row_fix(row(1), &f, "terminator GPS");
+        }
+    }
+}
+
+/* Issue #800, fail closed: a reacquired segment whose reception is unknown brings the row no GPS. A DMR call on a
+ * Connect Plus network is committed; the reception resets (another identity epoch) and the same source and talkgroup are
+ * reacquired with only the colour code known, so the segment's admitted position has no reception scope. The call rows
+ * still merge; the position stays off the network's row. */
+static void
+test_unknown_reception_never_merges_gps(void) {
+    reset_fixture();
+    DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_site(&g_state, DSD_RXID_DMR_TRUNK_CONNECT_PLUS, 1, 17U, 2U, 0U, "Con+");
+    const uint64_t first = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_DMR);
+    dsd_rxid_reset(&g_state);
+    dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    const uint64_t second = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    assert(second != first && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_NONE);
+    const dsd_position_fix f = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
+    assert(f.reception_scope.kind == DSD_POS_SCOPE_NONE);
+    assert(dsd_event_enrich_position(NULL, &g_state, 0U, second, &f, "segment fix") == 1); /* its own segment */
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+    assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_DMR);
+    assert(row(1)->pos.valid == 0U && row(1)->gps_s[0] == '\0');
+}
+
 /* A call that ended before any render takes the record as it ended, with the frequency the row is given (the call's
  * own), not whatever the staged row held. */
 static void
@@ -733,6 +800,8 @@ main(void) {
     test_reception_scope_refines_mid_call();
     test_reacquired_segment_strengthens_reception_scope();
     test_reacquired_position_keeps_reception();
+    test_closing_fix_checks_the_merged_row();
+    test_unknown_reception_never_merges_gps();
     test_reception_scope_of_a_call_ended_unseen();
     test_declined_position_keeps_crc_marking();
     test_callsign_sources();

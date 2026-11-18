@@ -9,6 +9,7 @@
  */
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -101,6 +102,22 @@ attribution_same_call(const dsd_position_attribution* a, const dsd_position_attr
     return call->epoch == a->call_epoch;
 }
 
+/* The evidence was learned on the reception the receiver is on now, by the reception rule every position writer
+ * applies (dsd_position_same_reception()): the evidence keeps no scope, so only the same received identity epoch, one
+ * uninterrupted generation, matches. */
+static int
+attribution_same_reception(const dsd_state* state, const dsd_position_attribution* a) {
+    dsd_position_reception learned;
+    dsd_position_reception now;
+    DSD_MEMSET(&learned, 0, sizeof learned);
+    DSD_MEMSET(&now, 0, sizeof now);
+    learned.rx_epoch = a->rx_epoch;
+    learned.epoch_known = 1U;
+    now.rx_epoch = state->rx_id.epoch;
+    now.epoch_known = 1U;
+    return dsd_position_same_reception(&learned, &now);
+}
+
 /* Every condition of the rule but the identity: evidence held, the call open, one protocol class for the call, the
  * evidence and the report, the same call, the same reception. */
 static int
@@ -114,7 +131,7 @@ attribution_binds(const dsd_state* state, const dsd_position_attribution* a, con
         || dsd_position_attribution_class(a->protocol) != report_class) {
         return 0;
     }
-    return attribution_same_call(a, call) && a->rx_epoch == state->rx_id.epoch;
+    return attribution_same_call(a, call) && attribution_same_reception(state, a);
 }
 
 int
