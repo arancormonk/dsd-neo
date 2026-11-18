@@ -2604,7 +2604,9 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    transmission). The epoch is the call the same LSF observed: an LSF that observes none (a stream of data type 0)
+    is bound to no transmission, whatever M17 call is still ACTIVE on the slot, so each such RF report is admitted
+    again and none touches that call's row. The LSF's CAN is noted (`dsd_rxid_note_access()`) before
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign

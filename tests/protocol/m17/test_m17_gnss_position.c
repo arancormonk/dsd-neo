@@ -845,6 +845,52 @@ test_other_protocol_call_is_no_transmission(void) {
     rig_close(&r);
 }
 
+/* An RF stream LSF from @p src of data type @p dt (2: voice, 0: neither voice nor data) with META subtype 1. */
+static int
+rf_stream_lsf_from(rig* r, const char* src, uint8_t dt, const uint8_t meta[M17_META_BYTES]) {
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    DSD_MEMSET(bits, 0, LSF_BITS);
+    m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, TEST_DST_CALLSIGN), m17_encode_b40_callsign(0ULL, src));
+    write_bits(bits + 96, m17_compose_frame_info(1U, dt, 0U, 1U, 5U, 0U, 0U), 16U);
+    for (size_t k = 0U; k < M17_META_BYTES; k++) {
+        write_bits(bits + 112U + (k * 8U), meta[k], 8U);
+    }
+    const uint16_t crc = m17_attach_lsf_crc(bits, packed);
+    DSD_MEMCPY(r->state->m17_lsf, bits, sizeof(bits));
+    return m17_finalize_lsf_crc(r->opts, r->state, packed, crc);
+}
+
+/* An LSF that observes no call (a stream of data type 0) is bound to no transmission, even while another station's M17
+ * call is still ACTIVE on the slot: its GNSS META is never deduplicated against that call's epoch. N0CALL's voice
+ * call admits its report; TEST2's data type 0 LSF with the same META bytes is a second report under its own callsign,
+ * and N0CALL's row keeps N0CALL's position (issue #800). */
+static void
+test_unbound_lsf_is_not_the_active_calls(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    expect_int("N0CALL voice LSF passes", rf_stream_lsf_from(&r, TEST_SRC_CALLSIGN, 2U, meta), 0);
+    dsd_call_snapshot call;
+    expect_true("N0CALL's M17 call is active", dsd_call_state_get(r.state, 0U, &call) > 0
+                                                   && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                   && DSD_SYNC_IS_M17(call.protocol));
+    const uint64_t epoch = call.epoch;
+    const uint64_t row_rev = row0(&r)->pos.rev;
+    expect_int("N0CALL's row takes its position", row0(&r)->pos.valid, 1);
+    const uint64_t rev = dsd_position_last_rev();
+    expect_int("TEST2 data type 0 LSF passes", rf_stream_lsf_from(&r, "TEST2", 0U, meta), 0);
+    expect_int("TEST2's report is admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_position_fix f[4];
+    expect_int("both senders kept", feed_records(&r, f, 4U), 2);
+    expect_true("first record is N0CALL's", strcmp(f[0].source_text, TEST_SRC_CALLSIGN) == 0);
+    expect_true("second record is TEST2's", strcmp(f[1].source_text, "TEST2") == 0);
+    expect_true("N0CALL's call is still the slot's", dsd_call_state_get(r.state, 0U, &call) > 0 && call.epoch == epoch);
+    expect_int("N0CALL's row keeps its position", (long long)row0(&r)->pos.rev, (long long)row_rev);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -863,6 +909,7 @@ main(void) {
     test_rf_packet_and_lsf_checked_apart();
     test_extended_callsign_meta_decodes();
     test_other_protocol_call_is_no_transmission();
+    test_unbound_lsf_is_not_the_active_calls();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

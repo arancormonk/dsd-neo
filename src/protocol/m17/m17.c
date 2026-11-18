@@ -79,9 +79,10 @@ static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* 
 typedef struct {
     uint8_t network; /* 1 for an IP stream or MPKT frame */
     uint16_t stream_id;
+    uint8_t call_observed; /* set by M17decodeLSF(): this LSF observed the slot's call (m17_publish_lsf()) */
 } m17_lsf_carrier;
 
-static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U};
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U};
 static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
@@ -351,12 +352,14 @@ m17_received_protocol(const dsd_state* state) {
     return protocol;
 }
 
-static void
+/* Publish the call a checked LSF describes; 1 when it observed the slot's call, 0 when it observed none (a stream of
+   data type 0 is neither voice nor data). */
+static int
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
     const int is_data = res->packet_stream == 0U || res->dt == 1U;
     if (!is_voice && !is_data) {
-        return;
+        return 0;
     }
     dsd_call_observation observation = {
         .protocol = m17_received_protocol(state),
@@ -369,7 +372,9 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     };
     m17_format_address(res->src, 1, observation.source_text);
     m17_format_address(res->dst, 0, observation.target_text);
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) < 0) {
+        return 0;
+    }
 
     const int has_key = m17_lsf_has_key(state, res);
     uint64_t mi = 0U;
@@ -393,6 +398,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     if (opts) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
+    return 1;
 }
 
 /* Set while the encoder decodes what this station transmits through the receive path, to monitor it: that is no
@@ -415,11 +421,13 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
             if (!s_m17_monitoring_local_tx) {
                 dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
             }
-            m17_publish_lsf(opts, state, &res);
+            m17_lsf_carrier bound = *carrier;
+            bound.call_observed = (uint8_t)m17_publish_lsf(opts, state, &res);
             /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
-               2.2): a META position is the received station's, and the call it describes is the one just published. */
+               2.2): a META position is the received station's, and the call it describes is the one just published,
+               when this LSF published one. */
             if (!s_m17_monitoring_local_tx) {
-                M17decodeLSFMeta(opts, state, &res, carrier);
+                M17decodeLSFMeta(opts, state, &res, &bound);
             }
         }
         M17logLSFTrailer(state, &res);
@@ -557,12 +565,6 @@ m17_gnss_row_text(const dsd_position_fix* fix, char* out, size_t cap) {
     }
 }
 
-/*
- * A GNSS META position from an LSF (or a stream's LSD) whose CRC passed, decoded from what this station received
- * (issue #800 2.2). Its check is that CRC (an IP stream frame's or MPKT's own CRC for the network carriers), and the
- * source is the same LSF's: the callsign of the call m17_publish_lsf() just observed. Nothing else in M17 carries a
- * position (D13).
- */
 /* The slot's ACTIVE M17 call: another protocol's call still open on the slot is no transmission of an M17 report. */
 static int
 m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
@@ -570,6 +572,13 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
            && DSD_SYNC_IS_M17(call->protocol);
 }
 
+/*
+ * A GNSS META position from an LSF (or a stream's LSD) whose CRC passed, decoded from what this station received
+ * (issue #800 2.2). Its check is that CRC (an IP stream frame's or MPKT's own CRC for the network carriers), and the
+ * source is the same LSF's callsign. The LSF's transmission is the call m17_publish_lsf() just observed for it; an LSF
+ * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
+ * call may be another station's. Nothing else in M17 carries a position (D13).
+ */
 static void
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
@@ -586,10 +595,11 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     m17_format_address(res->src, 1, callsign);
     DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", callsign);
     dsd_call_snapshot call;
-    const int active = m17_active_call(state, &call);
-    /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed),
-       or a network stream's ID within its call. The call epoch is part of both, so however a call ended (stream EOT,
-       EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. */
+    const int active = carrier->call_observed != 0U && m17_active_call(state, &call);
+    /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed for
+       this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended
+       (stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. An LSF that
+       observed no call has no epoch. */
     const uint8_t tx_kind = carrier->network ? 2U : 1U;
     const uint64_t epoch = active ? call.epoch : 0U;
     const uint64_t tx_id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
@@ -3753,7 +3763,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     const int crc_valid = crc_ext == crc_cmp;
     if (crc_valid) {
-        const m17_lsf_carrier carrier = {1U, sid};
+        const m17_lsf_carrier carrier = {1U, sid, 0U};
         M17decodeLSF(opts, state, 1, &carrier);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
@@ -3828,7 +3838,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
-        const m17_lsf_carrier carrier = {1U, sid};
+        const m17_lsf_carrier carrier = {1U, sid, 0U};
         M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
