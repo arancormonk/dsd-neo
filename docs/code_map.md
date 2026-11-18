@@ -2734,8 +2734,9 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header, wherever it sits in the superframe, a rebroadcast header's superframe included (the header's
-    nine blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    its own mini-header, except a rebroadcast header's own nine blocks (`dstar_sd_first_block()`): the header CRC covers
+    their octets but not their mini-headers, so none of them is ever text or GPS data, whatever type its mini-header
+    names; the block after them is read like any other. Only GPS blocks (0x3n) feed the record and the `GPS DATA:`
     display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
     of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks

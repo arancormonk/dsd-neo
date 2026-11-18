@@ -219,6 +219,17 @@ enum {
 #define DSTAR_SD_TYPE_MASK 0xF0U
 #define DSTAR_SD_TYPE_GPS  0x30U
 
+/* The blocks a rebroadcast header fills at the start of its superframe: its 41 octets, five per block. */
+enum { DSTAR_SD_HEADER_BLOCKS = 9 };
+
+/* The first block of a superframe that may carry text or GPS data: after a rebroadcast header's nine (@p header), else
+ * the first. The header CRC covers the header's octets, not its blocks' mini-headers, so a header block whose
+ * mini-header was received as another type still holds header octets: none of them is text or GPS data. */
+static int
+dstar_sd_first_block(int header) {
+    return header ? DSTAR_SD_HEADER_BLOCKS : 0;
+}
+
 /* An APRS position (APRS 1.0.1 chapter 6, as D-PRS fixes it): latitude ddmm.hh and longitude dddmm.hh, in degrees,
  * minutes and hundredths of a minute, and the optional time stamp. */
 typedef struct {
@@ -535,15 +546,16 @@ dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     }
 }
 
-/* Feed the superframe's GPS blocks (as received, before any display clean-up) to the record. What was assembled under
- * a binding that no longer holds (another transmission, named call, confirmation or reception) is dropped first. */
+/* Feed the superframe's GPS blocks from block @p first on (as received, before any display clean-up) to the record. What
+ * was assembled under a binding that no longer holds (another transmission, named call, confirmation or reception) is
+ * dropped first. */
 static void
-dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
+dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw, int first) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
     if (a->len != 0U && !dstar_sd_binding_holds(state, &a->bind)) {
         dstar_dprs_reset(a);
     }
-    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
         if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {
             continue;
@@ -576,8 +588,9 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
     return 1;
 }
 
-/* Each block by its own mini-header: a text block's five characters go to their place in the message, and nothing of
- * another block (GPS data among them) ever does. A block 0 starts a new message; a later block of the message fills its
+/* Each block from @p first on (dstar_sd_first_block(): never a rebroadcast header's own) by its own mini-header: a text
+ * block's five characters go to their place in the message, and nothing of another block (GPS data among them) ever
+ * does. A block 0 starts a new message; a later block of the message fills its
  * place in the one being shown. A message assembled under a binding that no longer holds is dropped before this
  * superframe's blocks: none of it is this message's. The places of one message come in order after its block 0, so a
  * block whose place is at or before one already heard since then starts the next message, its block 0 missed: the
@@ -585,11 +598,11 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
  * missed among them) starts from an empty message, so no character of the last one is shown with it. Returns 1 when
  * the superframe held a text block. */
 static int
-dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw) {
+dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw, int first) {
     char* const msg = state->dstar_txt;
     dstar_text_assembly* t = &state->dstar_text;
     int any = 0;
-    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         unsigned place = 0U;
         if (!dstar_sd_text_block(raw, b, &place)) {
             continue;
@@ -644,19 +657,19 @@ dstar_sd_handle_text_message(dsd_state* state) {
     }
 }
 
-/* The GPS blocks' data (a D-PRS record or NMEA sentences) of every GPS block, wherever it sits in the superframe,
+/* The GPS blocks' data (a D-PRS record or NMEA sentences) of every GPS block from @p first on (dstar_sd_first_block()),
  * shown as it arrived: a raw dump, like every payload dump, only with the payload option (-Z). The "$$CRC" literal checks nothing, and a block is shown before its record is whole:
  * a D-PRS record is evidence and a position only once its CRC matches and admission admitted it (dstar_dprs_publish()
  * prints that one's position), so without -Z no part of a record reaches the output before then (issue #800, fail
  * closed). The "GPS DATA:" label names what the blocks are whatever part of a record they hold, so the diagnostics log
  * can remove them (D10). */
 static void
-dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw) {
+dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw, int first) {
     if (opts->payload != 1) {
         return;
     }
     DSD_FPRINTF(stderr, " GPS DATA: ");
-    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
         if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {
             continue;
@@ -673,9 +686,6 @@ dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw) {
 /* What a slow-data block is, by its own mini-header: GPS data (0x3n), a text block (0x40-0x43), filler (0x66), or
  * anything else. */
 enum { DSTAR_SD_BLOCK_OTHER = 0, DSTAR_SD_BLOCK_GPS, DSTAR_SD_BLOCK_TEXT, DSTAR_SD_BLOCK_FILLER };
-
-/* The blocks a rebroadcast header fills at the start of its superframe: its 41 octets, five per block. */
-enum { DSTAR_SD_HEADER_BLOCKS = 9 };
 
 #define DSTAR_SD_FILLER 0x66U
 
@@ -709,26 +719,26 @@ dstar_sd_print_unknown(const uint8_t* raw, int first) {
     }
 }
 
-/* Every superframe, a rebroadcast header's after the header itself (@p header: its first nine blocks are the header's):
- * each block classified by its own mini-header, wherever it sits. Text blocks make the message (the block a header
- * leaves after its nine among them); GPS blocks, any of them, the -Z "GPS DATA:" dump; the blocks of no known kind
- * outside the header, when no text block came, the "_UNK:" dump. */
+/* Every superframe, a rebroadcast header's after the header itself (@p header: its first nine blocks are the header's,
+ * whatever their mini-headers say, dstar_sd_first_block()): each other block classified by its own mini-header. Text
+ * blocks make the message (the block a header leaves after its nine among them); GPS blocks the -Z "GPS DATA:" dump;
+ * the blocks of no known kind, when no text block came, the "_UNK:" dump. */
 static void
 dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx, int header) {
-    const int first = header ? DSTAR_SD_HEADER_BLOCKS : 0;
-    const int text = dstar_sd_collect_text(opts, state, ctx->payload);
+    const int first = dstar_sd_first_block(header);
+    const int text = dstar_sd_collect_text(opts, state, ctx->payload, first);
     if (text) {
         dstar_sd_handle_text_message(state);
     }
     int gps = 0;
     int other = 0;
-    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         const int kind = dstar_sd_block_kind(ctx->payload, b);
         gps |= kind == DSTAR_SD_BLOCK_GPS;
-        other |= b >= first && kind == DSTAR_SD_BLOCK_OTHER;
+        other |= kind == DSTAR_SD_BLOCK_OTHER;
     }
     if (gps) {
-        dstar_sd_handle_gps_data(opts, ctx->payload);
+        dstar_sd_handle_gps_data(opts, ctx->payload, first);
     }
     if (!text && other) {
         dstar_sd_print_unknown(ctx->payload, first);
@@ -784,7 +794,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
         dstar_sd_handle_header_format(state, &ctx);
     }
     dstar_sd_handle_typed_blocks(opts, state, &ctx, header);
-    dstar_sd_collect_gps(opts, state, ctx.payload);
+    dstar_sd_collect_gps(opts, state, ctx.payload, dstar_sd_first_block(header));
 
     dstar_sd_print_payload(opts, &ctx);
 }

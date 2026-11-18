@@ -881,6 +881,38 @@ test_text_block_after_a_header(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9): the header CRC covers a rebroadcast header's octets, not its nine blocks' mini-headers. A header
+ * block whose mini-header arrives as a text block's (0x41) or a GPS block's (0x35) in an otherwise valid header still
+ * holds header octets: they are never text or GPS data. N0TEXT's message "HELLO" stays "HELLO" on the row (no repeater
+ * callsign appended), and a D-PRS record whose bytes straddle the header superframe completes and is N0TEXT's. */
+static void
+test_header_blocks_are_never_text_or_gps(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0TEXT");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "HELLO", 1U);
+    expect_str("first block on the row", open_row(&r)->text_message, "HELLO");
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0TEXT", 0x00U);
+    bytes[3U * 6U] = 0x41U;
+    send_superframe(&r, bytes);
+    expect_str("header octets are no text", r.state->dstar_txt, "HELLO");
+    expect_str("row keeps its message", open_row(&r)->text_message, "HELLO");
+
+    const size_t half = 25U;
+    send_gps(&r, k_vector, half, 0);
+    build_slow_data_header(bytes, "N0TEXT", 0x00U);
+    bytes[4U * 6U] = 0x35U;
+    send_superframe(&r, bytes);
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    dsd_position_fix f[2];
+    expect_int("record across the header superframe admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record is N0TEXT's", f[0].source_text, "N0TEXT");
+    expect_int("N0TEXT's row takes the position", open_row(&r)->pos.valid, 1);
+    rig_close(&r);
+}
+
 /* Issue #800 (g62-r8): the next message's first block is missed within the same transmission. Its later blocks start
  * a new message (a place at or before one already heard since the last block 0): none of the previous message's
  * characters is shown with them, and the row keeps the previous whole message. */
@@ -933,6 +965,7 @@ main(void) {
     test_data_header_revokes_the_voice_naming();
     test_text_block_after_a_header();
     test_missed_first_block_starts_a_new_message();
+    test_header_blocks_are_never_text_or_gps();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;
