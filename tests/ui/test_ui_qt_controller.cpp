@@ -30,6 +30,9 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#if defined(DSD_TEST_QPA_APP_STATE)
+#include <qpa/qwindowsysteminterface.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -380,6 +383,39 @@ test_gui_snapshot_buffers_keep_no_key_off_screen() {
     state.K = state.R = 0ULL;
     freeState(&state);
 }
+
+#if defined(DSD_TEST_QPA_APP_STATE)
+// A controller made while the app is already off screen (Android recreating the GUI in the background) gets no state
+// transition to say so: it withholds keys from its first read on, and a read once the app is on screen has them.
+static void
+test_controller_made_off_screen_withholds_keys() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.K = 0x5A5AULL;
+    DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+    QWindowSystemInterface::handleApplicationStateChanged<QWindowSystemInterface::SynchronousDelivery>(
+        Qt::ApplicationHidden, true);
+    check(QGuiApplication::applicationState() == Qt::ApplicationHidden);
+    {
+        dsd_qt::UiController controller(nullptr, nullptr, nullptr, nullptr);
+        dsd_app_frontend_runtime_start(&opts, &state);
+        const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+        const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+        check(snapshot != nullptr && snapshot->K == 0ULL && opts_snapshot != nullptr
+              && opts_snapshot->rr_app_key[0] == '\0');
+        QWindowSystemInterface::handleApplicationStateChanged<QWindowSystemInterface::SynchronousDelivery>(
+            Qt::ApplicationActive, true);
+        snapshot = dsd_app_get_latest_snapshot();
+        check(snapshot != nullptr && snapshot->K == 0x5A5AULL);
+        dsd_app_frontend_runtime_stop();
+    }
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    state.K = 0ULL;
+    freeState(&state);
+}
+#endif
 
 // Reproduce the options-publication/redraw gap during Android input startup.
 static void
@@ -2019,6 +2055,9 @@ main(int argc, char** argv) {
     test_unit_activity_follows_the_session();
     test_startup_options_wait_for_redraw();
     test_gui_snapshot_buffers_keep_no_key_off_screen();
+#if defined(DSD_TEST_QPA_APP_STATE)
+    test_controller_made_off_screen_withholds_keys();
+#endif
     test_metrics_age_without_decoder_redraw();
     test_target_change_publishes_once();
     test_target_change_drops_sync_hold();

@@ -25821,6 +25821,18 @@ if(DSD_ENABLE_QT_UI)
             DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
+    # Qt6GuiPrivate (found above) lets the test set the application state as the platform does, for a controller made
+    # while the app is already off screen.
+    if(TARGET Qt6::GuiPrivate)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_controller
+            PRIVATE Qt6::GuiPrivate
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_controller
+            PRIVATE DSD_TEST_QPA_APP_STATE=1
+        )
+    endif()
     add_test(NAME UI_QT_CONTROLLER COMMAND dsd-neo_test_ui_qt_controller)
     set_tests_properties(
         UI_QT_CONTROLLER

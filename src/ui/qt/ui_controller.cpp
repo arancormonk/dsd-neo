@@ -59,6 +59,9 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistory
     }
     if (auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
         connect(app, &QGuiApplication::applicationStateChanged, this, &UiController::onApplicationStateChanged);
+        // A controller made while the app is already off screen withholds keys from its first poll on: no transition
+        // will come to say so.
+        onApplicationStateChanged(app->applicationState());
     }
 }
 
