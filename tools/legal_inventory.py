@@ -19,7 +19,7 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
             "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "soapy-airspyhf", "libhackrf",
-            "libairspyhf", "windows-libusb", "pthreads4w", "vcpkg-ports"}
+            "libairspyhf", "windows-libusb", "pthreads4w", "msvc-runtime", "vcpkg-ports"}
 
 
 def read_inventory(root=ROOT):
@@ -71,6 +71,11 @@ def validate(inventory, root=ROOT):
                 raise ValueError(f"Custom license has no retained text: {custom}")
         if "pin" in component and not re.fullmatch(r"[0-9a-f]{40}", pins.get(component["pin"], "")):
             raise ValueError(f"Missing immutable source revision: {ident}")
+        files = component.get("redistributable_files")
+        if files is not None and (not isinstance(files, list) or not files or len(set(files)) != len(files)
+                                  or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9_]+\.dll", name)
+                                             for name in files)):
+            raise ValueError(f"Redistributable files must be distinct lower-case DLL names: {ident}")
     if ids != REQUIRED:
         raise ValueError("Reviewed component inventory changed; review required coverage")
     return pins

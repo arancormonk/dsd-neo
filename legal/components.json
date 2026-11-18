@@ -786,6 +786,42 @@
       }
     },
     {
+      "id": "msvc-runtime",
+      "name": "Microsoft Visual C++ runtime",
+      "paths": [
+        "tools/windows/stage_runtime_dlls.ps1",
+        "tools/windows/verify_release_tree.ps1"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "notices": [],
+      "redistributable_files": [
+        "concrt140.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll",
+        "msvcp140_codecvt_ids.dll",
+        "vccorlib140.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "vcruntime140_threads.dll"
+      ],
+      "assessment": "Microsoft's C and C++ runtime DLLs in bin\\ of the Windows ZIP, as many of redistributable_files as its binaries import (the 2.12.1 ZIP carried MSVCP140.dll, VCRUNTIME140.dll and VCRUNTIME140_1.dll). tools/windows/stage_runtime_dlls.ps1 copies them unmodified from the x64 runtime folder of the toolset that built the release, VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC<toolset>.CRT, and never from System32; it and verify_release_tree.ps1 refuse any other Visual C++ runtime DLL and the debug runtime. Terms: the Distributable Code section of the Microsoft Software License Terms for the Visual Studio edition used (https://visualstudio.microsoft.com/license-terms/), whose REDIST list lets a licensed Visual Studio user distribute the files of VC\\Redist except its debug_nonredist folders: \"Visual Studio Redistribution\" for Visual Studio 2026 and later (https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution) and \"Visual Studio 2022 Redistribution\" (https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution), both retrieved 2026-11-18. No Microsoft license text or notice is retained or shipped.",
+      "copyright_permission": "unresolved",
+      "gpl_compatibility": "unresolved",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {},
+      "finding": "MSVC-RUNTIME"
+    },
+    {
       "id": "vcpkg-ports",
       "name": "vcpkg port recipes",
       "paths": [

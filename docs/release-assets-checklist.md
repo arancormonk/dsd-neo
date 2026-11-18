@@ -49,6 +49,9 @@ resource bundle, so they travel with the binary rather than as a separate file.
   - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll`, `HackRFSupport.dll` and
         `airspyhfSupport.dll`, and that `bin/` holds `hackrf.dll`, `airspyhf.dll` and `SoapySDRUtil.exe` beside
         `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and `pthreadVC3.dll`.
+  - [ ] Confirm the only Visual C++ runtime DLLs in `bin/` (`vcruntime140*.dll`, `msvcp140*.dll` and the like) are
+        ones the `msvc-runtime` record in `legal/components.json` lists, and that none is a debug build (`*d.dll`,
+        `ucrtbased.dll`); `tools/windows/verify_release_tree.ps1` refuses any other.
   - [ ] On a Windows machine, if one is at hand, `bin\SoapySDRUtil.exe --info` from a fresh unzip lists the three
         modules and `Available factories... airspy, airspyhf, hackrf` (`tools/windows/verify_release_tree.ps1` checks
         this in CI).

@@ -57,6 +57,15 @@ class InventoryTests(unittest.TestCase):
             with self.subTest(alteration=alteration), self.assertRaises(ValueError):
                 legal.validate(inventory, ROOT)
 
+    def test_runtime_file_list_is_checked(self):
+        # The Windows release scripts carry only the Visual C++ runtime DLLs this list names.
+        for files in ([], ["msvcp140.dll", "msvcp140.dll"], ["MSVCP140.dll"], ["bin/msvcp140.dll"], "msvcp140.dll"):
+            inventory = copy.deepcopy(self.inventory)
+            runtime = next(c for c in inventory["components"] if c["id"] == "msvc-runtime")
+            runtime["redistributable_files"] = files
+            with self.subTest(files=files), self.assertRaises(ValueError):
+                legal.validate(inventory, ROOT)
+
     def test_binary_sboms_preserve_uncertainty_and_dependency_identity(self):
         for platform in legal.PLATFORMS:
             document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}

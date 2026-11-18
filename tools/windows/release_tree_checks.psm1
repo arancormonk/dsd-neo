@@ -161,7 +161,8 @@ $script:WindowsDlls = [System.Collections.Generic.HashSet[string]]::new(
 #                    concrt140, vccorlib140, vcomp140, vcamp140, mfc140*, and their
 #                    Unicode and language builds), which comes with the Visual C++
 #                    redistributable, never with Windows, so the release carries it in
-#                    bin\ even when the build machine's System32 holds a copy;
+#                    bin\ even when the build machine's System32 holds a copy, and only
+#                    when the msvc-runtime record lists it (Get-RecordedRuntimeFiles);
 #   Other            anything else: a library the release carries in bin\.
 function Get-DllKind {
     param(
@@ -182,6 +183,33 @@ function Get-DllKind {
         return 'Redistributable'
     }
     return 'Other'
+}
+
+# The Visual C++ runtime DLLs a release may carry: the redistributable_files of the
+# msvc-runtime record in legal/components.json, which also names Microsoft's terms for
+# them. Staging reads the repository's record, the release check the one the tree
+# ships, so neither carries a runtime DLL the record does not list. Throws when the file
+# has no such record or the record lists no file.
+function Get-RecordedRuntimeFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    if (!(Test-Path -LiteralPath $ComponentsPath -PathType Leaf)) {
+        throw "No component inventory at $ComponentsPath, so the Visual C++ runtime DLLs a release may carry are unknown"
+    }
+    $records = @((Get-Content -Raw -LiteralPath $ComponentsPath | ConvertFrom-Json).components |
+            Where-Object { $_.id -eq 'msvc-runtime' })
+    if ($records.Count -ne 1 -or -not ($records[0].PSObject.Properties.Name -contains 'redistributable_files')) {
+        throw "$ComponentsPath has no msvc-runtime record listing the Visual C++ runtime DLLs a release may carry"
+    }
+    $files = @($records[0].redistributable_files | Where-Object { $_ -is [string] -and $_ -ne '' })
+    if ($files.Count -eq 0) {
+        throw "The msvc-runtime record in $ComponentsPath lists no Visual C++ runtime DLL"
+    }
+    $set = [System.Collections.Generic.HashSet[string]]::new([string[]]$files, [System.StringComparer]::OrdinalIgnoreCase)
+    return , $set
 }
 
 # Fills $Buffer from the stream's position; $false when the file ends first.
@@ -419,5 +447,5 @@ function Invoke-IsolatedProcess {
 }
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
-    Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Test-PeImage, Test-DumpbinImageReport,
+    Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles, Test-PeImage, Test-DumpbinImageReport,
     Test-ImportName, Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess

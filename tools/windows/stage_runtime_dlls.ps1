@@ -8,7 +8,11 @@ param(
     [string]$DestinationDir,
 
     [Parameter(Mandatory = $true)]
-    [string[]]$SearchDirs
+    [string[]]$SearchDirs,
+
+    # The component inventory whose msvc-runtime record lists the Visual C++ runtime DLLs
+    # a release may carry.
+    [string]$ComponentsPath = (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'legal/components.json')
 )
 
 Set-StrictMode -Version Latest
@@ -304,33 +308,44 @@ function Get-DependentDllNames {
     return $names | Sort-Object -Unique
 }
 
-function Get-VsRedistDirs {
-    $vsPath = Get-VsInstallationPath
-    if (-not $vsPath) {
-        return @()
-    }
-
-    $redistRoot = Join-Path $vsPath 'VC\Redist\MSVC'
-    if (!(Test-Path $redistRoot)) {
-        return @()
-    }
-
-    $dirs = @()
-    $redist = Get-ChildItem -Path $redistRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object -Property Name -Descending |
-        Select-Object -First 3
-    foreach ($r in $redist) {
-        foreach ($cand in @(
-            (Join-Path $r.FullName 'x64\Microsoft.VC143.CRT'),
-            (Join-Path $r.FullName 'x64\Microsoft.VC142.CRT'),
-            (Join-Path $r.FullName 'x64\Microsoft.VC141.CRT')
-        )) {
-            if (Test-Path $cand) {
-                $dirs += $cand
-            }
+# The x64 runtime folder of the Visual C++ toolset that built the binaries,
+# VC\Redist\MSVC\<version>\x64\Microsoft.VC<toolset>.CRT: under VCToolsRedistDir, which a
+# Visual Studio developer shell sets for its toolset, else under the newest toolset of
+# the latest Visual Studio. Microsoft's REDIST list lets a licensed Visual Studio user
+# distribute the files of VC\Redist, except its debug_nonredist folders (legal/components.json,
+# msvc-runtime). $null when there is no such folder.
+function Get-VcRuntimeDir {
+    $redist = $env:VCToolsRedistDir
+    if ([string]::IsNullOrWhiteSpace($redist)) {
+        $vsPath = Get-VsInstallationPath
+        if (-not $vsPath) {
+            return $null
         }
+        $redistRoot = Join-Path $vsPath 'VC\Redist\MSVC'
+        if (!(Test-Path -LiteralPath $redistRoot)) {
+            return $null
+        }
+        $newest = Get-ChildItem -LiteralPath $redistRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[0-9]+\.[0-9]+\.[0-9]+$' } |
+            Sort-Object -Property { [version]$_.Name } -Descending |
+            Select-Object -First 1
+        if (-not $newest) {
+            return $null
+        }
+        $redist = $newest.FullName
     }
-    return $dirs | Select-Object -Unique
+    $arch = Join-Path $redist 'x64'
+    if (!(Test-Path -LiteralPath $arch -PathType Container)) {
+        return $null
+    }
+    $crt = @(Get-ChildItem -LiteralPath $arch -Directory | Where-Object { $_.Name -match '^Microsoft\.VC[0-9]+\.CRT$' })
+    if ($crt.Count -gt 1) {
+        throw "More than one Visual C++ runtime folder in ${arch}: $(@($crt | ForEach-Object { $_.Name }) -join ', ')"
+    }
+    if ($crt.Count -eq 0) {
+        return $null
+    }
+    return $crt[0].FullName
 }
 
 if (!(Test-Path $TargetBinary)) {
@@ -346,10 +361,9 @@ $dumpbin = Get-DumpbinPath
 $readobj = Get-ReadobjPath
 $objdump = Get-ObjdumpPath
 
-$system32 = Join-Path $env:SystemRoot 'System32'
-if (Test-Path $system32) {
-    $system32 = (Resolve-Path $system32).Path
-}
+$ComponentsPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ComponentsPath)
+$recordedRuntime = Get-RecordedRuntimeFiles -ComponentsPath $ComponentsPath
+$runtimeDir = Get-VcRuntimeDir
 
 function Get-NormalizedDirs {
     param(
@@ -363,13 +377,13 @@ function Get-NormalizedDirs {
         Select-Object -Unique)
 }
 
-# A library comes from the search folders only. A Visual C++ runtime DLL may also come
-# from Visual Studio's redistributable folders or the build machine's System32: a clean
-# Windows lacks it, so it is copied from wherever it is found (Get-DllKind). A function
-# that returns one folder returns a string, not an array, so each result is put back
-# into one before a list is added to it.
+# A library comes from the search folders only. A Visual C++ runtime DLL comes only from
+# the toolset's runtime folder (Get-VcRuntimeDir), never from the build machine's
+# System32 or a search folder, and only when the msvc-runtime record lists it: a clean
+# Windows lacks it, so the release carries it (Get-DllKind). A function that returns one
+# folder returns a string, not an array, so its result is put back into one before a list
+# is added to it.
 $libraryDirs = @(Get-NormalizedDirs (@($destinationFull) + $SearchDirs))
-$runtimeDirs = @(Get-NormalizedDirs ($libraryDirs + @(Get-VsRedistDirs) + @($system32)))
 
 $queue = New-Object 'System.Collections.Generic.Queue[string]'
 $visited = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -394,31 +408,41 @@ while ($queue.Count -gt 0) {
             throw "$current imports $dll, part of the debug Visual C++ runtime, which may not be redistributed: build it with the release runtime (/MD)"
         }
 
+        if ($kind -eq 'Redistributable' -and -not $recordedRuntime.Contains($dll)) {
+            throw "$current imports $dll, a Visual C++ runtime DLL that the msvc-runtime record in $ComponentsPath does not list: record it there, with Microsoft's terms for it, before a release carries it"
+        }
+
         $destDllPath = Join-Path $destinationFull $dll
-        if (Test-Path $destDllPath) {
-            $queue.Enqueue((Resolve-Path $destDllPath).Path)
+        if (Test-Path -LiteralPath $destDllPath) {
+            $queue.Enqueue((Resolve-Path -LiteralPath $destDllPath).Path)
             continue
         }
 
         $dirs = $libraryDirs
         if ($kind -eq 'Redistributable') {
-            $dirs = $runtimeDirs
+            $dirs = @($runtimeDir | Where-Object { $_ })
         }
         $sourcePath = $null
         foreach ($dir in $dirs) {
             $candidate = Join-Path $dir $dll
-            if (Test-Path $candidate) {
-                $sourcePath = (Resolve-Path $candidate).Path
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $sourcePath = (Resolve-Path -LiteralPath $candidate).Path
                 break
             }
         }
 
         if (-not $sourcePath) {
-            $missing.Add("$dll (imported by $current)")
+            if ($kind -ne 'Redistributable') {
+                $missing.Add("$dll (imported by $current)")
+            } elseif ($runtimeDir) {
+                $missing.Add("$dll (imported by $current; not in the Visual C++ runtime folder $runtimeDir)")
+            } else {
+                $missing.Add("$dll (imported by $current; no Visual C++ runtime folder: run from a Visual Studio developer shell, or install the toolset's redistributable files)")
+            }
             continue
         }
 
-        Copy-Item -Force $sourcePath $destinationFull
+        Copy-Item -Force -LiteralPath $sourcePath -Destination $destinationFull
         $queue.Enqueue((Join-Path $destinationFull $dll))
     }
 }

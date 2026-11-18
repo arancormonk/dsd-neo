@@ -189,10 +189,14 @@ class StageRuntimeDlls(unittest.TestCase):
         crt.mkdir(parents=True)
         return crt
 
-    def stage(self, search=None):
+    def stage(self, search=None, redist=None):
         # Only the fakes are on PATH, so no real dumpbin, objdump or llvm-objdump on the host can answer instead.
         env = dict(os.environ, PATH=str(self.tools), SystemRoot=str(self.work / "windows"))
         env["ProgramFiles(x86)"] = str(self.program_files)
+        # A Visual Studio developer shell names its toolset's redistributable folder here.
+        env.pop("VCToolsRedistDir", None)
+        if redist is not None:
+            env["VCToolsRedistDir"] = str(redist)
         runner = self.work / "run.ps1"
         runner.write_text(RUNNER, encoding="utf-8")
         search = self.search if search is None else search
@@ -234,11 +238,14 @@ class StageRuntimeDlls(unittest.TestCase):
         self.respond("dumpbin", "a.dll", out=dumpbin_report("a.dll", ["KERNEL32.dll"]))
         for name in ("VCRUNTIME140_1.dll", "KERNEL32.dll"):
             (self.system32 / name).write_bytes(pe_image(b"system"))
+        (self.visual_studio() / "VCRUNTIME140_1.dll").write_bytes(pe_image(b"redistributable"))
         self.respond("dumpbin", "VCRUNTIME140_1.dll", out=dumpbin_report("VCRUNTIME140_1.dll", ["KERNEL32.dll"]))
         rc, output = self.stage()
         self.assertEqual(rc, 0, output)
-        # The runtime DLL found only in System32 is copied; the OS DLL and the API set are not.
+        # The runtime DLL is copied from Visual Studio's redistributable folder, not from System32; the OS DLL and the
+        # API set are not copied.
         self.assertEqual(self.staged(), ["VCRUNTIME140_1.dll", "a.dll", "dlls-manifest.txt"])
+        self.assertEqual((self.dest / "VCRUNTIME140_1.dll").read_bytes(), pe_image(b"redistributable"))
         manifest = normalized((self.dest / "dlls-manifest.txt").read_text(encoding="utf-8-sig")).split()
         self.assertEqual(sorted(manifest), ["VCRUNTIME140_1.dll", "a.dll"])
         calls = normalized((self.tools / "calls.log").read_text(encoding="utf-8")).splitlines()
@@ -248,11 +255,14 @@ class StageRuntimeDlls(unittest.TestCase):
         # The runtime DLLs whose names carry a suffix come with the Visual C++ redistributable, not with Windows: a
         # build machine has them in System32, a clean Windows does not.
         runtime = ["MSVCP140_ATOMIC_WAIT.dll", "MSVCP140_CODECVT_IDS.dll", "VCRUNTIME140_THREADS.dll"]
+        crt = self.visual_studio()
         self.tool("dumpbin")
         self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", runtime + ["KERNEL32.dll"]))
         for name in runtime + ["KERNEL32.dll"]:
             (self.system32 / name).write_bytes(pe_image(b"system"))
             self.respond("dumpbin", name, out=dumpbin_report(name, ["KERNEL32.dll"]))
+        for name in runtime:
+            (crt / name).write_bytes(pe_image(b"redistributable"))
         rc, output = self.stage()
         self.assertEqual(rc, 0, output)
         self.assertEqual([name for name in self.staged() if name.endswith(".dll")], sorted(runtime))
@@ -268,6 +278,55 @@ class StageRuntimeDlls(unittest.TestCase):
         rc, output = self.stage(search=self.dest)
         self.assertEqual(rc, 0, output)
         self.assertEqual(self.staged(), ["VCRUNTIME140_1.dll", "dlls-manifest.txt"])
+
+    def runtime_import(self, name="VCRUNTIME140.dll"):
+        self.reset_tools()
+        self.tool("dumpbin")
+        self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", [name, "KERNEL32.dll"]))
+        self.respond("dumpbin", name, out=dumpbin_report(name, ["KERNEL32.dll"]))
+
+    def test_runtime_comes_only_from_the_toolsets_redistributable_folder(self):
+        # Microsoft lets a licensed Visual Studio user distribute the files of VC\Redist (legal/components.json,
+        # msvc-runtime). The build machine's System32 copy may be another version, and a search folder's copy may come
+        # from anywhere.
+        (self.system32 / "VCRUNTIME140.dll").write_bytes(pe_image(b"system"))
+        (self.search / "VCRUNTIME140.dll").write_bytes(pe_image(b"vcpkg"))
+        older = self.visual_studio(version="14.44.35207", toolset="VC143")
+        (older / "VCRUNTIME140.dll").write_bytes(pe_image(b"latest Visual Studio"))
+        # The developer shell's toolset: Visual Studio 2026 names its folder Microsoft.VC145.CRT.
+        shell = self.work / "vs18/VC/Redist/MSVC/14.51.36231"
+        (shell / "x64/Microsoft.VC145.CRT").mkdir(parents=True)
+        (shell / "x64/Microsoft.VC145.CRT/VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
+        self.runtime_import()
+        rc, output = self.stage(redist=shell)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"developer shell"))
+        # Without a developer shell, the newest toolset of the latest Visual Studio.
+        self.runtime_import()
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"latest Visual Studio"))
+        # A runtime DLL that the toolset's folder lacks is missing, whatever System32 or the search folders hold.
+        self.runtime_import("MSVCP140.dll")
+        for where in (self.system32, self.search):
+            (where / "MSVCP140.dll").write_bytes(pe_image(b"elsewhere"))
+        output = self.assert_refused(["MSVCP140.dll", f"not in the Visual C++ runtime folder {older}"])
+        self.assertFalse((self.dest / "MSVCP140.dll").exists(), output)
+        # Without Visual Studio there is no runtime to carry.
+        shutil.rmtree(self.program_files / "Microsoft Visual Studio")
+        self.runtime_import()
+        self.assert_refused(["VCRUNTIME140.dll", "no Visual C++ runtime folder"])
+
+    def test_unrecorded_runtime_dlls_are_refused(self):
+        # A Visual C++ runtime DLL that the msvc-runtime record does not list has no recorded terms: staging stops,
+        # even with the file in the toolset's folder.
+        crt = self.visual_studio()
+        for name in ("vcomp140.dll", "mfc140u.dll", "VCAMP140.dll"):
+            with self.subTest(dll=name):
+                (crt / name).write_bytes(pe_image(b"redistributable"))
+                self.runtime_import(name)
+                output = self.assert_refused([name, "msvc-runtime record", str(ROOT / "legal/components.json")])
+                self.assertFalse((self.dest / name).exists(), output)
 
     def test_dumpbin_report_without_dependencies_is_valid(self):
         self.tool("dumpbin")

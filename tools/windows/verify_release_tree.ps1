@@ -9,7 +9,9 @@
 #      inputs and librtlsdr to the same airspy.dll and libusb-1.0.dll as the modules'
 #      libraries), every DLL a staged binary imports present in bin\ unless it is an
 #      API set or one of the Windows DLLs release_tree_checks.psm1 lists, no debug
-#      Visual C++ runtime, and SoapyAirspyHF built with its gain controls;
+#      Visual C++ runtime, no Visual C++ runtime DLL that the msvc-runtime record the
+#      tree ships (share\doc\dsd-neo\legal\components.json) does not list, and
+#      SoapyAirspyHF built with its gain controls;
 #   3. dsd-neo.exe -h;
 #   4. SoapySDRUtil --check=<driver> finds each of the three drivers;
 #   5. SoapySDRUtil --info finds exactly the three modules under this root;
@@ -209,7 +211,11 @@ function Test-Hardening {
 function Test-LoadPath {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TreeRoot
+        [string]$TreeRoot,
+
+        # The Visual C++ runtime DLLs the tree's msvc-runtime record lists.
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.HashSet[string]]$RecordedRuntime
     )
 
     $bin = Join-Path $TreeRoot 'bin'
@@ -256,21 +262,35 @@ function Test-LoadPath {
     # bin\ unless it is part of Windows. The runner's System32 says nothing about that:
     # it holds the Visual C++ redistributable and whatever its driver packages installed,
     # which a user's may lack (Get-DllKind).
+    # A Visual C++ runtime DLL the tree carries, imported or not, must be one the
+    # msvc-runtime record lists with Microsoft's terms for it.
     $missing = New-Object 'System.Collections.Generic.List[string]'
     $debug = New-Object 'System.Collections.Generic.List[string]'
+    $unrecorded = New-Object 'System.Collections.Generic.List[string]'
     $binaries = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
     foreach ($binary in @($binaries | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
+        $ownKind = Get-DllKind -Name $binary.Name
+        if ($ownKind -eq 'DebugRuntime') {
+            $debug.Add($binary.Name)
+        } elseif ($ownKind -eq 'Redistributable' -and -not $RecordedRuntime.Contains($binary.Name)) {
+            $unrecorded.Add($binary.Name)
+        }
         foreach ($name in @(Get-ImageDependents $binary.FullName)) {
             $kind = Get-DllKind -Name $name
             if ($kind -eq 'DebugRuntime') {
                 $debug.Add("$($binary.Name) -> $name")
+            } elseif ($kind -eq 'Redistributable' -and -not $RecordedRuntime.Contains($name)) {
+                $unrecorded.Add("$($binary.Name) -> $name")
             } elseif ($kind -ne 'ApiSet' -and $kind -ne 'Windows' -and !(Test-Path -LiteralPath (Join-Path $bin $name))) {
                 $missing.Add("$($binary.Name) -> $name")
             }
         }
     }
     if ($debug.Count -gt 0) {
-        throw "Staged binaries import the debug Visual C++ runtime, which may not be redistributed:`n$($debug -join "`n")"
+        throw "Staged binaries are or import the debug Visual C++ runtime, which may not be redistributed:`n$($debug -join "`n")"
+    }
+    if ($unrecorded.Count -gt 0) {
+        throw "Staged binaries are or import Visual C++ runtime DLLs that the tree's msvc-runtime record does not list:`n$($unrecorded -join "`n")"
     }
     if ($missing.Count -gt 0) {
         throw "DLLs the staged binaries import are missing from ${bin}:`n$($missing -join "`n")"
@@ -397,9 +417,10 @@ New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 try {
     Assert-ReleaseNotices -DocDir (Join-Path $treeRoot 'share/doc/dsd-neo')
     Write-Host "OK: every release notice is in $(Join-Path $treeRoot 'share/doc/dsd-neo')"
+    $recordedRuntime = Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
     Test-PatchedRtlsdr -Bin (Join-Path $treeRoot 'bin')
     Test-Hardening -TreeRoot $treeRoot
-    Test-LoadPath -TreeRoot $treeRoot
+    Test-LoadPath -TreeRoot $treeRoot -RecordedRuntime $recordedRuntime
     Test-Drivers -TreeRoot $treeRoot
     Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
     Test-WithoutHackrfLibrary -TreeRoot $treeRoot -Scratch $scratch

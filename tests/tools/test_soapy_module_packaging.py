@@ -273,6 +273,32 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn("licenses/BSL-1.0.txt", re.search(r"required=\(([^\n]+)\)",
                                                         read(".github/workflows/linux-appimage.yaml")).group(1).split())
 
+    def test_visual_cpp_runtime_record(self):
+        # The Windows ZIP carries Microsoft's runtime DLLs: the record names the files it may carry and Microsoft's
+        # terms, and leaves what is not established as a finding.
+        component = next(c for c in json.loads(read("legal/components.json"))["components"]
+                         if c["id"] == "msvc-runtime")
+        self.assertEqual((component["platforms"], component["distribution"]), (["windows"], ["binary"]))
+        self.assertEqual((component["license_declared"], component["license_concluded"]),
+                         ("NOASSERTION", "NOASSERTION"))
+        self.assertEqual((component["copyright_permission"], component["finding"]), ("unresolved", "MSVC-RUNTIME"))
+        # The DLLs the 2.12.1 ZIP carried are on the list, and nothing that a toolset's CRT folder lacks.
+        files = component["redistributable_files"]
+        for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+            self.assertIn(name, files)
+        for name in files:
+            self.assertRegex(name, r"^(concrt140|msvcp140(_1|_2|_atomic_wait|_codecvt_ids)?|vccorlib140|"
+                                   r"vcruntime140(_1|_threads)?)\.dll$")
+        for url in ("https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution",
+                    "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution",
+                    "https://visualstudio.microsoft.com/license-terms/"):
+            self.assertIn(url, component["assessment"])
+            self.assertIn(url, read("THIRD_PARTY.md"))
+        self.assertIn("| MSVC-RUNTIME |", read("legal/status.md"))
+        self.assertIn('"msvc-runtime"', read("tools/legal_inventory.py"))
+        self.assertIn("Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot "
+                      "'share/doc/dsd-neo/legal/components.json')", read("tools/windows/verify_release_tree.ps1"))
+
     def test_vcpkg_port_copies_keep_the_vcpkg_notice(self):
         # vcpkg's MIT license asks that its notice stay with copies of its files: the overlays copied from its ports
         # keep it beside them, and every portfile says whose it is.
@@ -575,7 +601,10 @@ DEPENDENCIES = {
     "SoapySDRUtil.exe": ["SoapySDR.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "KERNEL32.dll"],
 }
 INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "airspyhf.dll", "SoapySDR.dll", "libusb-1.0.dll",
-                 "pthreadVC3.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "unused.dll")
+                 "pthreadVC3.dll", "unused.dll")
+# The Visual C++ runtime the binaries import, which staging takes from the toolset's redistributable folder of the
+# Visual Studio that vswhere finds, never from vcpkg's bin\.
+RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
 
 
 # Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers, /DEPENDENTS and /IMPORTS from
@@ -845,13 +874,21 @@ class SoapyReleaseScripts(unittest.TestCase):
         (windows / "System32").mkdir(parents=True)
         (windows / "System32/KERNEL32.dll").write_bytes(pe_image(b"system"))
         self.program_files = self.work / "pf86"
-        self.program_files.mkdir()
+        installer = self.program_files / "Microsoft Visual Studio/Installer"
+        installer.mkdir(parents=True)
+        (installer / "vswhere.exe").write_text(f"#!/bin/sh\necho '{self.work / 'vs'}'\n", encoding="utf-8")
+        (installer / "vswhere.exe").chmod(0o755)
+        self.crt = self.work / "vs/VC/Redist/MSVC/14.51.36231/x64/Microsoft.VC145.CRT"
+        self.crt.mkdir(parents=True)
+        for name in RUNTIME_DLLS:
+            (self.crt / name).write_bytes(pe_image(name.encode()))
         return tools, build, installed, windows
 
     def stage(self, tools, build, installed, windows):
         stage = self.work / "dist/dsd-neo-msvc"
         env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows))
         env["ProgramFiles(x86)"] = str(self.program_files)
+        env.pop("VCToolsRedistDir", None)
         rc, out, err = self.pwsh(STAGE, "-Script", ROOT / "tools/windows/stage_release_tree.ps1", "-Build", build,
                                  "-Stage", stage, "-Installed", installed, env=env)
         return rc, out + err, stage
@@ -862,7 +899,9 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         bin_files = sorted(p.name for p in (stage / "bin").iterdir())
         self.assertEqual(bin_files, sorted(["dsd-neo.exe", "SoapySDRUtil.exe", "dlls-manifest.txt"]
-                                           + [n for n in INSTALLED_BIN if n != "unused.dll"]))
+                                           + [n for n in INSTALLED_BIN if n != "unused.dll"] + list(RUNTIME_DLLS)))
+        for name in RUNTIME_DLLS:
+            self.assertEqual((stage / "bin" / name).read_bytes(), (self.crt / name).read_bytes())
         self.assertEqual((stage / "bin/SoapySDR.dll").read_bytes(), pe_image(b"SoapySDR.dll"))
         self.assertEqual(sorted(p.relative_to(stage).as_posix() for p in (stage / "lib").rglob("*")),
                          ["lib/SoapySDR", "lib/SoapySDR/modules0.8"]
@@ -918,6 +957,24 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn("Missing DLL dependencies", output)
         self.assertIn("hackrf.dll", output)
 
+    def test_stage_release_tree_takes_the_runtime_from_the_toolset(self):
+        # The Visual C++ runtime comes from the toolset's redistributable folder, the files Microsoft's terms cover
+        # (legal/components.json, msvc-runtime), not from a copy vcpkg's bin\ or the build machine's System32 holds.
+        tools, build, installed, windows = self.fake_tree()
+        for name in RUNTIME_DLLS:
+            (installed / "bin" / name).write_bytes(pe_image(b"vcpkg copy"))
+            (windows / "System32" / name).write_bytes(pe_image(b"system copy"))
+        rc, output, stage = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 0, output)
+        for name in RUNTIME_DLLS:
+            self.assertEqual((stage / "bin" / name).read_bytes(), pe_image(name.encode()), name)
+        shutil.rmtree(stage)
+        (self.crt / "MSVCP140.dll").unlink()
+        rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"MSVCP140.dll (imported by", output)
+        self.assertIn(f"not in the Visual C++ runtime folder {self.crt}", output)
+
 
     def release_tree(self):
         """A release tree as stage_release_tree.ps1 leaves it, with fake programs and a fake dumpbin.exe."""
@@ -931,7 +988,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         root = self.work / "release"
         bin_dir = root / "bin"
         bin_dir.mkdir(parents=True)
-        for name in INSTALLED_BIN:
+        for name in INSTALLED_BIN + RUNTIME_DLLS:
             if name != "unused.dll":
                 (bin_dir / name).write_bytes(b"MZ " + name.encode())
         (bin_dir / "rtlsdr.dll").write_bytes(b"MZ ... no transfer left, canceling ...")
@@ -942,14 +999,19 @@ class SoapyReleaseScripts(unittest.TestCase):
         modules.mkdir(parents=True)
         for name in MODULE_FILES:
             (modules / name).write_bytes(b"MZ " + name.encode())
-        docs = root / "share/doc/dsd-neo"
-        for name in required_notices():
-            (docs / name).parent.mkdir(parents=True, exist_ok=True)
-            (docs / name).write_text(name + "\n")
+        self.write_notices(root)
         windows = self.work / "verify-windows"
         (windows / "System32").mkdir(parents=True)
         (windows / "System32/KERNEL32.dll").write_bytes(b"MZ system")
         return tools, root, windows
+
+    def write_notices(self, root):
+        # The legal component's components.json, whose msvc-runtime record lists the runtime DLLs a tree may carry.
+        docs = root / "share/doc/dsd-neo"
+        for name in required_notices():
+            (docs / name).parent.mkdir(parents=True, exist_ok=True)
+            (docs / name).write_text(name + "\n")
+        shutil.copyfile(ROOT / "legal/components.json", docs / "legal/components.json")
 
     def write_report(self, tools):
         (tools / "report.json").write_text(json.dumps(self.report), encoding="utf-8")
@@ -1003,9 +1065,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 1, output)
         self.assertIn("Missing or empty required license file", output)
-        for name in required_notices():
-            (root / "share/doc/dsd-neo" / name).parent.mkdir(parents=True, exist_ok=True)
-            (root / "share/doc/dsd-neo" / name).write_text(name + "\n")
+        self.write_notices(root)
         # A Visual C++ runtime DLL the tree lacks, which the build machine's System32 happens to hold: a clean Windows
         # does not have it.
         (windows / "System32/MSVCP140_ATOMIC_WAIT.dll").write_bytes(b"MZ redistributable")
@@ -1062,6 +1122,29 @@ class SoapyReleaseScripts(unittest.TestCase):
         # The listed Windows DLLs need no copy anywhere.
         (windows / "System32/KERNEL32.dll").unlink()
         self.report["dependents"]["libusb-1.0.dll"] = ["KERNEL32.dll", "ADVAPI32.dll"]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+
+    def test_verify_release_tree_refuses_unrecorded_runtime_dlls(self):
+        # Every Visual C++ runtime DLL the tree carries, imported or not, must be one the msvc-runtime record the tree
+        # ships lists with Microsoft's terms for it.
+        tools, root, windows = self.release_tree()
+        bin_dir = root / "bin"
+        (bin_dir / "vcomp140.dll").write_bytes(b"MZ OpenMP runtime")
+        self.report["dependents"]["vcomp140.dll"] = ["KERNEL32.dll"]
+        self.report["dependents"]["SoapySDR.dll"].append("vcomp140.dll")
+        self.assert_verify_refuses(tools, root, windows, "SoapySDR.dll -> vcomp140.dll", "msvc-runtime record")
+        self.report["dependents"]["SoapySDR.dll"].remove("vcomp140.dll")
+        self.assert_verify_refuses(tools, root, windows, "\nvcomp140.dll", "msvc-runtime record")
+        (bin_dir / "vcomp140.dll").unlink()
+        # A tree whose inventory has no such record names no runtime it may carry.
+        components = root / "share/doc/dsd-neo/legal/components.json"
+        inventory = json.loads(components.read_text(encoding="utf-8"))
+        inventory["components"] = [c for c in inventory["components"] if c["id"] != "msvc-runtime"]
+        components.write_text(json.dumps(inventory), encoding="utf-8")
+        self.assert_verify_refuses(tools, root, windows, f"{components} has no msvc-runtime record")
+        self.write_notices(root)
         self.write_report(tools)
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)

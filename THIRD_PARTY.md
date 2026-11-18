@@ -249,6 +249,18 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   `packaging/windows/` and shipped as `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
   `licenses/PThreads4W-CONTRIBUTORS.txt`.
 
+## Windows Visual C++ Runtime
+
+- **Microsoft Visual C++ runtime** (Microsoft Corporation) - Microsoft's license terms, not an open-source license. The
+  Windows ZIP carries in `bin\` the runtime DLLs its binaries import (`MSVCP140.dll`, `VCRUNTIME140.dll`,
+  `VCRUNTIME140_1.dll`, or another file of the `msvc-runtime` record in `legal/components.json`), unmodified, from the
+  `VC\Redist\MSVC\<version>\x64\Microsoft.VC<toolset>.CRT` folder of the Visual C++ toolset that built the release.
+  The Distributable Code section of the [Visual Studio license terms](https://visualstudio.microsoft.com/license-terms/)
+  and its REDIST list ([Visual Studio 2026 and later](https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution),
+  [Visual Studio 2022](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)) let a licensed
+  Visual Studio user distribute those files. No Microsoft license text ships with the ZIP; `legal/status.md`
+  (MSVC-RUNTIME) records what is still open.
+
 ## vcpkg Port Recipes
 
 - **vcpkg** (Copyright (c) Microsoft Corporation, https://github.com/microsoft/vcpkg) - MIT. The `soapysdr` and `rtlsdr`
