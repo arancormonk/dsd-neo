@@ -4883,8 +4883,10 @@ registry lock, so `dsd_app_telemetry_observer_remove()` returns only once no cal
 callback must not block, submit commands, add/remove observers, or take the P25 SM tick guard. Live event-history rows
 are read under `dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
 
-**Key copies:** the state snapshots carry the scalar and AES keys, the talkgroup autoload's copies of them and the
-CSI key, which the terminal UI shows redacted unless `--show-keys`. A publish overwrites them with the live values.
+**Key copies:** the state snapshots carry the scalar and AES keys, the talkgroup autoload's copies of them, the
+CSI key, which the terminal UI shows redacted unless `--show-keys`, and `payload_miN`, into which an NXDN voice call
+assignment or scrambled frame copies the scrambler key as its LFSR seed (also wiped from the live state with its keys,
+`dsd_key_state_secure_wipe()`). A publish overwrites them with the live values.
 The snapshots outlive the session (`snapshot.h`), so `dsd_app_frontend_runtime_stop()` wipes them, once the hooks are
 cleared and nothing can publish them again (`dsd_app_snapshot_wipe_keys()`, `DSD_SECURE_ZERO`): the published copy at
 once, the consumer's at its own thread's next read, which then copies the published state again. The terminal UI
