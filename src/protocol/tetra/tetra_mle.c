@@ -964,6 +964,13 @@ sds_concat_same_party(const sds_concat_party* a, const sds_concat_party* b) {
  * one, else a free one, else the stalest. Contexts idle for longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way,
  * and so are those begun on another reception (a retune, a trunk-scan target switch or a received identity change
  * since their first part): their parts are another reception's message, which a part heard now never completes. */
+static int
+sds_concat_stale(const dsd_state* state, const sds_concat_ctx* c, uint64_t now_ms) {
+    return c->valid
+           && (now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS
+               || (c->received_count > 0 && !dsd_position_origin_matches(state, &c->origin)));
+}
+
 static sds_concat_ctx*
 sds_concat_find(const dsd_state* state, struct tetra_sds_concat_store* store, const sds_concat_part* part,
                 uint64_t now_ms) {
@@ -971,9 +978,7 @@ sds_concat_find(const dsd_state* state, struct tetra_sds_concat_store* store, co
     sds_concat_ctx* oldest = &store->ctx[0];
     for (unsigned i = 0; i < SDS_CONCAT_CONTEXTS; i++) {
         sds_concat_ctx* c = &store->ctx[i];
-        if (c->valid
-            && (now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS
-                || (c->received_count > 0 && !dsd_position_origin_matches(state, &c->origin)))) {
+        if (sds_concat_stale(state, c, now_ms)) {
             sds_concat_clear(c);
         }
         if (c->valid && sds_concat_same_sender(&c->src, &part->src) && sds_concat_same_party(&c->dst, &part->dst)
