@@ -26,7 +26,6 @@
 #include <curl/curl.h>
 #include <curl/curlver.h>
 #include <curl/system.h>
-#include <dsd-neo/platform/timing.h>
 #ifdef DSD_TILE_FETCH_TEST_HOOKS
 #include "tile_fetch_test_hooks.h"
 #endif
@@ -236,87 +235,19 @@ tf_curl_features(void) {
     return (info != NULL) ? info->features : 0;
 }
 
-#define TF_POLL_MS            100
-
-/**
- * @brief Read the finished transfer's result off the multi handle.
- *
- * @param multi Multi handle with no transfer left running.
- * @return The transfer's result, or CURLE_GOT_NOTHING when libcurl reports none.
- */
-static CURLcode
-tf_multi_result(CURLM* multi) {
-    int left = 0;
-    for (const CURLMsg* msg = curl_multi_info_read(multi, &left); msg != NULL;
-         msg = curl_multi_info_read(multi, &left)) {
-        if (msg->msg == CURLMSG_DONE) {
-            return msg->data.result;
-        }
-    }
-    return CURLE_GOT_NOTHING;
+/** Cancel predicate for dsd_curl_perform_cancellable(). */
+static int
+tf_cancel_requested(const void* ctx) {
+    return dsd_tile_fetch_cancel_requested((const dsd_tile_fetch_cancel*)ctx);
 }
 
-/**
- * @brief Run one transfer on a private multi handle, checking the cancel token
- *        between short waits.
- *
- * The xferinfo callback alone does not bound a cancel: libcurl 8.23 was seen
- * calling it not once while a TLS handshake stalled (a loopback socket that
- * accepts and never answers), so a cancel waited out the whole connect timeout.
- * Driving the transfer here sees the token within TF_POLL_MS in every phase,
- * name lookup and connect included. The easy handle's own timeouts still apply.
- *
- * @param curl   Configured easy handle.
- * @param cancel Token, or NULL.
- * @return The transfer's result; CURLE_ABORTED_BY_CALLBACK when cancelled here.
- */
-static CURLcode
-tf_perform(CURL* curl, const dsd_tile_fetch_cancel* cancel) {
-    CURLM* multi = curl_multi_init();
-    if (multi == NULL) {
-        return CURLE_OUT_OF_MEMORY;
-    }
-    if (curl_multi_add_handle(multi, curl) != CURLM_OK) {
-        (void)curl_multi_cleanup(multi);
-        return CURLE_FAILED_INIT;
-    }
-
-    CURLcode result = CURLE_FAILED_INIT;
-    for (;;) {
-        if (dsd_tile_fetch_cancel_requested(cancel)) {
-            result = CURLE_ABORTED_BY_CALLBACK;
-            break;
-        }
-        int running = 0;
-        if (curl_multi_perform(multi, &running) != CURLM_OK) {
-            break;
-        }
-        if (running == 0) {
-            result = tf_multi_result(multi);
-            break;
-        }
-        int ready = 0;
-        if (curl_multi_wait(multi, NULL, 0U, TF_POLL_MS, &ready) != CURLM_OK) {
-            break;
-        }
-        if (ready == 0) {
-            /* Older libcurl returns at once when it has no socket to wait on yet. */
-            dsd_sleep_ms(10U);
-        }
-    }
-
-    (void)curl_multi_remove_handle(multi, curl);
-    (void)curl_multi_cleanup(multi);
-    return result;
-}
-
-#define TF_SETOPT_LONG        tf_setopt_long
-#define TF_SETOPT_PTR         tf_setopt_ptr
-#define TF_SETOPT_DATA_CB     tf_setopt_data_cb
-#define TF_SETOPT_XFERINFO_CB tf_setopt_xferinfo_cb
-#define TF_PERFORM            tf_perform
-#define TF_RESPONSE_CODE      tf_response_code
-#define TF_CURL_FEATURES      tf_curl_features
+#define TF_PERFORM(curl, cancel) dsd_curl_perform_cancellable((curl), tf_cancel_requested, (cancel))
+#define TF_SETOPT_LONG           tf_setopt_long
+#define TF_SETOPT_PTR            tf_setopt_ptr
+#define TF_SETOPT_DATA_CB        tf_setopt_data_cb
+#define TF_SETOPT_XFERINFO_CB    tf_setopt_xferinfo_cb
+#define TF_RESPONSE_CODE         tf_response_code
+#define TF_CURL_FEATURES         tf_curl_features
 #endif
 
 #ifndef TF_CURL_VERSION_NUM

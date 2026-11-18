@@ -395,8 +395,8 @@ dsd_rr_client* dsd_rr_client_create(const dsd_rr_client_config* config);
 /**
  * @brief Cancel everything, join the worker, and destroy the client.
  *
- * An in-flight transfer unwinds on the next libcurl progress tick, which fires at
- * least once a second, so this can block for roughly a second.
+ * An in-flight transfer unwinds within about 100 ms in any phase, name lookup,
+ * connect and TLS included, so this blocks only briefly.
  *
  * @param client Client to destroy; NULL is a no-op.
  */

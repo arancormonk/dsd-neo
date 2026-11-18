@@ -67,7 +67,7 @@ dsd_rr_cancel_requested(const dsd_rr_cancel_token* cancel) {
  * dsd_rr_get_support_maps(), which is three more round trips. Those nested
  * transfers have to answer the same cancel as the job that caused them, or
  * dsd_rr_client_destroy() joins behind up to three uninterruptible
- * total_timeout_ms transfers instead of the ~1 s the header promises.
+ * total_timeout_ms transfers instead of the short unwind the header promises.
  *
  * Thread-local rather than a client field: a blocking getter called from any
  * other thread must keep seeing NULL, since the worker's token says nothing
@@ -203,6 +203,12 @@ rr_xferinfo_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t u
     return dsd_rr_cancel_requested((const dsd_rr_cancel_token*)clientp) ? 1 : 0;
 }
 
+/** Cancel predicate for dsd_curl_perform_cancellable(). */
+static int
+rr_cancel_pred(const void* ctx) {
+    return dsd_rr_cancel_requested((const dsd_rr_cancel_token*)ctx);
+}
+
 /**
  * @brief Map a libcurl result to a dsd-neo failure class.
  *
@@ -302,7 +308,9 @@ rr_builtin_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) 
     }
 
     rr_apply_request_options(curl, req, &buf, hdrs);
-    const CURLcode code = curl_easy_perform(curl);
+    /* Not curl_easy_perform(): the xferinfo callback is never called while a
+     * connect or TLS handshake stalls, and destroy promises a prompt unwind. */
+    const CURLcode code = dsd_curl_perform_cancellable(curl, rr_cancel_pred, req->cancel);
     (void)curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp->http_status);
 
     curl_slist_free_all(hdrs);
@@ -877,8 +885,8 @@ dsd_rr_client_destroy(dsd_rr_client* client) {
     }
     if (client->running != NULL) {
         /*
-         * The in-flight transfer unwinds on the next libcurl progress tick, which
-         * fires at least once a second, so this join can block for about a second.
+         * The in-flight transfer unwinds within about 100 ms in any phase
+         * (dsd_curl_perform_cancellable() polls the token), so this join is short.
          * That is deliberate and differs from dsd_rdio_upload_shutdown, which lets
          * its in-flight upload finish.
          */

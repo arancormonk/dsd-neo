@@ -993,8 +993,8 @@ dsd_rdio_normalize_upload_options(const dsd_rdio_api_config* api, int* timeout_m
     return 0;
 }
 
-/* Aborts the transfer in flight once the user's Stop cancels the uploads. libcurl calls this at least about once a
- * second even while nothing moves, as against a stalled endpoint, so the abort lands well inside one attempt. */
+/* Aborts the transfer in flight once the user's Stop cancels the uploads. libcurl calls this while a transfer runs,
+ * but not while a connect or TLS handshake stalls; dsd_rdio_cancel_pred() covers those phases. */
 static int
 dsd_rdio_xferinfo_cb(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
     (void)userdata;
@@ -1002,6 +1002,13 @@ dsd_rdio_xferinfo_cb(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_
     (void)dlnow;
     (void)ultotal;
     (void)ulnow;
+    return atomic_load(&g_rdio_upload_cancel) != 0 ? 1 : 0;
+}
+
+/* Cancel predicate for dsd_curl_perform_cancellable(): sees the user's Stop within about 100 ms in any phase. */
+static int
+dsd_rdio_cancel_pred(const void* ctx) {
+    (void)ctx;
     return atomic_load(&g_rdio_upload_cancel) != 0 ? 1 : 0;
 }
 
@@ -1065,7 +1072,7 @@ dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoin
     dsd_rdio_add_mime_parts(mime, api, system_str, wav_path, meta_path);
     dsd_rdio_configure_curl_request(curl, mime, endpoint, timeout_ms);
 
-    *out_res = curl_easy_perform(curl);
+    *out_res = dsd_curl_perform_cancellable(curl, dsd_rdio_cancel_pred, NULL);
     *out_http_code = 0;
     (void)curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out_http_code);
 

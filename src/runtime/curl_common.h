@@ -106,6 +106,32 @@ void dsd_curl_apply_hardening(CURL* curl, int connect_timeout_ms, int total_time
  * @return Number of bytes consumed, or 0 to abort the transfer.
  */
 size_t dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata);
+
+/**
+ * @brief Cancel predicate for dsd_curl_perform_cancellable().
+ *
+ * @param ctx Caller's context.
+ * @return Nonzero when the transfer should stop.
+ */
+typedef int (*dsd_curl_cancel_fn)(const void* ctx);
+
+/**
+ * @brief curl_easy_perform() that a cancel stops within about 100 ms in any phase.
+ *
+ * The xferinfo callback alone does not bound a cancel: libcurl 8.23 was seen
+ * calling it not once while a TLS handshake stalled (a loopback socket that
+ * accepts and never answers), so a cancel waited out the whole connect timeout.
+ * This runs the easy handle on a private multi handle and asks @p cancelled
+ * between waits of at most 100 ms, so name lookup, connect and TLS are covered
+ * too. Callers keep their xferinfo callback for the transfer itself. The easy
+ * handle's own timeouts still apply, and the handle is detached again on return.
+ *
+ * @param curl      Configured easy handle.
+ * @param cancelled Predicate, or NULL for never.
+ * @param ctx       Passed to @p cancelled.
+ * @return The transfer's result; CURLE_ABORTED_BY_CALLBACK when cancelled here.
+ */
+CURLcode dsd_curl_perform_cancellable(CURL* curl, dsd_curl_cancel_fn cancelled, const void* ctx);
 #endif
 
 #ifdef __cplusplus

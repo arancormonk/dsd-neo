@@ -417,6 +417,66 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return incoming;
 }
 
+#define DSD_CURL_CANCEL_POLL_MS 100
+
+/**
+ * @brief Read the finished transfer's result off the multi handle.
+ *
+ * @param multi Multi handle with no transfer left running.
+ * @return The transfer's result, or CURLE_GOT_NOTHING when libcurl reports none.
+ */
+static CURLcode
+dsd_curl_multi_result(CURLM* multi) {
+    int left = 0;
+    for (const CURLMsg* msg = curl_multi_info_read(multi, &left); msg != NULL;
+         msg = curl_multi_info_read(multi, &left)) {
+        if (msg->msg == CURLMSG_DONE) {
+            return msg->data.result;
+        }
+    }
+    return CURLE_GOT_NOTHING;
+}
+
+CURLcode
+dsd_curl_perform_cancellable(CURL* curl, dsd_curl_cancel_fn cancelled, const void* ctx) {
+    CURLM* multi = curl_multi_init();
+    if (multi == NULL) {
+        return CURLE_OUT_OF_MEMORY;
+    }
+    if (curl_multi_add_handle(multi, curl) != CURLM_OK) {
+        (void)curl_multi_cleanup(multi);
+        return CURLE_FAILED_INIT;
+    }
+
+    CURLcode result = CURLE_FAILED_INIT;
+    for (;;) {
+        if (cancelled != NULL && cancelled(ctx) != 0) {
+            result = CURLE_ABORTED_BY_CALLBACK;
+            break;
+        }
+        int running = 0;
+        if (curl_multi_perform(multi, &running) != CURLM_OK) {
+            break;
+        }
+        if (running == 0) {
+            result = dsd_curl_multi_result(multi);
+            break;
+        }
+        int ready = 0;
+        if (curl_multi_wait(multi, NULL, 0U, DSD_CURL_CANCEL_POLL_MS, &ready) != CURLM_OK) {
+            break;
+        }
+        if (ready == 0) {
+            /* Older libcurl returns at once when it has no socket to wait on yet. */
+            dsd_sleep_ms(10U);
+        }
+    }
+
+    (void)curl_multi_remove_handle(multi, curl);
+    (void)curl_multi_cleanup(multi);
+    return result;
+}
+
 #else /* !USE_CURL */
 
 int
