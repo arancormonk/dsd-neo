@@ -3068,6 +3068,14 @@ struct dsd_state {
     uint16_t m17_gnss_tx_fn;    /* the IP stream frame number last heard with it (m17_gnss_tx_has_fn) */
     uint8_t m17_gnss_tx_has_fn; /* 1 when it came in an IP stream frame */
     uint64_t m17_gnss_tx_gen;   /* the reception generation (dsd_position_origin::gen) it was heard under */
+    /* The last network frame (an IP stream frame or MPKT, CRC included) whose GNSS META was admitted or repeated, by
+     * length and 64-bit FNV-1a digest, with the reception generation and decode-clock time it was heard at: a
+     * byte-identical copy of it (a duplicated datagram) heard on that reception within DSD_POSITION_REPEAT_MS is a
+     * repeat, never another transmission, even after the transmission's end reset m17_gnss_tx_kind. Length 0: none. */
+    uint64_t m17_gnss_dgram_digest;
+    uint64_t m17_gnss_dgram_gen;
+    uint64_t m17_gnss_dgram_ms;
+    uint32_t m17_gnss_dgram_len;
     uint8_t m17_text_meta_control_or;
     uint8_t m17_text_meta_expected_bitmap;
     uint8_t m17_text_meta_received_bitmap;

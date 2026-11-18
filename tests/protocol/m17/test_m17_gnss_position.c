@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1014,6 +1015,93 @@ test_ip_unbound_stream_repeat_includes_destination_and_frame_number(void) {
     rig_close(&r);
 }
 
+/* Frame @p fn of IP stream 0xBEEF carrying @p bits, every payload byte @p fill and its EOT bit @p eot (its CRC
+ * recomputed), dispatched; the reports admitted meanwhile. */
+static long long
+send_ip_stream_frame(rig* r, const uint8_t bits[LSF_BITS], uint16_t fn, uint8_t fill, int eot) {
+    uint8_t frame[54];
+    build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+    if (eot) {
+        frame[34] |= 0x80U;
+    }
+    DSD_MEMSET(frame + 36, fill, 16U);
+    const uint16_t crc = m17_crc16(frame, 52U);
+    frame[52] = (uint8_t)(crc >> 8U);
+    frame[53] = (uint8_t)(crc & 0xFFU);
+    const uint64_t rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r->opts, r->state, frame, (int)sizeof(frame));
+    return (long long)(dsd_position_last_rev() - rev);
+}
+
+/* Issue #800 (g62-r9): a byte-identical copy of the latest IP stream frame (a duplicated datagram) is no evidence of a
+ * new stream: its unchanged GNSS META is a repeat, however long the stream has run, and the stream goes on after it. A
+ * frame at the same number with another payload is another stream (its EOT missed) and is admitted again, as is one
+ * whose number goes back. A copy of the stream's EOT frame, heard after the EOT ended the stream, is a repeat too. */
+static void
+test_ip_duplicate_frame_is_a_repeat(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    long long admitted = 0;
+    for (uint16_t fn = 1U; fn <= 3U; fn++) {
+        admitted += send_ip_stream_frame(&r, bits, fn, (uint8_t)(0x10U + fn), 0);
+    }
+    expect_int("the stream admitted once", admitted, 1);
+    expect_int("a duplicate of the latest frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x13U, 0), 0);
+    expect_int("the stream goes on after the duplicate", send_ip_stream_frame(&r, bits, 4U, 0x14U, 0), 0);
+    expect_int("the same number with another payload is another stream", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0),
+               1);
+    expect_int("its own duplicate is a repeat", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0), 0);
+    expect_int("a number going back is another stream", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 1);
+    expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
+    expect_int("a copy of the EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
+    expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 1);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r9): one MPKT is one whole transmission, but a byte-identical copy of it (a duplicated datagram)
+ * heard within DSD_POSITION_REPEAT_MS is no new one: its META is a repeat. The same bytes heard later, or another
+ * packet with the same LSF, are another transmission and admitted again. */
+static void
+test_mpkt_duplicate_is_a_repeat(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t app[32];
+    uint8_t frame[128];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    const size_t app_len = gnss_shaped_packet(app);
+    const uint64_t t0 = 1000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(t0);
+    rig r;
+    rig_open(&r);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    const size_t len = build_mpkt(frame, sizeof(frame), bits, app, app_len);
+    uint64_t rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, frame, (int)len);
+    expect_int("the MPKT admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, frame, (int)len);
+    expect_int("a copy of the MPKT is a repeat", (long long)(dsd_position_last_rev() - rev), 0);
+    dsd_decode_clock_test_set_ns(t0 + ((uint64_t)DSD_POSITION_REPEAT_MS * 1000000ULL));
+    rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, frame, (int)len);
+    expect_int("the same bytes heard later are another MPKT", (long long)(dsd_position_last_rev() - rev), 1);
+    uint8_t other[128];
+    app[2U + M17_META_BYTES - 1U] ^= 0x01U;
+    const size_t other_len = build_mpkt(other, sizeof(other), bits, app, app_len);
+    rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, other, (int)other_len);
+    expect_int("another packet with the same LSF is another MPKT", (long long)(dsd_position_last_rev() - rev), 1);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
 /* The console output of one checked RF LSF carrying @p meta (empty when stderr cannot be captured). */
 static int
 rf_lsf_output(rig* r, const uint8_t meta[M17_META_BYTES], const char* name, char* out, size_t cap) {
@@ -1097,6 +1185,8 @@ main(void) {
     test_lich_lsd_bound_to_its_first_chunk();
     test_ip_unbound_stream_repeat_includes_sender();
     test_ip_unbound_stream_repeat_includes_destination_and_frame_number();
+    test_ip_duplicate_frame_is_a_repeat();
+    test_mpkt_duplicate_is_a_repeat();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();

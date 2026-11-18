@@ -2722,7 +2722,10 @@ suite runs under this compiler.
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
     transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
     number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
-    transmission) and the reception generation, so two stations, or one station sending to another destination,
+    transmission) and the reception generation, except that a byte-identical copy of the last network frame (stream
+    frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, its length and 64-bit FNV-1a digest
+    equal, heard on the same reception within `DSD_POSITION_REPEAT_MS` -- is always a repeat, after an EOT or an MPKT's
+    end too (`m17_gnss_is_duplicate()`), so two stations, or one station sending to another destination,
     reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
     the published target stays unknown). The epoch is the call
     the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
