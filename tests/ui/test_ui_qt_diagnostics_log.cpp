@@ -2010,6 +2010,68 @@ storedLegacyPositionFormsAreRemoved() {
     check(text.contains(kept), "the reload dropped a line with no position");
 }
 
+// Issue #800, D10, fail closed: the load scrubs the stored segments themselves, not only the rings Copy and Share read.
+// After an upgrade no saved file of either log (tail, host; current and previous segment) still holds a line the load
+// removed, and the split of an older build's oversized tail writes none back; a line with no position stays on disk.
+static void
+storedPositionsLeaveTheFiles() {
+    static const char kPosition[] = "[redacted position]";
+    const QStringList positionLines = {
+        QStringLiteral(" UTF8 Text: 22.50,45.00"),              // a legacy label
+        QStringLiteral(" Short Data Raw: [00][01]"),            // a legacy raw dump
+        QStringLiteral(" Lat: 22.50000 Lon: 45.00000"),         // a current label
+        QStringLiteral(" $GPRMC,120000,A,2230.0000,N,04500.0"), // a position's shape
+    };
+    const QByteArray kept = "[stderr] [info] Sync: +DMR  slot1 [VOICE] ";
+    const auto storeOf = [&](const char* prefix) {
+        QByteArray store;
+        for (const auto& line : positionLines) {
+            store += QByteArray(prefix) + line.toUtf8() + '\n';
+        }
+        return store + kept + '\n';
+    };
+    const auto checkScrubbed = [&](const QString& path, const char* what) {
+        const QByteArray text = readFile(path);
+        for (const auto& line : positionLines) {
+            checkLabelled(!text.contains(line.toUtf8()), QByteArray(what) + " kept on disk: " + line.toUtf8());
+        }
+        checkLabelled(text.count(kPosition) == positionLines.size(), QByteArray(what) + " lost its placeholders");
+        checkLabelled(text.contains(kept), QByteArray(what) + " lost a line with no position");
+    };
+    {
+        QTemporaryDir dir;
+        const char* const names[] = {"tail.prev.log", "tail.log", "host.prev.log", "host.log"};
+        for (const char* name : names) {
+            writeFile(dir.filePath(QString::fromLatin1(name)), storeOf("[stderr] [info] "));
+        }
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        for (const char* name : names) {
+            checkScrubbed(dir.filePath(QString::fromLatin1(name)), name);
+        }
+    }
+    {
+        // An older build's single tail over a segment, position lines throughout: the split writes scrubbed records.
+        QTemporaryDir dir;
+        QByteArray legacy;
+        for (int i = 0; legacy.size() < 200LL * 1024; ++i) {
+            legacy += QStringLiteral("[host] [info] legacy %1 ").arg(i).toUtf8() + QByteArray(400, 'l') + '\n';
+            if (i % 50 == 0) {
+                legacy += storeOf("[stderr] [info] ");
+            }
+        }
+        writeFile(dir.filePath("tail.log"), legacy);
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        const QByteArray saved = readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"));
+        check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "legacy tail not split");
+        check(saved.contains("legacy 0 ") || saved.contains(kPosition), "the split wrote nothing");
+        for (const auto& line : positionLines) {
+            checkLabelled(!saved.contains(line.toUtf8()), "split kept on disk: " + line.toUtf8());
+        }
+    }
+}
+
 namespace producers {
 
 /* A decoder rig: heap state as the decoder keeps it, with event history and the position feed. */
@@ -3391,6 +3453,7 @@ main(int argc, char** argv) {
     measurementCorpusSurvives();
     receivedPositionsAreRemoved();
     storedLegacyPositionFormsAreRemoved();
+    storedPositionsLeaveTheFiles();
     realProducersLabelReceivedPositions();
     everyProducerLabelsEveryPartOfItsReport();
     measurementExemptionsKeepKeyForms();

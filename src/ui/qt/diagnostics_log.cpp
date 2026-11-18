@@ -889,13 +889,49 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
         context.clear();
         for (const qsizetype at : contextAt) {
             if (at >= 0 && at < *keepFrom) {
-                context.append(DiagnosticsLog::redactStored(QString::fromUtf8(lines.at(at))));
+                context.append(QString::fromUtf8(lines.at(at)));
             }
         }
         if (context.size() == reserved) {
             return context;
         }
         reserved = static_cast<int>(context.size());
+    }
+}
+
+/**
+ * @brief Issue #800, D10, fail closed: the records of a stored segment's @p text as a load shows them, each through
+ * DiagnosticsLog::redactStored(), one per line.
+ *
+ * A record an older build stored with a position in it (or one under a label those builds used for one) leaves the
+ * files as well as the rings: what this returns is what the load writes back. A line holding a NUL (what a crash
+ * leaves where data was never written), an empty line and an unterminated last line are no records and go.
+ */
+QByteArray
+storedRecords(const QByteArray& text) {
+    QByteArray records;
+    records.reserve(text.size());
+    for (const auto& line : withoutFragment(text).split('\n')) {
+        if (!line.isEmpty() && !line.contains('\0')) {
+            records += DiagnosticsLog::redactStored(QString::fromUtf8(line)).toUtf8();
+            records += '\n';
+        }
+    }
+    return records;
+}
+
+/**
+ * @brief Puts the scrubbed @p records in place of the segment at @p path when they differ from @p stored, what it held:
+ * rewritten, or removed when the rewrite fails, so no record the load removed stays on the device (issue #800, D10).
+ */
+void
+replaceStoredRecords(const QString& path, const QByteArray& stored, const QByteArray& records) {
+    if (records == stored) {
+        return;
+    }
+    const bool replaced = records.isEmpty() ? QFile::remove(path) : replaceFile(path, records);
+    if (!replaced && QFileInfo::exists(path)) {
+        (void)QFile::remove(path);
     }
 }
 
@@ -1309,9 +1345,12 @@ DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) con
     const QString prevPath = filePath(segments.previous);
     const qint64 limit = segments.limit;
     const qint64 total = 2 * limit;
-    QByteArray prev = withoutFragment(readTail(prevPath, 2 * total));
-    QByteArray tail = withoutFragment(readTail(tailPath, 2 * total));
-    if (prev.size() > limit || tail.size() > limit) {
+    const QByteArray prevStored = readTail(prevPath, 2 * total);
+    const QByteArray tailStored = readTail(tailPath, 2 * total);
+    QByteArray prev = withoutFragment(prevStored);
+    QByteArray tail = withoutFragment(tailStored);
+    const bool split = prev.size() > limit || tail.size() > limit;
+    if (split) {
         // An older build's single tail (up to 256 KiB), or anything else over a segment: split at line starts
         // into the two bounded segments, keeping no more than before. A current segment over the cap is an
         // older build's tail that was never split (this writer rotates first), so it alone is the record: a
@@ -1319,13 +1358,27 @@ DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) con
         const QByteArray all = lineAlignedTail(tail.size() > limit ? tail : prev + tail, total);
         tail = lineAlignedTail(all, limit);
         prev = lineAlignedTail(all.left(all.size() - tail.size()), limit);
+    }
+    // Issue #800, D10, fail closed: what the segments hold is scrubbed as it loads (storedRecords(); a replacement
+    // record can be longer than the line it replaces, so each stays within its bound), and only the scrubbed records
+    // are written back, so no file keeps a record the load removed.
+    prev = lineAlignedTail(storedRecords(prev), limit);
+    tail = lineAlignedTail(storedRecords(tail), limit);
+    if (split) {
         // The current segment is rewritten only once the previous one holds its prefix: until then the unsplit tail
-        // stays the record, and the next load splits it again.
+        // stays the record, and the next load splits it again. A segment the split could not write is scrubbed in
+        // place, or removed when that fails too.
         const bool prevWritten =
             prev.isEmpty() ? (!QFileInfo::exists(prevPath) || QFile::remove(prevPath)) : replaceFile(prevPath, prev);
-        if (prevWritten) {
-            (void)replaceFile(tailPath, tail);
+        if (!prevWritten) {
+            replaceStoredRecords(prevPath, prevStored, storedRecords(prevStored));
         }
+        if (!prevWritten || !replaceFile(tailPath, tail)) {
+            replaceStoredRecords(tailPath, tailStored, storedRecords(tailStored));
+        }
+    } else {
+        replaceStoredRecords(prevPath, prevStored, prev);
+        replaceStoredRecords(tailPath, tailStored, tail);
     }
     const QByteArray all = prev + tail;
     QByteArray bounded = lineAlignedTail(all, total);
@@ -1375,7 +1428,7 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
         m_protectedPrevious.append(pushRingLocked(line));
     }
     for (qsizetype i = keepFrom; i < lines.size(); ++i) {
-        const quint64 id = pushRingLocked(redactStored(QString::fromUtf8(lines.at(i))));
+        const quint64 id = pushRingLocked(QString::fromUtf8(lines.at(i)));
         if (i == lastProcessAt || i == lastSessionAt) {
             m_protectedPrevious.append(id);
         }
@@ -1415,7 +1468,7 @@ DiagnosticsLog::seedHostRing(const QByteArray& text, qsizetype currentAt) {
         } else if (line.startsWith(kSessionPrefix)) {
             lastSession = line;
         }
-        lines.append(redactStored(QString::fromUtf8(line)));
+        lines.append(QString::fromUtf8(line));
     }
     // The newest records that fit beside the divider.
     lines = lines.mid(std::max<qsizetype>(0, lines.size() - (kHostRingLimit - 1)));

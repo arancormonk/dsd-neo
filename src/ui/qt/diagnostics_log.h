@@ -26,7 +26,8 @@ namespace dsd_qt {
 // promise erasure: only redacted text may enter the ring or the writer queue.
 //
 // The persistent tail is two append-only segments (tail.prev.log, then tail.log), each at
-// most kSegmentLimit bytes. Records are appended, never rewritten, and synced at most once a
+// most kSegmentLimit bytes. Records are appended, never rewritten (except by the load, which scrubs stored records
+// with redactStored() and writes back a segment that changed, issue #800), and synced at most once a
 // second, except during the startup window after a session attempt, when every append is
 // synced so a phone that falls over seconds after Play keeps its start sequence (issue #745).
 //

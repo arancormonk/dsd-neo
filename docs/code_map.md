@@ -17408,9 +17408,12 @@ Qt Quick frontend (`src/ui/qt`):
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
-  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded
-  (`DiagnosticsLog::redactStored()`, from `seedRing()`, its dropped context and `seedHostRing()`), so an older build's
-  log never reaches Copy or Share with one. Fail closed: a stored record carries no mark of the build that wrote it, so
+  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded: `loadSegments()`
+  passes every record of both segments of both logs (`tail`, `host`) through `DiagnosticsLog::redactStored()`
+  (`storedRecords()`) before the rings are seeded or a legacy tail is split, and writes the scrubbed records back over
+  any segment they changed (`replaceStoredRecords()`; removed when the rewrite fails; the split writes only scrubbed
+  records), so an older build's log never reaches Copy or Share with one and no position line stays on the device
+  until rotation (test `UI_QT_DIAGNOSTICS_LOG`, `storedPositionsLeaveTheFiles()`). Fail closed: a stored record carries no mark of the build that wrote it, so
   the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
   printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
   text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
