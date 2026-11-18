@@ -996,11 +996,13 @@ Window {
     // row a "Show on map" came from ({uid, sheet}), for Back to reopen.
     property bool mapOpen: false
     property var mapReturn: null
-    function openMap() {
+    function openMap(opener) {
         mapLoader.active = true;
-        // The control that opened it (History's Map, or the session's
-        // screen under the menu) takes the focus back on Back.
-        mapReturn = {focus: mainRoot.activeFocusItem};
+        // The control that opened it takes the focus back on Back: History's
+        // Map, or the session menu's own opener (Session options), which the
+        // menu names because it has closed onto the covered monitor by now
+        // and the window root holds the focus.
+        mapReturn = {focus: opener || mainRoot.activeFocusItem};
         if (mapLoader.item)
             mapLoader.item.clearPin();
         mapOpen = true;
@@ -1032,11 +1034,22 @@ Window {
         item.forceActiveFocus();
         return true;
     }
+    function focusScreen() {
+        var surfaces = Navigation.rootSurfaces;
+        for (var i = surfaces.length - 1; i >= 0; --i) {
+            if (focusBack(surfaces[i]))
+                return true;
+        }
+        return false;
+    }
     function returnFromMap(back) {
         if (mapOpen)
             return;
         if (!back.sheet) {
-            focusBack(back.focus);
+            // The opener gone (a Stop under the map took the monitor away):
+            // the screen the map leaves to, so Tab has somewhere to start.
+            if (!focusBack(back.focus))
+                focusScreen();
             return;
         }
         var host = back.sheet.parent;
@@ -2732,7 +2745,7 @@ Window {
             else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;
             else if (key === "map")
-                mainRoot.openMap();
+                mainRoot.openMap(monitor.sessionOptions);
             else if (key === "edit" && mainRoot.sessionRow >= 0) {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;

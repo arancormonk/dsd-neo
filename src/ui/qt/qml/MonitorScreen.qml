@@ -36,6 +36,9 @@ Item {
     property bool sitesAvailable: false
     signal openSites
     signal openSessionMenu
+    // Issue #800: the control the session menu opens from, which takes the
+    // focus back when a screen the menu pushed (the map) is left.
+    readonly property Item sessionOptions: sessionOptionsButton
     signal openTalkgroups
     // Issue #800: a recent call's "Show on map", with the sheet to return to.
     signal showOnMap(var record, var sheet)

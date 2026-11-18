@@ -18213,8 +18213,12 @@ Qt Quick frontend (`src/ui/qt`):
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
     row is still logged and its screen shows; when the row has left the log the focus goes to the History list
     (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
-    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
-    `mapReturn.focus` and Back gives it the focus again. A close the app makes (an incoming document) reopens nothing.
+    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap(opener)` keeps `opener` (else the
+    focused control) in `mapReturn.focus` and Back gives it the focus again. The session menu passes its own opener
+    (`MonitorScreen.sessionOptions`): by the time its row fires, the menu has closed onto the covered monitor and the
+    window root holds the focus, so without it a keyboard user came back to no focused item and a dead Tab. When the
+    opener is gone (a Stop under the map took the monitor away), Back focuses the screen the map leaves to
+    (`focusScreen()`, the top root surface). A close the app makes (an incoming document) reopens nothing.
     Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
