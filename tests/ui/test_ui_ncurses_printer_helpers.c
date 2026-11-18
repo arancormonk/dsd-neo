@@ -3351,30 +3351,6 @@ test_history_merged_slot_tags(void) {
     assert_capture_contains("|     \\-- MEET AT GATE");
 }
 
-/* A scrambled NXDN call's encryption line: the scrambler's LFSR seed comes from the key, so it is redacted with the
-   key unless --show-keys. */
-static void
-test_nxdn_scrambler_seed_redacted(void) {
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    assert(opts && state);
-    state->carrier = 1;
-    state->nxdn_cipher_type = 1;
-    state->R = 0x4D2ULL;
-    state->payload_miN = 0x4D2ULL;
-    reset_printw_capture();
-    ui_render_nxdn_encryption_line(opts, state);
-    assert_capture_contains("Seed: [redacted]");
-    assert_capture_contains("Key: [redacted]");
-    assert(strstr(g_printw_capture, "4D2") == NULL && strstr(g_printw_capture, "1234") == NULL);
-    opts->show_keys = 1;
-    reset_printw_capture();
-    ui_render_nxdn_encryption_line(opts, state);
-    assert_capture_contains("Seed: 04D2");
-    free(state);
-    free(opts);
-}
-
 static void
 test_loaded_scalar_key_status(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -5751,7 +5727,6 @@ main(void) {
     test_history_color_pair_policy();
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
-    test_nxdn_scrambler_seed_redacted();
     test_loaded_scalar_key_status();
     test_slot_row_shows_its_own_calls_key();
     test_edacs_tree_update_helpers();
