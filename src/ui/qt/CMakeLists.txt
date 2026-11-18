@@ -84,6 +84,8 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
+        map_tile_cache.cpp # Issue #800
+        map_tile_worker.cpp # Issue #800
         spectrum_view_item.cpp
         spectrum_trace_geometry.cpp
         screen_reader_state.cpp # Issue #782

@@ -26431,6 +26431,36 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+if(DSD_ENABLE_QT_UI)
+    # Issue #800: the map's tile cache (RFC 9111 private-cache rules, the disk LRU and the decoded-image bound) and its
+    # tile worker (generations, no prefetch, the backoff, https-only templates, the teardown during a stalled
+    # transfer), through a fake transport: no network.
+    add_executable(
+        dsd-neo_test_ui_qt_map_tiles
+        ui/test_ui_qt_map_tiles.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE Qt6::Core Qt6::Gui dsd-neo_runtime dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_map_tiles PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_TILES COMMAND dsd-neo_test_ui_qt_map_tiles)
+    set_tests_properties(
+        UI_QT_MAP_TILES
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
 # WP-F3: exercise the real vocoder producers and canonical call boundaries.
 add_executable(
     dsd-neo_test_core_p25_voice_error_ring

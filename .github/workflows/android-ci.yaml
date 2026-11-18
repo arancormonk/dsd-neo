@@ -346,6 +346,7 @@ jobs:
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_call_history_tap \
             dsd-neo_test_ui_qt_recording_store \
+            dsd-neo_test_ui_qt_map_tiles \
             dsd-neo_test_ui_qt_frequency_query \
             dsd-neo_test_ui_qt_session_args \
             dsd-neo_test_ui_qt_session_args_parse \
