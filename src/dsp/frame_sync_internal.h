@@ -138,6 +138,9 @@ void frame_sync_chain_mark_take(frame_sync_chain_mark* mark, const dsd_state* st
 /** 1 when the chain moved since @p mark: the modulation or the symbol profile changed, or a tune request begun since
  * may have moved the receiver (one refused or deferred before it moved counts not). */
 int frame_sync_chain_moved(const frame_sync_chain_mark* mark, const dsd_state* state);
+/** After a tick that moved the chain: note the tune request it began when it is still in flight
+ * (dsd_state::frame_sync_tick_tune_request), so the engine starts the next hunt after it lands. */
+void frame_sync_note_tick_tune(const frame_sync_chain_mark* mark, dsd_state* state);
 /** A P25 watchdog beat's tick, on the decoder thread, in the hunt: 1 when one ran and moved the chain, and the hunt
  * hands back at once with no sync (the caller sets dsd_state::input_interrupted). */
 int frame_sync_service_p25_watchdog(dsd_opts* opts, dsd_state* state);

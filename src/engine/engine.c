@@ -4801,6 +4801,23 @@ dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A tune a P25 tick inside the hunt began, still in flight when the hunt handed back (frame_sync_watchdog_tick.c): no
+   hunt starts until it resolves, so the next takes the tuning generation after the landing, at the actual tune
+   boundary, and reads nothing of the carrier left (every frame read meanwhile would be gated anyway). 1 while it waits;
+   one load while none is carried. */
+static int
+live_scanner_tick_tune_in_flight(dsd_state* state) {
+    const uint64_t request = state->frame_sync_tick_tune_request;
+    if (request == 0U) {
+        return 0;
+    }
+    if (dsd_trunk_tuning_request_status(request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return 1;
+    }
+    state->frame_sync_tick_tune_request = 0U;
+    return 0;
+}
+
 /* One pass of the live loop: the interruption the last pass left, the command pump and the ticks, noCarrier() unless
    an interruption ended the pass, then a frame-sync hunt and the frames it found. */
 static void
@@ -4876,6 +4893,12 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
     /* noCarrier and pending-row commits can replace the visit anchors. Publish
      * the incoming visit before getFrameSync starts emitting its snapshots. */
     dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    if (live_scanner_tick_tune_in_flight(state)) {
+        /* The hand-back's interruption stands while it waits: nothing was lost, so no no-carrier pass runs. */
+        state->input_interrupted = 1;
+        dsd_sleep_ms(1);
+        return;
+    }
     uint64_t frame_tune_generation = dsd_trunk_tuning_generation();
     state->synctype = live_scanner_frame_sync(opts, state);
     (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);

@@ -511,12 +511,15 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     state->min = ((state->min) + ctx->lmin) / 2;
 }
 
-/* The control channel's sync stamp only moves forward: the hunt's decode time is the one its call started with, and a
-   tick inside the call (the grace after a tune) may already have stamped a later one. */
+/* The control channel's sync stamps only move forward, each on its own clock: the hunt's decode times are the ones its
+   call started with, and a tick inside the call (the grace after a tune) may already have stamped later ones, the wall
+   clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. */
 static inline void
 frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
-    if (ctx->nowm > ctx->state->last_cc_sync_time_m) {
+    if (ctx->now > ctx->state->last_cc_sync_time) {
         ctx->state->last_cc_sync_time = ctx->now;
+    }
+    if (ctx->nowm > ctx->state->last_cc_sync_time_m) {
         ctx->state->last_cc_sync_time_m = ctx->nowm;
     }
 }
@@ -5962,7 +5965,11 @@ static int
 frame_sync_entry_tick_moved_chain(dsd_opts* opts, dsd_state* state, time_t now) {
     frame_sync_chain_mark entry;
     frame_sync_chain_mark_take(&entry, state);
-    return frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state);
+    if (!frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) || !frame_sync_chain_moved(&entry, state)) {
+        return 0;
+    }
+    frame_sync_note_tick_tune(&entry, state);
+    return 1;
 }
 
 /* getFrameSync()'s entry: 1 when the call ends before it hunts, with *@p out its result: -1 with no context, or no sync

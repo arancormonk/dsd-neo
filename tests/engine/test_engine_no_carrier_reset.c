@@ -398,6 +398,8 @@ static long int g_rigctl_setfreq_freq = 0;
 static uint32_t g_rigctl_confirmed_hz = 0U;
 /* What a rigctl tune and a frame dispatch report to the P25 watchdog read case (test_live_p25_beat_in_a_read()). */
 static void (*g_setfreq_observer)(long int freq) = NULL;
+/* What a sleep on the decoder thread reports to the pending-return case (the time a tune lands in). */
+static void (*g_sleep_observer)(void) = NULL;
 static int (*g_process_frame_observer)(const dsd_opts* opts, const dsd_state* state) = NULL;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
@@ -1247,6 +1249,9 @@ __wrap_dsd_realtime_mono_ms(void) {
 
 void
 __wrap_dsd_sleep_ms(unsigned int ms) {
+    if (g_sleep_observer) {
+        g_sleep_observer();
+    }
     if (g_live_fake_realtime) {
         g_live_realtime_ms += ms;
         return;
@@ -15055,9 +15060,53 @@ wd6_level(long symbol) {
     return k_levels[(h >> 13) & 3U];
 }
 
+/* A return the receiver answers PENDING (an RTL retune applied on the stream's own thread), which lands at the first
+   sleep or read on the decoder thread after it: a decoder that hunted on would read the new carrier's samples under the
+   tuning generation it took before the landing. */
+static struct {
+    int pending_returns;
+    uint64_t request;
+    int landed;
+} g_wd7;
+
+static dsd_trunk_tune_result
+wd7_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    if (!g_wd7.pending_returns) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    g_wd7.request = request_id;
+    return DSD_TRUNK_TUNE_RESULT_PENDING;
+}
+
+static dsd_trunk_tune_result
+wd7_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)freq;
+    (void)ted_sps;
+    return wd7_return_to_cc(opts, state, request_id);
+}
+
+static void
+wd7_land(void) {
+    if (g_wd7.request == 0U) {
+        return;
+    }
+    const uint64_t request = g_wd7.request;
+    g_wd7.request = 0U;
+    g_wd7.landed++;
+    g_wd6.returned = 1;
+    g_wd6.return_s = dsd_decode_now_mono_s();
+    g_wd6.return_sample = g_wd6.sample;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+}
+
 static int
 wd6_udp_read(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
     (void)opts;
+    /* A return still in flight lands before any read after it: the receiver applies it on its own time, and every
+       sample read after that is the new carrier's. */
+    wd7_land();
     const long symbol = g_wd6.sample / WD6_SPS;
     if (symbol == WD6_BEAT_SYMBOL && !g_wd6.beat_posted) {
         /* The release the beat's tick makes, asked for here (on the decoder thread, which owns the field) so the
@@ -15107,7 +15156,7 @@ wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-test_live_p25_beat_in_a_read(void) {
+run_live_p25_beat_in_a_read(int pending_return) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -15133,6 +15182,14 @@ test_live_p25_beat_in_a_read(void) {
     state->trunk_chan_map[WD6_VOICE_CHANNEL] = WD6_VC_HZ;
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
     dsd_engine_trunk_tuning_hooks_install();
+    DSD_MEMSET(&g_wd7, 0, sizeof g_wd7);
+    if (pending_return) {
+        g_wd7.pending_returns = 1;
+        dsd_trunk_tuning_hooks_set(
+            (dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                     .tune_to_cc_request = wd7_tune_to_cc,
+                                     .return_to_cc_request = wd7_return_to_cc});
+    }
     dsd_engine_set_decoder_thread(1);
 
     /* A followed voice channel. */
@@ -15145,7 +15202,8 @@ test_live_p25_beat_in_a_read(void) {
     g_wd6_state = state;
     const int followed = ctx->state == P25_SM_TUNED && g_rigctl_setfreq_freq == WD6_VC_HZ;
 
-    g_setfreq_observer = wd6_setfreq;
+    g_setfreq_observer = pending_return ? NULL : wd6_setfreq;
+    g_sleep_observer = pending_return ? wd7_land : NULL;
     g_process_frame_observer = wd6_process_frame;
     dsd_exitflag_store(0);
     for (int pass = 0; pass < LIVE_PASS_CAP && dsd_exitflag_load() == 0; pass++) {
@@ -15153,6 +15211,7 @@ test_live_p25_beat_in_a_read(void) {
     }
     dsd_exitflag_store(0);
     g_setfreq_observer = NULL;
+    g_sleep_observer = NULL;
     g_process_frame_observer = NULL;
     t_wd6_decoder = 0;
     g_wd6_state = NULL;
@@ -15162,10 +15221,10 @@ test_live_p25_beat_in_a_read(void) {
         DSD_FPRINTF(stderr, "FAIL: the grant was not followed (state %d)\n", (int)ctx->state);
         rc = 1;
     }
-    if (!g_wd6.returned || g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL) {
+    if (!g_wd6.returned || g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL || (pending_return && g_wd7.landed != 1)) {
         DSD_FPRINTF(stderr,
-                    "FAIL: the beat's tick did not return in the read it was posted at (returned %d, symbol %ld)\n",
-                    g_wd6.returned, g_wd6.return_sample / WD6_SPS);
+                    "FAIL: the beat's tick did not return in the read it was posted at (%s, returned %d, symbol %ld)\n",
+                    pending_return ? "pending return" : "rigctl", g_wd6.returned, g_wd6.return_sample / WD6_SPS);
         rc = 1;
     }
     if (g_wd6_off_thread_tunes != 0) {
@@ -15174,9 +15233,9 @@ test_live_p25_beat_in_a_read(void) {
     }
     if (g_wd6.frames == 0 || !DSD_SYNC_IS_P25P1(g_wd6.first_sync)) {
         DSD_FPRINTF(stderr,
-                    "FAIL: the control channel's first frame after the return was not dispatched (frames %d, "
+                    "FAIL: the control channel's first frame after the %s return was not dispatched (frames %d, "
                     "sync %d)\n",
-                    g_wd6.frames, g_wd6.first_sync);
+                    pending_return ? "pending" : "rigctl", g_wd6.frames, g_wd6.first_sync);
         rc = 1;
     } else if (g_wd6.first_cc_stamp_s + 1e-6 < g_wd6.return_s) {
         DSD_FPRINTF(stderr,
@@ -15189,6 +15248,18 @@ test_live_p25_beat_in_a_read(void) {
     p25_sm_init_ctx(ctx, opts, state);
     live_session_stop(opts, state);
     return rc;
+}
+
+static int
+test_live_p25_beat_in_a_read(void) {
+    return run_live_p25_beat_in_a_read(0);
+}
+
+/* The same return answered PENDING, landing on the receiver's own time after the hand-back: the hunt after it takes the
+   tuning generation of the landing, and the control channel's first frame dispatches. */
+static int
+test_live_p25_beat_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(1);
 }
 
 static int
@@ -17654,6 +17725,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
     rc |= test_live_trunk_scan_skips_a_quiet_target(0);
     rc |= test_live_p25_beat_in_a_read();
+    rc |= test_live_p25_beat_pending_return_lands_before_the_next_hunt();
     return rc;
 }
 #endif
