@@ -15310,6 +15310,76 @@ test_y_quiet_input_shows_until_a_call(void) {
     return rc;
 }
 
+/* One admitted NFM call heard on the stay: a reception of DSD_ANALOG_CALL_MIN_MS (an open carrier, its tone locked),
+   then its end. */
+static int
+yq_hear_analog_call(dsd_opts* opts, dsd_state* state) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 2000.0f;
+    }
+    state->analog_rx.carrier_open = 1;
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    }
+    const int heard = dsd_engine_analog_call_active(state);
+    dsd_engine_analog_call_end(opts, state);
+    state->analog_rx.carrier_open = 0;
+    return heard;
+}
+
+/* issue #834: an admitted NFM call on a -Y stay explains it as a digital call's checked content does: once one was
+   heard, the stay shows no "No check: input" for the rest of -t, after the call closed as while it ran. On a landed
+   row and on a stay no landing is in force for (the run's start frequency). */
+static int
+test_y_quiet_analog_call_explains_the_stay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 583012500L;
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+    }
+    state->lcn_freq_roll = 0;
+    dsd_engine_note_run_start(opts, state);
+    state->last_cc_sync_time = dsd_decode_time();
+    yq_timing_tick(opts, state);
+    int rc = yq_expect_quiet(state, "nfm: idle before the first landing", DSD_SCAN_STAY_HANGTIME,
+                             DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= expect_true("nfm: a call is admitted before the first landing", yq_hear_analog_call(opts, state));
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: a call was heard before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    dsd_engine_scan_landing_note_row(state, 0, base_hz, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= expect_true("nfm: a call is admitted on the landed row", yq_hear_analog_call(opts, state));
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: a call was heard on the landed row", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: an NFM call explains the -Y stay\n");
+    }
+    return rc;
+}
+
 /* issue #834 R10: a -Y row refused for its width starts again on the same visit once the width is edited, through the
    frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
    once per change. */
@@ -16356,6 +16426,7 @@ test_scan_quiet_decisions(void) {
         rc |= yq_cause_case(which);
     }
     rc |= test_y_quiet_input_shows_until_a_call();
+    rc |= test_y_quiet_analog_call_explains_the_stay();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);

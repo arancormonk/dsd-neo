@@ -729,11 +729,14 @@ Generated (do not edit/commit):
       -Y's HANGTIME; a raw sync no longer ends the check (R1), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on -Y
       only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_content_seq`,
-      checked content, and `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, against the values
-      the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`), since under the legacy rule
-      HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start frequency
-      before the first step, a step that forgot the landing and then failed, an input switch) against the stay's own
-      start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_unchecked_seq`, set by
+      checked content, `scan_y_unchecked_seq`, an X2-TDMA, ProVoice or TETRA frame dispatched, and
+      `scan_y_analog_call_seq`, an analog call admitted, which `analog_call_qualify()` moves as the NFM call begins
+      once its reception passed every gate, never on raw carrier a tone check rejected, against the values the landing
+      recorded, `dsd_engine_scan_landing::y_content_seq`, `y_unchecked_seq`, `y_analog_call_seq`), since under the
+      legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start
+      frequency before the first step, a step that forgot the landing and then failed, an input switch) against the
+      stay's own start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_unchecked_seq`,
+      `scan_y_stay_analog_call_seq`, set by
       `dsd_engine_scan_y_stay_begin()` at the run's start, a -Y scan's start and every landing forget), so the session's
       INPUT reason shows on an idle start frequency and goes while a call is heard there (`quiet_fill_no_check()`). A
       raw sync, which NXDN48 and dPMR pass on noise, is no

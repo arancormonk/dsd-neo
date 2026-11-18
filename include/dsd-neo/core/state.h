@@ -3230,11 +3230,17 @@ struct dsd_state {
     uint32_t scan_y_unchecked_seq;
     uint32_t scan_y_unchecked_seen;
     double scan_y_unchecked_m;
-    /* scan_y_content_seq and scan_y_unchecked_seq when the receiver's stay with no -Y row landing in force began: the
-     * run's start, a -Y scan's start, or the last forget of a landing (dsd_engine_scan_y_stay_begin()). The -Y
-     * no-check status is shown on such a stay until either moves past them, as on a landed row's visit until a call. */
+    /* An analog call admitted (issue #834): moves as the conventional NFM call begins, once its reception ran the
+     * minimum through every gate (engine/analog_call.c). It explains a -Y stay as checked content does, for its no-check
+     * status only: raw carrier, which a tone-rejected transmission has too, never moves it. */
+    uint32_t scan_y_analog_call_seq;
+    /* scan_y_content_seq, scan_y_unchecked_seq and scan_y_analog_call_seq when the receiver's stay with no -Y row
+     * landing in force began: the run's start, a -Y scan's start, or the last forget of a landing
+     * (dsd_engine_scan_y_stay_begin()). The -Y no-check status is shown on such a stay until any moves past them, as on
+     * a landed row's visit until a call. */
     uint32_t scan_y_stay_content_seq;
     uint32_t scan_y_stay_unchecked_seq;
+    uint32_t scan_y_stay_analog_call_seq;
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;

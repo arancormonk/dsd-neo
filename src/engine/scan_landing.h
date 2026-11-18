@@ -60,13 +60,15 @@
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
 /** A receiver's stay with no -Y row landing in force begins (issue #834): the run's start, a -Y scan's start, a
- * landing forgotten. The content and unchecked-frame counts now are the baseline its no-check status is judged against
- * (dsd_state::scan_y_stay_content_seq, scan_y_stay_unchecked_seq): shown until a call is heard on the stay. */
+ * landing forgotten. The content, unchecked-frame and analog-call counts now are the baseline its no-check status is
+ * judged against (dsd_state::scan_y_stay_content_seq, scan_y_stay_unchecked_seq, scan_y_stay_analog_call_seq): shown
+ * until a call is heard on the stay. */
 static inline void
 dsd_engine_scan_y_stay_begin(dsd_state* state) {
     if (state) {
         state->scan_y_stay_content_seq = state->scan_y_content_seq;
         state->scan_y_stay_unchecked_seq = state->scan_y_unchecked_seq;
+        state->scan_y_stay_analog_call_seq = state->scan_y_analog_call_seq;
     }
 }
 
@@ -152,7 +154,8 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
                                                  .index = row,
                                                  .tune_request = request,
                                                  .y_content_seq = state->scan_y_content_seq,
-                                                 .y_unchecked_seq = state->scan_y_unchecked_seq};
+                                                 .y_unchecked_seq = state->scan_y_unchecked_seq,
+                                                 .y_analog_call_seq = state->scan_y_analog_call_seq};
         dsd_engine_scan_landing_install(owner, landing);
     }
 }
