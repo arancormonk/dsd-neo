@@ -349,6 +349,13 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn("Get-RecordedRuntimeFiles -ComponentsPath (Join-Path $treeRoot "
                       "'share/doc/dsd-neo/legal/components.json')", read("tools/windows/verify_release_tree.ps1"))
 
+    def test_portaudio_overlay_keeps_asio_out(self):
+        # PortAudio 19.7 compiles the Steinberg ASIO SDK in whenever it finds one, whatever PA_USE_ASIOSDK says.
+        _, portfile = self.port("portaudio")
+        windows = portfile[portfile.index("if(VCPKG_TARGET_IS_WINDOWS)"):portfile.index("elseif(")]
+        self.assertIn("-DPA_USE_ASIO=OFF\n", windows)
+        self.assert_pinned(portfile, "PortAudio/portaudio", "PORTAUDIO", dynamic_only=False)
+
     def test_vcpkg_port_copies_keep_the_vcpkg_notice(self):
         # vcpkg's MIT license asks that its notice stay with copies of its files: the overlays copied from its ports
         # keep it beside them, and every portfile says whose it is.
