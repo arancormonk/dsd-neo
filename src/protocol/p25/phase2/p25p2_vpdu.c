@@ -574,13 +574,13 @@ p25p2_mac_handle_indiv(const p25p2_vpdu_ctx* ctx, int channel, int svc_bits, int
     }
     if (policy_data_override > 0) {
         p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, svc_bits);
-        ev.source_nonlocal = source_nonlocal;
+        ev.source_nonlocal = (uint8_t)(source_nonlocal != 0);
         p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch, ctx->crc_ok);
     } else {
         p25_sm_event_t ev = provenance == P25_SM_GRANT_PROVENANCE_UPDATE
                                 ? p25_sm_ev_indiv_grant_update(channel, 0, target, source, svc_bits)
                                 : p25_sm_ev_indiv_grant(channel, 0, target, source, svc_bits);
-        ev.source_nonlocal = source_nonlocal;
+        ev.source_nonlocal = (uint8_t)(source_nonlocal != 0);
         p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch, ctx->crc_ok);
     }
 }

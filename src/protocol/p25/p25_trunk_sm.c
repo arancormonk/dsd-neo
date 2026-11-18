@@ -7675,7 +7675,7 @@ p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uin
     p25_sm_event_t ev = {0};
     ev.src = (int)source;
     ev.identity_checked = checked;
-    ev.source_nonlocal = source_nonlocal ? 1 : 0;
+    ev.source_nonlocal = (uint8_t)(source_nonlocal ? 1U : 0U);
     const p25_sm_identity_claim claim = {
         .source = (source != 0U && p25_source_id_is_subscriber(source)) ? source : 0U,
         .target = target,

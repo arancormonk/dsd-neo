@@ -173,7 +173,7 @@ typedef struct {
     // home SUID of another (or a not yet known) system (p25_sm_suid_home_is_local()), or a Phase 1 link control that
     // needs a Source ID Extension. The value stays for display; as evidence it is a special address's: never checked,
     // and it takes the source's flag away (spec 2.19, issue #800).
-    int source_nonlocal;
+    uint8_t source_nonlocal;
 } p25_sm_event_t;
 
 /* ============================================================================

@@ -240,7 +240,7 @@ static int
 p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group, int source_local) {
     p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
     ev.identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
-    ev.source_nonlocal = source_local ? 0 : 1;
+    ev.source_nonlocal = (uint8_t)(source_local ? 0U : 1U);
     return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
 }
 
