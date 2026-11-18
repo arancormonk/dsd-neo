@@ -481,6 +481,111 @@ call_history_protocols_compatible(int x, int y) {
 }
 
 /**
+ * @brief The class a position's protocol belongs to as the core's position writers apply it
+ * (dsd_position_attribution_class()): P25 Phase 1 and Phase 2 apart, every other protocol its core family; -1 when the
+ * sync type is not known.
+ *
+ * Narrower than call_history_protocol_family(), which lets the two P25 phases (and both polarities of YSF, dPMR and
+ * X2-TDMA) be one conversation: a row may merge them, but a fix is one class's only (issue #800).
+ */
+inline int
+call_history_position_class(int protocol) {
+    if (protocol < 0 || protocol >= static_cast<int>(DSD_POSITION_PROTOCOL_NONE)) {
+        return -1;
+    }
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        return 0x1001;
+    }
+    if (DSD_SYNC_IS_P25P2(protocol)) {
+        return 0x1002;
+    }
+    return dsd_sync_protocol_family(protocol);
+}
+
+/**
+ * @brief Where a History fragment was heard, as the core's reception rule reads a row (dsd_position_reception,
+ * issue #800): the scope (Event_History::rx_scope once resolved, with its discriminator), and the received identity
+ * epoch it was read under (rx_epoch, epoch_known) with the ring that epoch counts in (Event_History_I::instance; 0 when
+ * not known). An epoch means nothing outside its ring: a fragment of another decoder run shares none with this one.
+ */
+struct CallHistoryReception {
+    CallHistoryScope scope;
+    uint64_t ring = 0U;
+    uint32_t epoch = 0U;
+    bool epochKnown = false;
+};
+
+/** @brief The tuned frequency a reception names: a tuned-frequency scope's, a P25 NAC scope's discriminator; else 0. */
+inline int64_t
+call_history_reception_tuned_hz(const CallHistoryScope& scope) {
+    if (scope.kind == static_cast<uint8_t>(DSD_POS_SCOPE_FEED_TUNED_FREQ)) {
+        return static_cast<int64_t>(scope.a);
+    }
+    return scope.kind == static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC) ? scope.freqHz : 0;
+}
+
+/** @brief Whether two known scopes are equal, discriminator included. */
+inline bool
+call_history_scopes_equal(const CallHistoryScope& x, const CallHistoryScope& y) {
+    return x.kind == y.kind && x.a == y.a && x.b == y.b && x.freqHz == y.freqHz;
+}
+
+/** @brief Whether two receptions were read under one received identity epoch of one ring: both epochs known, in the
+ * same known ring, and equal. */
+inline bool
+call_history_same_epoch(const CallHistoryReception& x, const CallHistoryReception& y) {
+    return x.epochKnown && y.epochKnown && x.ring != 0U && x.ring == y.ring && x.epoch == y.epoch;
+}
+
+/** @brief Whether two scopes of one kind agree on every part both know: an EDACS scope knows its site and its system
+ * apart (0 until known); every other kind is known whole. */
+inline bool
+call_history_scope_parts_agree(const CallHistoryScope& x, const CallHistoryScope& y) {
+    if (x.kind == static_cast<uint8_t>(DSD_POS_SCOPE_FEED_EDACS)) {
+        return (x.a == 0U || y.a == 0U || x.a == y.a) && (x.b == 0U || y.b == 0U || x.b == y.b);
+    }
+    return x.a == y.a && x.b == y.b;
+}
+
+/** @brief Within one epoch, whether one of two known scopes only refines the other: no two families, no two tuned
+ * frequencies, and one kind only with agreeing parts. */
+inline bool
+call_history_reception_refines(const CallHistoryScope& x, const CallHistoryScope& y) {
+    const int fx = call_history_scope_family(x);
+    const int fy = call_history_scope_family(y);
+    if (fx != 0 && fy != 0 && fx != fy) {
+        return false;
+    }
+    const int64_t hx = call_history_reception_tuned_hz(x);
+    const int64_t hy = call_history_reception_tuned_hz(y);
+    if (hx != 0 && hy != 0 && hx != hy) {
+        return false;
+    }
+    return x.kind != y.kind || call_history_scope_parts_agree(x, y);
+}
+
+/**
+ * @brief Whether two receptions are one (issue #800, fail closed), the core's reception rule
+ * (dsd_position_same_reception()) on History's fragments: both scopes known and equal, with one discriminator; or the
+ * same received identity epoch of one ring and nothing that says otherwise (an unknown scope, or one scope only
+ * refining the other: a NAC then the WACN and SYSID, an EDACS site then its system). Two families, two tuned frequencies
+ * or two values of one kind are two receptions within one epoch, and an unknown side never matches across epochs or
+ * rings.
+ */
+inline bool
+call_history_same_reception(const CallHistoryReception& x, const CallHistoryReception& y) {
+    const bool knownX = call_history_scope_known(x.scope);
+    const bool knownY = call_history_scope_known(y.scope);
+    if (knownX && knownY && call_history_scopes_equal(x.scope, y.scope)) {
+        return true;
+    }
+    if (!call_history_same_epoch(x, y)) {
+        return false;
+    }
+    return !knownX || !knownY || call_history_reception_refines(x.scope, y.scope);
+}
+
+/**
  * @brief Where a fragment's GPS text and position stand in the order that picks a merged row's one (issue #800, 2.7).
  *
  * A total order across decoder runs: the run's session ordinal (a persisted, strictly increasing number the model

@@ -15723,20 +15723,31 @@ Qt Quick frontend (`src/ui/qt`):
       (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
       stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
+      Fail closed (gate g62-r7): the row learns the fuller or stronger scope, and takes a fragment's fix, only from a
+      fragment heard on the row's reception (`fragment_same_reception()`, read on the row as it was before the reading
+      folds in anything): one protocol class (`call_history_position_class()`, the core's
+      `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
+      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: both scopes
+      known and equal with one discriminator, or the same received identity epoch of one ring, `Row::rxEpoch` and
+      `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
+      receptions, and an unknown side never matches across epochs or decoder runs). The merge of the conversation is
+      not gated: a call heard on 450 MHz with only a tuned-frequency scope and a fragment under a NAC on 451 MHz are one
+      row, which keeps its 450 MHz reception and none of the other carrier's fix; a Phase 1 row takes no Phase 2 fix.
     - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each
       fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
       fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
       frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
-      gave, decode session, its sender (source number and text, sender system), sync type and target text, its source
-      label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
+      gave, decode session, its sender (source number and text, sender system), sync type, numeric target and target
+      text, its source label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
       replaces its part whole (`merge_parts()`; a reading older by `Row::fragmentVers` changes nothing), so nothing an
       earlier reading gave outlives it (a message, sender, destination, name, site text or anything else the ring
       entry no longer carries is gone), and every row field a part gives is rebuilt from the parts on every fold
       (`foldRow()`): what the row's other parts gave (`rest_of_row()`, which leaves out every part the reading gives
       again), then each part the reading gives (`fold_reading_parts()`), so what the row held stays ahead of what an
-      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type and
-      the raw destination are the call's, not the sender's: they fold from every part of the call
-      (`fold_call_identity()`), so a senderless fragment's destination keeps a later fragment naming another
+      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type, the
+      numeric target and the raw destination are the call's, not the sender's: they fold from every part of the call
+      (`fold_call_identity()`; the core fills a committed call's unknown target in place on reacquisition,
+      `watchdog_event_merge_identity_fields()`, and the row takes it with the name the part gave, notifying `tg`), so a senderless fragment's destination keeps a later fragment naming another
       destination off the row, and with the destination the row takes the name it gave its part when the row's own
       name is only a label (a channel or a placeholder, not its service). A part gives the sender, label and message
       only when it names the row's radio (`fold_part()`,
@@ -15747,9 +15758,10 @@ Qt Quick frontend (`src/ui/qt`):
       found by its fragment, which is not merged again, is judged against what the row's other fragments gave
       (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
       fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
-      protocol family, reception and sender system, raw target text), never against
+      protocol family, reception and sender system, numeric target and raw target text, a target either side does not
+      know no conflict), never against
       its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
-      other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
+      other than the row's) is withdrawn (`withdraw_parts()`) and gives nothing, and the row is rebuilt from the rest,
       every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
       code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
       recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
@@ -15765,9 +15777,10 @@ Qt Quick frontend (`src/ui/qt`):
       the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
       stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
       unknown run, an older store's, does the start guard the push stamp), and a reading
-      gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
-      dropped when the row learns its radio. The reception scope folds by strength from any
-      fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
+      gives its own only when it names the row's radio and was heard on the row's reception (`fold_gps()`,
+      `fragment_same_reception()`). The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from a fragment heard on the row's
+      reception, whoever sent it. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
       unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
       `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
@@ -15795,16 +15808,23 @@ Qt Quick frontend (`src/ui/qt`):
       (coordinates, error, flags, kind), the raw target and identity. Against a notice an older build stored (one
       `detail`, no message or GPS text) the texts compared are the ones that build would have stored
       (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
-      replay after an upgrade gives the stored row its parts rather than logging it again; two rows of this build
-      compare their whole detail line. A fold looks a row's fragments up among its parts through an index
-      (`PartLookup`) once both are more than a few, so a long call of many short fragments folds in time linear in its
-      parts, not quadratic (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
-      `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
+      replay after an upgrade gives the stored row its parts rather than logging it again, and the name this build
+      gives the delivery (an unsummarised notice's whole detail line, `absorbRepeatedNotice()`, notifying `name`), so
+      a later replay, with neither row legacy any more, still finds it; two rows of this build compare their whole
+      detail line. A fold looks a row's fragments up among its parts through an index
+      (`PartLookup`) once both are more than a few, and takes a reading's parts out of the rest or withdraws them in one
+      pass (`rest_of_row()`, `withdraw_parts()`), so a long call of many short fragments folds in time linear in its
+      parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
+      (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      `rx`, `rxEp`/`rxRing` (the epoch the reception was read under and its ring, hex; both or neither),
+      `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
       under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only
       when known (`detail` only for a legacy text); spill lines
-      add `ord`. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
+      add `ord`, which with the fragment's `frv` gives a spilled reading back its GPS run and version when it carries
+      no GPS to store them with (`spilled_reading_provenance()`), so a fix the core withdrew while the app was away is
+      withdrawn from the row when the spill folds, as the same reading read live does. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
       part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
       could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on
       a NAC or frequency scope, a frequency scope's frequency known, EDACS parts 0 or `0x10000 |` the number), and a

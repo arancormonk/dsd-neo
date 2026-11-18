@@ -401,7 +401,9 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
 
 /**
  * @brief Whether fragment @p row is of @p existing's call (issue #800, B2, B4 and B5): one protocol family, reception
- * system and sender system, no other raw target text, and one receive service (receive_services_compatible()).
+ * system and sender system, no other numeric target or raw target text, and one receive service
+ * (receive_services_compatible()). A target either does not know is no conflict: the core fills a committed call's
+ * unknown target in place.
  *
  * An update found by its fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, so its later reading
  * may name what the merge (rows_identity_compatible(), the destination rule, receive_services_compatible()) would have
@@ -411,7 +413,7 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
  */
 bool
 fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return receive_services_compatible(existing, row)
+    return !(existing.tg != 0U && row.tg != 0U && existing.tg != row.tg) && receive_services_compatible(existing, row)
            && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
@@ -435,6 +437,37 @@ fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHi
     }
     return !(existing.src != 0 && row.src != 0 && existing.src != row.src)
            && !raw_texts_differ(existing.sourceText, row.sourceText);
+}
+
+/** @brief The reception a row was heard on, as the reception rule reads it (call_history_same_reception()). */
+static CallHistoryReception
+row_reception(const CallHistoryModel::Row& row) {
+    CallHistoryReception reception;
+    reception.scope = row.rxScope;
+    reception.ring = row.rxRing;
+    reception.epoch = row.rxEpoch;
+    reception.epochKnown = row.rxEpochKnown;
+    return reception;
+}
+
+bool
+fragment_same_reception(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    const int heldClass = call_history_position_class(existing.protocol);
+    return heldClass >= 0 && heldClass == call_history_position_class(row.protocol)
+           && call_history_same_reception(row_reception(existing), row_reception(row));
+}
+
+bool
+reception_learns(const CallHistoryModel::Row& held, const CallHistoryModel::Row& seen) {
+    return call_history_scope_learns(held.rxScope, seen.rxScope) && fragment_same_reception(held, seen);
+}
+
+void
+take_reception(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.rxScope = from.rxScope;
+    to.rxRing = from.rxRing;
+    to.rxEpoch = from.rxEpoch;
+    to.rxEpochKnown = from.rxEpochKnown;
 }
 
 /** @brief Keep the newest kMaxSessionOrdinals of @p rings, by ordinal. */
@@ -525,6 +558,9 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     row.targetText = raw_identity_text(row.protocol, false, item_text(item->tgt_str, sizeof(item->tgt_str)));
     row.sourceScope = item_sender_scope(item);
     row.rxScope = item_rx_scope(item);
+    // The epoch the reception was read under counts in the item's ring, which the walk gives the row (Row::rxRing).
+    row.rxEpoch = item->rx_scope.rx_epoch;
+    row.rxEpochKnown = item->rx_scope.epoch_known != 0U;
     row.messageText = item_text(item->text_message, sizeof(item->text_message));
     row.msgWhen = row.when;
     row.msgSeq = row.seq;
@@ -670,18 +706,19 @@ fold_gps(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row, bool
 
 /**
  * @brief Fill what @p existing does not know of its raw identity from @p row (issue #800): the reception system when
- * @p row names more of it (call_history_scope_learns(): a stronger scope, or the same one with a part the row did not
- * know, such as an EDACS system beside its site); and, only from a fragment of the row's own radio
- * (fragment_identity_compatible()), the sync type, the target text, the source text and a sender system the row learns
- * more of the same way.
+ * @p row was heard on the row's reception and names more of it (reception_learns(): a stronger scope, or the same one
+ * with a part the row did not know, such as an EDACS system beside its site); and, only from a fragment of the row's
+ * own radio (fragment_identity_compatible()), the sync type, the target text, the source text and, again only from the
+ * row's reception, a sender system the row learns more of the same way.
  * Other known values stay: a merge joins only rows whose known ones agree (rows_identity_compatible()).
  */
 void
 fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     // Where the row was heard is the reception's, whoever sent the fragment: the stronger of the two the merge found
-    // compatible (a trunked call's NAC gives way to its system).
-    if (call_history_scope_learns(existing.rxScope, row.rxScope)) {
-        existing.rxScope = row.rxScope;
+    // compatible (a trunked call's NAC gives way to its system), read on the row as it was before anything is adopted.
+    const bool sameReception = fragment_same_reception(existing, row);
+    if (sameReception && call_history_scope_learns(existing.rxScope, row.rxScope)) {
+        take_reception(existing, row);
     }
     // The sender's identity only from a fragment of the row's own radio, as its texts and position (fold_message(), fold_gps()).
     if (!fragment_identity_compatible(existing, row)) {
@@ -690,7 +727,7 @@ fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row)
     if (call_history_protocol_family(existing.protocol) < 0) {
         existing.protocol = row.protocol;
     }
-    if (call_history_scope_learns(existing.sourceScope, row.sourceScope)) {
+    if (sameReception && call_history_scope_learns(existing.sourceScope, row.sourceScope)) {
         existing.sourceScope = row.sourceScope;
     }
     if (existing.targetText.simplified().isEmpty()) {
@@ -723,6 +760,21 @@ row_position_digest(const CallHistoryModel::Position& pos) {
                                         pos.procInstance);
 }
 
+/** @brief Read the received identity epoch a stored row's reception was read under and its ring (`rxEp`, `rxRing`):
+ * known only when both are there and in range; a store an older build wrote has neither. */
+static void
+reception_epoch_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
+    const qint64 epoch = obj.value(QLatin1String("rxEp")).toInteger(-1);
+    bool ringOk = false;
+    const quint64 ring = obj.value(QLatin1String("rxRing")).toString().toULongLong(&ringOk, 16);
+    if (epoch < 0 || epoch > static_cast<qint64>(std::numeric_limits<uint32_t>::max()) || !ringOk || ring == 0U) {
+        return;
+    }
+    row.rxEpoch = static_cast<uint32_t>(epoch);
+    row.rxRing = ring;
+    row.rxEpochKnown = true;
+}
+
 /**
  * @brief Read a stored row's raw identity, text message, GPS text and position (issue #800), and the fragment each
  * came from. A store an older build wrote has none of them: its row keeps the detail it stored (legacyDetail), and a
@@ -738,6 +790,7 @@ row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.targetText = raw_identity_text(row.protocol, false, obj.value(QLatin1String("tgtText")).toString());
     row.sourceScope = scope_from_json(obj, "sscope");
     row.rxScope = scope_from_json(obj, "rx");
+    reception_epoch_from_json(row, obj);
     row.messageText = obj.value(QLatin1String("msg")).toString();
     row.msgWhen = json_i64_or(obj, "msgWhen", row.when);
     row.msgSeq = static_cast<qulonglong>(json_i64_or(obj, "msgSeq", static_cast<qint64>(row.seq)));
@@ -769,6 +822,10 @@ row_payload_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
     }
     scope_to_json(row.sourceScope, "sscope", obj);
     scope_to_json(row.rxScope, "rx", obj);
+    if (row.rxEpochKnown && row.rxRing != 0U) {
+        obj.insert(QLatin1String("rxEp"), static_cast<qint64>(row.rxEpoch));
+        obj.insert(QLatin1String("rxRing"), QString::number(row.rxRing, 16));
+    }
     if (!row.messageText.isEmpty()) {
         obj.insert(QLatin1String("msg"), row.messageText);
         obj.insert(QLatin1String("msgWhen"), row.msgWhen);
