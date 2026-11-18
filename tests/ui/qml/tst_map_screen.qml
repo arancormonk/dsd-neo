@@ -182,7 +182,7 @@ Item {
             testContext.setMapTilesFailing(false);
             testContext.setMapTilesNotPng(true);
             screen.tileUrl = "https://jpeg.example.invalid/{z}/{x}/{y}.jpg";
-            tryCompare(chip, "text", "The tile server sent no PNG tiles. Check Map settings.", 5000);
+            tryCompare(chip, "text", "The tile server sent no PNG tiles the map can use. Check Map settings.", 5000);
             verify(chip.visible);
         }
 

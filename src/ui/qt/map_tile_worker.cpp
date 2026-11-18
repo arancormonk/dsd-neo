@@ -48,8 +48,8 @@ struct NetJob {
     QByteArray ifModifiedSince;
 };
 
-/* What one fetch came to. Miss: the server answered, but has no PNG for this tile (404, 410, 204, or a 200 that is
- * not a PNG): that tile is skipped for its generation, with no backoff. */
+/* What one fetch came to. Miss: the server answered, but has no PNG for this tile (a hole: 404, 410, 204 or an empty
+ * 200; or a 200 whose body is not a PNG the map can use): that tile is skipped for its generation, with no backoff. */
 enum class Outcome { Success, Miss, Cancelled, Invalid, Unsupported, Failure };
 
 /* The answer with the times it went out and came back, before it is decoded or stored. */
@@ -59,7 +59,7 @@ struct Exchange {
     qint64 responseTime = 0;
 };
 
-/* Whether @p resp says the server has no tile there: gone, or empty (a 204, or a 200 without a body). */
+/* Whether @p resp says the server has no tile there (a hole): gone, or empty (a 204, or a 200 without a body). */
 bool
 tile_missing(const dsd_tile_fetch_response& resp) {
     if (resp.status != DSD_TILE_FETCH_ERR_HTTP) {
@@ -80,6 +80,8 @@ struct FetchResult {
     qint64 retryAfterMs = 0;
     /* A 304 selected nothing stored: the retry goes out without validators. */
     bool dropValidators = false;
+    /* A 200 with a body that is not a PNG the map can use (the only evidence for NoPngTiles; a hole is not). */
+    bool notPng = false;
 };
 
 bool
@@ -214,9 +216,10 @@ struct MapTileWorker::Core {
     quint64 generation = 0;
     /* The latest generation was asked for by a view the device's position placed. */
     bool memoryOnly = false;
-    /* This epoch has seen a PNG from its source (a cache hit or a fetch); until then a miss may mean the source
-     * sends no PNG tiles at all. */
+    /* This epoch has seen a PNG from its source (a cache hit or a fetch), and a 200 whose body is not a usable PNG.
+     * NoPngTiles needs the second without the first; holes (404, 410, 204, empty 200) count as neither. */
     bool pngSeen = false;
+    bool notPngSeen = false;
     std::deque<MapTileKey> pending;
     std::deque<NetJob> network;
     bool inflight = false;
@@ -267,7 +270,7 @@ struct MapTileWorker::Core {
     static FetchResult interpret(const NetJob& job, Exchange* ex, MapTileCache& tiles,
                                  const MapTileRequestFields& fields);
     void apply(const NetJob& job, const FetchResult& result);
-    void answered(bool png);
+    void answered(const FetchResult& result);
     MapTileCache& cacheFor(const QString& templateText, quint64 serial);
     MapTileRequestFields fieldsFor(const QString& templateText) const;
     void postState(State next);
@@ -464,8 +467,9 @@ MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& ti
             const QByteArray png(reinterpret_cast<const char*>(resp->body), static_cast<qsizetype>(resp->body_len));
             result.image = mapTileDecodePng(png);
             if (result.image.isNull()) {
-                /* Not a PNG (a JPEG source, an HTML page): this tile is skipped, not retried. */
+                /* Not a PNG the map can use (a JPEG source, an HTML page, over 512×512): skipped, not retried. */
                 result.outcome = Outcome::Miss;
+                result.notPng = true;
                 return result;
             }
             (void)tiles.store(job.key, *resp, png, result.image, ex->requestTime, ex->responseTime, fields, storage);
@@ -507,12 +511,12 @@ MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
     }
     switch (result.outcome) {
         case Outcome::Success:
-            answered(true);
+            answered(result);
             postTile(job.generation, job.key, result.image, false);
             return;
         case Outcome::Miss:
             /* Skipped for this generation; the rest of the view goes on at once. */
-            answered(false);
+            answered(result);
             return;
         case Outcome::Cancelled:
             /* Cancelled by a clear that a later request for the same tile overtook: still wanted, so again. */
@@ -545,17 +549,21 @@ MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
 }
 
 void
-MapTileWorker::Core::answered(bool png) {
+MapTileWorker::Core::answered(const FetchResult& result) {
     /* The server answered: whatever wait a failure set is over. */
     backoffStepMs = 0;
     backoffUntilMs = 0;
-    pngSeen = pngSeen || png;
-    if (pngSeen) {
-        postState(State::Ready);
-    } else if (network.empty()) {
-        /* This view is done and not one PNG came from this source since it was chosen or turned on. */
-        postState(State::NoPngTiles);
+    pngSeen = pngSeen || result.outcome == Outcome::Success;
+    notPngSeen = notPngSeen || result.notPng;
+    if (!pngSeen && notPngSeen) {
+        if (network.empty()) {
+            /* This view is done: the source sent bodies that are not PNG and not one PNG since it was chosen. */
+            postState(State::NoPngTiles);
+        }
+        return;
     }
+    /* A PNG, or a hole in a source not yet known to send anything but PNG: the server is fine. */
+    postState(State::Ready);
 }
 
 MapTileWorker::MapTileWorker(QObject* parent) : MapTileWorker(Options(), parent) {}
@@ -682,6 +690,7 @@ MapTileWorker::restart(bool templateChanged, bool resetBackoff) {
         m_core->generation++;
         m_core->epoch++;
         m_core->pngSeen = false;
+        m_core->notPngSeen = false;
         m_core->pending.clear();
         m_core->network.clear();
         m_core->lastPosted = idle;

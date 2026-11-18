@@ -97,12 +97,13 @@ for OpenStreetMap that is the OpenStreetMap Foundation's privacy policy.
 
 The app keeps the tiles of areas you looked at by hand in a cache on your device, so the same
 area does not have to be fetched again. Each cached tile is stored with the time it was fetched
-and stays until newer tiles push it out (the cache holds up to 50 MB) or the cache is cleared,
-so the cache shows which areas you looked at, and when. Once your own position has placed the
-map (Locate me, Follow my position, Show every radio when it took in your dot, or a map that
-first opened around you), the tiles of the rest of that visit to the map are kept in memory
-only and never written to the cache, so the cache holds no trail of where you were. The cache
-is not part of the app's backup file, and Android can clear it at any time.
+or last shown, and stays until newer tiles push it out (the cache holds up to 50 MB) or the
+cache is cleared, so the cache shows which areas you looked at, and when. Once your own
+position has placed the map (Locate me, Follow my position, Show every radio when it took in
+your dot, or a map that first opened around you), the tiles of the rest of that visit to the
+map are kept in memory only and never written to the cache, so the cache holds no trail of
+where you were. The cache is not part of the app's backup file, and Android can clear it at any
+time.
 
 The app saves on your device whether tiles are on, the tile server you entered and its
 attribution, the age filter you chose, and the area you last looked at, so the map can open

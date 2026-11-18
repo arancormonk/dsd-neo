@@ -18098,13 +18098,15 @@ Qt Quick frontend (`src/ui/qt`):
     the foreground. A key still asked for keeps its fetch in flight. Epochs: work started before an on/off or template
     change delivers nothing, posts no state, adds no backoff and is never retried, so one template's validators never
     reach another server. Backoff: 1 s doubling to 5 min, or `Retry-After` (seconds or date, at least 1 s); a success
-    or a template change resets it (on/off does not). A miss (404, 410, 204, an empty 200 or a 200 that is not a PNG)
-    skips that tile for its generation with no backoff and resets the wait like a success; when a view's requests end
-    and the epoch has seen no PNG at all (no fetch, no cache hit), the state is `NoPngTiles` ("The tile server sent no
-    PNG tiles. Check Map settings."), and the next PNG makes it `Ready`. Network failures, 429, 5xx, redirects and a
-    304 that selects nothing keep the global backoff. `requestTiles(keys, origin)`: `ViewOrigin::FromDevice` makes the
-    generation memory only; a fetch kept in flight takes the OR of every generation that kept it, read once its answer
-    is in, so a late result of a device-placed view never reaches the disk. Results go back with a queued
+    or a template change resets it (on/off does not). A miss (a hole: 404, 410, 204 or an empty 200; or a 200 whose
+    body is not a PNG the map can use, not PNG or over 512×512) skips that tile for its generation with no backoff and
+    resets the wait like a success. Only the non-PNG 200 is evidence about the source: when a view's requests end and
+    the epoch has seen such a body and no usable PNG (no fetch, no cache hit), the state is `NoPngTiles` ("The tile
+    server sent no PNG tiles the map can use. Check Map settings."), and the next PNG makes it `Ready`. Holes alone
+    never lead there (a regional server's 404s outside its coverage stay `Ready`). Network failures, 429, 5xx, redirects
+    and a 304 that selects nothing keep the global backoff. `requestTiles(keys, origin)`: `ViewOrigin::FromDevice` makes
+    the generation memory only; a fetch kept in flight takes the OR of every generation that kept it, read once its
+    answer is in, so a late result of a device-placed view never reaches the disk. Results go back with a queued
     `invokeMethod`; a fetch that returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor
     stored. Teardown never waits on the GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to
     the thread, which ends by itself. Every thread is in a registry, joined at the next start;
@@ -18115,8 +18117,8 @@ Qt Quick frontend (`src/ui/qt`):
     host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL; the template
     is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
     Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
-    epochs, backoff, Retry-After, UA, https only, each placeholder once, misses without backoff, `NoPngTiles`,
-    device-placed views kept off disk, the exit join).
+    epochs, backoff, Retry-After, UA, https only, each placeholder once, misses without backoff, `NoPngTiles` only
+    from non-PNG 200s, device-placed views kept off disk (late results included), the exit join).
   - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as
     `positionView`): the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
     `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at

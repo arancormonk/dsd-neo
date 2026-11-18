@@ -23,9 +23,10 @@
  * - After a failure (no answer, 429, 5xx, a redirect) the worker waits before its next request: 1 s, doubling to 5
  *   min, or the server's Retry-After (seconds or a date) when the failure carried one, never less than 1 s. A tile
  *   or a miss (below) resets the wait; so does a template change. Cache hits are still answered while it waits.
- * - A tile the server has no PNG for (404, 410, 204, or a 200 that is not a PNG) is a miss: skipped for that
- *   generation, with no wait, so the rest of the view still loads. A source that has sent no PNG at all since it was
- *   chosen or turned on, once a view's requests are done, is NoPngTiles, not Retrying.
+ * - A tile the server has no PNG for is a miss: skipped for that generation, with no wait, so the rest of the view
+ *   still loads. A hole (404, 410, 204, an empty 200) is only that. A 200 whose body is not a PNG the map can use (not
+ *   PNG, or over 512×512) is also evidence about the source: once a view's requests are done, a source that sent such
+ *   a body and no usable PNG since it was chosen or turned on is NoPngTiles, not Retrying.
  * - A view the device's position placed (ViewOrigin::FromDevice) leaves nothing on disk: the cache serves and keeps its
  *   tiles in memory only and does not read, write or stamp a file for it. The origin belongs to the generation the
  *   request starts; a fetch that a device-placed generation kept in flight is memory only too.
@@ -84,7 +85,8 @@ class MapTileWorker : public QObject {
         Retrying,      /**< The last request failed; the next waits out the backoff. */
         Unavailable,   /**< This build cannot fetch tiles (no libcurl, or no asynchronous resolver). */
         InvalidSource, /**< The URL template is not a valid https template, or the server refused it as such. */
-        NoPngTiles,    /**< The server answers, but has sent no PNG tile since this source was chosen or turned on. */
+        NoPngTiles, /**< The server sends 200 bodies that are not a usable PNG and no usable PNG since it was chosen or
+                            turned on (holes alone never lead here). */
     };
     Q_ENUM(State)
 

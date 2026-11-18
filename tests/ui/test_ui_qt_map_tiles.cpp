@@ -1384,24 +1384,92 @@ source_without_png(const QString& root) {
     expect("a PNG makes it ready again", wait_for([&h] { return h.worker->state() == MapTileWorker::State::Ready; }));
 }
 
-/* A hole in a source that does send PNGs is not a source without PNGs. */
+/* F1 review: holes (404, 410, 204, an empty 200) never say the source sends no PNG, even when a first view is all
+ * holes; a 200 body that is not a PNG does. */
 void
 source_with_holes(const QString& root) {
-    Harness holes(root + QStringLiteral("/holes"));
-    holes.worker->setEnabled(true);
-    FakeReply gone;
-    gone.status = 404;
-    holes.server.script(key(11, 5, 1), gone);
-    holes.worker->requestTiles({key(11, 5, 1), key(11, 6, 1)}, kByHand);
-    expect("the other tile arrives", wait_for([&holes] { return holes.tiles.size() == 1U; }));
-    settle();
-    expect("and the source stays ready", holes.worker->state() == MapTileWorker::State::Ready);
+    const QList<long> holeStatuses = {404, 410, 204, 200};
+    int n = 0;
+    for (const long status : holeStatuses) {
+        Harness holes(root + QStringLiteral("/holes-") + QString::number(n));
+        holes.server.fallback.status = status;
+        holes.server.fallback.body.clear();
+        holes.worker->setEnabled(true);
+        holes.worker->requestTiles({key(11, n, 1), key(11, n, 2), key(11, n, 3)}, kByHand);
+        const bool asked = wait_for([&holes] { return holes.server.seenCount() == 3U; });
+        settle();
+        const QString what =
+            QStringLiteral("a first view of only HTTP ") + QString::number(status) + QStringLiteral(" holes");
+        expect(qPrintable(what + QStringLiteral(" is asked once each, with no backoff")),
+               asked && holes.server.seenCount() == 3U && holes.worker->backoffRemainingMsForTest() == 0);
+        expect(qPrintable(what + QStringLiteral(" leaves the source ready (no chip)")),
+               holes.worker->state() == MapTileWorker::State::Ready);
+        n++;
+    }
+
+    {
+        Harness mixed(root + QStringLiteral("/holes-and-jpeg"));
+        mixed.server.fallback.status = 404;
+        mixed.server.fallback.body.clear();
+        FakeReply jpeg;
+        jpeg.body = QByteArrayLiteral("\xFF\xD8\xFF\xE0 not a png");
+        mixed.server.script(key(11, 9, 2), jpeg);
+        mixed.worker->setEnabled(true);
+        mixed.worker->requestTiles({key(11, 9, 1), key(11, 9, 2), key(11, 9, 3)}, kByHand);
+        expect("holes plus one 200 that is not a PNG name the source as sending no PNG",
+               wait_for([&mixed] { return mixed.worker->state() == MapTileWorker::State::NoPngTiles; }));
+        expect("after every tile was asked once", mixed.server.seenCount() == 3U);
+    }
+    {
+        Harness holed(root + QStringLiteral("/holes-png"));
+        holed.worker->setEnabled(true);
+        FakeReply gone;
+        gone.status = 404;
+        holed.server.script(key(11, 5, 1), gone);
+        holed.worker->requestTiles({key(11, 5, 1), key(11, 6, 1)}, kByHand);
+        expect("the other tile arrives", wait_for([&holed] { return holed.tiles.size() == 1U; }));
+        settle();
+        expect("and a source with a hole stays ready", holed.worker->state() == MapTileWorker::State::Ready);
+    }
 }
 
 void
 test_source_without_png(const QString& root) {
     source_without_png(root);
     source_with_holes(root);
+}
+
+/* F1 review M2: a device-placed view's fetch that nothing kept (the map closed, tiles turned off and on, or a view by
+ * hand without that tile) still never reaches the disk when it answers late. */
+void
+test_late_device_result_stays_off_disk(const QString& root) {
+    for (int variant = 0; variant < 3; ++variant) {
+        const QString dir = root + QStringLiteral("/late-") + QString::number(variant);
+        Harness h(dir);
+        h.worker->setEnabled(true);
+        const MapTileCache paths(dir, kTemplate, wall_now);
+        const MapTileKey late = key(12, variant, 1);
+        const MapTileKey next = key(12, variant, 2);
+        FakeReply deaf;
+        deaf.stall = true;
+        deaf.ignoreCancel = true;
+        deaf.headers = {"Cache-Control: max-age=600"};
+        deaf.body = make_png(256, 256, Qt::yellow);
+        h.server.script(late, deaf);
+        h.worker->requestTiles({late}, kFromDevice);
+        expect("a device-placed view's tile is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
+        if (variant == 0) {
+            h.worker->clearRequests(); /* the map closed */
+        } else if (variant == 1) {
+            h.worker->setEnabled(false); /* tiles off and on */
+            h.worker->setEnabled(true);
+        }
+        h.worker->requestTiles({next}, kByHand); /* variant 2: a view by hand without that tile */
+        h.server.releaseStall();
+        /* One thread, in order: once the next tile is on disk, the late answer was handled first. */
+        expect("the next view's tile is written", wait_for([&] { return QFileInfo::exists(paths.pathFor(next)); }));
+        expect("the late answer of the device-placed view is not", !QFileInfo::exists(paths.pathFor(late)));
+    }
 }
 
 } // namespace
@@ -1448,6 +1516,7 @@ main(int argc, char** argv) {
     test_device_view_leaves_disk_entries_alone(root);
     test_missing_tile_is_skipped(root);
     test_source_without_png(root);
+    test_late_device_result_stays_off_disk(root);
     expect("every worker thread so far ended", wait_threads_gone());
     test_shutdown_joins_threads(root);
 

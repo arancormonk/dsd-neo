@@ -730,14 +730,15 @@ stays at the bottom of the map, above any open sheet, and for OpenStreetMap it o
 With tiles on, the app asks the server only for the tiles of the area on screen, over HTTPS, with the User-Agent
 `dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`. The server sees which area you look at, your IP address
 and that User-Agent (see `PRIVACY_POLICY.md`, "Map"). It never gets positions, radio IDs or anything else the app
-decoded. Tiles of areas you looked at by hand are kept in the app's cache, each with the time it was fetched, until
-newer tiles push them out (up to 50 MB) or the cache is cleared. They follow the server's cache rules, or 7 days when it
-gives none. Once your own position has placed the map (Locate me, Follow my position, **Show every radio** when it took
-in your dot, or a map that first opened around you), the tiles of the rest of that visit stay in memory and are never
-written to the cache. There is no download for offline use: OpenStreetMap's tile policy does not allow it. When the
-server cannot be reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries again
-later, waiting longer each time (up to 5 minutes). A tile the server does not have stays blank, and the rest still load.
-If the server sends no PNG tiles at all, the line says **The tile server sent no PNG tiles. Check Map settings.**
+decoded. Tiles of areas you looked at by hand are kept in the app's cache, each with the time it was fetched or last
+shown, until newer tiles push them out (up to 50 MB) or the cache is cleared. They follow the server's cache rules, or 7
+days when it gives none. Once your own position has placed the map (Locate me, Follow my position, **Show every radio**
+when it took in your dot, or a map that first opened around you), the tiles of the rest of that visit stay in memory and
+are never written to the cache. There is no download for offline use: OpenStreetMap's tile policy does not allow it.
+When the server cannot be reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries
+again later, waiting longer each time (up to 5 minutes). A tile the server does not have stays blank, and the rest still
+load. If the server sends something other than PNG tiles (or PNGs larger than 512×512), the line says **The tile server
+sent no PNG tiles the map can use. Check Map settings.**
 
 ### Your own position
 
