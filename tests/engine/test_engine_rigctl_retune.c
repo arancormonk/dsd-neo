@@ -81,13 +81,36 @@
 
 static const uint64_t k_t0_ns = 1000000ULL * 1000000000ULL;
 
+/* Set while a case is run to fail on purpose (test_a_producer_that_cannot_start_ends_its_case()): its failures are
+   reported as expected, not as FAIL lines. */
+static int g_failure_expected = 0;
+
 static int
 expect_true(const char* what, int cond) {
     if (!cond) {
-        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+        DSD_FPRINTF(stderr, "%s: %s\n", g_failure_expected ? "expected failure" : "FAIL", what);
         return 1;
     }
     return 0;
+}
+
+/* The next this many producer threads a case starts (start_producer()) fail to start, as on a host out of threads. */
+static int g_producers_to_fail = 0;
+
+/* Start a case's producer thread: 0, or nonzero when it did not start (nothing to join). */
+static int
+start_producer(dsd_thread_t* th,
+               DSD_THREAD_RETURN_TYPE(
+#if DSD_PLATFORM_WIN_NATIVE
+                   __stdcall
+#endif
+                       * fn)(void*),
+               void* arg) {
+    if (g_producers_to_fail > 0) {
+        g_producers_to_fail--;
+        return -1;
+    }
+    return dsd_thread_create(th, fn, arg);
 }
 
 /* ---- A rigctl peer on a loopback socket ---- */
@@ -768,19 +791,23 @@ test_watchdog_tune_drops_at_the_next_read(void) {
     /* The new channel's audio comes once the decoder waits on the input. No reconcile runs before the read. */
     late_sender ls = {tx, port, 1000, 300U, 50U, 0, 0};
     dsd_thread_t th;
-    rc |= expect_true("late sender", dsd_thread_create(&th, late_sender_main, &ls) == 0);
-    (void)getSymbol(opts, state, 0);
-    atomic_store(&ls.read_returned, 1);
-    (void)dsd_thread_join(th);
-    rc |= expect_true("the read returned on the new channel's audio", atomic_load(&ls.gave_up) == 0);
-    dsd_exitflag_store(0);
-    rc |= expect_true("the next read moves the epoch once", state->symbol_clock_epoch == e + 1U);
-    rc |= expect_true("and the read drops the old channel's queued audio: what follows is the new channel's",
-                      udp_next(opts) >= 1000);
-    /* The tune's notice is reconciled later: the count the read took is not taken again. */
-    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
-    rc |= expect_true("the reconcile takes nothing twice",
-                      state->symbol_clock_epoch == e + 1U && state->input_drop_pending == 0U);
+    if (start_producer(&th, late_sender_main, &ls) != 0) {
+        /* No sender: the read would wait on the empty input for good, and there is no thread to join. */
+        rc |= expect_true("the late sender started", 0);
+    } else {
+        (void)getSymbol(opts, state, 0);
+        atomic_store(&ls.read_returned, 1);
+        (void)dsd_thread_join(th);
+        rc |= expect_true("the read returned on the new channel's audio", atomic_load(&ls.gave_up) == 0);
+        dsd_exitflag_store(0);
+        rc |= expect_true("the next read moves the epoch once", state->symbol_clock_epoch == e + 1U);
+        rc |= expect_true("and the read drops the old channel's queued audio: what follows is the new channel's",
+                          udp_next(opts) >= 1000);
+        /* The tune's notice is reconciled later: the count the read took is not taken again. */
+        (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+        rc |= expect_true("the reconcile takes nothing twice",
+                          state->symbol_clock_epoch == e + 1U && state->input_drop_pending == 0U);
+    }
     if (tx != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(tx);
     }
@@ -907,7 +934,10 @@ watchdog_queue_case(dsd_opts* opts, dsd_state* state, const wait_src* src, const
     const uint32_t e = state->symbol_clock_epoch;
     wait_poster wp = {src, 0};
     dsd_thread_t th;
-    rc |= expect_true("watchdog", dsd_thread_create(&th, wait_poster_main, &wp) == 0);
+    if (start_producer(&th, wait_poster_main, &wp) != 0) {
+        /* No watchdog: the read would wait on the empty input for good, and there is no thread to join. */
+        return rc | expect_true("the watchdog started", 0);
+    }
     (void)getSymbol(opts, state, 0); /* waits on the empty input; the new channel's audio ends the wait */
     (void)dsd_thread_join(th);
     rc |= expect_true("the new channel's audio was sent", wp.sent);
@@ -1954,6 +1984,23 @@ test_symbol_reader_checks_posts_only_with_rigctl(void) {
     return rc;
 }
 
+/* A case whose producer thread cannot start (a host out of threads) reports the failure and ends: it never waits on an
+   input nothing will feed, nor joins a thread that does not exist. Both producers' cases are run with their thread
+   made to fail; each must return its failure. */
+static int
+test_a_producer_that_cannot_start_ends_its_case(void) {
+    g_failure_expected = 1;
+    g_producers_to_fail = 1;
+    const int late = test_watchdog_tune_drops_at_the_next_read();
+    g_producers_to_fail = 1;
+    const int queued = test_watchdog_post_drops_only_what_was_queued();
+    g_producers_to_fail = 0;
+    g_failure_expected = 0;
+    int rc = expect_true("a late sender that cannot start fails its case", late != 0);
+    rc |= expect_true("a watchdog that cannot start fails its case", queued != 0);
+    return rc;
+}
+
 /* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
 static int
 test_readers_carry_out_the_drop(void) {
@@ -2063,6 +2110,7 @@ main(void) {
     rc |= test_staged_low_rate_pcm();
     rc |= test_staged_low_rate_pcm_from_a_file();
     rc |= test_symbol_reader_checks_posts_only_with_rigctl();
+    rc |= test_a_producer_that_cannot_start_ends_its_case();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();
