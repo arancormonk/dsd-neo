@@ -3427,8 +3427,10 @@ suite runs under this compiler.
   on it; a slot 2 one is on index 1): a slot 1 one runs on index 0 with its own live crypto swapped in while lane 0
   carries a slot 2 call or the packet is in progress, and the call's is put back after each burst
   (`dsd_state::dmr_mono_slot1_data_crypto`, `dmr_data_swap_in_slot1_data_crypto()`), so a data header neither resets
-  nor replaces the lane call's crypto. A voice LC header still opens the call the lane carries next:
-  it names its own call, and the lane's voice follows it. Under trunking nothing is folded.
+  nor replaces the lane call's crypto; its AES IV is expanded apart from the voice IV, MI and frame counter
+  (`dmr_block_crypto_prepare_aes_iv()`), and its data terminator resets the packet on its own slot. A voice LC header
+  still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Under trunking
+  nothing is folded.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
