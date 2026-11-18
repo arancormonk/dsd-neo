@@ -86,23 +86,9 @@ Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
 `vcpkg-triplets/`. The Windows zip's SoapySDR pieces come from overlays too:
 `soapysdr` (the registry port's SoapySDR 0.8.1 with a `tools` feature that
 builds `SoapySDRUtil.exe`, which the registry port leaves out), the device
-libraries `hackrf` (libhackrf, release 2026.01.3) and `airspyhf` (libairspyhf),
-and the modules `soapy-airspy`, `soapy-hackrf` and `soapy-airspyhf`, which
-build against the overlays' libraries (`soapy-airspy` against the held
-`airspy` overlay below). libairspyhf is pinned to an untagged commit on
-purpose: its only release tag, 1.6.8, dates from 2020, and the fixes since
-(a hang when a device is unplugged, a use-after-free) are on master; the library
-sources have not changed since the 1.8.1 version bump. The overlay applies
-dsd-neo's `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch`,
-which upstream has no equivalent of at that commit: like libairspy's `0001`, it
-makes a stop (and a start that fails part way) wait until libusb has called
-back every cancelled USB transfer, so a close or a sample-rate change never
-frees or resubmits one in flight; it also makes a retune while streaming
-change the sample consumer's DSP state only between blocks. The
-`soapy-airspyhf` overlay applies dsd-neo's
-`vcpkg-ports/soapy-airspyhf/0001-soapyairspyhf-report-device-errors.patch`, so
-the module reports a tune, sample rate, gain or stream start the radio refuses
-instead of reporting the setting as applied. The macOS DMG bundles
+library `hackrf` (libhackrf, release 2026.01.3), and the modules
+`soapy-airspy` and `soapy-hackrf`, which build against the overlays' libraries
+(`soapy-airspy` against the held `airspy` overlay below). The macOS DMG bundles
 Homebrew's SoapySDR and no modules. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
 SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker

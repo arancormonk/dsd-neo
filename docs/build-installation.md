@@ -36,28 +36,28 @@ Package hints:
   Older releases may ship SoapySDR 0.7.x, which is too old; install or build SoapySDR 0.8.1 or newer if you want that
   backend. Their `librtlsdr-dev` may also be older than 2.0.3, which an RTL-SDR Blog V4 needs.
 - macOS (Homebrew): `brew install cmake ninja openssl libsndfile ncurses pulseaudio rtl-sdr airspy soapysdr codec2`.
-- Windows: source builds use the `win-msvc-*` presets in `CMakePresets.json` with vcpkg; set `VCPKG_ROOT` first.
-  The presets build with Ninja and the compiler of the Visual Studio you use: open the folder in Visual Studio, or run
-  `cmake` from a Developer PowerShell or x64 Native Tools prompt. vcpkg also builds the SoapySDR Airspy, HackRF and
-  Airspy HF+ modules. `SoapySDR.dll` looks for modules relative to its own folder (`lib\SoapySDR\modules0.8` one
-  level above it). By default the build copies `SoapySDR.dll` next to `dsd-neo.exe` (vcpkg's app-local copy), where
-  there are no modules, so a `dsd-neo.exe` run from the build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set
-  it to `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
+- Windows: source builds use the `win-msvc-*` presets in `CMakePresets.json` with vcpkg; set `VCPKG_ROOT` first. The
+  presets build with Ninja and the compiler of the Visual Studio you use: open the folder in Visual Studio, or run
+  `cmake` from a Developer PowerShell or x64 Native Tools prompt. vcpkg also builds the SoapySDR Airspy and HackRF
+  modules. `SoapySDR.dll` looks for modules relative to its own folder (`lib\SoapySDR\modules0.8` one level above it).
+  By default the build copies `SoapySDR.dll` next to `dsd-neo.exe` (vcpkg's app-local copy), where there are no modules,
+  so a `dsd-neo.exe` run from the build tree finds them only through `SOAPY_SDR_PLUGIN_PATH`: set it to
+  `vcpkg_installed\x64-windows-dynamic-release\lib\SoapySDR\modules0.8` for `win-msvc-release`, or
   `vcpkg_installed\x64-windows-dynamic\debug\lib\SoapySDR\modules0.8` for `win-msvc-debug`. Configured with
-  `-DVCPKG_APPLOCAL_DEPS=OFF` (as a Windows CI job is), `dsd-neo.exe` loads `SoapySDR.dll` from the triplet's DLL
-  folder on `PATH`, next to the right modules already: leave `SOAPY_SDR_PLUGIN_PATH` unset then, or SoapySDR searches
-  that folder twice. Either way the modules' own DLLs (`hackrf.dll`, `airspyhf.dll`) are not copied next to
-  `dsd-neo.exe`, since only the modules use them, so also put the same triplet's DLL folder first on `PATH`: `vcpkg_installed\x64-windows-dynamic-release\bin` for Release,
-  `vcpkg_installed\x64-windows-dynamic\debug\bin` for Debug. Without it the modules are found but fail to load
-  (`LoadLibrary() failed`). Never mix the two: Release and Debug modules both report module ABI `0.8`, so SoapySDR
-  does not reject a module built for the other configuration, which can then fail or crash. `SoapySDRUtil.exe` is
-  always a Release build, in the triplet's `tools\soapysdr\` folder:
-  `vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\` for `win-msvc-release`,
+  `-DVCPKG_APPLOCAL_DEPS=OFF` (as a Windows CI job is), `dsd-neo.exe` loads `SoapySDR.dll` from the triplet's DLL folder
+  on `PATH`, next to the right modules already: leave `SOAPY_SDR_PLUGIN_PATH` unset then, or SoapySDR searches that
+  folder twice. Either way the HackRF module's own DLL (`hackrf.dll`) is not copied next to `dsd-neo.exe`, since only
+  the module uses it, so also put the same triplet's DLL folder first on `PATH`:
+  `vcpkg_installed\x64-windows-dynamic-release\bin` for Release, `vcpkg_installed\x64-windows-dynamic\debug\bin` for
+  Debug. Without it the HackRF module is found but fails to load (`LoadLibrary() failed`). Never mix the two: Release
+  and Debug modules both report module ABI `0.8`, so SoapySDR does not reject a module built for the other
+  configuration, which can then fail or crash. `SoapySDRUtil.exe` is always a Release build, in the triplet's
+  `tools\soapysdr\` folder: `vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\` for `win-msvc-release`,
   `vcpkg_installed\x64-windows-dynamic\tools\soapysdr\` for `win-msvc-debug`. Even in a Debug build it needs the
   triplet's Release modules and DLLs, not the `debug\` folders a Debug `dsd-neo.exe` uses: run it with
   `SOAPY_SDR_PLUGIN_PATH` set to `vcpkg_installed\x64-windows-dynamic\lib\SoapySDR\modules0.8` and
-  `vcpkg_installed\x64-windows-dynamic\bin` first on `PATH` (the same folders under `x64-windows-dynamic-release`
-  for Release). The release zip lays all of this out by itself ([soapysdr.md](soapysdr.md) section 0a).
+  `vcpkg_installed\x64-windows-dynamic\bin` first on `PATH` (the same folders under `x64-windows-dynamic-release` for
+  Release). The release zip lays all of this out by itself ([soapysdr.md](soapysdr.md) section 0a).
 - Android: see [Android Cross Builds](#android-cross-builds).
 
 ## Build mbelib-neo

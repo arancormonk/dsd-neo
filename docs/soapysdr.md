@@ -23,8 +23,7 @@ You need three pieces:
 - `SoapySDRUtil` (device discovery/probe tool)
 - A SoapySDR module/plugin for your radio (Airspy/SDRplay/HackRF/LimeSDR/etc.)
 
-Using the prebuilt Windows release zip? It already has all three for Airspy, HackRF and Airspy HF+ radios; see
-section 0a.
+Using the prebuilt Windows release zip? It already has all three for Airspy and HackRF radios; see section 0a.
 
 Sanity-check that the tool is installed and Soapy can see your plugins/devices:
 
@@ -38,17 +37,17 @@ If you installed modules into a non-standard location, set `SOAPY_SDR_PLUGIN_PAT
 
 ## 0a) Windows release zip: bundled modules, and adding others
 
-The Windows release zip ships SoapySDR 0.8.1 with three radio modules and the `SoapySDRUtil.exe` tool:
+The Windows release zip ships SoapySDR 0.8.1 with two radio modules and the `SoapySDRUtil.exe` tool:
 
 | Radio | Module (in `lib\SoapySDR\modules0.8\`) | Its library (in `bin\`) | Args |
 | --- | --- | --- | --- |
 | Airspy R2, Airspy Mini | `airspySupport.dll` (SoapyAirspy 0.2.1) | `airspy.dll`, the one the native Airspy input uses | `driver=airspy` |
 | HackRF One | `HackRFSupport.dll` (SoapyHackRF 0.3.6) | `hackrf.dll` | `driver=hackrf` |
-| Airspy HF+, HF+ Discovery | `airspyhfSupport.dll` (SoapyAirspyHF 0.2.1) | `airspyhf.dll` | `driver=airspyhf` |
 
-`bin\SoapySDR.dll`, `bin\libusb-1.0.dll` and `bin\pthreadVC3.dll` serve all three. From the unzipped folder,
-`bin\SoapySDRUtil.exe --info` lists the modules it found and `bin\SoapySDRUtil.exe --find` lists the radios
-plugged in. Windows reaches each radio through the WinUSB driver. An Airspy normally sets it up by itself
+`bin\SoapySDR.dll`, `bin\libusb-1.0.dll` and `bin\pthreadVC3.dll` serve both. Other radios need a module you add
+yourself (see "Adding another module" below); for an Airspy HF+ or HF+ Discovery that is SoapyAirspyHF. From the
+unzipped folder, `bin\SoapySDRUtil.exe --info` lists the modules it found and `bin\SoapySDRUtil.exe --find` lists the
+radios plugged in. Windows reaches each radio through the WinUSB driver. An Airspy normally sets it up by itself
 ([airspy.md](airspy.md)); a radio that `--find` does not list may need WinUSB installed once with
 [Zadig](https://zadig.akeo.ie/), as an RTL-SDR does.
 
@@ -64,14 +63,8 @@ What dsd-neo does with each (none of this is tested on real hardware yet):
   behaviour, the listed rate nearest the request: 1 or 2 MS/s, depending on the DSP bandwidth. Gains: `LNA`, `VGA` and the
   14 dB `AMP`; set them with `soapy_gains` (for example `soapy_gains = "LNA:24,VGA:20,AMP:0"`), and keep `AMP` off
   near strong transmitters. Skip silent channels checks it at 10 MS/s.
-- **Airspy HF+ and HF+ Discovery** get the generic profile (they used to be taken for an Airspy) and the device's
-  rate nearest the request, its highest (768 kS/s on a Discovery). They have no filter control. Gains: the LNA
-  on or off, the attenuator (0 to 48 dB in 6 dB steps) and the AGC. The
-  hardware covers 0.5 kHz to 31 MHz and 64 to 260 MHz; the `-i soapy:...:freq` shorthand starts at 1 MHz, so tune
-  lower through `[input] rtl_freq` (untested). Skip silent channels cannot check them at these rates.
 
-**Picking a radio.** A bare `-i soapy` opens the first radio found, in driver order: Airspy, then Airspy HF+, then
-HackRF. With more than one radio plugged in, name it: `-i soapy:driver=hackrf` or
+**Picking a radio.** A bare `-i soapy` opens the first radio found, in driver order: Airspy, then HackRF. With more than one radio plugged in, name it: `-i soapy:driver=hackrf` or
 `-i soapy:driver=airspy,serial=...`. To find a radio, a module opens each free radio of its kind for a moment: the
 HackRF module opens every free HackRF, reads its serial and turns its transceiver off, even when it then picks another
 radio. A radio another program is using is skipped; whether a HackRF streaming in another program is left alone is
@@ -81,13 +74,9 @@ untested.
 
 - `SoapySDR::Device::make() no match`: no loaded module handles that driver (a typo in `driver=`, or a module that did
   not load; run `bin\SoapySDRUtil.exe --info`).
-- `Unable to open AirSpy device`, `Unable to open AirspyHF device`, `no hackrf device matches`: the module loaded but
-  found no free radio of that kind (unplugged, in use by another program, or without the WinUSB driver).
+- `Unable to open AirSpy device`, `no hackrf device matches`: the module loaded but found no free radio of that kind
+  (unplugged, in use by another program, or without the WinUSB driver).
 - `no driver specified and no enumeration results`: a bare `-i soapy` found no radio at all.
-- `airspyhf_set_freq() failed`, `airspyhf_set_samplerate() failed`, `airspyhf_start() failed` or
-  `Unable to set the AirspyHF LNA and AGC`: an Airspy HF+ refused a tune, a rate, the stream start or its gain
-  setup, usually because of a USB problem; unplug it and plug it back in. The zip's module reports these (upstream
-  SoapyAirspyHF 0.2.1 went on as if the setting had worked).
 
 **Adding another module.** `SoapySDR.dll` finds its install root from its own location (one level above `bin\`), so
 with the zip extracted to `C:\dsd-neo` it loads modules from:
@@ -110,6 +99,12 @@ A module you add must be:
 - Able to find its own DLLs: Windows looks for them next to `dsd-neo.exe` (in `bin\`) and on `PATH`, not next to the
   module. SDRplay's module, for example, needs `sdrplay_api.dll` from the official SDRplay API installer on `PATH`.
   Do not put any DLL other than a module in the module folder: SoapySDR loads every DLL there as a module.
+
+**An Airspy HF+ through a module you added.** dsd-neo gives an Airspy HF+ or HF+ Discovery the generic profile (it
+does not take it for an Airspy) and the device's rate nearest the request, its highest (768 kS/s on a Discovery). It
+has no filter control. The hardware covers 0.5 kHz to 31 MHz and 64 to 260 MHz; the `-i soapy:...:freq` shorthand
+starts at 1 MHz, so tune lower through `[input] rtl_freq` (untested). Skip silent channels cannot check it at these
+rates.
 
 Long folder names (around 260 characters) or folder names with characters outside your Windows language's code page
 can stop SoapySDR from finding its modules; extract the zip to a short path such as `C:\dsd-neo`.
@@ -421,8 +416,8 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
   close other programs that load the computer, or adjust the driver's settings.
 - Discovery/plugin issues:
   Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers. The Windows release zip ships
-  the Airspy, HackRF and Airspy HF+ modules and `bin\SoapySDRUtil.exe`; see section 0a for adding others and the
-  ABI-match requirement.
+  the Airspy and HackRF modules and `bin\SoapySDRUtil.exe`; see section 0a for adding others and the ABI-match
+  requirement.
 
 Manual driver-setting check:
 

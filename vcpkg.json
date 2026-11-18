@@ -38,10 +38,6 @@
       "platform": "windows"
     },
     {
-      "name": "soapy-airspyhf",
-      "platform": "windows"
-    },
-    {
       "name": "codec2",
       "platform": "windows | android"
     },

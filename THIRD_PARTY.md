@@ -191,9 +191,9 @@ librtlsdr/libusb notices for the Android package. The Windows, AppImage and macO
 librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt` and
 `packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`. The Windows release
 package also carries the notices of its SoapySDR load path (below): `licenses/SoapyAirspy-MIT.txt`,
-`licenses/SoapyHackRF-MIT.txt`, `licenses/SoapyAirspyHF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`,
-`licenses/libairspyhf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/libusb-COPYRIGHT.txt`,
-`licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and `licenses/PThreads4W-CONTRIBUTORS.txt`.
+`licenses/SoapyHackRF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`,
+`licenses/libusb-COPYRIGHT.txt`, `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
+`licenses/PThreads4W-CONTRIBUTORS.txt`.
 
 Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
 and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.
@@ -221,28 +221,13 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
 - **SoapyHackRF** (Wei Jiang, Josh Blum, Kevin Mehall, https://github.com/pothosware/SoapyHackRF) - MIT; release
   0.3.6. Its LICENSE names no holder, so the notice `vcpkg-ports/soapy-hackrf/copyright` adds the source headers'
   holders; shipped as `licenses/SoapyHackRF-MIT.txt`.
-- **SoapyAirspyHF** (Charles J. Cliffe, Corey Stotts, https://github.com/pothosware/SoapyAirspyHF) - MIT; release
-  0.2.1. It carries one project patch, kept beside the overlay:
-  `vcpkg-ports/soapy-airspyhf/0001-soapyairspyhf-report-device-errors.patch` reports a tune, sample rate, gain or
-  stream start the radio refuses, and reports a setting only once the radio has taken it
-  (`tools/usb_dependency_patches.sh`). Notice `vcpkg-ports/soapy-airspyhf/copyright`, shipped as
-  `licenses/SoapyAirspyHF-MIT.txt`.
 - **libhackrf** (Great Scott Gadgets, Jared Boone, Benjamin Vernoux, https://github.com/greatscottgadgets/hackrf) -
   BSD-3-Clause for the library sources; release v2026.01.3, library only (`host/libhackrf/src`). The repository's
   GPL-2.0 firmware and tools are not built. HackRF is a trademark of Great Scott Gadgets. Notice, with every
   source-header holder and the trademark notice, `vcpkg-ports/hackrf/copyright`, shipped as
   `licenses/libhackrf-BSD-3-Clause.txt`.
-- **libairspyhf** (Youssef Touil, Ian Gilmour, Benjamin Vernoux, Michael Ossmann, Jared Boone, Leif Asbrink,
-  https://github.com/airspy/airspyhf) - BSD-3-Clause for the library sources; a `master` commit that reports 1.8.1
-  (the only release tag, 1.6.8, is from 2020), library only (`libairspyhf/src`). The repository's GPL-2.0 tools and
-  their LGPL getopt are not built. It carries one project patch, kept beside the overlay:
-  `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch` makes stop, close, restart and a failed
-  start wait until libusb has called back every cancelled transfer before freeing or resubmitting any, and makes a
-  retune while streaming change the sample consumer's DSP state only between blocks
-  (`tools/usb_dependency_patches.sh`). Notice, with every source-header holder and `LICENSE.BSD`,
-  `vcpkg-ports/airspyhf/copyright`, shipped as `licenses/libairspyhf-BSD-3-Clause.txt`.
 - **libusb** (https://github.com/libusb/libusb) - LGPL-2.1-or-later; vcpkg's 1.0.30 port at the manifest baseline,
-  `libusb-1.0.dll`, which librtlsdr, libairspy, libhackrf and libairspyhf load. Its COPYING is the one retained in
+  `libusb-1.0.dll`, which librtlsdr, libairspy and libhackrf load. Its COPYING is the one retained in
   `android/third_party/libusb/COPYING`, shipped as `licenses/libusb-LGPL-2.1-or-later.txt`. The holders and
   attributions in the headers of the sources that DLL is built from (Johannes Erdfelt, Daniel Drake, Nathan Hjelm,
   Peter Stuge, Google LLC, Hans de Goede, Pete Batard, Chris Dickens, Michael Plante, RealVNC Ltd., Red Hat, Inc.,

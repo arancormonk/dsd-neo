@@ -10,11 +10,10 @@
 #      libraries), every DLL a staged binary imports present in bin\ unless it is an
 #      API set or one of the Windows DLLs release_tree_checks.psm1 lists, no debug
 #      Visual C++ runtime, no Visual C++ runtime DLL that the msvc-runtime record the
-#      tree ships (share\doc\dsd-neo\legal\components.json) does not list, and
-#      SoapyAirspyHF built with its gain controls;
+#      tree ships (share\doc\dsd-neo\legal\components.json) does not list;
 #   3. dsd-neo.exe -h;
-#   4. SoapySDRUtil --check=<driver> finds each of the three drivers;
-#   5. SoapySDRUtil --info finds exactly the three modules under this root;
+#   4. SoapySDRUtil --check=<driver> finds each of the two drivers;
+#   5. SoapySDRUtil --info finds exactly the two modules under this root;
 #   6. dsd-neo.exe reaches each driver (it cannot open a device: there is none);
 #   7. without lib\, no driver is found;
 #   8. without bin\hackrf.dll, only the HackRF module fails to load.
@@ -37,9 +36,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 
-$Drivers = @('airspy', 'airspyhf', 'hackrf')
-$Modules = @{ airspy = 'airspySupport.dll'; airspyhf = 'airspyhfSupport.dll'; hackrf = 'HackRFSupport.dll' }
-$Libraries = @{ airspy = 'airspy.dll'; airspyhf = 'airspyhf.dll'; hackrf = 'hackrf.dll' }
+$Drivers = @('airspy', 'hackrf')
+$Modules = @{ airspy = 'airspySupport.dll'; hackrf = 'HackRFSupport.dll' }
+$Libraries = @{ airspy = 'airspy.dll'; hackrf = 'hackrf.dll' }
 $ProbeMessages = Get-SoapyProbeMessages
 $NoMatch = Get-SoapyNoMatchMessage
 
@@ -221,8 +220,7 @@ function Test-LoadPath {
     $bin = Join-Path $TreeRoot 'bin'
     $moduleDir = Join-Path $TreeRoot 'lib/SoapySDR/modules0.8'
 
-    foreach ($name in @('airspy.dll', 'airspyhf.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'rtlsdr.dll',
-            'SoapySDR.dll')) {
+    foreach ($name in @('airspy.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'rtlsdr.dll', 'SoapySDR.dll')) {
         $copies = @(Get-ChildItem -LiteralPath $TreeRoot -File -Recurse -Filter $name)
         if ($copies.Count -ne 1 -or $copies[0].DirectoryName -ine $bin) {
             $paths = @($copies | ForEach-Object { $_.FullName })
@@ -296,19 +294,6 @@ function Test-LoadPath {
         throw "DLLs the staged binaries import are missing from ${bin}:`n$($missing -join "`n")"
     }
 
-    # SoapyAirspyHF compiles its gain controls out unless its build saw the gain API.
-    $airspyhfModule = Join-Path $moduleDir $Modules['airspyhf']
-    $imports = Invoke-Dumpbin '/IMPORTS' $airspyhfModule
-    foreach ($function in @('airspyhf_set_hf_att', 'airspyhf_set_hf_lna', 'airspyhf_set_hf_agc')) {
-        try {
-            $imported = Test-DumpbinImport -Text $imports -Dll 'airspyhf.dll' -Function $function
-        } catch {
-            throw "dumpbin's import report for ${airspyhfModule}: $($_.Exception.Message)"
-        }
-        if (-not $imported) {
-            throw "airspyhfSupport.dll does not import $function from airspyhf.dll: its gain controls are compiled out"
-        }
-    }
     Write-Host 'OK: the SoapySDR modules, their libraries and every DLL they import are in place'
 }
 
@@ -390,7 +375,7 @@ function Test-WithoutHackrfLibrary {
 
     # A copy without bin\hackrf.dll and nothing added to the module folder: SoapySDR
     # loads every DLL there by full path, so a DLL placed there would be loaded first or
-    # not depending on its name. The HackRF module must then fail to load, the others not.
+    # not depending on its name. The HackRF module must then fail to load, the Airspy one not.
     $copy = Join-Path $Scratch 'without-hackrf'
     New-Item -ItemType Directory -Force -Path $copy | Out-Null
     Copy-Item -Recurse -Force -LiteralPath (Join-Path $TreeRoot 'bin') -Destination $copy
@@ -400,10 +385,8 @@ function Test-WithoutHackrfLibrary {
     $run = Invoke-TreeProgram -Bin $bin -Program 'SoapySDRUtil.exe' -Arguments @('--check=hackrf') -ExpectedExitCode 1
     Assert-Contains $run "Checking driver 'hackrf'... MISSING!"
     Assert-Contains $run 'LoadLibrary() failed'
-    foreach ($driver in @('airspy', 'airspyhf')) {
-        $run = Invoke-TreeProgram -Bin $bin -Program 'SoapySDRUtil.exe' -Arguments @("--check=$driver") -ExpectedExitCode 0
-        Assert-Contains $run "Checking driver '$driver'... PRESENT"
-    }
+    $run = Invoke-TreeProgram -Bin $bin -Program 'SoapySDRUtil.exe' -Arguments @('--check=airspy') -ExpectedExitCode 0
+    Assert-Contains $run "Checking driver 'airspy'... PRESENT"
 }
 
 $treeRoot = (Resolve-Path -LiteralPath $Root).ProviderPath

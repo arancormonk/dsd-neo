@@ -14,7 +14,7 @@ $script:SoapyLoadErrors = @('LoadLibrary() failed', 'failed ABI check', 'duplica
 # the installed legal component's, the embedded and linked components', and those of
 # the SoapySDR load path. stage_release_tree.ps1 stages them; verify_release_tree.ps1
 # checks the staged tree and the unpacked ZIP for them.
-$script:ReleaseNotices = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md','licenses/BSL-1.0.txt','licenses/SoapyAirspy-MIT.txt','licenses/SoapyHackRF-MIT.txt','licenses/SoapyAirspyHF-MIT.txt','licenses/libhackrf-BSD-3-Clause.txt','licenses/libairspyhf-BSD-3-Clause.txt','licenses/libusb-LGPL-2.1-or-later.txt','licenses/PThreads4W-Apache-2.0.txt','licenses/PThreads4W-NOTICE.txt','licenses/SoapySDR-COPYRIGHT.txt','licenses/libusb-COPYRIGHT.txt','licenses/PThreads4W-CONTRIBUTORS.txt')
+$script:ReleaseNotices = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md','licenses/BSL-1.0.txt','licenses/SoapyAirspy-MIT.txt','licenses/SoapyHackRF-MIT.txt','licenses/libhackrf-BSD-3-Clause.txt','licenses/libusb-LGPL-2.1-or-later.txt','licenses/PThreads4W-Apache-2.0.txt','licenses/PThreads4W-NOTICE.txt','licenses/SoapySDR-COPYRIGHT.txt','licenses/libusb-COPYRIGHT.txt','licenses/PThreads4W-CONTRIBUTORS.txt')
 
 function Get-ReleaseNotices {
     return $script:ReleaseNotices
@@ -36,13 +36,12 @@ function Assert-ReleaseNotices {
 }
 
 # What dsd-neo prints when it reaches a driver that finds no device, per driver ('' is
-# a bare -i soapy): each module's exception with no device attached (SoapyAirspy,
-# SoapyAirspyHF and SoapyHackRF Settings.cpp), and SoapySDR's answer to a bare
+# a bare -i soapy): each module's exception with no device attached (SoapyAirspy and
+# SoapyHackRF Settings.cpp), and SoapySDR's answer to a bare
 # request when more than one driver is registered (Factory.cpp).
 function Get-SoapyProbeMessages {
     return [ordered]@{
         airspy = 'Unable to open AirSpy device'
-        airspyhf = 'Unable to open AirspyHF device'
         hackrf = 'no hackrf device matches'
         '' = 'no driver specified and no enumeration results'
     }
@@ -326,57 +325,6 @@ function Get-DumpbinDependents {
     return $names.ToArray()
 }
 
-# Whether dumpbin /IMPORTS shows the function imported from the DLL by name. dumpbin
-# prints each DLL's name four spaces in, then its tables and a line per function, all
-# further in: "<hint> <name>", "<address> <hint> <name>" for a delay-loaded one, or
-# "Ordinal <n>". A line of an import section that is none of these throws, so a DLL
-# name the reader did not recognise cannot lend its functions to the DLL before it.
-function Test-DumpbinImport {
-    param(
-        [AllowEmptyString()]
-        [string]$Text,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Dll,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Function
-    )
-
-    $tables = '^[0-9A-Fa-f]+ (Import Address Table|Import Name Table|time date stamp|Index of first forwarder reference|Characteristics|Address of HMODULE|Bound Import Name Table|Unload Import Name Table)$'
-    $found = $false
-    $inSection = $false
-    $current = $null
-    foreach ($line in (ConvertTo-CheckLines $Text)) {
-        $trimmed = $line.Trim()
-        if ($trimmed -match '^Section contains the following (delay load )?imports:$') {
-            $inSection = $true
-            $current = $null
-        } elseif ($trimmed -eq 'Summary') {
-            $inSection = $false
-            $current = $null
-        } elseif (-not $inSection -or $trimmed -eq '') {
-            continue
-        } elseif ($line -match '^ {4}\S') {
-            if (-not (Test-ImportName $trimmed)) {
-                throw "dumpbin /IMPORTS named '$trimmed' as a DLL, which is not a DLL name"
-            }
-            $current = $trimmed
-        } elseif ($null -eq $current -or $line -notmatch '^ {5}') {
-            throw "dumpbin /IMPORTS printed a line outside any DLL's imports: '$trimmed'"
-        } elseif ($trimmed -match $tables -or $trimmed -match '^([0-9A-Fa-f]+\s+)?Ordinal\s+[0-9]+$') {
-            continue
-        } elseif ($trimmed -match '^([0-9A-Fa-f]+\s+)?[0-9A-Fa-f]+\s+(\S+)$') {
-            if ($current -ieq $Dll -and $Matches[2] -ceq $Function) {
-                $found = $true
-            }
-        } else {
-            throw "dumpbin /IMPORTS printed a line it does not recognise under ${current}: '$trimmed'"
-        }
-    }
-    return $found
-}
-
 # Runs a program in a fresh process, from a new empty working directory, with PATH
 # set to $PathValue and the variables that would point SoapySDR or dsd-neo elsewhere
 # removed. Returns the exit code and both streams as check text; throws when the
@@ -448,4 +396,4 @@ function Invoke-IsolatedProcess {
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
     Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles, Test-PeImage, Test-DumpbinImageReport,
-    Test-ImportName, Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess
+    Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess

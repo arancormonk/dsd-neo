@@ -94,22 +94,18 @@ Run the affected vcpkg build or packaging workflow. Use the same process for `ar
 | `soapysdr` | `pothosware/SoapySDR` | `SOAPY_SDR_SHA`, `SOAPY_SDR_TARBALL_SHA512` | the `soapy-sdr-0.8.1` tag (the AppImage builds the same commit) |
 | `soapy-airspy` | `pothosware/SoapyAirspy` | `SOAPY_AIRSPY_SHA`, `SOAPY_AIRSPY_TARBALL_SHA512` | the `soapy-airspy-0.2.1` tag |
 | `soapy-hackrf` | `pothosware/SoapyHackRF` | `SOAPY_HACKRF_SHA`, `SOAPY_HACKRF_TARBALL_SHA512` | the `soapy-hackrf-0.3.6` tag |
-| `soapy-airspyhf` | `pothosware/SoapyAirspyHF` | `SOAPY_AIRSPYHF_SHA`, `SOAPY_AIRSPYHF_TARBALL_SHA512` | the `soapy-airspyhf-0.2.1` tag |
 | `hackrf` | `greatscottgadgets/hackrf` | `HACKRF_SHA`, `HACKRF_TARBALL_SHA512` | the `v2026.01.3` release |
-| `airspyhf` | `airspy/airspyhf` | `AIRSPYHF_SHA`, `AIRSPYHF_TARBALL_SHA512` | a `master` commit (version 1.8.1); the only tag, `1.6.8`, is from 2020 |
 
 For a tag, pin the commit it points to (`git ls-remote https://github.com/<repo> 'refs/tags/<tag>^{}'`, or the plain
-tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` and `airspyhf`
-overlays build the library with their own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update
-the `LIBRARY_VERSION` and `LIBRARY_RELEASE` values in `vcpkg-ports/hackrf/CMakeLists.txt` as well, and recheck both
-libraries' source lists and the notices in each overlay's `copyright`, which the Windows ZIP ships.
+tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` overlay builds the
+library with its own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update the `LIBRARY_VERSION`
+and `LIBRARY_RELEASE` values in `vcpkg-ports/hackrf/CMakeLists.txt` as well, and recheck the library's source list and
+the notices in each overlay's `copyright`, which the Windows ZIP ships.
 
 ### Patched USB libraries
 
 The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
-`android/third_party/patches/`, the files the Android app's vendored copies carry, and the `airspyhf` and
-`soapy-airspyhf` overlays apply their own from `vcpkg-ports/airspyhf/` and `vcpkg-ports/soapy-airspyhf/` (neither
-has an Android copy). `tools/usb_dependency_patches.sh`
+`android/third_party/patches/`, the files the Android app's vendored copies carry. `tools/usb_dependency_patches.sh`
 names each library's series (`series`), hashes it (`digest`) and applies it to a pinned checkout (`apply`, `fetch`).
 vcpkg keys its binary cache on a port's own files only, so each portfile records the series and its SHA-256: a patch
 change then means a new cache key. The portfile's own digest check fails a build only when the cache misses, since a
@@ -121,14 +117,11 @@ The AppImage and macOS release jobs apply the same series between fetch and conf
 dependency manifest and cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
 libairspy that never imports `usleep()` or a librtlsdr without the reader's "no transfer left" message was built
 without the patches). The Windows ZIP job checks its `rtlsdr.dll` for the same message; a Windows libairspy build has
-no such mark, and `airspyhf.dll` has no probe either, so its overlay's digest check is what holds that patch. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when
+no such mark. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when
 `AIRSPY_SHA` moves (`TOOLS_AIRSPY_PACKAGING` builds the pinned upstream source and expects the probe to reject it).
 All three release packages ship librtlsdr's GPL text and `packaging/librtlsdr-PATCHES.txt`, which names the patches;
 update that note when the series or `RTL_SDR_SHA` changes. The patch files are checked out with LF line endings
-everywhere (`.gitattributes`), so the digests agree on Windows. The libairspyhf patch is the exception: upstream
-`airspyhf.c` has CRLF line endings, so the patch carries CRLF in its source lines and `.gitattributes` turns line-ending
-conversion off for it; its portfile hashes it with `file(SHA256)`, since `file(READ)` drops carriage returns. When
-`AIRSPYHF_SHA` moves, regenerate the patch against the new commit (its header names the commit it was made from).
+everywhere (`.gitattributes`), so the digests agree on Windows.
 
 ## Vulnerability Scanning
 

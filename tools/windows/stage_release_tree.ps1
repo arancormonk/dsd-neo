@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 
-# SoapyAirspy, SoapyAirspyHF and SoapyHackRF (vcpkg-ports/soapy-*). Anything else in
-# the module folder is an error, so a dependency change cannot add a module unseen.
-$expectedModules = @('airspySupport.dll', 'airspyhfSupport.dll', 'HackRFSupport.dll')
+# SoapyAirspy and SoapyHackRF (vcpkg-ports/soapy-*). Anything else in the module
+# folder is an error, so a dependency change cannot add a module unseen.
+$expectedModules = @('airspySupport.dll', 'HackRFSupport.dll')
 # Windows-only notices of the SoapySDR load path: the modules, the libraries they
 # need, and the libusb and PThreads4W those libraries load (license texts and the
 # holders and contributors their sources name). SoapySDR's own notices come with the
@@ -36,9 +36,7 @@ $expectedModules = @('airspySupport.dll', 'airspyhfSupport.dll', 'HackRFSupport.
 $soapyNotices = [ordered]@{
     'vcpkg-ports/soapy-airspy/copyright' = 'SoapyAirspy-MIT.txt'
     'vcpkg-ports/soapy-hackrf/copyright' = 'SoapyHackRF-MIT.txt'
-    'vcpkg-ports/soapy-airspyhf/copyright' = 'SoapyAirspyHF-MIT.txt'
     'vcpkg-ports/hackrf/copyright' = 'libhackrf-BSD-3-Clause.txt'
-    'vcpkg-ports/airspyhf/copyright' = 'libairspyhf-BSD-3-Clause.txt'
     'android/third_party/libusb/COPYING' = 'libusb-LGPL-2.1-or-later.txt'
     'packaging/windows/PThreads4W-LICENSE.txt' = 'PThreads4W-Apache-2.0.txt'
     'packaging/windows/PThreads4W-NOTICE.txt' = 'PThreads4W-NOTICE.txt'

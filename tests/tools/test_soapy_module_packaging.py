@@ -33,20 +33,16 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 MODULES = {
     "soapy-airspy": ("pothosware/SoapyAirspy", "SOAPY_AIRSPY", "airspy"),
     "soapy-hackrf": ("pothosware/SoapyHackRF", "SOAPY_HACKRF", "hackrf"),
-    "soapy-airspyhf": ("pothosware/SoapyAirspyHF", "SOAPY_AIRSPYHF", "airspyhf"),
 }
 LIBRARIES = {
     "hackrf": ("greatscottgadgets/hackrf", "HACKRF"),
-    "airspyhf": ("airspy/airspyhf", "AIRSPYHF"),
 }
-MODULE_FILES = ("airspySupport.dll", "airspyhfSupport.dll", "HackRFSupport.dll")
+MODULE_FILES = ("airspySupport.dll", "HackRFSupport.dll")
 # Repository notice -> its name in the ZIP's share/doc/dsd-neo/licenses/.
 WINDOWS_NOTICES = {
     "vcpkg-ports/soapy-airspy/copyright": "SoapyAirspy-MIT.txt",
     "vcpkg-ports/soapy-hackrf/copyright": "SoapyHackRF-MIT.txt",
-    "vcpkg-ports/soapy-airspyhf/copyright": "SoapyAirspyHF-MIT.txt",
     "vcpkg-ports/hackrf/copyright": "libhackrf-BSD-3-Clause.txt",
-    "vcpkg-ports/airspyhf/copyright": "libairspyhf-BSD-3-Clause.txt",
     "android/third_party/libusb/COPYING": "libusb-LGPL-2.1-or-later.txt",
     "packaging/windows/PThreads4W-LICENSE.txt": "PThreads4W-Apache-2.0.txt",
     "packaging/windows/PThreads4W-NOTICE.txt": "PThreads4W-NOTICE.txt",
@@ -143,10 +139,6 @@ class SoapyModulePackaging(unittest.TestCase):
                 for policy in ("ALLOW_DLLS_IN_LIB", "DLLS_WITHOUT_LIBS", "DLLS_WITHOUT_EXPORTS", "EMPTY_INCLUDE_FOLDER"):
                     self.assertIn(f"set(VCPKG_POLICY_{policy} enabled)", portfile)
                 self.assertIn('INSTALL "${CMAKE_CURRENT_LIST_DIR}/copyright"', portfile)
-        # SoapyAirspyHF's own probe for its gain API cannot link under MSVC; the port sets the result.
-        portfile = self.port("soapy-airspyhf")[1]
-        self.assertIn('"-DHAVE_GAIN_API=1"', portfile)
-        self.assertNotIn("HAVE_GAIN_API", self.port("soapy-airspy")[1] + self.port("soapy-hackrf")[1])
 
     def test_library_overlays(self):
         for name, (repo, pin) in LIBRARIES.items():
@@ -165,10 +157,6 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn("add_library(hackrf host/libhackrf/src/hackrf.c)", hackrf)
         self.assertIn('LIBRARY_VERSION="0.9.2" LIBRARY_RELEASE="2026.01.3"', hackrf)
         self.assertEqual(json.loads(read("vcpkg-ports/hackrf/vcpkg.json"))["version-string"], "2026.01.3")
-        airspyhf = read("vcpkg-ports/airspyhf/CMakeLists.txt")
-        self.assertIn("add_library(airspyhf libairspyhf/src/airspyhf.c libairspyhf/src/iqbalancer.c)", airspyhf)
-        self.assertEqual(json.loads(read("vcpkg-ports/airspyhf/vcpkg.json"))["version-string"],
-                         "1.8.1-" + self.pins["AIRSPYHF_SHA"][:7])
 
     def test_soapysdr_overlay_builds_the_tool_from_the_appimage_commit(self):
         manifest, portfile = self.port("soapysdr")
@@ -197,21 +185,7 @@ class SoapyModulePackaging(unittest.TestCase):
                      '"HackRF" is a trademark of Great Scott Gadgets.',
                      "Neither the name of Great Scott Gadgets nor the names of its contributors", BSD_BINARY_CLAUSE):
             self.assertIn(line, hackrf)
-        airspyhf = read("vcpkg-ports/airspyhf/copyright")
-        for line in ("Copyright (c) 2013-2024, Youssef Touil <youssef@airspy.com>",
-                     "Copyright (c) 2013-2023, Youssef Touil <youssef@airspy.com>",
-                     "Copyright (c) 2013-2017, Ian Gilmour <ian@sdrsharp.com>",
-                     "Copyright (c) 2013-2017, Benjamin Vernoux <bvernoux@airspy.com>",
-                     "Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>",
-                     "Copyright (c) 2012, Jared Boone <jared@sharebrained.com>",
-                     "Copyright (c) 2016-2023, Youssef Touil <youssef@airspy.com>",
-                     "Copyright (c) 2018, Leif Asbrink <leif@sm5bsz.com>",
-                     "Neither the name of Airspy HF+ nor the names of its contributors",
-                     "BSD 3-Clause License\n\nCopyright (c) 2017, Airspy", BSD_BINARY_CLAUSE):
-            self.assertIn(line, airspyhf)
         for name, holders in (("soapy-airspy", ["Copyright (c) 2015 Charles J. Cliffe"]),
-                              ("soapy-airspyhf", ["Copyright (c) 2015 Charles J. Cliffe",
-                                                  "Copyright (c) 2018 Corey Stotts"]),
                               ("soapy-hackrf", ["Copyright (c) 2015-2016 Wei Jiang",
                                                 "Copyright (c) 2015-2017 Josh Blum",
                                                 "Copyright (c) 2017 Kevin Mehall"])):
@@ -244,9 +218,7 @@ class SoapyModulePackaging(unittest.TestCase):
                                                                             "LICENSES/SoapySDR-COPYRIGHT.txt"]),
             "soapy-airspy": (["windows"], "MIT", "SOAPY_AIRSPY_SHA", ["vcpkg-ports/soapy-airspy/copyright"]),
             "soapy-hackrf": (["windows"], "MIT", "SOAPY_HACKRF_SHA", ["vcpkg-ports/soapy-hackrf/copyright"]),
-            "soapy-airspyhf": (["windows"], "MIT", "SOAPY_AIRSPYHF_SHA", ["vcpkg-ports/soapy-airspyhf/copyright"]),
             "libhackrf": (["windows"], "BSD-3-Clause", "HACKRF_SHA", ["vcpkg-ports/hackrf/copyright"]),
-            "libairspyhf": (["windows"], "BSD-3-Clause", "AIRSPYHF_SHA", ["vcpkg-ports/airspyhf/copyright"]),
             "windows-libusb": (["windows"], "LGPL-2.1-or-later", None, ["android/third_party/libusb/COPYING",
                                                                          "packaging/windows/libusb-COPYRIGHT.txt"]),
             "pthreads4w": (["windows"], "Apache-2.0", None, ["packaging/windows/PThreads4W-LICENSE.txt",
@@ -414,15 +386,14 @@ PROBE_BARE_NO_MODULES = (
     "SoapySDR: exception in Device::make: SoapySDR::Device::make() no match\r\n"
     "SoapySDR: failed to create device for args ''.\r\nFailed to open SoapySDR device.\r\nsoft stopping...\r\n"
     "Failed to open radio stream.\r\nNOTICE: Exiting.\r\n")
-# The same --info as printInfo() (apps/SoapySDRUtil.cpp) prints it for the three modules of a release tree.
+# The same --info as printInfo() (apps/SoapySDRUtil.cpp) prints it for the two modules of a release tree.
 INFO_RELEASE = (
     "Lib Version: v0.8.1-unknown\r\nAPI Version: v0.8.0\r\nABI Version: v0.8\r\n"
     "Install root: C:\\Users\\me\\dsd-neo\r\n"
     "Search path:  C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8\r\n"
-    "Module found: C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8/airspySupport.dll   (0.2.1)\r\n"
-    "Module found: C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8/airspyhfSupport.dll (0.2.1)\r\n"
-    "Module found: C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8/HackRFSupport.dll   (0.3.6)\r\n"
-    "Available factories... airspy, airspyhf, hackrf\r\nAvailable converters...\r\n")
+    "Module found: C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8/airspySupport.dll (0.2.1)\r\n"
+    "Module found: C:\\Users\\me\\dsd-neo/lib/SoapySDR/modules0.8/HackRFSupport.dll (0.3.6)\r\n"
+    "Available factories... airspy, hackrf\r\nAvailable converters...\r\n")
 
 
 def dumpbin(lines):
@@ -430,42 +401,19 @@ def dumpbin(lines):
                         "Copyright (C) Microsoft Corporation.  All rights reserved.", "", ""] + lines) + "\r\n"
 
 
-DEPENDENTS = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
-                      "  Image has the following dependencies:", "", "    airspyhf.dll", "    SoapySDR.dll",
+DEPENDENTS = dumpbin(["Dump of file HackRFSupport.dll", "", "File Type: DLL", "",
+                      "  Image has the following dependencies:", "", "    hackrf.dll", "    SoapySDR.dll",
                       "    MSVCP140.dll", "    KERNEL32.dll", "", "  Image has the following delay load dependencies:",
                       "", "    WS2_32.dll", "", "  Summary", "", "        1000 .data", "        9000 .text", ""])
-IMPORTS = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
-                   "  Section contains the following imports:", "", "    airspyhf.dll",
-                   "             180012000 Import Address Table", "             180016A58 Import Name Table",
-                   "                     0 time date stamp", "                     0 Index of first forwarder reference",
-                   "", "                           3 airspyhf_close", "                          12 airspyhf_set_hf_att",
-                   "", "    SoapySDR.dll", "             180012100 Import Address Table", "",
-                   "                         1A7 airspyhf_set_hf_lna", "", "  Summary", "", "        1000 .data", ""])
 
-# A DLL whose name holds a space, in the delay-load list and between two DLLs of the import list: its functions are
-# its own, not those of the DLL listed before it.
+# A DLL whose name holds a space, in the delay-load list.
 DEPENDENTS_SPACED = DEPENDENTS.replace("    WS2_32.dll", "    WS2_32.dll\r\n    Vendor Support.dll")
-IMPORTS_SPACED = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
-                          "  Section contains the following imports:", "", "    airspyhf.dll",
-                          "             180012000 Import Address Table", "",
-                          "                          12 airspyhf_set_hf_att", "", "    Vendor Support.dll",
-                          "             180012100 Import Address Table", "",
-                          "                          1A airspyhf_set_hf_agc", "", "    KERNEL32.dll",
-                          "                  Ordinal   115", "",
-                          "  Section contains the following delay load imports:", "", "    Late Loader.dll",
-                          "              00000001 Characteristics", "           0000000180015000 Address of HMODULE",
-                          "                     0 time date stamp", "",
-                          "           0000000180001010               0 airspyhf_set_hf_lna", "", "  Summary", ""])
-# Reads one dumpbin report with one reader; prints the result as JSON, or the reader's refusal.
-STRICT_READER = r"""param([string]$Module, [string]$File, [string]$Dll, [string]$Function)
+# Reads one dumpbin /DEPENDENTS report; prints the result as JSON, or the reader's refusal.
+STRICT_READER = r"""param([string]$Module, [string]$File)
 Import-Module $Module -Force
 $text = [System.IO.File]::ReadAllText($File)
 try {
-    if ($Dll) {
-        $result = Test-DumpbinImport -Text $text -Dll $Dll -Function $Function
-    } else {
-        $result = @(Get-DumpbinDependents $text)
-    }
+    $result = @(Get-DumpbinDependents $text)
     ConvertTo-Json -Compress -InputObject @{ result = $result }
 } catch {
     [Console]::Out.WriteLine('FAILED: ' + $_.Exception.Message)
@@ -517,12 +465,6 @@ $result['no_match'] = Get-SoapyNoMatchMessage
 $result['check_text'] = ConvertTo-CheckText $text['check_load_failed_stderr']
 $result['path'] = ConvertTo-ComparablePath 'D:\t\mingw/lib/SoapySDR/modules0.8/'
 $result['dependents'] = @(Get-DumpbinDependents $text['dependents'])
-$result['imports'] = [ordered]@{}
-foreach ($pair in @(@('airspyhf.dll', 'airspyhf_set_hf_att'), @('airspyhf.dll', 'airspyhf_set_hf_lna'),
-                    @('SoapySDR.dll', 'airspyhf_set_hf_lna'), @('airspyhf.dll', 'Import'),
-                    @('airspyhf.dll', 'airspyhf_set_hf_agc'))) {
-    $result['imports'][$pair[0] + ':' + $pair[1]] = Test-DumpbinImport -Text $text['imports'] -Dll $pair[0] -Function $pair[1]
-}
 $result['kinds'] = [ordered]@{}
 foreach ($name in $text['kinds'].Split("`n", [System.StringSplitOptions]::RemoveEmptyEntries)) {
     $result['kinds'][$name.Trim()] = Get-DllKind -Name $name.Trim()
@@ -593,21 +535,19 @@ DEPENDENCIES = {
     "rtlsdr.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "airspy.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "hackrf.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
-    "airspyhf.dll": ["libusb-1.0.dll", "pthreadVC3.dll", "KERNEL32.dll"],
     "SoapySDR.dll": ["MSVCP140.dll", "VCRUNTIME140.dll", "KERNEL32.dll"],
     "airspySupport.dll": ["airspy.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll"],
-    "airspyhfSupport.dll": ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll"],
     "HackRFSupport.dll": ["hackrf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll"],
     "SoapySDRUtil.exe": ["SoapySDR.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "KERNEL32.dll"],
 }
-INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "airspyhf.dll", "SoapySDR.dll", "libusb-1.0.dll",
-                 "pthreadVC3.dll", "unused.dll")
+INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "SoapySDR.dll", "libusb-1.0.dll", "pthreadVC3.dll",
+                 "unused.dll")
 # The Visual C++ runtime the binaries import, which staging takes from the toolset's redistributable folder of the
 # Visual Studio that vswhere finds, never from vcpkg's bin\.
 RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
 
 
-# Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers, /DEPENDENTS and /IMPORTS from
+# Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers and /DEPENDENTS from
 # report.json beside it. SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
 # <their folder>/../lib/SoapySDR/modules0.8, which fails when the module's library is not in their own folder, and
 # print what the real programs print (the probe messages are the drivers' own).
@@ -627,11 +567,6 @@ if option == "/headers":
 elif option == "/DEPENDENTS":
     lines += ["  Image has the following dependencies:", ""]
     lines += ["    " + dep for dep in report["dependents"].get(name, ["KERNEL32.dll"])]
-elif option == "/IMPORTS":
-    lines += ["  Section contains the following imports:", ""]
-    for dll, functions in report["imports"].get(name, {{}}).items():
-        lines += ["    " + dll, "             180012000 Import Address Table", ""]
-        lines += ["                          {{:X}} {{}}".format(i, f) for i, f in enumerate(functions)] + [""]
 else:
     sys.exit(2)
 lines += ["", "  Summary", "", "        1000 .data"]
@@ -642,10 +577,8 @@ FAKE_SOAPY_PROGRAM = r"""#!{python} -I
 import sys
 from pathlib import Path
 
-LIBRARIES = {{"airspySupport.dll": ("airspy", "airspy.dll"), "airspyhfSupport.dll": ("airspyhf", "airspyhf.dll"),
-             "HackRFSupport.dll": ("hackrf", "hackrf.dll")}}
-MESSAGES = {{"airspy": "Unable to open AirSpy device", "airspyhf": "Unable to open AirspyHF device",
-            "hackrf": "no hackrf device matches"}}
+LIBRARIES = {{"airspySupport.dll": ("airspy", "airspy.dll"), "HackRFSupport.dll": ("hackrf", "hackrf.dll")}}
+MESSAGES = {{"airspy": "Unable to open AirSpy device", "hackrf": "no hackrf device matches"}}
 program = Path(sys.argv[0])
 bin_dir = program.parent
 root = bin_dir.parent
@@ -703,9 +636,6 @@ RELEASE_DEPENDENTS = dict(DEPENDENCIES, **{
     "libusb-1.0.dll": ["KERNEL32.dll"], "pthreadVC3.dll": ["KERNEL32.dll"],
     "MSVCP140.dll": ["VCRUNTIME140.dll", "KERNEL32.dll"], "VCRUNTIME140.dll": ["KERNEL32.dll"],
 })
-RELEASE_IMPORTS = {"airspyhfSupport.dll": {"airspyhf.dll": ["airspyhf_open", "airspyhf_set_hf_att",
-                                                            "airspyhf_set_hf_lna", "airspyhf_set_hf_agc"],
-                                           "SoapySDR.dll": ["SoapySDR_logf"]}}
 
 @unittest.skipUnless(PWSH or REQUIRE_TOOLS, "pwsh is required")
 class SoapyReleaseScripts(unittest.TestCase):
@@ -741,7 +671,7 @@ class SoapyReleaseScripts(unittest.TestCase):
                            ("info_no_modules", INFO_NO_MODULES), ("info_release", INFO_RELEASE),
                            ("check_load_failed_stderr", CHECK_LOAD_FAILED_STDERR), ("probe_airspy", PROBE_AIRSPY),
                            ("probe_bare_no_modules", PROBE_BARE_NO_MODULES), ("dependents", DEPENDENTS),
-                           ("imports", IMPORTS), ("kinds", "\r\n".join(DLL_KINDS))):
+                           ("kinds", "\r\n".join(DLL_KINDS))):
             (fixtures / f"{name}.txt").write_bytes(text.encode("utf-8"))
         rc, out, err = self.pwsh(READERS, "-Module", ROOT / "tools/windows/release_tree_checks.psm1",
                                  "-Fixtures", fixtures)
@@ -754,7 +684,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(len(result["info_load_failed"]["Modules"]), 1)
         self.assertEqual(result["info_no_modules"], {"InstallRoot": "D:\\t\\mingw-nolib", "Modules": [],
                                                      "Factories": []})
-        self.assertEqual(result["info_release"]["Factories"], ["airspy", "airspyhf", "hackrf"])
+        self.assertEqual(result["info_release"]["Factories"], ["airspy", "hackrf"])
         self.assertEqual([m.rsplit("/", 1)[1] for m in result["info_release"]["Modules"]], list(MODULE_FILES))
         self.assertIsNone(result["error_info_one_module"])
         self.assertEqual(result["error_info_load_failed"], "LoadLibrary() failed")
@@ -767,55 +697,37 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn(result["probe_messages"]["airspy"], normalized(PROBE_AIRSPY))
         self.assertIn(result["no_match"], normalized(PROBE_BARE_NO_MODULES))
         self.assertNotIn(result["no_match"], normalized(PROBE_AIRSPY))
-        self.assertEqual(list(result["probe_messages"]), ["airspy", "airspyhf", "hackrf", ""])
-        self.assertEqual(result["dependents"], ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll",
+        self.assertEqual(list(result["probe_messages"]), ["airspy", "hackrf", ""])
+        self.assertEqual(result["dependents"], ["hackrf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll",
                                                 "WS2_32.dll"])
         self.assertEqual(result["kinds"], DLL_KINDS)
-        self.assertEqual(result["imports"], {
-            "airspyhf.dll:airspyhf_set_hf_att": True, "airspyhf.dll:airspyhf_set_hf_lna": False,
-            "SoapySDR.dll:airspyhf_set_hf_lna": True, "airspyhf.dll:Import": False,
-            "airspyhf.dll:airspyhf_set_hf_agc": False})
 
-    def read_dumpbin(self, text, dll="", function=""):
+    def read_dumpbin(self, text):
         report = self.work / f"report-{len(list(self.work.glob('report-*.txt')))}.txt"
         report.write_bytes(text.encode("utf-8"))
         rc, out, err = self.pwsh(STRICT_READER, "-Module", ROOT / "tools/windows/release_tree_checks.psm1",
-                                 "-File", report, "-Dll", dll, "-Function", function)
+                                 "-File", report)
         if rc != 0:
             return None, out + err
         return json.loads(out.strip().splitlines()[-1])["result"], out + err
 
     def test_dumpbin_readers_read_every_name(self):
-        with self.subTest(report="dependents"):
-            result, output = self.read_dumpbin(DEPENDENTS_SPACED)
-            self.assertEqual(result, ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll", "WS2_32.dll",
-                                      "Vendor Support.dll"], output)
-        for dll, function, imported in (("airspyhf.dll", "airspyhf_set_hf_att", True),
-                                        ("airspyhf.dll", "airspyhf_set_hf_agc", False),
-                                        ("Vendor Support.dll", "airspyhf_set_hf_agc", True),
-                                        ("airspyhf.dll", "airspyhf_set_hf_lna", False),
-                                        ("Late Loader.dll", "airspyhf_set_hf_lna", True)):
-            with self.subTest(dll=dll, function=function):
-                result, output = self.read_dumpbin(IMPORTS_SPACED, dll, function)
-                self.assertIs(result, imported, output)
+        result, output = self.read_dumpbin(DEPENDENTS_SPACED)
+        self.assertEqual(result, ["hackrf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll", "WS2_32.dll",
+                                  "Vendor Support.dll"], output)
 
     def test_dumpbin_readers_refuse_lines_they_cannot_read(self):
-        # A line of a dependency or import list that the reader cannot place stops it: skipped, it could hide a DLL.
+        # A line of a dependency list that the reader cannot place stops it: skipped, it could hide a DLL.
         cases = (
             ("a path in the dependency list", DEPENDENTS.replace("    WS2_32.dll", "    C:\\vendor\\late.dll"),
-             "", "C:\\vendor\\late.dll"),
+             "C:\\vendor\\late.dll"),
             ("a warning in the dependency list",
              DEPENDENTS.replace("    WS2_32.dll", "    LINK : warning LNK4048: Invalid format file; ignored"),
-             "", "LNK4048"),
-            ("an unknown line in a DLL's imports",
-             IMPORTS.replace("                     0 time date stamp", "                  forwarded somewhere else"),
-             "airspyhf.dll", "forwarded somewhere else"),
-            ("a line before any DLL", IMPORTS.replace("    airspyhf.dll\r\n", ""), "airspyhf.dll",
-             "outside any DLL"),
+             "LNK4048"),
         )
-        for label, text, dll, words in cases:
+        for label, text, words in cases:
             with self.subTest(case=label):
-                result, output = self.read_dumpbin(text, dll, "airspyhf_set_hf_att" if dll else "")
+                result, output = self.read_dumpbin(text)
                 self.assertIsNone(result, output)
                 self.assertIn("FAILED: ", output)
                 self.assertIn(words, output)
@@ -982,8 +894,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         tools.mkdir()
         (tools / "dumpbin.exe").write_text(FAKE_VERIFY_DUMPBIN.format(python=sys.executable), encoding="utf-8")
         (tools / "dumpbin.exe").chmod(0o755)
-        self.report = {"dependents": json.loads(json.dumps(RELEASE_DEPENDENTS)),
-                       "imports": json.loads(json.dumps(RELEASE_IMPORTS))}
+        self.report = {"dependents": json.loads(json.dumps(RELEASE_DEPENDENTS))}
         self.write_report(tools)
         root = self.work / "release"
         bin_dir = root / "bin"
@@ -1030,16 +941,16 @@ class SoapyReleaseScripts(unittest.TestCase):
         for line in ("OK: rtlsdr.dll is built with the librtlsdr transfer patches",
                      "OK: the SoapySDR modules, their libraries and every DLL they import are in place"):
             self.assertIn(line, output)
-        # Every program ran: the drivers, --info, -h, four probes, and both damaged copies.
-        self.assertEqual(output.count("SoapySDRUtil.exe --check="), 9)
-        self.assertEqual(output.count("dsd-neo.exe --frontend none -i soapy"), 8)
+        # Every program ran: the drivers, --info, -h, three probes, and both damaged copies.
+        self.assertEqual(output.count("SoapySDRUtil.exe --check="), 6)
+        self.assertEqual(output.count("dsd-neo.exe --frontend none -i soapy"), 6)
 
     def test_verify_release_tree_refusals(self):
         tools, root, windows = self.release_tree()
         cases = (
             ("a missing library", root / "bin/hackrf.dll", "Expected one hackrf.dll"),
-            ("a missing module", root / "lib/SoapySDR/modules0.8/airspyhfSupport.dll",
-             "modules0.8; found airspySupport.dll, HackRFSupport.dll"),
+            ("a missing module", root / "lib/SoapySDR/modules0.8/HackRFSupport.dll",
+             "modules0.8; found airspySupport.dll"),
             ("an unpatched librtlsdr", root / "bin/rtlsdr.dll", "lacks the reader's 'no transfer left' message"),
         )
         for label, path, message in cases:
@@ -1083,12 +994,6 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn("did not report", output)
         self.assertIn("hackrf.dll", output)
         del self.report["types"]
-        # SoapyAirspyHF built without its gain controls.
-        self.report["imports"]["airspyhfSupport.dll"]["airspyhf.dll"].remove("airspyhf_set_hf_lna")
-        self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
-        self.assertEqual(rc, 1, output)
-        self.assertIn("does not import airspyhf_set_hf_lna", output)
 
     def assert_verify_refuses(self, tools, root, windows, *messages):
         self.write_report(tools)

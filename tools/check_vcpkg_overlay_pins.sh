@@ -9,10 +9,9 @@ usage() {
 Usage: tools/check_vcpkg_overlay_pins.sh [--fix]
 
 Checks that the GitHub source pins of the vcpkg overlays (mbe-neo, codec2,
-rtlsdr, airspy, soapysdr, the soapy-* modules, hackrf and airspyhf) match
-tools/ci-dependency-pins.env, and that the airspy, rtlsdr, airspyhf and
-soapy-airspyhf overlays apply dsd-neo's patch series
-(tools/usb_dependency_patches.sh) with its current digest.
+rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) match
+tools/ci-dependency-pins.env, and that the airspy and rtlsdr overlays apply
+dsd-neo's patch series (tools/usb_dependency_patches.sh) with its current digest.
 With --fix, rewrites mirrored REF and SHA512 lines and the recorded patch digests
 in the overlay portfiles.
 USAGE
@@ -291,13 +290,9 @@ check_port "airspy" "airspy/airspyone_host" "AIRSPY_SHA" "AIRSPY_TARBALL_SHA512"
 check_port "soapysdr" "pothosware/SoapySDR" "SOAPY_SDR_SHA" "SOAPY_SDR_TARBALL_SHA512"
 check_port "soapy-airspy" "pothosware/SoapyAirspy" "SOAPY_AIRSPY_SHA" "SOAPY_AIRSPY_TARBALL_SHA512"
 check_port "soapy-hackrf" "pothosware/SoapyHackRF" "SOAPY_HACKRF_SHA" "SOAPY_HACKRF_TARBALL_SHA512"
-check_port "soapy-airspyhf" "pothosware/SoapyAirspyHF" "SOAPY_AIRSPYHF_SHA" "SOAPY_AIRSPYHF_TARBALL_SHA512"
 check_port "hackrf" "greatscottgadgets/hackrf" "HACKRF_SHA" "HACKRF_TARBALL_SHA512"
-check_port "airspyhf" "airspy/airspyhf" "AIRSPYHF_SHA" "AIRSPYHF_TARBALL_SHA512"
 check_port_patches "rtlsdr" "librtlsdr"
 check_port_patches "airspy" "libairspy"
-check_port_patches "airspyhf" "libairspyhf"
-check_port_patches "soapy-airspyhf" "soapyairspyhf"
 
 if [[ $fix -eq 1 && $fixed -eq 1 && $failed -eq 0 ]]; then
   exit 0

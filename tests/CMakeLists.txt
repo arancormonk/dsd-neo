@@ -19867,13 +19867,11 @@ endif()
 # Android app's copies. DESKTOP_* build the pinned upstream sources with the
 # patches the Windows, AppImage and macOS releases carry, from the tree that
 # tools/usb_dependency_patches.sh fetch-all writes, when
-# DSD_TEST_DESKTOP_USB_SOURCES names it; that tree also holds the libairspyhf the
-# Windows release builds for SoapyAirspyHF, whose stop, close and restart wait
-# for cancelled transfers the same way, and the SoapyAirspyHF module itself.
+# DSD_TEST_DESKTOP_USB_SOURCES names it.
 set(DSD_TEST_DESKTOP_USB_SOURCES
     ""
     CACHE PATH
-    "Patched desktop libairspy, librtlsdr, libairspyhf and SoapyAirspyHF sources (tools/usb_dependency_patches.sh fetch-all)"
+    "Patched desktop libairspy and librtlsdr sources (tools/usb_dependency_patches.sh fetch-all)"
 )
 
 function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
@@ -19950,90 +19948,6 @@ function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
     )
 endfunction()
 
-# libairspyhf has no vendored copy, so its test runs only on the desktop tree. The
-# library keeps upstream style and is built without the project warnings, as the
-# vcpkg port builds it, but with the sanitizers, so ThreadSanitizer sees its
-# threads. The test links it against stub libusb entry points.
-function(dsd_neo_add_libairspyhf_test airspyhf_src threads)
-    set(_lib dsd-neo_test_desktop_libairspyhf)
-    add_library(
-        ${_lib}
-        STATIC
-        ${airspyhf_src}/airspyhf.c
-        ${airspyhf_src}/iqbalancer.c
-    )
-    set_property(TARGET ${_lib} PROPERTY LINK_LIBRARIES "")
-    target_include_directories(${_lib} SYSTEM PUBLIC ${airspyhf_src})
-    target_include_directories(
-        ${_lib}
-        SYSTEM
-        PRIVATE "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
-    )
-    # Without it airspyhf.h declares the API __declspec(dllimport) on Windows.
-    target_compile_definitions(${_lib} PUBLIC STATIC_AIRSPYHFPLUS)
-    if(MSVC)
-        # airspyhf.c declares a struct timeval. The vendored libusb.h leaves out
-        # <sys/time.h> under MSVC, and WIN32_LEAN_AND_MEAN (cmake/Platform.cmake)
-        # keeps winsock.h, which declares it, out of windows.h. The vcpkg port
-        # builds without WIN32_LEAN_AND_MEAN, so there windows.h brings it.
-        target_compile_options(${_lib} PRIVATE /FIwinsock2.h)
-    endif()
-    target_link_libraries(
-        ${_lib}
-        PRIVATE dsd-neo_sanitizers ${threads} ${DSD_NEO_TEST_MATH_LIB}
-    )
-
-    set(_target dsd-neo_test_desktop_libairspyhf_transfers)
-    add_executable(${_target} io/test_desktop_libairspyhf_transfers.c)
-    target_include_directories(
-        ${_target}
-        SYSTEM
-        PRIVATE "${PROJECT_SOURCE_DIR}/android/third_party/libusb/libusb"
-    )
-    target_link_libraries(
-        ${_target}
-        PRIVATE ${_lib} dsd-neo_platform ${threads}
-    )
-    add_test(NAME DESKTOP_LIBAIRSPYHF_TRANSFERS COMMAND ${_target})
-    set_tests_properties(DESKTOP_LIBAIRSPYHF_TRANSFERS PROPERTIES TIMEOUT 120)
-endfunction()
-
-# SoapyAirspyHF, the module the Windows release builds on libairspyhf, from the
-# same tree. Its sources keep upstream style and build without the project
-# warnings, as the vcpkg port builds them, against SoapySDR; the test links them
-# against stub libairspyhf entry points.
-function(dsd_neo_add_soapyairspyhf_test module_src airspyhf_src)
-    set(_lib dsd-neo_test_desktop_soapyairspyhf)
-    # The module includes <libairspyhf/airspyhf.h>, where the vcpkg port installs it.
-    set(_include "${CMAKE_CURRENT_BINARY_DIR}/desktop-soapyairspyhf-include")
-    configure_file(
-        "${airspyhf_src}/airspyhf.h"
-        "${_include}/libairspyhf/airspyhf.h"
-        COPYONLY
-    )
-    add_library(
-        ${_lib}
-        STATIC
-        ${module_src}/Settings.cpp
-        ${module_src}/Streaming.cpp
-    )
-    set_property(TARGET ${_lib} PROPERTY LINK_LIBRARIES "")
-    target_include_directories(${_lib} SYSTEM PUBLIC ${module_src} ${_include})
-    # As the port builds it: with its gain controls. STATIC_AIRSPYHFPLUS keeps
-    # airspyhf.h from declaring the API __declspec(dllimport) on Windows.
-    target_compile_definitions(${_lib} PUBLIC HASGAINS=1 STATIC_AIRSPYHFPLUS)
-    target_link_libraries(
-        ${_lib}
-        PUBLIC dsd-neo_feature_soapy
-        PRIVATE dsd-neo_sanitizers
-    )
-
-    set(_target dsd-neo_test_desktop_soapyairspyhf_errors)
-    add_executable(${_target} io/test_desktop_soapyairspyhf_errors.cpp)
-    target_link_libraries(${_target} PRIVATE ${_lib} dsd-neo_platform)
-    add_test(NAME DESKTOP_SOAPYAIRSPYHF_ERRORS COMMAND ${_target})
-endfunction()
-
 set(_dsd_neo_usb_test_threads "")
 if(NOT ANDROID AND NOT CYGWIN)
     if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -20063,23 +19977,15 @@ if(_dsd_neo_usb_test_threads)
             "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspy/libairspy/src/airspy.c"
         )
         set(_desktop_rtlsdr "${DSD_TEST_DESKTOP_USB_SOURCES}/librtlsdr")
-        set(_desktop_airspyhf
-            "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspyhf/libairspyhf/src"
-        )
-        set(_desktop_soapyairspyhf
-            "${DSD_TEST_DESKTOP_USB_SOURCES}/soapyairspyhf"
-        )
         if(
             NOT EXISTS "${_desktop_airspy}"
             OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
-            OR NOT EXISTS "${_desktop_airspyhf}/airspyhf.c"
-            OR NOT EXISTS "${_desktop_soapyairspyhf}/Settings.cpp"
         )
             message(
                 FATAL_ERROR
                 "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
-                "libairspy/, librtlsdr/, libairspyhf/ and soapyairspyhf/ trees; create "
-                "them with tools/usb_dependency_patches.sh fetch-all"
+                "libairspy/ and librtlsdr/ trees; create them with "
+                "tools/usb_dependency_patches.sh fetch-all"
             )
         endif()
         dsd_neo_add_usb_library_tests(
@@ -20088,16 +19994,6 @@ if(_dsd_neo_usb_test_threads)
             "${_desktop_rtlsdr}"
             "${_dsd_neo_usb_test_threads}"
         )
-        dsd_neo_add_libairspyhf_test(
-            "${_desktop_airspyhf}"
-            "${_dsd_neo_usb_test_threads}"
-        )
-        if(DSD_HAS_SOAPYSDR)
-            dsd_neo_add_soapyairspyhf_test(
-                "${_desktop_soapyairspyhf}"
-                "${_desktop_airspyhf}"
-            )
-        endif()
     endif()
 elseif(DSD_TEST_DESKTOP_USB_SOURCES)
     message(

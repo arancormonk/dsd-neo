@@ -49,8 +49,8 @@ Getting started with a download:
   `brew install pulseaudio && brew services start pulseaudio`.
 - **Windows ZIP:** unzip it and run `bin\dsd-neo.exe -h` from a terminal in the unzipped folder. An RTL-SDR dongle
   needs the WinUSB driver, which you install once with [Zadig](https://zadig.akeo.ie/). An Airspy normally needs
-  nothing ([docs/airspy.md](docs/airspy.md)). The ZIP also includes the SoapySDR modules for Airspy, HackRF and Airspy
-  HF+ radios, and `SoapySDRUtil.exe` to list them ([docs/soapysdr.md](docs/soapysdr.md)).
+  nothing ([docs/airspy.md](docs/airspy.md)). The ZIP also includes the SoapySDR modules for Airspy and HackRF radios,
+  and `SoapySDRUtil.exe` to list them ([docs/soapysdr.md](docs/soapysdr.md)).
 
 ### Android: Google Play or the APK
 
@@ -92,7 +92,7 @@ Encrypted calls need their key: see "Keys & Privacy" in [docs/cli.md](docs/cli.m
   USB-OTG), or an `rtl_tcp` server on another computer. It can also take audio from SDR++ or other SDR software over
   TCP or UDP, or from a file. On a computer it also reads other SDRs through SoapySDR (SDRplay, HackRF, LimeSDR,
   RX-888 and more) once you install the SoapySDR module for your radio; the Windows ZIP already has the modules for
-  Airspy, HackRF and Airspy HF+ ([docs/soapysdr.md](docs/soapysdr.md)). It also reads your sound card.
+  Airspy and HackRF ([docs/soapysdr.md](docs/soapysdr.md)). It also reads your sound card.
 - **Follows trunked systems.** It listens to the control channel and tunes to each call as it starts. Talkgroup and
   radio ID lists put names on calls, and can block, mute or skip recording for any talkgroup or radio.
 - **Scans with one radio.** Trunk scan rotates one tuner across a list of P25, DMR and NXDN systems and single digital

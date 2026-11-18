@@ -643,33 +643,6 @@
       "pin": "SOAPY_HACKRF_SHA"
     },
     {
-      "id": "soapy-airspyhf",
-      "name": "SoapyAirspyHF module",
-      "paths": [
-        "vcpkg-ports/soapy-airspyhf/"
-      ],
-      "distribution": [
-        "binary"
-      ],
-      "platforms": [
-        "windows"
-      ],
-      "license_declared": "MIT",
-      "license_concluded": "MIT",
-      "notices": [
-        "vcpkg-ports/soapy-airspyhf/copyright"
-      ],
-      "assessment": "Pinned 0.2.1 SoapySDR module (airspyhfSupport.dll) in the Windows ZIP, built with its gain controls and project patch 0001 (vcpkg-ports/soapy-airspyhf/), which reports the device's tuning, rate, gain and start failures; its upstream LICENSE.txt ships as licenses/SoapyAirspyHF-MIT.txt.",
-      "copyright_permission": "notice-retained",
-      "gpl_compatibility": "reviewed-terms",
-      "patent_status": "not-cleared",
-      "review_date": "2026-11-17",
-      "notice_sha256": {
-        "vcpkg-ports/soapy-airspyhf/copyright": "54baa788d751b3e51b6cc38e2009689f08eb625421535082b9f6a7d9eeb59a95"
-      },
-      "pin": "SOAPY_AIRSPYHF_SHA"
-    },
-    {
       "id": "libhackrf",
       "name": "libhackrf",
       "paths": [
@@ -697,33 +670,6 @@
       "pin": "HACKRF_SHA"
     },
     {
-      "id": "libairspyhf",
-      "name": "libairspyhf",
-      "paths": [
-        "vcpkg-ports/airspyhf/"
-      ],
-      "distribution": [
-        "binary"
-      ],
-      "platforms": [
-        "windows"
-      ],
-      "license_declared": "BSD-3-Clause",
-      "license_concluded": "BSD-3-Clause",
-      "notices": [
-        "vcpkg-ports/airspyhf/copyright"
-      ],
-      "assessment": "Pinned master commit (version 1.8.1) of the library (airspyhf.dll) in the Windows ZIP, built from libairspyhf/src only with project patch 0001 (vcpkg-ports/airspyhf/), which waits for cancelled USB transfers and applies a retune between sample blocks; the repository's GPL-2.0 tools and LGPL getopt are not built. The shipped notice (licenses/libairspyhf-BSD-3-Clause.txt) carries every source-header holder and LICENSE.BSD.",
-      "copyright_permission": "notice-retained",
-      "gpl_compatibility": "reviewed-terms",
-      "patent_status": "not-cleared",
-      "review_date": "2026-11-17",
-      "notice_sha256": {
-        "vcpkg-ports/airspyhf/copyright": "55f7016fee3f3121ed15f66b507fc678dc4f14f6b2fe92f0cc76b5ba9502ac82"
-      },
-      "pin": "AIRSPYHF_SHA"
-    },
-    {
       "id": "windows-libusb",
       "name": "libusb Windows build",
       "paths": [
@@ -742,7 +688,7 @@
         "android/third_party/libusb/COPYING",
         "packaging/windows/libusb-COPYRIGHT.txt"
       ],
-      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin). Its COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt; libusb-COPYRIGHT.txt, shipped as licenses/libusb-COPYRIGHT.txt, carries the holders and attributions of every source the Windows DLL is built from and the upstream AUTHORS file. Corresponding source remains open (CORRESPONDING-SOURCE).",
+      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy and libhackrf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin). Its COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt; libusb-COPYRIGHT.txt, shipped as licenses/libusb-COPYRIGHT.txt, carries the holders and attributions of every source the Windows DLL is built from and the upstream AUTHORS file. Corresponding source remains open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -774,7 +720,7 @@
         "packaging/windows/PThreads4W-NOTICE.txt",
         "packaging/windows/PThreads4W-CONTRIBUTORS.txt"
       ],
-      "assessment": "pthreadVC3.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's pthreads port at the manifest baseline (PThreads4W 3.0.0, no project pin). Its LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, ship as licenses/PThreads4W-Apache-2.0.txt, licenses/PThreads4W-NOTICE.txt and licenses/PThreads4W-CONTRIBUTORS.txt.",
+      "assessment": "pthreadVC3.dll in the Windows ZIP, which librtlsdr, libairspy and libhackrf load; vcpkg's pthreads port at the manifest baseline (PThreads4W 3.0.0, no project pin). Its LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, ship as licenses/PThreads4W-Apache-2.0.txt, licenses/PThreads4W-NOTICE.txt and licenses/PThreads4W-CONTRIBUTORS.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",

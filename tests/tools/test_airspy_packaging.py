@@ -37,10 +37,6 @@ UPSTREAM_LICENSE_MD = "dc49b4210fb03af14b881f8f6fdea053446c28181854ed3712e2e5e73
 COPYRIGHT_HOLDERS = ("Michael Ossmann", "Jared Boone", "Youssef Touil", "Benjamin Vernoux", "Ian Gilmour")
 PATCHES = ROOT / "android/third_party/patches"
 USB_PATCHES = ROOT / "tools/usb_dependency_patches.sh"
-# libairspyhf has no Android copy: its patch lives beside the overlay that builds it for the Windows release.
-AIRSPYHF_PATCH = ROOT / "vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch"
-# SoapyAirspyHF's patch lives beside the module's overlay too.
-SOAPY_AIRSPYHF_PATCH = ROOT / "vcpkg-ports/soapy-airspyhf/0001-soapyairspyhf-report-device-errors.patch"
 
 
 def run(args, **kwargs):
@@ -121,10 +117,10 @@ class AirspyPackaging(unittest.TestCase):
         self.assertEqual(digest.stdout.strip(), hashlib.sha256(joined).hexdigest())
 
     def test_t15_patches_are_portable_and_keep_their_notices(self):
-        for path in (PATCHES / "0001-libairspy-wait-for-cancelled-transfers.patch",
-                     PATCHES / "0003-librtlsdr-account-for-every-transfer.patch", AIRSPYHF_PATCH):
-            with self.subTest(patch=path.name):
-                added = "\n".join(line for line in path.read_text().splitlines()
+        for name in ("0001-libairspy-wait-for-cancelled-transfers.patch",
+                     "0003-librtlsdr-account-for-every-transfer.patch"):
+            with self.subTest(patch=name):
+                added = "\n".join(line for line in (PATCHES / name).read_text().splitlines()
                                   if line.startswith("+"))
                 # MSVC's C compiler has neither the GCC builtins nor C11 atomics by default.
                 self.assertNotIn("__atomic", added)
@@ -133,58 +129,13 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertIn("Interlocked", added)
                 self.assertIn("#include <stdatomic.h>", added)
         # Only additions: the upstream licence headers stay as they are.
-        for path, notice in ((PATCHES / "0001-libairspy-wait-for-cancelled-transfers.patch", "All rights reserved."),
-                             (PATCHES / "0003-librtlsdr-account-for-every-transfer.patch",
-                              "GNU General Public License"),
-                             (AIRSPYHF_PATCH, "All rights reserved.")):
-            removed = [line for line in path.read_text().splitlines()
+        for name, notice in (("0001-libairspy-wait-for-cancelled-transfers.patch", "All rights reserved."),
+                             ("0003-librtlsdr-account-for-every-transfer.patch", "GNU General Public License")):
+            removed = [line for line in (PATCHES / name).read_text().splitlines()
                        if line.startswith("-") and not line.startswith("---")]
-            self.assertFalse(any(notice in line for line in removed), path.name)
-        attributes = (ROOT / ".gitattributes").read_text().splitlines()
-        self.assertIn("android/third_party/patches/*.patch text eol=lf", attributes)
-        self.assertIn("vcpkg-ports/airspyhf/*.patch -text", attributes)
-
-    def test_t15_airspyhf_patch_matches_the_pin(self):
-        """The libairspyhf patch is written against the pinned commit and keeps airspyhf.c's CRLF line endings."""
-        pins = dict(line.split("=", 1) for line in (ROOT / "tools/ci-dependency-pins.env").read_text().splitlines()
-                    if line and not line.startswith("#"))
-        data = AIRSPYHF_PATCH.read_bytes()
-        self.assertIn(f"Generated against airspyhf {pins['AIRSPYHF_SHA']}.".encode(), data)
-        series = run([str(USB_PATCHES), "series", "libairspyhf"])
-        self.assert_success(series)
-        self.assertEqual(series.stdout.split(), [AIRSPYHF_PATCH.name])
-        digest = run([str(USB_PATCHES), "digest", "libairspyhf"])
-        self.assert_success(digest)
-        self.assertEqual(digest.stdout.strip(), hashlib.sha256(data).hexdigest())
-        # A checkout or editor that converted the line endings would leave a patch that no longer applies.
-        hunk_lines = [line for line in data.split(b"\n")[:-1]
-                      if line[:1] in (b"+", b"-", b" ") and not line.startswith((b"+++ ", b"--- "))]
-        self.assertTrue(hunk_lines)
-        self.assertTrue(all(line.endswith(b"\r") for line in hunk_lines))
-        self.assertIn('"${CMAKE_CURRENT_LIST_DIR}/${DSD_NEO_PATCH_SERIES}"',
-                      (ROOT / "vcpkg-ports/airspyhf/portfile.cmake").read_text())
-
-    def test_t15_soapy_airspyhf_patch_matches_the_pin(self):
-        """The SoapyAirspyHF patch is written against the pinned module, applied by its overlay, and kept LF."""
-        pins = dict(line.split("=", 1) for line in (ROOT / "tools/ci-dependency-pins.env").read_text().splitlines()
-                    if line and not line.startswith("#"))
-        data = SOAPY_AIRSPYHF_PATCH.read_bytes()
-        self.assertIn(f"Generated against SoapyAirspyHF {pins['SOAPY_AIRSPYHF_SHA']}.".encode(), data)
-        self.assertNotIn(b"\r", data)
-        series = run([str(USB_PATCHES), "series", "soapyairspyhf"])
-        self.assert_success(series)
-        self.assertEqual(series.stdout.split(), [SOAPY_AIRSPYHF_PATCH.name])
-        digest = run([str(USB_PATCHES), "digest", "soapyairspyhf"])
-        self.assert_success(digest)
-        self.assertEqual(digest.stdout.strip(), hashlib.sha256(data).hexdigest())
-        portfile = (ROOT / "vcpkg-ports/soapy-airspyhf/portfile.cmake").read_text()
-        self.assertIn(f"set(DSD_NEO_PATCH_SERIES {SOAPY_AIRSPYHF_PATCH.name})", portfile)
-        self.assertIn('"${CMAKE_CURRENT_LIST_DIR}/${DSD_NEO_PATCH_SERIES}"', portfile)
-        self.assertIn("vcpkg-ports/soapy-airspyhf/*.patch text eol=lf",
+            self.assertFalse(any(notice in line for line in removed), name)
+        self.assertIn("android/third_party/patches/*.patch text eol=lf",
                       (ROOT / ".gitattributes").read_text().splitlines())
-        # The patch removes none of the module's notice lines.
-        removed = [line for line in data.decode().splitlines() if line.startswith("-") and not line.startswith("---")]
-        self.assertFalse(any("Copyright" in line or "Permission" in line for line in removed))
 
     @unittest.skipUnless(shutil.which("cc") and shutil.which("nm") and sys.platform.startswith("linux"),
                          "a Linux C compiler and nm are required")
@@ -421,8 +372,7 @@ class AirspyPackaging(unittest.TestCase):
         shutil.copytree(PATCHES, self.work / "android/third_party/patches")
         command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
         self.assert_success(run(command, cwd=self.work))
-        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "airspyhf", "soapy-hackrf",
-                          "soapy-airspyhf"):
+        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "soapy-hackrf"):
             port = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
             original = port.read_text()
             for key, length in (("REF", 40), ("SHA512", 128)):
@@ -439,12 +389,10 @@ class AirspyPackaging(unittest.TestCase):
         # A changed patch: its port's recorded digest is stale until --fix records the new one.
         android = "android/third_party/patches/"
         for port_name, patch_name in (("airspy", android + "0001-libairspy-wait-for-cancelled-transfers.patch"),
-                                      ("rtlsdr", android + "0003-librtlsdr-account-for-every-transfer.patch"),
-                                      ("airspyhf", "vcpkg-ports/airspyhf/" + AIRSPYHF_PATCH.name),
-                                      ("soapy-airspyhf", "vcpkg-ports/soapy-airspyhf/" + SOAPY_AIRSPYHF_PATCH.name)):
+                                      ("rtlsdr", android + "0003-librtlsdr-account-for-every-transfer.patch")):
             with self.subTest(patch=patch_name):
                 patch = self.work / patch_name
-                # Bytes: the libairspyhf patch keeps CRLF in its source lines.
+                # Bytes, so the patch's line endings stay as they are.
                 patch_bytes = patch.read_bytes()
                 portfile = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
                 port_text = portfile.read_text()
@@ -458,7 +406,7 @@ class AirspyPackaging(unittest.TestCase):
                 patch.write_bytes(patch_bytes)
                 portfile.write_text(port_text)
         # A port that stops passing the series to vcpkg_from_github() fails, whatever the recorded series says.
-        for port_name in ("airspy", "rtlsdr", "airspyhf", "soapy-airspyhf"):
+        for port_name in ("airspy", "rtlsdr"):
             with self.subTest(dropped=port_name):
                 portfile = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
                 port_text = portfile.read_text()

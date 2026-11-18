@@ -8821,18 +8821,6 @@ Key public headers:
   `Interlocked*` shim, so one patch file builds everywhere. Tests: `VENDORED_LIBAIRSPY_TRANSFERS` (MSVC included) and
   `DESKTOP_LIBAIRSPY_TRANSFERS`, the pinned upstream source with the patch, registered when
   `DSD_TEST_DESKTOP_USB_SOURCES` names a `tools/usb_dependency_patches.sh fetch-all` tree (Linux and macOS CI).
-  The Windows ZIP's libairspyhf (for SoapyAirspyHF) had the same bounded stop and gets the same fix from its own
-  patch, `vcpkg-ports/airspyhf/0001-libairspyhf-wait-for-cancelled-transfers.patch` (no Android copy; the overlay
-  records its digest). That patch also guards the library's DSP state with a mutex the consumer thread holds per
-  block, so `airspyhf_set_freq()` and the other DSP setters (calibration, sample rate, IQ correction point and
-  balancer settings, DSP switch) land between blocks; the setters never hold it across a USB request. Test:
-  `DESKTOP_LIBAIRSPYHF_TRANSFERS`, from the same fetch-all tree (its live-retune case needs the tsan-debug preset to
-  catch a race). The Windows ZIP's SoapyAirspyHF module carries
-  `vcpkg-ports/soapy-airspyhf/0001-soapyairspyhf-report-device-errors.patch`: a refused tune, rate, gain or AGC
-  write throws (a SoapySDR C API error code), a failed rate write or start fails `activateStream()` and the read that
-  applies a pending rate, and the module reports a setting only once the radio took it, so `rtl_device`'s Soapy
-  calls see the failure. Test: `DESKTOP_SOAPYAIRSPYHF_ERRORS`, the module's sources from the fetch-all tree against
-  stub libairspyhf calls (built when SoapySDR is found).
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in

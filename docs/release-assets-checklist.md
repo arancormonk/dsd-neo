@@ -41,20 +41,19 @@ resource bundle, so they travel with the binary rather than as a separate file.
 
 - [ ] Download `dsd-neo-msvc-x86_64-native-*.zip`.
   - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files, plus the notices of the SoapySDR load
-        path: `licenses/SoapyAirspy-MIT.txt`, `licenses/SoapyHackRF-MIT.txt`, `licenses/SoapyAirspyHF-MIT.txt`,
-        `licenses/libhackrf-BSD-3-Clause.txt`, `licenses/libairspyhf-BSD-3-Clause.txt`,
+        path: `licenses/SoapyAirspy-MIT.txt`, `licenses/SoapyHackRF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`,
         `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/libusb-COPYRIGHT.txt`, `licenses/PThreads4W-Apache-2.0.txt`,
         `licenses/PThreads4W-NOTICE.txt` and `licenses/PThreads4W-CONTRIBUTORS.txt` (the release job refuses a staged
         tree or an unpacked ZIP without any of them).
-  - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll`, `HackRFSupport.dll` and
-        `airspyhfSupport.dll`, and that `bin/` holds `hackrf.dll`, `airspyhf.dll` and `SoapySDRUtil.exe` beside
-        `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and `pthreadVC3.dll`.
+  - [ ] Confirm `lib/SoapySDR/modules0.8/` holds exactly `airspySupport.dll` and `HackRFSupport.dll`, and that `bin/`
+        holds `hackrf.dll` and `SoapySDRUtil.exe` beside `SoapySDR.dll`, `airspy.dll`, `libusb-1.0.dll` and
+        `pthreadVC3.dll`.
   - [ ] Confirm the only Visual C++ runtime DLLs in `bin/` (`vcruntime140*.dll`, `msvcp140*.dll` and the like) are
         ones the `msvc-runtime` record in `legal/components.json` lists, and that none is a debug build (`*d.dll`,
         `ucrtbased.dll`); `tools/windows/verify_release_tree.ps1` refuses any other.
-  - [ ] On a Windows machine, if one is at hand, `bin\SoapySDRUtil.exe --info` from a fresh unzip lists the three
-        modules and `Available factories... airspy, airspyhf, hackrf` (`tools/windows/verify_release_tree.ps1` checks
-        this in CI).
+  - [ ] On a Windows machine, if one is at hand, `bin\SoapySDRUtil.exe --info` from a fresh unzip lists the two
+        modules and `Available factories... airspy, hackrf` (`tools/windows/verify_release_tree.ps1` checks this in
+        CI).
 
 ### Android (APK)
 
