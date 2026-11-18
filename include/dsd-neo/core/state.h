@@ -3048,34 +3048,6 @@ struct dsd_state {
     int m17_vox;     //vox enabled via PWR value
 
     uint8_t m17_meta[16]; //packed meta
-    /* The last GNSS META admitted as a position (issue #800): a transmission repeats its LSF META (RF: every LICH
-     * superframe; IP: every stream frame), and the repeats are one report. Admitted again only for another
-     * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID; and
-     * for both m17_gnss_tx_epoch, the slot 0 call epoch, so any end of the call -- a stream EOT, EOTX, DISC, an MPKT's
-     * end, a timeout or a lost sync -- makes the next call another transmission; m17_gnss_tx_src, the checked LSF's
-     * sender, and with it m17_gnss_tx_dst and m17_gnss_tx_type, the rest of the checked LSF, so another station, or
-     * the same one sending to another destination, reusing a stream ID with no call to tell them apart is another
-     * transmission; m17_gnss_tx_fn, an IP stream frame's number, the last one heard, so a stream that starts again at
-     * or below it (its EOT missed) is another transmission; and m17_gnss_tx_gen, the reception) or changed META bytes;
-     * kind 0 = none yet. One left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
-    uint8_t m17_gnss_meta_admitted[14];
-    uint8_t m17_gnss_tx_kind;
-    uint64_t m17_gnss_tx_id;
-    uint64_t m17_gnss_tx_epoch;
-    uint64_t m17_gnss_tx_src;   /* the checked LSF's source address: another sender is another transmission */
-    uint64_t m17_gnss_tx_dst;   /* the checked LSF's destination address */
-    uint16_t m17_gnss_tx_type;  /* the checked LSF's type word */
-    uint16_t m17_gnss_tx_fn;    /* the IP stream frame number last heard with it (m17_gnss_tx_has_fn) */
-    uint8_t m17_gnss_tx_has_fn; /* 1 when it came in an IP stream frame */
-    uint64_t m17_gnss_tx_gen;   /* the reception generation (dsd_position_origin::gen) it was heard under */
-    /* The last network frame (an IP stream frame or MPKT, CRC included) whose GNSS META was admitted or repeated, by
-     * length and 64-bit FNV-1a digest, with the reception generation and decode-clock time it was heard at: a
-     * byte-identical copy of it (a duplicated datagram) heard on that reception within DSD_POSITION_REPEAT_MS is a
-     * repeat, never another transmission, even after the transmission's end reset m17_gnss_tx_kind. Length 0: none. */
-    uint64_t m17_gnss_dgram_digest;
-    uint64_t m17_gnss_dgram_gen;
-    uint64_t m17_gnss_dgram_ms;
-    uint32_t m17_gnss_dgram_len;
     uint8_t m17_text_meta_control_or;
     uint8_t m17_text_meta_expected_bitmap;
     uint8_t m17_text_meta_received_bitmap;

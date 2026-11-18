@@ -30,6 +30,9 @@ _Static_assert((int)DSD_STATE_EXT_CORE_POSITION_FEED < (int)DSD_STATE_EXT_MAX, "
 _Static_assert(DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA == 30,
                "the D-STAR slow-data assemblies own state_ext slot 30 (issue #800)");
 _Static_assert((int)DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA < (int)DSD_STATE_EXT_MAX, "slot 30 is inside the table");
+_Static_assert(DSD_STATE_EXT_PROTO_M17_GNSS == 31,
+               "the M17 GNSS META repeat state owns state_ext slot 31 (issue #800)");
+_Static_assert((int)DSD_STATE_EXT_PROTO_M17_GNSS < (int)DSD_STATE_EXT_MAX, "slot 31 is inside the table");
 
 static void
 test_cleanup_free(void* ptr) {

@@ -385,6 +385,11 @@ test_ip_stream_end_admits_next_stream(void) {
             const uint64_t rev = dsd_position_last_rev();
             for (uint16_t fn = 1U; fn <= 3U; fn++) {
                 build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+                /* Each stream's own voice: a byte-identical frame would be a copy of the last stream's, no new one. */
+                DSD_MEMSET(frame + 36, 0x40 + stream, 16U);
+                const uint16_t crc = m17_crc16(frame, 52U);
+                frame[52] = (uint8_t)(crc >> 8U);
+                frame[53] = (uint8_t)(crc & 0xFFU);
                 m17_ip_dispatch_frame(r.opts, r.state, frame, (int)sizeof(frame));
             }
             char label[96];
@@ -1064,6 +1069,37 @@ test_ip_duplicate_frame_is_a_repeat(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9 review): a copy that arrives a frame late, as a second network path of longer delay delivers it, is
+ * no restarted stream either. A stream runs 32 s (frames 1..803, 40 ms apart, past the feed's 30 s repeat window), a
+ * byte-identical copy of frame 802 arrives after frame 803: a repeat, as is the stream's next frame. */
+static void
+test_ip_late_copy_is_a_repeat(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    uint64_t now_ns = 2000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    rig r;
+    rig_open(&r);
+    long long admitted = 0;
+    for (uint16_t fn = 1U; fn <= 803U; fn++) {
+        admitted += send_ip_stream_frame(&r, bits, fn, (uint8_t)fn, 0);
+        now_ns += 40000000ULL;
+        dsd_decode_clock_test_set_ns(now_ns);
+    }
+    expect_int("the 32 s stream admitted once", admitted, 1);
+    expect_int("a copy of the frame before the latest is a repeat",
+               send_ip_stream_frame(&r, bits, 802U, (uint8_t)802U, 0), 0);
+    expect_int("the stream goes on after it", send_ip_stream_frame(&r, bits, 804U, (uint8_t)804U, 0), 0);
+    dsd_position_fix f[4];
+    expect_int("one feed record", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
 /* Issue #800 (g62-r9): one MPKT is one whole transmission, but a byte-identical copy of it (a duplicated datagram)
  * heard within DSD_POSITION_REPEAT_MS is no new one: its META is a repeat. The same bytes heard later, or another
  * packet with the same LSF, are another transmission and admitted again. */
@@ -1187,6 +1223,7 @@ main(void) {
     test_ip_unbound_stream_repeat_includes_destination_and_frame_number();
     test_ip_duplicate_frame_is_a_repeat();
     test_mpkt_duplicate_is_a_repeat();
+    test_ip_late_copy_is_a_repeat();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();

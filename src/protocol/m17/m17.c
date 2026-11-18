@@ -27,6 +27,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
@@ -652,11 +653,11 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
  * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
  * call may be another station's. Nothing else in M17 carries a position (D13).
  */
-/* What tells one GNSS META report's transmission from another's (dsd_state::m17_gnss_tx_kind and the fields after it):
- * the carrier and its call, the whole checked LSF (sender, destination, type word; the META is compared apart), the
- * reception, and on an IP stream the frame number. */
+/* What tells one GNSS META report's transmission from another's (m17_gnss_state::last): the carrier and its call, the
+ * whole checked LSF (sender, destination, type word; the META is compared apart), the reception, and on an IP stream
+ * the frame number. kind 0: none (no report admitted yet, or its transmission ended). */
 typedef struct {
-    uint8_t kind;
+    uint8_t kind; /* 1 = RF, the slot 0 call epoch; 2 = network, the stream ID */
     uint64_t id;
     uint64_t epoch;
     uint64_t src;
@@ -667,53 +668,125 @@ typedef struct {
     uint16_t fn;
 } m17_gnss_tx_key;
 
+/* Network frames remembered for the duplicate rule (m17_gnss_is_duplicate()): a few frames' worth, so a copy that
+ * arrives a few frames late (two network paths of different delay) is still known. */
+enum { M17_GNSS_DGRAM_RING = 16 };
+
+/* One network frame (IP stream frame or MPKT, CRC included) whose GNSS META was admitted or repeated: its length and
+ * 64-bit FNV-1a digest, the reception generation and the decode-clock time it was last heard at. len 0: none. */
+typedef struct {
+    uint64_t digest;
+    uint64_t gen;
+    uint64_t ms;
+    uint32_t len;
+} m17_gnss_dgram;
+
+/* The M17 GNSS META repeat state (issue #800), in the M17 protocol's state extension (DSD_STATE_EXT_PROTO_M17_GNSS):
+ * decoder-thread private, created at the first GNSS META heard, freed with the run's extensions. A transmission
+ * repeats its LSF META (RF: every LICH superframe; IP: every stream frame), and the repeats are one report: the last
+ * admitted report's transmission key and META bytes, and the network frames that carried it. */
+typedef struct {
+    m17_gnss_tx_key last;
+    uint8_t meta_admitted[M17_META_BYTES];
+    m17_gnss_dgram dgram[M17_GNSS_DGRAM_RING];
+    uint8_t dgram_next;
+} m17_gnss_state;
+
+_Static_assert((int)DSD_STATE_EXT_PROTO_M17_GNSS < (int)DSD_STATE_EXT_MAX,
+               "the M17 GNSS extension slot must fit the state's extension table");
+
+/* The state's GNSS META repeat state, created empty on first use; NULL when it could not be created. */
+static m17_gnss_state*
+m17_gnss_st(dsd_state* state) {
+    m17_gnss_state* g = DSD_STATE_EXT_GET_AS(m17_gnss_state, state, DSD_STATE_EXT_PROTO_M17_GNSS);
+    if (g) {
+        return g;
+    }
+    g = (m17_gnss_state*)calloc(1, sizeof(*g));
+    if (!g) {
+        return NULL;
+    }
+    if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_M17_GNSS, g, free) != 0) {
+        free(g);
+        return NULL;
+    }
+    return g;
+}
+
+/* The transmission ended (stream EOT, EOTX, DISC, an MPKT's end): a later one that reuses its stream ID is another.
+ * The frames remembered stay: a copy of one is still no new transmission. Never creates the state. */
+static void
+m17_gnss_tx_end(const dsd_state* state) {
+    m17_gnss_state* g = (m17_gnss_state*)dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_M17_GNSS);
+    if (g) {
+        g->last.kind = 0U;
+    }
+}
+
 /* 1 when the META now held repeats the last admitted one within the same transmission, LSF and reception. A stream's
  * frame numbers only rise within it: a frame number at or below the last one heard is another stream (one whose EOT
- * was missed), never a repeat. */
+ * was missed), never a repeat -- unless the frame is a copy of one already heard (m17_gnss_is_duplicate()). */
 static int
-m17_gnss_is_repeat(const dsd_state* state, const m17_gnss_tx_key* key) {
-    if (key->has_fn != state->m17_gnss_tx_has_fn || (key->has_fn != 0U && key->fn <= state->m17_gnss_tx_fn)) {
+m17_gnss_is_repeat(const m17_gnss_state* g, const dsd_state* state, const m17_gnss_tx_key* key) {
+    const m17_gnss_tx_key* last = &g->last;
+    if (key->has_fn != last->has_fn || (key->has_fn != 0U && key->fn <= last->fn)) {
         return 0;
     }
-    return state->m17_gnss_tx_kind == key->kind && state->m17_gnss_tx_id == key->id
-           && state->m17_gnss_tx_epoch == key->epoch && state->m17_gnss_tx_src == key->src
-           && state->m17_gnss_tx_dst == key->dst && state->m17_gnss_tx_type == key->type_word
-           && state->m17_gnss_tx_gen == key->gen
-           && memcmp(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
+    return last->kind == key->kind && last->id == key->id && last->epoch == key->epoch && last->src == key->src
+           && last->dst == key->dst && last->type_word == key->type_word && last->gen == key->gen
+           && memcmp(g->meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
 }
 
-/* 1 when the network frame now held (@p carrier) is a byte-identical copy of the last one whose GNSS META was admitted
- * or repeated (a duplicated datagram), heard on the same reception less than DSD_POSITION_REPEAT_MS after it. A copy
- * proves no new transmission, so its META is a repeat whatever happened between the two: an EOT or MPKT's end, the
- * call it opens, a frame number that did not rise. */
+/* The remembered network frame @p carrier is a byte-identical copy of, heard on reception @p gen less than
+ * DSD_POSITION_REPEAT_MS ago; NULL when none. */
+static m17_gnss_dgram*
+m17_gnss_find_dgram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+    if (carrier->datagram_len == 0U) {
+        return NULL;
+    }
+    for (size_t i = 0U; i < (size_t)M17_GNSS_DGRAM_RING; i++) {
+        m17_gnss_dgram* d = &g->dgram[i];
+        if (d->len == carrier->datagram_len && d->digest == carrier->datagram_digest && d->gen == gen && now_ms >= d->ms
+            && (now_ms - d->ms) < DSD_POSITION_REPEAT_MS) {
+            return d;
+        }
+    }
+    return NULL;
+}
+
+/* 1 when the network frame now held (@p carrier) is a byte-identical copy of any frame whose GNSS META was admitted
+ * or repeated on this reception within DSD_POSITION_REPEAT_MS (a duplicated datagram, the latest frame's or one a
+ * few frames older, as two network paths deliver it). A copy proves no new transmission, so its META is a repeat
+ * whatever happened between the two: an EOT or MPKT's end, the call it opens, a frame number that did not rise. */
 static int
-m17_gnss_is_duplicate(const dsd_state* state, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
-    return carrier->datagram_len != 0U && state->m17_gnss_dgram_len == carrier->datagram_len
-           && state->m17_gnss_dgram_digest == carrier->datagram_digest && state->m17_gnss_dgram_gen == gen
-           && now_ms >= state->m17_gnss_dgram_ms && (now_ms - state->m17_gnss_dgram_ms) < DSD_POSITION_REPEAT_MS;
+m17_gnss_is_duplicate(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+    m17_gnss_dgram* d = m17_gnss_find_dgram(g, carrier, gen, now_ms);
+    if (d == NULL) {
+        return 0;
+    }
+    d->ms = now_ms;
+    return 1;
 }
 
-/* The network frame (@p carrier) whose GNSS META was just admitted or repeated, for m17_gnss_is_duplicate(). */
+/* The network frame (@p carrier) whose GNSS META was just admitted or repeated, for m17_gnss_is_duplicate(): it takes
+ * the oldest place in the ring. RF frames are not remembered (they cannot be copied). */
 static void
-m17_gnss_note_datagram(dsd_state* state, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
-    state->m17_gnss_dgram_len = carrier->datagram_len;
-    state->m17_gnss_dgram_digest = carrier->datagram_digest;
-    state->m17_gnss_dgram_gen = gen;
-    state->m17_gnss_dgram_ms = now_ms;
+m17_gnss_note_datagram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+    if (carrier->datagram_len == 0U) {
+        return;
+    }
+    m17_gnss_dgram* d = &g->dgram[g->dgram_next % (uint8_t)M17_GNSS_DGRAM_RING];
+    g->dgram_next = (uint8_t)((g->dgram_next + 1U) % (unsigned)M17_GNSS_DGRAM_RING);
+    d->len = carrier->datagram_len;
+    d->digest = carrier->datagram_digest;
+    d->gen = gen;
+    d->ms = now_ms;
 }
 
 static void
-m17_gnss_note_admitted(dsd_state* state, const m17_gnss_tx_key* key) {
-    state->m17_gnss_tx_kind = key->kind;
-    state->m17_gnss_tx_id = key->id;
-    state->m17_gnss_tx_epoch = key->epoch;
-    state->m17_gnss_tx_src = key->src;
-    state->m17_gnss_tx_dst = key->dst;
-    state->m17_gnss_tx_type = key->type_word;
-    state->m17_gnss_tx_gen = key->gen;
-    state->m17_gnss_tx_has_fn = key->has_fn;
-    state->m17_gnss_tx_fn = key->fn;
-    DSD_MEMCPY(state->m17_gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+m17_gnss_note_admitted(m17_gnss_state* g, const dsd_state* state, const m17_gnss_tx_key* key) {
+    g->last = *key;
+    DSD_MEMCPY(g->meta_admitted, state->m17_meta, M17_META_BYTES);
 }
 
 static m17_gnss_verdict
@@ -753,25 +826,28 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     dsd_position_origin heard;
     dsd_position_origin_capture(opts, state, &heard);
     key.gen = heard.gen;
-    const uint64_t now_ms = dsd_decode_now_mono_ms();
-    if (m17_gnss_is_duplicate(state, carrier, key.gen, now_ms)) {
-        state->m17_gnss_dgram_ms = now_ms;
-        return M17_GNSS_ADMITTED; /* a copy of the frame it came in, admitted or repeated already */
+    m17_gnss_state* g = m17_gnss_st(state);
+    if (g == NULL) {
+        return M17_GNSS_REFUSED; /* no repeat rule to tell one report from its repeats: none is admitted */
     }
-    if (m17_gnss_is_repeat(state, &key)) {
-        state->m17_gnss_tx_fn = key.fn; /* the stream goes on: its next frame comes after this one */
-        m17_gnss_note_datagram(state, carrier, key.gen, now_ms);
+    const uint64_t now_ms = dsd_decode_now_mono_ms();
+    if (m17_gnss_is_duplicate(g, carrier, key.gen, now_ms)) {
+        return M17_GNSS_ADMITTED; /* a copy of a frame it came in, admitted or repeated already */
+    }
+    if (m17_gnss_is_repeat(g, state, &key)) {
+        g->last.fn = key.fn; /* the stream goes on: its next frame comes after this one */
+        m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
         return M17_GNSS_ADMITTED; /* admitted already, on this reception, within this transmission */
     }
     if (dsd_position_admit(opts, state, &fix, 1, 1, NULL) == DSD_POSITION_REFUSED) {
         return M17_GNSS_REFUSED;
     }
-    m17_gnss_note_datagram(state, carrier, key.gen, now_ms);
+    m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
     /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
     if (!carrier->network && key.id == 0U) {
         key.kind = 0U;
     }
-    m17_gnss_note_admitted(state, &key);
+    m17_gnss_note_admitted(g, state, &key);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
@@ -3945,7 +4021,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     }
     if (crc_valid && eot != 0U) {
         /* The stream ended: a later stream that reuses its ID is another transmission. */
-        state->m17_gnss_tx_kind = 0U;
+        m17_gnss_tx_end(state);
     }
 
     if (opts->payload == 1) {
@@ -3983,7 +4059,7 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }
         /* The transmission ended (EOTX, DISC): a later stream that reuses its ID is another one, call or not. */
-        state->m17_gnss_tx_kind = 0U;
+        m17_gnss_tx_end(state);
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
     }
@@ -4023,7 +4099,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
         decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
         m17_end_packet_call(opts, state);
         /* One MPKT is one whole transmission. */
-        state->m17_gnss_tx_kind = 0U;
+        m17_gnss_tx_end(state);
     } else {
         DSD_FPRINTF(stderr, " IP CRC ERR");
     }

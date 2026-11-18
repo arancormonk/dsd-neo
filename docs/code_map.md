@@ -2493,7 +2493,8 @@ suite runs under this compiler.
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
-  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`, issue #800). `CORE_STATE_EXT` pins these eight.
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -2722,10 +2723,12 @@ suite runs under this compiler.
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
     transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
     number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
-    transmission) and the reception generation, except that a byte-identical copy of the last network frame (stream
-    frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, its length and 64-bit FNV-1a digest
-    equal, heard on the same reception within `DSD_POSITION_REPEAT_MS` -- is always a repeat, after an EOT or an MPKT's
-    end too (`m17_gnss_is_duplicate()`), so two stations, or one station sending to another destination,
+    transmission) and the reception generation, except that a byte-identical copy of any of the last 16 network frames
+    (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
+    from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
+    `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
+    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_gnss_state`, freed
+    with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
     reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
     the published target stays unknown). The epoch is the call
     the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
@@ -2799,7 +2802,7 @@ suite runs under this compiler.
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
     transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, the call a D-STAR header
-    named, `dstar_tx_call_epoch`, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
+    named, `dstar_tx_call_epoch`) stay in their protocols, and the call state knows none of them: it never gives out
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's

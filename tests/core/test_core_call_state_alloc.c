@@ -10,7 +10,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 /* Every record keyed to a call epoch or transmission (issue #800): the DMR checked-LC source, the P25 Phase 1 checked
- * voice-user identity and L3Harris Part A, the call a D-STAR header named and the last admitted M17 GNSS META. The call
+ * voice-user identity and L3Harris Part A and the call a D-STAR header named. The call
  * state knows none of them: it never gives out an epoch twice on one state, so none of them matches a later call. */
 static void
 set_epoch_records(dsd_state* state, uint64_t epoch) {
@@ -23,18 +23,13 @@ set_epoch_records(dsd_state* state, uint64_t epoch) {
     state->p25_p1_harris_part_a.valid = 1U;
     state->p25_p1_harris_part_a.epoch = epoch;
     state->dstar_tx_call_epoch = epoch;
-    state->m17_gnss_tx_kind = 1U;
-    state->m17_gnss_tx_id = epoch;
-    state->m17_gnss_tx_epoch = epoch;
-    state->m17_gnss_meta_admitted[0] = 0x12U;
 }
 
 static int
 epoch_records_set(const dsd_state* state, uint64_t epoch) {
     return state->dmr_lc_attribution[0].transmission == epoch && state->dmr_lc_attribution[0].source == 1001U
            && state->p25_p1_lc_attribution.call_epoch == epoch && state->p25_p1_harris_part_a.valid == 1U
-           && state->dstar_tx_call_epoch == epoch && state->m17_gnss_tx_kind == 1U && state->m17_gnss_tx_id == epoch
-           && state->m17_gnss_tx_epoch == epoch && state->m17_gnss_meta_admitted[0] == 0x12U;
+           && state->dstar_tx_call_epoch == epoch;
 }
 
 int
