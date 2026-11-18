@@ -1043,6 +1043,87 @@ test_addressless_active_after_other_talkgroup(void) {
     fixture_close(&f);
 }
 
+/* Issue #800, fail closed: a checked message whose source field holds a special address ($FFFFFC-$FFFFFF: FNE use,
+ * System Default, Registration Default, ALL units) names no radio, and is no evidence for the talker the assignment
+ * held. After a checked grant and PTT naming SRC_A, a checked PTT (a new transmission) or MAC_ACTIVE naming such an
+ * address leaves the next report anonymous in the feed and in -L, and no track of the address is made; a checked PTT
+ * naming SRC_A again names it. */
+static void
+test_special_address_source(void) {
+    static const uint32_t specials[] = {0xFFFFFCU, 0xFFFFFDU, 0xFFFFFEU, 0xFFFFFFU};
+    for (size_t i = 0; i < sizeof specials / sizeof specials[0]; i++) {
+        for (int active = 0; active < 2; active++) {
+            fixture f;
+            fixture_open(&f);
+            char tag[96];
+            DSD_SNPRINTF(tag, sizeof tag, "%s from %06X", active ? "MAC_ACTIVE" : "MAC_PTT", (unsigned)specials[i]);
+            group_grant(&f, SRC_A, 1);
+            mac_ptt(&f, TG_A, SRC_A);
+            send_gps(&f, 0);
+            expect_report(&f, "special address: before", SRC_A, TG_A, 1);
+            if (active) {
+                mac_active(&f, TG_A, specials[i]);
+            } else {
+                mac_ptt(&f, TG_A, specials[i]);
+            }
+            send_gps(&f, 0);
+            expect_report(&f, tag, 0U, 0U, 0);
+            mac_ptt(&f, TG_A, SRC_A);
+            send_gps(&f, 0);
+            expect_report(&f, "special address: named again", SRC_A, TG_A, 1);
+            fixture_close(&f);
+        }
+    }
+}
+
+/* Issue #800: identity a checked message names after the reception changed is bound to the new reception. A trunked
+ * assignment held from system 0x1A3 survives a change of the checked network identity to 0x1A4; the next checked
+ * MAC_PTT names the talker (another one, or the grant's again) with its own verdicts under the new reception, so the
+ * report names it. Nothing the grant checked under the old one is carried: an addressless MAC_ACTIVE straight after the
+ * change still names no one. */
+static void
+test_retune_rebinds_identity(void) {
+    static const uint32_t talkers[] = {SRC_B, SRC_A};
+    for (size_t i = 0; i < sizeof talkers / sizeof talkers[0]; i++) {
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A3U);
+        group_grant(&f, SRC_A, 1);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "rebind: before", SRC_A, TG_A, 1);
+        const uint32_t before = f.st->rx_id.epoch;
+        dsd_rxid_note_p25_network(f.st, 0xBEE00U, 0x1A4U);
+        expect_true("rebind: reception changed", f.st->rx_id.epoch != before);
+        mac_ptt(&f, TG_A, talkers[i]);
+        expect_true("rebind: call names the talker", slot0_call_names(TG_A, talkers[i], f.st));
+        send_gps(&f, 0);
+        expect_report(&f, talkers[i] == SRC_B ? "rebind: new talker" : "rebind: same talker", talkers[i], TG_A, 1);
+        expect_true("rebind: assignment rebound", p25_sm_get_ctx()->slots[0].identity_rx_epoch == f.st->rx_id.epoch);
+        fixture_close(&f);
+    }
+}
+
+/* Issue #800: an anonymous Phase 2 report stays off a Phase 1 call. A conventional Phase 1 group call whose voice user
+ * named no source is still ACTIVE on slot 0 (its terminator missed); a Phase 2 L3Harris report gets no call epoch and
+ * goes to the feed and -L anonymous, but never onto the Phase 1 call's history row. */
+static void
+test_anonymous_phase2_report_stays_off_phase1_row(void) {
+    fixture f;
+    fixture_open(&f);
+    f.opts->trunk_enable = 0;
+    p1_group_voice_user(&f, (uint16_t)TG_A, 0U);
+    dsd_call_snapshot call;
+    expect_true("anonymous phase 1 call open", dsd_call_state_get(f.st, 0U, &call) > 0
+                                                   && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                   && DSD_SYNC_IS_P25P1(call.protocol) && call.ota_source_id == 0U);
+    send_gps(&f, 0);
+    expect_report(&f, "phase 2 report beside an anonymous phase 1 call", 0U, 0U, 0);
+    const Event_History* row = &f.st->event_history_s[0].Event_History_Items[0];
+    expect_true("phase 1 row keeps no phase 2 position", row->pos.valid == 0U && row->gps_s[0] == '\0');
+    fixture_close(&f);
+}
+
 /* Every grant routing in the MAC dispatch stamps the grant's CRC verdict on the slot's identity. */
 static void
 test_every_grant_kind(void) {
@@ -1144,6 +1225,9 @@ main(void) {
     test_phase1_call_names_no_phase2_report();
     test_reception_change();
     test_addressless_active_after_other_talkgroup();
+    test_special_address_source();
+    test_retune_rebinds_identity();
+    test_anonymous_phase2_report_stays_off_phase1_row();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

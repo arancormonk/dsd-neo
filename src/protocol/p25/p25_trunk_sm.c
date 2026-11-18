@@ -1462,15 +1462,40 @@ p25_source_id_known(int src) {
  *  - a later message naming the same value sets the flag when its check passed, and never clears it;
  *  - a message that omits a field (0 or absent) leaves the field and its flag as they are;
  *  - a message naming a different value replaces the field, whose flag takes that message's verdict;
+ *  - a message whose source field holds a special address ($FFFFFC-$FFFFFF, p25_source_id_is_subscriber()) names no
+ *    radio and is no evidence for one: the source the call keeps for display loses its flag, and a talker inherited
+ *    through such a message is never checked (issue #800, fail closed);
+ *  - the flags count only under the reception they were earned under (identity_rx_epoch, published.rx_epoch): a message
+ *    applied after the received identity's epoch moved first drops every flag inherited from the old one, then records
+ *    the fields it checked itself under the current one (p25_slot_bind_reception());
  *  - a new call epoch, a release or a reset clears all three.
  * A failed check never sets a flag. A claim carries only the fields the message itself named.
  */
 typedef struct {
-    uint32_t source; // 0: not named (also a fixed-network placeholder, which names no radio)
-    uint32_t target; // 0: not named
-    uint8_t kind;    // dsd_call_kind; DSD_CALL_KIND_UNKNOWN: not named
-    uint8_t checked; // P25_SM_IDENTITY_CHECKED_* verdicts of the message
+    uint32_t source;            // 0: not named (also a special address, which names no radio)
+    uint32_t target;            // 0: not named
+    uint8_t kind;               // dsd_call_kind; DSD_CALL_KIND_UNKNOWN: not named
+    uint8_t checked;            // P25_SM_IDENTITY_CHECKED_* verdicts of the message
+    uint8_t source_placeholder; // 1: the source field held a special address (named, but no radio)
 } p25_sm_identity_claim;
+
+/* A source field naming a special address: present, but no radio (p25_source_id_is_subscriber()). */
+static uint8_t
+p25_source_id_is_placeholder(int src) {
+    return (uint8_t)(src > 0 && !p25_source_id_is_subscriber((uint32_t)src));
+}
+
+/* The slot's verdicts belong to the reception they were earned under: once the received identity's epoch has moved
+ * (another access code, system or site named on the carrier), every flag the assignment holds is dropped and the
+ * assignment is rebound to the current reception, so the message applied next records only what it checked itself. */
+static void
+p25_slot_bind_reception(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state) {
+    if (state == NULL || slot_ctx->identity_rx_epoch == state->rx_id.epoch) {
+        return;
+    }
+    slot_ctx->identity_checked = 0U;
+    slot_ctx->identity_rx_epoch = state->rx_id.epoch;
+}
 
 /* The fields @p claim names with exactly the values @p source, @p target and @p kind; a target only with its kind. */
 static uint8_t
@@ -1497,6 +1522,7 @@ p25_sm_event_claim(const p25_sm_event_t* ev) {
         .target = target > 0 ? (uint32_t)target : 0U,
         .kind = (uint8_t)(ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
         .checked = (uint8_t)(ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL),
+        .source_placeholder = p25_source_id_is_placeholder(ev->src),
     };
     return claim;
 }
@@ -1514,21 +1540,36 @@ p25_sm_slot_claim(const p25_sm_slot_ctx_t* slot_ctx) {
     return claim;
 }
 
+/* The flags @p checked keeps after a message naming @p claim: a special address in its source field takes the source's
+ * flag away. */
+static uint8_t
+p25_sm_claim_withdraws(const p25_sm_identity_claim* claim, uint8_t checked) {
+    if (claim->source_placeholder) {
+        checked &= (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND);
+    }
+    return checked;
+}
+
 /* A message naming @p claim leaves the slot's assignment as it is: each field it names with the assignment's own
- * value gains the message's verdict, and no flag is cleared. */
+ * value gains the message's verdict, and no flag is cleared but the source's by a special address. Applied under the
+ * current reception (p25_slot_bind_reception()). */
 static void
-p25_slot_promote_identity(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+p25_slot_promote_identity(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, const p25_sm_identity_claim* claim) {
+    p25_slot_bind_reception(slot_ctx, state);
     const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
     const uint8_t named = p25_sm_claim_names(claim, held.source, held.target, held.kind);
-    slot_ctx->identity_checked =
-        (uint8_t)((slot_ctx->identity_checked | (claim->checked & named)) & P25_SM_IDENTITY_CHECKED_ALL);
+    slot_ctx->identity_checked = p25_sm_claim_withdraws(
+        claim, (uint8_t)((slot_ctx->identity_checked | (claim->checked & named)) & P25_SM_IDENTITY_CHECKED_ALL));
 }
 
 /* A message naming @p claim about the call the slot's assignment already holds (a repeated grant): each field it names
  * with the assignment's own value gains the message's verdict, and each field it names with another value takes that
- * value with the message's verdict alone, the earlier value's flag never carried over. A target goes with its kind. */
+ * value with the message's verdict alone, the earlier value's flag never carried over. A target goes with its kind. A
+ * special address in the source field takes the source's flag away. Applied under the current reception
+ * (p25_slot_bind_reception()). */
 static void
-p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, const p25_sm_identity_claim* claim) {
+    p25_slot_bind_reception(slot_ctx, state);
     const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
     const uint8_t named = p25_sm_claim_names(claim, held.source, held.target, held.kind);
     uint8_t checked = (uint8_t)((slot_ctx->identity_checked | (claim->checked & named)) & P25_SM_IDENTITY_CHECKED_ALL);
@@ -1552,7 +1593,7 @@ p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity
             checked |= (uint8_t)(claim->checked & P25_SM_IDENTITY_CHECKED_TARGET);
         }
     }
-    slot_ctx->identity_checked = checked;
+    slot_ctx->identity_checked = p25_sm_claim_withdraws(claim, checked);
 }
 
 /* A voice user observing the slot's call names who is talking now. Within the assignment it describes (the same kind
@@ -1561,12 +1602,12 @@ p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity
  * the grant's. One naming another kind or target is not the assignment's call: the assignment's source no longer names
  * who is talking on the slot, and is dropped with its flag. */
 static void
-p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, const p25_sm_identity_claim* claim) {
     const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
     const uint8_t same_call = (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND);
     if (held.target != 0U
         && (p25_sm_claim_names(claim, held.source, held.target, held.kind) & same_call) == same_call) {
-        p25_slot_apply_identity_claim(slot_ctx, claim);
+        p25_slot_apply_identity_claim(slot_ctx, state, claim);
         return;
     }
     slot_ctx->src = 0;
@@ -1575,8 +1616,9 @@ p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_clai
 
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
  * the call's current source, target and kind, its epoch and protocol, and the reception's epoch; a field keeps its flag
- * only within the same epoch, under the same reception and with the same value, and gains the message's verdict where
- * the message named the value the call now holds. A call that is not ACTIVE leaves no record. */
+ * only within the same epoch, under the same reception and with the same value (the source's not past a special
+ * address in the message's source field), and gains the message's verdict where the message named the value the call
+ * now holds. A call that is not ACTIVE leaves no record. */
 static void
 p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state* state, int slot,
                                 const p25_sm_identity_claim* claim) {
@@ -1593,7 +1635,7 @@ p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state*
     /* A flag earned under another reception (another access code or system named since) is not this one's. */
     if (rec->epoch == call.epoch && rec->rx_epoch == state->rx_id.epoch) {
         const p25_sm_identity_claim held = {.source = rec->source, .target = rec->target, .kind = rec->kind};
-        kept = (uint8_t)(rec->checked & p25_sm_claim_names(&held, source, target, kind));
+        kept = p25_sm_claim_withdraws(claim, (uint8_t)(rec->checked & p25_sm_claim_names(&held, source, target, kind)));
     }
     rec->epoch = call.epoch;
     rec->source = source;
@@ -2808,7 +2850,7 @@ p25_grant_duplicate_apply_identity(p25_sm_ctx_t* ctx, const dsd_state* state, in
         return;
     }
     const p25_sm_identity_claim claim = p25_sm_event_claim(ev);
-    p25_slot_apply_identity_claim(&ctx->slots[call_slot], &claim);
+    p25_slot_apply_identity_claim(&ctx->slots[call_slot], state, &claim);
     if (!data_call) {
         p25_sm_merge_published_identity(&ctx->slots[call_slot].published, state, call_slot, &claim);
     }
@@ -4173,6 +4215,8 @@ typedef struct {
     // The update only puts back on the canonical slot an identity it lost (p25_voice_canonical_lacks_identity()):
     // the call and its crypto are unchanged, so nothing is reclassified.
     int identity_recovery;
+    // The decoded message's source field held a special address: whatever talker the call keeps, it is not checked.
+    int source_placeholder;
 } p25_voice_start_changes_t;
 
 static int
@@ -4264,6 +4308,7 @@ p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state
         changes.identity_recovery = 1;
     }
     changes.ptt_evidence = p25_voice_start_is_p2_ptt(ctx, input);
+    changes.source_placeholder = input->identity_valid ? (int)p25_source_id_is_placeholder(input->src) : 0;
     // An ACTIVE-driven start may always fold into the epoch the
     // traffic-channel observation of the same transmission just began. A PTT
     // may do the same only for an epoch no PTT has claimed yet; identity and
@@ -4376,17 +4421,19 @@ p25_voice_start_clear_stale_reprobe(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_ev
 }
 
 /* The slot's flags once @p call_ev is committed: each field's verdict as the voice start resolved it (the message's
- * own, or the assignment's for an inherited one), plus, within the epoch (@p new_epoch 0), the flag the field already
- * had at the same value. A field with no value carries none. Read before media close drops the slot's source. */
+ * own, or the assignment's for an inherited one), plus, within the epoch (@p changes new_epoch 0), the flag the field
+ * already had at the same value. A field with no value carries none, and a source the message's special address left
+ * for display carries none either. Read before media close drops the slot's source. */
 static uint8_t
-p25_voice_start_committed_verdicts(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev, int new_epoch) {
+p25_voice_start_committed_verdicts(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev,
+                                   const p25_voice_start_changes_t* changes) {
     const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
     const p25_sm_identity_claim next = p25_sm_event_claim(call_ev);
     uint8_t verdicts = next.checked;
-    if (!new_epoch) {
+    if (!changes->new_epoch) {
         verdicts |= (uint8_t)(held.checked & p25_sm_claim_names(&held, next.source, next.target, next.kind));
     }
-    if (next.source == 0U) {
+    if (next.source == 0U || changes->source_placeholder) {
         verdicts &= (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND);
     }
     return verdicts;
@@ -4400,8 +4447,19 @@ p25_voice_start_promote_identity(p25_sm_ctx_t* ctx, const dsd_state* state, int 
         return;
     }
     const p25_sm_identity_claim claim = p25_sm_event_claim(input);
-    p25_slot_promote_identity(&ctx->slots[slot], &claim);
+    p25_slot_promote_identity(&ctx->slots[slot], state, &claim);
     p25_sm_merge_published_identity(&ctx->slots[slot].published, state, slot, &claim);
+}
+
+/* A voice start whose message named a special address in its source field: the call's record loses its source flag
+ * too, however the call came out (the same epoch or a new one). */
+static void
+p25_voice_start_withdraw_placeholder_source(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, int slot,
+                                            const p25_voice_start_changes_t* changes) {
+    if (changes->source_placeholder) {
+        const p25_sm_identity_claim withdraw = {.kind = (uint8_t)DSD_CALL_KIND_UNKNOWN, .source_placeholder = 1U};
+        p25_sm_merge_published_identity(&slot_ctx->published, state, slot, &withdraw);
+    }
 }
 
 static void
@@ -4411,7 +4469,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
                                 double now_m) {
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     const int logical_slot = ctx->vc_is_tdma ? slot : 0;
-    const uint8_t verdicts = p25_voice_start_committed_verdicts(slot_ctx, call_ev, changes->new_epoch);
+    const uint8_t verdicts = p25_voice_start_committed_verdicts(slot_ctx, call_ev, changes);
 
     if (changes->new_epoch) {
         p25_ptt_marker_invalidate(ctx, slot);
@@ -4451,6 +4509,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, changes->coalesce_canonical_epoch,
                                  changes->continuous_activity, P25_CALL_OBS_VOICE_EVIDENCE, now_m);
+    p25_voice_start_withdraw_placeholder_source(slot_ctx, state, slot, changes);
     if (changes->ptt_evidence) {
         // Whether this PTT began the epoch or folded into one an ACTIVE
         // observation began, the epoch now contains a PTT: the next
@@ -4471,6 +4530,8 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     if (out_new_epoch) {
         *out_new_epoch = !ctx->slots[slot].voice_active;
     }
+    /* Verdicts the assignment earned under an earlier reception are not this one's: nothing inherits them. */
+    p25_slot_bind_reception(&ctx->slots[slot], state);
     if (!p25_voice_start_build_identity(ctx, state, slot, input, &call_ev)) {
         p25_sm_diagf(opts, state, ctx, "voice_activity_ignored", "reason=no-assignment slot=%d kind=%d", slot,
                      (int)input->type);
@@ -7566,10 +7627,11 @@ p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uin
         .target = target,
         .kind = (uint8_t)(is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
         .checked = (uint8_t)(checked & P25_SM_IDENTITY_CHECKED_ALL),
+        .source_placeholder = (uint8_t)(source != 0U && !p25_source_id_is_subscriber(source)),
     };
     p25_sm_slot_ctx_t* slot_ctx = &p25_sm_get_ctx()->slots[slot];
     p25_sm_merge_published_identity(&slot_ctx->published, state, slot, &claim);
-    p25_slot_note_voice_user(slot_ctx, &claim);
+    p25_slot_note_voice_user(slot_ctx, state, &claim);
 }
 
 int
