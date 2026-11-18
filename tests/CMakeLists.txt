@@ -5248,6 +5248,8 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
+    # Issue #800: the map prefs refuse NaN and infinite views, which fast-math folds away.
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_persistence)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
     add_executable(

@@ -75,7 +75,8 @@ class LocationFeed : public QObject {
 
     /**
      * @brief Take the lease @p name (non-empty); the first one starts the feed. Idempotent; runs noteForeground().
-     * @return Whether the lease is held: false with no host (nothing to lease) or an empty name.
+     * @return Whether the lease is held when the call returns: false with no host (nothing to lease) or an empty name,
+     *         and false when a consumer drops this lease while handling the foregroundMoved() this call emits.
      */
     Q_INVOKABLE bool acquire(const QString& name);
     /** @brief Drop the lease @p name; the last one stops the feed. A lease not held: nothing happens. */

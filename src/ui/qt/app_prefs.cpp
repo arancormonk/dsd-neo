@@ -7,6 +7,8 @@
 
 #include <QAnyStringView>
 #include <QChar>
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,7 +28,9 @@
 #include <dsd-neo/core/opts.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>
+#include <limits>
 #include <utility>
+#include "map_math.h"
 #include "realtime_clock.h"
 #include "settings_path.h"
 #include "stored_int.h"
@@ -129,6 +133,13 @@ enum Key {
     kRoamingEnabled,
     kRoamingMaxDistanceKm,
     kRoamingMarginKm,
+    // Issue #800: the map (spec 4.8). Device-local: a tile URL template can carry a key, the saved view is a place
+    // the user looked at, and the tiles switch and the age filter follow this device. Following is never saved.
+    kMapTilesEnabled,
+    kMapTileUrl,
+    kMapTileAttribution,
+    kMapViewport,
+    kMapAgeFilter,
     kKeyCount
 };
 
@@ -185,6 +196,11 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"roaming/enabled", false},
     {"roaming/maxDistanceKm", true},
     {"roaming/marginKm", true},
+    {"map/tilesEnabled", false},
+    {"map/tileUrl", false},
+    {"map/tileAttribution", false},
+    {"map/viewport", false},
+    {"map/ageFilter", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -447,6 +463,106 @@ sane_analog_preroll(const QVariant& raw) {
     return ok && ms >= 0 && ms <= kMaxAnalogPrerollMs ? ms : kDefaultAnalogPrerollMs;
 }
 
+// Issue #800: the map's defaults (spec 4.4) and the age filters its pills offer, in seconds (0: all).
+constexpr char kDefaultMapTileUrl[] = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+constexpr char kDefaultMapTileAttribution[] = "\xC2\xA9 OpenStreetMap contributors"; // UTF-8 copyright sign
+constexpr int kMapAgeFilterChoices[] = {0, 900, 3600};
+// How long a map view waits in memory after its last write before it goes to the file.
+constexpr int kMapViewportWriteDelayMs = 1000;
+
+/** @brief Whether @p seconds is one of the age filters the map offers. */
+bool
+is_map_age_filter(int seconds) {
+    return std::any_of(std::begin(kMapAgeFilterChoices), std::end(kMapAgeFilterChoices),
+                       [seconds](int choice) { return choice == seconds; });
+}
+
+/** @brief The text @p raw holds (a list the ini backend split at commas joined again), else empty. */
+QString
+stored_text(const QVariant& raw) {
+    return as_scalar(raw).toString();
+}
+
+/*
+ * The saved map view is stored as JSON whole numbers, latitude and longitude in 1e-7 degrees and the zoom in
+ * thousandths, so a value read back is exactly the one written and compares without a tolerance.
+ */
+constexpr double kE7 = 1e7;
+constexpr double kZoomE3 = 1e3;
+// Rounded down, so the edge read back is still within the map's range.
+const qint64 kMaxViewLatE7 = static_cast<qint64>(std::floor(map_math::kMaxLatitudeDeg * kE7));
+constexpr qint64 kMaxViewLonE7 = 1800000000;
+constexpr qint64 kMinViewZoomE3 = static_cast<qint64>(map_math::kMinZoom * kZoomE3);
+constexpr qint64 kMaxViewZoomE3 = static_cast<qint64>(map_math::kMaxZoom * kZoomE3);
+
+/** @brief One whole-number field of a stored view, if @p value is one within [@p low, @p high]. */
+bool
+view_field(const QJsonValue& value, qint64 low, qint64 high, qint64* out) {
+    if (!value.isDouble()) {
+        return false;
+    }
+    constexpr qint64 kNotWhole = std::numeric_limits<qint64>::min();
+    const qint64 whole = value.toInteger(kNotWhole);
+    if (whole == kNotWhole || whole < low || whole > high) {
+        return false;
+    }
+    *out = whole;
+    return true;
+}
+
+/** @brief The view the stored text @p text names, else {}: text that is no such JSON object reads as no view. */
+QVariantMap
+view_from_text(const QString& text) {
+    const QJsonObject view = QJsonDocument::fromJson(text.toUtf8()).object();
+    qint64 lat = 0;
+    qint64 lon = 0;
+    qint64 zoom = 0;
+    if (!view_field(view.value(QLatin1String("latE7")), -kMaxViewLatE7, kMaxViewLatE7, &lat)
+        || !view_field(view.value(QLatin1String("lonE7")), -kMaxViewLonE7, kMaxViewLonE7, &lon)
+        || !view_field(view.value(QLatin1String("zoomE3")), kMinViewZoomE3, kMaxViewZoomE3, &zoom)) {
+        return {};
+    }
+    return {{QStringLiteral("latitude"), static_cast<double>(lat) / kE7},
+            {QStringLiteral("longitude"), static_cast<double>(lon) / kE7},
+            {QStringLiteral("zoom"), static_cast<double>(zoom) / kZoomE3}};
+}
+
+/** @brief A finite number within [@p low, @p high] that @p value holds, checked before any conversion. */
+bool
+view_number(const QVariant& value, double low, double high, double* out) {
+    bool ok = false;
+    const double number = value.toDouble(&ok);
+    if (!ok || !std::isfinite(number) || number < low || number > high) {
+        return false;
+    }
+    *out = number;
+    return true;
+}
+
+/** @brief The stored text for @p view: "" for {}, the JSON for a valid view; false when @p view is neither. */
+bool
+view_to_text(const QVariantMap& view, QString* text) {
+    if (view.isEmpty()) {
+        text->clear();
+        return true;
+    }
+    double lat = 0;
+    double lon = 0;
+    double zoom = 0;
+    if (!view_number(view.value(QStringLiteral("latitude")), -map_math::kMaxLatitudeDeg, map_math::kMaxLatitudeDeg,
+                     &lat)
+        || !view_number(view.value(QStringLiteral("longitude")), -180.0, 180.0, &lon)
+        || !view_number(view.value(QStringLiteral("zoom")), map_math::kMinZoom, map_math::kMaxZoom, &zoom)) {
+        return false;
+    }
+    const qint64 latE7 = std::clamp<qint64>(std::llround(lat * kE7), -kMaxViewLatE7, kMaxViewLatE7);
+    const QJsonObject json{{QStringLiteral("latE7"), latE7},
+                           {QStringLiteral("lonE7"), static_cast<qint64>(std::llround(lon * kE7))},
+                           {QStringLiteral("zoomE3"), static_cast<qint64>(std::llround(zoom * kZoomE3))}};
+    *text = QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact));
+    return true;
+}
+
 /**
  * @brief Whether writing @p next would change what is stored as @p stored.
  *
@@ -471,9 +587,17 @@ AppPrefs::AppPrefs(QObject* parent) : QObject(parent), m_settings() {
         Q_EMIT locationChanged();
     });
     armLocationExpiry();
+    // Issue #800: a map view goes to the file a second after its last write, or at once when the app leaves the
+    // foreground (Android may end a background app before the timer runs) or this object goes.
+    m_viewportWrite.setSingleShot(true);
+    m_viewportWrite.setInterval(kMapViewportWriteDelayMs);
+    connect(&m_viewportWrite, &QTimer::timeout, this, &AppPrefs::flushMapViewport);
+    if (auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, &AppPrefs::onApplicationStateChanged);
+    }
 }
 
-AppPrefs::~AppPrefs() = default;
+AppPrefs::~AppPrefs() { flushMapViewport(); }
 
 // Explicit scope and names: the organization name is empty on some platforms,
 // and QSettings' fallback location would then depend on how the process was
@@ -1515,6 +1639,127 @@ AppPrefs::analogPrerollChoices() {
         choices.append(choice);
     }
     return choices;
+}
+
+bool
+AppPrefs::mapTilesEnabled() const {
+    return m_settings.value(key_name(kMapTilesEnabled), false).toBool();
+}
+
+void
+AppPrefs::setMapTilesEnabled(bool on) {
+    if (on == mapTilesEnabled()) {
+        return;
+    }
+    m_settings.setValue(key_name(kMapTilesEnabled), on);
+    Q_EMIT mapTilesChanged();
+}
+
+QString
+AppPrefs::mapTileUrl() const {
+    const QString url = stored_text(m_settings.value(key_name(kMapTileUrl)));
+    return url.isEmpty() ? QString::fromUtf8(kDefaultMapTileUrl) : url;
+}
+
+void
+AppPrefs::setMapTileUrl(const QString& url) {
+    setMapText(kMapTileUrl, url);
+}
+
+QString
+AppPrefs::mapTileAttribution() const {
+    const QString text = stored_text(m_settings.value(key_name(kMapTileAttribution)));
+    return text.isEmpty() ? QString::fromUtf8(kDefaultMapTileAttribution) : text;
+}
+
+void
+AppPrefs::setMapTileAttribution(const QString& text) {
+    setMapText(kMapTileAttribution, text);
+}
+
+void
+AppPrefs::setMapText(int key, const QString& text) {
+    // Compared with the raw stored value, so text over a stored list or a removal over a stored empty string lands.
+    const QString name = key_name(static_cast<Key>(key));
+    const QVariant stored = m_settings.value(name);
+    if (text.isEmpty() ? !stored.isValid()
+                       : stored.metaType().id() == QMetaType::QString && stored.toString() == text) {
+        return;
+    }
+    if (text.isEmpty()) {
+        m_settings.remove(name);
+    } else {
+        m_settings.setValue(name, text);
+    }
+    Q_EMIT mapTilesChanged();
+}
+
+int
+AppPrefs::mapAgeFilter() const {
+    int seconds = 0;
+    return stored_int(m_settings.value(key_name(kMapAgeFilter)), &seconds) && is_map_age_filter(seconds) ? seconds : 0;
+}
+
+void
+AppPrefs::setMapAgeFilter(int seconds) {
+    if (!is_map_age_filter(seconds) || !stored_int_differs(m_settings.value(key_name(kMapAgeFilter), 0), seconds)) {
+        return;
+    }
+    m_settings.setValue(key_name(kMapAgeFilter), seconds);
+    Q_EMIT mapAgeFilterChanged();
+}
+
+QVariantMap
+AppPrefs::mapViewport() const {
+    if (m_viewportHeld) {
+        return view_from_text(m_viewportText);
+    }
+    // Only text QSettings wrote reads back as one string; anything else (a hand-edited list) is no view.
+    const QVariant stored = m_settings.value(key_name(kMapViewport));
+    return stored.metaType().id() == QMetaType::QString ? view_from_text(stored.toString()) : QVariantMap();
+}
+
+void
+AppPrefs::setMapViewport(const QVariantMap& view) {
+    QString text;
+    if (!view_to_text(view, &text)) {
+        return;
+    }
+    const QVariant stored = m_settings.value(key_name(kMapViewport));
+    const bool same = m_viewportHeld   ? m_viewportText == text
+                      : text.isEmpty() ? !stored.isValid()
+                                       : stored.metaType().id() == QMetaType::QString && stored.toString() == text;
+    if (same) {
+        return;
+    }
+    m_viewportText = text;
+    m_viewportHeld = true;
+    m_viewportWrite.start();
+    Q_EMIT mapViewportChanged();
+}
+
+void
+AppPrefs::flushMapViewport() {
+    m_viewportWrite.stop();
+    if (!m_viewportHeld) {
+        return;
+    }
+    m_viewportHeld = false;
+    if (m_viewportText.isEmpty()) {
+        m_settings.remove(key_name(kMapViewport));
+    } else {
+        m_settings.setValue(key_name(kMapViewport), m_viewportText);
+    }
+}
+
+void
+AppPrefs::onApplicationStateChanged(Qt::ApplicationState state) {
+    if (state == Qt::ApplicationActive || !m_viewportHeld) {
+        return;
+    }
+    flushMapViewport();
+    // QSettings writes the file at its next event, which a suspended app may never get.
+    m_settings.sync();
 }
 
 } // namespace dsd_qt

@@ -17,9 +17,8 @@ import "MapText.js" as MapText
 // states in words, the same sheet and Follow. Every map action has a button;
 // the canvas itself is not in the accessibility tree.
 //
-// The tile settings and the age filter live here until Task P8 wires them to
-// prefs (map/tilesEnabled, map/tileUrl, map/tileAttribution, map/ageFilter,
-// map/viewport); follow is never saved.
+// The tile settings, the age filter and the view are kept in this device's
+// prefs (map/*, never in a backup); follow is never saved.
 Item {
     id: screen
 
@@ -29,10 +28,14 @@ Item {
     readonly property string defaultAttribution: "© OpenStreetMap contributors"
     readonly property string copyrightUrl: "https://www.openstreetmap.org/copyright"
 
-    // P8: map/tilesEnabled, map/tileUrl, map/tileAttribution (device-local).
-    property bool tilesEnabled: false
-    property string tileUrl: defaultTileUrl
-    property string tileAttribution: defaultAttribution
+    // Spec 4.8: map/tilesEnabled, map/tileUrl, map/tileAttribution. What is
+    // set here is written back; what the prefs already say is not.
+    property bool tilesEnabled: prefs.mapTilesEnabled === true
+    property string tileUrl: prefs.mapTileUrl || defaultTileUrl
+    property string tileAttribution: prefs.mapTileAttribution || defaultAttribution
+    onTilesEnabledChanged: if (tilesEnabled !== (prefs.mapTilesEnabled === true)) prefs.mapTilesEnabled = tilesEnabled
+    onTileUrlChanged: if (tileUrl !== (prefs.mapTileUrl || defaultTileUrl)) prefs.mapTileUrl = tileUrl
+    onTileAttributionChanged: if (tileAttribution !== (prefs.mapTileAttribution || defaultAttribution)) prefs.mapTileAttribution = tileAttribution
 
     // Which view shows: the map (true) or the List.
     property bool mapShown: true
@@ -51,7 +54,7 @@ Item {
         }
     }
 
-    // The age filter (P8: map/ageFilter): 0 all, else seconds.
+    // The age filter (map/ageFilter): 0 all, else seconds.
     readonly property var ageChoices: [
         {text: qsTr("Last 15 min"), name: qsTr("Last 15 minutes"), seconds: 900},
         {text: qsTr("Last hour"), name: qsTr("Last hour"), seconds: 3600},
@@ -720,6 +723,12 @@ Item {
         target: positions
         property: "ageing"
         value: screen.visible
+    }
+
+    // Spec 4.8: the age filter and the view are kept between visits.
+    MapViewKeeper {
+        screen: screen
+        map: map
     }
 
     MapPositionSheet {

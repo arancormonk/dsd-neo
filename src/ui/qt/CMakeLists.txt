@@ -240,6 +240,7 @@ qt_add_resources(
         qml/MapPositionSheet.qml
         qml/MapSettingsSheet.qml
         qml/MapLocator.qml
+        qml/MapViewKeeper.qml
         qml/MapControlButton.qml
         qml/MapGlyph.qml
         qml/MapText.js
@@ -313,4 +314,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_activity_screen.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_map_screen.qml" # #800
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_map.qml" # #800
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_map_prefs.qml" # #800
 )
