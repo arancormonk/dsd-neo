@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Helpers for tools/windows/verify_release_tree.ps1: an isolated process runner and
-# readers for the text SoapySDRUtil, dsd-neo and dumpbin print. They take output as
-# text, so tests can feed them saved output on any platform.
+# Helpers for tools/windows/stage_runtime_dlls.ps1 and verify_release_tree.ps1: a PE
+# image check, an isolated process runner and readers for the text SoapySDRUtil,
+# dsd-neo and dumpbin print. The readers take output as text, so tests can feed them
+# saved output on any platform.
 
 Set-StrictMode -Version Latest
 
@@ -109,6 +110,54 @@ function Find-SoapyLoadError {
         }
     }
     return $null
+}
+
+# Whether the file is a PE image Windows can load (an executable or a DLL), from its
+# own headers: the MZ header, the PE signature it points to, the image flag in the COFF
+# header and a PE32 or PE32+ optional header. An object file has none of these, though
+# llvm-objdump names its format as it names an image's (coff-x86-64) and lists no
+# imports for it.
+function Test-PeImage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $bytes = New-Object byte[] 4096
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $count = $stream.Read($bytes, 0, $bytes.Length)
+    } finally {
+        $stream.Dispose()
+    }
+    if ($count -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+        return $false
+    }
+    $pe = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    if ($pe -lt 64 -or $pe + 26 -gt $count) {
+        return $false
+    }
+    if ($bytes[$pe] -ne 0x50 -or $bytes[$pe + 1] -ne 0x45 -or $bytes[$pe + 2] -ne 0 -or $bytes[$pe + 3] -ne 0) {
+        return $false
+    }
+    $characteristics = [System.BitConverter]::ToUInt16($bytes, $pe + 22)
+    $magic = [System.BitConverter]::ToUInt16($bytes, $pe + 24)
+    return (($characteristics -band 0x0002) -ne 0) -and ($magic -eq 0x10B -or $magic -eq 0x20B)
+}
+
+# Whether dumpbin reported on a loadable image: its File Type is DLL or EXECUTABLE
+# IMAGE (not COFF OBJECT or a library) and the report ends with a section summary,
+# which it prints even for a DLL that imports nothing.
+function Test-DumpbinImageReport {
+    param(
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $lines = ConvertTo-CheckLines $Text
+    $image = @($lines | Where-Object { $_ -match '^\s*File Type:\s*(DLL|EXECUTABLE IMAGE)\s*$' })
+    $summary = @($lines | Where-Object { $_ -match '^\s*Summary\s*$' })
+    return ($image.Count -gt 0) -and ($summary.Count -gt 0)
 }
 
 # The DLL names dumpbin /DEPENDENTS lists, delay-loaded ones included.
@@ -233,5 +282,5 @@ function Invoke-IsolatedProcess {
 }
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
-    Find-SoapyLoadError, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DumpbinDependents, Test-DumpbinImport,
-    Invoke-IsolatedProcess
+    Find-SoapyLoadError, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Test-PeImage, Test-DumpbinImageReport,
+    Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess

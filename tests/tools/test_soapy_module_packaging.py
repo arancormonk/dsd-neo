@@ -22,6 +22,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from test_stage_runtime_dlls import pe_image
+
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 PWSH = os.environ.get("DSD_NEO_TEST_PWSH") or shutil.which("pwsh")
 REQUIRE_TOOLS = os.environ.get("DSD_NEO_REQUIRE_TEST_TOOLS") == "1"
@@ -443,7 +445,7 @@ from pathlib import Path
 report = json.loads((Path(sys.argv[0]).resolve().parent / "report.json").read_text())
 option, path = sys.argv[1], sys.argv[2]
 name = Path(path).name
-kind = "EXECUTABLE IMAGE" if name.endswith(".exe") else "DLL"
+kind = report.get("types", {{}}).get(name, "EXECUTABLE IMAGE" if name.endswith(".exe") else "DLL")
 lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0", "", "Dump of file " + path, "", "File Type: " + kind, ""]
 if option == "/headers":
     lines += ["            8664 machine (x64)", "                   High Entropy Virtual Addresses",
@@ -628,7 +630,7 @@ class SoapyReleaseScripts(unittest.TestCase):
             (tools / tool).chmod(0o755)
         build = self.work / "build"
         (build / "apps/dsd-cli/Release").mkdir(parents=True)
-        (build / "apps/dsd-cli/Release/dsd-neo.exe").write_bytes(b"MZ dsd-neo")
+        (build / "apps/dsd-cli/Release/dsd-neo.exe").write_bytes(pe_image(b"dsd-neo", dll=False))
         for directory, names in (("pffft-licenses", ("pffft-LICENSE.txt", "pffft-NOTICES.txt")),
                                  ("tetra_crypto-licenses", ("tetra_crypto-LICENSE.txt",))):
             (build / directory).mkdir()
@@ -637,21 +639,21 @@ class SoapyReleaseScripts(unittest.TestCase):
         installed = self.work / "vcpkg_installed/x64-windows-dynamic-release"
         (installed / "bin").mkdir(parents=True)
         for name in INSTALLED_BIN:
-            (installed / "bin" / name).write_bytes(b"MZ " + name.encode())
+            (installed / "bin" / name).write_bytes(pe_image(name.encode()))
         (installed / "include/SoapySDR").mkdir(parents=True)
         (installed / "include/SoapySDR/Version.h").write_text(
             '#pragma once\r\n#define SOAPY_SDR_API_VERSION 0x00080000\r\n#define SOAPY_SDR_ABI_VERSION "0.8"\r\n')
         modules = installed / "lib/SoapySDR/modules0.8"
         modules.mkdir(parents=True)
         for name in MODULE_FILES:
-            (modules / name).write_bytes(b"MZ " + name.encode())
+            (modules / name).write_bytes(pe_image(name.encode()))
         # vcpkg_copy_tools deploys the tool's DLLs beside it; the ZIP takes them from bin\ instead.
         (installed / "tools/soapysdr").mkdir(parents=True)
-        (installed / "tools/soapysdr/SoapySDRUtil.exe").write_bytes(b"MZ SoapySDRUtil")
-        (installed / "tools/soapysdr/SoapySDR.dll").write_bytes(b"MZ tool-folder copy")
+        (installed / "tools/soapysdr/SoapySDRUtil.exe").write_bytes(pe_image(b"SoapySDRUtil", dll=False))
+        (installed / "tools/soapysdr/SoapySDR.dll").write_bytes(pe_image(b"tool-folder copy"))
         windows = self.work / "windows"
         (windows / "System32").mkdir(parents=True)
-        (windows / "System32/KERNEL32.dll").write_bytes(b"MZ system")
+        (windows / "System32/KERNEL32.dll").write_bytes(pe_image(b"system"))
         self.program_files = self.work / "pf86"
         self.program_files.mkdir()
         return tools, build, installed, windows
@@ -671,7 +673,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         bin_files = sorted(p.name for p in (stage / "bin").iterdir())
         self.assertEqual(bin_files, sorted(["dsd-neo.exe", "SoapySDRUtil.exe", "dlls-manifest.txt"]
                                            + [n for n in INSTALLED_BIN if n != "unused.dll"]))
-        self.assertEqual((stage / "bin/SoapySDR.dll").read_bytes(), b"MZ SoapySDR.dll")
+        self.assertEqual((stage / "bin/SoapySDR.dll").read_bytes(), pe_image(b"SoapySDR.dll"))
         self.assertEqual(sorted(p.relative_to(stage).as_posix() for p in (stage / "lib").rglob("*")),
                          ["lib/SoapySDR", "lib/SoapySDR/modules0.8"]
                          + sorted(f"lib/SoapySDR/modules0.8/{m}" for m in MODULE_FILES))
@@ -690,11 +692,11 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         # A second staging into the same folder would keep the first run's DLLs: the runtime staging keeps a DLL
         # already in bin\, so a module from the new run would ship beside the old hackrf.dll.
-        (installed / "bin/hackrf.dll").write_bytes(b"MZ a newer hackrf.dll")
+        (installed / "bin/hackrf.dll").write_bytes(pe_image(b"a newer hackrf.dll"))
         rc, output, _ = self.stage(tools, build, installed, windows)
         self.assertEqual(rc, 1, output)
         self.assertIn(f"is not empty: {stage}", output)
-        self.assertEqual((stage / "bin/hackrf.dll").read_bytes(), b"MZ hackrf.dll")
+        self.assertEqual((stage / "bin/hackrf.dll").read_bytes(), pe_image(b"hackrf.dll"))
 
     def test_stage_release_tree_refusals(self):
         tools, build, installed, windows = self.fake_tree()
@@ -797,6 +799,14 @@ class SoapyReleaseScripts(unittest.TestCase):
                     path.write_bytes(saved)
                 self.assertEqual(rc, 1, output)
                 self.assertIn(message, output)
+        # A dependency report that is not about an image (an object file named like a DLL).
+        self.report["types"] = {"hackrf.dll": "COFF OBJECT"}
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("did not report", output)
+        self.assertIn("hackrf.dll", output)
+        del self.report["types"]
         # SoapyAirspyHF built without its gain controls.
         self.report["imports"]["airspyhfSupport.dll"]["airspyhf.dll"].remove("airspyhf_set_hf_lna")
         self.write_report(tools)

@@ -12,6 +12,7 @@ ones.
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -60,11 +61,26 @@ try {
 """
 
 
-def dumpbin_report(name, dependencies):
+def pe_image(tag=b"", dll=True):
+    """The headers Windows reads to load a PE32+ (x64) image, then tag: what the staging checks before it asks a tool
+    for the imports. A DLL sets IMAGE_FILE_DLL as well as IMAGE_FILE_EXECUTABLE_IMAGE."""
+    dos = bytearray(64)
+    dos[:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 64)
+    coff = struct.pack("<HHIIIHH", 0x8664, 0, 0, 0, 0, 240, 0x2022 if dll else 0x0022)
+    return bytes(dos) + b"PE\0\0" + coff + struct.pack("<H", 0x20B) + bytes(238) + tag
+
+
+def coff_object(tag=b""):
+    """An x64 COFF object file as a compiler writes it: no MZ header, no optional header. Not a loadable image."""
+    return struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0) + tag
+
+
+def dumpbin_report(name, dependencies, file_type="DLL"):
     """dumpbin /DEPENDENTS output as MSVC prints it, CRLF line endings included."""
     lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0",
              "Copyright (C) Microsoft Corporation.  All rights reserved.", "", "",
-             f"Dump of file {name}", "", "File Type: DLL", ""]
+             f"Dump of file {name}", "", f"File Type: {file_type}", ""]
     if dependencies:
         lines += ["  Image has the following dependencies:", ""] + [f"    {d}" for d in dependencies] + [""]
     lines += ["  Summary", "", "        1000 .data", "        1000 .pdata", "        3000 .rdata",
@@ -112,7 +128,7 @@ class StageRuntimeDlls(unittest.TestCase):
         self.dest = work / "stage/bin"
         self.dest.mkdir(parents=True)
         self.target = self.dest / "dsd-neo.exe"
-        self.target.write_bytes(b"MZ target")
+        self.target.write_bytes(pe_image(b"target", dll=False))
         self.work = work
 
     def tool(self, name):
@@ -167,10 +183,10 @@ class StageRuntimeDlls(unittest.TestCase):
         self.tool("dumpbin")
         self.respond("dumpbin", "dsd-neo.exe", out=dumpbin_report("dsd-neo.exe", [
             "a.dll", "VCRUNTIME140_1.dll", "KERNEL32.dll", "api-ms-win-crt-runtime-l1-1-0.dll"]))
-        (self.search / "a.dll").write_bytes(b"MZ a")
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
         self.respond("dumpbin", "a.dll", out=dumpbin_report("a.dll", ["KERNEL32.dll"]))
         for name in ("VCRUNTIME140_1.dll", "KERNEL32.dll"):
-            (self.system32 / name).write_bytes(b"MZ system")
+            (self.system32 / name).write_bytes(pe_image(b"system"))
         self.respond("dumpbin", "VCRUNTIME140_1.dll", out=dumpbin_report("VCRUNTIME140_1.dll", ["KERNEL32.dll"]))
         rc, output = self.stage()
         self.assertEqual(rc, 0, output)
@@ -203,8 +219,8 @@ class StageRuntimeDlls(unittest.TestCase):
                         staged.unlink()
                 self.tool(tool)
                 self.respond(tool, "dsd-neo.exe", out=report(["a.dll", "KERNEL32.dll"]))
-                (self.search / "a.dll").write_bytes(b"MZ a")
-                (self.system32 / "KERNEL32.dll").write_bytes(b"MZ system")
+                (self.search / "a.dll").write_bytes(pe_image(b"a"))
+                (self.system32 / "KERNEL32.dll").write_bytes(pe_image(b"system"))
                 self.respond(tool, "a.dll", out=report([]))
                 rc, output = self.stage()
                 self.assertEqual(rc, 0, output)
@@ -222,7 +238,7 @@ class StageRuntimeDlls(unittest.TestCase):
         self.tool("objdump")
         self.respond("objdump", "dsd-neo.exe",
                      out=gnu_objdump_report(["a.dll"]).replace("{path}", str(self.work / "other.exe")))
-        (self.search / "a.dll").write_bytes(b"MZ a")
+        (self.search / "a.dll").write_bytes(pe_image(b"a"))
         self.assert_refused(["objdump", str(self.target)])
 
     def test_objdump_header_without_a_pe_format_stops_staging(self):
@@ -233,6 +249,26 @@ class StageRuntimeDlls(unittest.TestCase):
             Program Header:
             """))
         self.assert_refused(["objdump", str(self.target)])
+
+    def test_object_files_are_refused(self):
+        # An x64 object file named like a DLL: llvm-objdump calls it coff-x86-64 like an image and lists no imports,
+        # so only the file itself shows it is not one.
+        self.target = self.dest / "foo.dll"
+        self.target.write_bytes(coff_object(b"object"))
+        self.tool("llvm-objdump")
+        self.respond("llvm-objdump", "foo.dll", out=llvm_objdump_report([]))
+        self.assert_refused(["not a PE image", str(self.target)])
+
+    def test_tool_reports_for_object_files_are_refused(self):
+        # The file is an image, but the tool reports an object file: the report is not about what will be loaded.
+        for tool, report in (("dumpbin", dumpbin_report("dsd-neo.exe", [], file_type="COFF OBJECT")),
+                             ("objdump", gnu_objdump_report([]).replace("pei-x86-64", "pe-x86-64"))):
+            with self.subTest(tool=tool):
+                shutil.rmtree(self.tools)
+                self.tools.mkdir()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report)
+                self.assert_refused([tool, str(self.target)])
 
 
 if __name__ == "__main__":

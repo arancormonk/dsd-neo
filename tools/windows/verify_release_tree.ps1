@@ -63,6 +63,21 @@ function Invoke-Dumpbin {
     return $output
 }
 
+# The DLLs an image imports. A report that is not about a loadable image (an object
+# file, a library) would list none and pass every check below.
+function Get-ImageDependents {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $report = Invoke-Dumpbin '/DEPENDENTS' $Path
+    if (-not (Test-DumpbinImageReport $report)) {
+        throw "dumpbin did not report ${Path} as an executable or a DLL:`n$report"
+    }
+    return @(Get-DumpbinDependents $report)
+}
+
 function Get-IsolatedPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -213,7 +228,7 @@ function Test-LoadPath {
         $links[(Join-Path $bin $Libraries[$driver])] = @('libusb-1.0.dll', 'pthreadVC3.dll')
     }
     foreach ($path in $links.Keys) {
-        $dependents = @(Get-DumpbinDependents (Invoke-Dumpbin '/DEPENDENTS' $path))
+        $dependents = @(Get-ImageDependents $path)
         foreach ($name in $links[$path]) {
             if ($dependents -notcontains $name) {
                 throw "$path does not import $name; it imports $($dependents -join ', ')"
@@ -228,7 +243,7 @@ function Test-LoadPath {
     $missing = New-Object 'System.Collections.Generic.List[string]'
     $binaries = @(Get-ChildItem -Path $bin -File) + @(Get-ChildItem -Path $moduleDir -File)
     foreach ($binary in @($binaries | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
-        foreach ($name in @(Get-DumpbinDependents (Invoke-Dumpbin '/DEPENDENTS' $binary.FullName))) {
+        foreach ($name in @(Get-ImageDependents $binary.FullName)) {
             if ($name -match $ApiSetRegex -or (Test-Path -LiteralPath (Join-Path $bin $name))) {
                 continue
             }

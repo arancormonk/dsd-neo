@@ -15,6 +15,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 # The inspection tools' exit codes are checked below, where the failure can name the binary.
 $PSNativeCommandUseErrorActionPreference = $false
+Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 
 function Get-VsInstallationPath {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -77,23 +78,8 @@ function Get-ObjdumpPath {
     return $null
 }
 
-# A dumpbin /DEPENDENTS report names the file type and ends with a section summary, even for a DLL that imports
-# nothing; without both, dumpbin did not inspect the file.
-function Test-DumpbinReport {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [AllowEmptyString()]
-        [string[]]$Lines
-    )
-
-    $fileType = @($Lines | Where-Object { $_ -match '^\s*File Type:' })
-    $summary = @($Lines | Where-Object { $_ -match '^\s*Summary\s*$' })
-    return ($fileType.Count -gt 0) -and ($summary.Count -gt 0)
-}
-
-# GNU objdump calls a PE image pei-x86-64 (pe-x86-64 for an object), LLVM objdump coff-x86-64. The header must be
-# for the file that was asked about.
+# GNU objdump calls a PE image pei-x86-64 (an object file pe-x86-64), LLVM objdump calls both coff-x86-64; the
+# file's own headers tell those apart (Test-PeImage). The header must be for the file that was asked about.
 function Test-ObjdumpReport {
     param(
         [Parameter(Mandatory = $true)]
@@ -109,7 +95,7 @@ function Test-ObjdumpReport {
     foreach ($line in $Lines) {
         $candidate = $line.Replace('\', '/')
         if ($candidate.StartsWith($expected, [System.StringComparison]::OrdinalIgnoreCase) -and
-            $candidate.Substring($expected.Length) -match '^\s+file format (pei|coff|pe)-x86-64\s*$') {
+            $candidate.Substring($expected.Length) -match '^\s+file format (pei|coff)-x86-64\s*$') {
             return $true
         }
     }
@@ -127,6 +113,11 @@ function Get-DependentDllNames {
         [Parameter(Mandatory = $false)]
         [string]$ObjdumpPath
     )
+
+    # Only an image has imports to read: an object file reports none and would pass.
+    if (-not (Test-PeImage -Path $BinaryPath)) {
+        throw "${BinaryPath} is not a PE image (an executable or a DLL)"
+    }
 
     if ($DumpbinPath) {
         $tool = 'dumpbin'
@@ -147,8 +138,8 @@ function Get-DependentDllNames {
     }
 
     if ($DumpbinPath) {
-        if (-not (Test-DumpbinReport -Lines $lines)) {
-            throw "dumpbin printed no dependency report for ${BinaryPath}:`n$text"
+        if (-not (Test-DumpbinImageReport -Text $text)) {
+            throw "dumpbin printed no dependency report of an image for ${BinaryPath}:`n$text"
         }
         $names = $lines |
             ForEach-Object { $_.Trim() } |
