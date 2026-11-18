@@ -386,6 +386,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
     static void failNextSpillReadAfterLinesForTest(int lines);
 
+    /** @brief The fragment parts the folds' part lookups read or indexed since the last call, which resets it. */
+    static qint64 takePartLookupStepsForTest();
+
     /** @brief Start the debounced save now, as its timer would. */
     void
     startSaveForTest() {

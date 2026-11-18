@@ -15759,7 +15759,9 @@ Qt Quick frontend (`src/ui/qt`):
       `detail`, no message or GPS text) the texts compared are the ones that build would have stored
       (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
       replay after an upgrade gives the stored row its parts rather than logging it again; two rows of this build
-      compare their whole detail line. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      compare their whole detail line. A fold looks a row's fragments up among its parts through an index
+      (`PartLookup`) once both are more than a few, so a long call of many short fragments folds in time linear in its
+      parts, not quadratic (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each

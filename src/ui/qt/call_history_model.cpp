@@ -14,6 +14,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QGuiApplication>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -118,6 +119,8 @@ constexpr int kMergeScanRows = 32;
 
 #ifdef DSD_NEO_TEST_HOOKS
 std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
+/* The fragment parts the part lookups read or index (PartLookup, part_index()), for the fold's cost. */
+std::atomic<qint64> g_part_lookup_steps{0};
 /* The lines the next spill fold reads before its read fails (-1: it does not). */
 std::atomic<int> g_spill_read_fail_after{-1};
 
@@ -1905,10 +1908,13 @@ fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& f
     existing.session = qMax(existing.session, from.session);
 }
 
-/** @brief The index of fragment @p fragment's part in @p row, or -1. */
+/** @brief The index of fragment @p fragment's part in @p row, or -1. For one lookup; PartLookup for many. */
 qsizetype
 part_index(const CallHistoryModel::Row& row, const QString& fragment) {
     for (qsizetype i = 0; i < row.parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
         if (row.parts.at(i).fragment == fragment) {
             return i;
         }
@@ -1916,12 +1922,68 @@ part_index(const CallHistoryModel::Row& row, const QString& fragment) {
     return -1;
 }
 
+/**
+ * @brief Many lookups of fragments' parts in one row's parts: an index by fragment key, built once, when both the
+ * lookups and the parts are many, so a fold that looks every fragment of a long call up walks its parts once rather
+ * than once per fragment (a call of N short fragments would otherwise cost N^3 over its folds); a plain scan for a few,
+ * which costs less than building the index.
+ */
+class PartLookup {
+  public:
+    PartLookup(const QList<FragmentPart>& parts, qsizetype lookups) : m_parts(parts) {
+        if (lookups > kScanLimit && parts.size() > kScanLimit) {
+            m_index.reserve(parts.size());
+            for (qsizetype i = 0; i < parts.size(); i++) {
+                m_index.insert(parts.at(i).fragment, i);
+            }
+            m_indexed = true;
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(parts.size(), std::memory_order_relaxed);
+#endif
+        }
+    }
+
+    /** @brief The index of fragment @p fragment's part, or -1. */
+    qsizetype
+    find(const QString& fragment) const {
+        if (m_indexed) {
+            return m_index.value(fragment, -1);
+        }
+        for (qsizetype i = 0; i < m_parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+            if (m_parts.at(i).fragment == fragment) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** @brief Note that fragment @p fragment's part now sits at @p at of the parts this lookup reads. */
+    void
+    added(const QString& fragment, qsizetype at) {
+        if (m_indexed) {
+            m_index.insert(fragment, at);
+        }
+    }
+
+  private:
+    static constexpr qsizetype kScanLimit = 8;
+    const QList<FragmentPart>& m_parts;
+    QHash<QString, qsizetype> m_index;
+    bool m_indexed = false;
+};
+
 /** @brief Whether every fragment of @p row has its part, so the row can be rebuilt from them. */
 bool
 parts_complete(const CallHistoryModel::Row& row) {
-    return !row.fragments.isEmpty()
-           && std::all_of(row.fragments.cbegin(), row.fragments.cend(),
-                          [&row](const QString& fragment) { return part_index(row, fragment) >= 0; });
+    if (row.fragments.isEmpty()) {
+        return false;
+    }
+    const PartLookup lookup(row.parts, row.fragments.size());
+    return std::all_of(row.fragments.cbegin(), row.fragments.cend(),
+                       [&lookup](const QString& fragment) { return lookup.find(fragment) >= 0; });
 }
 
 /** @brief Put the parts of @p row into @p existing: a fragment's part is replaced whole by a reading that is not older
@@ -1931,9 +1993,11 @@ parts_complete(const CallHistoryModel::Row& row) {
 void
 merge_parts(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     QList<FragmentPart> parts = existing.parts;
+    PartLookup lookup(parts, row.parts.size());
     for (const FragmentPart& part : row.parts) {
-        const qsizetype held = part_index(existing, part.fragment);
+        const qsizetype held = lookup.find(part.fragment);
         if (held < 0) {
+            lookup.added(part.fragment, parts.size());
             parts.append(part);
         } else if (parts.at(held).withdrawn
                    || row.fragmentVers.value(part.fragment, 0U) >= existing.fragmentVers.value(part.fragment, 0U)) {
@@ -2019,8 +2083,10 @@ ensure_parts(CallHistoryModel::Row& row) {
         }
         return;
     }
+    PartLookup lookup(row.parts, row.fragments.size());
     for (const QString& fragment : row.fragments) {
-        if (part_index(row, fragment) < 0) {
+        if (lookup.find(fragment) < 0) {
+            lookup.added(fragment, row.parts.size());
             row.parts.append(legacy_part_of(row, fragment));
         }
     }
@@ -2207,8 +2273,9 @@ reading_part_keys(const CallHistoryModel::Row& reading) {
  * radio, when it names one, stays its own. Every part the reading gave folds, a legacy row's own part with the rest. */
 void
 fold_reading_parts(CallHistoryModel::Row& existing, const QStringList& keys) {
+    const PartLookup lookup(existing.parts, keys.size());
     for (const QString& fragment : keys) {
-        const qsizetype held = part_index(existing, fragment);
+        const qsizetype held = lookup.find(fragment);
         if (held < 0 || existing.parts.at(held).withdrawn) {
             continue;
         }
@@ -3592,6 +3659,11 @@ CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* t
 void
 CallHistoryModel::failNextSpillReadAfterLinesForTest(int lines) {
     g_spill_read_fail_after.store(lines);
+}
+
+qint64
+CallHistoryModel::takePartLookupStepsForTest() {
+    return g_part_lookup_steps.exchange(0);
 }
 #endif
 

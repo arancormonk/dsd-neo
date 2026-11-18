@@ -5670,6 +5670,27 @@ test_update_proving_other_slot_is_taken_back(void) {
     expect("slot proof: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* Issue #800: a long call folds many short fragments, each into a row holding all the earlier ones. A fold looks every
+ * fragment of the row up among its parts; done by a scan per fragment that is N^2 for the row of N, N^3 over the call,
+ * and the UI thread stalls. The lookups read a bounded number of parts per part the row holds, per fold. */
+void
+test_long_call_fold_lookups_stay_linear(void) {
+    const time_t when = kCaptureStart + 900;
+    const qint64 fragments = 200;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    (void)CallHistoryModel::takePartLookupStepsForTest();
+    for (qint64 i = 0; i < fragments; i++) {
+        ring.commit(0, 1201, 2201, when + 2 * i, when + 2 * i + 1);
+        model.refresh(ring.state);
+    }
+    const qint64 steps = CallHistoryModel::takePartLookupStepsForTest();
+    expect("long call: one row holds every fragment", model.count() == 1);
+    // A fold of a row of n parts reads at most ten per part: 10 * (1 + 2 + ... + fragments) over the call.
+    expect("long call: the part lookups stay linear per fold", steps <= 10 * fragments * (fragments + 1) / 2);
+}
+
 /* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
  * (watchdog_event_merge_stamps()) or move the end, so the same fragment (ring, slot and push stamp) is read with another
  * start. That reading still replaces and withdraws its own GPS unit: a fragment is known by its ring identity, never by
@@ -7373,6 +7394,7 @@ main(int argc, char** argv) {
     test_restamped_fragment_withdraws_its_fix();
     test_restamped_fragment_found_by_identity();
     test_update_proving_other_slot_is_taken_back();
+    test_long_call_fold_lookups_stay_linear();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();
