@@ -13495,7 +13495,8 @@ single "current call".
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
   reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
   so a message sent again whole completes), its parts addressed to one SSI (parts addressed by an event label alone name
-  no party, so their message's position is refused as `recipient unknown`). Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
+  the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
