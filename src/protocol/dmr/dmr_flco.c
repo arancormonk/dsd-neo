@@ -929,6 +929,22 @@ dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
         (uint8_t)(names_target && dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
 }
 
+/* A voice LC header begins a transmission, whichever radio sends it: the record of the one before no longer names the
+   source of an embedded GPS LC that follows (spec 2.2), even while the call stays ACTIVE (its terminator missed). Only
+   this header itself can name the new one, through dmr_flco_note_checked_source() when its own check passed; a header
+   whose check failed, a RAS acceptance, a protected or an unknown LC leaves the transmission's reports unattributed. */
+static void
+dmr_flco_forget_checked_source(const dmr_flco_ctx* ctx) {
+    if (ctx->type != 1U || ctx->slot >= 2U) {
+        return;
+    }
+    const uint8_t slot = ctx->slot;
+    ctx->state->dmr_lc_checked_transmission[slot] = 0U;
+    ctx->state->dmr_lc_checked_source[slot] = 0U;
+    ctx->state->dmr_lc_checked_target[slot] = 0U;
+    ctx->state->dmr_lc_checked_group[slot] = 0U;
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -1613,6 +1629,7 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_run(dmr_flco_ctx* ctx) {
     dmr_flco_ensure_heal_hook();
+    dmr_flco_forget_checked_source(ctx);
     dmr_flco_detect_special_modes(ctx);
     ctx->protected_lc = dmr_flco_is_protected(ctx);
     dmr_flco_print_protected_lc(ctx);

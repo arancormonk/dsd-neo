@@ -320,6 +320,48 @@ test_checked_lc_names_destination(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* A voice LC header begins another transmission even when its own check failed and the call stays ACTIVE (radio 1001's
+ * terminator was missed): the embedded GPS LC after it is no longer 1001's, and is anonymous until a checked LC names
+ * the radio sending it (issue #800). A RAS-accepted header names no one either. */
+static int
+test_failed_header_unbinds_embedded_gps(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    for (int ras = 0; ras <= 1; ras++) {
+        fixture(opts, state); /* group voice LC: talkgroup 2002, source 1001 */
+        CHECK(dsd_position_feed_start(state) == 0);
+        uint8_t bits[96];
+        build_gps(bits);
+        send_lc(opts, state, bits, 1, 3);
+        build_voice_lc(bits, 2002U, 1002U);
+        if (ras) {
+            /* The burst handler's RAS acceptance: CRCCorrect 1, the slot's scope flagged. */
+            const uint8_t saved = state->event_crc_invalid[0];
+            state->event_crc_invalid[0] = (uint8_t)(saved | DSD_CRC_RAS_UNVERIFIED);
+            uint32_t errors = 0;
+            dmr_flco(opts, state, bits, 1U, &errors, 1);
+            state->event_crc_invalid[0] = saved;
+        } else {
+            send_lc(opts, state, bits, 0, 1);
+        }
+        CHECK(ras || call_is_clean(state)); /* the call layer keeps 1001's call: nothing checked replaced it */
+        build_gps(bits);
+        bits[30] ^= 1U; /* another place, so it is no repeat of the first fix */
+        send_lc(opts, state, bits, 1, 3);
+        build_voice_lc(bits, 2002U, 1002U);
+        send_lc(opts, state, bits, 1, 1);
+        build_gps(bits);
+        bits[31] ^= 1U;
+        send_lc(opts, state, bits, 1, 3);
+        dsd_position_fix recs[4];
+        dsd_position_feed_meta meta;
+        CHECK(dsd_position_feed_copy_since(state, 0U, recs, 4, &meta) == 3);
+        CHECK(recs[0].source_id == 1001U);
+        CHECK(recs[1].source_id == 0U && recs[1].target_id == 0U);
+        CHECK(recs[2].source_id == 1002U && recs[2].target_id == 2002U);
+    }
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -339,6 +381,7 @@ main(void) {
     failed |= test_failed_fragment_abandons_assembly(opts, state);
     failed |= test_failed_lc_holds_no_scan(opts, state);
     failed |= test_checked_lc_names_destination(opts, state);
+    failed |= test_failed_header_unbinds_embedded_gps(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);
