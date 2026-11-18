@@ -1481,6 +1481,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     /* As dstar_tx_begin() does: the next transmission is another one, and nothing slow data assembled survives. */
     state->dstar_tx_seq++;
     state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
     DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
     DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
 

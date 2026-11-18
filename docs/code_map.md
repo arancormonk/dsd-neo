@@ -2670,8 +2670,10 @@ suite runs under this compiler.
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
-    `dstar_tx_begin()`), the call a checked header of that transmission named (`dstar_tx_call_epoch`, 0 none), the
-    confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
+    (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
+    still matches; 0 none, and 0 once a retune, target switch or another system's frame moved the reception generation,
+    whatever call stays ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
     resets it, and a D-PRS record is checked against its binding before its CRC counts as evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
     the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
@@ -2704,7 +2706,8 @@ suite runs under this compiler.
     checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
     header, whatever its CRC, begins another transmission (`dstar_tx_begin()`: the half-assembled D-PRS record and text
     message are dropped) whose slow data reaches no call, its D-PRS records anonymous, until a checked header, on RF or
-    in the slow data, names the transmission's MY callsign (`dstar_tx_call_epoch`; a checked header with a blank MY
+    in the slow data, names the transmission's MY callsign on the reception the slow data is heard on
+    (`dstar_tx_named_call()`; a checked header with a blank MY
     field names no one and leaves them anonymous too). Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,

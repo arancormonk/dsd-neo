@@ -352,32 +352,47 @@ dstar_aprs_text(const dstar_aprs_position* pos, char* out, size_t cap) {
 
 /* ---- What slow data is bound to (state.h dstar_sd_binding), and the only call it reaches ---- */
 
+/* The slot 0 call a checked header of the current transmission named (dsd_state::dstar_tx_call_epoch), or 0. The one
+ * rule every use of the header's naming goes through: the name holds only on the reception the header was heard on
+ * (dsd_state::dstar_tx_call_origin). After a retune, a trunk-scan switch or another system's frame noted on the carrier
+ * (the received identity's epoch moved), the header names no call: a call left ACTIVE across that change is not proven
+ * to be the one the slow data heard now belongs to. */
+static uint64_t
+dstar_tx_named_call(const dsd_state* state) {
+    if (state->dstar_tx_call_epoch == 0U || !dsd_position_origin_matches(state, &state->dstar_tx_call_origin)) {
+        return 0U;
+    }
+    return state->dstar_tx_call_epoch;
+}
+
 /* Capture what an assembly's first byte or block is heard under. */
 static void
 dstar_sd_bind(const dsd_opts* opts, const dsd_state* state, dstar_sd_binding* b) {
     DSD_MEMSET(b, 0, sizeof(*b));
     b->tx = state->dstar_tx_seq;
-    b->call_epoch = state->dstar_tx_call_epoch;
+    b->call_epoch = dstar_tx_named_call(state);
     b->confirmed = (uint8_t)dstar_confirm_is_confirmed(state);
     dsd_position_origin_capture(opts, state, &b->origin);
 }
 
 /* 1 while everything @p b was captured under still holds: the same transmission, the same call named by its checked
- * header (or still none), the same confirmation and the same reception generation. Anything else, the reset. */
+ * header on this reception (dstar_tx_named_call(), or still none), the same confirmation and the same reception
+ * generation. Anything else, the reset. */
 static int
 dstar_sd_binding_holds(const dsd_state* state, const dstar_sd_binding* b) {
-    return b->tx == state->dstar_tx_seq && b->call_epoch == state->dstar_tx_call_epoch
+    return b->tx == state->dstar_tx_seq && b->call_epoch == dstar_tx_named_call(state)
            && b->confirmed == (uint8_t)dstar_confirm_is_confirmed(state)
            && dsd_position_origin_matches(state, &b->origin);
 }
 
-/* The call slow data bound by @p b may reach: the slot 0 call a checked header of its transmission named, still
- * ACTIVE and D-STAR's. No other call -- one the transmission's header did not name, one left ACTIVE by the
- * transmission before (its terminator missed), an anonymous one -- is the transmission's. */
+/* The call slow data bound by @p b may reach: the slot 0 call a checked header of its transmission named on the
+ * reception the slow data is heard on (dstar_tx_named_call()), still ACTIVE and D-STAR's. No other call -- one the
+ * transmission's header did not name, one left ACTIVE by the transmission before (its terminator missed) or across a
+ * reception change, an anonymous one -- is the transmission's. */
 static int
 dstar_sd_bound_call(const dsd_state* state, const dstar_sd_binding* b, dsd_call_snapshot* call) {
-    return b->call_epoch != 0U && dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
-           && DSD_SYNC_IS_DSTAR(call->protocol) && call->epoch == b->call_epoch;
+    return b->call_epoch != 0U && b->call_epoch == dstar_tx_named_call(state) && dsd_call_state_get(state, 0U, call) > 0
+           && call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DSTAR(call->protocol) && call->epoch == b->call_epoch;
 }
 
 /*

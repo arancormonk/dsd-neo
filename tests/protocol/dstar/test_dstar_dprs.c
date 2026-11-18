@@ -12,10 +12,12 @@
  * processDSTAR_SD() with the real call state, history rows and position feed. Coordinates are synthetic.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -679,6 +681,59 @@ test_slow_data_suffix_alone_is_no_caller(void) {
     rig_close(&r);
 }
 
+/* Another system's frame noted on the carrier between a D-STAR header and its slow data: a P25 control frame's checked
+ * NAC (the received identity's epoch moves), then D-STAR sync again. */
+static void
+note_other_system_frame(rig* r) {
+    dsd_rxid_note_sync(r->state, DSD_SYNC_P25P1_POS);
+    dsd_rxid_note_access(r->state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    dsd_rxid_note_sync(r->state, DSD_SYNC_DSTAR_VOICE_POS);
+}
+
+/* Issue #800 (g62-r6): N0OLD's checked header names the call, which stays ACTIVE across another system's frame (a
+ * reception change). A whole, CRC-valid D-PRS record and a fresh text message heard after it, with no new header, are
+ * not proven N0OLD's: the record reaches the feed anonymous and no row, and the text stays off N0OLD's row. A header
+ * heard on the new reception names the call again. */
+static void
+test_header_bound_to_its_reception(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0OLD");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "OLD MESSAGE TEXT    ", 4U);
+    expect_str("N0OLD's own message", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    const uint64_t named = r.state->dstar_tx_call_epoch;
+    expect_int("header names the call", named != 0U, 1);
+    note_other_system_frame(&r);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("call still open", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_int("call still ACTIVE", call.phase, DSD_CALL_PHASE_ACTIVE);
+    expect_int("header naming bound to the old reception",
+               dsd_position_origin_matches(r.state, &r.state->dstar_tx_call_origin), 0);
+
+    send_text(&r, 0U, "FRESH MESSAGE TEXT  ", 4U);
+    expect_str("text after the reception change is not N0OLD's", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+
+    const uint64_t rev = dsd_position_last_rev();
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("record admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_position_fix f[2];
+    expect_int("one feed record", feed_records(&r, f, 2U), 1);
+    expect_str("record after the reception change names nobody", f[0].source_text, "");
+    expect_int("record after the reception change is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", open_row(&r)->pos.valid, 0);
+
+    /* A checked header heard on the new reception names its call again. */
+    send_slow_data_header(&r, "N0OLD");
+    expect_int("header on the new reception names the call",
+               dsd_position_origin_matches(r.state, &r.state->dstar_tx_call_origin), 1);
+    send_text(&r, 0U, "NEW MESSAGE TEXT    ", 4U);
+    expect_str("text under the new header reaches the row", open_row(&r)->text_message, "NEW MESSAGE TEXT");
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -699,6 +754,7 @@ main(void) {
     test_unconfirmed_text_stays_out_of_confirmed_messages();
     test_text_withheld_from_the_previous_transmitters_call();
     test_slow_data_suffix_alone_is_no_caller();
+    test_header_bound_to_its_reception();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;
