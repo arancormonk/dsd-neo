@@ -11,6 +11,13 @@
  * reads as a second, smaller circle) and stay cheap when it is far larger than
  * the screen, and a marker must land on whole device pixels. The checks sample
  * the coverage the triangles composite to, as the GPU blends them.
+ *
+ * Also what the map view decides per track before any triangle (map_scene.h):
+ * each state of a fix is its own sprite on its own axis, a trail's solid and
+ * dashed runs never bridge a break, labels never overlap, tiles land where the
+ * tile list says (and a parent tile stands in over its children), and a pan
+ * reuses the trails built for the view before it only by the offset the
+ * markers moved.
  */
 
 // LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
@@ -18,6 +25,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <vector>
@@ -25,9 +33,13 @@
 #include <dsd-neo/core/safe_api.h>
 
 #include "map_geometry.h"
+#include "map_math.h"
+#include "map_scene.h"
 #include "spectrum_trace_geometry.h"
 
 namespace mg = dsd_qt::map_geometry;
+namespace mm = dsd_qt::map_math;
+namespace ms = dsd_qt::map_scene;
 namespace sg = dsd_qt::spectrum_geometry;
 
 namespace {
@@ -399,6 +411,242 @@ test_marker_quads(void) {
     assert(out.size() == 6U);
 }
 
+/* ------------------------------------------------------------------------- */
+/* map_scene.h: what the map view draws for each track                       */
+/* ------------------------------------------------------------------------- */
+
+/* Freshness is the fill strength: solid while fresh, stepping down, faintest when old or of no known age. */
+void
+test_fill_levels() {
+    assert(ms::fill_level(0, 120, 900) == 0);
+    assert(ms::fill_level(120, 120, 900) == 0);
+    assert(ms::fill_level(121, 120, 900) == 1);
+    assert(ms::fill_level(509, 120, 900) == 1);
+    assert(ms::fill_level(510, 120, 900) == 2);
+    assert(ms::fill_level(899, 120, 900) == 2);
+    assert(ms::fill_level(900, 120, 900) == ms::kFillLevels - 1);
+    assert(ms::fill_level(1000000, 120, 900) == ms::kFillLevels - 1);
+    /* No age (a stopped replay's fix) is never mistaken for a fresh one. */
+    assert(ms::fill_level(-1, 120, 900) == ms::kFillLevels - 1);
+    /* No middle when the faded edge is not past the fresh one. */
+    assert(ms::fill_level(121, 120, 120) == ms::kFillLevels - 1);
+    assert(ms::fill_level(121, 120, 60) == ms::kFillLevels - 1);
+    /* Each step is visibly weaker and none is invisible. */
+    for (int level = 1; level < ms::kFillLevels; level++) {
+        assert(ms::fill_opacity(level) < ms::fill_opacity(level - 1) - 0.1F);
+    }
+    assert(ms::fill_opacity(0) > 0.99F && ms::fill_opacity(ms::kFillLevels - 1) > 0.1F);
+    assert(near(ms::fill_opacity(-5), ms::fill_opacity(0), 0.0F));
+    assert(near(ms::fill_opacity(99), ms::fill_opacity(ms::kFillLevels - 1), 0.0F));
+}
+
+/* Every combination of the axes is its own atlas cell, and the cell says which combination it draws. */
+void
+test_marker_cells() {
+    std::vector<int> seen(static_cast<size_t>(ms::kMarkerCellCount), 0);
+    for (int bits = 0; bits < 16; bits++) {
+        for (int fill = 0; fill < ms::kFillLevels; fill++) {
+            ms::MarkerStyle style;
+            style.ring = (bits & 8) != 0;
+            style.alert = (bits & 4) != 0;
+            style.double_outline = (bits & 2) != 0;
+            style.dashed_outline = (bits & 1) != 0;
+            style.fill_level = fill;
+            const int cell = ms::marker_cell(style);
+            assert(cell >= 0 && cell < ms::kSelectionHaloCell);
+            ms::MarkerStyle back;
+            assert(ms::marker_style_of_cell(cell, &back));
+            assert(back.ring == style.ring && back.alert == style.alert && back.double_outline == style.double_outline
+                   && back.dashed_outline == style.dashed_outline);
+            /* A ring has no fill, so its freshness does not pick another cell. */
+            assert(style.ring ? back.fill_level == 0 : back.fill_level == fill);
+            if (!style.ring || fill == 0) {
+                seen[static_cast<size_t>(cell)]++;
+            }
+        }
+    }
+    for (int cell = 0; cell < ms::kSelectionHaloCell; cell++) {
+        assert(seen[static_cast<size_t>(cell)] == 1);
+    }
+    ms::MarkerStyle none;
+    assert(!ms::marker_style_of_cell(ms::kSelectionHaloCell, &none));
+    assert(!ms::marker_style_of_cell(ms::kDeviceDotCell, &none));
+    assert(!ms::marker_style_of_cell(-1, &none) && !ms::marker_style_of_cell(ms::kMarkerCellCount, &none));
+    assert(!ms::marker_style_of_cell(0, nullptr));
+    assert(ms::kAtlasRows * ms::kAtlasColumns >= ms::kMarkerCellCount);
+    /* An out-of-range freshness is clamped, never another axis. */
+    ms::MarkerStyle wild;
+    wild.fill_level = 42;
+    ms::MarkerStyle faint;
+    faint.fill_level = ms::kFillLevels - 1;
+    assert(ms::marker_cell(wild) == ms::marker_cell(faint));
+    wild.fill_level = -3;
+    assert(ms::marker_cell(wild) == 0);
+}
+
+/* A trail splits into solid and dashed runs that share their meeting points, and a break is never bridged. */
+void
+test_split_trail() {
+    const float xs[6] = {0.0F, 10.0F, 20.0F, 30.0F, kNaN, 50.0F};
+    const float ys[6] = {0.0F, 0.0F, 0.0F, 0.0F, kNaN, 0.0F};
+    /* Segments ending at 2 and 3 are dashed; 5 follows a break. */
+    const uint8_t dashed[6] = {0U, 0U, 1U, 1U, 0U, 0U};
+    ms::TrailRuns runs;
+    ms::split_trail(xs, ys, dashed, 6, runs);
+    assert(runs.solid_x.size() == 2U && near(runs.solid_x[0], 0.0F, 0.0F) && near(runs.solid_x[1], 10.0F, 0.0F));
+    assert(runs.dashed_x.size() == 3U);
+    assert(near(runs.dashed_x[0], 10.0F, 0.0F) && near(runs.dashed_x[1], 20.0F, 0.0F)
+           && near(runs.dashed_x[2], 30.0F, 0.0F));
+    /* Solid, dashed, solid again: the solid list starts a new run (a NaN between), sharing the point it resumes at. */
+    const uint8_t mixed[4] = {0U, 0U, 1U, 0U};
+    ms::split_trail(xs, ys, mixed, 4, runs);
+    assert(runs.solid_x.size() == 5U && std::isnan(runs.solid_x[2]));
+    assert(near(runs.solid_x[3], 20.0F, 0.0F) && near(runs.solid_x[4], 30.0F, 0.0F));
+    assert(runs.dashed_x.size() == 2U);
+    /* Drawn, the solid list never bridges the dashed stretch. */
+    std::vector<mg::StrokeVertex> out;
+    assert(mg::append_trail(runs.solid_x.data(), runs.solid_y.data(), static_cast<int>(runs.solid_x.size()),
+                            pen(0.0F, 0.0F), nullptr, out)
+           > 0);
+    for (const mg::StrokeVertex& v : out) {
+        assert(!(v.x > 12.0F && v.x < 18.0F));
+    }
+    /* Across a break: nothing joins 30 to 50, whatever the styles. */
+    ms::split_trail(xs, ys, nullptr, 6, runs);
+    assert(runs.dashed_x.empty());
+    for (size_t i = 1; i < runs.solid_x.size(); i++) {
+        assert(!(runs.solid_x[i - 1U] < 31.0F && runs.solid_x[i] > 49.0F));
+    }
+    /* Too short or no points: nothing, and the lists are emptied. */
+    ms::split_trail(xs, ys, nullptr, 1, runs);
+    assert(runs.solid_x.empty() && runs.dashed_x.empty());
+    ms::split_trail(nullptr, ys, nullptr, 6, runs);
+    assert(runs.solid_x.empty());
+}
+
+/* Labels are placed in priority order and never overlap; one off screen is not placed. */
+void
+test_place_labels() {
+    const ms::LabelBox boxes[5] = {
+        {100.0F, 100.0F, 60.0F, 16.0F}, /* first: always placed */
+        {130.0F, 108.0F, 60.0F, 16.0F}, /* overlaps the first: dropped */
+        {160.0F, 100.0F, 60.0F, 16.0F}, /* touches the first's edge: placed */
+        {-80.0F, 10.0F, 60.0F, 16.0F},  /* off screen: dropped */
+        {10.0F, 10.0F, 0.0F, 16.0F},    /* empty: dropped */
+    };
+    uint8_t keep[5] = {9U, 9U, 9U, 9U, 9U};
+    assert(ms::place_labels(boxes, 5, 400.0F, 300.0F, keep) == 2);
+    assert(keep[0] == 1U && keep[1] == 0U && keep[2] == 1U && keep[3] == 0U && keep[4] == 0U);
+    /* The order is the priority: the same two boxes the other way round keep the other one. */
+    const ms::LabelBox swapped[2] = {boxes[1], boxes[0]};
+    uint8_t keep2[2] = {0U, 0U};
+    assert(ms::place_labels(swapped, 2, 400.0F, 300.0F, keep2) == 1);
+    assert(keep2[0] == 1U && keep2[1] == 0U);
+    assert(ms::place_labels(nullptr, 2, 400.0F, 300.0F, keep2) == 0);
+}
+
+/* A tile's place on screen, for any zoom: the view's own tiles where visible_tiles() puts them, a parent covering
+ * its four children, the copy nearest the centre across 180 degrees, and edges snapped to device pixels. */
+void
+test_tile_rects() {
+    mm::Viewport vp;
+    vp.width = 390.0;
+    vp.height = 844.0;
+    vp.zoom = 12.37;
+    vp.center_x = 0.61;
+    vp.center_y = 0.47;
+    vp = mm::clamp_viewport(vp);
+    const std::vector<mm::VisibleTile> tiles = mm::visible_tiles(vp);
+    assert(!tiles.empty());
+    for (const mm::VisibleTile& t : tiles) {
+        const ms::ScreenRect r = ms::tile_rect(vp, t.z, t.x, t.y);
+        assert(std::fabs(r.left - t.left) < 1.0e-6 && std::fabs(r.top - t.top) < 1.0e-6);
+        assert(std::fabs((r.right - r.left) - t.size) < 1.0e-6 && ms::rect_in_view(r, vp.width, vp.height));
+    }
+    const mm::VisibleTile& t = tiles.front();
+    const ms::ScreenRect parent = ms::tile_rect(vp, t.z - 1, t.x / 2, t.y / 2);
+    const ms::ScreenRect child = ms::tile_rect(vp, t.z, t.x, t.y);
+    assert(parent.left <= child.left + 1.0e-6 && parent.right >= child.right - 1.0e-6);
+    assert(parent.top <= child.top + 1.0e-6 && parent.bottom >= child.bottom - 1.0e-6);
+    assert(std::fabs((parent.right - parent.left) - (2.0 * t.size)) < 1.0e-6);
+    /* At 180 degrees: tile x = 0 sits just east of the centre, the last column just west. */
+    mm::Viewport dateline = vp;
+    dateline.center_x = 0.0;
+    dateline = mm::clamp_viewport(dateline);
+    assert(t.z >= 0 && t.z <= 19);
+    const int last = static_cast<int>(std::ldexp(1.0, t.z)) - 1;
+    const ms::ScreenRect east = ms::tile_rect(dateline, t.z, 0, t.y);
+    const ms::ScreenRect west = ms::tile_rect(dateline, t.z, last, t.y);
+    assert(std::fabs(east.left - (dateline.width / 2.0)) < 1.0e-6 && std::fabs(west.right - east.left) < 1.0e-6);
+    /* Snapped edges land on device pixels, and two neighbours still share theirs. */
+    const ms::ScreenRect a = ms::snap_rect(ms::tile_rect(vp, t.z, t.x, t.y), 2.625);
+    const ms::ScreenRect b = ms::snap_rect(ms::tile_rect(vp, t.z, t.x + 1, t.y), 2.625);
+    assert(std::fabs(a.right - b.left) < 1.0e-9);
+    assert(std::fabs((a.left * 2.625) - std::round(a.left * 2.625)) < 1.0e-6);
+    assert(!ms::rect_in_view(
+        ms::ScreenRect{
+            -20.0,
+            0.0,
+            -1.0,
+            10.0,
+        },
+        100.0, 100.0));
+    const ms::ScreenRect bad = ms::tile_rect(vp, 31, 0, 0);
+    assert(near(static_cast<float>(bad.right - bad.left), 0.0F, 0.0F));
+}
+
+/* Trails built for one view are reused for a pan by a translation that matches where the markers move. */
+void
+test_pan_reuse() {
+    mm::Viewport built;
+    built.width = 400.0;
+    built.height = 300.0;
+    built.zoom = 11.0;
+    built.center_x = 0.999; /* just west of 180 degrees, so the pan crosses it */
+    built.center_y = 0.4;
+    built = mm::clamp_viewport(built);
+    const mm::Viewport now = mm::pan(built, -37.5, 12.25);
+    const mm::ScreenPoint d = ms::pan_offset(built, now);
+    assert(std::fabs(d.x + 37.5) < 1.0e-6 && std::fabs(d.y - 12.25) < 1.0e-6);
+    const mm::WorldPoint p{0.0005, 0.4001};
+    const mm::ScreenPoint before = mm::screen_from_world(built, p);
+    const mm::ScreenPoint after = mm::screen_from_world(now, p);
+    assert(std::fabs((before.x + d.x) - after.x) < 1.0e-6 && std::fabs((before.y + d.y) - after.y) < 1.0e-6);
+    assert(ms::reusable(built, now, 200.0));
+    assert(!ms::reusable(built, now, 30.0));
+    mm::Viewport zoomed = now;
+    zoomed.zoom += 0.01;
+    assert(!ms::reusable(built, zoomed, 1.0e9));
+    mm::Viewport resized = now;
+    resized.width += 1.0;
+    assert(!ms::reusable(built, resized, 1.0e9));
+}
+
+/* The camera's path: the ends exactly, east-west the short way across 180 degrees. */
+void
+test_interpolate_viewport() {
+    mm::Viewport from;
+    from.width = 400.0;
+    from.height = 300.0;
+    from.zoom = 10.0;
+    from.center_x = 0.98;
+    from.center_y = 0.45;
+    mm::Viewport to = from;
+    to.zoom = 12.0;
+    to.center_x = 0.02;
+    to.center_y = 0.46;
+    const mm::Viewport start = ms::interpolate_viewport(from, to, 0.0);
+    const mm::Viewport end = ms::interpolate_viewport(from, to, 1.0);
+    assert(std::fabs(start.center_x - 0.98) < 1.0e-12 && std::fabs(end.center_x - 0.02) < 1.0e-12);
+    assert(std::fabs(end.zoom - 12.0) < 1.0e-12);
+    const mm::Viewport mid = ms::interpolate_viewport(from, to, 0.5);
+    assert(std::fabs(mid.zoom - 11.0) < 1.0e-12);
+    assert(mid.center_x < 1.0e-9 || mid.center_x > 1.0 - 1.0e-9); /* at 180 degrees, not back across the world */
+    assert(std::fabs(mid.center_y - 0.455) < 1.0e-12);
+    const mm::Viewport nan = ms::interpolate_viewport(from, to, std::numeric_limits<double>::quiet_NaN());
+    assert(std::fabs(nan.center_x - 0.98) < 1.0e-12);
+}
+
 } // namespace
 
 int
@@ -415,6 +663,13 @@ main(void) {
     test_slices_bound_the_chord_error();
     test_atlas_cells();
     test_marker_quads();
+    test_fill_levels();
+    test_marker_cells();
+    test_split_trail();
+    test_place_labels();
+    test_tile_rects();
+    test_pan_reuse();
+    test_interpolate_viewport();
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_GEOMETRY: ok\n");
     return 0;
 }

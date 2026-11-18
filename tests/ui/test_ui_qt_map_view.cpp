@@ -1,0 +1,398 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Regression test (issue #800): the map view's scene-graph tree, the one a phone draws.
+ *
+ * Headless Qt has only the software scene graph, which the QML suite renders through (tst_map_view.qml). The RHI
+ * tree is what every device draws, so it is built here through the test hook and inspected node by node:
+ *
+ *  - the layers: grid, tiles, accuracy circles and trails under one transform, marker sprites (one quad each, a
+ *    selection halo under the selected track's), labels;
+ *  - a pan within the margin moves the transform by exactly the offset the markers move and rebuilds nothing; a
+ *    pan past it, a zoom, or new tracks rebuild;
+ *  - tiles through the production worker on a canned transport: the view's tiles are asked for, drawn as image
+ *    nodes where the tile list puts them, a tile from an older view that is no longer in view is dropped, the
+ *    previous zoom's tiles stand in only until the new zoom's have all arrived, and nothing of them stays once
+ *    tiles are off;
+ *  - the sprite atlas is rebuilt when a marker colour changes.
+ */
+
+// LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
+// NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
+
+#include <QColor>
+#include <QCoreApplication>
+#include <QGuiApplication>
+#include <QImage>
+#include <QMatrix4x4>
+#include <QQuickWindow>
+#include <QSGGeometry>
+#include <QSGGeometryNode>
+#include <QSGImageNode>
+#include <QSGNode>
+#include <QSGTextureMaterial>
+#include <QSGTransformNode>
+#include <QSizeF>
+#include <QThread>
+#include <Qt>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/decode_clock.h>
+
+#include "map_math.h"
+#include "map_tile_cache.h"
+#include "map_view_item.h"
+#include "position_model.h"
+#include "qml_map_stub.h"
+
+namespace stub = dsd_neo_qml_stub;
+using dsd_qt::MapTileKey;
+using dsd_qt::MapViewItem;
+using dsd_qt::PositionModel;
+
+namespace {
+
+/* The tree's layers, in the order GpuRoot appends them. */
+struct Layers {
+    QSGGeometryNode* grid;
+    QSGNode* tiles;
+    QSGTransformNode* overlay;
+    QSGGeometryNode* circles;
+    QSGGeometryNode* trails;
+    QSGGeometryNode* sprites;
+    QSGNode* labels;
+};
+
+Layers
+layers(QSGNode* root) {
+    assert(root != nullptr && root->type() == QSGNode::BasicNodeType && root->childCount() == 5);
+    Layers l{};
+    l.grid = static_cast<QSGGeometryNode*>(root->childAtIndex(0));
+    l.tiles = root->childAtIndex(1);
+    assert(root->childAtIndex(2)->type() == QSGNode::TransformNodeType);
+    l.overlay = static_cast<QSGTransformNode*>(root->childAtIndex(2));
+    assert(l.overlay->childCount() == 2);
+    l.circles = static_cast<QSGGeometryNode*>(l.overlay->childAtIndex(0));
+    l.trails = static_cast<QSGGeometryNode*>(l.overlay->childAtIndex(1));
+    l.sprites = static_cast<QSGGeometryNode*>(root->childAtIndex(3));
+    l.labels = root->childAtIndex(4);
+    return l;
+}
+
+void
+push(uint32_t source, double lat, double lon, uint32_t err_m = 0U, uint16_t flags = 0U) {
+    dsd_position_fix f;
+    dsd_position_fix_init(&f);
+    f.protocol = DSD_SYNC_DMR_BS_DATA_POS;
+    f.kind = DSD_POS_DMR_LRRP;
+    f.source_id = source;
+    f.flags = flags;
+    f.lat_e7 = static_cast<int32_t>(std::llround(lat * 1.0e7));
+    f.lon_e7 = static_cast<int32_t>(std::llround(lon * 1.0e7));
+    f.err_m = err_m;
+    f.rx_clock = static_cast<uint8_t>(DSD_DECODE_CLOCK_SYSTEM);
+    f.rx_time_s = stub::map_wall_seconds();
+    f.reception_scope.kind = DSD_POS_SCOPE_DMR;
+    f.reception_scope.a = 1U;
+    f.reception_scope.b = 2U;
+    f.sender_scope = f.reception_scope;
+    stub::map_publish_fix(f);
+}
+
+/* Process events until @p done, at most ~5 s of loop turns (no clock read: the turns are counted). */
+template <typename Done>
+bool
+spin_until(Done done) {
+    for (int i = 0; i < 5000; i++) {
+        if (done()) {
+            return true;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+        QCoreApplication::sendPostedEvents();
+        QThread::msleep(1);
+    }
+    return done();
+}
+
+struct Fixture {
+    QQuickWindow window;
+    PositionModel model;
+    MapViewItem* map;
+
+    Fixture() : map(nullptr) {
+        stub::map_reset_fixes();
+        model.setSourceForTest(&stub::map_position_source);
+        model.setWallClockForTest(&stub::map_wall_seconds);
+        window.resize(400, 300);
+        map = new MapViewItem(window.contentItem());
+        map->setSize(QSizeF(400.0, 300.0));
+        map->setCameraDurationMs(0);
+        map->setModel(&model);
+        window.show();
+        map->centerOn(10.0, 20.0, 12.0);
+    }
+
+    ~Fixture() {
+        delete map;
+        model.clear();
+    }
+
+    Fixture(const Fixture&) = delete;
+    Fixture& operator=(const Fixture&) = delete;
+};
+
+/* The layers carry what the model holds: a trail, a circle, one quad per marker, a halo under the selected one. */
+void
+test_layers() {
+    Fixture f;
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 2.0);
+    Layers l = layers(root);
+    assert(l.grid->geometry()->vertexCount() > 0); /* the plain grid while tiles are off */
+    assert(l.tiles->childCount() == 0);
+    assert(l.trails->geometry()->vertexCount() == 0 && l.sprites->geometry()->vertexCount() == 0);
+
+    push(1001U, 10.0, 19.99);
+    push(1001U, 10.0, 20.01, 500U);
+    push(1002U, 10.01, 20.0, 0U, DSD_POS_FLAG_VALIDITY_UNKNOWN);
+    f.model.poll();
+    root = f.map->testUpdateGpuTree(root, 2.0);
+    l = layers(root);
+    assert(f.map->markerCount() == 2);
+    assert(l.trails->geometry()->vertexCount() > 0);
+    assert(l.circles->geometry()->vertexCount() > 0);
+    assert(l.sprites->geometry()->vertexCount() == 12);
+    assert(l.sprites->geometry()->attributeCount() == 2); /* position and texture coordinate */
+    auto* material = static_cast<QSGTextureMaterial*>(l.sprites->material());
+    assert(material->texture() != nullptr && (material->flags() & QSGMaterial::Blending) != 0);
+    assert(l.labels->childCount() == 2);
+
+    /* Every sprite corner on the 2x device pixel grid. */
+    const auto* v = l.sprites->geometry()->vertexDataAsTexturedPoint2D();
+    for (int i = 0; i < l.sprites->geometry()->vertexCount(); i++) {
+        assert(std::fabs((v[i].x * 2.0F) - std::round(v[i].x * 2.0F)) < 1.0e-3F);
+    }
+
+    f.map->setSelectedTrackId(f.map->trackAt(200.0 + 29.0, 150.0));
+    assert(f.map->selectedTrackId() != 0U);
+    root = f.map->testUpdateGpuTree(root, 2.0);
+    l = layers(root);
+    assert(l.sprites->geometry()->vertexCount() == 18);
+
+    /* The atlas follows the marker colour. */
+    const QSGTexture* before = material->texture();
+    root = f.map->testUpdateGpuTree(root, 2.0);
+    {
+        const Layers now = layers(root);
+        assert(static_cast<QSGTextureMaterial*>(now.sprites->material())->texture() == before);
+    }
+    f.map->setMarkerColor(QColor(10, 20, 30));
+    root = f.map->testUpdateGpuTree(root, 2.0);
+    {
+        const Layers now = layers(root);
+        assert(static_cast<QSGTextureMaterial*>(now.sprites->material())->texture() != before);
+    }
+    delete root;
+}
+
+/* A trail never crosses a break: a report on a new run starts the trail again, with no line back to the old run. */
+void
+test_break_is_not_bridged() {
+    Fixture f;
+    push(1004U, 10.0, 19.99);
+    f.model.poll();
+    stub::map_reset_fixes(); /* a new run */
+    push(1004U, 10.0, 20.01);
+    f.model.poll();
+    assert(f.model.count() == 1 && f.map->markerCount() == 1);
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.trails->geometry()->vertexCount() == 0);
+    }
+    push(1004U, 10.0, 20.02);
+    f.model.poll();
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    const QSGGeometry* g = layers(root).trails->geometry();
+    assert(g->vertexCount() > 0);
+    /* Only the new run's segment: nothing west of its first point (x = 229 at this zoom). */
+    for (int i = 0; i < g->vertexCount(); i++) {
+        assert(g->vertexDataAsColoredPoint2D()[i].x > 220.0F);
+    }
+    delete root;
+}
+
+/* A pan within the margin moves the overlay by the markers' offset and rebuilds nothing; past it, or a zoom, rebuilds. */
+void
+test_pan_moves_the_overlay() {
+    Fixture f;
+    push(1003U, 10.0, 19.99);
+    push(1003U, 10.0, 20.01, 300U);
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    Layers l = layers(root);
+    const int trailVertices = l.trails->geometry()->vertexCount();
+    const float firstX = l.trails->geometry()->vertexDataAsColoredPoint2D()[0].x;
+    assert(trailVertices > 0 && l.overlay->matrix().isIdentity());
+
+    const QVariant before = f.map->markerPoint(f.map->trackAt(229.0, 150.0));
+    f.map->panBy(-41.5, 17.25);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    l = layers(root);
+    const QPointF moved = f.map->markerPoint(f.map->trackAt(before.toPointF().x() - 41.5, 167.25)).toPointF();
+    const QPointF shift = moved - before.toPointF();
+    assert(std::fabs(shift.x() + 41.5) < 1.0e-6 && std::fabs(shift.y() - 17.25) < 1.0e-6);
+    const QMatrix4x4 m = l.overlay->matrix();
+    assert(std::fabs(m(0, 3) - static_cast<float>(shift.x())) < 1.0e-3F);
+    assert(std::fabs(m(1, 3) - static_cast<float>(shift.y())) < 1.0e-3F);
+    assert(l.trails->geometry()->vertexCount() == trailVertices);
+    assert(std::fabs(l.trails->geometry()->vertexDataAsColoredPoint2D()[0].x - firstX) < 1.0e-6F);
+
+    f.map->panBy(-300.0, 0.0); /* past half the view's larger side */
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    l = layers(root);
+    assert(l.overlay->matrix().isIdentity());
+
+    f.map->zoomAbout(f.map->zoom() + 0.25, 10.0, 10.0);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+
+    /* A new report rebuilds even without a pan. */
+    f.map->panBy(5.0, 0.0);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(!now.overlay->matrix().isIdentity());
+    }
+    push(1003U, 10.0, 20.02);
+    f.model.poll();
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    delete root;
+}
+
+/* Tiles through the production worker on the canned transport. */
+void
+test_tiles() {
+    Fixture f;
+    stub::MapTileSourceStub tiles;
+    f.map->setTileSource(&tiles);
+    f.map->testPolish();
+    assert(f.map->testRequestedTiles().isEmpty() && stub::map_tile_requests() == 0); /* off: nothing asked */
+
+    tiles.setEnabled(true);
+    f.map->testPolish();
+    const QList<MapTileKey> asked = f.map->testRequestedTiles();
+    const std::vector<dsd_qt::map_math::VisibleTile> visible =
+        dsd_qt::map_math::visible_tiles(dsd_qt::map_math::clamp_viewport(
+            dsd_qt::map_math::Viewport{dsd_qt::map_math::world_from_lat_lon(10.0, 20.0).x,
+                                       dsd_qt::map_math::world_from_lat_lon(10.0, 20.0).y, 12.0, 400.0, 300.0}));
+    assert(asked.size() == static_cast<int>(visible.size()) && !asked.isEmpty());
+    assert(asked.front() == (MapTileKey{visible.front().z, visible.front().x, visible.front().y}));
+    assert(spin_until([&] { return f.map->testHeldTiles() == asked.size(); }));
+
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    Layers l = layers(root);
+    assert(l.tiles->childCount() == asked.size());
+    auto* first = static_cast<QSGImageNode*>(l.tiles->firstChild());
+    assert(first->texture() != nullptr);
+    /* Drawn where the tile list puts it (snapped to whole pixels at ratio 1). */
+    bool found = false;
+    for (const auto& t : visible) {
+        found = found
+                || (std::fabs(first->rect().left() - std::round(t.left)) < 1.0e-6
+                    && std::fabs(first->rect().top() - std::round(t.top)) < 1.0e-6);
+    }
+    assert(found);
+
+    /* A late tile for a view the map has left is not drawn. */
+    const MapTileKey gone{12, 0, 0};
+    f.map->testDeliverTile(gone.z, gone.x, gone.y, QImage(256, 256, QImage::Format_ARGB32_Premultiplied));
+    assert(f.map->testHeldTiles() == asked.size());
+
+    /* Another tile source: nothing of the old one stays on screen, at once. */
+    tiles.setUrlTemplate(QStringLiteral("https://tiles.example.invalid/{z}/{x}/{y}.png"));
+    assert(f.map->testHeldTiles() == 0 && f.map->testRequestedTiles().isEmpty());
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.tiles->childCount() == 0);
+    }
+    f.map->testPolish();
+    assert(spin_until([&] { return f.map->testHeldTiles() == asked.size(); }));
+
+    /* A new zoom: the old tiles stand in until the new zoom's have all arrived, then go. */
+    tiles.setEnabled(false);
+    tiles.setEnabled(true); /* settle: nothing in flight */
+    f.map->testPolish();
+    assert(spin_until([&] { return f.map->testHeldTiles() == asked.size(); }));
+    f.map->setZoom(13.0);
+    f.map->testPolish();
+    const int standing = f.map->testHeldTiles();
+    assert(standing > 0);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.tiles->childCount() >= standing);
+    }
+    const QList<MapTileKey> zoomed = f.map->testRequestedTiles();
+    assert(!zoomed.isEmpty() && zoomed.front().z == 13);
+    assert(spin_until([&] {
+        f.map->testPolish();
+        return f.map->testHeldTiles() == zoomed.size();
+    }));
+
+    /* Tiles off: nothing of them stays, and the textures go with the next sync. */
+    tiles.setEnabled(false);
+    f.map->testPolish();
+    assert(f.map->testHeldTiles() == 0);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.tiles->childCount() == 0);
+    }
+
+    /* Inactive (the List shown): no request, even when on. */
+    const int before = stub::map_tile_requests();
+    f.map->setActive(false);
+    tiles.setEnabled(true);
+    f.map->panBy(120.0, 0.0);
+    f.map->testPolish();
+    assert(f.map->testRequestedTiles().isEmpty());
+    for (int i = 0; i < 50; i++) {
+        QCoreApplication::processEvents();
+    }
+    assert(stub::map_tile_requests() == before);
+    f.map->setTileSource(nullptr);
+    delete root;
+}
+
+} // namespace
+
+int
+main(int argc, char** argv) {
+    QGuiApplication app(argc, argv);
+    test_layers();
+    test_break_is_not_bridged();
+    test_pan_moves_the_overlay();
+    test_tiles();
+    (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
+    (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
+    return 0;
+}
+
+// NOLINTEND(cert-dcl03-c,misc-static-assert)

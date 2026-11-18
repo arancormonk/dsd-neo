@@ -6440,6 +6440,16 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
             ui/qml_spectrum_stub.cpp
+            # Issue #800: the map canvas, its tile worker on a canned transport, and the production track model over
+            # a canned position stream (ui/qml_map_stub.cpp): no network, no decoder.
+            ui/qml_map_stub.h
+            ui/qml_map_stub.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -26543,6 +26553,53 @@ if(DSD_ENABLE_QT_UI)
     set_tests_properties(
         UI_QT_MAP_TILES
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # Issue #800: the map view's scene-graph tree, the one a device draws (headless Qt renders only the software
+    # path, which the QML suite covers): its layers, the pan that only moves the overlay, and tiles through the
+    # production worker on the QML suite's canned transport (no network).
+    add_executable(
+        dsd-neo_test_ui_qt_map_view
+        ui/test_ui_qt_map_view.cpp
+        ui/qml_map_stub.h
+        ui/qml_map_stub.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${CMAKE_CURRENT_SOURCE_DIR}/ui
+    )
+    find_package(Qt6 REQUIRED COMPONENTS Gui Quick)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            Qt6::Gui
+            Qt6::Quick
+            dsd-neo_app_control
+            dsd-neo_runtime
+            dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_map_view)
+    set_target_properties(dsd-neo_test_ui_qt_map_view PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_VIEW COMMAND dsd-neo_test_ui_qt_map_view)
+    set_tests_properties(
+        UI_QT_MAP_VIEW
+        PROPERTIES
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
     )
 endif()
 

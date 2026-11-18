@@ -76,6 +76,7 @@
 #include <QtQuickTest>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <condition_variable>
 #include <ctime>
 #include <dsd-neo/app_control/commands.h>
@@ -83,11 +84,13 @@
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
@@ -123,9 +126,12 @@
 #include "listen_pins.h"
 #include "location_feed.h"
 #include "location_requests.h"
+#include "map_view_item.h"
 #include "p25_network_model.h" // WP-F2
+#include "position_model.h"
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
+#include "qml_map_stub.h"
 #include "qml_spectrum_stub.h"
 #include "realtime_clock.h"
 #include "saved_system_cards.h"
@@ -4561,6 +4567,98 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Issue #800: publish one position report on the canned stream and, with @p read, read it into `positions`
+     * as the next tick would.
+     *
+     * @p fix: `source` (a radio ID; 0 or absent with `anonymous`: no checked source), `lat`/`lon` (degrees; made-up
+     * places only), `ageSeconds` (received that long before the canned wall clock; default 0), `errM` (position
+     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`. Heard on a
+     * made-up DMR system on the system clock.
+     */
+    Q_INVOKABLE void
+    pushPosition(const QVariantMap& fix, bool read = true) {
+        dsd_position_fix f;
+        dsd_position_fix_init(&f);
+        f.protocol = DSD_SYNC_DMR_BS_DATA_POS;
+        f.kind = DSD_POS_DMR_LRRP;
+        f.lat_e7 = static_cast<int32_t>(std::llround(fix.value(QStringLiteral("lat")).toDouble() * 1.0e7));
+        f.lon_e7 = static_cast<int32_t>(std::llround(fix.value(QStringLiteral("lon")).toDouble() * 1.0e7));
+        f.err_m = fix.value(QStringLiteral("errM"), 0).toUInt();
+        f.rx_clock = static_cast<uint8_t>(DSD_DECODE_CLOCK_SYSTEM);
+        f.rx_time_s = dsd_neo_qml_stub::map_wall_seconds() - fix.value(QStringLiteral("ageSeconds"), 0).toLongLong();
+        f.reception_scope.kind = DSD_POS_SCOPE_DMR;
+        f.reception_scope.a = 1U;
+        f.reception_scope.b = 2U;
+        f.sender_scope = f.reception_scope;
+        const bool anonymous = fix.value(QStringLiteral("anonymous")).toBool();
+        f.source_id = anonymous ? 0U : fix.value(QStringLiteral("source"), 1001).toUInt();
+        unsigned flags = 0U;
+
+        const struct {
+            const char* name;
+            unsigned bit;
+        } named[] = {{"provisional", DSD_POS_FLAG_FORMAT_PROVISIONAL},
+                     {"validityUnknown", DSD_POS_FLAG_VALIDITY_UNKNOWN},
+                     {"emergency", DSD_POS_FLAG_EMERGENCY}};
+
+        for (const auto& n : named) {
+            if (fix.value(QString::fromLatin1(n.name)).toBool()) {
+                flags |= n.bit;
+            }
+        }
+        if (anonymous) {
+            flags |= DSD_POS_FLAG_SOURCE_UNVERIFIED;
+        }
+        f.flags = static_cast<uint16_t>(flags);
+        const QByteArray label = fix.value(QStringLiteral("label")).toString().toUtf8();
+        DSD_SNPRINTF(f.label, sizeof f.label, "%s", label.constData());
+        dsd_neo_qml_stub::map_publish_fix(f);
+        if (read) {
+            readPositions();
+        }
+    }
+
+    /** @brief Read the canned stream into `positions`, as the next tick would. */
+    Q_INVOKABLE void
+    readPositions() {
+        if (m_positions != nullptr) {
+            m_positions->poll();
+        }
+    }
+
+    /** @brief Issue #800: drop every track and start a new canned stream with nothing on it. */
+    Q_INVOKABLE void
+    resetPositions() {
+        dsd_neo_qml_stub::map_reset_fixes();
+        if (m_positions != nullptr) {
+            m_positions->poll();
+            m_positions->clear();
+            m_positions->setAgeFilterSeconds(0);
+        }
+    }
+
+    /** @brief Move the canned wall clock the positions age against, and read ages again. */
+    Q_INVOKABLE void
+    setPositionWallSeconds(qint64 seconds) {
+        dsd_neo_qml_stub::set_map_wall_seconds(seconds);
+        if (m_positions != nullptr) {
+            m_positions->refreshAges();
+        }
+    }
+
+    /** @brief The canned wall clock's start, Unix seconds. */
+    Q_INVOKABLE qint64
+    positionWallStart() const {
+        return dsd_neo_qml_stub::kMapWallSeconds;
+    }
+
+    /** @brief Map tile requests the canned transport has answered (no request may go out before tiles are on). */
+    Q_INVOKABLE int
+    mapTileRequests() const {
+        return dsd_neo_qml_stub::map_tile_requests();
+    }
+
+    /**
      * @brief Issue #782: publish a scan target's readings in one go, as MetricsModel does on a target change.
      *
      * Every key in @p readings is written in one batch and the reading groups are signalled once afterwards, with no
@@ -6727,6 +6825,9 @@ class Setup : public QObject {
             "DsdNeo", 1, 0, "SiteRoaming", QStringLiteral("siteRoaming is the app's one roaming executor"));
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
         qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+        // Issue #800: the map canvas, and its tile loader on the canned transport (qml_map_stub.cpp): never a network.
+        qmlRegisterType<dsd_qt::MapViewItem>("DsdNeo", 1, 0, "MapView");
+        qmlRegisterType<dsd_neo_qml_stub::MapTileSourceStub>("DsdNeo", 1, 0, "MapTileSource");
 
         auto* store = new CallLogStore();
         auto* historyView = new CallHistoryFilterModel(engine);
@@ -7332,6 +7433,15 @@ class Setup : public QObject {
         m_activity_view->setSourceModel(m_activity);
         ctx->setContextProperty(QStringLiteral("unitActivity"), m_activity);
         ctx->setContextProperty(QStringLiteral("activityView"), m_activity_view);
+        // Issue #800: the production track model over the canned position stream (qml_map_stub.cpp), fed by
+        // pushPosition(), and the List's view of it.
+        m_positions = new dsd_qt::PositionModel(engine);
+        m_positions->setSourceForTest(&dsd_neo_qml_stub::map_position_source);
+        m_positions->setWallClockForTest(&dsd_neo_qml_stub::map_wall_seconds);
+        auto* position_view = new dsd_qt::PositionFilterModel(engine);
+        position_view->setSourceModel(m_positions);
+        ctx->setContextProperty(QStringLiteral("positions"), m_positions);
+        ctx->setContextProperty(QStringLiteral("positionView"), position_view);
         // Issue #782: the production state, following QAccessible (on in the DSD_QML_TEST_ACCESSIBILITY=1 run).
         ctx->setContextProperty(QStringLiteral("screenReader"), new dsd_qt::ScreenReaderState(engine));
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
@@ -7522,6 +7632,7 @@ class Setup : public QObject {
     std::unique_ptr<dsd_state> m_network_state;
     dsd_qt::UnitActivityModel* m_activity = nullptr;
     dsd_qt::UnitActivityFilterModel* m_activity_view = nullptr;
+    dsd_qt::PositionModel* m_positions = nullptr;
     /* The log pushUnitActivity() writes, built on first use, on a made-up P25 system. */
     std::unique_ptr<dsd_state> m_activity_state;
 

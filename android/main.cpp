@@ -24,6 +24,7 @@
 
 #include "decoder_host_android.h"
 #include "diagnostics_log.h"
+#include "map_tile_worker.h"
 #include "qt_ui.h"
 #include "teardown_trace.h"
 
@@ -86,6 +87,12 @@ main(int argc, char* argv[]) {
     {
         const dsd_qt::TeardownStage stage("QML engine and its models");
         engine.reset();
+    }
+    {
+        // Issue #800: the map's tile threads, stopped and joined (bounded) here so the wait is traced; the exit-time
+        // post routine then finds none.
+        const dsd_qt::TeardownStage stage("map tile threads");
+        (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     }
     {
         const dsd_qt::TeardownStage stage("decoder host");

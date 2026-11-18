@@ -45,6 +45,8 @@
 #include "listen_pins.h"
 #include "location_feed.h"
 #include "location_requests.h"
+#include "map_tile_worker.h"
+#include "map_view_item.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "position_model.h"
@@ -311,6 +313,9 @@ register_qml_types() {
                                                     QStringLiteral("siteRoaming is the app's one roaming executor"));
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+    // Issue #800: the map canvas and its tile loader (one per map screen; off until the user turns tiles on).
+    qmlRegisterType<MapViewItem>("DsdNeo", 1, 0, "MapView");
+    qmlRegisterType<MapTileWorker>("DsdNeo", 1, 0, "MapTileSource");
 }
 
 // A restore the user confirmed applies before any model reads a store it replaces (#580), so the restored data goes
