@@ -24,8 +24,19 @@
 
 #include <dsd-neo/platform/env.h>
 #include <stdlib.h>
+/* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the
+   test's own go to the C library), so a discard is seen to lose no new audio when memory runs out. */
+static int g_backend_alloc_fails;
+
+static void*
+backend_alloc(size_t bytes) {
+    return g_backend_alloc_fails ? NULL : malloc(bytes);
+}
+
+#define malloc(bytes) backend_alloc(bytes)
 #include "../../src/platform/audio_pulse.c"
 #include "../../src/platform/audio_pulse_record.c"
+#undef malloc
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/audio_concealment.h"
@@ -427,6 +438,9 @@ pa_stream_get_state(const pa_stream* p) {
     return g_pa_record_failed ? PA_STREAM_FAILED : PA_STREAM_READY;
 }
 
+/* From the next peek on, the backend's allocations fail (g_backend_alloc_fails). */
+static int g_pa_peek_runs_out_of_memory;
+
 /* The next fragment the client holds, numbered frames, or none (no data and no length) when it holds none. */
 int
 pa_stream_peek(pa_stream* p, const void** data, size_t* nbytes) {
@@ -443,6 +457,9 @@ pa_stream_peek(pa_stream* p, const void** data, size_t* nbytes) {
         g_fake_hole_out = g_pa_hole_bytes;
         g_pa_hole_bytes = 0U;
         return 0;
+    }
+    if (g_pa_peek_runs_out_of_memory) {
+        g_backend_alloc_fails = 1; /* from the discard's first read of the client on */
     }
     const int overrun_now = g_pa_overrun_at_peek == 1;
     if (g_pa_overrun_at_peek > 0) {
@@ -1208,6 +1225,44 @@ test_pulse_input_discard_keeps_what_came_before_it_began(void) {
     reset_pa_simple_fakes();
 }
 
+/* Issue #834: memory runs out during a discard. Once it read the client (the late discard above: 240 old frames, 4800
+   captured since the mark), the newest frames are kept with no allocation after the read: the next frame read is
+   240. With no memory for the ring that keeps them, the discard reads nothing, and the next frame read is the oldest
+   held. */
+static void
+test_pulse_input_discard_without_memory_loses_no_new_audio(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_held = 240U;
+    g_late_clock_ns = 100000000ULL;
+    g_late_clock_frames = 4800U;
+    g_pa_peek_runs_out_of_memory = 1;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    g_pa_peek_runs_out_of_memory = 0;
+    g_backend_alloc_fails = 0;
+    int16_t frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (dropped != 240 || frame != 240) {
+        DSD_FPRINTF(stderr, "a discard out of memory dropped %d, next %d (expected 240 and 240)\n", dropped, frame);
+    }
+    assert(dropped == 240 && frame == 240);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+
+    in = open_capture_input();
+    g_pa_capture_held = 300U;
+    g_backend_alloc_fails = 1;
+    const int none = dsd_audio_discard_input(in, g_now_ns);
+    g_backend_alloc_fails = 0;
+    frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (none != -1 || frame != 0) {
+        DSD_FPRINTF(stderr, "a discard with no ring returned %d, next %d (expected -1 and 0)\n", none, frame);
+    }
+    assert(none == -1 && frame == 0);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
 /* Issue #834: the server's record queue overruns during the discard. The decoder was preempted for 100 ms before the
    discard's third peek, and the server threw its oldest frames away meanwhile: frames 0..299 were held at the mark,
    the first two fragments took 0..199, and what the client holds from there on is 4800 frames numbered from 20000. The
@@ -1272,6 +1327,7 @@ main(void) {
     test_pulse_input_discard_keeps_the_newest();
     test_pulse_input_discard_keeps_what_came_before_it_began();
     test_pulse_input_discard_keeps_what_an_overrun_left();
+    test_pulse_input_discard_without_memory_loses_no_new_audio();
     test_pulse_input_discard_never_waits_on_a_stopped_source();
     return 0;
 }

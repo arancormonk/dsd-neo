@@ -27,7 +27,18 @@
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+/* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the
+   test's own go to the C library), so a discard is seen to lose no new audio when memory runs out. */
+static int g_backend_alloc_fails;
+
+static void*
+backend_alloc(size_t bytes) {
+    return g_backend_alloc_fails ? NULL : malloc(bytes);
+}
+
+#define malloc(bytes) backend_alloc(bytes)
 #include "../../src/platform/audio_aaudio.c"
+#undef malloc
 #include "aaudio/AAudio.h"
 
 /* The backend reads its variables through the override store (#782); this test links no platform library, and no
@@ -118,6 +129,7 @@ static struct {
        has written overrun_written_frames more by then. */
     int overrun_uncounted;
     int64_t overrun_written_frames;
+    int overrun_runs_out_of_memory; /* from the overrun on, the backend's allocations fail */
     int32_t xruns;
     int16_t captured[FAKE_CAPTURE_SAMPLES];
     size_t captured_samples;
@@ -433,6 +445,7 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
             }
             g.frames_written += g.overrun_written_frames;
             g.input_next = g.overrun_next;
+            g_backend_alloc_fails = g.overrun_runs_out_of_memory;
         }
     }
     if (buffer != NULL) {
@@ -1160,6 +1173,40 @@ test_input_stream(void) {
         for (int i = 0; i < 4; i++) {
             assert(next[i] == (int16_t)(20000 + i));
         }
+    }
+    dsd_audio_close(stream);
+
+    /* Issue #834: memory runs out once the device overran: the overrun's chunk is still kept, in the buffer the
+       discard reserved before it read anything. With no memory for that buffer the discard reads nothing. */
+    reset_fakes();
+    g.device_rate = 48000;
+    g.device_channels = 1;
+    stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.frames_read_step = 0;
+    g.frames_written = 4800;
+    g.frames_read = 0;
+    g.input_numbered = 1;
+    g.input_next = 0;
+    g.overrun_at_read = 2;
+    g.overrun_next = 20000;
+    g.overrun_runs_out_of_memory = 1;
+    {
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
+        g_backend_alloc_fails = 0;
+        int16_t next = 0;
+        const int got = dsd_audio_read(stream, &next, 1);
+        if (dropped != 256 || got != 1 || next != 20000) {
+            DSD_FPRINTF(stderr,
+                        "an overrun's discard out of memory dropped %d frames, next %d (expected 256, then 20000)\n",
+                        dropped, (int)next);
+        }
+        assert(dropped == 256 && got == 1 && next == 20000);
+        const int64_t taken = g.input_frames_taken;
+        g_backend_alloc_fails = 1;
+        assert(dsd_audio_discard_input(stream, g.now_ns) == -1);
+        g_backend_alloc_fails = 0;
+        assert(g.input_frames_taken == taken);
     }
     dsd_audio_close(stream);
 

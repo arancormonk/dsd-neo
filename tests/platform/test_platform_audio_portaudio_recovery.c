@@ -17,7 +17,19 @@
  */
 
 #define DSD_USE_PORTAUDIO 1
+#include <stdlib.h>
+/* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the
+   test's own go to the C library), so a discard is seen to lose no new audio when memory runs out. */
+static int g_backend_alloc_fails;
+
+static void*
+backend_alloc(size_t bytes) {
+    return g_backend_alloc_fails ? NULL : malloc(bytes);
+}
+
+#define malloc(bytes) backend_alloc(bytes)
 #include "../../src/platform/audio_portaudio.c"
+#undef malloc
 
 #include <assert.h>
 #include <portaudio.h>
@@ -179,6 +191,8 @@ static int16_t g_read_next;
 static int g_overrun_at_read;
 static int16_t g_overrun_next;
 static signed long g_overrun_available;
+/* From the overrun on, the backend's allocations fail (g_backend_alloc_fails). */
+static int g_overrun_runs_out_of_memory;
 
 PaDeviceIndex
 Pa_GetDefaultInputDevice(void) {
@@ -281,6 +295,7 @@ Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
             g_read_available = g_overrun_available;
             g_read_next = g_overrun_next;
             result = paInputOverflowed;
+            g_backend_alloc_fails = g_overrun_runs_out_of_memory;
         }
     }
     if (g_read_numbered && buffer != NULL) {
@@ -631,6 +646,45 @@ test_input_discard_stops_at_an_overrun(void) {
     input_discard_stops_at_an_overrun(25U);
 }
 
+/* Issue #834: memory runs out once the device overran: the overrun's chunk, which may be the new channel's, is still
+   kept, in the buffer the discard reserved before it read anything. And with no memory for that buffer the discard
+   reads nothing at all: every frame stays in the device. */
+static void
+test_input_discard_without_memory_loses_no_new_audio(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_read_available = 48000;
+    g_read_numbered = 1;
+    g_read_next = 0;
+    g_overrun_at_read = 2;
+    g_overrun_next = 20000;
+    g_overrun_available = 4800;
+    g_overrun_runs_out_of_memory = 1;
+    const int dropped = discard_at(in, g_discard_now_ns);
+    g_backend_alloc_fails = 0;
+    g_overrun_runs_out_of_memory = 0;
+    int16_t next = 0;
+    const int got = dsd_audio_read(in, &next, 1);
+    if (dropped != 256 || got != 1 || next != 20000) {
+        DSD_FPRINTF(stderr,
+                    "an overrun's discard out of memory dropped %d frames, next %d (expected 256, then 20000)\n",
+                    dropped, (int)next);
+    }
+    assert(dropped == 256 && got == 1 && next == 20000);
+    g_read_available = 1000;
+    g_read_next = 5000;
+    g_backend_alloc_fails = 1;
+    assert(discard_at(in, g_discard_now_ns) == -1);
+    g_backend_alloc_fails = 0;
+    assert(g_read_available == 1000);
+    g_read_numbered = 0;
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
 /* Issue #834: the device holds fewer frames than it reported at the count (it lost some since): the discard never
    asks a read for more than the stream holds just before it, since a blocking read of frames not there waits for new
    capture, without end on a source that stopped. 1000 counted, 400 still held: those 400 go, no read waits. */
@@ -662,6 +716,7 @@ main(void) {
     test_input_discard_reads_what_is_available();
     test_input_discard_keeps_what_was_captured_before_its_snapshot();
     test_input_discard_stops_at_an_overrun();
+    test_input_discard_without_memory_loses_no_new_audio();
     test_input_discard_never_reads_past_what_is_held();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");

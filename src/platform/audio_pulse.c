@@ -1015,25 +1015,47 @@ pulse_keep_push(pulse_keep_ring* ring, const int16_t* frames, size_t n) {
     ring->count += n;
 }
 
-/* The carry becomes the ring's newest @p keep frames, oldest first; the others go. 0, or -1 when memory runs out (the
-   frames are dropped then, as a discard keeping none would). */
-static int
-pulse_keep_to_carry(struct audio_input_carry* carry, const pulse_keep_ring* ring, size_t keep) {
+/* Swap frames @p a and @p b of the ring's buffer. */
+static void
+pulse_keep_swap(const pulse_keep_ring* ring, size_t a, size_t b) {
+    for (size_t c = 0; c < ring->ch; c++) {
+        const int16_t t = ring->buf[a * ring->ch + c];
+        ring->buf[a * ring->ch + c] = ring->buf[b * ring->ch + c];
+        ring->buf[b * ring->ch + c] = t;
+    }
+}
+
+/* Reverse the ring buffer's frames [@p from, @p to). */
+static void
+pulse_keep_reverse(const pulse_keep_ring* ring, size_t from, size_t to) {
+    while (from + 1U < to) {
+        pulse_keep_swap(ring, from, to - 1U);
+        from++;
+        to--;
+    }
+}
+
+/* The carry becomes the ring's newest @p keep frames, oldest first, held in the ring's own buffer, whose ownership
+   passes to the carry (issue #834): nothing is allocated once the frames were read from the client. The others go. */
+static void
+pulse_keep_to_carry(struct audio_input_carry* carry, pulse_keep_ring* ring, size_t keep) {
     size_t held = ring->count < ring->cap ? ring->count : ring->cap;
     if (held > keep) {
         held = keep;
     }
-    int16_t* frames = held > 0U ? (int16_t*)malloc(held * ring->ch * sizeof(int16_t)) : NULL;
-    const int failed = held > 0U && frames == NULL;
-    const size_t first = held > 0U ? (ring->count - held) % ring->cap : 0U;
-    for (size_t i = 0; frames != NULL && i < held; i++) {
-        DSD_MEMCPY(frames + i * ring->ch, ring->buf + ((first + i) % ring->cap) * ring->ch, ring->ch * sizeof(int16_t));
+    if (held == 0U) {
+        audio_input_carry_adopt(carry, NULL, 0U);
+        free(ring->buf);
+        ring->buf = NULL;
+        return;
     }
-    free(carry->frames);
-    carry->frames = frames;
-    carry->len = frames != NULL ? held : 0U;
-    carry->pos = 0U;
-    return failed ? -1 : 0;
+    /* The ring rotated left so its frame first comes to the front: the kept frames are its first held, in order. */
+    const size_t first = (ring->count - held) % ring->cap;
+    pulse_keep_reverse(ring, 0U, first);
+    pulse_keep_reverse(ring, first, ring->cap);
+    pulse_keep_reverse(ring, 0U, ring->cap);
+    audio_input_carry_adopt(carry, ring->buf, held);
+    ring->buf = NULL;
 }
 
 /* What the client holds is read without a wait (pulse_record_read_held()): the fragment the stream handed over and
@@ -1070,7 +1092,7 @@ pulse_discard_read_held(const dsd_audio_stream* stream, pulse_keep_ring* ring, s
 }
 
 /* A ring for the newest @p keep frames of @p ch channels, with what an earlier discard kept and no read took yet: the
-   oldest of what the stream holds. Without memory for it the ring keeps nothing. */
+   oldest of what the stream holds. Without memory for it the ring has no buffer (and the discard reads nothing). */
 static pulse_keep_ring
 pulse_keep_ring_open(const struct audio_input_carry* carry, size_t keep, size_t ch) {
     pulse_keep_ring ring = {keep > 0U ? (int16_t*)malloc(keep * ch * sizeof(int16_t)) : NULL, 0U, ch, 0U};
@@ -1108,13 +1130,16 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
                         + PULSE_DISCARD_CHUNK_FRAMES;
     struct audio_input_carry* carry = stream->input_carry;
     pulse_keep_ring ring = pulse_keep_ring_open(carry, room, (size_t)stream->channels);
+    if (ring.buf == NULL) {
+        /* No room for the newest frames (issue #834): reading the client would lose them. Nothing is read, and what the
+           stream holds stays to be read, old audio included. */
+        set_error("Out of memory");
+        return -1;
+    }
     const size_t carried = ring.count;
     const long got = pulse_discard_read_held(stream, &ring, limit, start_ns);
     const size_t keep = (size_t)audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), (int)rate, room);
-    if (pulse_keep_to_carry(carry, &ring, keep) != 0 && got >= 0) {
-        set_error("Out of memory");
-    }
-    free(ring.buf);
+    pulse_keep_to_carry(carry, &ring, keep);
     if (got < 0) {
         return -1;
     }

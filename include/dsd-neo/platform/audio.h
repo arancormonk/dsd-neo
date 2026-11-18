@@ -120,7 +120,10 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * reads), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
  * drop keeps more rather than less. Frames an earlier drop kept and no read took are the oldest the stream holds. A
  * drop may lose only audio held before the mark: once it cannot tell old audio from new (the device overran and threw
- * audio away), it stops, and keeps what it holds. No backend waits for audio: a source that stops delivering (one
+ * audio away), it stops, and keeps what it holds. The memory a drop keeps audio in is taken before it reads anything
+ * (PulseAudio's ring of the newest frames, which then becomes the stream's kept frames; PortAudio's and AAudio's chunk
+ * buffer, which an overrun's chunk is kept in): without it the drop reads nothing and fails, so running out of memory
+ * never loses audio captured after the mark. No backend waits for audio: a source that stops delivering (one
  * suspended during the retune) ends the drop at once. Per backend:
  * - PulseAudio (Linux, macOS): everything the client holds now (the rest of the record fragment being read, the queue
  *   behind it) is read without a wait; what the server has not sent yet stays there and is read after the drop. At

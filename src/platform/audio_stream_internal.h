@@ -97,20 +97,23 @@ audio_input_carry_drop(struct audio_input_carry* carry, size_t frames) {
     return drop;
 }
 
-/* The carry becomes a copy of @p frames frames of @p channels at @p src, whatever it held. 0, or -1 when memory runs
-   out (the carry is empty then: the frames are lost, as a read that failed would lose them). */
-static inline int
-audio_input_carry_keep(struct audio_input_carry* carry, const int16_t* src, size_t frames, int channels) {
+/* The buffer an input discard reads its chunks into, of @p frames frames of @p channels, allocated before it reads
+   anything (issue #834): a chunk the discard cannot tell old from new is handed to the carry whole
+   (audio_input_carry_adopt()), so nothing is allocated once the device gave the audio up. NULL when memory runs out:
+   the discard then reads nothing, and every frame stays in the device. */
+static inline int16_t*
+audio_input_chunk_reserve(size_t frames, int channels) {
     const size_t samples = frames * (size_t)channels;
-    int16_t* copy = samples > 0U ? (int16_t*)malloc(samples * sizeof(int16_t)) : NULL;
-    if (copy != NULL) {
-        DSD_MEMCPY(copy, src, samples * sizeof(int16_t));
-    }
+    return samples > 0U ? (int16_t*)malloc(samples * sizeof(int16_t)) : NULL;
+}
+
+/* The carry becomes @p frames frames held in @p owned (allocated, the carry frees it from then on), whatever it held. */
+static inline void
+audio_input_carry_adopt(struct audio_input_carry* carry, int16_t* owned, size_t frames) {
     free(carry->frames);
-    carry->frames = copy;
-    carry->len = copy != NULL ? frames : 0U;
+    carry->frames = owned;
+    carry->len = owned != NULL ? frames : 0U;
     carry->pos = 0U;
-    return samples > 0U && copy == NULL ? -1 : 0;
 }
 
 /* Free the carry and what it holds. */

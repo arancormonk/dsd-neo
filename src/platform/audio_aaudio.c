@@ -1564,11 +1564,19 @@ aaudio_discard_chunk_may_be_new(const dsd_audio_stream* stream, int64_t pos, int
 /* Read and drop @p owed frames from the device, from frame position @p pos on, with no wait. A read whose chunk may hold
    audio captured after the mark (aaudio_discard_chunk_may_be_new(): the device overran, or may have) ends it: what
    that read returned is not known to be old, so nothing tells old from new any more. That chunk goes to the carry,
-   which the next dsd_audio_read() returns first, and the rest stays in the device. The frames dropped, or -1 on a
-   read error. */
+   which the next dsd_audio_read() returns first, in the buffer reserved before the reads, and the rest stays in the
+   device. The frames dropped, or -1 on a read error or when that buffer could not be reserved (nothing read). */
 static int
 aaudio_discard_reads(const dsd_audio_stream* stream, uint64_t owed, int64_t pos, int32_t xruns) {
-    int16_t chunk[DSD_AAUDIO_DISCARD_CHUNK_FRAMES * DSD_AAUDIO_DISCARD_MAX_CHANNELS];
+    if (owed == 0U) {
+        return 0;
+    }
+    /* Reserved before any read: the chunk an overrun leaves undecided goes to the carry with no allocation after it. */
+    int16_t* chunk = audio_input_chunk_reserve(DSD_AAUDIO_DISCARD_CHUNK_FRAMES, stream->channels);
+    if (chunk == NULL) {
+        set_error("Out of memory");
+        return -1;
+    }
     const int32_t capacity = AAudioStream_getBufferCapacityInFrames(stream->handle);
     const uint64_t start_ns = dsd_time_monotonic_ns();
     int dropped = 0;
@@ -1580,18 +1588,18 @@ aaudio_discard_reads(const dsd_audio_stream* stream, uint64_t owed, int64_t pos,
         if (res <= 0) {
             if (res < 0) {
                 set_error_aaudio(res);
-                return -1;
+                dropped = -1;
             }
             break;
         }
         if (aaudio_discard_chunk_may_be_new(stream, pos + (int64_t)dropped, capacity, xruns)) {
-            if (audio_input_carry_keep(stream->input_carry, chunk, (size_t)res, stream->channels) != 0) {
-                set_error("Out of memory");
-            }
+            audio_input_carry_adopt(stream->input_carry, chunk, (size_t)res);
+            chunk = NULL;
             break;
         }
         dropped += (int)res;
     }
+    free(chunk);
     return dropped;
 }
 

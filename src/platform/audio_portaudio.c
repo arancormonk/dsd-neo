@@ -1019,17 +1019,26 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
    long as the source delivers nothing), and the drop ends when the stream holds none. A read that reports an overrun
    (paInputOverflowed: PortAudio threw input away since the last read) ends it: the oldest audio is gone, and what that
    read returned may have been captured after the mark, so nothing tells old from new any more. That chunk goes to the
-   carry, which the next dsd_audio_read() returns first, and the rest stays in the device. The frames dropped, or -1 on
-   a read error. */
+   carry, which the next dsd_audio_read() returns first, in the buffer reserved before the reads, and the rest stays in
+   the device. The frames dropped, or -1 on a read error or when that buffer could not be reserved (nothing read). */
 static int
 portaudio_discard_owed(const dsd_audio_stream* stream, signed long owed) {
-    int16_t chunk[PORTAUDIO_DISCARD_CHUNK_FRAMES * PORTAUDIO_DISCARD_MAX_CHANNELS];
+    if (owed <= 0) {
+        return 0;
+    }
+    /* Reserved before any read: the chunk an overrun leaves undecided goes to the carry with no allocation after it. */
+    int16_t* chunk = audio_input_chunk_reserve(PORTAUDIO_DISCARD_CHUNK_FRAMES, stream->channels);
+    if (chunk == NULL) {
+        set_error("Out of memory");
+        return -1;
+    }
     int dropped = 0;
     while (owed > 0) {
         const signed long available = Pa_GetStreamReadAvailable(stream->handle);
         if (available < 0) {
             set_error_pa((PaError)available);
-            return -1;
+            dropped = -1;
+            break;
         }
         signed long want = owed < available ? owed : available;
         if (want > PORTAUDIO_DISCARD_CHUNK_FRAMES) {
@@ -1041,18 +1050,19 @@ portaudio_discard_owed(const dsd_audio_stream* stream, signed long owed) {
         const unsigned long frames = (unsigned long)want;
         const PaError err = Pa_ReadStream(stream->handle, chunk, frames);
         if (err == paInputOverflowed) {
-            if (audio_input_carry_keep(stream->input_carry, chunk, frames, stream->channels) != 0) {
-                set_error("Out of memory");
-            }
+            audio_input_carry_adopt(stream->input_carry, chunk, frames);
+            chunk = NULL;
             break;
         }
         if (err != paNoError) {
             set_error_pa(err);
-            return -1;
+            dropped = -1;
+            break;
         }
         dropped += (int)frames;
         owed -= (signed long)frames;
     }
+    free(chunk);
     return dropped;
 }
 
