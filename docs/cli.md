@@ -564,7 +564,8 @@ does.
   The source column is `00000000` when the report names no radio: a report that carries no sender of its own (DMR
   embedded GPS, P25 L3Harris or Motorola link control or MAC) takes the radio a checked message of the same call named
   on the same reception, so after a colour code, NAC or system change without the call ending it is `0` until such a
-  message names the radio again; a P25 fixed network ID (a report from a network address) is never a radio.
+  message names the radio again; a P25 special address (`$FFFFFC`-`$FFFFFF`, for example a report from a network
+  address) is never a radio, and a talker is not carried past a message that names one.
 
   Never written:
   - D-STAR and M17 positions: their source is a callsign and the column is a number. They still reach History and
