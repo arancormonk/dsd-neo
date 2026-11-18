@@ -10,7 +10,6 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -204,10 +203,9 @@ dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane) {
+dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
     (void)state;
-    (void)evidence_lane;
-    (void)data_lane;
 }
 
 void

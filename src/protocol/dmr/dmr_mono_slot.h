@@ -7,8 +7,6 @@
 #ifndef DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 #define DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 
-#include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
@@ -60,23 +58,6 @@ dmr_mono_slot_begin(dsd_state* state) {
         state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
     }
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
-}
-
-/* Whether the single-slot output folds a burst's LCs onto lane 0 (dmr_flco()): the single-slot reader's own bursts, and
-   a standalone burst while the single-slot output is on. */
-static inline int
-dmr_single_slot_folds_lcs(const dsd_opts* opts, const dsd_state* state) {
-    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
-}
-
-/* The burst on state->currentslot is being read (issue #800, fail closed): the sender evidence and data header binding
-   of another sender kind on its lanes are revoked (dsd_position_dmr_note_lane_burst(); the embedded GPS evidence lane
-   is lane 0 where the single-slot output folds the burst's LCs, the data lane the burst's slot). Every DMR burst
-   reader calls it once the burst's slot is known. */
-static inline void
-dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
-    const uint8_t lane = (uint8_t)(state->currentslot & 1);
-    dsd_position_dmr_note_lane_burst(state, dmr_single_slot_folds_lcs(opts, state) ? 0U : lane, lane);
 }
 
 /* Decoding that is not the single-slot decoder's: nothing is proven. */

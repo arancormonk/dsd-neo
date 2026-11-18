@@ -18,7 +18,6 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
-#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -367,11 +366,10 @@ burst_from(fixture* f, int direct) {
     f->st->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     f->st->dmr_dm_sync_slot = direct ? 2U : 0U;
     f->st->dmr_mono_rx_slot = direct ? DSD_DMR_MONO_RX_TS2 : DSD_DMR_MONO_RX_PENDING;
-    /* As processFrame() notes every frame it dispatches, and the single-slot reader notes the burst on its lane 0
-       (dmr_note_burst_lane()). */
+    /* As processFrame() notes every frame it dispatches, and the single-slot reader notes the burst on its lane 0. */
     dsd_rxid_note_sync(f->st, f->st->synctype);
     f->st->currentslot = 0;
-    dsd_position_dmr_note_lane_burst(f->st, 0U, 0U);
+    dmr_note_burst_lane(f->opts, f->st);
 }
 
 /* A burst on the two-slot decoder: a repeater's BS-sourced one on slot @p slot, or (@p bs 0) a radio's MS-sourced one,
@@ -384,7 +382,7 @@ two_slot_burst(fixture* f, int bs, uint8_t slot) {
     f->st->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
     dsd_rxid_note_sync(f->st, f->st->synctype);
     f->st->currentslot = bs ? slot : 0U;
-    dsd_position_dmr_note_lane_burst(f->st, (uint8_t)f->st->currentslot, (uint8_t)f->st->currentslot);
+    dmr_note_burst_lane(f->opts, f->st);
 }
 
 /* The slot's ACTIVE call names SOURCE to TARGET. */

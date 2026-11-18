@@ -100,6 +100,11 @@ int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
+/** The burst on state->currentslot is being read (issue #800, fail closed): the sender evidence and data header binding
+ * of another sender kind on its lanes are revoked (dsd_position_dmr_note_lane_burst(); the embedded GPS evidence lane is
+ * lane 0 where the single-slot output folds the burst's LCs, as dmr_flco() does, the data lane the burst's slot). Every
+ * DMR burst reader calls it once the burst's slot is known; NULL @p opts folds nothing (a two-slot reader). */
+void dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state);
 
 void dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
                uint32_t IrrecoverableErrors);

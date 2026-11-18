@@ -2679,7 +2679,7 @@ suite runs under this compiler.
     a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
     layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and no burst of another sender kind came between on the
     evidence's lane: every DMR burst reader, once the burst's slot is known (`dmr_note_burst_lane()` in
-    `dmr_mono_slot.h`, from `dmr_data_sync()`, the MS voice bootstrap and the BS burst readers), revokes the embedded
+    `dmr_flco.c`, from `dmr_data_sync()`, the MS voice bootstrap and the BS burst readers), revokes the embedded
     GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that burst's lanes
     (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds the burst's
     LCs, the data lane the burst's slot), so a return to direct mode after a repeater-mode burst is not the direct-mode

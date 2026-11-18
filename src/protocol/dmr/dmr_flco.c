@@ -46,7 +46,6 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
-#include "dmr_mono_slot.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -174,7 +173,17 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
 
 static int
 dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
-    return dmr_single_slot_folds_lcs(opts, state);
+    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
+}
+
+void
+dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    const uint8_t lane = (uint8_t)(state->currentslot & 1);
+    const int folds = opts != NULL && dmr_flco_single_slot_collapse(opts, state);
+    dsd_position_dmr_note_lane_burst(state, folds ? 0U : lane, lane);
 }
 
 static void
