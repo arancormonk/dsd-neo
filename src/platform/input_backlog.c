@@ -53,8 +53,9 @@ static dsd_input_arrived_fn s_undo_arrived;
 static uint64_t s_undo_prior_seq;
 static uint64_t s_undo_continued_from;
 static uint64_t s_undo_continued_to;
-/* The unmeasured post (a device input's) the last attach retired, which its failed start puts back
-   (dsd_input_backlog_attach_failed()): the device it was posted on runs on. */
+/* The post of the input the last attach replaced, which its failed start puts back (dsd_input_backlog_attach_failed()):
+   the input it was posted on runs on. An unmeasured one (a device input's) the attach retired, or one marked on that
+   input and posted after the attach (dsd_input_backlog_post()). */
 static int s_undo_post_held;
 static dsd_input_cut s_undo_post;
 
@@ -256,6 +257,19 @@ dsd_input_backlog_post(const dsd_input_cut* cut) {
     /* Marked on a connection that was opening, whose queue has attached since and goes on from its count. */
     if (held.measured && s_continued_to != 0U && held.seq == s_continued_from && s_seq == s_continued_to) {
         held.seq = s_seq;
+    }
+    if (held.seq != s_seq) {
+        /* Marked on an input since replaced or stopped (a reconnect, a switch): the input read now holds nothing of the
+           channel it left, and the decoder may have read the new channel already. Refused, so it drops nothing and moves
+           no timeline. One marked on the input an attach still in flight replaced is kept for that attach's failed
+           start, which makes that input the one read again (dsd_input_backlog_attach_failed()). */
+        if (s_undo_held && s_seq == s_undo_seq && held.seq == s_undo_prior_seq
+            && (!s_undo_post_held || held.order > s_undo_post.order)) {
+            s_undo_post = held;
+            s_undo_post_held = 1;
+        }
+        backlog_unlock();
+        return;
     }
     /* Of two posts the later mark is held, whatever order they come in. */
     if (!s_post_held || held.order > s_post.order) {

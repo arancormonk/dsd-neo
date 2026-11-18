@@ -68,8 +68,9 @@ void dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived);
  * thread did not start): detached, and while nothing attached, detached or opened since it attached, the queue its attach
  * replaced is the input again on the attachment it had, so an input switch that keeps the running input keeps its
  * registration too, and a mark measured on that queue before still counts it. An unmeasured post the attach retired
- * (a device input's, which attaches no queue) stands again unless a later one does, so the device that runs on still
- * drops its old audio. Call it before @p queue is freed. */
+ * (a device input's, which attaches no queue), or a post marked on the replaced input that came after the attach,
+ * stands again unless a later one does, so the input that runs on still drops its old audio. Call it before @p queue
+ * is freed. */
 void dsd_input_backlog_attach_failed(const void* queue);
 
 /** @p queue goes away: detached before it is freed, if it is the one attached. */
@@ -84,7 +85,10 @@ int dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue);
 /** A retune confirmed off the decoder thread, held for the decoder: @p cut is its mark, taken before the tune was asked
  * for (dsd_input_backlog_mark()), so audio that came after the request, even before its confirmation, is not in it. Of
  * two posts the later mark is held (dsd_input_cut::order). A mark measured on a connection that was opening stands on
- * the queue that attached to it since (dsd_input_backlog_attach()). */
+ * the queue that attached to it since (dsd_input_backlog_attach()). A mark taken on an input since replaced or stopped
+ * (a reconnect or a switch between the mark and the confirmation) is refused: the input read now holds nothing of the
+ * channel it left. One taken on the input an attach still in flight replaced comes back if that attach's input fails
+ * to start (dsd_input_backlog_attach_failed()). */
 void dsd_input_backlog_post(const dsd_input_cut* cut);
 
 /** The decoder takes the held post into @p out: 1 when one was held and not retired, else 0. */

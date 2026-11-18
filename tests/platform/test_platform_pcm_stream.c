@@ -631,6 +631,67 @@ test_failed_start_restores_a_device_post(void) {
     dsd_input_backlog_retire();
 }
 
+/* Issue #834: a watchdog marks the input, sends its tune, and posts the mark only when the peer confirms. If the input
+   was replaced in between (a TCP reconnect: the old connection's queue detached, the new one attached, and the decoder
+   forgot the posts then pending, of which there was none yet), the late post is no drop of the new input: it is
+   refused, so the decoder neither drops nor moves its timeline for it. A post marked on the queue attached now still
+   stands, as does one a device input posts with no queue attached. The legitimate opening-to-reader handoff is
+   test_post_while_the_input_opens(). */
+static void
+test_late_post_from_a_replaced_input(void) {
+    static uint64_t old_queue = 40U;
+    static uint64_t new_queue = 50U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&old_queue, fake_queue_arrived);
+    dsd_input_cut on_old;
+    dsd_input_backlog_mark(&on_old);
+    dsd_input_backlog_detach(&old_queue);
+    dsd_input_backlog_attach(&new_queue, fake_queue_arrived);
+    dsd_input_backlog_forget();
+    dsd_input_backlog_post(&on_old);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    const int taken = dsd_input_backlog_take(&held);
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what,
+                 "a post marked on the replaced input is refused (held %d, measured %u, %llu, applies %d)", taken,
+                 (unsigned)held.measured, (unsigned long long)held.arrived,
+                 taken ? dsd_input_backlog_cut_applies(&held, &new_queue) : 0);
+    check(!taken, what);
+    dsd_input_cut on_new;
+    dsd_input_backlog_mark(&on_new);
+    dsd_input_backlog_post(&on_new);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_new.order
+              && dsd_input_backlog_cut_applies(&held, &new_queue),
+          "a post marked on the input attached now stands");
+    /* A post marked on the new queue, which stopped before the post came (no input now): refused too. */
+    dsd_input_backlog_mark(&on_new);
+    dsd_input_backlog_detach(&new_queue);
+    dsd_input_backlog_post(&on_new);
+    check(dsd_input_backlog_take(NULL) == 0, "a post marked on an input that stopped since is refused");
+    /* A device input attaches no queue: its post is unmeasured, and stands on the mark's time. */
+    dsd_input_cut device;
+    dsd_input_backlog_mark(&device);
+    dsd_input_backlog_post(&device);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.measured == 0U && held.order == device.order,
+          "a device input's post stands");
+    /* A switch's attach is in flight when the post marked on the input it replaces comes: refused while the new input
+       stands, back once its start fails, since the input it was marked on is the one read again. */
+    dsd_input_backlog_attach(&old_queue, fake_queue_arrived);
+    dsd_input_backlog_mark(&on_old);
+    dsd_input_backlog_attach(&new_queue, fake_queue_arrived);
+    dsd_input_backlog_post(&on_old);
+    dsd_input_backlog_attach_failed(&new_queue);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_old.order
+              && dsd_input_backlog_cut_applies(&held, &old_queue),
+          "a post of the input a failed start puts back stands on it");
+    dsd_input_backlog_detach(&old_queue);
+    dsd_input_backlog_retire();
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -683,6 +744,7 @@ main(void) {
     test_opening_keeps_its_own_connection();
     test_failed_start_puts_back_the_replaced_queue();
     test_failed_start_restores_a_device_post();
+    test_late_post_from_a_replaced_input();
     test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {

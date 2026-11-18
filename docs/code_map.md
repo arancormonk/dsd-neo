@@ -7402,7 +7402,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
   `dsd_opts_reset_pcm_input_state()`; it calls `dsd_input_backlog_forget()`): such a retune moved the peer before the
-  new stream began. What one drop takes is bounded, and no drop waits for audio: the sound-card input (per backend:
+  new stream began. A post that comes after the replacement, marked on the input replaced (a watchdog's tune marked on
+  the old TCP connection and confirmed after the reconnect), is refused by `dsd_input_backlog_post()` itself, past the
+  opening-to-reader handoff above: it would move the new stream's timeline and drop nothing of it
+  (`test_late_post_from_a_replaced_input()`). One marked on the input a switch's attach in flight replaced comes back
+  if that attach's input fails to start. What one drop takes is bounded, and no drop waits for audio: the sound-card input (per backend:
   PulseAudio on Linux and macOS, what the client holds, at most 2 s of frames at the stream's rate, exact to one
   32-frame read (up to 31 frames past it), no read begun after 250 ms; PortAudio on Windows, one snapshot of what is
   available; AAudio on Android, at most 96000 frames and no read begun after 250 ms; see the platform audio entry), the
