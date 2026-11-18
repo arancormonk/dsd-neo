@@ -12300,7 +12300,11 @@ Private per-protocol modules worth knowing about:
   a new call epoch, a release or a reset clears all three. A failed check never sets a flag, and a field inherited
   from an earlier assignment keeps that assignment's flag. Every site that sets or confirms identity applies it
   through `p25_sm_identity_claim` (only the fields the message itself named): new grants (`p25_grant_store_slot_context`,
-  a new assignment), duplicate grants (`p25_grant_duplicate_promote_identity`), voice starts that change the call
+  a new assignment), duplicate grants (`p25_grant_duplicate_apply_identity()` → `p25_slot_apply_identity_claim()`: a
+  repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
+  by the target its call is judged by that names another target or kind, replaces that field in the assignment with
+  its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
+  with the new talker, a new canonical epoch; test `P25_P2_HARRIS_GPS`), voice starts that change the call
   (`p25_voice_start_commit_identity`) and ones that change nothing (`p25_voice_start_promote_identity`), the
   trunk-off publication (`p25_sm_conventional_note_identity`), and Phase 2 MAC_SIGNAL voice users that observe the
   canonical call themselves (`p25p2_vpdu_observe_voice()` → `p25_sm_note_call_identity()`, with the MAC CRC verdict).
