@@ -18,9 +18,9 @@
 #include <exception>
 #include <libairspy/airspy.h>
 #include <memory>
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string>
 #include <vector>
 
 namespace SoapySDR {
