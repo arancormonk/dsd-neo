@@ -563,11 +563,16 @@ MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
     if (withDevice) {
         points.push_back(device);
     }
+    /* Fit into the part below the screen's chips, then place that part's middle where the fit put the view's. */
+    mm::Viewport clear = viewportForSize();
+    const double inset = std::min(m_topInset, std::max(0.0, clear.height - (2.0 * m_fitPadding) - 1.0));
+    clear.height -= inset;
     mm::Viewport out;
-    if (!mm::fit_points(viewportForSize(), points.data(), static_cast<int>(points.size()), m_fitPadding, m_fitMaxZoom,
-                        &out)) {
+    if (!mm::fit_points(clear, points.data(), static_cast<int>(points.size()), m_fitPadding, m_fitMaxZoom, &out)) {
         return false;
     }
+    out.height = clear.height + inset;
+    out.center_y -= (inset / 2.0) / mm::world_size_px(out.zoom);
     stopFollowing();
     if (withDevice) {
         markUsedDevice();
@@ -586,7 +591,7 @@ MapViewItem::centerOnTrack(qulonglong trackId) {
     const mm::WorldPoint at = t->hasMarker ? t->marker : t->ring;
     vp.center_x = at.x;
     vp.center_y = at.y;
-    moveCamera(vp);
+    moveCamera(belowTopInset(vp));
     return true;
 }
 
@@ -600,7 +605,7 @@ MapViewItem::centerOnDevice() {
     mm::Viewport vp = cameraBase();
     vp.center_x = at.x;
     vp.center_y = at.y;
-    moveCamera(vp);
+    moveCamera(belowTopInset(vp));
     return true;
 }
 
@@ -616,7 +621,14 @@ MapViewItem::centerOn(double lat, double lon, double level) {
     if (level >= 0.0 && std::isfinite(level)) {
         vp.zoom = level;
     }
-    moveCamera(vp);
+    moveCamera(belowTopInset(vp));
+}
+
+mm::Viewport
+MapViewItem::belowTopInset(mm::Viewport vp) const {
+    const double inset = std::min(m_topInset, std::max(0.0, height() / 2.0));
+    vp.center_y -= (inset / 2.0) / mm::world_size_px(vp.zoom);
+    return vp;
 }
 
 qulonglong
@@ -940,6 +952,13 @@ MapViewItem::setFitPadding(double padding) {
 void
 MapViewItem::setFitMaxZoom(double level) {
     if (assignSize(m_fitMaxZoom, level)) {
+        Q_EMIT behaviourChanged();
+    }
+}
+
+void
+MapViewItem::setTopInset(double inset) {
+    if (assignSize(m_topInset, inset)) {
         Q_EMIT behaviourChanged();
     }
 }

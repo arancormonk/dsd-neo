@@ -117,6 +117,8 @@ Item {
         mapShown = true;
         cameraPlaced = true;
         map.selectedTrackId = 0;
+        // The pin's chip laid out first, so the pin lands below it.
+        status.forceLayout();
         map.centerOn(record.position.latitude, record.position.longitude, Math.max(map.zoom, 14));
     }
     function clearPin() {
@@ -386,9 +388,13 @@ Item {
             emergencyText: qsTr("Emergency")
             hitRadius: Theme.minimumTouchSize / 2
             // Room for a label beside a marker at the edge (more at a larger
-            // text size), less on a short landscape canvas, where it would
-            // cost the fit most of its zoom.
-            fitPadding: Math.min(Math.round(72 * Theme.fontSize(12) / 12), Math.min(width, height) / 5)
+            // text size), less on a short landscape canvas (a quarter of its
+            // height at most), where it would cost the fit most of its zoom.
+            fitPadding: Math.min(Math.round(72 * Theme.fontSize(12) / 12), height / 4)
+            // The chips at the top (the pin, what is followed, tile trouble,
+            // location notices) cover the canvas there: fits and centring aim
+            // below them.
+            topInset: status.visible && status.height > 0 ? status.y + status.height : 0
             cameraDurationMs: Theme.reducedMotion ? 0 : 250
 
             deviceValid: locator.deviceValid
@@ -654,7 +660,7 @@ Item {
                 hiddenCount: positions.count
                 filterName: positions.ageFilterSeconds === 900 ? qsTr("the last 15 minutes") : qsTr("the last hour")
                 // Offered here only once the prompt above is set aside.
-            showTilesPrompt: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && screen.tilesPromptDismissed
+                showTilesPrompt: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && screen.tilesPromptDismissed
                 tilesHost: screen.tilesHost
                 onShowAll: positions.ageFilterSeconds = 0
                 onLoadTiles: screen.tilesEnabled = true
@@ -891,7 +897,7 @@ Item {
 
     // Tiles are off: what loading them sends, and where. One line of text
     // with its button beside it where there is room, else the button under
-    // it; a close mark sets it aside for this visit.
+    // it; a close mark sets it aside for the rest of the app's run.
     component MapTilesPrompt: UiPanel {
         id: prompt
 

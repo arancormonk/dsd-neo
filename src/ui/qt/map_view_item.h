@@ -131,6 +131,8 @@ class MapViewItem : public QQuickItem {
     Q_PROPERTY(double hitRadius READ hitRadius WRITE setHitRadius NOTIFY behaviourChanged)
     Q_PROPERTY(double fitPadding READ fitPadding WRITE setFitPadding NOTIFY behaviourChanged)
     Q_PROPERTY(double fitMaxZoom READ fitMaxZoom WRITE setFitMaxZoom NOTIFY behaviourChanged)
+    /** The height at the top the screen covers with chips (logical px): fits and centring aim below it. */
+    Q_PROPERTY(double topInset READ topInset WRITE setTopInset NOTIFY behaviourChanged)
     Q_PROPERTY(int cameraDurationMs READ cameraDurationMs WRITE setCameraDurationMs NOTIFY behaviourChanged)
 
   public:
@@ -282,6 +284,8 @@ class MapViewItem : public QQuickItem {
     void setFitPadding(double padding);
     double fitMaxZoom() const { return m_fitMaxZoom; }
     void setFitMaxZoom(double level);
+    double topInset() const { return m_topInset; }
+    void setTopInset(double inset);
     int cameraDurationMs() const { return m_cameraMs; }
     void setCameraDurationMs(int ms);
     // clang-format on
@@ -470,6 +474,8 @@ class MapViewItem : public QQuickItem {
     std::vector<map_math::WorldPoint> markerPoints() const;
     /** @brief Fit @p points and the device's dot when valid (fitAll()'s body). */
     bool fitPoints(std::vector<map_math::WorldPoint> points);
+    /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
+    map_math::Viewport belowTopInset(map_math::Viewport vp) const;
     const TrackDraw* findTrack(qulonglong trackId) const;
     std::vector<TileDraw> tileDraws(double ratio) const;
     const std::vector<SpriteQuad>& spriteQuads();
@@ -529,6 +535,7 @@ class MapViewItem : public QQuickItem {
     double m_hitRadius = 24.0;
     double m_fitPadding = 48.0;
     double m_fitMaxZoom = 16.0;
+    double m_topInset = 0.0;
     int m_cameraMs = 250;
 
     /* The scene, in world coordinates: rebuilt when the model's tracks, ages or the selection change. */

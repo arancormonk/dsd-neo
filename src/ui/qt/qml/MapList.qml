@@ -44,8 +44,11 @@ Item {
 
         readonly property var position: list.pin && list.pin.position ? list.pin.position : ({})
         readonly property string name: list.pin ? (list.pin.name || list.pin.sourceName || qsTr("Saved position")) : ""
-        readonly property string when: list.pin && (pinRow.position.receivedTime > 0 || list.pin.when > 0)
-            ? Qt.formatDateTime(new Date((pinRow.position.receivedTime > 0 ? pinRow.position.receivedTime : list.pin.when) * 1000), "hh:mm:ss") : ""
+        // With its date, as the pin's sheet says it: a History row can be
+        // from any day, unlike the live rows below.
+        readonly property double whenS: !list.pin ? 0 : pinRow.position.receivedTime > 0 ? pinRow.position.receivedTime : (list.pin.when || 0)
+        readonly property string when: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm") : ""
+        readonly property string whenFull: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm:ss") : ""
         readonly property string states: MapText.stateWords(pinRow.position).join(" · ")
 
         visible: list.pin !== null
@@ -56,7 +59,7 @@ Item {
         activeFocusOnTab: (navigationAllowed && visible) || activeFocus
         Accessible.role: Accessible.Button
         Accessible.name: navigationAllowed && visible ? qsTr("Saved position from History: %1").arg(name) : ""
-        Accessible.description: navigationAllowed && visible ? [when.length > 0 ? qsTr("received at %1").arg(when) : "", pinRow.position.kindText || "", states].filter(function (part) {
+        Accessible.description: navigationAllowed && visible ? [whenFull.length > 0 ? qsTr("received %1").arg(whenFull) : "", pinRow.position.kindText || "", states].filter(function (part) {
             return part.length > 0;
         }).join(", ") : ""
         readonly property bool navigationAllowed: Navigation.allows(pinRow)

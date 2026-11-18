@@ -306,10 +306,13 @@ Item {
                                        provisional: false, weakCheck: false, anonymous: false, emergency: false, kindText: "LIP"}});
             var pin = item("mapPin");
             waitForRendering(screen);
+            wait(20);
             verify(pin.visible);
             verify(!item("mapEmptyState").visible, "a pin is something to show");
             var c = canvas();
-            verify(Math.abs(pin.tipX - c.width / 2) < 1 && Math.abs(pin.tipY - c.height / 2) < 1, "centred on the row's fix");
+            var below = item("mapStatus").y + item("mapStatus").height;
+            verify(Math.abs(pin.tipX - c.width / 2) < 1 && Math.abs(pin.tipY - (below + c.height) / 2) < 1,
+                   "centred on the row's fix in the part below the chips: " + pin.tipY + " vs " + (below + c.height) / 2);
             mouseClick(c, pin.tipX, pin.tipY - 12);
             verify(sheet().visible && sheet().pin !== null);
             var words = sheetWords();
@@ -323,8 +326,13 @@ Item {
             item("mapFit").activate();
             waitForRendering(screen);
             var marker = c.markerPoint(trackNamed("Engine 7"));
+            // Re-review minor 1: the chips at the top (the pin's among them) cover that band, so a fit aims below it.
+            var status = item("mapStatus");
+            var band = status.y + status.height;
+            verify(item("mapPinChip").visible && band > 40, "the pin's chip covers the top: " + band);
+            compare(c.topInset, band);
             for (var p of [Qt.point(pin.tipX, pin.tipY), marker])
-                verify(p.x >= 0 && p.x <= c.width && p.y >= 0 && p.y <= c.height, "in view after a fit: " + p);
+                verify(p.x >= 0 && p.x <= c.width && p.y >= band && p.y <= c.height, "in view below the chips after a fit: " + p + ", band " + band);
             screen.clearPin();
             verify(!pin.visible);
         }
@@ -347,6 +355,8 @@ Item {
             verify(row.visible);
             compare(row.Accessible.role, Accessible.Button);
             compare(row.Accessible.name, "Saved position from History: CALL 042");
+            var day = Qt.formatDateTime(new Date(1700000000 * 1000), "yyyy-MM-dd");
+            verify(row.Accessible.description.indexOf("received " + day) === 0, "a History row's day is said: " + row.Accessible.description);
             verify(row.Accessible.description.indexOf("Format not confirmed by a published specification") >= 0, row.Accessible.description);
             row.activate();
             verify(sheet().visible && sheet().pin !== null, "the List row opens the pin's sheet");
@@ -518,6 +528,9 @@ Item {
                                name + " runs off the side at scale " + scale + ", width " + width + ": " + left + ".." + right);
                     }
                     verify(!item("mapAttributionText").truncated, "the attribution is owed whole, wrapped not cut");
+                    if (width === 360 && scale <= 1.3)
+                        compare(canvas().fitPadding, Math.round(72 * Ui.Theme.fontSize(12) / 12),
+                                "on a phone a label's room is kept whole (re-review minor 4)");
                     var chrome = item("mapAgeFilter");
                     verify(chrome.mapToItem(screen, 0, chrome.height).y < screen.height / 2, "the map keeps most of the screen");
                 }
