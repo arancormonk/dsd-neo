@@ -10873,7 +10873,9 @@ Notes:
   client holds now (`pulse_record_read_held()`: `pa_stream_peek()` until it hands over nothing, never a wait), at most
   2 s of frames at the stream's rate (exact to one read: the cap is checked before each 32-frame read, so up to 31
   frames past it) with no read begun after 250 ms on the monotonic clock, and keeps the newest of it in the stream's
-  carry (`struct audio_input_carry` in `audio_stream_internal.h`, allocated with the input stream), which
+  carry (`struct audio_input_carry` in `audio_stream_internal.h`, allocated with the input stream; the keep ring's
+  buffer becomes the carry's, its kept frames brought to its front without touching the room past the frames read,
+  `test_pulse_keep_moves_only_frames_read()`), which
   `dsd_audio_read()` returns before the device's: as much as was captured from the mark to the end of its reads, the
   time before it began included. What the server has not sent the client yet stays in the server and is read after the
   drop (it was captured last). The decoder's own reads (`pulse_record_read()`) wait for the source as `pa_simple_read()`

@@ -1036,7 +1036,9 @@ pulse_keep_reverse(const pulse_keep_ring* ring, size_t from, size_t to) {
 }
 
 /* The carry becomes the ring's newest @p keep frames, oldest first, held in the ring's own buffer, whose ownership
-   passes to the carry (issue #834): nothing is allocated once the frames were read from the client. The others go. */
+   passes to the carry (issue #834): nothing is allocated once the frames were read from the client. The others go.
+   Only frames the ring was written are moved: a ring that never wrapped holds its frames from its front, and the room
+   past them (sized for the most a discard could keep) was never written. */
 static void
 pulse_keep_to_carry(struct audio_input_carry* carry, pulse_keep_ring* ring, size_t keep) {
     size_t held = ring->count < ring->cap ? ring->count : ring->cap;
@@ -1049,11 +1051,19 @@ pulse_keep_to_carry(struct audio_input_carry* carry, pulse_keep_ring* ring, size
         ring->buf = NULL;
         return;
     }
-    /* The ring rotated left so its frame first comes to the front: the kept frames are its first held, in order. */
     const size_t first = (ring->count - held) % ring->cap;
-    pulse_keep_reverse(ring, 0U, first);
-    pulse_keep_reverse(ring, first, ring->cap);
-    pulse_keep_reverse(ring, 0U, ring->cap);
+    if (ring->count <= ring->cap) {
+        /* Never wrapped: the kept frames are the last held of the frames written, in order; moved to the front. */
+        if (first > 0U) {
+            DSD_MEMMOVE(ring->buf, ring->buf + first * ring->ch, held * ring->ch * sizeof(int16_t));
+        }
+    } else if (first > 0U) {
+        /* Wrapped, so every frame of it was written: rotated left so its frame first comes to the front, the kept
+           frames its first held, in order. */
+        pulse_keep_reverse(ring, 0U, first);
+        pulse_keep_reverse(ring, first, ring->cap);
+        pulse_keep_reverse(ring, 0U, ring->cap);
+    }
     audio_input_carry_adopt(carry, ring->buf, held);
     ring->buf = NULL;
 }

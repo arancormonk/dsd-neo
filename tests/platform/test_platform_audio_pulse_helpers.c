@@ -1311,8 +1311,85 @@ test_pulse_input_discard_never_waits_on_a_stopped_source(void) {
     reset_pa_simple_fakes();
 }
 
+/* What a frame of the keep ring's buffer holds before any read writes it: a value no test frame takes. */
+#define KEEP_UNWRITTEN ((int16_t)-32768)
+
+/* A keep ring of @p cap mono frames, every frame of it unwritten, through which frames 1..@p n passed. */
+static pulse_keep_ring
+keep_ring_after(size_t cap, size_t n) {
+    pulse_keep_ring ring = {(int16_t*)malloc(cap * sizeof(int16_t)), cap, 1U, 0U};
+    assert(ring.buf != NULL);
+    for (size_t i = 0; i < cap; i++) {
+        ring.buf[i] = KEEP_UNWRITTEN;
+    }
+    for (size_t i = 1; i <= n; i++) {
+        const int16_t frame = (int16_t)i;
+        pulse_keep_push(&ring, &frame, 1U);
+    }
+    return ring;
+}
+
+/* The carry's frames freed, the carry empty (it is the test's own, not one an input stream allocated). */
+static void
+keep_carry_clear(struct audio_input_carry* carry) {
+    free(carry->frames);
+    carry->frames = NULL;
+    carry->len = 0U;
+    carry->pos = 0U;
+}
+
+/* Issue #834: the discard's ring is sized for the most it could keep, and usually holds far less. The newest frames go
+   to the carry, oldest first, from the frames the discard read only: a ring that never wrapped moves its kept frames
+   to the front and touches none past what was read (no frame it never wrote is read or moved), and one whose kept
+   frames start at its front is left as it is. */
+static void
+test_pulse_keep_moves_only_frames_read(void) {
+    struct audio_input_carry carry = {NULL, 0U, 0U};
+    pulse_keep_ring ring = keep_ring_after(64U, 10U);
+    pulse_keep_to_carry(&carry, &ring, 4U);
+    assert(carry.len == 4U && carry.pos == 0U);
+    for (size_t i = 0; i < 4U; i++) {
+        assert(carry.frames[i] == (int16_t)(7 + i));
+    }
+    int untouched = 1;
+    for (size_t i = 10U; i < 64U; i++) {
+        untouched &= carry.frames[i] == KEEP_UNWRITTEN;
+    }
+    if (!untouched) {
+        DSD_FPRINTF(stderr, "a keep moved frames of the ring it never wrote\n");
+    }
+    assert(untouched);
+    keep_carry_clear(&carry);
+
+    /* Wrapped: 16 frames through 8, the newest 8 kept, starting at the front. */
+    ring = keep_ring_after(8U, 16U);
+    pulse_keep_to_carry(&carry, &ring, 8U);
+    assert(carry.len == 8U);
+    for (size_t i = 0; i < 8U; i++) {
+        assert(carry.frames[i] == (int16_t)(9 + i));
+    }
+    keep_carry_clear(&carry);
+
+    /* Wrapped, the kept frames across the end: 13 through 8, the newest 5 (9..13) from frame 0 of the ring on. */
+    ring = keep_ring_after(8U, 13U);
+    pulse_keep_to_carry(&carry, &ring, 5U);
+    assert(carry.len == 5U);
+    for (size_t i = 0; i < 5U; i++) {
+        assert(carry.frames[i] == (int16_t)(9 + i));
+    }
+    keep_carry_clear(&carry);
+
+    /* All 3 read, all kept: already in order. */
+    ring = keep_ring_after(32U, 3U);
+    pulse_keep_to_carry(&carry, &ring, 32U);
+    assert(carry.len == 3U && carry.frames[0] == 1 && carry.frames[1] == 2 && carry.frames[2] == 3
+           && carry.frames[3] == KEEP_UNWRITTEN);
+    keep_carry_clear(&carry);
+}
+
 int
 main(void) {
+    test_pulse_keep_moves_only_frames_read();
     test_pulse_size_helpers();
     test_pulse_ring_wrap_read_and_drop();
     test_pulse_output_attr_and_async_buffers();
