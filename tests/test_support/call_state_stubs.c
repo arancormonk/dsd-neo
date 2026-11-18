@@ -141,17 +141,6 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
 }
 
 int
-dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision) {
-    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == NULL || revision == NULL) {
-        return -1;
-    }
-    stub_select_state((dsd_state*)state);
-    *epoch = g_stub_calls[slot].epoch;
-    *revision = g_stub_calls[slot].revision;
-    return *epoch != 0U ? 1 : 0;
-}
-
-int
 dsd_call_state_protocol_family(int protocol) {
     // Mirrors the real store closely enough for the boundary decisions these
     // stubs exercise: P25 Phase 1 and Phase 2 must land in different families.

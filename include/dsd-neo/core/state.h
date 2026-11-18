@@ -2260,15 +2260,6 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
-    /* The IV an NXDN DES or AES call sent over the air (VCALL_IV, or the SCCH's IV A, B and C), and the call epoch on
-       slot 0 it came in (nxdn_note_received_iv()): the only value published or shown as the call's MI, never
-       payload_miN, which a followed assignment's key or the scrambler also writes. iv_a_valid/iv_a_epoch: an IV A
-       received, which an IV B and C complete for that call. */
-    uint64_t nxdn_rx_iv;
-    uint64_t nxdn_rx_iv_epoch;
-    uint64_t nxdn_rx_iv_a_epoch;
-    uint8_t nxdn_rx_iv_valid;
-    uint8_t nxdn_rx_iv_a_valid;
     uint16_t nxdn_pn95_seed;
 
     /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,
