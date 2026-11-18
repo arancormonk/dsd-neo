@@ -3434,7 +3434,14 @@ m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict) {
     }
     if ((gnss->validity & M17_GNSS_VALID_RADIUS) != 0U) {
         /* On the GPS line: a part of the report carries the producer's label (issue #800, D10). */
-        DSD_FPRINTF(stderr, " Radius: %.1f m;", gnss->radius_m);
+        if (gnss->radius_exponent >= 7U) {
+            /* Code 7 is every radius above 64 m (M17 spec 2.0.11: radii above 128 m are encoded as 7 too; the M17
+               Project's libm17 encoder gives 7 to any radius over 64 m): a lower bound, as m17_gnss_fill_fix() records
+               it, never 128 m. */
+            DSD_FPRINTF(stderr, " Radius: >64 m;");
+        } else {
+            DSD_FPRINTF(stderr, " Radius: %.1f m;", gnss->radius_m);
+        }
     }
     if (gnss->invalid_zero_fields != 0U) {
         DSD_FPRINTF(stderr, " Nonzero Invalid Fields: %X;", gnss->invalid_zero_fields);

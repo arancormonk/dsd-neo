@@ -1022,6 +1022,33 @@ test_refused_meta_prints_no_coordinates(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r6): radius code 7 is every radius above 64 m, with no upper bound (M17 spec 2.0.11): the console
+ * shows it as a lower bound, as the record does (err_m 64, ERR_LOWER_BOUND), never as 128 m. Code 6 is 64 m. */
+static void
+test_radius_code_7_prints_a_lower_bound(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    char out[4096];
+    gnss_meta(meta, GNSS_ALL_VALID, 7U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    if (rf_lsf_output(&r, meta, "m17_gnss_radius7", out, sizeof(out))) {
+        expect_true("radius code 7 printed as more than 64 m", strstr(out, "Radius: >64 m;") != NULL);
+        expect_true("radius code 7 never printed as 128 m", strstr(out, "128") == NULL);
+    }
+    dsd_position_fix f[2];
+    expect_int("radius code 7 kept", feed_records(&r, f, 2U), 1);
+    expect_int("radius code 7 record lower bound", f[0].flags & DSD_POS_FLAG_ERR_LOWER_BOUND,
+               DSD_POS_FLAG_ERR_LOWER_BOUND);
+    rig_close(&r);
+
+    rig_open(&r);
+    gnss_meta(meta, GNSS_ALL_VALID, 6U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    if (rf_lsf_output(&r, meta, "m17_gnss_radius6", out, sizeof(out))) {
+        expect_true("radius code 6 printed as 64 m", strstr(out, "Radius: 64.0 m;") != NULL);
+    }
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -1044,6 +1071,7 @@ main(void) {
     test_other_protocol_call_is_no_transmission();
     test_unbound_lsf_is_not_the_active_calls();
     test_refused_meta_prints_no_coordinates();
+    test_radius_code_7_prints_a_lower_bound();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

@@ -19,7 +19,7 @@ Implemented decode coverage:
   topic, once per transmission, sender and META content. The console prints its coordinates only once the position
   was accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23 (never used by the specification) is no position,
   a bearing above 359 degrees reads `Bearing: Invalid;` with the speed kept, and radius code 7 counts as "more than 64
-  m". M17 positions are not written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a
+  m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a
   position: M17 defines no GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
 - Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided.
