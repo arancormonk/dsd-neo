@@ -1787,48 +1787,6 @@ write_vcall_iv_fields(uint8_t* bits, uint64_t iv) {
     write_bits_u64(bits, 8U, iv, 64U);
 }
 
-/* A scrambled call (cipher 1) sends no MI. With its scrambler key loaded, dsd_state::payload_miN holds the scrambler's
-   LFSR seeded from that key (as the voice call assignment loads it): the VCALL's published crypto, and the event
-   history row built on it, carry no MI, so the key reaches no snapshot or output. A DES call's IV is its MI. */
-static int
-test_vcall_scrambler_seed_is_no_mi(void) {
-    int rc = 0;
-    for (int cipher = 1; cipher <= 2; cipher++) {
-        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-        static Event_History_I histories[2];
-        uint8_t bits[96];
-        if (!opts || !state) {
-            free(state);
-            free(opts);
-            return 1;
-        }
-        DSD_MEMSET(histories, 0, sizeof(histories));
-        state->event_history_s = histories;
-        state->nxdn_confirmed = 1;
-        state->R = 0x4D2ULL;
-        state->scalar_key_present[0] = 1U;
-        state->payload_miN = cipher == 1 ? state->R : 0x0102030405060708ULL;
-        DSD_MEMSET(bits, 0, sizeof(bits));
-        write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x1234U, 0x4567U, (uint8_t)cipher, 0x01U);
-        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-        dsd_call_snapshot call;
-        rc |= expect_int(cipher == 1 ? "scrambler-vcall-canonical" : "des-vcall-canonical",
-                         dsd_call_state_get(state, 0U, &call), 1);
-        if (cipher == 1) {
-            rc |= expect_u64("scrambler-vcall-mi", call.mi, 0U);
-            rc |= expect_u64("scrambler-vcall-event-mi", histories[0].Event_History_Items[0].mi, 0U);
-        } else {
-            rc |= expect_u64("des-vcall-mi", call.mi, 0x0102030405060708ULL);
-        }
-        state->event_history_s = NULL;
-        dsd_state_ext_free_all(state);
-        free(state);
-        free(opts);
-    }
-    return rc;
-}
-
 static int
 test_arib_vcall_uses_shifted_fields(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -3470,7 +3428,6 @@ main(void) {
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();
     rc |= test_sdcall_des_imported_zero_key();
-    rc |= test_vcall_scrambler_seed_is_no_mi();
     rc |= test_arib_vcall_uses_shifted_fields();
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();

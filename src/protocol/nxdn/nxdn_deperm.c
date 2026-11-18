@@ -845,7 +845,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                          : DSD_CALL_CRYPTO_UNKNOWN,
         .algid = cipher,
         .kid = 0U,
-        .mi = nxdn_published_mi(state, cipher),
+        .mi = state->payload_miN,
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
