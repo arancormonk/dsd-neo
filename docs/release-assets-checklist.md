@@ -168,3 +168,8 @@ resource bundle, so they travel with the binary rather than as a separate file.
 - [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against one of the trusted keys in `release-keys/` (`arancormonk-desktop-2026.pgp` or `arancormonk-laptop-2026.pgp`).
 - [ ] For each workflow run, verify the staging steps did not emit “missing required license file” errors.
 - [ ] Spot-check nightly and tag builds across all OSes after any packaging changes.
+- [ ] Assets with the Qt Quick frontend (the APK): open the Map screen with tiles on and confirm the attribution
+      "© OpenStreetMap contributors" shows at the bottom of the map, stays visible above an open detail sheet, and
+      opens <https://www.openstreetmap.org/copyright> (the ODbL notice; `THIRD_PARTY.md`, "Online Map Data"). Tiles
+      are fetched at run time and never bundled, so no license file ships for them; a release that changes the tile
+      default, the User-Agent or the cache rules is checked against the OSMF Tile Usage Policy first.

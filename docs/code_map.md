@@ -4810,7 +4810,7 @@ suite runs under this compiler.
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
     `include/dsd-neo/runtime/radioreference.h` and `radioreference_generate.h`; needs `USE_CURL` and `USE_EXPAT`, and
     reports `dsd_rr_available() == 0` without them. Shared curl setup lives in the module-private
-    `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
+    `src/runtime/curl_common.h`, alongside `rdio_export.c`'s and `tile_fetch.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
     Places: `dsd_rr_trs_details` keeps the system's `Trs.sState` and `Trs.sCounty` ids (`state_ids`, `county_ids`;
@@ -4840,6 +4840,38 @@ suite runs under this compiler.
     or without curl and expat, so the no-expat configuration still builds it. `radioreference/rr_provenance.c`
     reads and writes the plain-text `<file>.rr` sidecars that make a generated CSV refreshable. Both
     frontends consume that header, so the Qt model and the terminal wizard cannot drift apart.
+  - Map tile fetch (issue #800; `include/dsd-neo/runtime/tile_fetch.h`, `src/runtime/tile_fetch.c`): one blocking
+    HTTPS GET of one map tile per `dsd_tile_fetch()` call, for the Qt map's tile worker, which owns the thread, the
+    cache and the backoff (UI, Qt, "Map"). The header names no curl or Qt type, includes only `<stddef.h>` and declares
+    every entry point unconditionally: `dsd_tile_fetch_available()` is the runtime answer, true only with libcurl **and**
+    an asynchronous resolver (`CURL_VERSION_ASYNCHDNS`), since with `NOSIGNAL` a synchronous lookup ignores every
+    timeout; without either, the built-in transport returns `DSD_TILE_FETCH_ERR_UNSUPPORTED` ("online map tiles are not
+    available in this build"). Rules:
+    - https only, twice: the request URL is checked (`https://` + host, visible ASCII, at most 2048 B; else
+      `ERR_INVALID`, nothing sent), and after `dsd_curl_apply_hardening()` (which allows http for rdio) the helper
+      restricts the protocol itself, `CURLOPT_PROTOCOLS_STR "https"` from libcurl 7.85 and `CURLPROTO_HTTPS` below,
+      with the hardening's version guard. Android's cleartext flag does not bind native sockets, so this is the rule.
+    - Every `curl_easy_setopt` result is checked, and any failure fails the fetch closed (`ERR_SETUP`, nothing sent).
+    - Redirects are never followed: any 3xx but 304 is `ERR_REDIRECT`, a failure the worker backs off from.
+    - Caps: body 512 KiB (`DSD_TILE_FETCH_BODY_CAP_BYTES`), header block 32 KiB; over either is `ERR_TOO_LARGE`.
+    - Response fields (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`, `Date`, `Age`, `Vary`, `Retry-After`) come
+      raw from the final header block with `header_present`/`header_invalid` masks; interpreting them is the caller's.
+      A `Cache-Control` or `Vary` that cannot be carried whole fails the fetch (`ERR_BAD_HEADER`), so a lost `no-store`
+      or `Vary: *` can never be cached.
+    - Cancel: an opaque atomic token. The built-in transport runs through `dsd_curl_perform_cancellable()`
+      (`curl_common.h`; its third user after `rr_client.c` and `rdio_export.c`): a private multi handle polled every
+      100 ms at most in every phase, plus `XFERINFOFUNCTION` for the transfer itself, because libcurl calls no progress
+      callback during connect or TLS. A name lookup stops within that bound only from libcurl 8.20
+      (`CURLMOPT_QUICK_EXIT`, the stuck resolver thread ends by itself); older libcurl returns when the system resolver
+      does, so no caller may wait for a fetch on a UI thread.
+    - Privacy: nothing in the helper logs, and no error text carries the URL (a template can hold a key).
+    - The transport is injectable per request (`dsd_tile_fetch_transport`, like `dsd_rr_transport`); the curl option
+      seam `DSD_TILE_FETCH_TEST_HOOKS` is compiled only into tests. User-Agent: `dsd_tile_fetch_user_agent()`,
+      `dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`.
+    Tests: `RUNTIME_TILE_FETCH` (fake transport and a held name lookup: caps, header parsing, classification, cancel),
+    `RUNTIME_TILE_FETCH_NO_CURL`,
+    `RUNTIME_TILE_FETCH_CURL` and `RUNTIME_TILE_FETCH_CURL_PRE_7_85` (the options and their fail-closed setup, with
+    libcurl only), and the header smoke tests.
   - Session input failure latch (`include/dsd-neo/runtime/input_failure.h`, `src/runtime/input_failure.c`): the last
     failure of the session's input, kind and native code (`dsd_input_failure_report()`; `dsd_input_failure_clear()`
     at the session's start and when an Airspy opens or an rtl_tcp server connects), which
@@ -14985,9 +15017,10 @@ Qt Quick frontend (`src/ui/qt`):
   before that rebuild; skipped while Home is hidden, a sheet covers it or another tab is current, and never repeated
   for the same text). Nearest without a fix says "Nearest needs your
   location" and "Showing names until a location arrives" with a flat "Use my location" action; with a fix it says
-  "Using your location from %1" with "Update location". Both go through the site chooser's request contract
-  (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
-  it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
+  "Using your location from %1" with "Update location". Both go through the one-shot broker the site chooser uses
+  (`locationRequests.requestSite("savedSystems")`, "Map" under UI, Qt; a newer request from any screen supersedes it
+  and the broker says so with `ended()`, hiding Home or leaving Systems cancels it, an answer for another id is
+  ignored), and call
   `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
   cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
   hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`: the field also takes Return and
@@ -16389,7 +16422,10 @@ Qt Quick frontend (`src/ui/qt`):
   started, latched in `noteSessionStart()`, and as they are now: an edit while it runs reaches the decoder only at the
   next start, so it can take roaming away but never give it), and whose decoder
   snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
-  held talkgroup. The location feed runs only while armed. Main's start path carries out a switch: `switchRequested()`
+  held talkgroup. Roaming holds the shared `LocationFeed`'s "roaming" lease (`setLocationFeed()`, before `setHost()`
+  in `qt_ui.cpp`; "Map" under UI, Qt) only while armed: the feed starts the host's stream at the first lease and
+  starts it again after a foreground move, the epoch notice first, as roaming's own `m_seenEpoch` handling expects.
+  Main's start path carries out a switch: `switchRequested()`
   (Main records `pendingRestart.kind == "roam"`), `DecoderHost::stopForSwitch()`, then at Idle `startPlan()` (the
   checks: the foreground epoch and user stop generation read from the host now, the verdict derived again, the
   destination still a roamable, unavoided site of the group captured at the session's start), `noteWaitingForUsb()` /
@@ -16402,7 +16438,8 @@ Qt Quick frontend (`src/ui/qt`):
   change of a name alone (a site renamed by an RR update) or of the unit shown is a change of the view and is
   announced; the recovery notice is derived again from its two sites' names (`refreshNotice()`, its own signal). Tests:
   `check_executor_metadata_changes()`, `tst_site_roaming.qml` `test_24c`.
-  Rule: a fix the host delivers (`locationStreamUpdate`, emitted inside its refresh, which `UiController::tick()` runs
+  Rule: a fix the host delivers (`locationStreamUpdate`, passed on in the same call by `LocationFeed::updated()`,
+  emitted inside its refresh, which `UiController::tick()` runs
   before the tick's model refresh) is stored at once and judged as the event loop turns (`evaluateSoon()`, one queued
   call), so the decision reads that tick's decoder snapshot (`facts`): a call that began between polls holds the
   switch. The initialization edge, also signalled inside the host's refresh, revokes the evidence (`revoke()` in
@@ -16493,8 +16530,9 @@ Qt Quick frontend (`src/ui/qt`):
   with `Qt.callLater`). Tests: `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml`
   (`UI_QT_QML_CALL_LISTS`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
-  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`) and the Activity list (`activityList`, keyed by
-  seq through `UnitActivityFilterModel::rowForSeq()`) get their models from a `KeepPlace` only
+  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`), the Activity list (`activityList`, keyed by
+  seq through `UnitActivityFilterModel::rowForSeq()`) and the Map's List (`MapList.qml`, keyed by track id through
+  `positionView.rowForTrack()`; issue #800) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
   them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
@@ -17059,8 +17097,10 @@ Qt Quick frontend (`src/ui/qt`):
   with no error and no change to the saved fix, and `SiteChooserSheet` returns to its idle text (`ANDROID_LOCATION_JVM`,
   `UI_QT_ANDROID_HOST` `check_location_record()`, `UI_QT_RADIO_REFERENCE`, `tst_site_chooser_sheet.qml`).
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
-  `DecoderHost::requestSiteLocation` shares request ownership and cancellation with nearby import but asks Android
-  for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
+  `DecoderHost::requestSiteLocation` asks Android for coordinates only, and `LocationRequests` (issue #800, "Map"
+  below) owns the single request for every requester (the site chooser, Nearest, nearby import and the map), so a
+  newer request ends the one before it and only its own id is answered: fixes must be at most 30 seconds old, a cache
+  must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
   permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
@@ -18016,6 +18056,150 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_SPECTRUM_TRACE_GEOMETRY` (coverage against the exact ramped outline), `UI_QT_SPECTRUM_MODEL` (the GPU tree
   through a test hook, the software picture, a real window, one fold per frame, model destruction, fractional edges),
   `UI_QT_SPECTRUM_MATH`.
+- Map (issue #800; user guide in `android/README.md` "Map", privacy in `PRIVACY_POLICY.md` "Map"). Where the radios
+  that sent a checked position are, from the verified position feed (`app_control/position_view.h`, above). The parts,
+  data first:
+  - `map_math.h` (Qt-free, header-only): Web Mercator arithmetic. Positions in fixed point (`world_from_e7()` refuses
+    out-of-range values), the ±85.0511° clamp, the ±180° wrap, the visible tiles at the nearest whole zoom (centre
+    first, at most 1024), pan and zoom about an anchor, one drawn copy of every point (the one nearest the view centre;
+    taps test the same copy), tracks continuous across 180°, and fit-to-markers on the shortest east-west arc.
+    `clamp_viewport()` raises the zoom until the world is at least as wide as the view, so no second copy of the world
+    shows. A non-finite point is a track break, never bridged. Test: `UI_QT_MAP_MATH`.
+  - `map_geometry.h` (Qt-free, header-only, on `spectrum_trace_geometry.{h,cpp}`): triangle lists for trails (the
+    spectrum stroke; dashed where provisional, clipped to the view; trails are opaque, since strokes overlap at sharp
+    turns), accuracy circles (one cover per pixel, view-clipped) and device-pixel-snapped marker sprite quads. Test:
+    `UI_QT_MAP_GEOMETRY`. Both headers rely on IEEE semantics: their includers build with `-fno-fast-math`.
+  - `map_tile_http.{h,cpp}` (pure HTTP field parsers: HTTP-date, delta-seconds, Cache-Control, Vary) and
+    `map_tile_cache.{h,cpp}` (`MapTileCache`, worker thread only): an RFC 9111 private cache. Freshness: `max-age`,
+    else `Expires − Date`, age from `Age`/`Date`; a malformed value is stale; the 7-day default only when the server
+    gives no freshness at all (OSM's tile policy). `no-store`: never on disk or in the decoded-image cache, and it
+    removes an older entry; `no-cache`: stored, and every reuse revalidates first; `must-revalidate`: never served
+    stale; `Vary: *` never stored, other `Vary` fields stored with the values sent and compared on reuse. A 304 merges
+    its metadata into the entry (§4.3.4). A 304 is matched to the entry by a weak ETag comparison, on purpose: the cache
+    holds one response per tile, the one the request named in `If-None-Match`. One
+    file per tile (`<z>-<x>-<y>.tile`: magic, metadata JSON, PNG; written whole by `QSaveFile`, owner-only) under
+    `QStandardPaths::CacheLocation/map-tiles/<first 128 bits of the template's SHA-256>`, so the template itself is
+    never written. 64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
+    entries are deleted and stray temp files removed at the first scan. The cache is outside the backup allowlist
+    (`backup_archive.h`), so it is never backed up. Wall clock through `realtime_clock.h`.
+  - `map_tile_worker.{h,cpp}` (`MapTileWorker`, registered as `MapTileSource`): GUI-thread object, off by default
+    (no thread, no disk, no request while off; started lazily at the first enable). Its work runs on one
+    `std::thread` with a condition variable, never a QThread event loop (Android suspends those with the app). One tile
+    at a time in the order asked, cache hits first, in-view keys only, no prefetch. Every `requestTiles()` and
+    `clearRequests()` makes a new generation; the owner (`MapView`) clears on close, List, hiding and the app leaving
+    the foreground. A key still asked for keeps its fetch in flight. Epochs: work started before an on/off or template
+    change delivers nothing, posts no state, adds no backoff and is never retried, so one template's validators never
+    reach another server. Backoff: 1 s doubling to 5 min, or `Retry-After` (seconds or date, at least 1 s); a success
+    or a template change resets it (on/off does not). Results go back with a queued `invokeMethod`; a fetch that
+    returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor stored. Teardown never waits on the
+    GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to the thread, which ends by itself.
+    Every thread is in a registry, joined at the next start; `shutdownThreads(kShutdownJoinMs)` (2 s, android/main.cpp
+    `TeardownStage("map tile threads")` right after `engine.reset()`, and a `qAddPostRoutine` on every platform)
+    joins what ends in time and releases only an old libcurl stuck in a name lookup. `validTemplate()`: `https://`, a
+    host without braces or userinfo, each of `{z}{x}{y}` once, no other braces, at most 2048 B filled; `templateHost()`
+    gives the host (with port) the settings sheet names. The template and the tile URLs are never logged or stored.
+    Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
+    epochs, backoff, Retry-After, UA, https only, the exit join).
+  - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as
+    `positionView`): the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
+    `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at
+    Stop. A track is a typed source (protocol family, scope, ID or callsign; D7 identity): 100 points each, 200 tracks,
+    the oldest newest-report arrival evicted first (an anonymous point before any named track). Hashed or unverified
+    sources are anonymous single points with no trail or name; validity-unknown fixes (D11) are kept apart, hollow and
+    never on a trail; provisional formats (D12) are flagged per point (dashed). A trail breaks at a cursor loss, a queue
+    drop and a stream change, and the List shows one gap row ("Positions may be missing from …") only where reports may
+    really be missing (a stream read to its end after its run stopped is read through). Ages: SYSTEM fixes on the wall
+    clock; REPLAY fixes only on the sample of their own running replay that the view returns with the cursor, so no
+    clock is ever mixed; no age is older than any filter. `ageFilterSeconds` (0, 900, 3600) is the map's and the
+    List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
+  - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
+    Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
+    a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
+    and gap rule both share. Test: `UI_QT_POSITION_MODEL`.
+  - `location_feed.{h,cpp}` (`LocationFeed`, context property `locationFeed`): the one owner of the host's continuous
+    location stream (`DecoderHost::startLocationStream()`/`stopLocationStream()`/`locationStreamUpdate`), through
+    idempotent named leases ("roaming" for `SiteRoaming`, "map" for live follow). The first lease starts the stream,
+    the last one stops it. The feed follows the application state itself: Hidden/Suspended clears `record` at once (no
+    fix from before can read as live); Active runs `noteForeground()`, which on a moved foreground epoch emits
+    `foregroundMoved()` first and then starts the stream once for every lease, so roaming still sees the notice before
+    the first new fix. `setHost()` drops every lease (`leasesDropped()`). `record.fixAtMs` is monotonic
+    (`dsd_realtime_mono_ms()`), never epoch time, and a stream fix is never saved. Test: `UI_QT_LOCATION_FEED`.
+  - `location_requests.{h,cpp}` (`LocationRequests`, context property `locationRequests`): the one-shot broker over
+    `DecoderHost::requestSiteLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
+    one on every new request (`LocationSupport.kt`), so the broker owns the single request in flight: the newest
+    wins, the one it replaces is cancelled and its requester told with `ended()`, and only the pending id is ever
+    answered (`answered(requester, id, result)`). Requesters: "siteChooser", "savedSystems" (Listen's Nearest),
+    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me). An answer a host gives inside the
+    request call is delivered once the event loop turns. Saving the one-shot fix stays the requester's
+    (`prefs.setLocationFix()`). Test: `UI_QT_LOCATION_REQUESTS`. Both objects are published by `qt_ui.cpp`
+    `publish_location()` and, under the same names, by the QML harness (`tests/ui/qml_test_context.h`, over
+    `LocationRelayHost`).
+  - `map_view_item.{h,cpp}`, `map_view_paint.cpp`, `map_view_detail.h`, `map_scene.h` (`MapViewItem`, registered as
+    `MapView`): the canvas, a `QQuickItem` on the scene graph like the spectrum trace: one `QSGImageNode` per tile
+    (greyscale duotone, ink and paper from Theme), trails and circles as geometry, markers from a pre-rendered sprite
+    atlas, labels rendered on the GUI thread when the scene changes. The software scene graph (every QML test) paints a
+    `QImage` instead. One visual variable per state: freshness is fill strength over a halo base (4 levels, ages from
+    the model), an unconfirmed source a dashed outline, validity unknown an open ring at its own fix (no freshness: it
+    has no fill), a provisional format a double outline and a dashed trail, emergency the alert colour with the word
+    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). Labels never
+    overlap: emergencies first, then the selected track, then the freshest; the List has every name. While a new
+    zoom's tiles load, earlier zooms' tiles in view stand in (at most 64). The item holds no gesture state: the screen's
+    handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `centerOnTrack()`,
+    `centerOnDevice()`, `centerOn()`, `trackAt()`, `markerPoint()`, `pointFor()` (the History pin). `followTrackId`
+    and `followDevice` re-centre on every change; a pan ends either. `cameraUsedDevicePosition` turns true once the
+    camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
+    saved-view rule below reads it. Tile loading stops at once (not at the next polish, which a hidden window never
+    gets) when the app goes Hidden/Suspended, the item hides or leaves its window, or `active` goes false (the List).
+    Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the software picture, pan reuse across the wrap, background
+    stop).
+  - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills, the status column, the control column of
+    48 px buttons, the attribution chip kept above the detail sheet), `MapList.qml` (the List), `MapPositionSheet.qml`
+    (a marker's, row's or pin's detail sheet), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
+    and Follow my position), `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and
+    `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has
+    `mapPaper`, `mapTileInk`, `mapGrid`, `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable
+    `reducedMotion`, fed by `DecoderHost::reducedMotion` (Android: `ValueAnimator.areAnimatorsEnabled()`, read in
+    `refreshPresentation()`; desktop false): with it the camera jumps (`cameraDurationMs` 0, else 250 ms).
+  - Tiles: off until "Load map tiles" (the empty state's or the prompt's) or the Map settings switch, and the prompt
+    and the settings name the host the viewed area goes to. The attribution ("© OpenStreetMap contributors") is always
+    visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`). Tile
+    trouble is a quiet chip, never a modal.
+  - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
+    refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
+    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow
+    on, precise only ("Live position needs precise location." otherwise). A live fix moves the dot and the camera,
+    nothing else. Desktop has no location: the button is hidden.
+  - Navigation: `mainRoot.mapOpen`, a `Loader` built at the first open and kept (its view, tile source and the List's
+    place survive a close), declared after the session tools so it covers idle and session History. Its guard joins
+    `callRecordingsOpen` at the six sites that block auto-start and the session tools under it. Entries: the session
+    menu row "Map" (`sessionMenuMap`, unconditional), History's top bar "Map" (`historyMapButton`, idle and in a
+    session, so kept tracks stay reachable after Stop) and "Show on map" in the History/Listen/Monitor detail sheet
+    (`historyShowOnMap`, `HistoryDetailSheet.showMap`, false in Signal search; only for a row with a position). "Show on
+    map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
+    row is still logged and its screen shows, else the focus goes back to that screen; a close the app makes (an
+    incoming document) reopens nothing. Stop keeps the map open. The pin is the row's saved fix
+    (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
+    errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
+    without one); `position_kind_text.h` names a report format in the same words on the map and on the pin.
+  - Prefs (spec 4.8; `AppPrefs`, all device-local, so never in a backup and untouched by a restore): `map/tilesEnabled`,
+    `map/tileUrl` (a template can hold a key), `map/tileAttribution` (both read as the OpenStreetMap defaults when
+    unset or empty), `map/ageFilter` (0, 900 or 3600) and `map/viewport` (`{latitude, longitude, zoom}`, stored as
+    whole numbers: 1e-7°, 0.001 zoom). A view write is held in memory and reaches the file a second after the last
+    one, when the app leaves the foreground, or when `AppPrefs` goes, since a pan writes every frame and each QSettings
+    write rewrites the file. Follow is never saved. Rule: no view derived from the device's position is ever stored.
+    `MapViewKeeper.qml` saves the view on every change only while `cameraUsedDevicePosition` is false; once Locate me,
+    follow or a fit that took in the device dot has used it, nothing more is saved that visit (a later pan or zoom
+    still starts from there), and closing the map puts the view back on the last saved one (or on the whole world,
+    with the camera placed again at the next open, when none is saved), so the next visit starts from a view the
+    device did not shape. A first open restores the saved view instead of fitting the radios. Tests:
+    `UI_QT_PERSISTENCE` (`test_map_prefs()`, the pinned key table, a backup leaving the map keys out and a restore
+    leaving them alone), `UI_QT_BACKUP_ARCHIVE` (an edited backup's map keys dropped), `tst_map_prefs.qml` (follow
+    on, follow off then zoom, follow off then fit, close, restart, a first fit with the device, the pin).
+  - Accessibility: the canvas is `Accessible.ignored`; the List is its complete equivalent (every mark, each state in
+    words, the same sheet and Follow), detached while hidden (`KeepPlace`), its row names paced (`SpeechPacer`,
+    `Navigation.speechPeriodMs`), rows updated in place. The sheet's ages are `LiveText`. Every map action has a
+    button. Tests: `tst_map_screen.qml`, `tst_main_map.qml` (navigation), `tst_map_view.qml` (pixels),
+    `qml_a11y/tst_a11y_map.qml` (churn while fixes arrive).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
@@ -18859,7 +19043,8 @@ because a user stop or leaving the foreground came after its expectations; the n
 `stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
 default false: the Stopping on screen began with `stopForSwitch()` and no `stop()` came since), `retireRoamAttempt()` (true when the roam's start never runs;
 default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
-default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
+default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()` (on the Qt side called only by
+`LocationFeed`, the stream's one owner since issue #800), `requestRoamingPermission(id)`,
 `openAppLocationSettings()`, `openLocationSourceSettings()` (no-ops), and the signal `locationStreamUpdate(record)`:
 {generation, state, hasFix} and with a fix {provider, measurementNs, lat, lon, accuracyM, fixAtMs}. `fixAtMs` is the
 poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
@@ -20143,7 +20328,8 @@ item view refills its delegates even while invisible, so:
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
   (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at the
-  reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
+  reader's place (History, Home's recent calls, the Talkgroups grid, Activity, the Map's List; see "Hidden lists" under
+  UI, Qt), or a
   `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
   detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
   follows the snapshot can instead refresh only while visible (`NetworkSheet`).

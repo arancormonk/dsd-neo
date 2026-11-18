@@ -55,6 +55,18 @@ not a finding that every component is cleared for redistribution.
   Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
   — today that is the Android app.
 
+## Online Map Data (fetched at run time, not shipped)
+
+- **OpenStreetMap tiles** (Qt Quick frontend's Map screen, issue #800) — map data © OpenStreetMap contributors,
+  available under the Open Data Commons Open Database License (ODbL) 1.0 from the OpenStreetMap Foundation; see
+  <https://www.openstreetmap.org/copyright>. No map data or tile is in the source tree or in any asset. The app fetches
+  tiles from `https://tile.openstreetmap.org/{z}/{x}/{y}.png` only after the user turns map tiles on, under the OSMF
+  Tile Usage Policy (<https://operations.osmfoundation.org/policies/tiles/>): a distinct User-Agent
+  (`dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`), the server's cache headers honoured (at least 7
+  days when it sends none), in-view tiles only (no prefetch, no bulk or offline download). The map always shows
+  "© OpenStreetMap contributors", linked to the copyright page, while that source is used. Another tile server the
+  user enters in Map settings brings its own terms, and the user enters its attribution with it.
+
 ## Embedded Provenance-Bearing Code
 
 - **EDACS-FME / EDACS helpers** (`src/protocol/edacs/edacs-fme.c`) - source comments credit EDACS-FM, sp5wwp/ledacs,

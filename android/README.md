@@ -264,8 +264,12 @@ USB/lifecycle diagnostics use the runtime log surface, including when no Activit
 exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
 after 24 hours, on load/read and by a foreground timer. Location producers use
 `AppPrefs::setLocationFix` to publish the tuple with one coherent notification; the coordinate
-and timestamp properties are read-only to QML. The device's coordinates and direct
-key fields must never be included in diagnostic exports. Received positions are removed
+and timestamp properties are read-only to QML. The map's Locate me goes through the same coordinate-only request, as
+requester "map" of the shared broker (`LocationRequests`), and its Follow my position takes the "map" lease of the
+stream roaming uses (`LocationFeed`): the stream runs while either needs it, and a followed fix is never saved. The
+device's coordinates and direct key fields must never be included in diagnostic exports, and neither may a tile URL or
+the tile server address: nothing on the map's path logs one, and errors never carry the URL. Received positions are
+removed
 too: `DiagnosticsLog::redact()` drops every record that shows a decoded position or
 carries a producer's position label in `kPositionMarkers` (a position, a position message
 or a part of a received report), with any payload bytes printed on it, in exports and in
@@ -696,6 +700,57 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   settings, never the recordings. A restored Storage limit lower than what the recordings on the phone take removes the
   oldest of them when DSD-neo next opens.
 
+## Map
+
+**Map** in the session menu, or the **Map** button at the top of History, shows where radios that sent their position
+are. A History row with a position also has **Show on map** in its detail sheet; Back from the map opens that row
+again. The map keeps its radios after Stop, for as long as the app runs, so History's **Map** button still reaches
+them.
+
+Each radio is a marker with a trail of its last positions. What a marker looks like says how much to trust it, and the
+detail sheet and the List say the same in words:
+
+- A faded marker is an older position. The pills at the top show only the last 15 minutes, the last hour, or all.
+- A dashed outline is a radio that is not confirmed (its ID was hidden or not checked). It gets no trail and no name.
+- An empty ring is a position that may be old or invalid: the radio reported that it may have no current fix.
+- A double outline and a dashed trail mean the report's format is not confirmed by a published specification.
+- An emergency is in the alert colour with the word **Emergency** in its label. The radio you picked is in cyan.
+
+**List** shows the same radios as rows, with every state in words. A screen reader uses the List; the map itself is not
+read. Every map action has a button: zoom in and out, **Show every radio**, **Locate me**.
+
+### Map tiles
+
+Until you turn tiles on, the map is a plain grid and the app sends nothing. **Load map tiles** (on the empty map, or in
+the prompt on the map) or the switch in **Map settings** (the menu at the top right) turns them on. The prompt and the
+settings name the server first: OpenStreetMap's (`tile.openstreetmap.org`) unless you enter another `https://` address
+with `{z}`, `{x}` and `{y}` in it, and the attribution that server asks for. The attribution stays at the bottom of the
+map, above any open sheet, and for OpenStreetMap it opens its copyright page.
+
+With tiles on, the app asks the server only for the tiles of the area on screen, over HTTPS, with the User-Agent
+`dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`. The server sees which area you look at, your IP address
+and that User-Agent (see `PRIVACY_POLICY.md`, "Map"). It never gets positions, radio IDs or anything else the app
+decoded. Tiles are kept in the app's cache (up to 50 MB) and follow the server's cache rules, or 7 days when it gives
+none. There is no download for offline use: OpenStreetMap's tile policy does not allow it. When the server cannot be
+reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries again later, waiting
+longer each time (up to 5 minutes).
+
+### Your own position
+
+**Locate me** asks for your location once and puts a dot there. It is saved like the nearby-site chooser's fix and
+dropped after 24 hours. Press the button again while the map is still on the dot to **Follow my position**: the map
+then moves with you, using precise location, only while the map is on screen. Leaving the map, moving it by hand or
+pressing the button a third time stops it, and those live positions are never saved. Without precise location the map
+says **Live position needs precise location.**
+
+### What the map keeps
+
+The map remembers, on this phone only, whether tiles are on, the tile server and its attribution, the age filter and
+the area you last looked at. None of these go into a backup, and a restore leaves them as they are. The saved area is
+never one centred on you: once Locate me, Follow my position or **Show every radio** has used your dot, the map saves
+no area for the rest of that visit, and closing it goes back to the last area it saved. Following a radio is never
+saved. Tracks are kept in memory only; History rows keep their own position.
+
 ## Backup and restore
 
 Settings → **Backup** saves your setup as one encrypted file, to keep a copy or to move it to another phone.
@@ -708,7 +763,8 @@ decoder arguments and the RadioReference username and application-key override.
 It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
 detection history, diagnostics, the last location fix, whether GPS roaming is on (its two distances are carried), the
 Listen tab the phone opens on and the order Listen sorts saved systems in (each phone remembers its own, and a restore
-keeps them) and first-run state. The RadioReference password is never saved, so it is never in a backup.
+keeps them), the Map settings, age filter and saved map area (a tile server address can hold a key; a restore keeps the
+phone's own) and first-run state. The RadioReference password is never saved, so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again,
 and neither are temporary files an import left behind in a bundle folder (only when nothing uses them). An imported
 file is carried whatever it is called. A
@@ -1912,8 +1968,9 @@ M17 voice or has lost the RadioReference import. The triplet links statically,
 so they end up inside `libdsd-neo-app_arm64-v8a.so` — there is no extra `.so` to
 package and no `System.loadLibrary` change.
 
-libcurl backs the rdio-scanner upload path and the RadioReference client, both
-through `src/runtime/curl_common.c`. `android.permission.INTERNET` is already
+libcurl backs the rdio-scanner upload path, the RadioReference client and the map's
+tiles (`src/runtime/tile_fetch.c`, HTTPS only, no redirects), all through
+`src/runtime/curl_common.c`. `android.permission.INTERNET` is already
 declared, and because OpenSSL's compiled-in `/etc/ssl/certs` does not exist on
 Android, that helper supplies the trust store itself.
 
@@ -1944,6 +2001,11 @@ module behind it, so androiddeployqt has nothing extra to package.
   DSD-neo runs, a save picker the app stops waiting for (the screen that asked for it closed) is closed too, so it
   makes no file.
 - **arm64-v8a only.** armv7 would run scalar-only DSP and is out of scope.
+- **The map has no offline tiles and no background location** (#800). Tiles load only for the area on screen while
+  the phone is online, and the tile server can block an app it sees misusing it (OpenStreetMap's tile policy). Follow
+  my position works only with precise location and only while the map is on screen. A system whose identity is learned
+  after its first positions starts a second track for the same radio. The desktop app has no location, so it has no
+  Locate me.
 - **GPS roaming works only on screen and with precise location** (#786). The app has no
   location in the background (no background location permission and no `location`
   foreground service), so leaving DSD-neo or turning the screen off cancels a switch
