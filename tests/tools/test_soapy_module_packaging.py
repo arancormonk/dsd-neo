@@ -287,8 +287,9 @@ class SoapyModulePackaging(unittest.TestCase):
                          ("notice-retained", "reviewed-terms"))
         self.assertNotIn("finding", component)
         self.assertEqual(component["notices"], [RUNTIME_NOTICE_SOURCE])
+        # legal/msvc-runtime.md comes with the legal component; the release checks require it with the runtime.
         self.assertEqual(component["windows_release"]["notices"],
-                         {RUNTIME_NOTICE: "repo:" + RUNTIME_NOTICE_SOURCE})
+                         {RUNTIME_NOTICE: "repo:" + RUNTIME_NOTICE_SOURCE, "legal/msvc-runtime.md": "legal-component"})
         self.assertIn("legal/msvc-runtime.md", component["assessment"])
         # The end-user notice: whose the files are, their terms and that they bind those files only, no endorsement,
         # and where Microsoft publishes the runtime.
@@ -932,14 +933,14 @@ class SoapyReleaseScripts(unittest.TestCase):
             f"CMAKE_CXX_COMPILER:STRING={compiler}\r\nCMAKE_CXX_COMPILER_LAUNCHER:STRING=sccache\r\n"
             f"CMAKE_C_COMPILER:STRING={compiler}\r\nCMAKE_LINKER:FILEPATH={toolset}/bin/Hostx64/x64/link.exe\r\n")
 
-    def stage(self, tools, build, installed, windows):
+    def stage(self, tools, build, installed, windows, repo=ROOT):
         stage = self.work / "dist/dsd-neo-msvc"
         env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows))
         env["ProgramFiles(x86)"] = str(self.program_files)
         for name in ("VCToolsInstallDir", "VCToolsRedistDir"):
             env.pop(name, None)
         env.update(self.shell)
-        rc, out, err = self.pwsh(STAGE, "-Script", ROOT / "tools/windows/stage_release_tree.ps1", "-Build", build,
+        rc, out, err = self.pwsh(STAGE, "-Script", repo / "tools/windows/stage_release_tree.ps1", "-Build", build,
                                  "-Stage", stage, "-Installed", installed, env=env)
         return rc, out + err, stage
 
@@ -1027,6 +1028,38 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 1, output)
         self.assertIn("Missing DLL dependencies", output)
         self.assertIn("hackrf.dll", output)
+
+    def test_stage_release_tree_keeps_notice_sources_in_their_roots(self):
+        # A record's repo: or build: source names a file inside the repository or the build tree: staging refuses one
+        # that climbs out of it, even to a file that exists. The staging reads the inventory of the repository its
+        # script is in, so the script runs from a copy whose other folders are the repository's.
+        tools, build, installed, windows = self.fake_tree()
+        repo = self.work / "repo"
+        (repo / "tools").mkdir(parents=True)
+        shutil.copytree(ROOT / "tools/windows", repo / "tools/windows")
+        shutil.copytree(ROOT / "legal", repo / "legal")
+        for entry in ROOT.iterdir():
+            if entry.name not in ("tools", "legal", ".git"):
+                (repo / entry.name).symlink_to(entry)
+        (self.work / "outside.txt").write_text("not a notice of the release\n")
+        components = repo / "legal/components.json"
+        original = components.read_text(encoding="utf-8")
+        for source in ("build:../outside.txt", "repo:../outside.txt", "repo:legal/../../outside.txt",
+                       "build:./../outside.txt", "repo:legal//components.json"):
+            with self.subTest(source=source):
+                shutil.rmtree(self.work / "dist", ignore_errors=True)
+                inventory = json.loads(original)
+                portaudio = next(c for c in inventory["components"] if c["id"] == "portaudio")
+                portaudio["windows_release"]["notices"]["licenses/outside.txt"] = source
+                components.write_text(json.dumps(inventory), encoding="utf-8")
+                rc, output, stage = self.stage(tools, build, installed, windows, repo=repo)
+                self.assertEqual(rc, 1, output)
+                self.assertIn(f"names a source outside its root: '{source}'", output)
+                self.assertFalse((stage / "share/doc/dsd-neo/licenses/outside.txt").exists())
+        components.write_text(original, encoding="utf-8")
+        shutil.rmtree(self.work / "dist", ignore_errors=True)
+        rc, output, _ = self.stage(tools, build, installed, windows, repo=repo)
+        self.assertEqual(rc, 0, output)
 
     def test_stage_release_tree_takes_the_runtime_from_the_toolset(self):
         # The Visual C++ runtime comes from the toolset's redistributable folder, the files Microsoft's terms cover
@@ -1400,6 +1433,22 @@ class SoapyReleaseScripts(unittest.TestCase):
                         del self.report["dependents"][path.name]
         shutil.rmtree(root / "lib/.cache")
         self.write_report(tools)
+
+    def test_verify_release_tree_needs_the_runtime_record_with_the_runtime(self):
+        # legal/msvc-runtime.md, which records Microsoft's terms for the runtime DLLs and how the release meets them,
+        # ships with those DLLs: a tree that lost it fails, like one that lost the end-user notice.
+        tools, root, windows = self.release_tree()
+        record = root / "share/doc/dsd-neo/legal/msvc-runtime.md"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text("Visual C++ runtime terms\n")
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        record.unlink()
+        self.assert_verify_refuses(tools, root, windows, f"MSVCP140.dll (msvc-runtime): {record}",
+                                   f"VCRUNTIME140.dll (msvc-runtime): {record}")
+        record.write_text("")
+        self.assert_verify_refuses(tools, root, windows, f"MSVCP140.dll (msvc-runtime): {record}")
+        self.write_notices(root)
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)
 

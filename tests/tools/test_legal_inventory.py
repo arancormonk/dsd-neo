@@ -92,10 +92,53 @@ class InventoryTests(unittest.TestCase):
                     {"licenses/extra.txt": "repo:LICENSES/missing.txt"})),
             "a component the ZIP does not carry": edit(
                 "ibm-plex", lambda c: c.update(windows_release={"binaries": ["dsd-neo.exe"], "notices": {}})),
+            # A notice source must stay inside the root its prefix names, whatever follows the prefix.
+            "a build notice above the build tree": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update({"licenses/x.txt": "build:../COPYRIGHT"})),
+            "a repository notice above the repository": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update({"licenses/x.txt": "repo:../COPYRIGHT"})),
+            "a repository notice through a parent folder": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update(
+                    {"licenses/x.txt": "repo:LICENSES/../COPYRIGHT"})),
+            "an absolute build notice": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update({"licenses/x.txt": "build:/COPYRIGHT"})),
+            "a build notice with an empty part": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update(
+                    {"licenses/x.txt": "build:pffft-licenses//pffft-LICENSE.txt"})),
+            "a build notice through the current folder": edit(
+                "portaudio", lambda c: c["windows_release"]["notices"].update(
+                    {"licenses/x.txt": "build:./pffft-licenses/pffft-LICENSE.txt"})),
+            # Every standalone library the ZIP carries ships a notice; only the recorded exception compiled into
+            # dsd-neo.exe has none.
+            "a standalone library without notices": edit("mpg123", lambda c: c["windows_release"].update(notices={})),
+            "the runtime without notices": edit("msvc-runtime", lambda c: c["windows_release"].update(notices={})),
+            "embedded code without notices": edit("tiny-aes", lambda c: c["windows_release"].update(notices={})),
+            "the exception in a standalone file": edit(
+                "wallace-golay", lambda c: c["windows_release"].update(binaries=["golay.dll"])),
         }
         for label, inventory in cases.items():
             with self.subTest(case=label), self.assertRaises(ValueError):
                 legal.validate(inventory, ROOT)
+
+    def test_release_files_may_be_any_name_windows_loads(self):
+        # The release scripts follow imports whatever their suffix and stage names with spaces (Test-ImportName in
+        # tools/windows/release_tree_checks.psm1), so a record can name every such file, in lower case.
+        inventory = copy.deepcopy(self.inventory)
+        portaudio = next(c for c in inventory["components"] if c["id"] == "portaudio")
+        portaudio["windows_release"]["binaries"] = ["portaudio.dll", "vendor.drv", "vendor support.dll", "a.b-c+d_e"]
+        legal.validate(inventory, ROOT)
+        for name in ("Vendor Support.dll", "VENDOR.DRV", "vendor.dll.", "vendor.dll ", "bin/vendor.dll",
+                     "bin\\vendor.dll", "c:vendor.dll", "vendor?.dll", "vendor*.dll", "vendor<.dll", "..", ".", "",
+                     "vendor\x01.dll"):
+            portaudio["windows_release"]["binaries"] = ["portaudio.dll", name]
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                legal.validate(inventory, ROOT)
+        # The Visual C++ runtime record keeps its own list of the files a toolset's runtime folder holds.
+        runtime = next(c for c in inventory["components"] if c["id"] == "msvc-runtime")
+        runtime["windows_release"]["binaries"] = ["msvcp140.dll", "vendor.drv"]
+        portaudio["windows_release"]["binaries"] = ["portaudio.dll"]
+        with self.assertRaises(ValueError):
+            legal.validate(inventory, ROOT)
 
     def test_binary_sboms_preserve_uncertainty_and_dependency_identity(self):
         for platform in legal.PLATFORMS:

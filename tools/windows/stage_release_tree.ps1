@@ -149,8 +149,8 @@ try {
 # The notices of the components of every file staged in bin\ and lib\, from where
 # their records say: the repository (repo:), the build tree (build:, the downloaded
 # PFFFT's and TETRA_crypto's), the copyright file a vcpkg port installs (vcpkg:<port>,
-# share\<port>\copyright) or the legal component installed above (legal-component,
-# mbelib's). A file no record lists stops the staging.
+# share\<port>\copyright) or the legal component installed above (legal-component:
+# mbelib's notices, LICENSES\ and legal\). A file no record lists stops the staging.
 $componentsPath = Join-Path $repoRoot 'legal/components.json'
 $records = Get-ReleaseBinaryRecords -ComponentsPath $componentsPath
 foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
@@ -163,10 +163,15 @@ foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
             if ($from -eq 'legal-component') {
                 continue
             }
-            if ($from -match '^repo:(.+)$') {
-                $source = Join-Path $repoRoot $Matches[1]
-            } elseif ($from -match '^build:(.+)$') {
-                $source = Join-Path $build $Matches[1]
+            if ($from -match '^(repo|build):(.+)$') {
+                $sourceRoot = if ($Matches[1] -eq 'repo') { $repoRoot } else { $build }
+                $relative = $Matches[2]
+                # A path inside its root: no drive or root, and no empty, '.' or '..' part.
+                $parts = @($relative -split '[/\\]')
+                if ($relative.Contains(':') -or @($parts | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) {
+                    throw "The notice $notice of $($record.Component) names a source outside its root: '$from'"
+                }
+                $source = Join-Path $sourceRoot $relative
             } elseif ($from -match '^vcpkg:([a-z0-9-]+)$') {
                 $source = Join-Path $installed "share/$($Matches[1])/copyright"
             } else {

@@ -23,9 +23,29 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis", "opus", "mp3lame",
             "mpg123"}
 # Where the Windows staging takes a notice the ZIP carries for a component: the repository, the configured build
-# tree, the copyright file a vcpkg port installs (share/<port>/copyright) or the legal CMake component (mbelib's).
-NOTICE_SOURCE = re.compile(r"(repo|build):(?!/)(?!.*(?:^|/)\.\.(?:/|$))[\w.+/-]+|vcpkg:[a-z0-9-]+|legal-component")
+# tree (each a relative path under it), the copyright file a vcpkg port installs (share/<port>/copyright) or the
+# legal CMake component (mbelib's notices, LICENSES/ and legal/).
+NOTICE_PATH = re.compile(r"[\w.+/-]+")
+VCPKG_PORT = re.compile(r"[a-z0-9-]+")
+# A file name Windows can load, as tools/windows/release_tree_checks.psm1 (Test-ImportName) accepts an import: no
+# folder, none of the characters Windows refuses in a name, not ending in a dot or a space. Records list it in
+# lower case, the one spelling of a name Windows compares without regard to case.
+RELEASE_FILE = re.compile(r'[^<>:"/\\|?*\x00-\x1f]*[^<>:"/\\|?*\x00-\x1f. ]')
 RUNTIME_DLL = re.compile(r"(concrt|msvcp|vccorlib|vcruntime)140(_[a-z0-9_]+)?\.dll")
+# Components the ZIP carries with no notice of their own: code compiled into dsd-neo.exe whose grant is unresolved.
+NO_RELEASE_NOTICE = {"wallace-golay"}
+
+
+def notice_source(source):
+    """Whether staging can take a notice from this source: repo: and build: name a path inside their root."""
+    if source == "legal-component":
+        return True
+    kind, _, rest = source.partition(":")
+    if kind == "vcpkg":
+        return bool(VCPKG_PORT.fullmatch(rest))
+    if kind not in ("repo", "build") or not NOTICE_PATH.fullmatch(rest):
+        return False
+    return all(part not in ("", ".", "..") for part in rest.split("/"))
 
 
 def read_inventory(root=ROOT):
@@ -96,17 +116,21 @@ def validate_windows_release(component, root=ROOT):
         raise ValueError(f"Only a component the Windows ZIP carries has release files: {ident}")
     files = release.get("binaries")
     if (not isinstance(files, list) or not files or len(set(files)) != len(files)
-            or not all(isinstance(name, str) and re.fullmatch(r"[a-z0-9_.+-]+\.(dll|exe)", name) for name in files)):
-        raise ValueError(f"Release files must be distinct lower-case .dll or .exe names: {ident}")
+            or not all(isinstance(name, str) and RELEASE_FILE.fullmatch(name) and name == name.lower()
+                       for name in files)):
+        raise ValueError(f"Release files must be distinct lower-case Windows file names: {ident}")
     if ident == "msvc-runtime" and not all(RUNTIME_DLL.fullmatch(name) for name in files):
         raise ValueError("The Visual C++ runtime record lists a file outside a toolset's runtime folder")
     notices = release.get("notices")
     if not isinstance(notices, dict):
         raise ValueError(f"Release notices must map a path to its source: {ident}")
+    if not notices and not (ident in NO_RELEASE_NOTICE and files == ["dsd-neo.exe"]
+                            and component["copyright_permission"] == "unresolved"):
+        raise ValueError(f"The ZIP carries no notice for a component it ships: {ident}")
     for notice, source in notices.items():
         path = Path(notice)
         if (path.is_absolute() or ".." in path.parts or "\\" in notice or not notice
-                or not isinstance(source, str) or not NOTICE_SOURCE.fullmatch(source)):
+                or not isinstance(source, str) or not notice_source(source)):
             raise ValueError(f"Invalid release notice {notice!r} from {source!r}: {ident}")
         if source.startswith("repo:") and source[5:] not in component["notices"]:
             raise ValueError(f"Release notice is not a retained notice of the record: {source} ({ident})")

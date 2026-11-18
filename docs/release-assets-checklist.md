@@ -57,7 +57,7 @@ resource bundle, so they travel with the binary rather than as a separate file.
         `ucrtbased.dll`); `tools/windows/verify_release_tree.ps1` refuses any other.
   - [ ] When `bin/` holds any of those runtime DLLs, confirm `share/doc/dsd-neo/` holds
         `licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt`, the end-user notice of Microsoft's terms for them, and
-        `legal/msvc-runtime.md`. Before tagging, check that the Distributable Code section and the REDIST list it
+        `legal/msvc-runtime.md` (the release job refuses a tree without either). Before tagging, check that the Distributable Code section and the REDIST list it
         quotes are unchanged at <https://aka.ms/VisualStudioLicenses>.
   - [ ] On a Windows machine, if one is at hand, `bin\SoapySDRUtil.exe --info` from a fresh unzip lists the two
         modules and `Available factories... airspy, hackrf` (`tools/windows/verify_release_tree.ps1` checks this in
