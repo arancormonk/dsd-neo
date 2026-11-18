@@ -4875,6 +4875,44 @@ test_dmr_mono_discards_pi_for_the_other_slot(char frame[4][24]) {
     return rc;
 }
 
+/* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
+   slot. A slot 1 one heard while lane 0 carries a slot 2 call resets slot 1's packet, never slot 2's; a slot 2 one,
+   with the lane on a slot 1 call or idle (where it is folded onto lane 0), resets slot 2's, never slot 1's. */
+static int
+test_dmr_mono_data_terminator_resets_its_own_packet(void) {
+    int rc = 0;
+    for (int c = 0; c < 3; c++) {
+        const int slot = c == 0 ? 0 : 1;
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        if (c < 2) {
+            dmr_mono_lane_call_on(opts, state, 1 - slot); /* The lane carries the other slot's call. */
+        } else {
+            opts->dmr_mono = 1; /* The lane idle. */
+            opts->trunk_enable = 0;
+            state->dmr_stereo = 0;
+            state->dmr_ms_mode = 0;
+        }
+        state->data_header_valid[0] = state->data_header_valid[1] = 1;
+        uint8_t bits[96];
+        DSD_MEMSET(bits, 0, sizeof bits);
+        dmr_hop_put_bits(bits, 2U, 0x30U, 6U);
+        uint32_t errors = 0U;
+        state->currentslot = slot;
+        state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
+        dmr_flco(opts, state, bits, 1U, &errors, 2U);
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "-fr: a slot %d data terminator (lane %s) resets its own slot's packet only",
+                     slot + 1, c < 2 ? "on the other slot" : "idle");
+        rc |= expect_true(what, state->data_header_valid[slot] == 0 && state->data_header_valid[1 - slot] == 1);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
 static int
 test_dmr_hold_edges(void) {
@@ -4901,6 +4939,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
+    rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     return rc;
 }
 
