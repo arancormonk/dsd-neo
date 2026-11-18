@@ -384,13 +384,13 @@ dmr_sm_leave_judgement_settle(dmr_sm_ctx_t* ctx, dsd_state* state, int landed) {
     if (ctx->cc_leave_request_id == 0U) {
         return;
     }
-    const long from_hz = ctx->cc_leave_from_hz;
-    const long to_hz = ctx->cc_leave_to_hz;
+    const long receiver_hz = ctx->cc_leave_from_hz;
+    const long freq_hz = ctx->cc_leave_to_hz;
     ctx->cc_leave_request_id = 0U;
     ctx->cc_leave_from_hz = 0;
     ctx->cc_leave_to_hz = 0;
     if (landed && state) {
-        dmr_sm_note_carrier_tune(state, from_hz, to_hz);
+        dmr_sm_note_carrier_tune(state, receiver_hz, freq_hz);
     }
 }
 
