@@ -15585,7 +15585,8 @@ Qt Quick frontend (`src/ui/qt`):
       dPMR -- by `call_history_identity_text_is_raw()`: the EDACS `LID_<id>`, `LID_UNK` and AFS labels render a number
       or its absence, and M17's `UNKNOWN` source names nobody), `sourceScope` (`pos.scope` and its discriminator, set
       with or without a position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
-      two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4), and
+      two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4; two known raw target texts
+      that differ are two calls with a talkgroup too, `rows_identity_compatible()`), and
       requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
       plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
       matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
@@ -15595,26 +15596,35 @@ Qt Quick frontend (`src/ui/qt`):
       (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
       stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
-    - Fold (`fold_payload()`, `fill_identity()`, `foldRow()`): a fragment gives the row its texts, position, sender
-      scope, protocol, target and source texts, source number and source label only when it names the same radio
-      (`fragment_identity_compatible()`): an anonymous fragment never enriches a named row, and one naming another
-      radio (another number, callsign or sender system; also an update found by its fragment, which is not merged
-      again) keeps all of them to itself and leaves the row's own as they were. So does one heard on a reception
-      system the row's own is not compatible with (`call_history_scopes_compatible()` on `rxScope`): an update found by
-      its fragment can name another system than the one it merged under, and a late position from it never lands on
-      the row. Such a reading also takes back what that fragment's earlier readings gave while they agreed with the row
-      (`withdraw_fragment_payload()`, `withdraw_source_label()`): its GPS unit (the row shows the best remaining
-      fragment's, or none), and the message and source label when they are that fragment's (by provenance), so a
-      NAC-only fragment that later names another system leaves no fix, message or label of its own on the row, live,
-      saved or after a reload. A reading that names another system (`fragment_system_compatible()`: protocol family,
-      reception or sender system) also gives nothing else and takes back every other field it gave
-      (`withdraw_fragment_fields()`): each fragment's contribution is kept as a `Row::FragmentPart` (span, crypto and
-      emergency flags, frequency and access code, site and call channel, reception scope, receive evidence, service
-      and the name it gave), and the row is rebuilt from the parts not withdrawn by the merge's own rules
-      (`rebuild_from_parts()`: newest known frequency, code and channel by provenance, site union, strongest scope,
-      first receive evidence, earliest start and latest end, flags OR'd), then re-sorted. A later reading that agrees
-      again gives its part back (`merge_parts()`). A row an older build stored with several fragments has no parts:
-      the withdrawal clears only the frequency, code and channel that are that fragment's (by provenance). The texts anonymous fragments gave are
+    - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each
+      fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
+      fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
+      frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
+      gave, decode session, its sender (source number and text, sender system), sync type and target text, its source
+      label and its text message, each with its provenance. A fragment's later reading folds into its own part by the
+      merge's rules (`accumulate_part()`: newest known value by provenance, site union, stronger scope, wider span),
+      and the row is the fold of its parts not withdrawn: what the row's other fragments gave (`rest_of_row()`), then
+      this fragment's part, so what the row held stays ahead of what an update now says (a conflicting site is
+      discarded). A part gives the sender, label and message only when it names the row's radio (`fold_part()`,
+      `part_gives_sender()`: the radio the row named, while a part still names it; the first a part names when the row
+      named none), so an anonymous fragment never enriches a named row, and one naming another radio (another number,
+      callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
+      no radio again, and no other radio's part names it. Its other fields fold from every part of the call. An update
+      found by its fragment, which is not merged again, is judged against what the row's other fragments gave
+      (`fragment_call_compatible()`: protocol family, reception and sender system, raw target text), never against
+      its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
+      other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
+      every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
+      code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
+      recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
+      The parts are persisted (`fp`, `pv` 2 for a part that holds its sender; a part an earlier build stored without
+      one takes the row's). A row an older build stored without parts is given one per fragment before it next folds
+      (`ensure_parts()`, `legacy_part_of()`): each holds the row's values, and a value that carries provenance
+      (frequency, code, channel, label, message) only in the part of the fragment its slot and push stamp name; a row
+      with no fragments gets one part with no key. So withdrawing such a fragment takes back only those values: its
+      sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
+      the parts (`Row::gpsOthers`, each a fragment's by its provenance and its run's session ordinal), and a reading
+      gives its own only when it names the row's radio (`fold_gps()`). The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and

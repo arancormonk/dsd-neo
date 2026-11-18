@@ -83,15 +83,19 @@ void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
 
-/** @brief Whether fragment @p row is of @p existing's system: one protocol family, and a reception and sender system the
- * row's are compatible with (call_history_scopes_compatible()). */
-bool fragment_system_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+/** @brief Whether a row (or fragment) names its sender: a source ID or a source text. */
+bool row_names_source(const CallHistoryModel::Row& row);
+
+/** @brief Whether fragment @p row is of @p existing's call: one protocol family, a reception and sender system the row's
+ * are compatible with (call_history_scopes_compatible()), and no other raw target text. */
+bool fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
 /** @brief Whether fragment @p row is of @p existing's radio, so it may give the row its texts, position and source
  * label: one protocol family and sender system, no other source number or text, and not anonymous beside a named row. */
 bool fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
-/** @brief Whether two rows' known identities agree: protocol family, reception and sender system, source text. */
+/** @brief Whether two rows' known identities agree: protocol family, reception and sender system, source and target
+ * text. */
 bool rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
 /** @brief Whether a row has a GPS unit: GPS text, a position, or both. */
@@ -103,8 +107,13 @@ void take_gps(CallHistoryModel::Row& to, const CallHistoryModel::Row& from);
 /** @brief Give @p to the text message of @p from, with the fragment it came from. */
 void take_message(CallHistoryModel::Row& to, const CallHistoryModel::Row& from);
 
-/** @brief Fold @p row's text message, and its GPS text with its position, into @p existing (call before its source). */
-void fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+/** @brief Fold the text message of @p row, a fragment of @p existing's radio, into @p existing (call before its
+ * source). */
+void fold_message(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+
+/** @brief Fold @p row's GPS text with its position into @p existing when @p sender (the reading names the row's radio),
+ * else take back the GPS unit of @p row's fragment; @p learnsSource: the row named no source before this reading. */
+void fold_gps(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row, bool sender, bool learnsSource);
 
 /** @brief Fill what @p existing does not know of its raw identity from @p row (call before its source). */
 void fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);

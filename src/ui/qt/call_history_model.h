@@ -497,15 +497,19 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     };
 
     /**
-     * @brief What one fragment's latest reading gave its voice row besides its texts, position and label (issue #800):
-     * its span, crypto and emergency flags, frequency and access code, site and call channel, reception scope, receive
-     * evidence, service and name, each with the provenance the row's own fields carry. A row keeps one per fragment
-     * (Row::parts), so when a fragment turns out to be another system's (fragment_system_compatible()) the row rebuilds
-     * these fields from its other fragments' by the rules a merge folds them with.
+     * @brief What one fragment's readings gave its voice row besides its GPS unit (issue #800): its span, crypto
+     * and emergency flags, frequency and access code, site and call channel, reception scope, receive evidence,
+     * service and name, decode session, its sender (source number and text, sender system), sync type and target text, its source
+     * label and its text message, each with the provenance the row's own fields carry. A row keeps one per fragment
+     * (Row::parts), keyed by the fragment's ring identity, and is always the fold of its parts not withdrawn
+     * (rebuild_from_parts()), so when a fragment turns out to be another call's (fragment_call_compatible()) the row
+     * rebuilds every field it gave from its other fragments' by the rules a merge folds them with.
      */
     struct FragmentPart {
+        /* The fragment's key (call_history_fragment_key()); empty for the part standing for what a row an older build
+         * stored without fragments held. */
         QString fragment;
-        /* The fragment's reading named another system than the row's: kept so the row knows the fragment, never
+        /* The fragment's reading named another call than the row's: kept so the row knows the fragment, never
          * folded. */
         bool withdrawn = false;
         bool enc = false;
@@ -535,6 +539,23 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         CallHistoryScope rxScope;
         QString name;
         QString service;
+        /* The decode session the reading came from (Row::session): the row is the newest session's of its parts. */
+        qint64 session = 0;
+        /* The sender and the call it names (Row's fields of the same names). */
+        int protocol = -1;
+        qulonglong src = 0;
+        QString sourceText;
+        QString targetText;
+        CallHistoryScope sourceScope;
+        /* The source label and the text message, each with the fragment it came from. */
+        QString sourceName;
+        qint64 sourceNameWhen = 0;
+        qulonglong sourceNameSeq = 0;
+        int sourceNameSlot = 0;
+        int msgSlot = 0;
+        QString messageText;
+        qint64 msgWhen = 0;
+        qulonglong msgSeq = 0;
     };
 
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -637,9 +658,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * fragments whose version is known. */
         QHash<QString, quint64> fragmentVers;
         /* Issue #800. What each fragment gave a voice row (FragmentPart), one per fragment, so a fragment found to be
-         * another system's is taken back and the row rebuilt from the rest. Persisted (`fp`) for a row of two or more
-         * fragments; a one-fragment row is its own part. A row an older build stored with several fragments has none:
-         * a withdrawal then clears only the values that fragment gave (by provenance). */
+         * another call's is taken back and the row rebuilt from the rest. Persisted (`fp`) for a row of two or more
+         * parts; a one-fragment row is its own part. A row an older build stored without them is given one per
+         * fragment before it next folds (ensure_parts()): each holds the row's values, and the values that carry a
+         * fragment's provenance only in the part of that fragment. */
         QList<FragmentPart> parts;
         /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
          * (protocol, above), the source and target text as received (src_str, tgt_str:
@@ -763,7 +785,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString twin;
         /* Issue #800: the digest of the raw identity last read (call_history_identity_digest()). The core can resolve
          * a committed voice row's reception or sender system in place, and the fragment must then be read again (its
-         * texts and position are checked against the row again, fold_payload()), so any change is an advance. Not
+         * texts and position are checked against the row again, foldRow()), so any change is an advance. Not
          * known in an entry an older build stored or one load() seeded: the first read then takes the digest without
          * counting as an advance, as the site text digest's (SeenSettled). Last, so load()'s seed leaves it unknown. */
         uint32_t identity = 0;
