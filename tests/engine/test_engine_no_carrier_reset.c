@@ -27,6 +27,7 @@
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
@@ -65,6 +66,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -394,6 +396,9 @@ static long int g_rigctl_setfreq_freq = 0;
 /* The frequency the stand-in peer last confirmed (RigctlConfirmedFreq()), which the legacy leg's cache holds on: every
    stand-in failure is a complete refusal, which leaves it. */
 static uint32_t g_rigctl_confirmed_hz = 0U;
+/* What a rigctl tune and a frame dispatch report to the P25 watchdog read case (test_live_p25_beat_in_a_read()). */
+static void (*g_setfreq_observer)(long int freq) = NULL;
+static int (*g_process_frame_observer)(dsd_opts* opts, dsd_state* state) = NULL;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
@@ -1025,6 +1030,9 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
 
 void
 __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
+    if (g_process_frame_observer && g_process_frame_observer(opts, state)) {
+        return;
+    }
     if (!g_frame_script) {
         __real_processFrame(opts, state);
         return;
@@ -1114,6 +1122,9 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     g_rigctl_setfreq_freq = freq;
     if (g_rigctl_setfreq_ok) {
         g_rigctl_confirmed_hz = (uint32_t)freq;
+    }
+    if (g_setfreq_observer) {
+        g_setfreq_observer(freq);
     }
     return g_rigctl_setfreq_ok ? true : false;
 }
@@ -14998,6 +15009,188 @@ live_trunk_scan_advanced(const dsd_opts* opts, const dsd_state* state) {
     return g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == g_live_second_hz;
 }
 
+/*
+ * A P25 watchdog beat met in a hunt read: the live loop over a scripted C4FM PCM input on UDP, with the engine's hooks
+ * and the real P25 trunk state machine following a voice channel it is told to release. The beat is posted at a
+ * scripted read inside the hunt, and that read finds nothing buffered, so its tick runs there, on this (the decoder)
+ * thread, and tunes back to the control channel. The stream goes on with the control channel's P25p1 word. The first
+ * frame after the return dispatches (the frame-sync gate takes the generation after the tune), and the control
+ * channel's sync stamp it carries is no earlier than the return.
+ */
+enum {
+    WD6_SPS = 10,          /* 48 kHz over 4800 symbols/s */
+    WD6_BEAT_SYMBOL = 150, /* the read the beat is posted at: before the hunt's 300-symbol checkpoint */
+    WD6_WORD_SYMBOL = 162, /* the control channel's word starts here: 12 symbols after the beat */
+    WD6_STREAM_SYMBOLS = 900,
+    WD6_VOICE_CHANNEL = 0x1234,
+};
+
+static const long int WD6_CC_HZ = 851000000L;
+static const long int WD6_VC_HZ = 852000000L;
+
+static struct {
+    long sample;
+    int beat_posted;
+    int beat_reads;
+    int returned;
+    double return_s;
+    long return_sample;
+    int frames;
+    int first_sync;
+    double first_cc_stamp_s;
+} g_wd6;
+
+static _Thread_local int t_wd6_decoder = 0;
+static dsd_state* g_wd6_state = NULL;
+static int g_wd6_off_thread_tunes = 0;
+
+static int
+wd6_level(long symbol) {
+    if (symbol >= WD6_WORD_SYMBOL && symbol < WD6_WORD_SYMBOL + 24) {
+        return P25P1_SYNC[symbol - WD6_WORD_SYMBOL] == '1' ? 3 : -3;
+    }
+    /* Data: a fixed scramble of the four levels. */
+    static const int k_levels[4] = {3, 1, -1, -3};
+    const uint32_t h = (uint32_t)symbol * 2654435761U;
+    return k_levels[(h >> 13) & 3U];
+}
+
+static int
+wd6_udp_read(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    (void)opts;
+    const long symbol = g_wd6.sample / WD6_SPS;
+    if (symbol == WD6_BEAT_SYMBOL && !g_wd6.beat_posted) {
+        /* The release the beat's tick makes, asked for here (on the decoder thread, which owns the field) so the
+           decoder's own once-a-second tick at the hunt's entry has nothing to release before the beat. */
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+    }
+    /* The read at the beat finds nothing buffered while the beat stands (a short pause in the sender). */
+    if (g_wd6.beat_posted && p25_sm_watchdog_tick_wanted() && g_wd6.beat_reads < 4) {
+        g_wd6.beat_reads++;
+        dsd_sleep_ms(timeout_ms);
+        live_clock_set(g_live.now_ns + (uint64_t)timeout_ms * LIVE_NS_PER_MS);
+        return -1;
+    }
+    if (symbol >= WD6_STREAM_SYMBOLS) {
+        dsd_exitflag_store(1);
+        return -1;
+    }
+    *out = (int16_t)(wd6_level(symbol) * 3000);
+    g_wd6.sample++;
+    live_clock_set(g_live.now_ns + LIVE_SAMPLE_NS);
+    return 1;
+}
+
+static void
+wd6_setfreq(long int freq) {
+    if (!t_wd6_decoder) {
+        g_wd6_off_thread_tunes++;
+    }
+    if (freq == WD6_CC_HZ && !g_wd6.returned) {
+        g_wd6.returned = 1;
+        g_wd6.return_s = dsd_decode_now_mono_s();
+        g_wd6.return_sample = g_wd6.sample;
+    }
+}
+
+static int
+wd6_process_frame(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (g_wd6.returned && g_wd6.frames++ == 0) {
+        g_wd6.first_sync = state->synctype;
+        g_wd6.first_cc_stamp_s = state->last_cc_sync_time_m;
+        dsd_exitflag_store(1);
+    }
+    return 1; /* the frame is noted, not decoded */
+}
+
+static int
+test_live_p25_beat_in_a_read(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, LIVE_UDP, 0U);
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample_wait = wd6_udp_read});
+    DSD_MEMSET(&g_wd6, 0, sizeof g_wd6);
+    g_wd6.first_sync = DSD_SYNC_NONE;
+    g_wd6_off_thread_tunes = 0;
+    t_wd6_decoder = 1;
+    opts->frame_dstar = opts->frame_x2tdma = opts->frame_p25p2 = opts->frame_nxdn48 = opts->frame_nxdn96 = 0;
+    opts->frame_dmr = opts->frame_provoice = opts->frame_dpmr = opts->frame_ysf = opts->frame_m17 = 0;
+    opts->frame_tetra = 0;
+    opts->frame_p25p1 = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    state->p25_cc_freq = state->trunk_cc_freq = WD6_CC_HZ;
+    state->trunk_chan_map[WD6_VOICE_CHANNEL] = WD6_VC_HZ;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
+    dsd_engine_trunk_tuning_hooks_install();
+    dsd_engine_set_decoder_thread(1);
+
+    /* A followed voice channel. */
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(WD6_VOICE_CHANNEL, WD6_VC_HZ, 1234, 42, 0);
+    p25_sm_tick_guard_enter();
+    p25_sm_event(ctx, opts, state, &grant);
+    p25_sm_tick_guard_leave();
+    g_wd6_state = state;
+    const int followed = ctx->state == P25_SM_TUNED && g_rigctl_setfreq_freq == WD6_VC_HZ;
+
+    g_setfreq_observer = wd6_setfreq;
+    g_process_frame_observer = wd6_process_frame;
+    dsd_exitflag_store(0);
+    for (int pass = 0; pass < LIVE_PASS_CAP && dsd_exitflag_load() == 0; pass++) {
+        dsd_engine_test_live_scanner_run(opts, state, 1);
+    }
+    dsd_exitflag_store(0);
+    g_setfreq_observer = NULL;
+    g_process_frame_observer = NULL;
+    t_wd6_decoder = 0;
+    g_wd6_state = NULL;
+
+    int rc = 0;
+    if (!followed) {
+        DSD_FPRINTF(stderr, "FAIL: the grant was not followed (state %d)\n", (int)ctx->state);
+        rc = 1;
+    }
+    if (!g_wd6.returned || g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the beat's tick did not return in the read it was posted at (returned %d, symbol %ld)\n",
+                    g_wd6.returned, g_wd6.return_sample / WD6_SPS);
+        rc = 1;
+    }
+    if (g_wd6_off_thread_tunes != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a tune ran off the decoder thread\n");
+        rc = 1;
+    }
+    if (g_wd6.frames == 0 || !DSD_SYNC_IS_P25P1(g_wd6.first_sync)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the control channel's first frame after the return was not dispatched (frames %d, "
+                    "sync %d)\n",
+                    g_wd6.frames, g_wd6.first_sync);
+        rc = 1;
+    } else if (g_wd6.first_cc_stamp_s + 1e-6 < g_wd6.return_s) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the first frame after the return carried a sync stamp of %.6f s, before the return at "
+                    "%.6f s\n",
+                    g_wd6.first_cc_stamp_s, g_wd6.return_s);
+        rc = 1;
+    }
+    dsd_engine_set_decoder_thread(0);
+    p25_sm_init_ctx(ctx, opts, state);
+    live_session_stop(opts, state);
+    return rc;
+}
+
 static int
 live_expect_between(const char* label, int64_t got_ms, int64_t min_ms, int64_t max_ms) {
     if (got_ms < min_ms || got_ms > max_ms) {
@@ -17460,6 +17653,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
     rc |= test_live_trunk_scan_skips_a_quiet_target(0);
+    rc |= test_live_p25_beat_in_a_read();
     return rc;
 }
 #endif

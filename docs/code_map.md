@@ -1306,7 +1306,9 @@ the beat until it resumes. The off-thread tune machinery (`dsd_frame_sync_note_o
 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
 `ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
 watchdog-paced release tunes from the decoder thread (tsan-debug); `DSP_INPUT_INTERRUPT` and
-`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the transport-wait service and the forward-only stamp.
+`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the transport-wait service and the forward-only stamp, and
+`ENGINE_NO_CARRIER_RESET` runs the live loop over a scripted C4FM input with a beat posted at a hunt read and checks
+that the control channel's first frame after the return dispatches with a stamp no earlier than the return.
 
 DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
