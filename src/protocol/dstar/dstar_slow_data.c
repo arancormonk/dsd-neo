@@ -665,18 +665,14 @@ dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw) {
     }
 }
 
-/* What a slow-data block is, by its own mini-header: GPS data (0x3n), a text block (0x40-0x43), header data (0x5n),
- * filler (0x66), or anything else. */
-enum {
-    DSTAR_SD_BLOCK_OTHER = 0,
-    DSTAR_SD_BLOCK_GPS,
-    DSTAR_SD_BLOCK_TEXT,
-    DSTAR_SD_BLOCK_HEADER,
-    DSTAR_SD_BLOCK_FILLER
-};
+/* What a slow-data block is, by its own mini-header: GPS data (0x3n), a text block (0x40-0x43), filler (0x66), or
+ * anything else. */
+enum { DSTAR_SD_BLOCK_OTHER = 0, DSTAR_SD_BLOCK_GPS, DSTAR_SD_BLOCK_TEXT, DSTAR_SD_BLOCK_FILLER };
 
-#define DSTAR_SD_FILLER      0x66U
-#define DSTAR_SD_TYPE_HEADER 0x50U
+/* The blocks a rebroadcast header fills at the start of its superframe: its 41 octets, five per block. */
+enum { DSTAR_SD_HEADER_BLOCKS = 9 };
+
+#define DSTAR_SD_FILLER 0x66U
 
 static int
 dstar_sd_block_kind(const uint8_t* raw, int b) {
@@ -688,19 +684,16 @@ dstar_sd_block_kind(const uint8_t* raw, int b) {
     if (dstar_sd_text_block(raw, b, &place)) {
         return DSTAR_SD_BLOCK_TEXT;
     }
-    if ((mini & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_HEADER) {
-        return DSTAR_SD_BLOCK_HEADER;
-    }
     return mini == DSTAR_SD_FILLER ? DSTAR_SD_BLOCK_FILLER : DSTAR_SD_BLOCK_OTHER;
 }
 
-/* The superframe's blocks of no known kind, shown as "_UNK:", printable bytes only; GPS, text, header and filler blocks
- * are never part of it, so GPS data reaches the output only through dstar_sd_handle_gps_data() (-Z) or an admitted
- * position. */
+/* The superframe's blocks of no known kind from block @p first on (a header's superframe: those after the header),
+ * shown as "_UNK:", printable bytes only; GPS, text and filler blocks are never part of it, so GPS data reaches the
+ * output only through dstar_sd_handle_gps_data() (-Z) or an admitted position. */
 static void
-dstar_sd_print_unknown(const uint8_t* raw) {
+dstar_sd_print_unknown(const uint8_t* raw, int first) {
     DSD_FPRINTF(stderr, " _UNK: ");
-    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         if (dstar_sd_block_kind(raw, b) != DSTAR_SD_BLOCK_OTHER) {
             continue;
         }
@@ -711,11 +704,13 @@ dstar_sd_print_unknown(const uint8_t* raw) {
     }
 }
 
-/* Every superframe, a rebroadcast header's after the header itself: each block classified by its own mini-header,
- * wherever it sits. Text blocks make the message (the block a header leaves after its nine among them); GPS blocks,
- * any of them, the -Z "GPS DATA:" dump; the blocks of no known kind, when no text block came, the "_UNK:" dump. */
+/* Every superframe, a rebroadcast header's after the header itself (@p header: its first nine blocks are the header's):
+ * each block classified by its own mini-header, wherever it sits. Text blocks make the message (the block a header
+ * leaves after its nine among them); GPS blocks, any of them, the -Z "GPS DATA:" dump; the blocks of no known kind
+ * outside the header, when no text block came, the "_UNK:" dump. */
 static void
-dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx) {
+dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx, int header) {
+    const int first = header ? DSTAR_SD_HEADER_BLOCKS : 0;
     const int text = dstar_sd_collect_text(opts, state, ctx->payload);
     if (text) {
         dstar_sd_handle_text_message(state);
@@ -725,13 +720,13 @@ dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
         const int kind = dstar_sd_block_kind(ctx->payload, b);
         gps |= kind == DSTAR_SD_BLOCK_GPS;
-        other |= kind == DSTAR_SD_BLOCK_OTHER;
+        other |= b >= first && kind == DSTAR_SD_BLOCK_OTHER;
     }
     if (gps) {
         dstar_sd_handle_gps_data(opts, ctx->payload);
     }
     if (!text && other) {
-        dstar_sd_print_unknown(ctx->payload);
+        dstar_sd_print_unknown(ctx->payload, first);
     }
 }
 
@@ -779,10 +774,11 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     dstar_sd_capture_display_strings(&ctx);
 
     /* A header first: it may name the call the superframe's other blocks belong to. */
-    if (ctx.payload[0] == 0x55) {
+    const int header = ctx.payload[0] == 0x55;
+    if (header) {
         dstar_sd_handle_header_format(state, &ctx);
     }
-    dstar_sd_handle_typed_blocks(opts, state, &ctx);
+    dstar_sd_handle_typed_blocks(opts, state, &ctx, header);
     dstar_sd_collect_gps(opts, state, ctx.payload);
 
     dstar_sd_print_payload(opts, &ctx);

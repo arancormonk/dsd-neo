@@ -2703,9 +2703,9 @@ suite runs under this compiler.
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
     its own mini-header, wherever it sits in the superframe, a rebroadcast header's superframe included (the header's
-    nine 0x5n blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    nine blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
     display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
-    of no known kind (never a GPS, text, header or filler block, so GPS bytes reach the output only through `-Z` or an admitted
+    of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
