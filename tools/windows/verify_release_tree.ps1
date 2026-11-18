@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Checks a Windows release tree, as stage_release_tree.ps1 leaves it or as the ZIP
 # unpacks, without hardware:
+#   0. every release notice is in share\doc\dsd-neo;
 #   1. the bundled librtlsdr is the patched build, and every .exe and .dll under bin\
 #      and lib\SoapySDR\ passes check_release_hardening.ps1;
 #   2. the SoapySDR load path: one copy of each library, in bin\, each module and
@@ -370,6 +371,8 @@ if (-not $tempBase) {
 $scratch = Join-Path $tempBase ('dsd-neo-verify-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 try {
+    Assert-ReleaseNotices -DocDir (Join-Path $treeRoot 'share/doc/dsd-neo')
+    Write-Host "OK: every release notice is in $(Join-Path $treeRoot 'share/doc/dsd-neo')"
     Test-PatchedRtlsdr -Bin (Join-Path $treeRoot 'bin')
     Test-Hardening -TreeRoot $treeRoot
     Test-LoadPath -TreeRoot $treeRoot

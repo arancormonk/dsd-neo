@@ -72,6 +72,12 @@ def pins():
     return result
 
 
+def required_notices():
+    """The notices every Windows release tree must hold under share/doc/dsd-neo, as the scripts list them."""
+    match = re.search(r"\$script:ReleaseNotices = @\(([^\n]+)\)", read("tools/windows/release_tree_checks.psm1"))
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
 def job_block(workflow, job):
     """The text of one job in a workflow: from its key at two spaces to the next job's key."""
     lines = read(f".github/workflows/{workflow}").splitlines()
@@ -226,7 +232,11 @@ class SoapyModulePackaging(unittest.TestCase):
 
     def test_staging_ships_every_notice(self):
         script = read("tools/windows/stage_release_tree.ps1")
-        required = re.search(r"\$required = @\(([^\n]+)\)", script).group(1)
+        required = re.search(r"\$script:ReleaseNotices = @\(([^\n]+)\)",
+                             read("tools/windows/release_tree_checks.psm1")).group(1)
+        self.assertIn("Assert-ReleaseNotices -DocDir $docDir", script)
+        self.assertIn("Assert-ReleaseNotices -DocDir (Join-Path $treeRoot 'share/doc/dsd-neo')",
+                      read("tools/windows/verify_release_tree.ps1"))
         for source, shipped in WINDOWS_NOTICES.items():
             with self.subTest(notice=shipped):
                 self.assertTrue((ROOT / source).is_file(), source)
@@ -764,6 +774,10 @@ class SoapyReleaseScripts(unittest.TestCase):
         modules.mkdir(parents=True)
         for name in MODULE_FILES:
             (modules / name).write_bytes(b"MZ " + name.encode())
+        docs = root / "share/doc/dsd-neo"
+        for name in required_notices():
+            (docs / name).parent.mkdir(parents=True, exist_ok=True)
+            (docs / name).write_text(name + "\n")
         windows = self.work / "verify-windows"
         (windows / "System32").mkdir(parents=True)
         (windows / "System32/KERNEL32.dll").write_bytes(b"MZ system")
@@ -811,6 +825,19 @@ class SoapyReleaseScripts(unittest.TestCase):
                     path.write_bytes(saved)
                 self.assertEqual(rc, 1, output)
                 self.assertIn(message, output)
+        # A ZIP that lost a notice, or every notice.
+        notice = root / "share/doc/dsd-neo/licenses/PThreads4W-NOTICE.txt"
+        notice.unlink()
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"Missing or empty required license file: {notice}", output)
+        shutil.rmtree(root / "share")
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("Missing or empty required license file", output)
+        for name in required_notices():
+            (root / "share/doc/dsd-neo" / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / "share/doc/dsd-neo" / name).write_text(name + "\n")
         # A Visual C++ runtime DLL the tree lacks, which the build machine's System32 happens to hold: a clean Windows
         # does not have it.
         (windows / "System32/MSVCP140_ATOMIC_WAIT.dll").write_bytes(b"MZ redistributable")

@@ -24,6 +24,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 
 # SoapyAirspy, SoapyAirspyHF and SoapyHackRF (vcpkg-ports/soapy-*). Anything else in
 # the module folder is an error, so a dependency change cannot add a module unseen.
@@ -129,9 +130,5 @@ try {
     Pop-Location
 }
 
-$required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md','licenses/BSL-1.0.txt','licenses/SoapyAirspy-MIT.txt','licenses/SoapyHackRF-MIT.txt','licenses/SoapyAirspyHF-MIT.txt','licenses/libhackrf-BSD-3-Clause.txt','licenses/libairspyhf-BSD-3-Clause.txt','licenses/libusb-LGPL-2.1-or-later.txt','licenses/PThreads4W-Apache-2.0.txt','licenses/PThreads4W-NOTICE.txt')
-foreach ($f in $required) {
-    $p = Join-Path $docDir $f
-    if (!(Test-Path -LiteralPath $p)) { throw "Missing required license file in staged docs: $p" }
-}
+Assert-ReleaseNotices -DocDir $docDir
 Write-Host "Staged release tree: $stage"

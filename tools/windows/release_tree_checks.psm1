@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Helpers for tools/windows/stage_runtime_dlls.ps1 and verify_release_tree.ps1: a PE
-# image check, an isolated process runner and readers for the text SoapySDRUtil,
+# Helpers for the Windows release scripts in this folder: the release notices, a DLL
+# classification, a PE image check, an isolated process runner and readers for the text
+# SoapySDRUtil,
 # dsd-neo and dumpbin print. The readers take output as text, so tests can feed them
 # saved output on any platform.
 
@@ -8,6 +9,31 @@ Set-StrictMode -Version Latest
 
 # Messages SoapySDR prints when a module failed to load (Modules.in.cpp, Registry.cpp).
 $script:SoapyLoadErrors = @('LoadLibrary() failed', 'failed ABI check', 'duplicate entry')
+
+# The notices every Windows release tree carries under share\doc\dsd-neo: the project's,
+# the installed legal component's, the embedded and linked components', and those of
+# the SoapySDR load path. stage_release_tree.ps1 stages them; verify_release_tree.ps1
+# checks the staged tree and the unpacked ZIP for them.
+$script:ReleaseNotices = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md','licenses/BSL-1.0.txt','licenses/SoapyAirspy-MIT.txt','licenses/SoapyHackRF-MIT.txt','licenses/SoapyAirspyHF-MIT.txt','licenses/libhackrf-BSD-3-Clause.txt','licenses/libairspyhf-BSD-3-Clause.txt','licenses/libusb-LGPL-2.1-or-later.txt','licenses/PThreads4W-Apache-2.0.txt','licenses/PThreads4W-NOTICE.txt')
+
+function Get-ReleaseNotices {
+    return $script:ReleaseNotices
+}
+
+# Throws unless every release notice is a non-empty file under the documentation folder.
+function Assert-ReleaseNotices {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DocDir
+    )
+
+    foreach ($notice in $script:ReleaseNotices) {
+        $path = Join-Path $DocDir $notice
+        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+            throw "Missing or empty required license file: $path"
+        }
+    }
+}
 
 # What dsd-neo prints when it reaches a driver that finds no device, per driver ('' is
 # a bare -i soapy): each module's exception with no device attached (SoapyAirspy,
@@ -307,5 +333,5 @@ function Invoke-IsolatedProcess {
 }
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
-    Find-SoapyLoadError, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Test-PeImage, Test-DumpbinImageReport,
+    Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Test-PeImage, Test-DumpbinImageReport,
     Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess

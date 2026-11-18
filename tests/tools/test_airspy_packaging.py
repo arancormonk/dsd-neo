@@ -230,7 +230,8 @@ class AirspyPackaging(unittest.TestCase):
                       "(Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop", windows)
         self.assertIn("Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' "
                       "(Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop", windows)
-        self.assertIn(f"'{gpl}','{patches}'", windows)
+        notices = (ROOT / "tools/windows/release_tree_checks.psm1").read_text()
+        self.assertIn(f"'{gpl}','{patches}'", notices)
         self.assertIn("no transfer left, canceling", (ROOT / "tools/windows/verify_release_tree.ps1").read_text())
         self.assert_windows_release_scripts()
 
@@ -293,7 +294,7 @@ class AirspyPackaging(unittest.TestCase):
         macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
         self.assertIn(" licenses/" + NOTICE + " ", macos)
         windows = (ROOT / "tools/windows/stage_release_tree.ps1").read_text()
-        self.assertIn("'licenses/" + NOTICE + "'", windows)
+        self.assertIn("'licenses/" + NOTICE + "'", (ROOT / "tools/windows/release_tree_checks.psm1").read_text())
         self.assertIn("Copy-Item -Force 'android/third_party/libairspy/LICENSE' "
                       "(Join-Path $licenseDir '" + NOTICE + "') -ErrorAction Stop", windows)
         self.assert_windows_release_scripts()
