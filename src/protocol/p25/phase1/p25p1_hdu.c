@@ -430,6 +430,13 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
+    /* An HDU begins a transmission, whichever radio sends it and whether or not its words decoded (issue #800): the
+       hard-decoded voice-user identity and the L3Harris Part A of the call it leaves ACTIVE (the last transmission's
+       terminator missed) no longer name the source of a GPS link control that follows. Only a voice-user link control
+       of the new transmission names it again (p25_lcw.c). */
+    DSD_MEMSET(&state->p25_p1_lc_checked_id, 0, sizeof(state->p25_p1_lc_checked_id));
+    DSD_MEMSET(&state->p25_p1_harris_part_a, 0, sizeof(state->p25_p1_harris_part_a));
+
     // Now put the corrected data on the DSD structures
 
     hdu_extract_mi_algid_kid((const char (*)[6])hex_data, mi, algid, kid);
