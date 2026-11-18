@@ -1622,8 +1622,7 @@ freeState(dsd_state* state) {
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
     dsd_state_trunk_scan_entry_reasons_free(state);
-    /* The keys the state holds go before its memory is handed back, whatever armed them (keyloader or not). */
-    dsd_key_state_secure_wipe(state);
+    dsd_key_state_secure_wipe(state); // its keys go with it, whatever armed them (keyloader or not)
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {
