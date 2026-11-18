@@ -15054,6 +15054,9 @@ static struct {
     int rate_refused;  /* the capture's rate is one the calibration did not validate */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
+    /* When set, the stream's generation moves on while the check judges a capture's rate: the RTL thread opened a new
+       generation between the check's validation of that capture and its refusal of it. */
+    int bump_in_rate_check;
     int requests;
     uint32_t ticket;
     uint32_t next_ticket;
@@ -15160,6 +15163,10 @@ __wrap_rtl_signal_quiet_cancel(uint32_t ticket) {
 
 int
 __wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
+    if (g_yq.active && g_yq.bump_in_rate_check) {
+        g_yq.bump_in_rate_check = 0;
+        g_yq.gen_base++;
+    }
     return g_yq.active ? (rate_hz != 0U && !g_yq.rate_refused) : __real_dsd_signal_quiet_rate_supported(rate_hz);
 }
 
@@ -15734,6 +15741,36 @@ test_y_quiet_no_check_outlasts_an_unqualified_carrier(int edited) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status after an unqualified carrier, edited %d\n", edited);
+    }
+    return rc;
+}
+
+/* issue #834 R10: a refusal of a capture is cached against that capture's stream generation, never the one the stream
+   reads when the refusal is stored: the RTL thread may open a new generation (Fs/4 rotation back on) between the
+   check's validation of a capture and its refusal (here of its rate). A publication on that new generation, whose
+   rate is validated again, then measures the row instead of holding the stale "No check: rate". */
+static int
+test_y_quiet_refusal_keeps_the_refused_capture_generation(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_refused = 1;
+    g_yq.bump_in_rate_check = 1;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 513012500L) == 0);
+    rc |= expect_true("the capture's rate is refused", scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED
+                                                           && g_yq.requests == 0 && !g_yq.bump_in_rate_check);
+    g_yq.rate_refused = 0; /* the new generation runs a validated rate */
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the new generation is measured (requests %d, phase %d)", g_yq.requests,
+                 (int)scan_quiet_phase_get(state));
+    rc |= expect_true(label, g_yq.requests == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refusal cached against the refused capture's generation\n");
     }
     return rc;
 }
@@ -16786,6 +16823,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_input_shows_until_a_call();
     rc |= test_y_quiet_analog_call_explains_the_stay();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
+    rc |= test_y_quiet_refusal_keeps_the_refused_capture_generation();
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();

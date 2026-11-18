@@ -544,8 +544,9 @@ Generated (do not edit/commit):
       (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_analog_supported()` with the analog kind). The visit is
       SUSPENDED with that reason (`quiet_refuse()`), so an edit restarts it on the same visit, and the refusal is cached
       (issue #834 R10, `scan_quiet_check::refused`): a publication of the same visit with the same facts and revisions
-      while the stream keeps the output generation it refused (any change of rate, shift or receive profile moves it)
-      starts nothing and reads no capture (`quiet_refusal_holds()`, one compare); the hunt and frame services answer
+      while the stream keeps the output generation it refused (any change of rate, shift or receive profile moves it;
+      the refused capture's own generation, never one read when the refusal is stored, which the RTL thread may have
+      moved past it: `test_y_quiet_refusal_keeps_the_refused_capture_generation()`) starts nothing and reads no capture (`quiet_refusal_holds()`, one compare); the hunt and frame services answer
       NONE for it at once. A width refusal needs no capture of its own: a start whose analog width the calibration does
       not cover at the last capture's rate (that capture rotated, at a validated rate, on the input in force, read on
       a visit at this visit's DSP rate, so at its capture rate) is refused at once (`quiet_width_refused_ahead()`), so a

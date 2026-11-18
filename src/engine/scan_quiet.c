@@ -855,13 +855,15 @@ quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signa
 }
 
 /* The capture refused the visit for @p reason: SUSPENDED, not DONE, so an edit that changes what it refused starts it
-   again on the same visit (issue #834 R10); until then the refusal is cached (scan_quiet_check::refused). */
+   again on the same visit (issue #834 R10); until then the refusal is cached (scan_quiet_check::refused) against
+   @p generation, the stream generation of what was refused: the refused capture's own, never one read later, since the
+   RTL thread may open a new generation (rotation back on) between the capture's validation and its refusal. */
 static void
-quiet_refuse(scan_quiet_check* c, uint8_t reason) {
+quiet_refuse(scan_quiet_check* c, uint8_t reason, uint32_t generation) {
     quiet_end(c, SCAN_QUIET_SUSPENDED);
     c->reason = reason;
     c->refused = 1;
-    c->refused_generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    c->refused_generation = generation;
     c->republish_owed = 0;
 }
 
@@ -944,7 +946,7 @@ quiet_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms, i
     }
     const uint8_t refusal = quiet_capture_refusal(opts, c, &cap);
     if (refusal != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
-        quiet_refuse(c, refusal);
+        quiet_refuse(c, refusal, cap.generation);
         return;
     }
     quiet_request(c, &cap, now_ms);
@@ -1267,7 +1269,8 @@ scan_quiet_publish_eligibility(const dsd_opts* opts, dsd_state* state, int owner
     if (c->phase == SCAN_QUIET_SUSPENDED || !quiet_published_as_measured(c, e)) {
         quiet_start(owner, c, e, now_ms);
         if (quiet_width_refused_ahead(opts, c)) {
-            quiet_refuse(c, (uint8_t)DSD_SCAN_QUIET_REASON_WIDTH);
+            /* Refused on the facts of the stream running now, not on a capture read for this visit. */
+            quiet_refuse(c, (uint8_t)DSD_SCAN_QUIET_REASON_WIDTH, dsd_rtl_stream_metrics_hook_stream_generation());
             return;
         }
     }
