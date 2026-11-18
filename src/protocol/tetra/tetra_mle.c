@@ -1421,15 +1421,16 @@ sds_lip_pdu(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status
     return 1;
 }
 
-/* Admit a short location report as the SDS sender's, to the addressed party @p dst. The MAC block CRC passed before
- * the MLE was reached, and the LLC FCS too when the PDU carried one (tetra_mac.c llc_deliver()); like the notice that
- * goes with it, the report is published only once an earlier CRC-passed block proved the carrier. The sender and its
- * network come from the same checked SDS: a calling party of type 2 sends its own MCC and MNC (table 14.44), which
- * names the sender's network; type 1 is the network the decoder is on. Whether @p dst is a group the MAC address does
- * not say, so the report is not marked as sent to one. */
+/* Admit a short location report as the SDS sender's. The MAC block CRC passed before the MLE was reached, and the LLC
+ * FCS too when the PDU carried one (tetra_mac.c llc_deliver()); like the notice that goes with it, the report is
+ * published only once an earlier CRC-passed block proved the carrier. The sender and its network come from the same
+ * checked SDS: a calling party of type 2 sends its own MCC and MNC (table 14.44), which names the sender's network;
+ * type 1 is the network the decoder is on. The record names no target: the MAC address the SDS came with does not say
+ * whether its SSI is a radio or a group, and a record's target is a radio unless marked a talkgroup (issue #800, fail
+ * closed: the notice still shows the address). */
 static int
-sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const lip_short_report* r,
-              const dsd_position_origin* origin, sds_lip* out) {
+sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, const lip_short_report* r, const dsd_position_origin* origin,
+              sds_lip* out) {
     dsd_position_fix* const fix = &out->fix;
     if (!d->calling.ssi_valid) {
         /* A reserved calling party type (table 14.43) has no address of known length: nothing after it, the report
@@ -1457,7 +1458,6 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
     fix->protocol = (uint8_t)tetra_calls_protocol(ctx->state);
     fix->slot = 0U;
     fix->source_id = d->calling.ssi;
-    fix->target_id = dst;
     if (d->calling.type == 2U && d->calling.extension_valid) {
         fix->sender_scope.kind = DSD_POS_SCOPE_TETRA;
         fix->sender_scope.a = d->calling.extension >> 14;     /* MCC, 10 bits */
@@ -1474,7 +1474,7 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
 /* Decode the LIP PDU @p bits: a short location report (table 6.1) is admitted; a long one, and the other PDU types,
  * are named and left undecoded. */
 static void
-sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const uint8_t* bits, int nbits,
+sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits, int nbits,
                const dsd_position_origin* origin, sds_lip* out) {
     tetra_bit_reader rd = tetra_bits_reader(bits, nbits, 0);
     const uint32_t type = tetra_bits_read(&rd, 2); /* table 6.91 */
@@ -1488,7 +1488,7 @@ sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const 
         }
         DSD_SNPRINTF(out->what, sizeof out->what, "%s", "short location report");
         out->short_report = 1;
-        out->admitted = (uint8_t)sds_lip_admit(ctx, d, dst, &r, origin, out);
+        out->admitted = (uint8_t)sds_lip_admit(ctx, d, &r, origin, out);
     } else if (type == 1u) {
         /* Table 6.92: PDU type extension 0011 is the long location report (table 6.2). */
         const uint32_t extension = tetra_bits_read(&rd, 4);
@@ -1519,7 +1519,7 @@ sds_lip_report(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits,
     }
     sds_lip lip;
     DSD_MEMSET(&lip, 0, sizeof lip);
-    sds_lip_decode(ctx, d, dst, bits, nbits, origin, &lip);
+    sds_lip_decode(ctx, d, bits, nbits, origin, &lip);
     if (lip.admitted) {
         DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u %s; %s\n", ctx->cc, d->calling.ssi,
                     (unsigned)dst, lip.what, lip.text);

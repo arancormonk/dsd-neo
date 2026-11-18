@@ -13721,8 +13721,9 @@ single "current call".
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
-  learned for its network. The destination's group or individual kind is not known, so the record never sets
-  `TARGET_GROUP`. Test: `TETRA_LIP`.
+  learned for its network. The destination's group or individual kind is not known (the MAC address does not say),
+  so the record names no target (`target_id` 0, never `TARGET_GROUP`; the notice still shows the address). Test:
+  `TETRA_LIP`.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
