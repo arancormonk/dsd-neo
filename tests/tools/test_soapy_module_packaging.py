@@ -420,7 +420,7 @@ IMPORTS = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
 DLL_KINDS = {
     # The Windows DLLs the release imports (the 2.12.1 ZIP and a later nightly), in the spellings the import tables
     # use, and nothing else from System32: a driver package's DLL there, or one that comes with Windows but that no
-    # release binary imports yet, must be in bin\ until it is reviewed into the list.
+    # release binary imports yet, must be in bin\ until it is added to the list.
     **{name: "Windows" for name in ("ADVAPI32.dll", "bcrypt.dll", "CRYPT32.dll", "GDI32.dll", "IPHLPAPI.DLL",
                                     "KERNEL32.dll", "ole32.dll", "Secur32.dll", "SETUPAPI.dll", "SHLWAPI.dll",
                                     "USER32.dll", "WINMM.dll", "WS2_32.dll")},
