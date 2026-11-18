@@ -614,6 +614,65 @@ test_checks(void) {
     fixture_close(&f);
 }
 
+/* Dispatch one link control with the RS verdict @p errors (irrecoverable errors), through p25_lcw() or, with @p tdulc,
+ * p25_lcw_from_tdulc(); never a soft-erasure retry. */
+static void
+send_lc_verdict(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[PART_OCTETS], uint8_t errors,
+                int tdulc) {
+    uint8_t bytes[9] = {format, mfid, octets[0], octets[1], octets[2], octets[3], octets[4], octets[5], octets[6]};
+    uint8_t lcw[72];
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    if (tdulc) {
+        p25_lcw_from_tdulc(f->opts, f->st, lcw, errors, NULL);
+    } else {
+        p25_lcw(f->opts, f->st, lcw, errors);
+    }
+}
+
+/* A link control whose RS decode left irrecoverable errors is no checked provenance, whichever entry point it comes
+ * through: neither a GPS half nor a voice user's identity counts, even with no soft-erasure retry. */
+static void
+test_uncorrectable_verdict(void) {
+    for (int tdulc = 0; tdulc < 2; tdulc++) {
+        char label[160];
+        fixture f;
+        fixture_open(&f);
+        (void)start_call(&f, TG_A, SRC_A);
+        body_fields b = fields_default();
+        uint8_t body[BODY_OCTETS];
+        make_body(&b, body);
+        char last[256];
+        dsd_position_fix fix;
+
+        send_lc_verdict(&f, LCO_A_ODD, MFID_HARRIS, body, 1U, tdulc);
+        send_lc_verdict(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0U, tdulc);
+        DSD_SNPRINTF(label, sizeof label, "uncorrectable Part A (tdulc %d): no fix", tdulc);
+        expect_true(label, lrrp_rows(&f, last) == 0 && !feed_next(&f, &fix));
+        send_lc_verdict(&f, LCO_A_ODD, MFID_HARRIS, body, 0U, tdulc);
+        send_lc_verdict(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 1U, tdulc);
+        DSD_SNPRINTF(label, sizeof label, "uncorrectable Part B (tdulc %d): no fix", tdulc);
+        expect_true(label, lrrp_rows(&f, last) == 0 && !feed_next(&f, &fix));
+        fixture_close(&f);
+    }
+
+    // A voice user with irrecoverable errors names the call, but not as checked provenance.
+    fixture f;
+    fixture_open(&f);
+    const uint8_t user[PART_OCTETS] = {
+        0x00, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_A >> 16), (uint8_t)(SRC_A >> 8), (uint8_t)SRC_A};
+    send_lc_verdict(&f, 0x00, 0x00, user, 1U, 0);
+    body_fields b = fields_default();
+    uint8_t body[BODY_OCTETS];
+    make_body(&b, body);
+    send_update(&f, LCO_A_ODD, LCO_B_ODD, body);
+    dsd_position_fix fix;
+    expect_true("uncorrectable voice user: unverified record",
+                feed_next(&f, &fix) && fix.source_id == 0U && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+    fixture_close(&f);
+}
+
 /* V1, V3, the time field, quality, emergency and speed, through the decoder with a checked context. */
 static int
 decode(fixture* f, const body_fields* b, dsd_position_fix* fix) {
@@ -723,6 +782,7 @@ main(void) {
     test_terminator();
     test_event_log_one_label();
     test_checks();
+    test_uncorrectable_verdict();
     test_fields();
     dsd_decode_clock_use_system();
     if (g_fail) {

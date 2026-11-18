@@ -25,7 +25,13 @@ extern "C" {
 
 struct dsd_event_closing_call;
 
-/** Decode an LCW carried by an active-call data unit such as LDU1. */
+/**
+ * Decode an LCW carried by an active-call data unit such as LDU1.
+ *
+ * @p irrecoverable_errors is the RS decode's verdict: a nonzero count leaves
+ * everything the link control names unchecked (no checked identity, no
+ * checked position; issue #800), as a soft-erasure retry does.
+ */
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
 /**
@@ -35,7 +41,8 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  * after the terminator has ended the current transmission. @p closing is the
  * call the terminator ended, captured (dsd_event_capture_closing_call()) just
  * before it did: a GPS link control in the terminator belongs to that call
- * (issue #800, spec N2). NULL when none was captured.
+ * (issue #800, spec N2). NULL when none was captured. @p irrecoverable_errors
+ * is the RS verdict, as for p25_lcw().
  */
 void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
                         const struct dsd_event_closing_call* closing);
