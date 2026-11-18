@@ -8,7 +8,8 @@
  * those still queued in the socket because the receive thread was descheduled, and none that arrives after it. The
  * receive thread is held off the socket through the test seam (DSD_NEO_TEST_HOOKS, udp_input_test_hold_receive()), so
  * the old channel's datagram waits in the socket when the mark is taken; the new channel's, sent after the mark, is
- * read after the drop.
+ * read after the drop. The hold is set before the input starts, so the thread never waits on the socket with it set
+ * (a thread waiting there would wake for the datagram and take it).
  */
 
 #include <dsd-neo/core/opts.h>
@@ -99,7 +100,10 @@ test_mark_counts_queued_datagrams(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.wav_sample_rate = 48000;
+    /* The receive thread is descheduled from its start: the old channel's datagram will wait in the socket. */
+    udp_input_test_hold_receive(1);
     if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        udp_input_test_hold_receive(0);
         DSD_FPRINTF(stderr, "udp_input_start failed\n");
         return 1;
     }
@@ -109,8 +113,6 @@ test_mark_counts_queued_datagrams(void) {
     const int16_t old_audio[] = {11, 12, 13};
     const int16_t new_audio[] = {21, 22};
     if (rc == 0) {
-        /* The receive thread is descheduled: the old channel's datagram waits in the socket. */
-        udp_input_test_hold_receive(1);
         rc |= expect("the old channel's datagram sent", send_samples(tx, port, old_audio, 3U) == 0);
         rc |= expect("it waits in the socket", socket_holds_one(opts.udp_in_sockfd));
         dsd_input_cut cut;

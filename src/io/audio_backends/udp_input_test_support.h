@@ -16,7 +16,8 @@ extern "C" {
 void udp_input_test_fail_thread_starts(int count);
 
 /* While @p hold is set, the receive thread takes nothing from the socket, as a thread descheduled with datagrams
-   queued: they stay in the socket until it is cleared (or a backlog mark takes them). */
+   queued: they stay in the socket until it is cleared (or a backlog mark takes them). Set before udp_input_start(): a
+   thread already waiting on the socket when it is set wakes for the next datagram and takes it. */
 void udp_input_test_hold_receive(int hold);
 
 #ifdef __cplusplus
