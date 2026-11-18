@@ -212,7 +212,12 @@ Item {
             // writes Accessible.ignored on each row's root as it lays it out
             // (issue #800, F1), and a row that was its own node came back
             // into the tree under the position sheet as fixes landed.
-            activeFocusOnTab: (navigationAllowed && !gap && visible) || activeFocus
+            // The keyboard lands on the node (Tab, a sheet's focus return): a
+            // focus given to the row itself is passed on to it.
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    rowNode.forceActiveFocus();
+            }
             readonly property bool navigationAllowed: Navigation.allows(row)
             readonly property Item node: rowNode
             // The root gates itself too: a cover with no re-layout leaves
@@ -229,7 +234,6 @@ Item {
             Keys.onReleased: function (event) {
                 Navigation.activationRelease(event);
             }
-            FocusFrame {}
             GatedTapHandler {
                 onAllowedTap: row.activate()
             }
@@ -257,6 +261,8 @@ Item {
                 Accessible.focusable: reachable
                 Accessible.ignored: !reachable
                 Accessible.onPressAction: row.activate()
+                // The row's Tab stop (see OutlineButton); keys reach the row from here.
+                activeFocusOnTab: (row.navigationAllowed && !row.gap && row.visible) || activeFocus
                 FocusFrame {}
 
                 // The row's text inside its node: the node's words are its lines'.

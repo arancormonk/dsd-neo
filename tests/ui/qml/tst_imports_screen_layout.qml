@@ -472,9 +472,13 @@ Item {
             back.forceActiveFocus();
             verify(back.activeFocus);
             keyClick(Qt.Key_Tab);
-            verify(first.activeFocus, "Tab from the back chevron did not reach the first card");
+            verify(first.node.activeFocus, "Tab from the back chevron did not reach the first card");
+            // Issue #800 (P10a): the stop is the card's named node, which a screen reader reads and presses.
+            var stop = testContext.accessibleNode(tc.screen.Window.window.activeFocusItem);
+            compare(stop.name, importedFiles.get(0).name);
+            verify((stop.actions || []).indexOf("Press") >= 0, JSON.stringify(stop));
             keyClick(Qt.Key_Tab);
-            verify(second.activeFocus, "Tab from the first card did not reach the next one");
+            verify(second.node.activeFocus, "Tab from the first card did not reach the next one");
         }
 
         function test_the_cards_sit_centred_between_the_screen_edges() {

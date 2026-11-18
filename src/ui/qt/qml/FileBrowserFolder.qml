@@ -136,7 +136,12 @@ Item {
             opacity: index < entryRows.shown ? (inert ? 0.5 : 1) : 0
             readonly property bool inert: !folder && restartCloser.active
             readonly property bool navigationAllowed: Navigation.allows(entryRow)
-            activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
+            // The keyboard lands on the node (Tab, a sheet's focus return): a
+            // focus given to the entry itself is passed on to it.
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    entryNode.forceActiveFocus();
+            }
             // The entry's node is a child that fills it, never the entry: the
             // view writes Accessible.ignored on each delegate's root as it lays
             // it out (issue #800, F1), which put a covered entry back in the
@@ -156,11 +161,6 @@ Item {
             Keys.onReleased: function (event) {
                 Navigation.activationRelease(event);
             }
-            // Inside the row: the list clips at its edges.
-            FocusFrame {
-                anchors.margins: 0
-            }
-
             Item {
                 id: entryNode
                 objectName: "fileBrowserEntryNode"
@@ -173,6 +173,12 @@ Item {
                 Accessible.focusable: reachable
                 Accessible.ignored: !reachable
                 Accessible.onPressAction: entryRow.activate()
+                // The entry's Tab stop (see OutlineButton); keys reach the entry from here.
+                activeFocusOnTab: reachable || activeFocus
+                // Inside the row: the list clips at its edges.
+                FocusFrame {
+                    anchors.margins: 0
+                }
 
                 // The entry's text inside its node: the node's words are its lines'.
                 Rectangle {

@@ -337,7 +337,12 @@ Item {
             // The gate read first: see OutlineButton.
             readonly property bool inTree: Navigation.allows(fileRow) && visible
             // Held while focused: see OutlineButton.
-            activeFocusOnTab: inTree || activeFocus
+            // The keyboard lands on the node (Tab, a sheet's focus return): a
+            // focus given to the card itself is passed on to it.
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    cardNode.forceActiveFocus();
+            }
             // The card's node is a child that fills it, never the card: the
             // view writes Accessible.ignored on each delegate's root as it lays
             // it out (issue #800, F1), and a card that was its own node came
@@ -359,13 +364,6 @@ Item {
             Keys.onReleased: function (event) {
                 Navigation.activationRelease(event);
             }
-            // On the card's own edge: the list clips, and a ring drawn outside
-            // the card lost its top and sides there.
-            FocusFrame {
-                anchors.margins: 0
-                radius: Theme.radiusPanel
-            }
-
             Item {
                 id: cardNode
                 objectName: "importedFileNode"
@@ -381,6 +379,15 @@ Item {
                 Accessible.focusable: fileRow.inTree
                 Accessible.ignored: !fileRow.inTree
                 Accessible.onPressAction: fileRow.activate()
+                // The card's Tab stop, held while focused (see OutlineButton);
+                // keys reach the card from here.
+                activeFocusOnTab: fileRow.inTree || activeFocus
+                // On the card's own edge: the list clips, and a ring drawn outside
+                // the card lost its top and sides there.
+                FocusFrame {
+                    anchors.margins: 0
+                    radius: Theme.radiusPanel
+                }
 
                 // The card's text inside its node: the node's words are its lines'.
                 Column {

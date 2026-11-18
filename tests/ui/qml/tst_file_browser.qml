@@ -458,7 +458,7 @@ Item {
             }, 1000, "the folder's own reading line still shows");
             answerListing([entry(storagePath, "a.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(storagePath + "/a.csv");
+                return window().activeFocusItem === entryRow(storagePath + "/a.csv").node;
             }, 1000, "and its listing still gives its first row the focus");
 
             // An ok answer then: the folder stays, on the newer generation.
@@ -469,7 +469,7 @@ Item {
             compare(screen.view, "folder", "its place is still there");
             answerListing([entry(storagePath, "b.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(storagePath + "/b.csv");
+                return window().activeFocusItem === entryRow(storagePath + "/b.csv").node;
             }, 1000);
             entryRow(storagePath + "/b.csv").activate();
             compare(last("requestFileHandoff").generation, 9, "later requests carry the newer generation");
@@ -610,8 +610,11 @@ Item {
             compare(callsNamed("requestFolderListing").length, listings + 1, "Return opens it");
             answerListing([entry(screen.path, "a.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(screen.path + "/a.csv");
+                return window().activeFocusItem === entryRow(screen.path + "/a.csv").node;
             }, 1000, "the first file takes the focus");
+            // Issue #800 (P10a): the keyboard stop is the entry's named node, which a screen reader reads and presses.
+            var stop = testContext.accessibleNode(window().activeFocusItem);
+            verify(stop.name.indexOf("a.csv") === 0 && (stop.actions || []).indexOf("Press") >= 0, JSON.stringify(stop));
             keyClick(Qt.Key_Return);
             compare(last("requestFileHandoff").reference, "file://" + screen.path + "/a.csv", "Return picks it");
             keyClick(Qt.Key_Escape);

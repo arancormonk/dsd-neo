@@ -20483,7 +20483,9 @@ child itself (`Accessible.ignored`, name, description and focusable from `Naviga
 `node` property naming that child. The row's text sits inside the node (what a screen reader reaches is the text's
 own ancestor chain), the node is sized by binding to the row, not anchored (anchored, a list that put a reader's place
 back measured new rows before their text and landed a row off), and the root gates its own flag as well, so a cover
-with no re-layout leaves nothing of it. A shared control laid out by a view as its whole delegate sits in a plain,
+with no re-layout leaves nothing of it. The keyboard lands on the node too: it is the row's Tab stop and carries the
+focus ring, and a focus given to the root (a list or a caller focusing the row) is passed on to it, so Tab and a
+sheet's focus return reach a node a screen reader names and can press; key events still reach the root's handlers. A shared control laid out by a view as its whole delegate sits in a plain,
 gated item (Talkgroups' category chips, each delegate's `pill`). A role
 switch is not enough: Qt offers Press for any item with an `onPressAction` handler, whatever its role, and the
 Android bridge makes a node with Press clickable, which TalkBack stops on with no text. Rows whose node is a

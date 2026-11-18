@@ -14,8 +14,12 @@ Item {
     property bool interactive: false
     property bool hasRecording: false
     signal activated
-    // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(row) && interactive && enabled) || activeFocus
+    // The keyboard lands on the node, the row's named stop (Tab, a sheet's
+    // focus return): a focus given to the row itself is passed on to it.
+    onActiveFocusChanged: {
+        if (activeFocus)
+            rowNode.forceActiveFocus();
+    }
     // Issue #800 (F1): the row's accessible node is `node`, a child that
     // fills it, never the row itself. A list view writes Accessible.ignored on
     // the root of every row it lays out, with no change signal
@@ -47,7 +51,6 @@ Item {
     Keys.onReleased: function (event) {
         Navigation.activationRelease(event);
     }
-    FocusFrame {}
     GatedTapHandler {
         onAllowedTap: row.activate()
     }
@@ -78,7 +81,10 @@ Item {
         Accessible.focusable: row.reachable
         Accessible.ignored: !row.reachable
         Accessible.onPressAction: row.activate()
-        // TalkBack's focus action lands here: the frame shows it.
+        // The row's Tab stop, held while it has the focus (see OutlineButton);
+        // keys reach the row's handlers from here.
+        activeFocusOnTab: (row.navigationAllowed && row.interactive && row.enabled && row.visible) || activeFocus
+        // The keyboard's and TalkBack's focus both land here: the frame shows it.
         FocusFrame {}
 
         // The row's text sits inside its node, so the node's words are its
