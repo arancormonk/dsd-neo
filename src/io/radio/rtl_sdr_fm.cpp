@@ -11208,12 +11208,19 @@ struct rtl_live_read_idle {
     int want_no_stream;   /* The reader takes DSD_RTL_READ_NO_STREAM (rtl_live_read_no_stream()). */
     int no_stream_waited; /* A wait slice passed with the device having no stream. */
     int want_idle_bound;  /* The reader takes DSD_RTL_READ_IDLE (rtl_live_read_idle_expired()). */
+    int want_empty; /* The reader takes DSD_RTL_READ_EMPTY at the first empty poll (rtl_live_read_idle_expired()). */
 };
 } // namespace
 
 /* One empty poll of a live read. Returns 1 when the read gives up, with its result in @p *result. */
 static int
 rtl_live_read_idle_expired(rtl_live_read_idle* idle, int* result) {
+    /* A reader that services its own waiters first (the decoder's hunt) hears of an empty output before any wait, and
+       reads again to wait. */
+    if (idle->want_empty) {
+        *result = DSD_RTL_READ_EMPTY;
+        return 1;
+    }
     if (idle->analog_monitor < 0) {
         /* The receive mode in force now (an NFM monitor switched to AM, or a digital session to NFM, changes it while
            the stream runs): the decoder's options, which this read runs on the thread of. */
@@ -11297,7 +11304,8 @@ rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t co
                                0U,
                                (wants & DSD_RTL_READ_WANT_NO_STREAM) != 0 ? 1 : 0,
                                0,
-                               (wants & DSD_RTL_READ_WANT_IDLE_BOUND) != 0 ? 1 : 0};
+                               (wants & DSD_RTL_READ_WANT_IDLE_BOUND) != 0 ? 1 : 0,
+                               static_cast<int>((wants & DSD_RTL_READ_WANT_EMPTY_RETURN) != 0)};
     for (;;) {
         if (!output.buffer || dsd_exitflag_load()
             || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
@@ -11309,11 +11317,6 @@ rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t co
         int got = rtl_stream_read_live_available(&controller, &output, out, voice, flags, count, &gated);
         if (got != 0) {
             return got;
-        }
-        /* A reader that services its own waiters first (the decoder's hunt) hears of an empty output before any wait,
-           and reads again to wait. */
-        if ((wants & DSD_RTL_READ_WANT_EMPTY_RETURN) != 0) {
-            return DSD_RTL_READ_EMPTY;
         }
         if (!gated) {
             RTL_LIVE_TEST_DECODER_IDLE();
