@@ -1159,7 +1159,7 @@ reconnect_read(tcp_input_ctx* ctx, int16_t* out, unsigned int timeout_ms) {
 static long
 reconnect_discard(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
     const long n = tcp_input_discard_through(ctx, cut);
-    g_reconnect.dropped += n;
+    g_reconnect.dropped += n > 0 ? n : 0;
     return n;
 }
 
@@ -1835,6 +1835,57 @@ test_staged_low_rate_pcm(void) {
     return rc;
 }
 
+/* Issue #834: 8 kHz PCM on stdin redirected from a file (no pipe): a retune's cutoff does not apply to it, so the drop
+   keeps what the low-rate resampler staged and its FIR history, as it keeps the rest of the file: the staged outputs of
+   the sample read are played, then the file reads on. */
+static int
+test_staged_low_rate_pcm_from_a_file(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-rigctl-staged-file");
+    if (fd < 0) {
+        return expect_true("staged file: temp file", 0);
+    }
+    int rc = expect_true("staged file: samples", pipe_put(fd, 300) && pipe_put(fd, 301));
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_true("staged file: rewound", _lseek(fd, 0, SEEK_SET) == 0);
+#else
+    rc |= expect_true("staged file: rewound", lseek(fd, 0, SEEK_SET) == 0);
+#endif
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        (void)dsd_close(fd);
+        (void)remove(path);
+        return expect_true("staged file: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    opts->wav_sample_rate = 8000;
+    opts->audio_in_stdin = dsd_pcm_stream_open_fd(fd);
+    rc |= expect_true("staged file: stdin reader", opts->audio_in_stdin != NULL);
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    if (opts->audio_in_stdin != NULL) {
+        rc |= expect_true("staged file: the decoder read a sample", staged_after_read(opts, 300));
+        rc |= expect_true("staged file: a hop", leg_trunk(opts, state, VC1_HZ));
+        dsd_symbol_apply_input_drop(opts, state);
+        char label[200];
+        DSD_SNPRINTF(label, sizeof label,
+                     "staged file: the staged outputs and FIR history stay (staged %d of %d, primed %d)",
+                     opts->input_upsample_len - opts->input_upsample_pos, opts->input_upsample_len,
+                     opts->input_upsample_prev_valid);
+        rc |= expect_true(label, opts->input_upsample_pos == 1 && opts->input_upsample_len == 6
+                                     && opts->input_upsample_prev_valid == 1);
+        rc |= expect_true("staged file: and the file reads on", pipe_next(opts) == 301);
+        dsd_pcm_stream_close(opts->audio_in_stdin);
+        opts->audio_in_stdin = NULL;
+    }
+    dsd_resampler_reset(&opts->input_resampler);
+    (void)dsd_close(fd);
+    (void)remove(path);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* Every input reader carries out a pending drop before it reads: the symbol reader and EDACS analog voice. */
 static int
 test_readers_carry_out_the_drop(void) {
@@ -1942,6 +1993,7 @@ main(void) {
     rc |= test_new_audio_before_the_reply();
     rc |= test_old_audio_while_the_passband_is_set();
     rc |= test_staged_low_rate_pcm();
+    rc |= test_staged_low_rate_pcm_from_a_file();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();

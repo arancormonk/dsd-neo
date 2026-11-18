@@ -3754,7 +3754,7 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
     /* What the input held at the mark goes; what arrived after it is the new channel's. A device keeps the audio it
        captured since the mark; a stream or ring drops up to the count marked on it. */
     const dsd_input_cut* cut = &state->input_drop_cut;
-    long dropped = DSD_INPUT_DISCARD_READ_PAST;
+    long dropped = DSD_INPUT_DISCARD_NOT_APPLICABLE;
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
@@ -3767,9 +3767,10 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
         default: break;
     }
     /* A low-rate stream's staged upsampled outputs and FIR history came from the last samples the decoder read: from
-       before the mark unless it had read past it already (a confirmation taken late), and then they go with the rest,
-       so no old-channel audio is mixed into the new channel's first samples. */
-    if (dropped != DSD_INPUT_DISCARD_READ_PAST && dsd_pcm_input_uses_staged_resampler(opts)) {
+       before the mark when the cut applied and the decoder had not read past it already (a confirmation taken late),
+       and then they go with the rest, so no old-channel audio is mixed into the new channel's first samples. A cut
+       that does not apply (stdin from a file, another input's cut) keeps them, as it keeps the input. */
+    if (dropped >= 0 && dsd_pcm_input_uses_staged_resampler(opts)) {
         dsd_pcm_input_forget_staged(opts);
     }
 }

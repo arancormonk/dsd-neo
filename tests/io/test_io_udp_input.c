@@ -450,13 +450,14 @@ test_discard_through(void) {
     opts.wav_sample_rate = 48000;
     dsd_input_cut cut;
     dsd_input_backlog_mark(&cut);
-    rc |= expect_int("a discard with no input", (int)udp_input_discard_through(&opts, &cut), 0);
+    rc |= expect_int("a discard with no input", (int)udp_input_discard_through(&opts, &cut),
+                     (int)DSD_INPUT_DISCARD_NOT_APPLICABLE);
     if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
         DSD_FPRINTF(stderr, "udp_input_start failed for the discard\n");
         return 1;
     }
     rc |= expect_int("a mark made before the input started drops nothing of it",
-                     (int)udp_input_discard_through(&opts, &cut), 0);
+                     (int)udp_input_discard_through(&opts, &cut), (int)DSD_INPUT_DISCARD_NOT_APPLICABLE);
     const int port = get_bound_port(opts.udp_in_sockfd);
     dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     const int16_t before[] = {11, 12, 13};

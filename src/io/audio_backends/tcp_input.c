@@ -75,7 +75,7 @@ tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeou
 long
 tcp_input_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
     if (!ctx || !ctx->valid) {
-        return 0;
+        return DSD_INPUT_DISCARD_NOT_APPLICABLE;
     }
     return dsd_pcm_stream_discard_through(ctx->stream, cut);
 }

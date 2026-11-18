@@ -7337,7 +7337,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   stdin, upsampled through the staged resampler) the outputs still staged from the last sample read and the FIR history
   go with it (`dsd_pcm_input_forget_staged()`; the next sample re-primes the history), unless the decoder had read past
   the mark already (a confirmation taken late: the queue's drop returns `DSD_INPUT_DISCARD_READ_PAST`), when they are
-  the new channel's and stay (`ENGINE_RIGCTL_RETUNE` `test_staged_low_rate_pcm()`). The drop takes only what the
+  the new channel's and stay (`ENGINE_RIGCTL_RETUNE` `test_staged_low_rate_pcm()`), or the cut does not apply to the
+  input (`DSD_INPUT_DISCARD_NOT_APPLICABLE`: stdin from a regular file, a cut of another input), which keeps them as it
+  keeps the input (`test_staged_low_rate_pcm_from_a_file()`). The drop takes only what the
   input held before the leg asked the peer to move, never what arrived after it, also when the new channel's audio is
   what ended a read that was waiting then: the request carries a mark of the input (`dsd_state::input_drop_cut`,
   `dsd_input_backlog_mark()` in `<dsd-neo/platform/input_backlog.h>`). Every leg takes that mark immediately before it

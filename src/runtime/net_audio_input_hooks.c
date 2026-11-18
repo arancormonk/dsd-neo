@@ -73,12 +73,14 @@ dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsi
 
 long
 dsd_net_audio_input_hook_tcp_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
-    return g_net_audio_input_hooks.tcp_discard_through ? g_net_audio_input_hooks.tcp_discard_through(ctx, cut) : 0;
+    return g_net_audio_input_hooks.tcp_discard_through ? g_net_audio_input_hooks.tcp_discard_through(ctx, cut)
+                                                       : DSD_INPUT_DISCARD_NOT_APPLICABLE;
 }
 
 long
 dsd_net_audio_input_hook_udp_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
-    return g_net_audio_input_hooks.udp_discard_through ? g_net_audio_input_hooks.udp_discard_through(opts, cut) : 0;
+    return g_net_audio_input_hooks.udp_discard_through ? g_net_audio_input_hooks.udp_discard_through(opts, cut)
+                                                       : DSD_INPUT_DISCARD_NOT_APPLICABLE;
 }
 
 dsd_socket_t

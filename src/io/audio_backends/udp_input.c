@@ -535,7 +535,7 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
 long
 udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
     if (!opts || !opts->udp_in_ctx || !dsd_input_backlog_cut_applies(cut, opts->udp_in_ctx)) {
-        return 0;
+        return DSD_INPUT_DISCARD_NOT_APPLICABLE;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
     dsd_mutex_lock(&ctx->ring.m);

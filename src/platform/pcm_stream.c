@@ -298,7 +298,7 @@ dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut)
     /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
        queued stream, and a read could wait or take the rest of a file. */
     if (stream == NULL || !stream->queues || !dsd_input_backlog_cut_applies(cut, stream)) {
-        return 0;
+        return DSD_INPUT_DISCARD_NOT_APPLICABLE;
     }
     /* Only whole samples that had arrived by the mark go; a part of one stays, so the samples after it stay whole. A
        later cut of the stream discards at least as much as an earlier one still owed. */

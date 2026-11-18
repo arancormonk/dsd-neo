@@ -57,7 +57,13 @@ typedef struct dsd_input_cut {
 /** What a queue's drop of a cut returns when the decoder had already read past the cut's mark (the retune's
  * confirmation was taken late, after the decoder read some of what arrived after the mark): nothing is dropped, and
  * what the decoder holds of the input was read after the mark (issue #834). */
-#define DSD_INPUT_DISCARD_READ_PAST (-1L)
+#define DSD_INPUT_DISCARD_READ_PAST      (-1L)
+
+/** What a queue's drop of a cut returns when the cut does not apply to it: no input, a cut measured on another input or
+ * attachment (dsd_input_backlog_cut_applies()), or an input that queues nothing to drop (stdin from a regular file or a
+ * console). Nothing is dropped, and what the decoder holds of the input stays its own, unlike a drop that applied and
+ * found nothing left of the mark (0). */
+#define DSD_INPUT_DISCARD_NOT_APPLICABLE (-2L)
 
 /** @p queue is the input the decoder reads from now on, its count read by @p arrived. While an input is opening
  * (dsd_input_backlog_opening()), @p queue is that input's and its count goes on from the connection's: a post measured

@@ -74,7 +74,7 @@ main(void) {
     }
     dsd_input_cut cut;
     dsd_input_backlog_mark(&cut);
-    if (tcp_input_discard_through(NULL, &cut) != 0) {
+    if (tcp_input_discard_through(NULL, &cut) != DSD_INPUT_DISCARD_NOT_APPLICABLE) {
         DSD_FPRINTF(stderr, "a NULL context's discard dropped something\n");
         return 1;
     }

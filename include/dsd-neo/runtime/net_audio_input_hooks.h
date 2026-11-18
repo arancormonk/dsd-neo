@@ -58,8 +58,9 @@ int dsd_net_audio_input_hook_udp_read_sample(dsd_opts* opts, int16_t* out);
 /** 1 with a sample, 0 on stop, -1 when none arrived within @p timeout_ms. Without the hook it waits as
     dsd_net_audio_input_hook_udp_read_sample() does, and never returns -1. */
 int dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
-/** The samples the input dropped (tcp_input_discard_through(), udp_input_discard_through()), or
-    DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark; 0 without the hook. */
+/** The samples the input dropped (tcp_input_discard_through(), udp_input_discard_through()),
+    DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark, or DSD_INPUT_DISCARD_NOT_APPLICABLE when the
+    cut does not apply, and without the hook. */
 long dsd_net_audio_input_hook_tcp_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut);
 long dsd_net_audio_input_hook_udp_discard_through(dsd_opts* opts, const dsd_input_cut* cut);
 /** The connected socket, or DSD_INVALID_SOCKET (also without the hook). */

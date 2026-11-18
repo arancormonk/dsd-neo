@@ -252,7 +252,8 @@ test_socket_discard_through(void) {
     dsd_input_cut cut;
     dsd_input_backlog_mark(&cut);
     check(cut.measured == 1U && cut.arrived == 0U, "the stream is the input marked on, holding nothing");
-    check(dsd_pcm_stream_discard_through(NULL, &cut) == 0, "a NULL discard drops nothing");
+    check(dsd_pcm_stream_discard_through(NULL, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a NULL discard drops nothing, the cut applying to no input");
     /* Nothing held at the mark: nothing dropped, and no read made. A discard that waited would block on the idle socket
        for good (it has no receive timeout), so the test would not end: no bound on the clock decides it. */
     check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing held at the mark: nothing dropped");
@@ -312,7 +313,8 @@ test_fd_discard_through(void) {
     const uint8_t more[] = {0x08U, 0x00U};
     put_bytes(fds[1], more, sizeof more);
     dsd_input_backlog_mark(&cut);
-    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "a mark on another input drops nothing of this one");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a mark on another input drops nothing of this one: it does not apply");
     check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 8, "it reads on");
     dsd_pcm_stream_close(other_stream);
     (void)dsd_close(other[0]);
@@ -334,7 +336,8 @@ test_fd_discard_through(void) {
     check(file != NULL, "reopen the file for the discard");
     dsd_pcm_stream* file_stream = file ? dsd_pcm_stream_open_fd(dsd_fileno(file)) : NULL;
     dsd_input_backlog_mark(&cut);
-    check(dsd_pcm_stream_discard_through(file_stream, &cut) == 0, "a regular file drops nothing");
+    check(dsd_pcm_stream_discard_through(file_stream, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a regular file drops nothing: no cut applies to it");
     check(dsd_pcm_stream_read_wait(file_stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 5, "it reads on");
     dsd_pcm_stream_close(file_stream);
     if (file) {
