@@ -2167,7 +2167,10 @@ first, for the reason given. The app cannot read why the device restarted; an
 
 Sharing creates a temporary text file in `cacheDir/diagnostics/`, exposed through
 our separate, non-exported diagnostics FileProvider with a temporary read grant.
-Files older than one hour are removed on the next share. The API accepts text,
+Files more than one hour old (either way of the clock) are removed at the next
+app start or share, whichever comes first, so a copy an older build shared with
+position lines in it does not wait for a share (`DiagnosticsShare.clean()`, from
+the host's transfer worker at start; issue #800). The API accepts text,
 not paths; systems, preferences, and imported CSVs are outside that provider.
 Qt's own provider paths are unchanged.
 

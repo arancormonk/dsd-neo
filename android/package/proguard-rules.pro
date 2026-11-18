@@ -139,6 +139,7 @@
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DiagnosticsShare {
     public static void share(android.content.Context, java.lang.String, java.lang.String);
+    public static void clean(android.content.Context);
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.ProcessFacts {
