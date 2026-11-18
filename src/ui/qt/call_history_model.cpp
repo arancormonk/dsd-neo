@@ -24,6 +24,7 @@
 #include <QLocale>
 #include <QMap>
 #include <QPair>
+#include <QSet>
 #include <QStringView>
 #include <QVariant>
 #include <QVariantList>
@@ -119,7 +120,8 @@ constexpr int kMergeScanRows = 32;
 
 #ifdef DSD_NEO_TEST_HOOKS
 std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
-/* The fragment parts the part lookups read or index (PartLookup, part_index()), for the fold's cost. */
+/* The fragment parts the part lookups read or index (PartLookup, part_index(), fragment_withdrawn(),
+ * recording_fragments()), for the cost of a fold and of the recording roles. */
 std::atomic<qint64> g_part_lookup_steps{0};
 /* The lines the next spill fold reads before its read fails (-1: it does not). */
 std::atomic<int> g_spill_read_fail_after{-1};
@@ -516,22 +518,38 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
 }
 
 /** @brief Whether fragment @p fragment's part in @p row is withdrawn (issue #800): its reading named another call than
- * the row's, so the row keeps its key only to know its later readings. */
+ * the row's, so the row keeps its key only to know its later readings. For one lookup; recording_fragments() for all. */
 bool
 fragment_withdrawn(const CallHistoryModel::Row& row, const QString& fragment) {
     return std::any_of(row.parts.cbegin(), row.parts.cend(), [&fragment](const CallHistoryModel::FragmentPart& part) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
         return part.withdrawn && part.fragment == fragment;
     });
 }
 
 /** @brief The fragments whose recordings are @p row's: every fragment it holds but the withdrawn ones, whose
- * recordings belong to another call. */
+ * recordings belong to another call. Its parts are read once, whatever the number of fragments: both recording roles
+ * ask on the GUI thread, for a long call of many short fragments too. */
 QStringList
 recording_fragments(const CallHistoryModel::Row& row) {
+    QSet<QString> withdrawn;
+    for (const CallHistoryModel::FragmentPart& part : row.parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (part.withdrawn) {
+            withdrawn.insert(part.fragment);
+        }
+    }
+    if (withdrawn.isEmpty()) {
+        return row.fragments;
+    }
     QStringList fragments;
     fragments.reserve(row.fragments.size());
     for (const QString& fragment : row.fragments) {
-        if (!fragment_withdrawn(row, fragment)) {
+        if (!withdrawn.contains(fragment)) {
             fragments.append(fragment);
         }
     }
@@ -2306,19 +2324,28 @@ fold_reading_parts(CallHistoryModel::Row& existing, const QStringList& keys) {
     }
 }
 
-/** @brief Mark fragment @p fragment's part in @p existing withdrawn (its reading names another call than the row's): it
- * is kept so the row knows the fragment, and folds nothing until a reading agrees again (merge_parts()). */
+/** @brief Mark the parts of fragments @p fragments in @p existing withdrawn (their reading names another call than the
+ * row's), adding a withdrawn marker for a fragment that has none: each is kept so the row knows the fragment, and folds
+ * nothing until a reading agrees again (merge_parts()). One pass over the parts, whatever the number of fragments. */
 void
-withdraw_part(CallHistoryModel::Row& existing, const QString& fragment) {
+withdraw_parts(CallHistoryModel::Row& existing, const QStringList& fragments) {
+    QSet<QString> missing(fragments.cbegin(), fragments.cend());
     QList<FragmentPart> parts = existing.parts;
-    const qsizetype held = part_index(existing, fragment);
-    if (held >= 0) {
-        parts[held].withdrawn = true;
-    } else {
-        FragmentPart marker;
-        marker.fragment = fragment;
-        marker.withdrawn = true;
-        parts.append(marker);
+    for (FragmentPart& part : parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (missing.remove(part.fragment)) {
+            part.withdrawn = true;
+        }
+    }
+    for (const QString& fragment : fragments) {
+        if (missing.remove(fragment)) {
+            FragmentPart marker;
+            marker.fragment = fragment;
+            marker.withdrawn = true;
+            parts.append(marker);
+        }
     }
     existing.parts = std::move(parts);
 }
@@ -2328,11 +2355,18 @@ withdraw_part(CallHistoryModel::Row& existing, const QString& fragment) {
  * judged against or folded onto. False when no other part is left, so nothing of the row disagrees with the reading. */
 bool
 rest_of_row(CallHistoryModel::Row& rest, const QStringList& own) {
-    for (const QString& fragment : own) {
-        if (part_index(rest, fragment) >= 0) {
-            withdraw_part(rest, fragment);
+    // One pass over the parts, whatever the number of keys: a stored row of a long call folds as one reading at load.
+    const QSet<QString> keys(own.cbegin(), own.cend());
+    QList<FragmentPart> parts = rest.parts;
+    for (FragmentPart& part : parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (keys.contains(part.fragment)) {
+            part.withdrawn = true;
         }
     }
+    rest.parts = std::move(parts);
     const CallHistoryModel::Row radio = rest;
     return rebuild_from_parts(rest, &radio);
 }
@@ -2490,9 +2524,7 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     if (callOk) {
         merge_parts(existing, reading);
     } else {
-        for (const QString& fragment : own) {
-            withdraw_part(existing, fragment);
-        }
+        withdraw_parts(existing, own);
     }
     if (restKnown) {
         // The rest first, then this reading: what the row held stays ahead of what an update now says (a conflicting
@@ -2611,7 +2643,7 @@ CallHistoryModel::settleMerged(int merged) {
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
     // A merge pulls the absorbing row's start earlier, which may now sort below newer rows beneath it; a fragment taken
-    // back (another call's, withdraw_part()) can move it later, above older rows. Restore the
+    // back (another call's, withdraw_parts()) can move it later, above older rows. Restore the
     // newest-first invariant the insertion scan and day sections depend on.
     int newPos = merged;
     while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {

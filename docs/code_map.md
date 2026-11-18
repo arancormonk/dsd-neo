@@ -15761,7 +15761,7 @@ Qt Quick frontend (`src/ui/qt`):
       protocol family, reception and sender system, numeric target and raw target text, a target either side does not
       know no conflict), never against
       its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
-      other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
+      other than the row's) is withdrawn (`withdraw_parts()`) and gives nothing, and the row is rebuilt from the rest,
       every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
       code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
       recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
@@ -15812,8 +15812,10 @@ Qt Quick frontend (`src/ui/qt`):
       gives the delivery (an unsummarised notice's whole detail line, `absorbRepeatedNotice()`, notifying `name`), so
       a later replay, with neither row legacy any more, still finds it; two rows of this build compare their whole
       detail line. A fold looks a row's fragments up among its parts through an index
-      (`PartLookup`) once both are more than a few, so a long call of many short fragments folds in time linear in its
-      parts, not quadratic (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      (`PartLookup`) once both are more than a few, and takes a reading's parts out of the rest or withdraws them in one
+      pass (`rest_of_row()`, `withdraw_parts()`), so a long call of many short fragments folds in time linear in its
+      parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
+      (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `rxEp`/`rxRing` (the epoch the reception was read under and its ring, hex; both or neither),
       `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and

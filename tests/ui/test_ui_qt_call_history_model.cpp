@@ -5756,6 +5756,15 @@ test_long_call_fold_lookups_stay_linear(void) {
     expect("long call: one row holds every fragment", model.count() == 1);
     // A fold of a row of n parts reads at most ten per part: 10 * (1 + 2 + ... + fragments) over the call.
     expect("long call: the part lookups stay linear per fold", steps <= 10 * fragments * (fragments + 1) / 2);
+    // Both recording roles ask which fragments' recordings are the row's, on the GUI thread, at every delegate read:
+    // its parts are read once per ask, not once per fragment.
+    FakeRecordings recordings;
+    model.setRecordingProvider(&recordings);
+    (void)model.data(model.index(0), CallHistoryModel::RecordingsRole);
+    (void)model.data(model.index(0), CallHistoryModel::HasRecordingRole);
+    const qint64 roleSteps = CallHistoryModel::takePartLookupStepsForTest();
+    expect("long call: the recording roles read each part once", roleSteps > 0 && roleSteps <= 2 * fragments);
+    model.setRecordingProvider(nullptr);
 }
 
 /* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
