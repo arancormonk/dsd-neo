@@ -248,16 +248,19 @@ pos_reception_refines(const dsd_position_reception* a, const dsd_position_recept
     return a->scope.kind != b->scope.kind || pos_scope_parts_agree(&a->scope, &b->scope);
 }
 
+/* Two receptions known to be apart whatever else agrees: two known protocol classes (P25 Phase 1 and Phase 2), or two
+ * known carriers, also of one system whose scope names no carrier (a P25 WACN and SYSID). */
+static int
+pos_reception_apart(const dsd_position_reception* a, const dsd_position_reception* b) {
+    if (a->protocol_class != 0 && b->protocol_class != 0 && a->protocol_class != b->protocol_class) {
+        return 1;
+    }
+    return a->tuned_hz != 0 && b->tuned_hz != 0 && a->tuned_hz != b->tuned_hz;
+}
+
 int
 dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b) {
-    if (!a || !b) {
-        return 0;
-    }
-    if (a->protocol_class != 0 && b->protocol_class != 0 && a->protocol_class != b->protocol_class) {
-        return 0;
-    }
-    /* Two carriers are two receptions, also of one system whose scope names no carrier (a P25 WACN and SYSID). */
-    if (a->tuned_hz != 0 && b->tuned_hz != 0 && a->tuned_hz != b->tuned_hz) {
+    if (!a || !b || pos_reception_apart(a, b)) {
         return 0;
     }
     const int known_a = a->scope.kind != DSD_POS_SCOPE_NONE;

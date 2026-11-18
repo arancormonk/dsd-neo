@@ -179,6 +179,8 @@ rxid_dmr_mode(const dsd_state* state, int synctype) {
     return (state->dmr_dm_sync_slot == 1U || state->dmr_dm_sync_slot == 2U) ? 3U : 2U;
 }
 
+static void rxid_note_mode(dsd_state* state, int synctype);
+
 void
 dsd_rxid_note_sync(dsd_state* state, int synctype) {
     const dsd_rxid_family family = dsd_rxid_family_for_sync(synctype);
@@ -194,9 +196,14 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
         rxid_clear(id);
     }
     state->rx_sync_protocol = protocol;
-    /* Both phases send one system's identity, so the record stays; but a transmission of the other phase is another
-       reception (issue #800, fail closed): the phase sequence moves the reception generation, which every multi-part
-       report's origin, every sender evidence and every history row compares. */
+    rxid_note_mode(state, synctype);
+}
+
+/* Both P25 phases send one system's identity, so the record stays; but a transmission of the other phase is another
+   reception (issue #800, fail closed): the mode sequence moves the reception generation, which every multi-part
+   report's origin, every sender evidence and every history row compares. */
+static void
+rxid_note_mode(dsd_state* state, int synctype) {
     const uint8_t phase = DSD_SYNC_IS_P25P1(synctype) ? 1U : (DSD_SYNC_IS_P25P2(synctype) ? 2U : 0U);
     if (phase != 0U && state->rx_p25_phase != 0U && state->rx_p25_phase != phase) {
         state->rx_mode_seq++;
