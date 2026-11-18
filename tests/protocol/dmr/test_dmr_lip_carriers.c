@@ -487,28 +487,85 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     return failed;
 }
 
-/* A long binary NMEA UDT (TS 102 361-4 Annex B.3.6: UDT format 5, UAB 01 = two appended blocks) through the real UDT
-   assembly: Q, the fix 22 deg 30 min S, 45 deg W, the UTC hour and the course; the header's own CRC as given. */
+/* A binary NMEA UDT (TS 102 361-4 Annex B.3.6: UDT format 5) of @p blocks appended blocks (1 short format, 2 long)
+   with @p pad_nibbles pad nibbles through the real UDT assembly: Q, the fix 22 deg 30 min S, 45 deg W, the UTC hour
+   and the course; the header's own CRC as given. */
 static void
-send_udt_nmea(dsd_opts* opts, dsd_state* state, int header_crc_ok, int q, unsigned hour, unsigned cog) {
-    const uint8_t hdr[12] = {0, 0x05, 0, 0, 42, 0x01, 0xE2, 0x40, 0x01, 0, 0, 0};
+send_udt_nmea_padded(dsd_opts* opts, dsd_state* state, int header_crc_ok, int q, unsigned hour, unsigned cog,
+                     unsigned blocks, unsigned pad_nibbles) {
+    uint8_t hdr[12] = {0, 0x05, 0, 0, 42, 0x01, 0xE2, 0x40, 0x01, 0, 0, 0};
+    hdr[8] = (uint8_t)((pad_nibbles << 3) | (blocks - 1U));
     uint8_t bits[192] = {0};
     set_bits(bits, 3, 1, (uint32_t)q);
     set_bits(bits, 11, 7, 22);
     set_bits(bits, 18, 6, 30);
     set_bits(bits, 38, 8, 45);
     set_bits(bits, 66, 5, hour);
-    set_bits(bits, 103, 9, cog);
-    set_bits(bits, 176, 16, dsd_crc_ccitt16_bits(bits, 176));
-    uint8_t blocks[24] = {0};
+    if (blocks == 2U) {
+        set_bits(bits, 103, 9, cog);
+    }
+    const size_t crc_at = (size_t)blocks * 96U - 16U;
+    set_bits(bits, crc_at, 16, dsd_crc_ccitt16_bits(bits, crc_at));
+    uint8_t packed[24] = {0};
     for (size_t i = 0; i < sizeof bits; ++i) {
-        blocks[i / 8] |= (uint8_t)(bits[i] << (7 - i % 8));
+        packed[i / 8] |= (uint8_t)(bits[i] << (7 - i % 8));
     }
     uint8_t hdr_bits[96];
     dsd_unpack_bytes_to_bits(hdr, sizeof hdr, hdr_bits, sizeof hdr_bits, sizeof hdr);
-    dmr_dheader(opts, state, (uint8_t*)hdr, hdr_bits, header_crc_ok ? 1U : 0U, 0);
-    dmr_block_assembler(opts, state, blocks, 12, 0x07, 3);
-    dmr_block_assembler(opts, state, blocks + 12, 12, 0x07, 3);
+    dmr_dheader(opts, state, hdr, hdr_bits, header_crc_ok ? 1U : 0U, 0);
+    for (unsigned b = 0; b < blocks; ++b) {
+        dmr_block_assembler(opts, state, packed + 12U * b, 12, 0x07, 3);
+    }
+}
+
+/* A long binary NMEA UDT, two appended blocks with no pad. */
+static void
+send_udt_nmea(dsd_opts* opts, dsd_state* state, int header_crc_ok, int q, unsigned hour, unsigned cog) {
+    send_udt_nmea_padded(opts, state, header_crc_ok, q, hour, cog, 2U, 0U);
+}
+
+/* The pad nibbles are not user data: a short report with 12 of them in its one block holds Q and the latitude but no
+   longitude, and a long one with 17 holds no course; neither is a position (the fields the pad stands in for were never
+   sent). Each format with all of its fields is one. */
+static int
+test_udt_nmea_padding(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const struct {
+        unsigned blocks;
+        unsigned pad_nibbles;
+        int rows;
+        const char* console;
+    } cases[] = {
+        {1U, 12U, 0, "truncated (32 of 80 bits)"},
+        {2U, 17U, 0, "truncated (108 of 112 bits)"},
+        {1U, 0U, 1, "Short Format"},
+        {2U, 15U, 1, "Long Format"},
+    };
+
+    int failed = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        reset_carrier_state(state);
+        CHECK(truncate_output(path));
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "udt_nmea_pad") != 0) {
+            return 1;
+        }
+        send_udt_nmea_padded(opts, state, 1, 1, 12U, 90U, cases[i].blocks, cases[i].pad_nibbles);
+        dsd_test_capture_stderr_end(&cap);
+        char output[4096];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 1;
+        }
+        const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+        if (!expect_rows(path, cases[i].rows, "00123456", "-22.500000", "-45.000000", 0, cases[i].blocks == 2U ? 90 : 0,
+                         "UDT NMEA padding")
+            || strstr(output, cases[i].console) == NULL || strstr(notice->event_string, "NMEA;") == NULL
+            || (notice->pos.valid == 1U) != (cases[i].rows == 1)) {
+            DSD_FPRINTF(stderr, "\nUDT NMEA padding case %zu: notice '%s' pos %u; console %s\n", i,
+                        notice->event_string, notice->pos.valid, output);
+            failed = 1;
+        }
+    }
+    return failed;
 }
 
 /* Spec 2.5, V3, V4 and 2.11 through dispatch: a checked fix with an invalid hour and course keeps its position (time
@@ -593,6 +650,7 @@ main(void) {
     failed |= test_udp_mixed_ports(&opts, &state);
     failed |= test_compressed_mixed_ports(&opts, &state);
     failed |= test_udt_nmea_dispatch(&opts, &state, path);
+    failed |= test_udt_nmea_padding(&opts, &state, path);
     dsd_state_ext_free_all(&state);
     free(state.event_history_s);
     (void)remove(path);

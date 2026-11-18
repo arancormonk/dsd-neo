@@ -145,11 +145,18 @@ void lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits
                      const dsd_gps_address* addr);
 /**
  * @brief A binary NMEA report carried by a DMR UDT (TS 102 361-4 Annex B.3.6, Tables B.6/B.7; @p type 1 short, 2 long),
- * addressed by @p addr (the UDT header's source, destination and I/G bit). As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope, an admitted report staged for the slot's
- * next data notice, its text in dsd_state::dmr_embedded_gps.
+ * addressed by @p addr (the UDT header's source, destination and I/G bit). @p bit_count is the user data the UDT
+ * carried, its pad nibbles left out: a report shorter than its format's fields (NMEA_UDT_SHORT_BITS,
+ * NMEA_UDT_LONG_BITS) is truncated and gives nothing. As lip_pdu_decoder(): inside the UDT's event_crc_invalid scope,
+ * an admitted report staged for the slot's next data notice, its text in dsd_state::dmr_embedded_gps.
  */
-void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr,
-                      int type);
+void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                      const dsd_gps_address* addr, int type);
+
+/** @brief The user data bits a binary UDT NMEA report's fields span: short format through the seconds code, long format
+ * through the course over ground (TS 102 361-4 Figures B.23, B.24). */
+enum { NMEA_UDT_SHORT_BITS = 80, NMEA_UDT_LONG_BITS = 112 };
+
 /**
  * @brief Decode the ASCII NMEA 0183 sentences of a data payload (P25 SAP 48, NXDN data call format 0x06).
  *

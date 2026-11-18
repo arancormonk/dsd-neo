@@ -1028,7 +1028,7 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
         char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
         ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, &addr, 1);
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, &addr, 1);
         if (ctx->state->dmr_embedded_gps[ctx->slot][0] == '\0') {
             DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
                          previous_gps);
@@ -1037,7 +1037,7 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
         char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
         ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, &addr, 2);
+        nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, &addr, 2);
         if (ctx->state->dmr_embedded_gps[ctx->slot][0] == '\0') {
             DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
                          previous_gps);

@@ -2541,7 +2541,8 @@ suite runs under this compiler.
     datagram's source and destination, qualified as a group like LRRP's). LRRP
     reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
     0x67, 0x69, 0x6B, 0x6C and document type 0x13; a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
-    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1. These go to their own data notice
+    parse, and a resync-guessed position is never published. UDT NMEA needs Q=1 and the format's fields (80 bits
+    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
     specification); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC), else the fix time is
     unknown, so two reports that differ only in time are not folded as a repeat.

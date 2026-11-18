@@ -796,8 +796,15 @@ udt_nmea_print_position(uint8_t crc_flags, const udt_nmea_fields* f, int in_rang
 }
 
 void
-nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, const dsd_gps_address* addr, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                 const dsd_gps_address* addr, int type) {
     const int slot = state->currentslot & 1;
+    const size_t needed = type == 1 ? (size_t)NMEA_UDT_SHORT_BITS : (size_t)NMEA_UDT_LONG_BITS;
+    if (bit_count < needed) {
+        /* The pad nibbles are not user data: a field they would hold was never sent. */
+        DSD_FPRINTF(stderr, " truncated (%zu of %zu bits);", bit_count, needed);
+        return;
+    }
 
     //NOTE: The Only difference between Short (type == 1) and Long Format (type == 2)
     //is the utc_ss3 on short vs utc_ss6 and inclusion of COG value on long
