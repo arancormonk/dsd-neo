@@ -2865,6 +2865,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
+    int moved; /* a P25 tick in a wait moved the chain: every later check cancels too */
 } symbol_tcp_reconnect_ctx;
 
 static int
@@ -2874,12 +2875,15 @@ symbol_tcp_reconnect_cancelled_decoding(void* context) {
 }
 
 /* A hunt's reconnect also services a P25 watchdog beat in its backoff and connect waits: a tick that moved the chain
-   gives the reconnect up for now, as a queued command does (frame_sync_watchdog_tick.c). */
+   gives the reconnect up for now, as a queued command does (frame_sync_watchdog_tick.c). The move is kept, so the check
+   after a connect it cut short gives way too rather than taking the connect for a refused one. */
 static int
 symbol_tcp_reconnect_cancelled_hunting(void* context) {
-    const symbol_tcp_reconnect_ctx* ctx = context;
-    return dsd_exitflag_load() == 1 || dsd_runtime_controls_pending()
-           || (ctx != NULL && frame_sync_service_p25_watchdog(ctx->opts, ctx->state));
+    symbol_tcp_reconnect_ctx* ctx = context;
+    if (ctx != NULL && !ctx->moved && frame_sync_service_p25_watchdog(ctx->opts, ctx->state)) {
+        ctx->moved = 1;
+    }
+    return dsd_exitflag_load() == 1 || dsd_runtime_controls_pending() || (ctx != NULL && ctx->moved);
 }
 
 /* Wait out the reconnect backoff in slices. Returns 1 when the reconnect was cancelled meanwhile. */
@@ -2946,7 +2950,7 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
            tap would notice, so the old tone would otherwise carry over onto the new connection. */
         dsd_analog_rx_reset(state);
         symbol_tcp_close(opts);
-        symbol_tcp_reconnect_ctx context = {opts, state};
+        symbol_tcp_reconnect_ctx context = {opts, state, 0};
         if (symbol_tcp_backoff(backoff_ms, cancelled, &context)) {
             return -1;
         }

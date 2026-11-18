@@ -300,6 +300,10 @@ fake_tcp_close(tcp_input_ctx* ctx) {
     g_tcp_closes++;
 }
 
+/* A beat the watchdog posts while the reconnect's connect waits (set by a case, read by fake_tcp_connect()). */
+static int g_beat_during_connect = 0;
+static int g_beat;
+
 static dsd_socket_t
 fake_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context) {
     (void)host;
@@ -308,6 +312,10 @@ fake_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn c
     g_tcp_connects++;
     if (g_command_during_connect) {
         g_pending = 1;
+    }
+    if (g_beat_during_connect) {
+        g_beat = g_beat_during_connect;
+        g_beat_during_connect = 0;
     }
     if (cancelled && cancelled(context)) {
         return DSD_INVALID_SOCKET;
@@ -426,7 +434,6 @@ test_a_lost_tcp_input_is_no_socket(void) {
    or nothing (no beat was waiting). Counts every service the read makes. */
 enum { BEAT_NONE = 0, BEAT_MOVES = 1, BEAT_REFUSED = 2 };
 
-static int g_beat = BEAT_NONE;
 static int g_services = 0;
 
 static int
@@ -467,9 +474,10 @@ test_a_quiet_hunt_read_leaves_when_its_tick_retunes(void) {
     (void)getSymbol(&opts, &state, 0);
     const uint64_t waited_ms = dsd_realtime_mono_ms() - start_ms;
     if (state.input_interrupted != 1 || state.symbolcnt != 0U || waited_ms >= DSD_ANALOG_STREAM_PAUSE_MIN_MS) {
-        fprintf(stderr,
-                "FAIL: a quiet read whose tick retuned did not leave at once (interrupted %d, symbols %u, %llu ms)\n",
-                state.input_interrupted, (unsigned)state.symbolcnt, (unsigned long long)waited_ms);
+        DSD_FPRINTF(
+            stderr,
+            "FAIL: a quiet read whose tick retuned did not leave at once (interrupted %d, symbols %u, %llu ms)\n",
+            state.input_interrupted, (unsigned)state.symbolcnt, (unsigned long long)waited_ms);
         g_failures++;
     }
 
@@ -478,8 +486,8 @@ test_a_quiet_hunt_read_leaves_when_its_tick_retunes(void) {
     g_beat = BEAT_REFUSED;
     (void)getSymbol(&opts, &state, 0);
     if (state.input_interrupted != 0 || state.symbolcnt != 1U) {
-        fprintf(stderr, "FAIL: a refused tune made the read leave (interrupted %d, symbols %u)\n",
-                state.input_interrupted, (unsigned)state.symbolcnt);
+        DSD_FPRINTF(stderr, "FAIL: a refused tune made the read leave (interrupted %d, symbols %u)\n",
+                    state.input_interrupted, (unsigned)state.symbolcnt);
         g_failures++;
     }
     dsd_frame_sync_hooks_set(NULL);
@@ -517,14 +525,14 @@ test_slow_reads_that_succeed_service_the_beat(void) {
         (void)getSymbol(&opts, &state, 0);
     }
     if (g_slow_reads != 5 || g_services < 5) {
-        fprintf(stderr, "FAIL: slow reads serviced %d beats over %d transport waits\n", g_services, g_slow_reads);
+        DSD_FPRINTF(stderr, "FAIL: slow reads serviced %d beats over %d transport waits\n", g_services, g_slow_reads);
         g_failures++;
     }
     /* Frame decoding never services one: the frame waits for its samples under the guard. */
     install_watchdog_service();
     (void)getSymbol(&opts, &state, 1);
     if (g_services != 0) {
-        fprintf(stderr, "FAIL: a frame read serviced %d beats\n", g_services);
+        DSD_FPRINTF(stderr, "FAIL: a frame read serviced %d beats\n", g_services);
         g_failures++;
     }
     dsd_frame_sync_hooks_set(NULL);
@@ -540,7 +548,7 @@ test_a_tcp_reconnect_services_the_beat(void) {
     init_tcp_session(&opts, &state, 0);
     (void)getSymbol(&opts, &state, 0);
     if (g_services == 0) {
-        fprintf(stderr, "FAIL: a TCP reconnect serviced no beat\n");
+        DSD_FPRINTF(stderr, "FAIL: a TCP reconnect serviced no beat\n");
         g_failures++;
     }
 
@@ -549,12 +557,28 @@ test_a_tcp_reconnect_services_the_beat(void) {
     g_beat = BEAT_MOVES;
     (void)getSymbol(&opts, &state, 0);
     if (state.input_interrupted != 1 || state.input_fallback_pending != 0 || g_tcp_connects > 1) {
-        fprintf(stderr,
-                "FAIL: a reconnect whose tick retuned did not give way (interrupted %d, fallback %d, connects %d)\n",
-                state.input_interrupted, state.input_fallback_pending, g_tcp_connects);
+        DSD_FPRINTF(
+            stderr,
+            "FAIL: a reconnect whose tick retuned did not give way (interrupted %d, fallback %d, connects %d)\n",
+            state.input_interrupted, state.input_fallback_pending, g_tcp_connects);
         g_failures++;
     }
     g_beat = BEAT_NONE;
+
+    /* A beat met in the connect wait: the connect gives up, and the reconnect gives way as for a backoff's, not as for
+       a server that refused (no input fallback). */
+    install_watchdog_service();
+    init_tcp_session(&opts, &state, 0);
+    g_beat_during_connect = BEAT_MOVES;
+    (void)getSymbol(&opts, &state, 0);
+    if (state.input_interrupted != 1 || state.input_fallback_pending != 0 || g_tcp_connects != 1) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a connect whose tick retuned did not give way (interrupted %d, fallback %d, connects %d)\n",
+                    state.input_interrupted, state.input_fallback_pending, g_tcp_connects);
+        g_failures++;
+    }
+    g_beat = BEAT_NONE;
+    g_beat_during_connect = 0;
     dsd_frame_sync_hooks_set(NULL);
 }
 
