@@ -35,6 +35,7 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_CALLS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <stdint.h>
