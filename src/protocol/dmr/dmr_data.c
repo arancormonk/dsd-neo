@@ -441,21 +441,83 @@ dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
     ctx->header_marked = 1U;
 }
 
-/* A slot 1 data header or data block the single-slot decoder dispatches on its own while lane 0 carries a slot 2 call
-   (dmr_mono_lane_call_is_other_slot()): it acts on the other index (1), never on lane 0, whose live ALG ID, key ID, MI
-   and service options a data header otherwise resets or replaces under the call the lane's voice decrypts with. A
-   slot 2 one already acts on index 1 (its CACH slot), and an LC or PI header picks its own index
-   (dmr_flco_ctx_init(), dmr_pi()). */
+/* Index 0's live crypto, which a data burst on slot 1 reads and writes (dmr_dheader(), dmr_block_crypto.c) and lane
+   0's voice decrypts with. */
+typedef struct {
+    unsigned int so;
+    int algid;
+    int keyid;
+    unsigned long long int mi;
+    uint8_t le_vendor;
+} dmr_data_index0_crypto;
+
 static void
-dmr_data_route_off_lane(dmr_data_sync_ctx* ctx) {
+dmr_data_index0_crypto_get(const dsd_state* state, dmr_data_index0_crypto* out) {
+    out->so = state->dmr_so;
+    out->algid = state->payload_algid;
+    out->keyid = state->payload_keyid;
+    out->mi = state->payload_mi;
+    out->le_vendor = state->dmr_le_vendor[0];
+}
+
+static void
+dmr_data_index0_crypto_set(dsd_state* state, const dmr_data_index0_crypto* in) {
+    state->dmr_so = in->so;
+    state->payload_algid = in->algid;
+    state->payload_keyid = in->keyid;
+    state->payload_mi = in->mi;
+    state->dmr_le_vendor[0] = in->le_vendor;
+}
+
+/* Whether the burst is a slot 1 data header or data block the single-slot decoder (no trunking, a repeater's CACH
+   slot) dispatches on its own. It stays on index 0, its over-the-air slot, for the whole packet: the block assembler
+   keys on it. */
+static int
+dmr_data_is_mono_slot1_data(const dmr_data_sync_ctx* ctx) {
     const uint8_t burst = ctx->burst;
     const int data = burst == 6U || burst == 7U || burst == 8U || burst == 10U;
-    if (!data || ctx->folded_slot != DSD_DMR_MONO_RX_TS1 || ctx->state->dmr_ms_mode != 0
-        || !dmr_mono_folds_standalone_burst(ctx->opts, ctx->state)
-        || !dmr_mono_lane_call_is_other_slot(ctx->state, 0U)) {
-        return;
+    return data && ctx->folded_slot == DSD_DMR_MONO_RX_TS1 && ctx->state->dmr_ms_mode == 0
+           && dmr_mono_folds_standalone_burst(ctx->opts, ctx->state);
+}
+
+/* Before a slot 1 data burst (dmr_data_is_mono_slot1_data()): index 0's live crypto is lane 0's call's while that call
+   is slot 2's (dmr_mono_lane_call_is_other_slot()), and a packet in progress keeps its own values
+   (dsd_state::dmr_mono_slot1_data_crypto). Either way the burst runs with the packet's values (the live ones for a
+   packet's first burst) and the live ones are kept in @p lane to be put back after. 1 when swapped. */
+static int
+dmr_data_swap_in_slot1_data_crypto(const dmr_data_sync_ctx* ctx, dmr_data_index0_crypto* lane) {
+    dsd_state* state = ctx->state;
+    const int packet = state->dmr_mono_slot1_data_crypto.active != 0U && state->data_header_valid[0] != 0;
+    if (!packet && !dmr_mono_lane_call_is_other_slot(state, 0U)) {
+        return 0;
     }
-    ctx->state->currentslot = 1;
+    dmr_data_index0_crypto_get(state, lane);
+    if (packet) {
+        const dmr_data_index0_crypto own = {
+            state->dmr_mono_slot1_data_crypto.so,        state->dmr_mono_slot1_data_crypto.algid,
+            state->dmr_mono_slot1_data_crypto.keyid,     state->dmr_mono_slot1_data_crypto.mi,
+            state->dmr_mono_slot1_data_crypto.le_vendor,
+        };
+        dmr_data_index0_crypto_set(state, &own);
+    }
+    return 1;
+}
+
+/* After a slot 1 data burst: a packet still in progress keeps the values it ran with, and a swapped burst puts lane 0's
+   back (@p lane). */
+static void
+dmr_data_swap_out_slot1_data_crypto(dsd_state* state, int swapped, const dmr_data_index0_crypto* lane) {
+    dmr_data_index0_crypto own;
+    dmr_data_index0_crypto_get(state, &own);
+    state->dmr_mono_slot1_data_crypto.active = (uint8_t)(state->data_header_valid[0] != 0);
+    state->dmr_mono_slot1_data_crypto.so = own.so;
+    state->dmr_mono_slot1_data_crypto.algid = own.algid;
+    state->dmr_mono_slot1_data_crypto.keyid = own.keyid;
+    state->dmr_mono_slot1_data_crypto.mi = own.mi;
+    state->dmr_mono_slot1_data_crypto.le_vendor = own.le_vendor;
+    if (swapped) {
+        dmr_data_index0_crypto_set(state, lane);
+    }
 }
 
 /* Whether the burst was a voice LC header that the call it names took (issue #637): the call on the lane the header
@@ -545,11 +607,16 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 if (opts->dmr_debug_burst != 0) {
                     (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
                 }
+                dmr_data_index0_crypto lane = {0U, 0, 0, 0ULL, 0U};
+                const int slot1_data = standalone && dmr_data_is_mono_slot1_data(&ctx);
+                const int swapped = slot1_data && dmr_data_swap_in_slot1_data_crypto(&ctx, &lane);
                 if (standalone) {
-                    dmr_data_route_off_lane(&ctx);
                     dmr_data_mark_header_lane(&ctx);
                 }
                 dmr_data_dispatch_burst(&ctx);
+                if (slot1_data) {
+                    dmr_data_swap_out_slot1_data_crypto(state, swapped, &lane);
+                }
             }
         }
     }
