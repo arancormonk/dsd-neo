@@ -216,9 +216,17 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
 
     const int collapse = dmr_mono_folds_standalone_burst(opts, state);
     ctx->burst_slot = (uint8_t)(state->currentslot & 1);
-    ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0);
+    /* A terminator ends the call it lands on: while lane 0 carries the other slot's call it acts on the other index
+       (1), as the other slot's does on the dual-slot decoder, never ending the lane's call
+       (dmr_mono_lane_call_is_other_slot()). A voice LC header, which names its own call, opens the call the lane carries
+       next (dmr_data_header_opened_lane_call()). */
+    uint8_t target = 0U;
+    if (collapse && type == 2U && dmr_mono_lane_call_is_other_slot(state, ctx->burst_slot)) {
+        target = 1U;
+    }
+    ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != target);
     if (collapse) {
-        state->currentslot = 0;
+        state->currentslot = target;
     }
     ctx->voice_slot = (uint8_t)(state->currentslot & 1);
     ctx->voice_slot_known = (uint8_t)(dmr_slot_is_known(state) != 0);
@@ -1771,14 +1779,15 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     dmr_flco_ctx ctx;
     dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
     // The burst handler indexed its CRC scope by the TACT slot. Mono mode re-homes this
-    // LC onto slot 0, so its CRC verdict must follow it (issue #552 item 3). OR and
-    // restore preserve an outer slot-0 verdict, including across the early-return paths.
-    const uint8_t saved = state->event_crc_invalid[0];
+    // LC onto another index (slot 0, or slot 1 for the other slot's terminator), so its CRC
+    // verdict must follow it (issue #552 item 3). OR and restore preserve an outer verdict on
+    // that index, including across the early-return paths.
+    const uint8_t saved = state->event_crc_invalid[ctx.slot_idx];
     if (ctx.slot_collapsed) {
-        state->event_crc_invalid[0] |= state->event_crc_invalid[ctx.burst_slot];
+        state->event_crc_invalid[ctx.slot_idx] |= state->event_crc_invalid[ctx.burst_slot];
     }
     dmr_flco_run(&ctx);
-    state->event_crc_invalid[0] = saved;
+    state->event_crc_invalid[ctx.slot_idx] = saved;
 }
 
 static const char*
