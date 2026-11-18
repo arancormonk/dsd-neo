@@ -18123,7 +18123,10 @@ Qt Quick frontend (`src/ui/qt`):
     `positionView`): the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
     `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at
     Stop. A track is a typed source (protocol family, scope, ID or callsign; D7 identity): 100 points each, 200 tracks,
-    the oldest newest-report arrival evicted first (an anonymous point before any named track). Hashed or unverified
+    the row whose newest report arrived first evicted first, named or not (spec 4.5). Anonymous rows (one per report)
+    are held to `kAnonymousCapacity` (50, a quarter): a new one past that share replaces the oldest anonymous row, so a
+    hashed flood (every DMR USBD LIP is hashed) keeps at most 50 rows and at least 150 stay for named radios, while a
+    fresh anonymous fix still never gives way to a stale named track. Hashed or unverified
     sources are anonymous single points with no trail or name; validity-unknown fixes (D11) are kept apart, hollow and
     never on a trail; provisional formats (D12) are flagged per point (dashed). A trail breaks at a cursor loss, a queue
     drop and a stream change, and the List shows one gap row ("Positions may be missing from …") only where reports may
@@ -18131,6 +18134,15 @@ Qt Quick frontend (`src/ui/qt`):
     clock; REPLAY fixes only on the sample of their own running replay that the view returns with the cursor, so no
     clock is ever mixed; no age is older than any filter. `ageFilterSeconds` (0, 900, 3600) is the map's and the
     List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
+    The flat roles (flags, readings, `kindText`, `fixTime`) describe a track's newest report; `currentFix` and
+    `unknownFix` (maps, `{}` when none) describe the filled marker's own report and the open ring's, each with its
+    flags, readings, times and `newest`. The detail sheet and the List describe the fix drawn from those (final review
+    M1): the sheet's "Position" block is the shown fix (marker, else ring, else a History pin) with its own states and
+    readings, and a ring beside a current position gets a "Newer report"/"Earlier report" block; a List row says the
+    shown fix's states, format and age, and "Newer report may be old or invalid" (with its format) for the ring. The
+    distance line says "from you" while the live position is followed, "from your saved location" for the saved fix.
+    `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions in …", Show all)
+    shows after a loss too, on the map and below the List's gap row.
   - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
     Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
     a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read

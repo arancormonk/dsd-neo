@@ -490,6 +490,12 @@ Item {
             verify(locator.live);
             tryVerify(function () { return Math.abs(canvas().deviceLatitude - 10.25) < 1e-9; });
             compare(prefs.lastFixAt, savedAt, "a live fix is not saved");
+            // Final review M5: the sheet measures from the live position then, and says so.
+            push({source: 1001, lat: 10.3, lon: 20.3, label: "Engine 7"});
+            screen.openTrack(trackNamed("Engine 7"), false);
+            var words = sheetWords();
+            verify(/ from you\b/.test(words) && words.indexOf("from your saved location") < 0, words);
+            sheet().visible = false;
             testContext.emitApplicationState(Qt.ApplicationHidden);
             verify(!locationFeed.holds("map"), "the app away: let go");
             compare(testContext.roamingHostCalls().streamActive, false);
@@ -511,15 +517,84 @@ Item {
             testContext.useAppPrefs(true);
         }
 
-        // Review P7 minor 4: a stopped replay's fix has no age; the line under an invalid newer fix still reads whole.
+        // Review P7 minor 4: a stopped replay's fix has no age; its received line still reads whole (the time alone).
         function test_14c_a_fix_with_no_age_still_reads_whole() {
             sheet().pin = null;
             sheet().trackId = 0;
-            sheet().take({trackId: 7, label: "Unit 41", validityUnknown: true, hasPosition: true, hasUnknownFix: true,
-                          ageSeconds: -1, unknownAgeSeconds: -1});
+            sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: -1,
+                          currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true}});
             sheet().visible = true;
-            compare(item("mapPositionLastValid").text, "The last valid position is still shown");
+            compare(item("mapShownFixReceived").text, "Received at 12:04:33");
             sheet().visible = false;
+        }
+
+        // Final review M1: the sheet and the List describe the fix the map draws. A weak-check, unconfirmed-format fix
+        // is the filled marker (its double outline); a newer error-7 report is the open ring. The sheet says the
+        // marker's states with its own readings beside "Position", and the ring's report on its own lines; the List
+        // row says the marker's states and that a newer report may be invalid.
+        function test_14d_the_sheet_and_list_describe_the_shown_fix() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", weakCheck: true, provisional: true, speedDkmh: 420,
+                  ageSeconds: 30});
+            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7", validityUnknown: true, altitudeDm: 1230});
+            var id = trackNamed("Engine 7");
+            screen.openTrack(id, false);
+            var states = [0, 1, 2].map(function (i) { return item("mapShownFixState" + i); }).filter(function (t) {
+                return t.visible;
+            }).map(function (t) { return t.text; });
+            compare(JSON.stringify(states), JSON.stringify(["Format not confirmed by a published specification", "Weak error check"]),
+                    "the marker's own states");
+            var shown = [];
+            for (var i = 0; i < 9; ++i) {
+                var line = item("mapShownFixLine" + i);
+                if (line.visible)
+                    shown.push(line.text);
+            }
+            verify(shown.indexOf("Position 10.00000° N, 20.00000° E") >= 0, JSON.stringify(shown));
+            verify(shown.some(function (t) { return t.indexOf("Speed") === 0; }), "the marker's speed: " + JSON.stringify(shown));
+            verify(!shown.some(function (t) { return t.indexOf("Altitude") === 0; }), "not the newer report's altitude");
+            verify(item("mapRingFix").visible);
+            compare(item("mapRingFixHeading").text, "Newer report");
+            compare(item("mapRingFixState0").text, "Fix may be old or invalid");
+            var ringLines = [];
+            for (i = 0; i < 9; ++i) {
+                if (item("mapRingFixLine" + i).visible)
+                    ringLines.push(item("mapRingFixLine" + i).text);
+            }
+            verify(ringLines.indexOf("Position 10.01000° N, 20.01000° E") >= 0, JSON.stringify(ringLines));
+            verify(ringLines.some(function (t) { return t.indexOf("Altitude") === 0; }), JSON.stringify(ringLines));
+            sheet().visible = false;
+
+            screen.mapShown = false;
+            var list = item("mapList");
+            tryVerify(function () { return list.itemAtIndex(0) !== null; });
+            var row = list.itemAtIndex(positionView.rowForTrack(id));
+            var said = row.node.Accessible.description;
+            verify(said.indexOf("Weak error check") >= 0 && said.indexOf("Format not confirmed by a published specification") >= 0, said);
+            verify(said.indexOf("Newer report may be old or invalid") >= 0, said);
+            screen.mapShown = true;
+        }
+
+        // Final review M2: after a loss (a gap row), a filter that hides every radio still shows the filtered-empty
+        // state with Show all, on the map and in the List (under the List's gap row).
+        function test_14e_a_gap_row_does_not_hide_the_filtered_empty_state() {
+            push({source: 1001, lat: 10.0, lon: 20.0, ageSeconds: 2000});
+            testContext.startNewPositionStream();
+            compare(positionView.rowForTrack(0) >= 0, true, "the gap row is there");
+            positions.ageFilterSeconds = 900;
+            compare(positionView.trackCount, 0);
+            verify(item("mapEmptyState").visible, "the map says the filter hides every radio");
+            compare(item("mapEmptyTitle").text, "No positions in the last 15 minutes");
+            screen.mapShown = false;
+            var list = item("mapList");
+            tryVerify(function () { return list.itemAtIndex(0) !== null && list.itemAtIndex(0).gap; });
+            verify(item("mapPositionList").visible && item("mapEmptyState").visible);
+            var show = item("mapShowAll");
+            verify(show.visible);
+            verify(show.mapToItem(screen, 0, 0).y >= list.mapToItem(screen, 0, list.itemAtIndex(0).height).y - 1,
+                   "Show all sits below the gap row");
+            show.activate();
+            compare(positions.ageFilterSeconds, 0);
+            screen.mapShown = true;
         }
 
         // A large text size: nothing in the top bar, the filter or the controls runs off the screen's sides.

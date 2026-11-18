@@ -75,7 +75,8 @@ Item {
     ]
 
     readonly property bool emptyLog: positions.count === 0 && !pin
-    readonly property bool emptyFilter: !emptyLog && positionView.count === 0 && !pin
+    // Tracks only (final review M2): a gap row alone is no radio shown.
+    readonly property bool emptyFilter: !emptyLog && positionView.trackCount === 0 && !pin
     readonly property bool tilesAvailable: tiles.available
     readonly property string tilesHost: tiles.templateHost(tileUrl)
     readonly property bool attributionLinked: tileUrl === defaultTileUrl
@@ -656,8 +657,12 @@ Item {
             objectName: "mapEmptyScroll"
             accessibleName: qsTr("Map explanation")
             visible: screen.emptyLog || screen.emptyFilter
+            // Over the List, under its gap row when it has one (the List
+            // keeps that row; this offers Show all below it).
+            z: 1
             anchors.top: parent.top
-            anchors.topMargin: status.visible && status.height > 0 ? status.height + 12 : 0
+            anchors.topMargin: !screen.mapShown ? (screen.emptyFilter ? positionList.view.contentHeight + 4 : 0)
+                : status.visible && status.height > 0 ? status.height + 12 : 0
             anchors.left: parent.left
             anchors.right: screen.mapShown ? controls.left : parent.right
             anchors.bottom: parent.bottom
@@ -689,7 +694,9 @@ Item {
             id: positionList
             objectName: "mapPositionList"
             anchors.fill: parent
-            visible: !screen.mapShown && !(screen.emptyLog || screen.emptyFilter)
+            // Shown when filtered empty too: its gap row still says where
+            // positions may be missing, above the empty state's Show all.
+            visible: !screen.mapShown && !screen.emptyLog
             selectedTrackId: map.selectedTrackId
             followTrackId: map.followTrackId
             deviceKnown: locator.deviceValid
@@ -809,6 +816,7 @@ Item {
         following: (trackId > 0 && map.followTrackId === trackId)
         bottomReserve: screen.mapShown ? attribution.chipHeight + 8 : 0
         deviceKnown: locator.deviceValid
+        deviceLive: locator.live
         deviceLatitude: locator.deviceLatitude
         deviceLongitude: locator.deviceLongitude
         onFollowRequested: function (trackId) {

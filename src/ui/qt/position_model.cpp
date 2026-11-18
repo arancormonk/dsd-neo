@@ -246,12 +246,56 @@ time_value(const Row& row, int role) {
     }
 }
 
+/* @p value into @p out under @p key when @p is_known. */
+void
+put_known(QVariantMap& out, const char* key, bool is_known, const QVariant& value) {
+    if (is_known) {
+        out.insert(QLatin1String(key), value);
+    }
+}
+
+/* One report's own flags and measured fields (CurrentFixRole, UnknownFixRole): what its mark on the canvas is drawn
+ * from, so the sheet and the List say exactly that (spec 4.6). @p newest: it is the track's newest report. */
+QVariantMap
+fix_record(const dsd_position_fix& fix, bool newest) {
+    QVariantMap out;
+    const auto flag = [&fix](unsigned bit) { return (fix.flags & bit) != 0U; };
+    out.insert(QStringLiteral("latitude"), degrees(fix.lat_e7));
+    out.insert(QStringLiteral("longitude"), degrees(fix.lon_e7));
+    out.insert(QStringLiteral("kindText"), position_kind_text(fix.kind));
+    out.insert(QStringLiteral("weakCheck"), flag(DSD_POS_FLAG_WEAK_CHECK));
+    out.insert(QStringLiteral("provisional"), flag(DSD_POS_FLAG_FORMAT_PROVISIONAL));
+    out.insert(QStringLiteral("validityUnknown"), flag(DSD_POS_FLAG_VALIDITY_UNKNOWN));
+    out.insert(QStringLiteral("sourceHashed"), flag(DSD_POS_FLAG_SOURCE_HASHED));
+    out.insert(QStringLiteral("sourceUnverified"), flag(DSD_POS_FLAG_SOURCE_UNVERIFIED));
+    out.insert(QStringLiteral("errorLowerBound"), flag(DSD_POS_FLAG_ERR_LOWER_BOUND));
+    out.insert(QStringLiteral("speedLowerBound"), flag(DSD_POS_FLAG_SPEED_LOWER_BOUND));
+    out.insert(QStringLiteral("headingAmbiguous"), flag(DSD_POS_FLAG_HEADING_AMBIGUOUS));
+    put_known(out, "errorM", fix.err_m != DSD_POSITION_ERR_UNKNOWN, fix.err_m);
+    put_known(out, "speedDkmh", fix.speed_dkmh != DSD_POSITION_SPEED_UNKNOWN, fix.speed_dkmh);
+    put_known(out, "headingDdeg", fix.heading_ddeg != DSD_POSITION_HEADING_UNKNOWN, fix.heading_ddeg);
+    put_known(out, "altitudeDm", fix.alt_dm != DSD_POSITION_ALT_UNKNOWN, fix.alt_dm);
+    put_known(out, "sats", fix.sats != DSD_POSITION_SATS_NONE, fix.sats);
+    put_known(out, "freqHz", fix.freq_hz > 0, static_cast<double>(fix.freq_hz));
+    put_known(out, "fixTime", fix.fix_time_s != 0, static_cast<double>(fix.fix_time_s));
+    out.insert(QStringLiteral("receivedTime"), static_cast<double>(fix.rx_time_s));
+    out.insert(QStringLiteral("timeText"), time_text(fix.rx_time_s));
+    out.insert(QStringLiteral("newest"), newest);
+    return out;
+}
+
 } // namespace
 
 QVariant
 PositionModel::value(const Row& row, int role) {
     if (row.gap) {
         return gapValue(row, role);
+    }
+    if (role == CurrentFixRole) {
+        return row.hasCurrent ? fix_record(row.current, !row.latestIsUnknown) : QVariantMap();
+    }
+    if (role == UnknownFixRole) {
+        return row.hasUnknown ? fix_record(row.unknown, row.latestIsUnknown) : QVariantMap();
     }
     QVariant flag;
     if (flag_value(role, row.latest().flags, &flag)) {
@@ -313,7 +357,9 @@ PositionModel::roleNames() const {
             {UnknownAgeSecondsRole, QByteArrayLiteral("unknownAgeSeconds")},
             {ReportAgeSecondsRole, QByteArrayLiteral("reportAgeSeconds")},
             {ShownRole, QByteArrayLiteral("shown")},
-            {PointCountRole, QByteArrayLiteral("pointCount")}};
+            {PointCountRole, QByteArrayLiteral("pointCount")},
+            {CurrentFixRole, QByteArrayLiteral("currentFix")},
+            {UnknownFixRole, QByteArrayLiteral("unknownFix")}};
 }
 
 /* The first row whose order is at most @p order: where a row of that order is, or goes. */
@@ -450,17 +496,17 @@ PositionModel::placeGap() {
     endInsertRows();
 }
 
-/* An anonymous point leaves before any named track (each anonymous report is a row of its own, so a busy hashed or
- * unverified source would otherwise push out every radio that has a trail); among them, the one whose newest report
- * arrived first. */
+/* The row whose newest report arrived first leaves (spec 4.5: oldest newest-fix first); with @p anonymousOnly, the
+ * oldest anonymous row (the anonymous share is full). */
 void
-PositionModel::evictOldest() {
-    const auto before = [](const Row& a, const Row& b) {
-        return a.anonymous != b.anonymous ? a.anonymous : a.lastArrival < b.lastArrival;
-    };
+PositionModel::evictOldest(bool anonymousOnly) {
     int oldest = -1;
     for (int i = 0; i < m_rows.size(); ++i) {
-        if (!m_rows.at(i).gap && (oldest < 0 || before(m_rows.at(i), m_rows.at(oldest)))) {
+        const Row& row = m_rows.at(i);
+        if (row.gap || (anonymousOnly && !row.anonymous)) {
+            continue;
+        }
+        if (oldest < 0 || row.lastArrival < m_rows.at(oldest).lastArrival) {
             oldest = i;
         }
     }
@@ -476,16 +522,29 @@ PositionModel::evictOldest() {
     setCount(m_count - 1);
 }
 
-/* A new row for @p fix's track at the top (the oldest track leaving first when full); @return the row it is at. */
+int
+PositionModel::anonymousCount() const {
+    return static_cast<int>(
+        std::count_if(m_rows.cbegin(), m_rows.cend(), [](const Row& row) { return !row.gap && row.anonymous; }));
+}
+
+/* A new row for @p fix's track at the top; @return the row it is at. A new anonymous row first makes room within the
+ * anonymous share (each anonymous report is a row of its own: a hashed or unverified flood would otherwise push out
+ * every radio that has a trail); then, when all 200 are held, the row whose newest report is oldest leaves, named or
+ * not, so a fresh fix never gives way to a stale one. */
 int
 PositionModel::insertTrack(const dsd_position_fix& fix) {
+    const bool anonymous = anonymous_fix(fix);
+    if (anonymous && anonymousCount() >= kAnonymousCapacity) {
+        evictOldest(true);
+    }
     if (m_count >= kTrackCapacity) {
-        evictOldest();
+        evictOldest(false);
     }
     Row row;
     row.order = m_nextOrder++;
     row.id = row.order;
-    row.anonymous = anonymous_fix(fix);
+    row.anonymous = anonymous;
     const int at = positionFor(row.order);
     beginInsertRows(QModelIndex(), at, at);
     m_rows.insert(at, std::move(row));
@@ -752,6 +811,11 @@ PositionFilterModel::filterAcceptsRow(int source_row, const QModelIndex& source_
         return false;
     }
     return source->data(source->index(source_row, 0, source_parent), PositionModel::ShownRole).toBool();
+}
+
+int
+PositionFilterModel::trackCount() const {
+    return rowForTrack(0U) >= 0 ? rowCount() - 1 : rowCount();
 }
 
 int

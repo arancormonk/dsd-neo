@@ -84,6 +84,34 @@ function stateWords(track) {
     return words
 }
 
+// The states of one report as its own mark draws them (final review M1): a
+// fix that may be invalid (the open ring), a format no published
+// specification confirms (the double outline), a weak error check.
+function fixWords(fix) {
+    var words = []
+    if (!fix)
+        return words
+    if (fix.validityUnknown)
+        words.push(qsTr("Fix may be old or invalid"))
+    if (fix.provisional)
+        words.push(qsTr("Format not confirmed by a published specification"))
+    if (fix.weakCheck)
+        words.push(qsTr("Weak error check"))
+    return words
+}
+
+// What the List says of a track's open ring beside its current position:
+// that it is there and may be invalid, and its own format when unconfirmed
+// (its double outline), in one line.
+function ringWords(ring) {
+    if (!ring || ring.latitude === undefined)
+        return ""
+    var text = ring.newest ? qsTr("Newer report may be old or invalid") : qsTr("An earlier report may be old or invalid")
+    if (ring.provisional)
+        text = qsTr("%1, format not confirmed by a published specification").arg(text)
+    return text
+}
+
 function degreesText(value, positive, negative) {
     if (typeof value !== "number" || !isFinite(value))
         return ""

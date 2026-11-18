@@ -14,6 +14,8 @@ import "MapText.js" as MapText
 // nothing depends on seeing the marker.
 //
 // It follows its track while open: a new fix, a label learned, ages moving.
+// It describes each fix the map draws with that report's own states and
+// readings (final review M1): the shown position, then an open ring's report.
 // Every line is a fixed slot (issue #782): nothing is built or destroyed
 // while it is open, a line comes and goes only by `visible`, and its words
 // change in place. The ages move every second on their own (`ages`), read at
@@ -37,8 +39,10 @@ ModalSheet {
     // How much of the screen's bottom the panel leaves clear: the map's
     // attribution, which stays readable above any sheet (spec 4.4).
     property real bottomReserve: 0
-    // The device's position for "N km from you", when known.
+    // The device's position for "N km from you", when known, and whether it is
+    // the live one (following) rather than the saved one-shot fix.
     property bool deviceKnown: false
+    property bool deviceLive: false
     property double deviceLatitude: 0
     property double deviceLongitude: 0
 
@@ -106,25 +110,27 @@ ModalSheet {
     }
 
     readonly property string title: pin ? (pin.name || pin.sourceName || qsTr("Saved position")) : MapText.trackName(track)
-    readonly property double newestAge: MapText.newestAge(Object.assign({}, track, ages))
-    // The states in fixed slots: emergency, validity, source, format, check.
-    readonly property var stateSlots: {
+    // Final review M1: the sheet describes the fixes the map draws, each with
+    // its own report's states and readings. The first block is the shown
+    // position: the filled marker's fix (currentFix), else the open ring's
+    // when there is no other, else a History pin's. The second is the open
+    // ring's report when the track has both.
+    readonly property var current: track.currentFix || ({})
+    readonly property var ring: track.unknownFix || ({})
+    readonly property bool hasCurrent: current.latitude !== undefined
+    readonly property bool hasRing: ring.latitude !== undefined
+    readonly property var shownFix: pin ? pinPosition : hasCurrent ? current : ring
+    readonly property double shownAge: pin ? -1 : hasCurrent ? (Number(ages.ageSeconds) >= 0 ? ages.ageSeconds : -1) : (Number(ages.unknownAgeSeconds) >= 0 ? ages.unknownAgeSeconds : -1)
+    // The track's own states, which belong to no one report: an emergency (the
+    // marker's alert colour) and a source that could not be confirmed (the
+    // dashed outline).
+    readonly property var trackStates: {
         var t = pin ? pinPosition : track;
-        return [t.emergency ? qsTr("Emergency") : "", t.validityUnknown ? qsTr("Fix may be old or invalid") : "",
-                t.anonymous ? qsTr("Radio not confirmed") : "",
-                t.provisional ? qsTr("Format not confirmed by a published specification") : "",
-                t.weakCheck ? qsTr("Weak error check") : ""];
+        return [t.emergency ? qsTr("Emergency") : "", t.anonymous ? qsTr("Radio not confirmed") : ""];
     }
-    readonly property bool hasFix: pin ? pinPosition.latitude !== undefined : (track.hasPosition === true || track.hasUnknownFix === true)
-    // Where the fix shown is: a pin's, else the current position, else the
-    // open ring's; 0 until there is one (hasFix says whether there is).
-    readonly property double shownLatitude: Number(pin ? pinPosition.latitude : track.hasPosition ? track.latitude : track.unknownLatitude) || 0
-    readonly property double shownLongitude: Number(pin ? pinPosition.longitude : track.hasPosition ? track.longitude : track.unknownLongitude) || 0
 
-    // The detail lines in fixed slots, "" for one not known: who (label or
-    // the row's name, callsign, radio ID, talkgroup or target), then the
-    // report (format, position, distance, accuracy, speed, heading, altitude,
-    // satellites, frequency).
+    // Who sent it, in fixed slots, "" for one not known: label or the row's
+    // name, callsign, radio ID, talkgroup or target.
     function identitySlots() {
         if (pin)
             return [pin.sourceName && pin.sourceName !== title ? pin.sourceName : "", "",
@@ -137,21 +143,7 @@ ModalSheet {
                 track.sourceId > 0 ? qsTr("Radio ID %1").arg(Util.idText(track.sourceId)) : "",
                 track.targetId > 0 ? (track.targetGroup ? qsTr("Talkgroup %1").arg(Util.idText(track.targetId)) : qsTr("Sent to radio %1").arg(Util.idText(track.targetId))) : ""];
     }
-    function reportSlots() {
-        var kind = pin ? pinPosition.kindText : track.kindText;
-        var away = hasFix && deviceKnown ? MapText.lengthText(MapText.distanceMetres(deviceLatitude, deviceLongitude, shownLatitude, shownLongitude), metric) : "";
-        var t = pin ? ({}) : track;
-        return [kind && kind.length > 0 ? qsTr("Report type %1").arg(kind) : "",
-                hasFix ? qsTr("Position %1").arg(MapText.coordinateText(shownLatitude, shownLongitude)) : "",
-                away.length > 0 ? qsTr("%1 from your saved location").arg(away) : "",
-                pin ? MapText.accuracyText(pinPosition.errorM, pinPosition.errorLowerBound, metric) : MapText.accuracyText(t.errorM, t.errorLowerBound, metric),
-                MapText.speedText(t.speedDkmh, t.speedLowerBound, metric), MapText.headingText(t.headingDdeg, t.headingAmbiguous),
-                MapText.altitudeText(t.altitudeDm, metric), t.sats > 0 ? qsTr("%1 satellites").arg(t.sats) : "",
-                t.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(t.freqHz)) : ""];
-    }
-    // Every property the two read is a dependency of this binding.
-    readonly property var lineSlots: identitySlots().concat(reportSlots())
-    readonly property int lineSlotCount: 13
+    readonly property var identityLines: identitySlots()
 
     // The radio's name, the one heading.
     ReadableText {
@@ -166,16 +158,16 @@ ModalSheet {
         color: sheet.track.emergency || (sheet.pin && sheet.pinPosition.emergency) ? Theme.alert : Theme.textPrimary
     }
 
-    // The states, each a line of words: an emergency in the alert colour and
-    // weight (the word is the state, the colour only repeats it).
+    // The track's states: an emergency in the alert colour and weight (the
+    // word is the state, the colour only repeats it).
     Repeater {
-        model: 5
+        model: 2
         ReadableText {
             required property int index
-            objectName: "mapPositionState" + index
+            objectName: "mapTrackState" + index
             width: parent.width
             visible: text.length > 0
-            text: sheet.stateSlots[index]
+            text: sheet.trackStates[index]
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
@@ -183,65 +175,138 @@ ModalSheet {
             color: index === 0 ? Theme.alert : Theme.textPrimary
         }
     }
-
-    // When it was heard and when the radio says it was measured: ages move,
-    // so these two are read at a screen reader's pace.
-    LiveText {
-        objectName: "mapPositionReceived"
-        width: parent.width
-        visible: text.length > 0
-        step: String(sheet.trackId) + ":" + (sheet.track.receivedTime || 0)
-        text: {
-            if (sheet.pin) {
-                var at = sheet.pinPosition.receivedTime > 0 ? sheet.pinPosition.receivedTime : sheet.pin.when;
-                return at > 0 ? qsTr("Received %1").arg(Qt.formatDateTime(new Date(at * 1000), "yyyy-MM-dd hh:mm:ss")) : "";
-            }
-            var ago = MapText.agoText(sheet.newestAge, sheet.track.timeText);
-            return ago.length > 0 ? qsTr("Received %1").arg(ago) + (sheet.newestAge >= 0 && sheet.track.timeText ? " · " + sheet.track.timeText : "") : "";
-        }
-        wrapMode: Text.Wrap
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(15)
-        color: Theme.textPrimary
-    }
-    LiveText {
-        objectName: "mapPositionReported"
-        width: parent.width
-        visible: text.length > 0
-        step: String(sheet.trackId) + ":" + (sheet.track.fixTime || 0)
-        text: !sheet.pin && sheet.track.fixTime > 0 ? qsTr("Measured %1").arg(MapText.agoText(sheet.ages.reportAgeSeconds, Qt.formatDateTime(new Date(sheet.track.fixTime * 1000), "hh:mm:ss"))) : ""
-        wrapMode: Text.Wrap
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(15)
-        color: Theme.textPrimary
-    }
-    // A newer report that may be invalid stands apart from the last valid one.
-    LiveText {
-        objectName: "mapPositionLastValid"
-        width: parent.width
-        visible: text.length > 0
-        step: String(sheet.trackId) + ":" + (sheet.track.receivedTime || 0)
-        // A stopped replay's fix has no age: then the line says only that it is kept.
-        readonly property string ago: MapText.agoText(sheet.ages.ageSeconds, "")
-        text: !sheet.pin && sheet.track.validityUnknown && sheet.track.hasPosition ? (ago.length > 0 ? qsTr("Last valid position received %1").arg(ago) : qsTr("The last valid position is still shown")) : ""
-        wrapMode: Text.Wrap
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(15)
-        color: Theme.textPrimary
-    }
-
     Repeater {
-        model: sheet.lineSlotCount
+        model: 4
         ReadableText {
             required property int index
-            objectName: "mapPositionLine" + index
+            objectName: "mapIdentityLine" + index
             width: parent.width
             visible: text.length > 0
-            text: sheet.lineSlots[index] || ""
+            text: sheet.identityLines[index] || ""
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
             color: Theme.textPrimary
+        }
+    }
+
+    // The shown position, then the open ring's report beside it. Both blocks
+    // are always built; the second shows only when the track has both.
+    FixDetails {
+        objectName: "mapShownFix"
+        width: parent.width
+        heading: sheet.pin ? qsTr("Saved position") : sheet.hasRing && sheet.hasCurrent ? qsTr("Position on the map") : qsTr("Position")
+        fix: sheet.shownFix
+        ageSeconds: sheet.shownAge
+        reportAgeSeconds: sheet.shownFix.newest ? (Number(sheet.ages.reportAgeSeconds) >= 0 ? sheet.ages.reportAgeSeconds : -1) : -1
+        stepKey: String(sheet.trackId) + ":" + (sheet.shownFix.receivedTime || 0)
+        receivedWhen: sheet.pin ? (sheet.pinPosition.receivedTime > 0 ? sheet.pinPosition.receivedTime : (sheet.pin.when || 0)) : -1
+    }
+    FixDetails {
+        objectName: "mapRingFix"
+        width: parent.width
+        visible: !sheet.pin && sheet.hasCurrent && sheet.hasRing
+        heading: sheet.ring.newest ? qsTr("Newer report") : qsTr("Earlier report")
+        fix: sheet.hasCurrent ? sheet.ring : ({})
+        ageSeconds: Number(sheet.ages.unknownAgeSeconds) >= 0 ? sheet.ages.unknownAgeSeconds : -1
+        reportAgeSeconds: sheet.ring.newest ? (Number(sheet.ages.reportAgeSeconds) >= 0 ? sheet.ages.reportAgeSeconds : -1) : -1
+        stepKey: String(sheet.trackId) + ":ring:" + (sheet.ring.receivedTime || 0)
+        receivedWhen: -1
+    }
+
+    // One report: a small section heading, its states, when it was heard and
+    // measured (paced: ages move), and its readings, each line a fixed slot.
+    component FixDetails: Column {
+        id: block
+
+        property string heading: ""
+        property var fix: ({})
+        property double ageSeconds: -1
+        property double reportAgeSeconds: -1
+        property string stepKey: ""
+        // A History pin's receive time (Unix s): said as a date; -1 for a live fix.
+        property double receivedWhen: -1
+        readonly property bool hasFix: fix.latitude !== undefined
+        readonly property var states: MapText.fixWords(fix)
+        readonly property string away: hasFix && sheet.deviceKnown ? MapText.lengthText(MapText.distanceMetres(sheet.deviceLatitude, sheet.deviceLongitude, fix.latitude, fix.longitude), sheet.metric) : ""
+        readonly property var lines: [fix.kindText && fix.kindText.length > 0 ? qsTr("Report type %1").arg(fix.kindText) : "",
+            hasFix ? qsTr("Position %1").arg(MapText.coordinateText(fix.latitude, fix.longitude)) : "",
+            // Final review M5: the live position while following, else the saved one.
+            away.length > 0 ? (sheet.deviceLive ? qsTr("%1 from you").arg(away) : qsTr("%1 from your saved location").arg(away)) : "",
+            MapText.accuracyText(fix.errorM, fix.errorLowerBound, sheet.metric),
+            MapText.speedText(fix.speedDkmh, fix.speedLowerBound, sheet.metric),
+            MapText.headingText(fix.headingDdeg, fix.headingAmbiguous),
+            MapText.altitudeText(fix.altitudeDm, sheet.metric),
+            fix.sats > 0 ? qsTr("%1 satellites").arg(fix.sats) : "",
+            fix.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(fix.freqHz)) : ""]
+
+        visible: hasFix
+        spacing: 12
+        topPadding: 6
+
+        MicroLabel {
+            objectName: block.objectName + "Heading"
+            width: parent.width
+            text: block.heading
+        }
+        Repeater {
+            model: 3
+            ReadableText {
+                required property int index
+                objectName: block.objectName + "State" + index
+                width: block.width
+                visible: text.length > 0
+                text: block.states[index] || ""
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(15)
+                font.weight: Font.DemiBold
+                color: Theme.textPrimary
+            }
+        }
+        LiveText {
+            objectName: block.objectName + "Received"
+            width: parent.width
+            visible: text.length > 0
+            step: block.stepKey
+            text: {
+                if (block.receivedWhen > 0)
+                    return qsTr("Received %1").arg(Qt.formatDateTime(new Date(block.receivedWhen * 1000), "yyyy-MM-dd hh:mm:ss"));
+                if (block.receivedWhen === 0 || !block.hasFix)
+                    return "";
+                var ago = MapText.agoText(block.ageSeconds, block.fix.timeText);
+                return ago.length > 0 ? qsTr("Received %1").arg(ago) + (block.ageSeconds >= 0 && block.fix.timeText ? " · " + block.fix.timeText : "") : "";
+            }
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+            color: Theme.textPrimary
+        }
+        LiveText {
+            objectName: block.objectName + "Measured"
+            width: parent.width
+            visible: text.length > 0
+            step: block.stepKey + ":" + (block.fix.fixTime || 0)
+            readonly property string at: block.fix.fixTime > 0 ? Qt.formatDateTime(new Date(block.fix.fixTime * 1000), "hh:mm:ss") : ""
+            text: at.length === 0 ? "" : block.reportAgeSeconds >= 0 ? qsTr("Measured %1").arg(MapText.agoText(block.reportAgeSeconds, at)) : qsTr("Measured at %1").arg(at)
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+            color: Theme.textPrimary
+        }
+        Repeater {
+            model: 9
+            ReadableText {
+                required property int index
+                objectName: block.objectName + "Line" + index
+                width: block.width
+                visible: text.length > 0
+                text: block.lines[index] || ""
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(15)
+                color: Theme.textPrimary
+            }
         }
     }
 

@@ -4593,7 +4593,7 @@ class Setup : public QObject {
      *
      * @p fix: `source` (a radio ID; 0 or absent with `anonymous`: no checked source), `lat`/`lon` (degrees; made-up
      * places only), `ageSeconds` (received that long before the canned wall clock; default 0), `errM` (position
-     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`, `group` (the
+     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`, `weakCheck`, `group` (the
      * target is a talkgroup), with pushPositionDetails()'s fields. Heard on a made-up DMR system on the system clock.
      */
     Q_INVOKABLE void
@@ -4621,7 +4621,8 @@ class Setup : public QObject {
             unsigned bit;
         } named[] = {{"provisional", DSD_POS_FLAG_FORMAT_PROVISIONAL},
                      {"validityUnknown", DSD_POS_FLAG_VALIDITY_UNKNOWN},
-                     {"emergency", DSD_POS_FLAG_EMERGENCY}};
+                     {"emergency", DSD_POS_FLAG_EMERGENCY},
+                     {"weakCheck", DSD_POS_FLAG_WEAK_CHECK}};
 
         for (const auto& n : named) {
             if (fix.value(QString::fromLatin1(n.name)).toBool()) {
@@ -4682,6 +4683,16 @@ class Setup : public QObject {
     Q_INVOKABLE void
     emitApplicationState(int state) {
         Q_EMIT qGuiApp->applicationStateChanged(static_cast<Qt::ApplicationState>(state));
+    }
+
+    /**
+     * @brief Issue #800: a new canned stream (a new run) with the tracks kept, read at once: the old stream's tail
+     * counts as unread, so the model places its gap row ("positions may be missing").
+     */
+    Q_INVOKABLE void
+    startNewPositionStream() {
+        dsd_neo_qml_stub::map_reset_fixes();
+        readPositions();
     }
 
     /** @brief Issue #800: read every track's age again now, as the map's one-second timer does. */

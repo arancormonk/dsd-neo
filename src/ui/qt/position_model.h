@@ -46,9 +46,9 @@ namespace dsd_qt {
  * Trails: at most kPointsPerTrack points, oldest first. A point whose position may be old or invalid (DSD_POS_FLAG_
  * VALIDITY_UNKNOWN, decision D11) never extends a trail and never moves the track's current position: it is held apart
  * as the track's newest unknown fix (a hollow marker). A trail breaks (Point::breakBefore) wherever reports may be
- * missing or a run changed: no line is drawn across it. At most kTrackCapacity rows (anonymous ones included) are held;
- * an anonymous point leaves before any named track, and among either the one whose newest report came first leaves
- * first.
+ * missing or a run changed: no line is drawn across it. At most kTrackCapacity rows (anonymous ones included) are held,
+ * and the one whose newest report came first leaves first, named or not (spec 4.5); anonymous rows are held to
+ * kAnonymousCapacity of them, the oldest anonymous one leaving for a new one past that share.
  *
  * Losses: when the view lost reports, the background queue dropped some, or a run ended before its last reports were
  * read, one gap row ("positions may be missing from" timeText) stands where the loss was found, above the tracks that
@@ -76,7 +76,9 @@ class PositionModel : public QAbstractListModel {
     Q_PROPERTY(bool ageing READ ageing WRITE setAgeing NOTIFY ageingChanged)
 
   public:
-    enum { kTrackCapacity = 200, kPointsPerTrack = 100, kAgeTickMs = 1000 };
+    /* kAnonymousCapacity: anonymous rows (hashed, unverified or sourceless points, one row per report) are held to a
+     * quarter of the 200, so a flood of them cannot push out every named track; the rest leave by age as all rows do. */
+    enum { kTrackCapacity = 200, kAnonymousCapacity = 50, kPointsPerTrack = 100, kAgeTickMs = 1000 };
 
     enum Role {
         TrackIdRole = Qt::UserRole + 1, /**< The row's identity for its whole life (never reused); 0 on the gap row. */
@@ -120,6 +122,13 @@ class PositionModel : public QAbstractListModel {
         ReportAgeSecondsRole,  /**< Age of the newest report's own time (fixTime); -1 when none or unknown. */
         ShownRole,             /**< The age filter shows one of the track's fixes (the gap row: always). */
         PointCountRole,        /**< Points in the trail. */
+        /** The current position's own report, the one its marker is drawn from (spec 4.6: the sheet and the List
+         *  describe the fix shown): {latitude, longitude, kindText, weakCheck, provisional, sourceHashed,
+         *  sourceUnverified, errorM, errorLowerBound, speedDkmh, speedLowerBound, headingDdeg, headingAmbiguous,
+         *  altitudeDm, sats, freqHz, fixTime, receivedTime, timeText, newest}; unknown values left out; {} when none. */
+        CurrentFixRole,
+        /** The newest validity-unknown report (the open ring), in the same keys; {} when none. */
+        UnknownFixRole,
     };
 
     /** @brief One trail point. */
@@ -260,7 +269,8 @@ class PositionModel : public QAbstractListModel {
     void ingest(const dsd_position_fix& fix, quint8 gap, Ingest& batch);
     void placeGap();
     int insertTrack(const dsd_position_fix& fix);
-    void evictOldest();
+    void evictOldest(bool anonymousOnly);
+    int anonymousCount() const;
     static void addFix(Row& row, const dsd_position_fix& fix, quint64 arrival, quint64 breakEpoch);
     void finishBatch(const Ingest& batch);
     bool updateAges(Row& row, qint64 wallNow) const;
@@ -290,6 +300,7 @@ class PositionModel : public QAbstractListModel {
 class PositionFilterModel : public QSortFilterProxyModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    Q_PROPERTY(int trackCount READ trackCount NOTIFY countChanged)
 
   public:
     explicit PositionFilterModel(QObject* parent = nullptr);
@@ -298,6 +309,9 @@ class PositionFilterModel : public QSortFilterProxyModel {
     count() const {
         return rowCount();
     }
+
+    /** @brief The tracks the filter shows, the gap row left out (a gap alone is no radio to show). */
+    int trackCount() const;
 
     /** @brief The view row of track @p trackId (0: the gap row), or -1 when it is not shown. */
     Q_INVOKABLE int rowForTrack(qulonglong trackId) const;

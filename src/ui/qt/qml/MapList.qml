@@ -177,16 +177,21 @@ Item {
             readonly property bool selected: !gap && list.selectedTrackId > 0 && model.trackId === list.selectedTrackId
             readonly property bool followed: !gap && list.followTrackId > 0 && model.trackId === list.followTrackId
             readonly property string name: MapText.trackName(model)
-            readonly property double age: MapText.newestAge(model)
-            readonly property string ageShown: gap ? "" : MapText.ageText(age).length > 0 ? MapText.ageText(age) : (model.timeText || "")
-            readonly property double fixLat: model.hasPosition ? model.latitude : model.unknownLatitude
-            readonly property double fixLon: model.hasPosition ? model.longitude : model.unknownLongitude
+            // Final review M1: the row describes the fix the map draws for it:
+            // the filled marker's (currentFix), else the open ring's, with
+            // that report's own age, format and states; a ring beside a
+            // current position gets its own words.
+            readonly property var shownFix: gap ? ({}) : model.hasPosition ? (model.currentFix || ({})) : (model.unknownFix || ({}))
+            readonly property double age: gap ? -1 : model.hasPosition ? model.ageSeconds : model.unknownAgeSeconds
+            readonly property string ageShown: gap ? "" : MapText.ageText(age).length > 0 ? MapText.ageText(age) : (shownFix.timeText || "")
+            readonly property double fixLat: Number(model.hasPosition ? model.latitude : model.unknownLatitude) || 0
+            readonly property double fixLon: Number(model.hasPosition ? model.longitude : model.unknownLongitude) || 0
             readonly property string what: {
                 if (gap)
                     return "";
                 var parts = [];
-                if (model.kindText && model.kindText.length > 0)
-                    parts.push(model.kindText);
+                if (shownFix.kindText && shownFix.kindText.length > 0)
+                    parts.push(shownFix.kindText);
                 if (model.targetId > 0)
                     parts.push(model.targetGroup ? qsTr("TG %1").arg(Util.idText(model.targetId)) : qsTr("to %1").arg(Util.idText(model.targetId)));
                 if (!model.anonymous && model.sourceId > 0 && name.indexOf(Util.idText(model.sourceId)) < 0)
@@ -195,13 +200,13 @@ Item {
                     parts.push(qsTr("%1 away").arg(MapText.lengthText(MapText.distanceMetres(list.deviceLatitude, list.deviceLongitude, fixLat, fixLon), list.metric)));
                 return parts.join(" · ");
             }
-            // Emergency has its tag; the rest of the states are words here.
-            readonly property var states: MapText.stateWords(model).filter(function (word) {
-                return word !== qsTr("Emergency");
-            })
+            // Emergency has its tag; the rest of the states are words here: the
+            // shown fix's, the track's source, then the ring's beside it.
+            readonly property var states: gap ? [] : MapText.fixWords(shownFix).concat(model.anonymous ? [qsTr("Radio not confirmed")] : [])
+                .concat(model.hasPosition && model.hasUnknownFix ? [MapText.ringWords(model.unknownFix)] : [])
             readonly property string gapTitle: model.timeText && model.timeText.length > 0 ? qsTr("Positions may be missing from %1").arg(model.timeText) : qsTr("Positions may be missing")
             readonly property string gapDetail: qsTr("Reports that came while the app could not read them were lost. Trails break here.")
-            readonly property string spokenNow: gap ? gapTitle : (MapText.agoText(age, model.timeText).length > 0 ? name + ", " + MapText.agoText(age, model.timeText) : name)
+            readonly property string spokenNow: gap ? gapTitle : (MapText.agoText(age, shownFix.timeText).length > 0 ? name + ", " + MapText.agoText(age, shownFix.timeText) : name)
 
             width: ListView.view ? ListView.view.width : 0
             implicitHeight: Math.max(Theme.rowHeight, (gap ? gapLabels.implicitHeight : labels.implicitHeight) + 24)

@@ -23,6 +23,7 @@
 #include <QVariant>
 #include <Qt>
 #include <QtGlobal>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -343,26 +344,107 @@ test_caps() {
     CHECK(track_of(f.model, 1000U) != nullptr && track_of(f.model, 1000U)->trail.size() == 1);
     CHECK(role(f.model, 0, "sourceId").toUInt() == 1000U);
 
-    // Anonymous points leave before any named track: a flood of hashed reports keeps every named radio, however long
-    // ago it reported, and the anonymous points cycle among themselves.
-    const int namedBefore = f.model.count();
+    // Revised ruling (final review): rows leave by the age of their newest report, named or not (spec 4.5), and
+    // anonymous rows are held to their share (kAnonymousCapacity). A flood of hashed reports first fills the share,
+    // each one pushing out the stalest row of any kind while all 200 are held; past the share, a new one replaces
+    // the oldest anonymous row and every named radio stays.
+    const int share = PositionModel::kAnonymousCapacity;
     std::vector<dsd_position_fix> hashed;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < share + 10; ++i) {
         dsd_position_fix h = fix_of(0U, i, kT0 + 400 + i);
         h.flags = DSD_POS_FLAG_SOURCE_HASHED;
         hashed.push_back(h);
     }
     publish(s, hashed, sample_of(s, 0, kT0, true));
     f.model.poll();
-    // The first anonymous point had to evict a named track (no anonymous one yet); the next two evicted anonymous ones.
     int anonymous = 0;
     for (const PositionModel::Row& row : f.model.rows()) {
         anonymous += row.anonymous ? 1 : 0;
     }
-    CHECK(namedBefore == PositionModel::kTrackCapacity && f.model.count() == PositionModel::kTrackCapacity);
-    CHECK(anonymous == 1);
-    CHECK(track_of(f.model, 7U) != nullptr && track_of(f.model, 5000U) != nullptr);
-    CHECK(f.model.rows().first().anonymous && f.model.rows().first().current.lat_e7 == kLat + 2);
+    CHECK(f.model.count() == PositionModel::kTrackCapacity);
+    CHECK(anonymous == share);
+    CHECK(f.model.rows().first().anonymous && f.model.rows().first().current.lat_e7 == kLat + share + 9);
+    // The freshest named radios stayed; the stalest named ones made room for the share.
+    CHECK(track_of(f.model, 7U) != nullptr && track_of(f.model, 5000U) != nullptr
+          && track_of(f.model, 1000U) != nullptr);
+    CHECK(f.model.count() - anonymous == PositionModel::kTrackCapacity - share);
+
+    // A fresh anonymous fix never gives way to a stale named track: with all 200 held, a new radio pushes out the
+    // row whose newest report is oldest, here a named radio that last reported long before the hashed flood.
+    const PositionModel::Row* stalest = nullptr;
+    for (const PositionModel::Row& row : f.model.rows()) {
+        if (!row.gap && (stalest == nullptr || row.lastArrival < stalest->lastArrival)) {
+            stalest = &row;
+        }
+    }
+    CHECK(stalest != nullptr && !stalest->anonymous);
+    const uint32_t stale_id = stalest->latest().source_id;
+    publish(s, {fix_of(6000U, 0, kT0 + 500)}, sample_of(s, 0, kT0, true));
+    f.model.poll();
+    anonymous = 0;
+    for (const PositionModel::Row& row : f.model.rows()) {
+        anonymous += row.anonymous ? 1 : 0;
+    }
+    CHECK(track_of(f.model, 6000U) != nullptr && track_of(f.model, stale_id) == nullptr);
+    CHECK(anonymous == share);
+}
+
+/* Final review M1: the sheet and the List describe the fix that is drawn. The current position's own report and the
+ * open ring's report each have their flags and measured fields (currentFix, unknownFix), apart from the newest
+ * report's (the top-level roles): a weak-check fix on the trail stays described as weak when a newer error-7 report
+ * becomes the newest. */
+void
+test_shown_fix_records() {
+    Fresh f;
+    const uint64_t s = 19U;
+    dsd_position_fix weak = fix_of(7U, 0, kT0);
+    weak.flags = DSD_POS_FLAG_WEAK_CHECK | DSD_POS_FLAG_FORMAT_PROVISIONAL;
+    weak.speed_dkmh = 420;
+    weak.err_m = 25;
+    dsd_position_fix later = fix_of(7U, 3, kT0 + 5);
+    later.flags = DSD_POS_FLAG_VALIDITY_UNKNOWN;
+    later.alt_dm = 1230;
+    publish(s, {weak, later}, sample_of(s, DSD_DECODE_CLOCK_SYSTEM, kT0 + 6, true));
+    f.model.poll();
+    const PositionModel::Row* seven = track_of(f.model, 7U);
+    CHECK(seven != nullptr);
+    const QVariantMap track = f.model.trackFor(seven->id);
+    // The top-level roles describe the newest report (the error-7 one) ...
+    CHECK(track.value(QStringLiteral("validityUnknown")).toBool()
+          && !track.value(QStringLiteral("weakCheck")).toBool());
+    // ... the current fix's record what its marker is drawn from: weak, provisional (the double outline), its speed.
+    const QVariantMap current = track.value(QStringLiteral("currentFix")).toMap();
+    CHECK(current.value(QStringLiteral("weakCheck")).toBool() && current.value(QStringLiteral("provisional")).toBool());
+    CHECK(!current.value(QStringLiteral("validityUnknown")).toBool()
+          && !current.value(QStringLiteral("newest")).toBool());
+    CHECK(current.value(QStringLiteral("speedDkmh")).toInt() == 420
+          && current.value(QStringLiteral("errorM")).toInt() == 25);
+    CHECK(!current.contains(QStringLiteral("altitudeDm")));
+    const QVariantMap ring = track.value(QStringLiteral("unknownFix")).toMap();
+    CHECK(ring.value(QStringLiteral("validityUnknown")).toBool() && ring.value(QStringLiteral("newest")).toBool());
+    CHECK(ring.value(QStringLiteral("altitudeDm")).toInt() == 1230 && !ring.contains(QStringLiteral("speedDkmh")));
+    CHECK(std::fabs(ring.value(QStringLiteral("latitude")).toDouble() - (kLat + 3) / 1e7) < 1e-9);
+}
+
+/* Final review M2: the filter's track count leaves the gap row out, so a filter that hides every radio reads as no
+ * radio shown even after a loss. */
+void
+test_filter_track_count() {
+    Fresh f;
+    PositionFilterModel view;
+    view.setSourceModel(&f.model);
+    const uint64_t s = 20U;
+    publish(s, {fix_of(7U, 0, kT0)}, sample_of(s, DSD_DECODE_CLOCK_SYSTEM, kT0, true));
+    f.model.poll();
+    CHECK(view.trackCount() == 1 && view.count() == 1);
+    // A new run: the old one's tail was unread, so a gap row is placed.
+    const uint64_t s2 = 21U;
+    publish(s2, {fix_of(8U, 0, kT0 + 10)}, sample_of(s2, DSD_DECODE_CLOCK_SYSTEM, kT0 + 10, true));
+    f.model.poll();
+    g_wall = kT0 + 2000;
+    f.model.setAgeFilterSeconds(900);
+    CHECK(view.count() >= 1);
+    CHECK(view.trackCount() == 0);
 }
 
 /* A loss breaks every trail there and shows one gap row (at the top, with the time of the last report read); a later
@@ -760,6 +842,8 @@ main(int argc, char** argv) {
     test_tap_queue_drops_oldest();
     test_tracks_by_typed_source();
     test_anonymous_points();
+    test_shown_fix_records();
+    test_filter_track_count();
     test_validity_unknown_and_provisional();
     test_caps();
     test_loss_breaks_trails_and_one_gap_row();
