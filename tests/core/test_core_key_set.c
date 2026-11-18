@@ -595,6 +595,61 @@ test_scan_keys_and_wipe_leave_no_autoloaded_key(void) {
     return failed;
 }
 
+/* Slot 1's call keyed from talkgroup 123's key, which its row shows: the autoload's key is the working key, and the
+   slot keeps its copy of it. */
+static void
+seed_slot_keyed_from_tg(dsd_state* state) {
+    seed_autoloaded_key(state, 0ULL);
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.slot_key[0][i] = state->dmr_tg_autoload.installed[i];
+    }
+    state->dmr_tg_autoload.slot_key_flags[0][0] = 1U;
+    state->dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state->dmr_tg_autoload.slot_tg[0] = 123U;
+}
+
+/* Whether slot 1 holds no copy of a key, and the key its row shows on talkgroup 123 is none. */
+static int
+slot_key_copy_gone(const dsd_state* state) {
+    const unsigned char* bytes = (const unsigned char*)state->dmr_tg_autoload.slot_key;
+    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload.slot_key); i++) {
+        if (bytes[i] != 0U) {
+            return 0;
+        }
+    }
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    dsd_dmr_slot_call_key(state, 0U, 123U, words, flags);
+    return state->dmr_tg_autoload.slot_key_flags[0][0] == 0U && state->dmr_tg_autoload.slot_key_flags[0][1] == 0U
+           && words[0] == 0ULL && words[1] == 0ULL && words[5] == 0ULL && flags[0] == 0U && flags[1] == 0U;
+}
+
+/* Replacing the key collection (the decryption settings' apply clearing it, a profile or scan row installed) wipes
+   each slot's copy of the talkgroup key its call keyed from: the row no longer shows a key the keyring does not hold.
+   The talkgroup the slot's call keyed from stays, and the autoload's key leaves the working key. */
+static int
+test_key_set_install_wipes_slot_key_copies(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    seed_slot_keyed_from_tg(state);
+    dsd_key_set empty;
+    DSD_MEMSET(&empty, 0, sizeof(empty));
+    dsd_key_set_install(state, &empty);
+    if (!slot_key_copy_gone(state)) {
+        DSD_FPRINTF(stderr, "installing a key set kept slot 1's copy of talkgroup 123's key\n");
+        failed = 1;
+    }
+    if (state->dmr_tg_autoload.slot_tg[0] != 123U || state->K != 0ULL || dsd_dmr_tg_autoload_holds(state)) {
+        DSD_FPRINTF(stderr, "installing a key set lost slot 1's talkgroup or kept the autoloaded working key\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
 /* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
    overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
    does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
@@ -691,6 +746,9 @@ main(void) {
         return 1;
     }
     if (test_direct_entry_keeps_no_autoloaded_key() != 0) {
+        return 1;
+    }
+    if (test_key_set_install_wipes_slot_key_copies() != 0) {
         return 1;
     }
     if (test_capture_install_roundtrip() != 0) {

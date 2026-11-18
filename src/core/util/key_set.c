@@ -189,6 +189,8 @@ dsd_key_set_install(dsd_state* state, const dsd_key_set* ks) {
         return;
     }
     const size_t capacity = key_set_capacity();
+    /* The keyring is replaced: no talkgroup key of the old one stays the working key or a slot's shown copy. */
+    dsd_dmr_tg_autoload_keyring_replaced(state);
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof(state->rkey_array_loaded));
     /* A NULL entry table always means an empty set; count is authoritative only with a table. */

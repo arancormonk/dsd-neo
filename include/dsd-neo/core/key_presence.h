@@ -141,6 +141,21 @@ dsd_dmr_tg_autoload_hand_back(dsd_state* state) {
     DSD_SECURE_ZERO(state->dmr_tg_autoload.installed_flags, sizeof(state->dmr_tg_autoload.installed_flags));
 }
 
+// The keyring the talkgroup key autoload keys from was replaced or cleared (a key set, profile or scan row installed,
+// the menu's clear): the working key it installed goes back (dsd_dmr_tg_autoload_hand_back()), and each slot's copy of
+// the key its call keyed from (slot_key, slot_key_flags), which a frontend shows on the slot's row, is wiped, so a key
+// the keyring no longer holds is neither shown nor kept. The talkgroup each slot's call keyed from stays: the call's
+// next frame keys from that talkgroup's key in the new keyring, if it has one.
+static inline void
+dsd_dmr_tg_autoload_keyring_replaced(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_dmr_tg_autoload_hand_back(state);
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key, sizeof(state->dmr_tg_autoload.slot_key));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key_flags, sizeof(state->dmr_tg_autoload.slot_key_flags));
+}
+
 // The DMR Basic Privacy and Hytera key slot @p slot's call on talkgroup @p tg (0 for a call no LC has named yet) is
 // decrypted with, as a frontend shows it from its snapshot, which holds no keyring: with a forced key or an ALG ID on
 // the slot, the working key; else the key the slot's own call last keyed from (dsd_state::dmr_tg_autoload slot_key)

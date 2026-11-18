@@ -2811,6 +2811,31 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_int("keys clear drops the tg key notice latch", (int)state.dmr_tg_key_note_epoch[0], 0);
     rc |= expect_int("keys clear drops the tg key skip latch", (int)state.dmr_tg_key_skip_epoch[0], 0);
 
+    // A call that keyed from a talkgroup's key of the cleared keyring: the operator's own key (none) is the working key
+    // again, and slot 1's row shows no copy of the cleared key. The talkgroup it keyed from stays.
+    rc |= expect_int("clear: seed key import ok again", svc_import_keys_dec(&opts, &state, "keys.csv"), 0);
+    state.K = state.K1 = state.H = 0x33ULL;
+    state.basic_key_present = 1U;
+    state.hytera_key_segments = 1U;
+    const unsigned long long int tg_key[6] = {0x33ULL, 0x33ULL, 0ULL, 0ULL, 0ULL, 0x33ULL};
+    DSD_MEMCPY(state.dmr_tg_autoload.installed, tg_key, sizeof tg_key);
+    DSD_MEMSET(state.dmr_tg_autoload.baseline, 0, sizeof state.dmr_tg_autoload.baseline);
+    state.dmr_tg_autoload.installed_flags[0] = state.dmr_tg_autoload.installed_flags[1] = 1U;
+    state.dmr_tg_autoload.baseline_flags[0] = state.dmr_tg_autoload.baseline_flags[1] = 0U;
+    state.dmr_tg_autoload.active = 1U;
+    DSD_MEMCPY(state.dmr_tg_autoload.slot_key[0], tg_key, sizeof tg_key);
+    state.dmr_tg_autoload.slot_key_flags[0][0] = state.dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state.dmr_tg_autoload.slot_tg[0] = 123U;
+    rc |= expect_int("keys clear with a talkgroup key loaded ok", svc_clear_keys(&opts, &state), 0);
+    rc |= expect_int("keys clear puts the operator's key back", (int)(state.K | state.K1 | state.H), 0);
+    rc |= expect_int("keys clear ends the autoload", (int)state.dmr_tg_autoload.active, 0);
+    rc |= expect_int("keys clear wipes the autoload's installed copy", (int)state.dmr_tg_autoload.installed[0], 0);
+    rc |= expect_int("keys clear wipes slot 1's key copy",
+                     (int)(state.dmr_tg_autoload.slot_key[0][0] | state.dmr_tg_autoload.slot_key[0][1]
+                           | state.dmr_tg_autoload.slot_key_flags[0][0] | state.dmr_tg_autoload.slot_key_flags[0][1]),
+                     0);
+    rc |= expect_int("keys clear keeps slot 1's talkgroup", (int)state.dmr_tg_autoload.slot_tg[0], 123);
+
     g_chan_import_result = -1;
     g_key_import_result = -1;
     return rc;

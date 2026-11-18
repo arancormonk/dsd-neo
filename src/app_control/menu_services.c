@@ -17,6 +17,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -990,8 +991,10 @@ svc_clear_keys(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
-    // One keyring behind both CSV kinds, so one clear covers dec and hex.
+    // One keyring behind both CSV kinds, so one clear covers dec and hex. No talkgroup key of it stays the working key
+    // or a slot's shown copy.
     opts->key_in_file[0] = '\0';
+    dsd_dmr_tg_autoload_keyring_replaced(state);
     DSD_MEMSET(state->rkey_array, 0, sizeof state->rkey_array);
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof state->rkey_array_loaded);
     // The TG->key ID override map indexes into the keyring, so it goes with it. One
