@@ -172,7 +172,7 @@ group_grant(fixture* f, uint32_t src, int crc_ok) {
     const uint8_t grant[] = {0x40,
                              0x00,
                              (uint8_t)(VC_CHANNEL >> 8),
-                             (uint8_t)VC_CHANNEL,
+                             (uint8_t)(VC_CHANNEL & 0xFFU),
                              (uint8_t)(TG_A >> 8),
                              (uint8_t)TG_A,
                              (uint8_t)(src >> 16),
@@ -186,10 +186,10 @@ static void
 private_grant(fixture* f, uint32_t src, int crc_ok) {
     const uint8_t grant[] = {0x44,
                              (uint8_t)(VC_CHANNEL >> 8),
-                             (uint8_t)VC_CHANNEL,
+                             (uint8_t)(VC_CHANNEL & 0xFFU),
                              (uint8_t)(UNIT_B >> 16),
                              (uint8_t)(UNIT_B >> 8),
-                             (uint8_t)UNIT_B,
+                             (uint8_t)(UNIT_B & 0xFFU),
                              (uint8_t)(src >> 16),
                              (uint8_t)(src >> 8),
                              (uint8_t)src};
@@ -466,8 +466,13 @@ test_epoch_change(void) {
     send_gps(&f, 0);
     expect_report(&f, "before the epoch change", SRC_A, TG_A, 1);
 
-    const uint8_t voice_user[] = {
-        0x01, 0x00, (uint8_t)(TG_A >> 8), (uint8_t)TG_A, (uint8_t)(SRC_B >> 16), (uint8_t)(SRC_B >> 8), (uint8_t)SRC_B};
+    const uint8_t voice_user[] = {0x01,
+                                  0x00,
+                                  (uint8_t)(TG_A >> 8),
+                                  (uint8_t)TG_A,
+                                  (uint8_t)(SRC_B >> 16),
+                                  (uint8_t)(SRC_B >> 8),
+                                  (uint8_t)(SRC_B & 0xFFU)};
     send_mac(&f, 0, voice_user, sizeof voice_user, 0);
     expect_true("-F voice user opened its talker's epoch", slot0_call_names(TG_A, SRC_B, f.st));
     send_gps(&f, 0);
@@ -483,8 +488,13 @@ test_epoch_change(void) {
     dsd_call_snapshot before;
     expect_true("call before the end", dsd_call_state_get(f.st, 0U, &before) > 0);
     (void)dsd_call_state_end_ex(f.st, 0U, 1.0, DSD_CALL_END_TERMINATOR);
-    const uint8_t same_user[] = {
-        0x01, 0x00, (uint8_t)(TG_A >> 8), (uint8_t)TG_A, (uint8_t)(SRC_B >> 16), (uint8_t)(SRC_B >> 8), (uint8_t)SRC_B};
+    const uint8_t same_user[] = {0x01,
+                                 0x00,
+                                 (uint8_t)(TG_A >> 8),
+                                 (uint8_t)TG_A,
+                                 (uint8_t)(SRC_B >> 16),
+                                 (uint8_t)(SRC_B >> 8),
+                                 (uint8_t)(SRC_B & 0xFFU)};
     send_mac(&f, 0, same_user, sizeof same_user, 0);
     dsd_call_snapshot after;
     expect_true("-F voice user opened a new epoch", slot0_call_names(TG_A, SRC_B, f.st)
@@ -526,7 +536,7 @@ test_hangtime(void) {
     end[0] = 0x40; // MAC_END_PTT (opcode 2)
     end[13] = (uint8_t)(SRC_A >> 16);
     end[14] = (uint8_t)(SRC_A >> 8);
-    end[15] = (uint8_t)SRC_A;
+    end[15] = (uint8_t)(SRC_A & 0xFFU);
     end[16] = (uint8_t)(TG_A >> 8);
     end[17] = (uint8_t)TG_A;
     send_facch(&f, end);
@@ -549,8 +559,13 @@ test_conventional(void) {
     send_gps(&f, 0);
     expect_report(&f, "conventional checked ptt", SRC_A, TG_A, 1);
 
-    const uint8_t voice_user[] = {
-        0x01, 0x00, (uint8_t)(TG_A >> 8), (uint8_t)TG_A, (uint8_t)(SRC_B >> 16), (uint8_t)(SRC_B >> 8), (uint8_t)SRC_B};
+    const uint8_t voice_user[] = {0x01,
+                                  0x00,
+                                  (uint8_t)(TG_A >> 8),
+                                  (uint8_t)TG_A,
+                                  (uint8_t)(SRC_B >> 16),
+                                  (uint8_t)(SRC_B >> 8),
+                                  (uint8_t)(SRC_B & 0xFFU)};
     send_mac(&f, 0, voice_user, sizeof voice_user, 0);
     expect_true("conventional -F voice user", slot0_call_names(TG_A, SRC_B, f.st));
     send_gps(&f, 0);

@@ -71,7 +71,7 @@ dsd_event_stage_position(dsd_state* state, uint8_t slot, const dsd_position_fix*
 
 const dsd_position_fix*
 dsd_event_staged_position(const dsd_state* state, uint8_t slot) {
-    static const dsd_position_fix none; /* zero: rev 0 */
+    static const dsd_position_fix none = {0}; /* zero: rev 0 */
     return staging_available(state, slot) ? &state->event_history_s[slot].staged.pos_fix : &none;
 }
 

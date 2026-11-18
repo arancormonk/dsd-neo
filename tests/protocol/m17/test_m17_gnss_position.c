@@ -172,7 +172,7 @@ gnss_meta(uint8_t meta[M17_META_BYTES], uint8_t validity, uint8_t radius_exp, ui
     meta[7] = (uint8_t)(lon >> 8U);
     meta[8] = (uint8_t)lon;
     meta[9] = (uint8_t)(TEST_ALTITUDE_RAW >> 8U);
-    meta[10] = (uint8_t)TEST_ALTITUDE_RAW;
+    meta[10] = (uint8_t)(TEST_ALTITUDE_RAW & 0xFFU);
     meta[11] = (uint8_t)(TEST_SPEED_RAW >> 4U);
     meta[12] = (uint8_t)((TEST_SPEED_RAW & 0xFU) << 4U);
 }
