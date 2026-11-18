@@ -420,6 +420,13 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return incoming;
 }
 
+#ifdef DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
+/* Lets a test build compile the older-libcurl branches against current headers. */
+#define CC_CURL_VERSION_NUM DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
+#else
+#define CC_CURL_VERSION_NUM LIBCURL_VERSION_NUM
+#endif
+
 #ifdef DSD_CURL_COMMON_TEST_HOOKS
 #define CC_MULTI_INIT          dsd_curl_test_multi_init
 #define CC_MULTI_ADD           dsd_curl_test_multi_add_handle
@@ -433,11 +440,8 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
 #define CC_MULTI_SETOPT_LONG   dsd_curl_test_multi_setopt_long
 #define CC_RUNTIME_VERSION_NUM dsd_curl_test_runtime_version_num
 #define CC_SLEEP_MS            dsd_curl_test_sleep_ms
-#ifdef DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
-/* Lets a test build take the older-libcurl branches against current headers. */
-#define CC_CURL_VERSION_NUM DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
-#endif
 #else
+#if CC_CURL_VERSION_NUM >= 0x081400 /* only dsd_curl_multi_quick_exit() uses these */
 static CURLMcode
 dsd_curl_multi_setopt_long(CURLM* multi, CURLMoption option, long value) {
     return curl_multi_setopt(multi, option, value);
@@ -448,6 +452,7 @@ dsd_curl_runtime_version_num(void) {
     const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
     return (info != NULL) ? info->version_num : 0U;
 }
+#endif
 
 #define CC_MULTI_INIT          curl_multi_init
 #define CC_MULTI_ADD           curl_multi_add_handle
@@ -461,10 +466,6 @@ dsd_curl_runtime_version_num(void) {
 #define CC_MULTI_SETOPT_LONG   dsd_curl_multi_setopt_long
 #define CC_RUNTIME_VERSION_NUM dsd_curl_runtime_version_num
 #define CC_SLEEP_MS            dsd_sleep_ms
-#endif
-
-#ifndef CC_CURL_VERSION_NUM
-#define CC_CURL_VERSION_NUM LIBCURL_VERSION_NUM
 #endif
 
 #define DSD_CURL_CANCEL_POLL_MS     100

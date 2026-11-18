@@ -7249,6 +7249,32 @@ if(DSD_HAS_CURL)
         )
         add_test(NAME ${_cc_test} COMMAND dsd-neo_test_runtime_${_cc_target})
     endforeach()
+
+    # Build checks, no test: curl_common.c as shipped (no hooks) with the curl
+    # version forced below 8.20 (no CURLMOPT_QUICK_EXIT) and below 7.66
+    # (curl_multi_wait), so warnings-as-errors catches code that only compiles
+    # against current headers.
+    foreach(_cc_old_version IN ITEMS 0x081300 0x074100)
+        add_library(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            OBJECT
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=${_cc_old_version}
+        )
+        target_link_libraries(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+    endforeach()
 endif()
 
 # rr_import.c is pure policy - no transport, no parser - and compiles
