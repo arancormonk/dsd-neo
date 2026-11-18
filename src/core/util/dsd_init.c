@@ -1478,6 +1478,11 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->dstar_confirmed = 0;
     state->dstar_confirm_weak_streak = 0;
     state->dstar_confirm_frame_evidence = 0;
+    /* As dstar_tx_begin() does: the next transmission is another one, and nothing slow data assembled survives. */
+    state->dstar_tx_seq++;
+    state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+    DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
 
     //M17 Storage
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));

@@ -623,21 +623,40 @@ typedef struct dmr_talker_alias_assembly {
 #define DSTAR_DPRS_RECORD_MAX 300U
 
 /**
+ * What a D-STAR slow-data assembly (a D-PRS record, the text message) is bound to from its first byte or block
+ * (src/protocol/dstar/dstar_slow_data.c, issue #800): the transmission (dsd_state::dstar_tx_seq), the call a checked
+ * header of that transmission named (dsd_state::dstar_tx_call_epoch, 0: none), whether the transmission was confirmed
+ * (dsd_state::dstar_confirmed) and the reception (dsd_position_origin_capture()). A block heard when any of them has
+ * changed resets the assembly before it is used: nothing assembled across two transmissions, two receptions, a header
+ * naming another call or the confirmation reaches the evidence, a position or a call.
+ */
+typedef struct dstar_sd_binding {
+    uint32_t tx;
+    uint64_t call_epoch;
+    dsd_position_origin origin;
+    uint8_t confirmed;
+} dstar_sd_binding;
+
+/**
  * One D-STAR D-PRS (GPS-A) record being collected from the GPS blocks (type 3) of the slow data
  * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
- * spans superframes, so it is bound to the slot 0 call it began in (epoch 0: none was active) and to the reception
- * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was
- * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header or the carrier's
- * end (dstar_confirm_reset()) clears it; a record begun in a call of another engine run matches no call of this one
- * (dsd_state::call_epoch_floor).
+ * spans superframes, so it is bound (dstar_sd_binding) from its first byte, the hunt for "$$CRC" included. A record
+ * that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was lost gives way to the next "$$CRC". A
+ * changed binding, an RF header or the carrier's end (dstar_confirm_reset()) clears it.
  */
 typedef struct dstar_dprs_assembly {
     uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */
     uint16_t len;
-    uint8_t collecting; /* 1 once "$$CRC" began a record */
-    uint64_t epoch;     /* the slot 0 call's epoch when the record began; 0 = no active D-STAR call */
-    dsd_position_origin origin;
+    uint8_t collecting;    /* 1 once "$$CRC" began a record */
+    dstar_sd_binding bind; /* captured with the first byte (len 0 -> 1) */
 } dstar_dprs_assembly;
+
+/** The D-STAR text message being assembled from the slow data's text blocks (dsd_state::dstar_txt holds its text): the
+ * blocks held (bit n: the block at place n) and what they are bound to (dstar_sd_binding), captured with the first. */
+typedef struct dstar_text_assembly {
+    uint8_t places;
+    dstar_sd_binding bind;
+} dstar_text_assembly;
 
 typedef struct {
     uint8_t mask;
@@ -2972,11 +2991,16 @@ struct dsd_state {
     /* The D-PRS record being collected from slow data; only a complete one whose CRC-16/X.25 matches is evidence or a
      * position (issue #800 2.10). */
     dstar_dprs_assembly dstar_dprs;
-    /* 1 from an RF header (which begins a transmission) until a header whose CRC passed names that transmission's MY
-     * callsign (issue #800), and after a checked header whose MY field is blank: the slot 0 call's callsign may be
-     * another transmission's (its terminator missed), so a D-PRS record completed meanwhile names no source, however
-     * long the call stays ACTIVE. */
-    uint8_t dstar_dprs_source_unchecked;
+    /* The text message being assembled (issue #800): only one whose blocks all came under one binding, its first
+     * block among them, while the transmission was confirmed, reaches the transmission's call. */
+    dstar_text_assembly dstar_text;
+    /* The D-STAR transmission (issue #800). dstar_tx_seq advances at every transmission boundary: an RF header, decoded
+     * or not, and the carrier's end (dstar_confirm_reset()). dstar_tx_call_epoch is the slot 0 call a header of this
+     * transmission whose CRC passed named with a MY callsign; 0 until one has, after an RF header (the call left ACTIVE,
+     * its terminator missed, may be another radio's), and after a checked header whose MY field is blank. Slow data
+     * reaches a call (its text, a D-PRS source, a D-PRS position) only when that call is the one named here. */
+    uint32_t dstar_tx_seq;
+    uint64_t dstar_tx_call_epoch;
 
     //M17 Storage
     uint8_t m17_lsf[360];

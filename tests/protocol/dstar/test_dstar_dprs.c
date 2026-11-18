@@ -21,13 +21,16 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_confirm.h"
 
 /* The published vector: CRC-16/X.25 of the text after the comma, CR included, is 9E3E. */
 static const char k_vector[] = "$$CRC9E3E,N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";
@@ -85,17 +88,25 @@ rig_close(rig* r) {
     free(r->opts);
 }
 
-/* Open a D-STAR voice call as a decoded header leaves it: only a header whose CRC passed names a callsign. */
+/* Open a D-STAR voice call as a decoded RF header leaves it (dstar_header_decode_soft() hands its fields to
+ * dstar_header_observe()): only a header whose CRC passed names a callsign, and it names the transmission's call. */
 static void
 open_call(rig* r, const char* mycall) {
+    char my[13];
+    DSD_SNPRINTF(my, sizeof(my), "%-12s", mycall);
+    dstar_header_observe(r->state, DSD_SYNC_DSTAR_VOICE_POS, 0, "RPT2TST", "RPT1TST", "CQCQCQ", my);
+    dsd_event_sync_slot(r->opts, r->state, 0U);
+}
+
+/* A late-entry call: the transmission confirmed with no header decoded, so the call opens with no identity. */
+static void
+open_anonymous_call(rig* r) {
     dsd_call_observation observation;
     DSD_MEMSET(&observation, 0, sizeof(observation));
     observation.protocol = DSD_SYNC_DSTAR_VOICE_POS;
     observation.slot = 0U;
     observation.kind = DSD_CALL_KIND_VOICE;
-    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", mycall);
-    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "CQCQCQ");
-    expect_int("call opens", dsd_call_state_observe(r->state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    expect_int("anonymous call opens", dsd_call_state_observe(r->state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
     dsd_event_sync_slot(r->opts, r->state, 0U);
 }
 
@@ -473,22 +484,33 @@ test_tag_across_the_bound(void) {
     }
 }
 
-/* Late entry: a record begun before any call was active, whose call opens mid-record, is kept. Its CRC proves the
- * transmission; its position names no checked source, so the named call's row does not take it. */
+/* Late entry: a record begun before any call was active, whose (anonymous) call opens mid-record, is kept. Its CRC
+ * proves the transmission; its position names no checked source and reaches no row: no checked header of its
+ * transmission named the call. A header that names the call mid-record changes what the record is bound to: the record
+ * is dropped, never credited to the call it did not begin in. */
 static void
 test_late_entry_record_kept_unverified(void) {
     rig r;
     rig_open(&r);
     const size_t half = 25U;
     send_gps(&r, k_vector, half, 0);
-    open_call(&r, "N0CALL");
+    open_anonymous_call(&r);
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
     expect_int("late-entry record proves the transmission", r.state->dstar_confirmed, 1);
     dsd_position_fix f[2];
     expect_int("late-entry record admitted", feed_records(&r, f, 2U), 1);
     expect_int("late-entry record is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
-    expect_int("late-entry record not on the named row", r.history[0].Event_History_Items[0].pos.valid, 0);
+    expect_int("late-entry record not on the anonymous row", r.history[0].Event_History_Items[0].pos.valid, 0);
+    rig_close(&r);
+
+    rig_open(&r);
+    send_gps(&r, k_vector, half, 0);
+    open_call(&r, "N0CALL");
+    const uint64_t rev = dsd_position_last_rev();
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    expect_int("record cut by the naming header proves nothing", r.state->dstar_confirmed, 0);
+    expect_int("record cut by the naming header admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
     rig_close(&r);
 }
 
@@ -523,37 +545,137 @@ send_slow_data_header(rig* r, const char* mycall) {
 }
 
 /* N0ONE's call is ACTIVE (its terminator missed) when another transmission's RF header fails its CRC
- * (processDSTAR_HD() leaves dstar_dprs_source_unchecked set: DSTAR_PROCESS). A whole, CRC-valid D-PRS record heard
- * after it is not N0ONE's: it names no one, until a header whose CRC passed names the transmission's MY callsign (here
- * the slow-data header of N0TWO's), whose next record is N0TWO's. A checked header with a blank MY field names no one
- * and leaves the records anonymous. */
+ * (processDSTAR_HD() begins a transmission, dstar_tx_begin(): DSTAR_PROCESS). A whole, CRC-valid D-PRS record heard
+ * after it is not N0ONE's: it names no one and reaches no row, until a header whose CRC passed names the transmission's
+ * MY callsign (here the slow-data header of N0TWO's), whose next record is N0TWO's. A checked header with a blank MY
+ * field names no one and leaves the records anonymous. */
 static void
 test_failed_header_leaves_records_anonymous(void) {
     rig r;
     rig_open(&r);
     open_call(&r, "N0ONE");
-    r.state->dstar_dprs_source_unchecked = 1U;
+    dstar_tx_begin(r.state);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     dsd_position_fix f[3];
     expect_int("record after a failed header admitted", feed_records(&r, f, 3U), 1);
     expect_str("record after a failed header names nobody", f[0].source_text, "");
     expect_int("record after a failed header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("record after a failed header is not on N0ONE's row", r.history[0].Event_History_Items[0].pos.valid, 0);
     /* A checked header whose MY field is blank names no one: the call keeps N0ONE's callsign, which is not this
        transmission's, so the next record still names nobody. */
     send_slow_data_header(&r, "");
-    expect_int("a blank checked header names no one", r.state->dstar_dprs_source_unchecked, 1);
+    expect_int("a blank checked header names no one", (long long)r.state->dstar_tx_call_epoch, 0);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     expect_int("record after a blank header admitted", feed_records(&r, f, 3U), 2);
     expect_str("record after a blank header names nobody", f[1].source_text, "");
     expect_int("record after a blank header is unverified", f[1].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
     send_slow_data_header(&r, "N0TWO");
-    expect_int("a checked header names the transmission", r.state->dstar_dprs_source_unchecked, 0);
+    expect_int("a checked header names the transmission", r.state->dstar_tx_call_epoch != 0U, 1);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 3);
     expect_str("record after the checked header is N0TWO's", f[2].source_text, "N0TWO");
     expect_int("record after the checked header is checked", f[2].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
+    rig_close(&r);
+}
+
+/* A superframe holding text blocks: @p count blocks, block i at place @p first + i with five characters of @p text. */
+static void
+send_text(rig* r, unsigned first, const char* text, size_t count) {
+    uint8_t bytes[60];
+    DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+    for (size_t i = 0U; i < count; i++) {
+        bytes[i * 6U] = (uint8_t)(0x40U | (first + i));
+        DSD_MEMCPY(bytes + (i * 6U) + 1U, text + (i * 5U), 5U);
+    }
+    send_superframe(r, bytes);
+}
+
+static const Event_History*
+open_row(const rig* r) {
+    return &r->history[0].Event_History_Items[0];
+}
+
+/* Issue #800 (g62-r5): a record whose bytes all arrived before a retune but whose CR arrived after it was assembled
+ * across two receptions. Its CRC passes, but it is checked against the reception it began on before it counts as
+ * anything: it neither confirms the new carrier nor reaches the feed. */
+static void
+test_reception_change_before_cr_proves_nothing(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0CALL");
+    send_gps(&r, k_vector, strlen(k_vector) - 1U, 0);
+    expect_int("record waits for its CR", r.state->dstar_dprs.collecting, 1);
+    dsd_trunk_tuning_generation_advance();
+    const uint64_t rev = dsd_position_last_rev();
+    send_gps(&r, "\r", 1U, 0);
+    expect_int("record across a retune does not confirm the carrier", r.state->dstar_confirmed, 0);
+    expect_int("record across a retune admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
+    /* The next whole record, heard on the new reception, decodes. */
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("next record confirms", r.state->dstar_confirmed, 1);
+    expect_int("next record admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r5): text blocks heard before the transmission was confirmed, or before its header named the call,
+ * are no part of the confirmed call's message: an unconfirmed block 0 ("OLDER") followed by a checked header naming
+ * N0NEWS and block 1 ("NEWER") puts nothing on N0NEWS's row (the message there lacks its first block). The next whole
+ * message heard under the header does. */
+static void
+test_unconfirmed_text_stays_out_of_confirmed_messages(void) {
+    rig r;
+    rig_open(&r);
+    send_text(&r, 0U, "OLDER", 1U);
+    expect_int("not confirmed", r.state->dstar_confirmed, 0);
+    send_slow_data_header(&r, "N0NEWS");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    expect_int("header confirms", r.state->dstar_confirmed, 1);
+    send_text(&r, 1U, "NEWER", 1U);
+    expect_str("message missing its own first block reaches no row", open_row(&r)->text_message, "");
+    send_text(&r, 0U, "HELLOWORLD", 2U);
+    expect_str("whole message heard under the header", open_row(&r)->text_message, "HELLOWORLD");
+    expect_str("row is N0NEWS's", open_row(&r)->src_str, "N0NEWS");
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r5): N0OLD's confirmed call is still ACTIVE (its terminator missed) when the next transmission's RF
+ * header fails its CRC (processDSTAR_HD() begins a transmission). A fresh, whole text message heard next is that
+ * transmission's, and no checked header has named its call: N0OLD's row does not take it. */
+static void
+test_text_withheld_from_the_previous_transmitters_call(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0OLD");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "OLD MESSAGE TEXT    ", 4U);
+    expect_str("N0OLD's own message", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    dstar_tx_begin(r.state);
+    expect_int("still confirmed", r.state->dstar_confirmed, 1);
+    send_text(&r, 0U, "NEXT!", 1U);
+    expect_str("next transmission's text is not N0OLD's", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r5): a checked slow-data header with a blank MY field and the suffix TEST names no caller: the call
+ * stays anonymous and the suffix never becomes its source; the record that follows is anonymous too. */
+static void
+test_slow_data_suffix_alone_is_no_caller(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "        TEST");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("header opens a call", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_str("suffix alone is no source", call.source_text, "");
+    expect_int("transmission names no call", (long long)r.state->dstar_tx_call_epoch, 0);
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[2];
+    expect_int("record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record names nobody", f[0].source_text, "");
+    expect_str("row names nobody", open_row(&r)->src_str, "");
     rig_close(&r);
 }
 
@@ -573,6 +695,10 @@ main(void) {
     test_tag_across_the_bound();
     test_late_entry_record_kept_unverified();
     test_failed_header_leaves_records_anonymous();
+    test_reception_change_before_cr_proves_nothing();
+    test_unconfirmed_text_stays_out_of_confirmed_messages();
+    test_text_withheld_from_the_previous_transmitters_call();
+    test_slow_data_suffix_alone_is_no_caller();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

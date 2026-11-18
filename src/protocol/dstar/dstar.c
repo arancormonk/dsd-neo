@@ -112,11 +112,10 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     for (i = 0; i < 660; i++) {
         getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
-    /* A header opens another transmission, whether or not it decodes: a D-PRS record the one before it left unfinished
+    /* A header opens another transmission, whether or not it decodes: what slow data the one before it left unfinished
        is not this one's, and whose transmission it is stays unknown (the call it leaves ACTIVE, its terminator missed,
-       may be another radio's) until a checked header names a callsign (dstar_header_decode_soft()). */
-    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
-    state->dstar_dprs_source_unchecked = 1U;
+       may be another radio's) until a checked header names a callsign (dstar_header_observe()). */
+    dstar_tx_begin(state);
     /* A carrier boundary split the header (issue #575), or an input interruption cut it (a Signal search left it): the
        rest of it belongs to another carrier or is erasures the reader stood in, which the soft Viterbi decode reads as
        confident symbols. It decodes nothing, and the superframe behind it is not read. */

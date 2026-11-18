@@ -102,19 +102,34 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
         return 0;
     }
 
-    int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
+    const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
+    dstar_header_observe(state, protocol, ((uint8_t)radioheader[0] & 0x80U) != 0U, str1, str2, str3, str4);
+    return 1;
+}
+
+void
+dstar_header_observe(dsd_state* state, int protocol, int data, const char* rpt2, const char* rpt1, const char* dst,
+                     const char* my) {
+    if (state == NULL || rpt2 == NULL || rpt1 == NULL || dst == NULL || my == NULL) {
+        return;
+    }
+    const int named = dstar_callsign_present(my, 8U);
     dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
-        .kind = ((uint8_t)radioheader[0] & 0x80U) != 0U ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
+        .kind = data ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
     };
-    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
-    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);
-    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
-    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
+    /* MY and its suffix name the caller; the suffix alone names no one (a blank MY field). */
+    if (named) {
+        DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", my);
+    }
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", dst);
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", rpt1);
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", rpt2);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-    /* The transmission's own callsign is on the call now: a D-PRS record of it may name it. A blank MY field names
-       no one, and the call may still carry the last transmission's callsign (its terminator missed). */
-    state->dstar_dprs_source_unchecked = dstar_callsign_present(str4, 8U) ? 0U : 1U;
-    return 1;
+    /* The transmission's own callsign is on the call now: slow data of this transmission may reach that call. A blank
+       MY field names no one, and the call may still carry the last transmission's callsign (its terminator missed). */
+    dsd_call_snapshot call;
+    state->dstar_tx_call_epoch =
+        (named && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch : 0U;
 }

@@ -2092,7 +2092,9 @@ add_test(NAME DSTAR_CONFIRM COMMAND dsd-neo_test_dstar_confirm)
 add_executable(dsd-neo_test_dstar_dprs protocol/dstar/test_dstar_dprs.c)
 target_include_directories(
     dsd-neo_test_dstar_dprs
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dstar
 )
 target_link_libraries(dsd-neo_test_dstar_dprs PRIVATE dsd-neo_proto_dstar)
 add_test(NAME DSTAR_DPRS COMMAND dsd-neo_test_dstar_dprs)
