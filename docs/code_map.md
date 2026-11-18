@@ -1970,7 +1970,9 @@ suite runs under this compiler.
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
   to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
   its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
-  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
+  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
+  a call of the detail's own protocol family (the caller passes the sync type it decoded under: D-STAR text never
+  lands on a DMR call still open on the slot), and
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
   call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
   checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
@@ -2612,7 +2614,9 @@ suite runs under this compiler.
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
     only when the record arrived within that call. Each slow-data block goes by its own mini-header: only GPS blocks
     (0x3n) feed the record and the `GPS DATA:` display, only text blocks (0x40-0x43) the 20-character message, each at
-    its place. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    its place. Slow data decodes after a single unconfirmed sync, so the message reaches a history row only once the
+    transmission is confirmed (`dstar_confirm.h`) and only through an open D-STAR call; until then it is display text
+    alone. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.

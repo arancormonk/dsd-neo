@@ -440,7 +440,8 @@ test_callsign_sources(void) {
     assert(dsd_event_set_open_call_position(&g_state, 0U, &f, "DPRS 22.5 45.0") == 1);
 
     /* The text-only open-call GPS drops the position with the text it replaces. */
-    assert(dsd_event_set_open_call_detail(&g_state, 0U, DSD_EVENT_DETAIL_GPS, "text only") == 1);
+    assert(dsd_event_set_open_call_detail(&g_state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_GPS, "text only")
+           == 1);
     assert(row(0)->pos.valid == 0U && strcmp(row(0)->gps_s, "text only") == 0);
 }
 
