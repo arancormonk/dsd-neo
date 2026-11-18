@@ -2571,8 +2571,9 @@ suite runs under this compiler.
     type 0 or 1, kept in `dmr_data_checked_group`). A CRC-failed packet keeps no sentence text.
   - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
     call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
-    `nxdn_data_carrier_seq`; a failed FACCH2/UDCH or FACCH3/UDCH2 CRC, a rejected header, another reception or
-    carrier, or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
+    `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,
+    FACCH3/UDCH2 or CAC CRC, a FACCH1 none of whose copies passed -- a rejected header, another reception or carrier,
+    or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
     names its destination. Its own notice.
   - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's

@@ -9,7 +9,7 @@
  * with the real event layer, feed and -L writer. The degree/minute packing counts a minute once (2.8); a report too
  * short for its fields gives nothing; every component is checked before it is converted (V2); a heading out of range
  * is unknown (V3); the format is provisional (D12); and a payload is attributed only to the header that opened its
- * assembly with nothing between them (B6). All IDs, coordinates and dates are made up.
+ * assembly with nothing between them, not even a lost message that could have been a header (B6). All IDs, coordinates and dates are made up.
  */
 
 #include <assert.h>
@@ -479,6 +479,70 @@ test_binding_rejected_header_and_udch2(void) {
     expect_nothing(100U);
 }
 
+/* B6: a failed CAC (which carries data call headers) and a FACCH1 none of whose copies decoded may have been radio
+ * 200's replacement header: the payload that follows is not radio 100's. One FACCH1 copy that decoded keeps it. */
+static void
+facch1_copy(uint8_t frame, int crc_ok) {
+    uint8_t trellis[96];
+    uint8_t m_data[12];
+    DSD_MEMSET(trellis, 0, sizeof trellis);
+    DSD_MEMSET(m_data, 0, sizeof m_data);
+    put_bits(trellis, 2, 0x10U, 6); /* IDLE */
+    nxdn_handle_facch1(&g_opts, &g_state, trellis, m_data, crc_ok ? 0U : 1U, 0U, frame);
+}
+
+static void
+test_binding_failed_cac_and_facch1(void) {
+    const gps_in g = gps_default();
+    uint8_t payload[MAX_PAYLOAD];
+    const size_t total = gps_payload(payload, &g, GPS_MSG_BYTES);
+
+    reset_fixture();
+    send_header(100U, total, 1);
+    uint8_t trellis[208];
+    uint8_t m_data[32];
+    DSD_MEMSET(trellis, 0, sizeof trellis);
+    DSD_MEMSET(m_data, 0, sizeof m_data);
+    put_bits(trellis, 2, g_ran, 6);
+    nxdn_handle_cac(&g_opts, &g_state, trellis, m_data, 1U);
+    CHECK(!nxdn_data_call_header_bound(&g_state));
+    send_blocks(payload, total);
+    expect_nothing(100U);
+
+    static const struct {
+        uint8_t first;
+        int first_ok;
+        uint8_t second;
+        int second_ok;
+        int kept;
+    } cases[] = {
+        {0U, 0, 0xFFU, 0, 0}, /* a single copy that failed */
+        {1U, 0, 2U, 0, 0},    /* both copies failed */
+        {1U, 0, 2U, 1, 1},    /* the second copy decoded */
+        {1U, 1, 2U, 0, 1},    /* the first copy decoded */
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_fixture();
+        send_header(100U, total, 1);
+        facch1_copy(cases[i].first, cases[i].first_ok);
+        if (cases[i].second != 0xFFU) {
+            facch1_copy(cases[i].second, cases[i].second_ok);
+        }
+        if (nxdn_data_call_header_bound(&g_state) != cases[i].kept) {
+            DSD_FPRINTF(stderr, "FAIL: FACCH1 case %zu: binding %s\n", i, cases[i].kept ? "lost" : "kept");
+            g_failures++;
+        }
+        send_blocks(payload, total);
+        if (cases[i].kept) {
+            dsd_position_fix r;
+            expect_one(100U, 100000000, 225000000, &r);
+        } else {
+            expect_nothing(100U);
+        }
+    }
+}
+
 /* B6: another RAN, another carrier, or the hold time on the decode clock ends the binding. */
 static void
 test_binding_reception_and_expiry(void) {
@@ -640,6 +704,7 @@ main(void) {
     test_heading_bounds();
     test_binding_failed_replacement_header();
     test_binding_rejected_header_and_udch2();
+    test_binding_failed_cac_and_facch1();
     test_binding_reception_and_expiry();
     test_binding_ran_from_every_channel();
     test_nmea_data_call();
