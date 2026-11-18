@@ -18,3 +18,5 @@ android/third_party/patches/*.patch text eol=lf
 # libairspyhf's airspyhf.c has CRLF line endings, so its patch carries CRLF in
 # its source lines and LF in the rest: no line-ending conversion at all.
 vcpkg-ports/airspyhf/*.patch -text
+# SoapyAirspyHF's sources have LF line endings, like the patches above.
+vcpkg-ports/soapy-airspyhf/*.patch text eol=lf

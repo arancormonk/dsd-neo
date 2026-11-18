@@ -84,6 +84,10 @@ untested.
 - `Unable to open AirSpy device`, `Unable to open AirspyHF device`, `no hackrf device matches`: the module loaded but
   found no free radio of that kind (unplugged, in use by another program, or without the WinUSB driver).
 - `no driver specified and no enumeration results`: a bare `-i soapy` found no radio at all.
+- `airspyhf_set_freq() failed`, `airspyhf_set_samplerate() failed`, `airspyhf_start() failed` or
+  `Unable to set the AirspyHF LNA and AGC`: an Airspy HF+ refused a tune, a rate, the stream start or its gain
+  setup, usually because of a USB problem; unplug it and plug it back in. The zip's module reports these (upstream
+  SoapyAirspyHF 0.2.1 went on as if the setting had worked).
 
 **Adding another module.** `SoapySDR.dll` finds its install root from its own location (one level above `bin\`), so
 with the zip extracted to `C:\dsd-neo` it loads modules from:

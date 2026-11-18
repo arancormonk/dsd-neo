@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The patches dsd-neo's desktop releases apply to libairspy, librtlsdr and
-# libairspyhf. libairspy's and librtlsdr's are the Android app's patch files
+# libairspyhf, and to the SoapyAirspyHF module built on libairspyhf.
+# libairspy's and librtlsdr's are the Android app's patch files
 # (android/third_party/patches), so both consumers build the same change:
 # libairspy's stop waits for every cancelled USB transfer, and librtlsdr's async
 # reader accounts for every transfer (with 0002, which 0003 builds on).
@@ -10,6 +11,8 @@
 # series. libairspyhf, which only the Windows release builds (for SoapyAirspyHF),
 # has no Android copy; its patch lives beside its overlay (vcpkg-ports/airspyhf)
 # and makes its stop wait for every cancelled transfer as libairspy's does.
+# SoapyAirspyHF's patch, beside its overlay (vcpkg-ports/soapy-airspyhf), makes
+# the module report the device's tuning, rate, gain and start failures.
 #
 # The Windows vcpkg overlays list the same series and its digest in their
 # portfiles; tools/check_vcpkg_overlay_pins.sh keeps them in step with this file.
@@ -25,7 +28,7 @@ Usage: tools/usb_dependency_patches.sh series <library>
        tools/usb_dependency_patches.sh fetch <library> <dest-dir>
        tools/usb_dependency_patches.sh fetch-all <dest-dir>
 
-<library> is libairspy, librtlsdr or libairspyhf.
+<library> is libairspy, librtlsdr, libairspyhf or soapyairspyhf.
 
 series     prints the patch file names, in order.
 digest     prints the SHA-256 of the series' patch files concatenated in order.
@@ -33,9 +36,9 @@ apply      applies the series to a pinned upstream checkout (the top of a Git
            work tree, as tools/fetch-pinned-git.sh leaves it); any context
            mismatch fails.
 fetch      checks out the pinned upstream source and applies the series.
-fetch-all  fetches all three into <dest-dir>/libairspy, <dest-dir>/librtlsdr
-           and <dest-dir>/libairspyhf, the layout DSD_TEST_DESKTOP_USB_SOURCES
-           expects.
+fetch-all  fetches all four into <dest-dir>/libairspy, <dest-dir>/librtlsdr,
+           <dest-dir>/libairspyhf and <dest-dir>/soapyairspyhf, the layout
+           DSD_TEST_DESKTOP_USB_SOURCES expects.
 USAGE
 }
 
@@ -51,8 +54,11 @@ series() {
     libairspyhf)
       echo 0001-libairspyhf-wait-for-cancelled-transfers.patch
       ;;
+    soapyairspyhf)
+      echo 0001-soapyairspyhf-report-device-errors.patch
+      ;;
     *)
-      echo "unknown library: $1 (expected libairspy, librtlsdr or libairspyhf)" >&2
+      echo "unknown library: $1 (expected libairspy, librtlsdr, libairspyhf or soapyairspyhf)" >&2
       return 2
       ;;
   esac
@@ -62,6 +68,7 @@ series() {
 patch_dir() {
   case "$1" in
     libairspyhf) echo "$repo_root/vcpkg-ports/airspyhf" ;;
+    soapyairspyhf) echo "$repo_root/vcpkg-ports/soapy-airspyhf" ;;
     *) echo "$repo_root/android/third_party/patches" ;;
   esac
 }
@@ -115,6 +122,9 @@ fetch() {
     libairspyhf)
       "$repo_root/tools/fetch-pinned-git.sh" https://github.com/airspy/airspyhf "$AIRSPYHF_SHA" "$dest"
       ;;
+    soapyairspyhf)
+      "$repo_root/tools/fetch-pinned-git.sh" https://github.com/pothosware/SoapyAirspyHF "$SOAPY_AIRSPYHF_SHA" "$dest"
+      ;;
     *)
       series "$lib" > /dev/null
       ;;
@@ -153,6 +163,7 @@ case "$command" in
     fetch libairspy "$2/libairspy"
     fetch librtlsdr "$2/librtlsdr"
     fetch libairspyhf "$2/libairspyhf"
+    fetch soapyairspyhf "$2/soapyairspyhf"
     ;;
   -h | --help)
     usage

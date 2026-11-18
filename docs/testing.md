@@ -4431,7 +4431,10 @@ sources with the patches the AppImage and the DMG ship: they run
 `-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally. That
 tree also holds the patched libairspyhf the Windows ZIP builds for SoapyAirspyHF;
 `DESKTOP_LIBAIRSPYHF_TRANSFERS` drives it against the same kind of stub libusb,
-and runs only there, since the library has no vendored copy.
+and runs only there, since the library has no vendored copy. The tree holds the
+patched SoapyAirspyHF module as well, which `DESKTOP_SOAPYAIRSPYHF_ERRORS` builds
+against SoapySDR and stub libairspyhf calls that fail on request; it registers
+only when SoapySDR is found.
 
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,

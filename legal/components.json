@@ -659,7 +659,7 @@
       "notices": [
         "vcpkg-ports/soapy-airspyhf/copyright"
       ],
-      "assessment": "Pinned 0.2.1 SoapySDR module (airspyhfSupport.dll) in the Windows ZIP, built with its gain controls; its upstream LICENSE.txt ships as licenses/SoapyAirspyHF-MIT.txt.",
+      "assessment": "Pinned 0.2.1 SoapySDR module (airspyhfSupport.dll) in the Windows ZIP, built with its gain controls and project patch 0001 (vcpkg-ports/soapy-airspyhf/), which reports the device's tuning, rate, gain and start failures; its upstream LICENSE.txt ships as licenses/SoapyAirspyHF-MIT.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",

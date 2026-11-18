@@ -222,7 +222,11 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   0.3.6. Its LICENSE names no holder, so the notice `vcpkg-ports/soapy-hackrf/copyright` adds the source headers'
   holders; shipped as `licenses/SoapyHackRF-MIT.txt`.
 - **SoapyAirspyHF** (Charles J. Cliffe, Corey Stotts, https://github.com/pothosware/SoapyAirspyHF) - MIT; release
-  0.2.1. Notice `vcpkg-ports/soapy-airspyhf/copyright`, shipped as `licenses/SoapyAirspyHF-MIT.txt`.
+  0.2.1. It carries one project patch, kept beside the overlay:
+  `vcpkg-ports/soapy-airspyhf/0001-soapyairspyhf-report-device-errors.patch` reports a tune, sample rate, gain or
+  stream start the radio refuses, and reports a setting only once the radio has taken it
+  (`tools/usb_dependency_patches.sh`). Notice `vcpkg-ports/soapy-airspyhf/copyright`, shipped as
+  `licenses/SoapyAirspyHF-MIT.txt`.
 - **libhackrf** (Great Scott Gadgets, Jared Boone, Benjamin Vernoux, https://github.com/greatscottgadgets/hackrf) -
   BSD-3-Clause for the library sources; release v2026.01.3, library only (`host/libhackrf/src`). The repository's
   GPL-2.0 firmware and tools are not built. HackRF is a trademark of Great Scott Gadgets. Notice, with every

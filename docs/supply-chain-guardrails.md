@@ -107,8 +107,9 @@ libraries' source lists and the notices in each overlay's `copyright`, which the
 ### Patched USB libraries
 
 The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
-`android/third_party/patches/`, the files the Android app's vendored copies carry, and the `airspyhf` overlay applies
-its own from `vcpkg-ports/airspyhf/` (libairspyhf has no Android copy). `tools/usb_dependency_patches.sh`
+`android/third_party/patches/`, the files the Android app's vendored copies carry, and the `airspyhf` and
+`soapy-airspyhf` overlays apply their own from `vcpkg-ports/airspyhf/` and `vcpkg-ports/soapy-airspyhf/` (neither
+has an Android copy). `tools/usb_dependency_patches.sh`
 names each library's series (`series`), hashes it (`digest`) and applies it to a pinned checkout (`apply`, `fetch`).
 vcpkg keys its binary cache on a port's own files only, so each portfile records the series and its SHA-256: a patch
 change then means a new cache key. The portfile's own digest check fails a build only when the cache misses, since a

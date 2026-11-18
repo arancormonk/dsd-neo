@@ -19869,11 +19869,11 @@ endif()
 # tools/usb_dependency_patches.sh fetch-all writes, when
 # DSD_TEST_DESKTOP_USB_SOURCES names it; that tree also holds the libairspyhf the
 # Windows release builds for SoapyAirspyHF, whose stop, close and restart wait
-# for cancelled transfers the same way.
+# for cancelled transfers the same way, and the SoapyAirspyHF module itself.
 set(DSD_TEST_DESKTOP_USB_SOURCES
     ""
     CACHE PATH
-    "Patched desktop libairspy, librtlsdr and libairspyhf sources (tools/usb_dependency_patches.sh fetch-all)"
+    "Patched desktop libairspy, librtlsdr, libairspyhf and SoapyAirspyHF sources (tools/usb_dependency_patches.sh fetch-all)"
 )
 
 function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
@@ -19998,6 +19998,42 @@ function(dsd_neo_add_libairspyhf_test airspyhf_src threads)
     set_tests_properties(DESKTOP_LIBAIRSPYHF_TRANSFERS PROPERTIES TIMEOUT 120)
 endfunction()
 
+# SoapyAirspyHF, the module the Windows release builds on libairspyhf, from the
+# same tree. Its sources keep upstream style and build without the project
+# warnings, as the vcpkg port builds them, against SoapySDR; the test links them
+# against stub libairspyhf entry points.
+function(dsd_neo_add_soapyairspyhf_test module_src airspyhf_src)
+    set(_lib dsd-neo_test_desktop_soapyairspyhf)
+    # The module includes <libairspyhf/airspyhf.h>, where the vcpkg port installs it.
+    set(_include "${CMAKE_CURRENT_BINARY_DIR}/desktop-soapyairspyhf-include")
+    configure_file(
+        "${airspyhf_src}/airspyhf.h"
+        "${_include}/libairspyhf/airspyhf.h"
+        COPYONLY
+    )
+    add_library(
+        ${_lib}
+        STATIC
+        ${module_src}/Settings.cpp
+        ${module_src}/Streaming.cpp
+    )
+    set_property(TARGET ${_lib} PROPERTY LINK_LIBRARIES "")
+    target_include_directories(${_lib} SYSTEM PUBLIC ${module_src} ${_include})
+    # As the port builds it: with its gain controls. STATIC_AIRSPYHFPLUS keeps
+    # airspyhf.h from declaring the API __declspec(dllimport) on Windows.
+    target_compile_definitions(${_lib} PUBLIC HASGAINS=1 STATIC_AIRSPYHFPLUS)
+    target_link_libraries(
+        ${_lib}
+        PUBLIC dsd-neo_feature_soapy
+        PRIVATE dsd-neo_sanitizers
+    )
+
+    set(_target dsd-neo_test_desktop_soapyairspyhf_errors)
+    add_executable(${_target} io/test_desktop_soapyairspyhf_errors.cpp)
+    target_link_libraries(${_target} PRIVATE ${_lib} dsd-neo_platform)
+    add_test(NAME DESKTOP_SOAPYAIRSPYHF_ERRORS COMMAND ${_target})
+endfunction()
+
 set(_dsd_neo_usb_test_threads "")
 if(NOT ANDROID AND NOT CYGWIN)
     if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -20030,16 +20066,20 @@ if(_dsd_neo_usb_test_threads)
         set(_desktop_airspyhf
             "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspyhf/libairspyhf/src"
         )
+        set(_desktop_soapyairspyhf
+            "${DSD_TEST_DESKTOP_USB_SOURCES}/soapyairspyhf"
+        )
         if(
             NOT EXISTS "${_desktop_airspy}"
             OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
             OR NOT EXISTS "${_desktop_airspyhf}/airspyhf.c"
+            OR NOT EXISTS "${_desktop_soapyairspyhf}/Settings.cpp"
         )
             message(
                 FATAL_ERROR
                 "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
-                "libairspy/, librtlsdr/ and libairspyhf/ trees; create them with "
-                "tools/usb_dependency_patches.sh fetch-all"
+                "libairspy/, librtlsdr/, libairspyhf/ and soapyairspyhf/ trees; create "
+                "them with tools/usb_dependency_patches.sh fetch-all"
             )
         endif()
         dsd_neo_add_usb_library_tests(
@@ -20052,6 +20092,12 @@ if(_dsd_neo_usb_test_threads)
             "${_desktop_airspyhf}"
             "${_dsd_neo_usb_test_threads}"
         )
+        if(DSD_HAS_SOAPYSDR)
+            dsd_neo_add_soapyairspyhf_test(
+                "${_desktop_soapyairspyhf}"
+                "${_desktop_airspyhf}"
+            )
+        endif()
     endif()
 elseif(DSD_TEST_DESKTOP_USB_SOURCES)
     message(
