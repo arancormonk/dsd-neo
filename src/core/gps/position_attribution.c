@@ -18,18 +18,9 @@
 #include "dsd-neo/core/state_fwd.h"
 
 /* The two P25 phases are separate classes; every other protocol is its family. */
-#define ATTRIBUTION_CLASS_P25P1 0x1001
-#define ATTRIBUTION_CLASS_P25P2 0x1002
-
 int
 dsd_position_attribution_class(int protocol) {
-    if (DSD_SYNC_IS_P25P1(protocol)) {
-        return ATTRIBUTION_CLASS_P25P1;
-    }
-    if (DSD_SYNC_IS_P25P2(protocol)) {
-        return ATTRIBUTION_CLASS_P25P2;
-    }
-    return dsd_sync_protocol_family(protocol);
+    return dsd_sync_protocol_class(protocol);
 }
 
 int
@@ -88,7 +79,7 @@ dsd_position_attribution_learn(const dsd_state* state, const dsd_position_attrib
     out->source = source;
     out->target = names_target ? target : 0U;
     out->group = (uint8_t)(names_target && group != 0);
-    out->rx_epoch = state->rx_id.epoch;
+    out->rx_gen = dsd_state_reception_generation(state);
     out->protocol = call->protocol;
     return 1;
 }
@@ -103,17 +94,17 @@ attribution_same_call(const dsd_position_attribution* a, const dsd_position_attr
 }
 
 /* The evidence was learned on the reception the receiver is on now, by the reception rule every position writer
- * applies (dsd_position_same_reception()): the evidence keeps no scope, so only the same received identity epoch, one
- * uninterrupted generation, matches. */
+ * applies (dsd_position_same_reception()): the evidence keeps no scope, so only the same reception generation, one
+ * uninterrupted reception with no retune, epoch move or change of P25 phase in between, matches. */
 static int
 attribution_same_reception(const dsd_state* state, const dsd_position_attribution* a) {
     dsd_position_reception learned;
     dsd_position_reception now;
     DSD_MEMSET(&learned, 0, sizeof learned);
     DSD_MEMSET(&now, 0, sizeof now);
-    learned.rx_epoch = a->rx_epoch;
+    learned.rx_gen = a->rx_gen;
     learned.epoch_known = 1U;
-    now.rx_epoch = state->rx_id.epoch;
+    now.rx_gen = dsd_state_reception_generation(state);
     now.epoch_known = 1U;
     return dsd_position_same_reception(&learned, &now);
 }
@@ -149,7 +140,7 @@ dsd_position_attribution_grant(const dsd_state* state, const dsd_position_attrib
         granted->call_epoch = call->epoch;
         granted->transmission = a->transmission;
         granted->source = a->source;
-        granted->rx_epoch = a->rx_epoch;
+        granted->rx_gen = a->rx_gen;
         granted->protocol = call->protocol;
         if (a->target != 0U && call->target == (uint64_t)a->target) {
             granted->target = a->target;

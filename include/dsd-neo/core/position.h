@@ -219,9 +219,11 @@ typedef enum {
 typedef struct dsd_position_origin {
     dsd_position_scope scope; /**< the reception scope (D7) */
     int64_t freq_hz;          /**< the tuned frequency (dsd_opts_tuned_freq_hz()); 0 = unknown */
-    /** The reception generation: the received identity's epoch (dsd_received_identity::epoch) in the low 32 bits, the
-     * trunk tuning generation (dsd_trunk_tuning_generation(), advanced by every completed retune) in the high 32. */
+    /** The reception generation (dsd_state_reception_generation()). */
     uint64_t gen;
+    /** The trunk tuning generation (dsd_trunk_tuning_generation(), advanced by every completed retune), which a
+     * retune moves before the decoder thread applies it to the reception generation. */
+    uint64_t tune_gen;
     uint8_t valid; /**< 1 once captured; a zeroed origin never matches */
 } dsd_position_origin;
 
@@ -231,10 +233,13 @@ typedef struct dsd_position_origin {
  */
 typedef struct dsd_position_reception {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    uint64_t rx_gen;          /**< the reception generation it was read under (dsd_state_reception_generation()) */
     dsd_position_scope scope; /**< the reception scope (D7); DSD_POS_SCOPE_NONE when unknown */
-    uint32_t rx_epoch;        /**< the received identity's epoch (dsd_received_identity::epoch) it was read under */
-    uint8_t epoch_known;      /**< 1 when rx_epoch was read; 0: the generation is unknown */
-    uint8_t pad[7];           /**< always 0 */
+    /** The protocol class it was heard in (dsd_sync_protocol_class(): P25 Phase 1 and Phase 2 apart); 0 when
+     * unknown, which no class rule refuses. */
+    int32_t protocol_class;
+    uint8_t epoch_known; /**< 1 when rx_gen was read; 0: the generation is unknown */
+    uint8_t pad[7];      /**< always 0 */
 } dsd_position_reception;
 
 /** Where a reader of the feed stands (dsd_position_feed_copy_since()). */
@@ -269,16 +274,18 @@ uint64_t dsd_position_last_rev(void);
 void dsd_position_origin_capture(const dsd_opts* opts, const dsd_state* state, dsd_position_origin* out);
 
 /** 1 when @p origin was captured (valid) under the reception generation @p state is in now; 0 otherwise (a retune,
- * a trunk-scan target switch or a received identity epoch change since, or NULL). */
+ * a trunk-scan target switch, a received identity epoch change or a change of P25 phase since, or NULL). */
 int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origin* origin);
 
 /**
  * @brief The reception rule (issue #800, fail closed): 1 when @p a and @p b were heard on one reception, so a position
  * of one may land on (or merge into) the other.
  *
+ * Two known protocol classes that differ (P25 Phase 1 and Phase 2) are two receptions, whatever else agrees; else:
  * - Both scopes known (not DSD_POS_SCOPE_NONE) and equal, with the same identity discriminator: one reception, whatever
  *   the generations; or
- * - the same uninterrupted reception generation (both epochs known and equal) and nothing that says otherwise: a scope
+ * - the same uninterrupted reception generation (both known and equal: dsd_state_reception_generation(), retunes
+ *   and P25 phase changes included) and nothing that says otherwise: a scope
  *   that is unknown on either side, or two known scopes of which one only refines the other (a scope learned later in
  *   the same generation: a NAC, then the WACN and SYSID; an EDACS site, then its system). Two known scopes of different
  *   families, two tuned frequencies (a feed-only tuned-frequency scope or a NAC's discriminator) that differ, or two
@@ -289,7 +296,7 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
 int dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b);
 
 /** The reception of an admitted report @p fix into @p out: its reception scope, the tuned frequency as the
- * discriminator of a P25 NAC scope, and the received identity epoch of its origin (the low 32 bits of origin_gen), known
+ * discriminator of a P25 NAC scope, its protocol class, and the reception generation of its origin (origin_gen), known
  * once admission stamped it (rev set). NULL @p fix gives an unknown reception; NULL @p out does nothing. */
 void dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* out);
 

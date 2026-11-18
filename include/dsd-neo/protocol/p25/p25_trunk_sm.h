@@ -112,6 +112,7 @@ int p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sy
  * its fields are checked, under which reception. */
 typedef struct {
     uint64_t epoch;    // Canonical call epoch the identity was published under; 0 = none
+    uint64_t rx_gen;   // dsd_state_reception_generation() at the last publication: attribution binds to it
     uint32_t source;   // Source RID, 0 = none
     uint32_t target;   // Talkgroup (group) or destination RID (private)
     uint32_t rx_epoch; // dsd_state::rx_id epoch the checked flags were earned under (a flag of another one is dropped)
@@ -119,7 +120,7 @@ typedef struct {
     uint8_t kind;      // dsd_call_kind of the published call
     uint8_t is_group;  // 1 when target is a talkgroup
     uint8_t checked;   // P25_SM_IDENTITY_CHECKED_* bits
-    uint8_t reserved;
+    uint8_t reserved[5];
 } p25_sm_published_identity;
 
 /* ============================================================================

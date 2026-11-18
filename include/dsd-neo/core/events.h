@@ -348,11 +348,12 @@ int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const 
  *   runs one space; a callsign using all DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes, its last not a space, matches by
  *   prefix) when it names one; an anonymous report (hashed, unverified, or neither ID nor callsign) only on a call that
  *   names no source (spec 2.14);
- * - the report was heard where the call was. Same reception: the received identity epoch the report came from (the
- *   low 32 bits of dsd_position_fix::origin_gen) is the one the call began on (dsd_call_snapshot::rx_id_epoch); the
- *   scopes are then not compared, since the record may have learned more between the two reads. Another reception
- *   (the record was reset since): the report's reception scope (dsd_position_fix::reception_scope, with its P25 NAC
- *   discriminator) equals the row's known one (Event_History::rx_scope); an unknown row scope matches nothing. The
+ * - the report was heard where the call was, by the reception rule (dsd_position_same_reception()) on the report's
+ *   reception (its scope with its P25 NAC discriminator, its protocol class and the reception generation of its
+ *   origin, dsd_position_fix::origin_gen) and the row's (Event_History::rx_scope with the row's sync type): of one
+ *   protocol class, and either both scopes known and equal or one reception generation with nothing that says
+ *   otherwise (dsd_state_reception_generation(): a retune or a change of P25 phase is another); an unknown row scope
+ *   matches only within the generation it was read under. The
  *   report's sender scope is never compared (it is only the track key): a TETRA radio of a foreign network heard here
  *   enriches its own call;
  * - the report is newer (greater rev) than the position the row holds, if any.

@@ -136,6 +136,7 @@ dsd_rxid_reset(dsd_state* state) {
         rxid_clear(&state->rx_id);
         state->rx_id_trunk_tune_pending = 0U; /* a retune of the carrier left, whose code is gone with the rest */
         state->rx_sync_protocol = 0U;         /* nothing heard on the carrier reached yet */
+        state->rx_p25_phase = 0U;             /* rx_phase_seq never goes back: the epoch moved instead */
     }
 }
 
@@ -173,6 +174,14 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
         rxid_clear(id);
     }
     state->rx_sync_protocol = protocol;
+    /* Both phases send one system's identity, so the record stays; but a transmission of the other phase is another
+       reception (issue #800, fail closed): the phase sequence moves the reception generation, which every multi-part
+       report's origin, every sender evidence and every history row compares. */
+    const uint8_t phase = DSD_SYNC_IS_P25P1(synctype) ? 1U : (DSD_SYNC_IS_P25P2(synctype) ? 2U : 0U);
+    if (phase != 0U && state->rx_p25_phase != 0U && state->rx_p25_phase != phase) {
+        state->rx_phase_seq++;
+    }
+    state->rx_p25_phase = phase;
 }
 
 void
@@ -186,6 +195,7 @@ void
 dsd_rxid_trunk_tune(dsd_state* state) {
     if (state != NULL) {
         rxid_drop(&state->rx_id, DSD_RXID_ACCESS);
+        state->rx_tune_seq++; /* another carrier: another reception generation, the system kept (issue #800) */
     }
 }
 

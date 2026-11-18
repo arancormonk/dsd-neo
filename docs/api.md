@@ -468,7 +468,8 @@ the checked reports that History and `-L` take (only reports whose own check,
 a CRC, FEC or checksum, passed), D-STAR and M17 included, which `-L` leaves out.
 A report that repeats its radio's last kept one unchanged within 30 s is not
 kept again. Unchanged means where it was heard too: the same fix on the other
-slot, on another frequency, on another system or under a new label is kept.
+slot, on another frequency, on another system, on the other P25 phase or under
+a new label is kept.
 
 * `pos_stream` names the decoder run (a decimal string, like every 64-bit
   identifier) and `pos_seq` numbers the run's kept reports from `1`. A new run is

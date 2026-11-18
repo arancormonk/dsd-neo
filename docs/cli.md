@@ -606,7 +606,10 @@ does.
   P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
   never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
   messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked
-  MAC_PTT or MAC_ACTIVE names all three again.
+  MAC_PTT or MAC_ACTIVE names all three again. A change of P25 phase on the carrier (Phase 2 frames heard during a
+  Phase 1 call whose terminator was missed, or the other way round) counts as another reception: a call left open
+  across it names no later report's sender until a checked voice link control or voice user of the call names it
+  again.
 
   Speed and heading: LRRP speed is km/h with three decimals (earlier versions wrote 0.01 mph); a LIP speed above 1043
   km/h is written as 1043 and an ambiguous LIP direction as 0; UDT NMEA above 126 knots is written as 233; L3Harris rows

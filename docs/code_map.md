@@ -2496,7 +2496,9 @@ suite runs under this compiler.
   checks they ran: `pos_verified` (the position's own CRC/FEC check) and `source_verified` (source, target and
   group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
-  (`dsd_position_origin_capture()`/`_matches()`: the received identity's epoch with the trunk tuning generation), or
+  (`dsd_position_origin_capture()`/`_matches()`: the reception generation, `dsd_state_reception_generation()`, which
+  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase, together with
+  the trunk tuning generation), or
   for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
   a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
   destination kept),
@@ -2508,8 +2510,9 @@ suite runs under this compiler.
   `dsd_tg_policy_lookup_learned_label()`), and
   stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
-  equal, where it was heard included: slot, tuned frequency, reception scope and label, so the same fix on the other
-  slot or another visited network is a new record; kept less than 30 s ago on the decode clock; anonymous sources never
+  equal, where it was heard included: protocol class, slot, tuned frequency, reception scope and label, so the same fix
+  on the other slot, another visited network or the other P25 phase is a new record (Phase 1 and Phase 2 TDMA slot 1
+  publish one slot value; a radio that changes phase keeps both records, while both polarities of one phase fold); kept less than 30 s ago on the decode clock; anonymous sources never
   fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
   producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
   takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0
@@ -2544,11 +2547,16 @@ suite runs under this compiler.
   the row was, and lets only a newer `rev` replace a position. Where it was heard is one reception rule
   (`dsd_position_same_reception()`, `<dsd-neo/core/position.h>`, fail closed), used by every row writer, the
   reacquisition merge and the attribution rule: two receptions (`dsd_position_reception`: scope, NAC discriminator,
-  received identity epoch) are one when both scopes are known and equal, or when they share the received identity
-  epoch and nothing says otherwise (an unknown scope, or one scope only refining the other: a NAC then the WACN and
-  SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one kind are two
-  receptions within one epoch, and an unknown side never matches across epochs. The row side is the row's own
-  `Event_History::rx_scope` (with the epoch it was read under, `rx_epoch`), never the closing call's: a terminator's
+  protocol class, reception generation) of two known protocol classes that differ (P25 Phase 1 and Phase 2,
+  `dsd_sync_protocol_class()`) are never one; else they are one when both scopes are known and equal, or when they
+  share the reception generation (`dsd_state_reception_generation()`: the received identity's epoch, plus the applied
+  trunking retunes, `dsd_state::rx_tune_seq`, and the P25 phase changes, `dsd_state::rx_phase_seq`, both of which keep
+  the system the record holds) and nothing says otherwise (an unknown scope, or one scope only refining the other: a
+  NAC then the WACN and SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one
+  kind are two receptions within one generation, and an unknown side never matches across generations, so a NAC heard
+  before a retune and a WACN and SYSID learned after it are two receptions, not a refinement. The row side is the row's
+  own `Event_History::rx_scope` (with the generation it was read under, `rx_gen`) and sync type, never the closing
+  call's: a terminator's
   GPS decoded after its segment merged into a row heard on another carrier is refused there. The sender scope in
   `pos.scope` is only the track key. A call row takes
   its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
@@ -2635,11 +2643,15 @@ suite runs under this compiler.
     the call is open (ACTIVE, or the call the report's own terminator just ended,
     `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
     protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
-    transmission (a healed fade keeps it); the received identity's epoch (`dsd_received_identity::epoch`, moved by
-    another access code, system, site or family; a trunk follow keeps it) is the one it was learned under (the
-    reception rule, `dsd_position_same_reception()`, on the epoch alone: the evidence keeps no scope); and the
+    transmission (a healed fade keeps it); the reception generation (`dsd_state_reception_generation()`, moved by
+    another access code, system, site or family, an applied trunking retune or a change of P25 phase: a Phase 1 call
+    left open across Phase 2 frames names no later report's sender) is the one it was learned under (the reception
+    rule, `dsd_position_same_reception()`, on the generation alone: the evidence keeps no scope); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
-    The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
+    The P25 trunk SM binds its published record to the generation of its last publication
+    (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another
+    generation is dropped when the record is published again) and keeps the reception its flags were earned under
+    (`rx_epoch`) there and in
     the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
     `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
     inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
@@ -2730,7 +2742,8 @@ suite runs under this compiler.
     first part keeps its own first fragment's) and pass it to admission (LRRP
     and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
     `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
-    retune, target switch or reception change came in between. Such a report publishes nothing of its own under the
+    retune, target switch, reception change or change of P25 phase came in between (the L3Harris Part B also refuses
+    to pair: `GPS Part A of another reception`). Such a report publishes nothing of its own under the
     reception the receiver is on now: no text, no staged GPS and no notice of its own (`nmea_sentence_checker()` and
     `sds_lip_report()` test the origin before they stage anything; the other producers stage only what admission
     admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
@@ -3863,7 +3876,8 @@ suite runs under this compiler.
   protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
   closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
   multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
-  protocol); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
+  reception generation, keeping the record); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
@@ -15856,7 +15870,7 @@ Qt Quick frontend (`src/ui/qt`):
       pass (`rest_of_row()`, `withdraw_parts()`), so a long call of many short fragments folds in time linear in its
       parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
       (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
-      `rx`, `rxEp`/`rxRing` (the epoch the reception was read under and its ring, hex; both or neither),
+      `rx`, `rxGen`/`rxRing` (the reception generation the reception was read under and its ring, hex; both or neither),
       `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each

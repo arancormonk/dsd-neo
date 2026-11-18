@@ -335,6 +335,10 @@ typedef struct {
     char service_label[DSD_SERVICE_LABEL_SIZE];
     /** dsd_received_identity::epoch of dsd_state::rx_id when this epoch began: the carrier the call was heard on. */
     uint32_t rx_id_epoch;
+    /** The reception generation when this epoch began (dsd_state_reception_generation()). */
+    uint64_t rx_gen;
+    /** The reception generation ended_rx_id was captured under; 0 while it is empty. */
+    uint64_t ended_rx_gen;
     /**
      * The received identity record (dsd_state::rx_id) as it stood when this epoch ended, captured at that transition
      * while the record was still the one of the carrier the call began on (rx_id_epoch); otherwise, and while the

@@ -198,7 +198,7 @@ struct RingFixture {
         DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         // Every row the core commits was read under the reception's received identity epoch (issue #800): one epoch
         // for the whole fixture, as a run with no system change has, unless a test moves it (with_epoch()).
-        item->rx_scope.rx_epoch = 1U;
+        item->rx_scope.rx_gen = 1U;
         item->rx_scope.epoch_known = 1U;
         ring->push_seq++;
         ring->commit_rev++;

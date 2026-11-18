@@ -1157,7 +1157,8 @@ p25_lcw_harris_gps_part_a(p25_lcw_ctx* ctx, uint8_t even) {
 
 /* Why the pending Part A @p a cannot pair with a Part B of @p even parity heard on @p call; NULL when it can. */
 static const char*
-p25_lcw_harris_gps_unpaired(const p25_p1_harris_gps_part_a* a, const p25_lcw_gps_call* call, uint8_t even) {
+p25_lcw_harris_gps_unpaired(const dsd_state* state, const p25_p1_harris_gps_part_a* a, const p25_lcw_gps_call* call,
+                            uint8_t even) {
     if (!a->valid) {
         return "Missing GPS Part A";
     }
@@ -1170,6 +1171,11 @@ p25_lcw_harris_gps_unpaired(const p25_p1_harris_gps_part_a* a, const p25_lcw_gps
     }
     if (a->epoch != call->view.epoch || a->source != p25_lcw_gps_call_source(call)) {
         return "GPS Part A of another call";
+    }
+    /* Heard on another reception (a retune, another system or a change of P25 phase since, issue #800): a call left
+       open across it is not shown to be the one the Part B rides on. */
+    if (!dsd_position_origin_matches(state, &a->origin)) {
+        return "GPS Part A of another reception";
     }
     const uint64_t now_ms = dsd_decode_now_mono_ms();
     if (now_ms < a->stored_mono_ms || now_ms - a->stored_mono_ms > P25_HARRIS_GPS_PAIR_WINDOW_MS) {
@@ -1186,7 +1192,7 @@ p25_lcw_harris_gps_part_b(p25_lcw_ctx* ctx, uint8_t even) {
     DSD_MEMSET(&ctx->state->p25_p1_harris_part_a, 0, sizeof(ctx->state->p25_p1_harris_part_a));
     p25_lcw_gps_call call;
     p25_lcw_gps_call_get(ctx, &call);
-    const char* unpaired = p25_lcw_harris_gps_unpaired(&a, &call, even);
+    const char* unpaired = p25_lcw_harris_gps_unpaired(ctx->state, &a, &call, even);
     if (unpaired != NULL) {
         DSD_FPRINTF(stderr, " %s", unpaired);
         return;

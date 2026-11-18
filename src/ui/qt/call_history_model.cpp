@@ -1848,8 +1848,8 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.cchSlot = row.cchSlot;
     part.rxScope = row.rxScope;
     part.rxRing = row.rxRing;
-    part.rxEpoch = row.rxEpoch;
-    part.rxEpochKnown = row.rxEpochKnown;
+    part.rxGen = row.rxGen;
+    part.rxGenKnown = row.rxGenKnown;
     part.name = row.name;
     part.service = row.service;
     part.session = row.session;
@@ -1897,8 +1897,8 @@ row_of_part(const FragmentPart& part) {
     row.cchSlot = part.cchSlot;
     row.rxScope = part.rxScope;
     row.rxRing = part.rxRing;
-    row.rxEpoch = part.rxEpoch;
-    row.rxEpochKnown = part.rxEpochKnown;
+    row.rxGen = part.rxGen;
+    row.rxGenKnown = part.rxGenKnown;
     row.name = part.name;
     row.service = part.service;
     row.session = part.session;

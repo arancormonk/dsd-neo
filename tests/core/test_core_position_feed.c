@@ -551,6 +551,101 @@ test_reception_change_is_not_a_repeat(void) {
     }
 }
 
+/* Issue #800, fail closed: P25 Phase 1 and Phase 2 are one track but two receptions. The same radio's unchanged Harris
+ * fix heard on Phase 1, then on Phase 2 TDMA slot 1 (which publishes slot 0 as Phase 1 does), on the same frequency
+ * and system within the repeat window, is a new record: a feed reader would otherwise keep only the Phase 1 reception.
+ * A Phase 2 report of the other polarity is still a repeat of the Phase 2 one. */
+static void
+test_phase_change_is_not_a_repeat(void) {
+    dsd_state* st = new_state();
+    dsd_opts* opts = new_opts();
+    assert(dsd_position_feed_start(st) == 0);
+    clock_at_ms(T0_MS);
+    set_p25_nac(st, 0x2A3U);
+    tune_rtl(opts, 450000000U);
+    dsd_position_fix f = base_fix();
+    f.kind = DSD_POS_P25_HARRIS;
+    f.protocol = DSD_SYNC_P25P1_POS;
+    f.flags = 0U;
+    f.target_id = 0U;
+    const dsd_position_fix harris = f;
+    assert(dsd_position_admit(opts, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT);
+    clock_at_ms(T0_MS + 1000U);
+    f = harris;
+    f.protocol = DSD_SYNC_P25P2_POS;
+    if (dsd_position_admit(opts, st, &f, 1, 1, NULL) != DSD_POSITION_ADMITTED_KEPT) {
+        DSD_FPRINTF(stderr, "FAIL: a change of P25 phase was folded as a repeat\n");
+        exit(1);
+    }
+    assert(f.slot == 0U);
+    clock_at_ms(T0_MS + 2000U);
+    f = harris;
+    f.protocol = DSD_SYNC_P25P2_NEG;
+    assert(dsd_position_admit(opts, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_NOT_KEPT);
+    free(opts);
+    free_state(st);
+}
+
+/* Issue #800, fail closed: the reception generation moves with an applied trunking retune and with a change of P25
+ * phase, never with another sync of the same phase, while the received identity keeps the system both share. A report
+ * whose first fragment was captured before either is refused, and two receptions read on either side are one only when
+ * their known scopes are equal: a NAC, then a WACN and SYSID learned across the retune, is not a refinement. */
+static void
+test_generation_moves_with_retune_and_phase(void) {
+    dsd_state* st = new_state();
+    dsd_opts* opts = new_opts();
+    clock_at_ms(T0_MS);
+    tune_rtl(opts, 450000000U);
+    dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS);
+    dsd_rxid_note_access(st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2A3U);
+    const uint32_t record_epoch = st->rx_id.epoch;
+    uint64_t gen = dsd_state_reception_generation(st);
+    dsd_rxid_note_sync(st, DSD_SYNC_P25P1_NEG);
+    assert(dsd_state_reception_generation(st) == gen);
+
+    for (int step = 0; step < 3; step++) {
+        dsd_position_origin origin;
+        dsd_position_origin_capture(opts, st, &origin);
+        dsd_position_reception before;
+        DSD_MEMSET(&before, 0, sizeof before);
+        before.scope = origin.scope;
+        before.identity_freq_hz = 450000000;
+        before.rx_gen = origin.gen;
+        before.epoch_known = 1U;
+        if (step == 0) {
+            dsd_rxid_note_sync(st, DSD_SYNC_P25P2_POS); /* Phase 1 to Phase 2 */
+        } else if (step == 1) {
+            dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS); /* and back */
+        } else {
+            dsd_rxid_trunk_tune(st); /* an applied retune, the NAC noted again on the carrier reached */
+            dsd_rxid_note_access(st, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x2A3U);
+        }
+        assert(st->rx_id.epoch == record_epoch && (st->rx_id.valid & DSD_RXID_ACCESS) != 0U);
+        const uint64_t now = dsd_state_reception_generation(st);
+        if (now == gen) {
+            DSD_FPRINTF(stderr, "FAIL: step %d left the reception generation\n", step);
+            exit(1);
+        }
+        gen = now;
+        assert(!dsd_position_origin_matches(st, &origin));
+        dsd_position_fix f = base_fix();
+        f.protocol = DSD_SYNC_P25P1_POS;
+        assert(dsd_position_admit(opts, st, &f, 1, 1, &origin) == DSD_POSITION_REFUSED);
+        dsd_position_reception after;
+        DSD_MEMSET(&after, 0, sizeof after);
+        after.scope.kind = DSD_POS_SCOPE_P25;
+        after.scope.a = 0xBEE00U;
+        after.scope.b = 0x1A3U;
+        after.rx_gen = now;
+        after.epoch_known = 1U;
+        assert(!dsd_position_same_reception(&before, &after));
+        after.rx_gen = before.rx_gen;
+        assert(dsd_position_same_reception(&before, &after)); /* the same generation: a refinement */
+    }
+    free(opts);
+    free_state(st);
+}
+
 static void
 test_anonymous_never_fold(void) {
     dsd_state* st = new_state();
@@ -784,7 +879,8 @@ test_origin(void) {
     /* An origin never captured never matches. */
     dsd_position_origin zero;
     DSD_MEMSET(&zero, 0, sizeof zero);
-    zero.gen = ((dsd_trunk_tuning_generation() & 0xFFFFFFFFU) << 32) | st->rx_id.epoch;
+    zero.gen = dsd_state_reception_generation(st);
+    zero.tune_gen = dsd_trunk_tuning_generation();
     assert(!dsd_position_origin_matches(st, &zero));
     f = base_fix();
     assert(dsd_position_admit(opts, st, &f, 1, 1, &zero) == DSD_POSITION_REFUSED);
@@ -834,6 +930,8 @@ main(void) {
     test_anonymous_never_fold();
     test_every_observable_field_breaks_a_repeat();
     test_reception_change_is_not_a_repeat();
+    test_phase_change_is_not_a_repeat();
+    test_generation_moves_with_retune_and_phase();
     test_track_table_forgets_the_oldest();
     test_ring_wrap_and_read();
     test_read_edges();

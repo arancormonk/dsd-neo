@@ -244,7 +244,7 @@ struct Decoder {
         item->rx_scope.scope.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
         item->rx_scope.scope.a = 450000000U;
         item->rx_scope.resolved = 1U;
-        item->rx_scope.rx_epoch = 1U;
+        item->rx_scope.rx_gen = 1U;
         item->rx_scope.epoch_known = 1U;
         item->freq_hz = 450000000;
     }

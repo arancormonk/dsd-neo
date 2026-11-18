@@ -256,6 +256,22 @@ dsd_sync_protocol_family(int s) {
     return 0x100 + s;
 }
 
+/**
+ * @brief The protocol class of sync type @p s (issue #800): the protocol family (dsd_sync_protocol_family()), except
+ * that P25 Phase 1 (0x1001) and Phase 2 (0x1002) are two classes. Two receptions of different classes are never one
+ * (dsd_position_same_reception()), and sender evidence never crosses classes (dsd_position_attribution_class()).
+ */
+static inline int
+dsd_sync_protocol_class(int s) {
+    if (DSD_SYNC_IS_P25P1(s)) {
+        return 0x1001;
+    }
+    if (DSD_SYNC_IS_P25P2(s)) {
+        return 0x1002;
+    }
+    return dsd_sync_protocol_family(s);
+}
+
 /* ============================================================================
  * Safe String Mapping Function
  *

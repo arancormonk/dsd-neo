@@ -1677,8 +1677,10 @@ p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state*
     const uint32_t target = (uint32_t)call.ota_target_id;
     const uint8_t kind = (uint8_t)call.kind;
     uint8_t kept = 0U;
-    /* A flag earned under another reception (another access code or system named since) is not this one's. */
-    if (rec->epoch == call.epoch) {
+    /* A flag earned under another reception (another access code or system named since, or a retune or a change of P25
+       phase: another reception generation, issue #800, fail closed) is not this one's. */
+    const uint64_t gen = dsd_state_reception_generation(state);
+    if (rec->epoch == call.epoch && rec->rx_gen == gen) {
         const p25_sm_identity_claim held = {.source = rec->source, .target = rec->target, .kind = rec->kind};
         kept = p25_sm_claim_withdraws(
             claim, (uint8_t)(p25_published_verdicts_now(rec, state) & p25_sm_claim_names(&held, source, target, kind)));
@@ -1687,6 +1689,7 @@ p25_sm_merge_published_identity(p25_sm_published_identity* rec, const dsd_state*
     rec->source = source;
     rec->target = target;
     rec->rx_epoch = state->rx_id.epoch;
+    rec->rx_gen = gen;
     rec->protocol = call.protocol;
     rec->kind = kind;
     rec->is_group = (uint8_t)(call.kind == DSD_CALL_KIND_GROUP_VOICE);
@@ -7725,7 +7728,7 @@ p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protoc
     evidence.source = published->source;
     evidence.target = published->target;
     evidence.group = published->is_group;
-    evidence.rx_epoch = published->rx_epoch;
+    evidence.rx_gen = published->rx_gen;
     evidence.protocol = published->protocol;
     dsd_position_attribution_call view;
     dsd_position_attribution granted;
