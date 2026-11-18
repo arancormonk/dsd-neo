@@ -5,10 +5,11 @@
 #   1. the bundled librtlsdr is the patched build, and every .exe and .dll under bin\
 #      and lib\SoapySDR\ passes check_release_hardening.ps1;
 #   2. the SoapySDR load path: one copy of each library, in bin\, each module and
-#      library linked to what it should be, every DLL a staged binary imports
-#      present in bin\ unless it is an API set or one of the Windows DLLs
-#      release_tree_checks.psm1 lists, no debug Visual C++ runtime, and
-#      SoapyAirspyHF built with its gain controls;
+#      library linked to what it should be (dsd-neo.exe's native Airspy and RTL-SDR
+#      inputs and librtlsdr to the same airspy.dll and libusb-1.0.dll as the modules'
+#      libraries), every DLL a staged binary imports present in bin\ unless it is an
+#      API set or one of the Windows DLLs release_tree_checks.psm1 lists, no debug
+#      Visual C++ runtime, and SoapyAirspyHF built with its gain controls;
 #   3. dsd-neo.exe -h;
 #   4. SoapySDRUtil --check=<driver> finds each of the three drivers;
 #   5. SoapySDRUtil --info finds exactly the three modules under this root;
@@ -210,7 +211,8 @@ function Test-LoadPath {
     $bin = Join-Path $TreeRoot 'bin'
     $moduleDir = Join-Path $TreeRoot 'lib/SoapySDR/modules0.8'
 
-    foreach ($name in @('airspy.dll', 'airspyhf.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'SoapySDR.dll')) {
+    foreach ($name in @('airspy.dll', 'airspyhf.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'rtlsdr.dll',
+            'SoapySDR.dll')) {
         $copies = @(Get-ChildItem -LiteralPath $TreeRoot -File -Recurse -Filter $name)
         if ($copies.Count -ne 1 -or $copies[0].DirectoryName -ine $bin) {
             $paths = @($copies | ForEach-Object { $_.FullName })
@@ -223,7 +225,15 @@ function Test-LoadPath {
         throw "Expected exactly $($expected -join ', ') in $moduleDir; found $($found -join ', ')"
     }
 
+    # By name, since Windows loads one file per name and the names are unique in the tree:
+    # a second copy under another name (libairspy.dll beside airspy.dll) passes every
+    # other check, but the native input would then drive the device through one copy and
+    # the module through the other. The patched librtlsdr check above holds only for the
+    # rtlsdr.dll dsd-neo.exe imports, and only with the libusb-1.0.dll the rest share.
     $links = [ordered]@{}
+    $links[(Join-Path $bin 'dsd-neo.exe')] = @('airspy.dll', 'rtlsdr.dll', 'SoapySDR.dll')
+    $links[(Join-Path $bin 'SoapySDRUtil.exe')] = @('SoapySDR.dll')
+    $links[(Join-Path $bin 'rtlsdr.dll')] = @('libusb-1.0.dll')
     foreach ($driver in $Drivers) {
         $links[(Join-Path $moduleDir $Modules[$driver])] = @($Libraries[$driver], 'SoapySDR.dll')
         $links[(Join-Path $bin $Libraries[$driver])] = @('libusb-1.0.dll', 'pthreadVC3.dll')

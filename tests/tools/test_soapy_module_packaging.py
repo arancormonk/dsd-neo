@@ -952,6 +952,28 @@ class SoapyReleaseScripts(unittest.TestCase):
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)
 
+    def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):
+        # dsd-neo.exe's native Airspy input and librtlsdr must load the airspy.dll and libusb-1.0.dll the modules and
+        # their libraries load, not copies of them under another name.
+        tools, root, windows = self.release_tree()
+        bin_dir = root / "bin"
+        for importer, shared, copy in (("dsd-neo.exe", "airspy.dll", "libairspy.dll"),
+                                       ("rtlsdr.dll", "libusb-1.0.dll", "usb-1.0.dll"),
+                                       # Unpatched, and named so that the patch check looks only at rtlsdr.dll.
+                                       ("dsd-neo.exe", "rtlsdr.dll", "rtl-sdr.dll"),
+                                       ("dsd-neo.exe", "SoapySDR.dll", "libSoapySDR.dll"),
+                                       ("SoapySDRUtil.exe", "SoapySDR.dll", "libSoapySDR.dll")):
+            with self.subTest(importer=importer, copy=copy):
+                saved = list(self.report["dependents"][importer])
+                (bin_dir / copy).write_bytes(b"MZ " + copy.encode())
+                self.report["dependents"][copy] = list(self.report["dependents"].get(shared, ["KERNEL32.dll"]))
+                self.report["dependents"][importer] = [copy if name == shared else name for name in saved]
+                try:
+                    self.assert_verify_refuses(tools, root, windows, f"{bin_dir / importer} does not import {shared}")
+                finally:
+                    self.report["dependents"][importer] = saved
+                    del self.report["dependents"][copy]
+                    (bin_dir / copy).unlink()
 
 
 if __name__ == "__main__":
