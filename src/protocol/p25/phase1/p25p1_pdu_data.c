@@ -664,14 +664,17 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     p25_decode_sap(ea_sap, ea_sap_string, sizeof ea_sap_string);
     UNUSED(ea_sap_string);
 
+    /* The packet's sender, sanitised once before any text or record names it (p25_source_id_is_subscriber()): a
+       special address names no radio. The header line above prints it as sent. */
+    const uint32_t sender = p25_source_id_is_subscriber(ea_llid) ? ea_llid : 0U;
     char ea_str[200];
     DSD_MEMSET(ea_str, 0, sizeof(ea_str));
-    DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
+    DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %u; SAP:%02X;%s", sender, ea_sap, ea_sap_string);
     dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ea_str);
 
     *sap = ea_sap;
     *ptr += 12;
-    return ea_llid;
+    return sender;
 }
 
 typedef struct {
@@ -831,7 +834,9 @@ p25_read_pdu_data_fields(const uint8_t* input) {
     pdu.blks = input[6] & 0x7F;
     pdu.pad = input[7] & 0x1F;
     pdu.offset = input[9] & 0x3F;
-    pdu.source_id = pdu.io == 0 ? pdu.llid : 0U;
+    /* An inbound packet's sender, sanitised once before any text or record names it: a special address names no radio
+       (p25_source_id_is_subscriber()). The header dump and the JSON keep the LLID as sent. */
+    pdu.source_id = (pdu.io == 0 && p25_source_id_is_subscriber(pdu.llid)) ? pdu.llid : 0U;
     pdu.target_id = pdu.io == 1 ? pdu.llid : 0U;
     return pdu;
 }
@@ -955,8 +960,8 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
     const int nmea_shaped = nmea_payload_framed(payload_bits, span);
     if (nmea_shaped) {
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
-        /* A fixed-network LLID names no radio: its report is kept, anonymous (p25_source_id_is_subscriber()). */
-        state->dmr_lrrp_source[slot] = p25_source_id_is_subscriber(pdu->source_id) ? pdu->source_id : 0U;
+        /* The sanitised sender (p25_read_pdu_data_fields()): a special address left none, and the report is anonymous. */
+        state->dmr_lrrp_source[slot] = pdu->source_id;
         state->dmr_lrrp_target[slot] = pdu->target_id;
         // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
         // --dmr-tg-key-csv lookup treat this address as one.

@@ -1050,10 +1050,7 @@ decode_ip_pdu_event_category(uint8_t protocol, uint16_t src_port, uint16_t dst_p
 static int
 decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t prot, uint32_t src24, uint32_t dst24,
                           uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
-    // A P25 fixed network endpoint's address names no radio (dsd_position_source_names_radio()): the notice of a
-    // packet it sent names no sender, as the report it carried names none.
-    const uint32_t sender = dsd_position_source_names_radio(state->lastsynctype, src24) ? src24 : 0U;
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, sender, dst24);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
     const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
     // An admitted LIP report was staged with its text by lip_pdu_decoder() and this notice consumes it. An ICMP
     // wrapper never claims a fix produced by its enclosed packet: that packet's own notice consumed it.
@@ -1112,7 +1109,11 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     dmr_ip_pdu_header hdr = {version, ihl, tos, tlen, iden, ipf, offset, ttl, prot, hsum, len};
     decode_ip_pdu_print_header(opts, &hdr);
 
-    uint32_t src24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
+    // The sender, sanitised once before any text or record is made of it: a P25 network endpoint's address names no
+    // radio (dsd_position_source_names_radio()), so no notice, summary, -L row or report names it as one. The header
+    // dump below still prints the address as sent.
+    const uint32_t addr24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
+    const uint32_t src24 = dsd_position_source_names_radio(state->lastsynctype, addr24) ? addr24 : 0U;
     uint32_t dst24 = (uint32_t)((input[17] << 16) | (input[18] << 8) | input[19]);
     uint16_t src_port = 0;
     uint16_t dst_port = 0;
@@ -1122,7 +1123,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
             dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
         }
     }
-    decode_ip_pdu_print_endpoints(prot, src24, dst24, src_port, dst_port, input);
+    decode_ip_pdu_print_endpoints(prot, addr24, dst24, src_port, dst_port, input);
     char previous_gps[sizeof state->dmr_embedded_gps[slot]];
     DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
     state->dmr_embedded_gps[slot][0] = '\0';
