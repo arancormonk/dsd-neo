@@ -2510,7 +2510,11 @@ suite runs under this compiler.
   or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
   equal, where it was heard included: slot, tuned frequency, reception scope and label, so the same fix on the other
   slot or another visited network is a new record; kept less than 30 s ago on the decode clock; anonymous sources never
-  fold; 256 tracks, the least recently kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
+  producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
+  takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0
+  with `DSD_POS_FLAG_SLOT_UNKNOWN`, which is never the same place as another report (test
+  `DMR_EMBEDDED_GPS_ATTRIBUTION`). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
   still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
   it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and

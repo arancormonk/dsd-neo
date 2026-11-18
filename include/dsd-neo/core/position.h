@@ -125,8 +125,11 @@ typedef enum {
     DSD_POS_FLAG_FORMAT_PROVISIONAL = 1U << 8,
     /** The report carried an emergency indication (L3Harris E bit). */
     DSD_POS_FLAG_EMERGENCY = 1U << 9,
+    /** Admission only: the over-the-air slot is not known (the single-slot DMR decoder's lane before a CACH proves its
+     * slot, as on an inbound carrier, which has no CACH): slot is 0 and the report is no repeat of any other. */
+    DSD_POS_FLAG_SLOT_UNKNOWN = 1U << 10,
     /** Every defined flag; admission clears any other bit. */
-    DSD_POS_FLAG_ALL = (1U << 10) - 1U,
+    DSD_POS_FLAG_ALL = (1U << 11) - 1U,
 } dsd_position_flag;
 
 /** dsd_position_scope::kind. 0..5 are the alias scope kinds (dsd_alias_scope_kind, <dsd-neo/core/alias_learn.h>),
@@ -188,7 +191,10 @@ typedef struct dsd_position_fix {
     uint8_t sats;          /**< producer: satellites in use; DSD_POSITION_SATS_NONE */
     uint8_t protocol;      /**< producer: the DSD_SYNC_* value of the carrier (<dsd-neo/core/synctype_ids.h>) */
     uint8_t kind;          /**< producer: dsd_position_kind; never cleared */
-    uint8_t slot;          /**< producer: the lane (0 or 1) of a two-slot protocol, else 0 */
+    /** producer: the lane (0 or 1) of a two-slot protocol, else 0; admission: the over-the-air slot (0 TS1, 1 TS2),
+     * which for the single-slot DMR decoder is the slot the CACH proved for its lane (none proven: 0 with
+     * DSD_POS_FLAG_SLOT_UNKNOWN) */
+    uint8_t slot;
     /** admission: where the report was heard (D7: the alias scope, else a feed-only scope; none for M17/D-STAR). */
     dsd_position_scope reception_scope;
     /** producer (TETRA only: the calling party's own network when sent, an alias scope kind) or admission: the

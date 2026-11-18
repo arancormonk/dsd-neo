@@ -270,11 +270,54 @@ test_failed_report_prints_no_content(void) {
     }
 }
 
+/* The single-slot decoder carries either over-the-air slot on its one lane (lane 0): its report publishes the slot the
+ * CACH proved, not the lane, so the same fix heard on TS2 then on TS1 is two records (the repeat rule compares where it
+ * was heard). One heard while no slot is proven names none: slot 0 marked DSD_POS_FLAG_SLOT_UNKNOWN, never a repeat of
+ * another, not even of the same fix heard again unproven (issue #800, fail closed). */
+static void
+test_single_slot_decoder_publishes_proven_slot(void) {
+    static const struct {
+        uint8_t mono;
+        uint8_t slot;
+        uint16_t unknown;
+        const char* tag;
+    } steps[] = {
+        {DSD_DMR_MONO_RX_TS2, 1U, 0U, "single-slot TS2"},
+        {DSD_DMR_MONO_RX_TS1, 0U, 0U, "single-slot TS1, same fix"},
+        {DSD_DMR_MONO_RX_PENDING, 0U, DSD_POS_FLAG_SLOT_UNKNOWN, "single-slot, slot not proven"},
+        {DSD_DMR_MONO_RX_PENDING, 0U, DSD_POS_FLAG_SLOT_UNKNOWN, "single-slot, slot not proven, same fix"},
+        {DSD_DMR_MONO_RX_TS1, 0U, 0U, "single-slot TS1 again, same fix"},
+    };
+
+    fixture f;
+    fixture_open(&f);
+    f.st->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+    voice_lc(&f, 1U);
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        f.st->dmr_mono_rx_slot = steps[i].mono;
+        f.pos_err = 0U; /* the same fix every time */
+        embedded_gps(&f);
+        dsd_position_fix fix;
+        dsd_position_feed_meta meta;
+        const int n = dsd_position_feed_copy_since(f.st, f.feed_seq, &fix, 1, &meta);
+        char label[128];
+        DSD_SNPRINTF(label, sizeof label, "%s: kept %d slot %u flags %04X", steps[i].tag, n, n == 1 ? fix.slot : 0U,
+                     n == 1 ? fix.flags : 0U);
+        expect_true(label,
+                    n == 1 && fix.slot == steps[i].slot && (fix.flags & DSD_POS_FLAG_SLOT_UNKNOWN) == steps[i].unknown);
+        if (n == 1) {
+            f.feed_seq = meta.last_seq;
+        }
+    }
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_reception_change();
     test_same_reception();
     test_failed_report_prints_no_content();
+    test_single_slot_decoder_publishes_proven_slot();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;
