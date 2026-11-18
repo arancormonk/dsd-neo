@@ -271,8 +271,10 @@ against the sources the DLLs are built from.
   The Distributable Code section of the [Visual Studio license terms](https://visualstudio.microsoft.com/license-terms/)
   and its REDIST list ([Visual Studio 2026 and later](https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution),
   [Visual Studio 2022](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)) let a licensed
-  Visual Studio user distribute those files. No Microsoft license text ships with the ZIP; `legal/status.md`
-  (MSVC-RUNTIME) records what is still open.
+  Visual Studio user distribute those files. With them the ZIP carries an end-user notice of the terms that apply to
+  these files alone, `packaging/windows/LicenseRef-Microsoft-Visual-CPP-Runtime.txt`, as
+  `licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt`. `legal/msvc-runtime.md` quotes Microsoft's terms and records
+  how the release meets them and the GPL question it accepts as a risk.
 
 ## vcpkg Port Recipes
 

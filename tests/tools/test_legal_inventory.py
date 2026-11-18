@@ -112,6 +112,14 @@ class InventoryTests(unittest.TestCase):
             notices = {n["licenseId"]: n["extractedText"] for n in document["hasExtractedLicensingInfos"]}
             self.assertIn("free for non-commercial purposes", notices["LicenseRef-BCH3-Noncommercial"])
             self.assertIn("author's contribution", notices["LicenseRef-Simon-Rockliff"])
+            # The Windows SBOM names Microsoft's terms for the Visual C++ runtime and carries the ZIP's notice of them.
+            runtime = "LicenseRef-Microsoft-Visual-CPP-Runtime"
+            self.assertEqual(runtime in notices, platform == "windows")
+            if platform == "windows":
+                self.assertEqual((packages["msvc-runtime"]["licenseDeclared"],
+                                  packages["msvc-runtime"]["licenseConcluded"]), (runtime, runtime))
+                self.assertNotIn("licenseComments", packages["msvc-runtime"])
+                self.assertIn("Do not modify them.", notices[runtime])
             with self.assertRaises(ValueError):
                 legal.add_spdx(document, self.inventory, self.pins, platform)
 

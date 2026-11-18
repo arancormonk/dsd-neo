@@ -31,13 +31,18 @@ was rewritten, and this review does not authorize publication.
 | MBELIB-ETSI | mbelib-neo 2.6.11 retains TETRA ACELP table data with unresolved copyright permission and GPL compatibility under its `ETSI-RETAIN-1` disclosure. Its GPLv2-or-later project grant and conformance tests do not resolve those data rights. | Follow the pinned dependency's [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.11/legal/status.md). Carry its notices and `NOASSERTION` conclusions downstream. No new exception or permission is inferred here. |
 | FIXTURE-PERMISSION | Signal Identification Wiki recordings and derivatives are tracked under `tests/fixtures/iq`; no explicit redistribution license has been established. Attribution, short duration and off-air origin alone do not establish permission. Other contributed audio needs asset-specific evidence as well. | Obtain permission for the particular recordings, replace them with synthetic or expressly licensed fixtures, or remove them from public distribution. Keep acquisition URLs and hashes, but do not treat those as authorization. |
 | CORRESPONDING-SOURCE | Current GitHub source snapshots omit downloaded PFFFT and TETRA_crypto source. Portable binaries also bundle mbelib and platform-dependent libraries. No verified, complete corresponding-source delivery for each binary is established by the current workflow. | Assemble the exact source, modifications, build scripts and applicable installation information for each distributed binary; verify a fresh offline rebuild and provide the source through an appropriate distribution method. See [source delivery](source-delivery.md). |
-| MSVC-RUNTIME | The Windows ZIP carries Microsoft's Visual C++ runtime DLLs in `bin\` (the 2.12.1 ZIP: `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`). The `msvc-runtime` record lists the files a release may carry and cites Microsoft's REDIST list, which lets a licensed Visual Studio user distribute the files of `VC\Redist`; the release job now copies them only from that folder of the toolset that built the release. Whether the release job's Visual Studio edition is licensed for this use, whether the ZIP meets the conditions of the license's Distributable Code section, and how the GPL's System Libraries definition applies to these files are not established here. No Microsoft license text or notice ships with the ZIP. | Read the Distributable Code section of the license terms for the Visual Studio the release job uses, confirm that use is licensed and that the ZIP meets each condition (including any notice it requires), and record the result in the `msvc-runtime` record; or stop carrying the DLLs and require Microsoft's Visual C++ Redistributable instead. |
 | RUNTIME-NOTICES | The existing license-file checklist covers only selected dependencies. Copying mbelib's notices fixes that omission, but does not establish notice/source coverage for every Homebrew, vcpkg, AppImage or Qt runtime library. The Windows ZIP's SoapySDR load path is now recorded with its notices: SoapySDR and SoapySDRUtil (also SoapySDR for the AppImage), the SoapyAirspy and SoapyHackRF modules, libhackrf, and the libusb and PThreads4W the radio libraries load. Every file the Windows ZIP carries in `bin\` and `lib\` now has a component record (`windows_release`) naming the notices the ZIP carries for it, and the release job refuses a file without one or a tree without those notices. The libraries vcpkg builds from its own ports or the project's overlays of them (codec2, PortAudio, PDCurses, OpenSSL's libcrypto, libcurl, Expat, zlib, libsndfile and the libFLAC, libogg, libvorbis, Opus, LAME and mpg123 libraries it loads) ship the copyright file their port installs; whether each file names every holder and license of the sources its DLL is built from is not reviewed. The AppImage, macOS DMG and Qt closures are not recorded. | Review each vcpkg-installed copyright file against the sources its Windows DLL is built from. Compare each other final binary's actual dependency closure and SBOM with its notice and source inventory, including Qt modules/plugins and their selected license terms. |
 
 These findings remain open. The audit checks enforce faithful records and
 notice delivery, not a release waiver. In particular, BCH-NONCOMMERCIAL is an
 express restriction, not merely a missing attribution. Resolve the relevant
 rights and distribution issues before claiming GPL-compliant redistribution.
+
+## Resolved findings
+
+| Finding | Resolution | Accepted risk |
+| --- | --- | --- |
+| MSVC-RUNTIME | Resolved 2026-11-18 by policy. The Windows ZIP keeps carrying Microsoft's Visual C++ runtime DLLs in `bin\`, copied unmodified only from the `VC\Redist` runtime folder of the toolset that built the release, never from System32. [msvc-runtime.md](msvc-runtime.md) quotes the Distributable Code section of the Visual Studio license terms and its REDIST list, and records how the release meets each condition: an end-user notice of protective terms for these files alone (`licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt`, which the release job requires whenever the ZIP carries one of them), no Microsoft trademark in the program's name, and the indemnity of the Visual Studio 2026 terms, which the maintainer accepts. The release relies on the maintainer's Visual Studio Community licence, with the hosted runner as a Build Device hosted on Microsoft Azure. | The FSF GPL FAQ (`#WindowsRuntimeAndGPL`) says these DLLs may not be distributed with a GPL program; the GPLv3 text (sections 1 and 6) and the FSF's 2006 drafting rationale support doing so. Other copyright holders whose GPL code dsd-neo contains could rely on the FAQ. Not verified: the licensing of the runner's preinstalled Visual Studio Enterprise, that its runtime files match a Community installation's, and what makes end users of a ZIP "agree to terms". The fallback is to stop carrying the DLLs and require Microsoft's Visual C++ Redistributable. |
 
 ## Remediation in this preparation
 
@@ -69,7 +74,9 @@ rights and distribution issues before claiming GPL-compliant redistribution.
   the files it may carry and Microsoft's REDIST lists. The release job copies
   them only from the toolset's `VC\Redist` runtime folder, never from the
   build machine's System32, and refuses a runtime DLL the record does not
-  list; the terms themselves stay under MSVC-RUNTIME.
+  list. [msvc-runtime.md](msvc-runtime.md) records Microsoft's terms for them,
+  how the release meets each condition, its licence basis and the accepted
+  GPL risk; the ZIP carries an end-user notice of those terms with the DLLs.
 - Keep vcpkg's MIT license and Microsoft's notice beside the overlays copied
   from its ports (`soapysdr`, `rtlsdr`, `portaudio`) as
   `vcpkg-ports/LICENSE-vcpkg.txt`; each copied portfile names its source port
@@ -111,7 +118,8 @@ advice is needed for conclusions this engineering evidence cannot establish.
 - Microsoft's [Visual Studio Redistribution](https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution)
   (2026 and later) and [Visual Studio 2022 Redistribution](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)
   REDIST lists and its [license terms directory](https://visualstudio.microsoft.com/license-terms/),
-  retrieved 2026-11-18. The license text itself could not be read online.
+  retrieved 2026-11-18, with the license documents those pages embed; the
+  sources [msvc-runtime.md](msvc-runtime.md) lists.
 - The repository's `LICENSE`, especially GPLv3 sections 1, 5, 6 and 10,
   for corresponding source, notices and additional restrictions.
 - The [mbelib release](https://github.com/arancormonk/mbelib-neo/releases/tag/v2.6.11)

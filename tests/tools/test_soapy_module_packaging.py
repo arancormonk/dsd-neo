@@ -74,6 +74,10 @@ VCPKG_PORT_COPIES = {
     "portaudio": "ports/portaudio at port-version 8",
 }
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
+# The end-user notice the ZIP carries with the Visual C++ runtime DLLs, its source and the license the record names.
+RUNTIME_NOTICE = "licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt"
+RUNTIME_NOTICE_SOURCE = "packaging/windows/LicenseRef-Microsoft-Visual-CPP-Runtime.txt"
+RUNTIME_LICENSE = "LicenseRef-Microsoft-Visual-CPP-Runtime"
 # The files the Windows ZIP carries in bin\ and lib\: those of the 2.12.1 ZIP (its file list, in its spellings) and
 # the SoapySDR program, modules and library added since. Each must be one a component record lists.
 WINDOWS_RELEASE_FILES = (
@@ -271,14 +275,62 @@ class SoapyModulePackaging(unittest.TestCase):
                                                         read(".github/workflows/linux-appimage.yaml")).group(1).split())
 
     def test_visual_cpp_runtime_record(self):
-        # The Windows ZIP carries Microsoft's runtime DLLs: the record names the files it may carry and Microsoft's
-        # terms, and leaves what is not established as a finding.
+        # The Windows ZIP carries Microsoft's runtime DLLs: the record names the files it may carry, Microsoft's terms
+        # and the end-user notice the ZIP carries with them, and legal/msvc-runtime.md records how the release meets
+        # each condition of those terms and the GPL risk it accepts.
         component = next(c for c in json.loads(read("legal/components.json"))["components"]
                          if c["id"] == "msvc-runtime")
         self.assertEqual((component["platforms"], component["distribution"]), (["windows"], ["binary"]))
         self.assertEqual((component["license_declared"], component["license_concluded"]),
-                         ("NOASSERTION", "NOASSERTION"))
-        self.assertEqual((component["copyright_permission"], component["finding"]), ("unresolved", "MSVC-RUNTIME"))
+                         (RUNTIME_LICENSE, RUNTIME_LICENSE))
+        self.assertEqual((component["copyright_permission"], component["gpl_compatibility"]),
+                         ("notice-retained", "reviewed-terms"))
+        self.assertNotIn("finding", component)
+        self.assertEqual(component["notices"], [RUNTIME_NOTICE_SOURCE])
+        self.assertEqual(component["windows_release"]["notices"],
+                         {RUNTIME_NOTICE: "repo:" + RUNTIME_NOTICE_SOURCE})
+        self.assertIn("legal/msvc-runtime.md", component["assessment"])
+        # The end-user notice: whose the files are, their terms and that they bind those files only, no endorsement,
+        # and where Microsoft publishes the runtime.
+        notice = " ".join(read(RUNTIME_NOTICE_SOURCE).split())
+        for words in ("are Microsoft's Visual C++ runtime", "not licensed under the GNU General Public License",
+                      "Do not modify them.", "Do not reverse engineer, decompile or disassemble them.",
+                      "Distribute them only unmodified, as part of dsd-neo, and under these same terms.",
+                      "These terms do not limit any right the GNU General Public License gives you",
+                      "not made, endorsed or supported by Microsoft",
+                      "https://visualstudio.microsoft.com/license-terms/",
+                      "https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution",
+                      "https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist"):
+            self.assertIn(words, notice)
+        # The terms, quoted from Microsoft, how the release meets each one, the build basis, and the GPL text and the
+        # FSF reading that disagree, kept as an accepted risk.
+        record = " ".join(" ".join(line.strip().removeprefix(">") for line in read("legal/msvc-runtime.md").splitlines())
+                          .split())
+        for words in ("add significant primary functionality to it in your applications;",
+                      "require distributors and external end users to agree to terms that protect the Distributable "
+                      "Code at least as much as these license terms; and",
+                      "indemnify, defend, and hold harmless Microsoft from any claims",
+                      "use Microsoft's trademarks in your applications' names",
+                      "An Excluded License is one that requires, as a condition of use, modification or distribution",
+                      "you may copy and distribute with your program any of the files within the following folder and "
+                      "its subfolders except as noted below. You may not modify these files.",
+                      "(ii) hosted on Microsoft Azure for you",
+                      "GitHub hosts Windows runners … on virtual machines in Azure.",
+                      "maintainer's own Visual Studio Community licence",
+                      "\"System Libraries\" of an executable work include anything",
+                      "need not be included in conveying the object code work.",
+                      "removes the words ``unless that component itself accompanies the executable.''",
+                      "You may not distribute these libraries in compiled DLL form with the program.",
+                      "a known, accepted risk", "Not verified.",
+                      "https://www.gnu.org/licenses/gpl-faq.html#WindowsRuntimeAndGPL",
+                      "https://gplv3.fsf.org/gpl-rationale-2006-01-16.html"):
+            self.assertIn(words, record)
+        status = read("legal/status.md")
+        open_findings = status[status.index("## Findings requiring resolution"):status.index("## Resolved findings")]
+        self.assertNotIn("MSVC-RUNTIME", open_findings)
+        self.assertIn("| MSVC-RUNTIME |", status[status.index("## Resolved findings"):])
+        self.assertIn(RUNTIME_NOTICE, read("docs/release-assets-checklist.md"))
+        self.assertIn("legal/msvc-runtime.md", read("THIRD_PARTY.md"))
         # The DLLs the 2.12.1 ZIP carried are on the list, and nothing that a toolset's CRT folder lacks.
         files = component["windows_release"]["binaries"]
         for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
@@ -887,6 +939,9 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual((licenses / "BSL-1.0.txt").read_bytes(), (ROOT / "LICENSES/BSL-1.0.txt").read_bytes())
         # A library vcpkg builds from its own port: the ZIP carries the copyright file the port installs.
         self.assertEqual((licenses / "portaudio-copyright.txt").read_bytes(), PORTAUDIO_COPYRIGHT)
+        # The Visual C++ runtime the tree carries comes with Microsoft's terms for it.
+        self.assertEqual((stage / "share/doc/dsd-neo" / RUNTIME_NOTICE).read_bytes(),
+                         (ROOT / RUNTIME_NOTICE_SOURCE).read_bytes())
         log = normalized((tools / "cmake.log").read_text(encoding="utf-8"))
         self.assertEqual(log, f"--install {build} --prefix {stage} --component legal\n")
 
@@ -1209,6 +1264,23 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertIn("OK: every file in bin\\ and lib\\ has a component record, and the tree carries its notices",
                       output)
+
+    def test_verify_release_tree_needs_the_runtime_notice_with_the_runtime(self):
+        # A tree that carries a Visual C++ runtime DLL carries the notice of Microsoft's terms for it; a tree without
+        # the runtime does not need it.
+        tools, root, windows = self.release_tree()
+        notice = root / "share/doc/dsd-neo" / RUNTIME_NOTICE
+        notice.unlink(missing_ok=True)
+        self.assert_verify_refuses(tools, root, windows, f"MSVCP140.dll (msvc-runtime): {notice}",
+                                   f"VCRUNTIME140.dll (msvc-runtime): {notice}")
+        for name in RUNTIME_DLLS:
+            (root / "bin" / name).unlink()
+            del self.report["dependents"][name]
+        for dependents in self.report["dependents"].values():
+            dependents[:] = [name for name in dependents if name not in RUNTIME_DLLS]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
 
     def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):
         # dsd-neo.exe's native Airspy input and librtlsdr must load the airspy.dll and libusb-1.0.dll the modules and
