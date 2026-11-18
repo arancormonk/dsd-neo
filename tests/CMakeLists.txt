@@ -5171,6 +5171,47 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_spectrum_trace_geometry
 )
 
+# The map's Web Mercator arithmetic (map_math.h), header-only and Qt-free like
+# spectrum_math.h: projection from fixed-point positions, the tiles a view at a
+# fractional zoom needs, the wrap at 180 degrees, the pinch anchor, taps and
+# fit-to-markers. A slip in any of them draws a radio in the wrong place.
+add_executable(dsd-neo_test_ui_qt_map_math ui/test_ui_qt_map_math.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_math
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+# IEEE semantics, as dsd-neo_ui_qt builds its includers: the non-finite cases
+# check guards that fast-math would compile out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_MATH COMMAND dsd-neo_test_ui_qt_map_math)
+
+# The map's trails, accuracy circles and marker sprites as triangles
+# (map_geometry.h, header-only over the spectrum trace's stroke builder):
+# breaks never bridged, real dashes, circles that cover each pixel once and
+# stay cheap far larger than the view, sprites on whole device pixels.
+add_executable(
+    dsd-neo_test_ui_qt_map_geometry
+    ui/test_ui_qt_map_geometry.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_geometry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_map_geometry
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_geometry PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_GEOMETRY COMMAND dsd-neo_test_ui_qt_map_geometry)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
