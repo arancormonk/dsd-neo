@@ -48,9 +48,16 @@ process_frame_apply_off_thread_retunes(dsd_state* state) {
     }
 }
 
-/* The handler's verdict, settled once the frame ran on @p carrier_seq, and the -Y stay's call marker. */
+/* Whether a frame of @p synctype can be a call's for the -Y stay's call marker: not an X2-TDMA data burst. */
+static int
+process_frame_may_be_a_call(int synctype) {
+    return synctype != DSD_SYNC_X2TDMA_DATA_POS && synctype != DSD_SYNC_X2TDMA_DATA_NEG;
+}
+
+/* The handler's verdict, settled once the frame ran on @p carrier_seq, and the -Y stay's call marker (@p call_frame: a
+   frame of a protocol with no content check that is a call's when its decoder takes it). */
 static void
-process_frame_settle_verdict(dsd_state* state, uint32_t carrier_seq, int unchecked) {
+process_frame_settle_verdict(dsd_state* state, uint32_t carrier_seq, int call_frame) {
     /* A replay read that adopted a recorded retune ran the carrier boundary inside the frame (issue #575): its
        decoder dropped what it read, as on a sync loss, so the frame validated nothing on either carrier, whatever
        the handler reported for the symbols it read. */
@@ -64,9 +71,11 @@ process_frame_settle_verdict(dsd_state* state, uint32_t carrier_seq, int uncheck
         state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
     }
     /* The -Y stay's call marker (issue #834) moves only for a frame of a protocol with no content check its decoder
-       took, on the carrier it was dispatched on and uninterrupted: X2-TDMA reports no verdict, ProVoice none until a
-       second sync confirms its transmission, TETRA none until a burst's CRC passes. One sync is no call. */
-    if (unchecked
+       took, on the carrier it was dispatched on and uninterrupted: X2-TDMA voice reports no verdict, ProVoice none until
+       a second sync confirms its transmission, TETRA none until a burst's CRC passes. One sync is no call, and an
+       X2-TDMA data burst none at all: it carries nothing checked, and its decoder takes it the same whether it decoded
+       anything or not. */
+    if (call_frame
         && (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
             || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN)) {
         state->scan_y_call_seq++;
@@ -107,6 +116,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
             dsd_rxid_note_sync(state, state->synctype);
         }
         const uint32_t carrier_seq = state->carrier_seq;
+        const int synctype = state->synctype;
         /* The frame's protocol and carrier, for the decoders' MBE capture: a decoder that borrows another protocol's
            vocoder changes state->synctype, not this, and a frame read across a carrier boundary is captured nowhere
            (issue #661). */
@@ -115,7 +125,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->frame_dispatch_active = 1;
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
         state->frame_dispatch_active = 0;
-        process_frame_settle_verdict(state, carrier_seq, unchecked);
+        process_frame_settle_verdict(state, carrier_seq, unchecked && process_frame_may_be_a_call(synctype));
     }
 }
 

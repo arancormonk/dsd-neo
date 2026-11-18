@@ -735,7 +735,7 @@ Generated (do not edit/commit):
       checked content, and `scan_y_call_seq`, a call no checked content shows: an analog call admitted, which
       `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
       a tone check rejected, or a frame a decoder of a protocol with no content check took, which `processFrame()`
-      moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA frame,
+      moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA voice frame (a data burst carries nothing checked and is no call),
       a ProVoice frame once a second sync confirmed the transmission, a TETRA burst whose CRC passed, never one sync,
       against the values the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_call_seq`), since under the
       legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start

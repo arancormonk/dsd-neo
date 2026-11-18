@@ -319,14 +319,17 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
     /* Its -Y call marker moves only when its decoder took it, on the carrier it was dispatched on and uninterrupted:
        a ProVoice sync its decoder has not confirmed (UNPRODUCTIVE), a TETRA burst whose CRC failed, a frame dropped or
-       cut, is no call. */
+       cut, is no call. Nor is an X2-TDMA data burst: it carries no checked content, and its decoder reads it the same
+       whether it decoded anything or not (a sync on noise); X2-TDMA voice is the call. */
     const int taken =
         !dropped && !cut && (verdict == DSD_FRAME_VERDICT_PRODUCTIVE || verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    if (state->scan_y_call_seq != (unchecked && taken ? 1U : 0U)) {
+    const int x2_data = synctype == DSD_SYNC_X2TDMA_DATA_POS || synctype == DSD_SYNC_X2TDMA_DATA_NEG;
+    const unsigned want_call = unchecked && taken && !x2_data ? 1U : 0U;
+    if (state->scan_y_call_seq != want_call) {
         DSD_FPRINTF(stderr, "the -Y call marker of synctype %d with verdict %d moved %u (want %u)\n", synctype,
-                    (int)verdict, (unsigned)state->scan_y_call_seq, (unsigned)(unchecked && taken ? 1U : 0U));
+                    (int)verdict, (unsigned)state->scan_y_call_seq, want_call);
     }
-    assert(state->scan_y_call_seq == (unchecked && taken ? 1U : 0U));
+    assert(state->scan_y_call_seq == want_call);
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
