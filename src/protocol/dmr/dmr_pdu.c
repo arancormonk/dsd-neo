@@ -570,6 +570,15 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
 }
 
+/* The ICMP error messages (RFC 792, RFC 1812 4.3.2.3: Destination Unreachable 3, Source Quench 4, Redirect 5, Time
+ * Exceeded 11, Parameter Problem 12) that return the invoking datagram after their 8-octet header. Every other type's
+ * data (an Echo Request or Reply among them) is opaque, not a datagram: a report copied into it was never sent as one,
+ * so it is never decoded (issue #800). */
+static int
+decode_ip_pdu_icmp_quotes_datagram(uint8_t icmp_type) {
+    return icmp_type == 3U || icmp_type == 4U || icmp_type == 5U || icmp_type == 11U || icmp_type == 12U;
+}
+
 static void DSD_ATTR_USED
 decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len, size_t ip_header_len,
                           uint8_t* input) {
@@ -594,7 +603,7 @@ decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len
         DSD_FPRINTF(stderr, " Unreachable;");
     }
     size_t attached_off = ip_header_len + 8u;
-    if (effective_len > attached_off && input[attached_off] == 0x45) {
+    if (decode_ip_pdu_icmp_quotes_datagram(icmp_type) && effective_len > attached_off && input[attached_off] == 0x45) {
         DSD_FPRINTF(stderr, "\n ------------Attached Message-------------");
         size_t rem = effective_len - attached_off;
         if (rem > UINT16_MAX) {

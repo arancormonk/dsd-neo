@@ -487,6 +487,43 @@ test_icmp_enclosed_report(dsd_opts* opts, dsd_state* state, const char* path) {
     return failed;
 }
 
+/* An ICMP Echo Request or Reply carries opaque data, never a quoted datagram: a complete UDP/5017 report from radio 111
+   copied into an echo from radio 999 is no report of 111's. Only the error types (3, 4, 5, 11, 12) quote the invoking
+   datagram; one of them still decodes it (test_icmp_enclosed_report()). */
+static int
+test_icmp_echo_not_decoded(dsd_opts* opts, dsd_state* state, const char* path) {
+    int failed = 0;
+    static const uint8_t echo_types[] = {8U, 0U, 13U};
+    for (size_t i = 0; i < sizeof echo_types; i++) {
+        reset_carrier_state(state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        CHECK(truncate_output(path));
+        uint8_t packet[66] = {0};
+        packet[0] = 0x45;
+        packet[3] = sizeof packet;
+        packet[8] = 64;
+        packet[9] = 1;
+        packet[12] = 10;
+        packet[14] = 3;
+        packet[15] = 231; // 10.0.3.231: src24 = 999.
+        packet[16] = 10;
+        packet[19] = 222;
+        packet[20] = echo_types[i];
+        build_packet(packet + 28);
+        (void)decode_ip_pdu(opts, state, sizeof packet, packet);
+        CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "X3 ICMP echo"));
+        dsd_position_feed_meta meta;
+        dsd_position_fix recs[2];
+        CHECK(dsd_position_feed_copy_since(state, 0U, recs, 2U, &meta) == 0);
+        for (int r = 0; r < DSD_EVENT_HISTORY_LEN; r++) {
+            const Event_History* row = &state->event_history_s[0].Event_History_Items[r];
+            CHECK(row->pos.valid == 0U && strstr(row->gps_s, "LIP:") == NULL);
+            CHECK(strstr(row->event_string, "LIP SRC: 111;") == NULL);
+        }
+    }
+    return failed;
+}
+
 /* A binary NMEA UDT (TS 102 361-4 Annex B.3.6: UDT format 5) of @p blocks appended blocks (1 short format, 2 long)
    with @p pad_nibbles pad nibbles through the real UDT assembly: Q, the fix 22 deg 30 min S, 45 deg W, the UTC hour
    and the course; the header's own CRC as given. */
@@ -781,6 +818,7 @@ main(void) {
     }
     failed |= test_truncated_ownership(&opts, &state, path);
     failed |= test_icmp_enclosed_report(&opts, &state, path);
+    failed |= test_icmp_echo_not_decoded(&opts, &state, path);
     failed |= test_udp_mixed_ports(&opts, &state);
     failed |= test_compressed_mixed_ports(&opts, &state);
     failed |= test_udt_nmea_dispatch(&opts, &state, path);

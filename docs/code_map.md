@@ -1930,8 +1930,11 @@ suite runs under this compiler.
   reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
   quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
   service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
-  decoded;` or `Truncated UDP;`. The compressed path passes the data header's LLIDs as the radios and a
-  NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
+  decoded;` or `Truncated UDP;`. An ICMP message's data is decoded as a datagram only for the error types that quote
+  the invoking datagram (`decode_ip_pdu_icmp_quotes_datagram()`: 3, 4, 5, 11, 12); an Echo Request or Reply (or any
+  other type) carries opaque data, so a report copied into it is never one (test `DMR_LIP_CARRIERS`). The compressed
+  path passes the data header's LLIDs as the radios and a NULL IPv4 header (9361/49198 then print the LLIDs), and
+  appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
