@@ -177,11 +177,11 @@ function Test-Hardening {
     )
 
     $artifacts = @(Get-ChildItem -Path (Join-Path $TreeRoot 'bin') -File) +
-        @(Get-ChildItem -Path (Join-Path $TreeRoot 'lib\SoapySDR') -File -Recurse)
+        @(Get-ChildItem -Path (Join-Path $TreeRoot 'lib/SoapySDR') -File -Recurse)
     $artifacts = @($artifacts | Where-Object { $_.Extension -in @('.exe', '.dll') })
     if ($artifacts.Count -eq 0) { throw "No PE files found under $TreeRoot" }
     foreach ($artifact in $artifacts) {
-        & (Join-Path $PSScriptRoot '..\check_release_hardening.ps1') $artifact.FullName
+        & (Join-Path $PSScriptRoot '../check_release_hardening.ps1') $artifact.FullName
     }
 }
 
@@ -192,12 +192,13 @@ function Test-LoadPath {
     )
 
     $bin = Join-Path $TreeRoot 'bin'
-    $moduleDir = Join-Path $TreeRoot 'lib\SoapySDR\modules0.8'
+    $moduleDir = Join-Path $TreeRoot 'lib/SoapySDR/modules0.8'
 
     foreach ($name in @('airspy.dll', 'airspyhf.dll', 'hackrf.dll', 'libusb-1.0.dll', 'pthreadVC3.dll', 'SoapySDR.dll')) {
         $copies = @(Get-ChildItem -LiteralPath $TreeRoot -File -Recurse -Filter $name)
         if ($copies.Count -ne 1 -or $copies[0].DirectoryName -ine $bin) {
-            throw "Expected one $name, in $bin; found: $(@($copies.FullName) -join ', ')"
+            $paths = @($copies | ForEach-Object { $_.FullName })
+            throw "Expected one $name, in $bin; found $($paths.Count): $($paths -join ', ')"
         }
     }
     $found = @(Get-ChildItem -Path $moduleDir -File | Select-Object -ExpandProperty Name | Sort-Object)
@@ -273,7 +274,7 @@ function Test-Drivers {
     }
     $found = @($info.Modules | ForEach-Object { (ConvertTo-ComparablePath $_).ToLowerInvariant() } | Sort-Object)
     $expected = @($Modules.Values | ForEach-Object {
-            (ConvertTo-ComparablePath (Join-Path $rootPath "lib\SoapySDR\modules0.8\$_")).ToLowerInvariant()
+            (ConvertTo-ComparablePath (Join-Path $rootPath "lib/SoapySDR/modules0.8/$_")).ToLowerInvariant()
         } | Sort-Object)
     if (($found -join '|') -ne ($expected -join '|')) {
         throw "SoapySDRUtil --info found modules $($info.Modules -join ', ')`n$($run.Output)"
@@ -334,7 +335,7 @@ function Test-WithoutHackrfLibrary {
     New-Item -ItemType Directory -Force -Path $copy | Out-Null
     Copy-Item -Recurse -Force -LiteralPath (Join-Path $TreeRoot 'bin') -Destination $copy
     Copy-Item -Recurse -Force -LiteralPath (Join-Path $TreeRoot 'lib') -Destination $copy
-    Remove-Item -Force -LiteralPath (Join-Path $copy 'bin\hackrf.dll')
+    Remove-Item -Force -LiteralPath (Join-Path $copy 'bin/hackrf.dll')
     $bin = Join-Path $copy 'bin'
     $run = Invoke-TreeProgram -Bin $bin -Program 'SoapySDRUtil.exe' -Arguments @('--check=hackrf') -ExpectedExitCode 1
     Assert-Contains $run "Checking driver 'hackrf'... MISSING!"

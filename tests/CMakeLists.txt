@@ -26162,9 +26162,10 @@ if(Python3_Interpreter_FOUND)
                 TIMEOUT 120
                 ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
         )
-        # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree, and the readers
-        # verify_release_tree.ps1 uses, fed output that Windows builds of SoapySDRUtil
-        # and dsd-neo printed under Wine. The fakes are POSIX scripts here too.
+        # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
+        # verify_release_tree.ps1 over a fake release tree, and the readers it uses fed
+        # output that Windows builds of SoapySDRUtil and dsd-neo printed under Wine. The
+        # fakes are POSIX scripts here too.
         add_test(
             NAME TOOLS_SOAPY_RELEASE_SCRIPTS
             COMMAND
@@ -26175,7 +26176,7 @@ if(Python3_Interpreter_FOUND)
         set_tests_properties(
             TOOLS_SOAPY_RELEASE_SCRIPTS
             PROPERTIES
-                TIMEOUT 180
+                TIMEOUT 600
                 ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
         )
     endif()

@@ -3,8 +3,8 @@
 """Contracts for the SoapySDR modules the Windows ZIP ships.
 
 SoapyModulePackaging reads the vcpkg overlays, the manifest, the notices, the legal records and the workflows.
-SoapyReleaseScripts runs tools/windows/stage_release_tree.ps1 under pwsh over a fake vcpkg tree, and feeds the
-readers verify_release_tree.ps1 uses (tools/windows/release_tree_checks.psm1) output that Windows builds of
+SoapyReleaseScripts runs tools/windows/stage_release_tree.ps1 under pwsh over a fake vcpkg tree and
+verify_release_tree.ps1 over a fake release tree, and feeds the readers verify_release_tree.ps1 uses (tools/windows/release_tree_checks.psm1) output that Windows builds of
 SoapySDRUtil 0.8.1 and dsd-neo printed under Wine. The release jobs run both scripts on the real tree; this test
 cannot build it.
 
@@ -431,6 +431,106 @@ INSTALLED_BIN = ("rtlsdr.dll", "airspy.dll", "hackrf.dll", "airspyhf.dll", "Soap
                  "pthreadVC3.dll", "MSVCP140.dll", "VCRUNTIME140.dll", "unused.dll")
 
 
+# Fakes for running verify_release_tree.ps1 off Windows. dumpbin.exe answers /headers, /DEPENDENTS and /IMPORTS from
+# report.json beside it. SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
+# <their folder>/../lib/SoapySDR/modules0.8, which fails when the module's library is not in their own folder, and
+# print what the real programs print (the probe messages are the drivers' own).
+FAKE_VERIFY_DUMPBIN = r"""#!{python} -I
+import json
+import sys
+from pathlib import Path
+
+report = json.loads((Path(sys.argv[0]).resolve().parent / "report.json").read_text())
+option, path = sys.argv[1], sys.argv[2]
+name = Path(path).name
+kind = "EXECUTABLE IMAGE" if name.endswith(".exe") else "DLL"
+lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0", "", "Dump of file " + path, "", "File Type: " + kind, ""]
+if option == "/headers":
+    lines += ["            8664 machine (x64)", "                   High Entropy Virtual Addresses",
+              "                   Dynamic base", "                   NX compatible"]
+elif option == "/DEPENDENTS":
+    lines += ["  Image has the following dependencies:", ""]
+    lines += ["    " + dep for dep in report["dependents"].get(name, ["KERNEL32.dll"])]
+elif option == "/IMPORTS":
+    lines += ["  Section contains the following imports:", ""]
+    for dll, functions in report["imports"].get(name, {{}}).items():
+        lines += ["    " + dll, "             180012000 Import Address Table", ""]
+        lines += ["                          {{:X}} {{}}".format(i, f) for i, f in enumerate(functions)] + [""]
+else:
+    sys.exit(2)
+lines += ["", "  Summary", "", "        1000 .data"]
+sys.stdout.write("\r\n".join(lines) + "\r\n")
+"""
+
+FAKE_SOAPY_PROGRAM = r"""#!{python} -I
+import sys
+from pathlib import Path
+
+LIBRARIES = {{"airspySupport.dll": ("airspy", "airspy.dll"), "airspyhfSupport.dll": ("airspyhf", "airspyhf.dll"),
+             "HackRFSupport.dll": ("hackrf", "hackrf.dll")}}
+MESSAGES = {{"airspy": "Unable to open AirSpy device", "airspyhf": "Unable to open AirspyHF device",
+            "hackrf": "no hackrf device matches"}}
+program = Path(sys.argv[0])
+bin_dir = program.parent
+root = bin_dir.parent
+module_dir = root / "lib/SoapySDR/modules0.8"
+modules = sorted(module_dir.glob("*.dll")) if module_dir.is_dir() else []
+drivers = []
+for module in modules:
+    driver, library = LIBRARIES[module.name]
+    if (bin_dir / library).exists():
+        drivers.append(driver)
+    else:
+        sys.stderr.write("[ERROR] SoapySDR::loadModule(%s/lib/SoapySDR/modules0.8/%s)\r\n"
+                         "  LoadLibrary() failed: The specified module could not be found.\r\n" % (root, module.name))
+args = sys.argv[1:]
+if program.name == "SoapySDRUtil.exe":
+    if args == ["--info"]:
+        print("Lib Version: v0.8.1-unknown\r\nABI Version: v0.8\r\nInstall root: %s\r" % root)
+        for module in modules:
+            print("Module found: %s/lib/SoapySDR/modules0.8/%s (0.2.1)\r" % (root, module.name))
+        print("Available factories... %s\r" % (", ".join(sorted(drivers)) or "No factories found!"))
+        sys.exit(0)
+    driver = args[0].split("=", 1)[1]
+    print("Loading modules... done\r\nChecking driver '%s'... %s\r" % (driver, "PRESENT" if driver in drivers else
+                                                                      "MISSING!"))
+    sys.exit(0 if driver in drivers else 1)
+if args == ["-h"]:
+    print("Usage: dsd-neo [options]\r")
+    sys.exit(0)
+source = args[args.index("-i") + 1]
+driver = source.split("driver=", 1)[1] if "driver=" in source else ""
+if driver in drivers:
+    message = MESSAGES[driver]
+elif not driver and len(drivers) > 1:
+    message = "SoapySDR::Device::make() no driver specified and no enumeration results"
+elif not driver and drivers:
+    message = MESSAGES[drivers[0]]
+else:
+    message = "SoapySDR::Device::make() no match"
+sys.stderr.write("SoapySDR: exception in Device::make: %s\r\nFailed to open radio stream.\r\n" % message)
+sys.exit(1)
+"""
+
+# Runs verify_release_tree.ps1 and prints a failure's message whole.
+VERIFY = r"""param([string]$Script, [string]$Root)
+try {
+    & $Script -Root $Root -TimeoutSeconds 60
+} catch {
+    [Console]::Error.WriteLine('FAILED: ' + $_.Exception.Message)
+    exit 1
+}
+"""
+
+# A release tree's binaries and what each imports (dumpbin /DEPENDENTS).
+RELEASE_DEPENDENTS = dict(DEPENDENCIES, **{
+    "libusb-1.0.dll": ["KERNEL32.dll"], "pthreadVC3.dll": ["KERNEL32.dll"],
+    "MSVCP140.dll": ["VCRUNTIME140.dll", "KERNEL32.dll"], "VCRUNTIME140.dll": ["KERNEL32.dll"],
+})
+RELEASE_IMPORTS = {"airspyhfSupport.dll": {"airspyhf.dll": ["airspyhf_open", "airspyhf_set_hf_att",
+                                                            "airspyhf_set_hf_lna", "airspyhf_set_hf_agc"],
+                                           "SoapySDR.dll": ["SoapySDR_logf"]}}
+
 @unittest.skipUnless(PWSH or REQUIRE_TOOLS, "pwsh is required")
 class SoapyReleaseScripts(unittest.TestCase):
     def setUp(self):
@@ -612,6 +712,83 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn("Missing DLL dependencies", output)
         self.assertIn("hackrf.dll", output)
 
+
+    def release_tree(self):
+        """A release tree as stage_release_tree.ps1 leaves it, with fake programs and a fake dumpbin.exe."""
+        tools = self.work / "verify-tools"
+        tools.mkdir()
+        (tools / "dumpbin.exe").write_text(FAKE_VERIFY_DUMPBIN.format(python=sys.executable), encoding="utf-8")
+        (tools / "dumpbin.exe").chmod(0o755)
+        self.report = {"dependents": json.loads(json.dumps(RELEASE_DEPENDENTS)),
+                       "imports": json.loads(json.dumps(RELEASE_IMPORTS))}
+        self.write_report(tools)
+        root = self.work / "release"
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True)
+        for name in INSTALLED_BIN:
+            if name != "unused.dll":
+                (bin_dir / name).write_bytes(b"MZ " + name.encode())
+        (bin_dir / "rtlsdr.dll").write_bytes(b"MZ ... no transfer left, canceling ...")
+        for name in ("SoapySDRUtil.exe", "dsd-neo.exe"):
+            (bin_dir / name).write_text(FAKE_SOAPY_PROGRAM.format(python=sys.executable), encoding="utf-8")
+            (bin_dir / name).chmod(0o755)
+        modules = root / "lib/SoapySDR/modules0.8"
+        modules.mkdir(parents=True)
+        for name in MODULE_FILES:
+            (modules / name).write_bytes(b"MZ " + name.encode())
+        windows = self.work / "verify-windows"
+        (windows / "System32").mkdir(parents=True)
+        (windows / "System32/KERNEL32.dll").write_bytes(b"MZ system")
+        return tools, root, windows
+
+    def write_report(self, tools):
+        (tools / "report.json").write_text(json.dumps(self.report), encoding="utf-8")
+
+    def verify(self, tools, root, windows):
+        env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows), RUNNER_TEMP=str(self.work))
+        rc, out, err = self.pwsh(VERIFY, "-Script", ROOT / "tools/windows/verify_release_tree.ps1", "-Root", root,
+                                 env=env)
+        return rc, out + err
+
+    def test_verify_release_tree(self):
+        tools, root, windows = self.release_tree()
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        self.assertIn(f"Release tree verified: {root}", output)
+        for line in ("OK: rtlsdr.dll is built with the librtlsdr transfer patches",
+                     "OK: the SoapySDR modules, their libraries and every DLL they import are in place"):
+            self.assertIn(line, output)
+        # Every program ran: the drivers, --info, -h, four probes, and both damaged copies.
+        self.assertEqual(output.count("SoapySDRUtil.exe --check="), 9)
+        self.assertEqual(output.count("dsd-neo.exe --frontend none -i soapy"), 8)
+
+    def test_verify_release_tree_refusals(self):
+        tools, root, windows = self.release_tree()
+        cases = (
+            ("a missing library", root / "bin/hackrf.dll", "Expected one hackrf.dll"),
+            ("a missing module", root / "lib/SoapySDR/modules0.8/airspyhfSupport.dll",
+             "modules0.8; found airspySupport.dll, HackRFSupport.dll"),
+            ("an unpatched librtlsdr", root / "bin/rtlsdr.dll", "lacks the reader's 'no transfer left' message"),
+        )
+        for label, path, message in cases:
+            with self.subTest(case=label):
+                saved = path.read_bytes()
+                if label == "an unpatched librtlsdr":
+                    path.write_bytes(b"MZ rtlsdr")
+                else:
+                    path.unlink()
+                try:
+                    rc, output = self.verify(tools, root, windows)
+                finally:
+                    path.write_bytes(saved)
+                self.assertEqual(rc, 1, output)
+                self.assertIn(message, output)
+        # SoapyAirspyHF built without its gain controls.
+        self.report["imports"]["airspyhfSupport.dll"]["airspyhf.dll"].remove("airspyhf_set_hf_lna")
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 1, output)
+        self.assertIn("does not import airspyhf_set_hf_lna", output)
 
 if __name__ == "__main__":
     unittest.main()
