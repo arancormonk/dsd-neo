@@ -563,7 +563,8 @@ does.
     USBD bursts without a repeater-mode sync (not decoded as a position).
   - A report whose check failed, or that `-F` accepted as RAS. It still prints, with `Position: (suppressed; CRC ERR)`
     or `(suppressed; RAS)` in place of the coordinates (see `-F`).
-  - A report with no fix or an impossible position: a latitude past 90 or a longitude past 180 degrees, minutes of 60
+  - A report with no fix or an impossible position: a latitude past 90 or a longitude past 180 degrees (by any digit
+    of its fraction, however far down), minutes of 60
     or more, exactly 0, 0, UDT NMEA with Q=0, an L3Harris update marked no fix or GPS not enabled, an NMEA GGA whose
     quality is not 1-5, an RMC not marked valid (status `V`, or mode `N`, `E`, `M` or `S`). A bad time, speed or
     heading field does not stop the row: that field becomes unknown.

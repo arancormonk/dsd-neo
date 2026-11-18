@@ -148,11 +148,13 @@ nmea_is_digit(char c) {
 }
 
 /* A number written as digits, an optional '.', and more digits: its integer part (at most @p max_int digits, at least
- * one) and its first @p keep fraction digits as an integer (zero-padded; further digits are dropped). */
+ * one) and its first @p keep fraction digits as an integer (zero-padded; further digits are dropped, but whether any
+ * fraction digit at all is nonzero is kept). */
 typedef struct {
     uint32_t whole;
     uint32_t frac;
     size_t int_digits;
+    uint8_t frac_nonzero; /* some fraction digit, kept or dropped, is not 0 */
 } nmea_number;
 
 static int
@@ -160,6 +162,7 @@ nmea_parse_number(const nmea_field* f, size_t max_int, size_t keep, nmea_number*
     size_t i = 0U;
     out->whole = 0U;
     out->frac = 0U;
+    out->frac_nonzero = 0U;
     while (i < f->n && nmea_is_digit(f->p[i])) {
         if (i >= max_int) {
             return 0;
@@ -179,6 +182,9 @@ nmea_parse_number(const nmea_field* f, size_t max_int, size_t keep, nmea_number*
         for (i++; i < f->n; i++) {
             if (!nmea_is_digit(f->p[i])) {
                 return 0;
+            }
+            if (f->p[i] != '0') {
+                out->frac_nonzero = 1U;
             }
             if (kept < keep) {
                 out->frac = (out->frac * 10U) + (uint32_t)(f->p[i] - '0');
@@ -206,7 +212,7 @@ enum {
 
 /* ddmm.m... (latitude, @p deg_digits 2, @p max_deg 90) or dddmm.m... (longitude, 3, 180) and its hemisphere letter. The
  * components are checked before anything is converted: degrees <= max, minutes <= 59, the boundary degree only with
- * zero minutes and fraction. */
+ * zero minutes and a fraction whose every digit is 0, those past the kept precision included. */
 static int
 nmea_parse_coordinate(const nmea_field* value, const nmea_field* hemi, size_t deg_digits, uint32_t max_deg,
                       const char* signs, int32_t* out_e7) {
@@ -216,7 +222,7 @@ nmea_parse_coordinate(const nmea_field* value, const nmea_field* hemi, size_t de
     }
     const uint32_t deg = num.whole / 100U;
     const uint32_t min = num.whole % 100U;
-    if (deg > max_deg || min > 59U || (deg == max_deg && (min != 0U || num.frac != 0U))) {
+    if (deg > max_deg || min > 59U || (deg == max_deg && (min != 0U || num.frac_nonzero))) {
         return 0;
     }
     int sign = 0;

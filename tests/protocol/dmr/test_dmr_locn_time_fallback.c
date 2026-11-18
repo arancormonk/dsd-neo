@@ -140,6 +140,10 @@ static const locn_case k_locn_cases[] = {
     {"latitude 99", "N9930.0000E04500.0000", 0, 0, 0, NULL},
     {"past the pole", "N9000.0001E04500.0000", 0, 0, 0, NULL},
     {"past the date line", "W18000.0001N1000.0000", 0, 0, 0, NULL},
+    // A fraction digit past the four the format keeps still counts at the boundary; zeros do not.
+    {"past the pole, fifth digit", "N9000.00001E04500.0000", 0, 0, 0, NULL},
+    {"past the date line, sixth digit", "E18000.000001N1000.0000", 0, 0, 0, NULL},
+    {"boundary, zero digits on", "N9000.000000E04500.0000", 1, 900000000, 450000000, NULL},
     // A non-digit is no field at all (it used to shift by a negative amount).
     {"non-digit", "N/430.0000E04500.0000", 0, 0, 0, ""},
     // The separator is a '.': any other character there is no coordinate field, on either axis.

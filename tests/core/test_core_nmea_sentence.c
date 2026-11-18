@@ -228,6 +228,14 @@ test_coordinate_bounds(void) {
     CHECK(f.has_position && f.lat_e7 == -900000000 && f.lon_e7 == -1800000000);
     CHECK(!parse_body("GPRMC,120000,A,9000.0001,N,04500.0,E,,,150626,,,A").has_position);
     CHECK(!parse_body("GPRMC,120000,A,2230.0,N,18000.0001,E,,,150626,,,A").has_position);
+    /* Any nonzero fraction digit past the boundary, those beyond the kept 1e-7 minute included (GGA as RMC). */
+    CHECK(!parse_body("GPGGA,120000,9000.00000001,N,04500.0,E,1,05,1.0,10.0,M,,M,,").has_position);
+    CHECK(!parse_body("GPRMC,120000,A,2230.0,N,18000.000000000009,W,,,150626,,,A").has_position);
+    f = parse_body("GPGGA,120000,9000.000000000000,N,18000.00000000,E,1,05,1.0,10.0,M,,M,,");
+    CHECK(f.has_position && f.lat_e7 == 900000000 && f.lon_e7 == 1800000000);
+    /* Below the boundary, digits beyond the kept precision are dropped as before. */
+    f = parse_body("GPRMC,120000,A,4500.12345678,N,04500.0,E,,,150626,,,A");
+    CHECK(f.has_position && f.lat_e7 == 450020576); /* 45 + 0.1234567 / 60, rounded */
     /* Field shape: ddmm / dddmm, digits, a hemisphere letter. */
     CHECK(!parse_body("GPRMC,120000,A,230.0,N,04500.0,E,,,150626,,,A").has_position);
     CHECK(!parse_body("GPRMC,120000,A,2230.0,N,4500.0,E,,,150626,,,A").has_position);

@@ -1925,19 +1925,35 @@ dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
     return 1;
 }
 
-// One coordinate: `deg_digits` degree digits, two minute digits, the '.' separator, four digits of 1/10000 minute,
-// after the hemisphere letter at p[0]. Returns 1 when they have that shape (the field is a coordinate field); *valid
-// says whether the value is in range (degrees <= max_deg, the boundary only with zero minutes, minutes <= 59).
+// Whether any of the digits that run on from p[0] (at most `avail` bytes) is not 0: fraction digits past the four
+// the format keeps.
 static int
-dmr_locn_parse_coord(const uint8_t* p, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7, uint8_t* valid) {
+dmr_locn_more_digits_nonzero(const uint8_t* p, size_t avail) {
+    for (size_t i = 0; i < avail && p[i] >= '0' && p[i] <= '9'; i++) {
+        if (p[i] != '0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// One coordinate: `deg_digits` degree digits, two minute digits, the '.' separator, four digits of 1/10000 minute,
+// after the hemisphere letter at p[0], with `avail` bytes from p[0]. Returns 1 when they have that shape (the field is
+// a coordinate field); *valid says whether the value is in range (degrees <= max_deg, minutes <= 59, the boundary only
+// with zero minutes and a fraction whose every digit is 0, any that run on past the four included).
+static int
+dmr_locn_parse_coord(const uint8_t* p, size_t avail, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7,
+                     uint8_t* valid) {
     uint32_t deg = 0U;
     uint32_t min = 0U;
     uint32_t frac = 0U;
-    if (!dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
+    const size_t end = 8U + deg_digits;
+    if (avail < end || !dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
         || p[3 + deg_digits] != (uint8_t)'.' || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
         return 0;
     }
-    *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && min == 0U && frac == 0U)));
+    const int boundary_ok = min == 0U && frac == 0U && !dmr_locn_more_digits_nonzero(p + end, avail - end);
+    *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && boundary_ok)));
     if (*valid) {
         // degrees + (minutes + frac / 10000) / 60, in 1e-7 degree, rounded
         const int64_t value = (int64_t)deg * 10000000 + ((int64_t)(min * 10000U + frac) * 100 + 3) / 6;
@@ -1954,14 +1970,14 @@ dmr_locn_parse_field(const uint8_t* pdu, uint16_t len, uint16_t i, dmr_locn_data
         return dmr_locn_parse_time(pdu + i, d) ? 13U : 1U;
     }
     if ((c == 0x4E || c == 0x53) && (uint16_t)(i + 9U) < len) {
-        if (!dmr_locn_parse_coord(pdu + i, 2U, 90U, c == 0x53, &d->lat_e7, &d->lat_valid)) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 2U, 90U, c == 0x53, &d->lat_e7, &d->lat_valid)) {
             return 1U;
         }
         d->lat = 1;
         return 10U;
     }
     if ((c == 0x45 || c == 0x57) && (uint16_t)(i + 10U) < len) {
-        if (!dmr_locn_parse_coord(pdu + i, 3U, 180U, c == 0x57, &d->lon_e7, &d->lon_valid)) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 3U, 180U, c == 0x57, &d->lon_e7, &d->lon_valid)) {
             return 1U;
         }
         d->lon = 1;
