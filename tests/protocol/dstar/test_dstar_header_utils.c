@@ -394,8 +394,23 @@ open_dstar_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 0U);
 }
 
+/* One superframe's slow data: each block's mini-header and its five data bytes, the rest spaces. */
 static void
-test_slow_data_text_keeps_byte_after_marker(void) {
+slow_data_blocks(uint8_t bytes[60], const uint8_t* minis, const char* const* data, int blocks) {
+    DSD_MEMSET(bytes, 0x20, 60);
+    for (int b = 0; b < blocks; b++) {
+        bytes[b * 6] = minis[b];
+        for (int i = 0; i < 5 && data[b][i] != '\0'; i++) {
+            bytes[(b * 6) + 1 + i] = (uint8_t)data[b][i];
+        }
+    }
+}
+
+/* Each block by its own mini-header (issue #800): a text block's five characters, the one right after its mini-header
+ * included, go to its place in the 20-character message (block 0x40 + n is characters 5n..5n+4); a GPS block's bytes
+ * never do, before or after the text. */
+static void
+test_slow_data_text_by_mini_header(void) {
     static dsd_opts opts;
     static dsd_state state;
     Event_History_I* history;
@@ -407,24 +422,15 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     history = (Event_History_I*)calloc(2u, sizeof(*history));
     assert(history != NULL);
     state.event_history_s = history;
-    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
 
-    bytes[0] = 0x40;
-    bytes[1] = 'A';
-    bytes[2] = 'B';
-    bytes[3] = 'C';
-    bytes[4] = 'D';
-    bytes[5] = 'E';
-    bytes[6] = 'x';
-    bytes[7] = 'G';
-
+    static const uint8_t text_minis[2] = {0x40, 0x41};
+    static const char* const text_data[2] = {"ABCDE", "G"};
+    slow_data_blocks(bytes, text_minis, text_data, 2);
     pack_slow_data_bytes(bytes, bits);
     uint64_t revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
 
-    assert(state.dstar_txt[5] == 'E');
-    assert(state.dstar_txt[6] == ' ');
-    assert(state.dstar_txt[7] == 'G');
+    assert(strcmp(state.dstar_txt, "ABCDEG") == 0);
     /* No call is open: the display text is kept, the history row is left alone. */
     assert(state.event_history_s[0].Event_History_Items[0].text_message[0] == '\0');
     assert(history[0].revision == revision);
@@ -434,8 +440,27 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     pack_slow_data_bytes(bytes, bits);
     revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
-    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, state.dstar_txt) == 0);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, "ABCDEG") == 0);
     assert(history[0].revision == revision + 1U);
+
+    /* A text block 0 then GPS blocks with coordinates: only the text block's characters are text. */
+    static const uint8_t mixed_minis[4] = {0x40, 0x35, 0x35, 0x35};
+    static const char* const mixed_data[4] = {"HELLO", "2230.", "00N/0", "4500."};
+    slow_data_blocks(bytes, mixed_minis, mixed_data, 4);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(strcmp(state.dstar_txt, "HELLO") == 0);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") == 0);
+
+    /* A GPS continuation first, then the rest of the message: the text blocks are kept in their places. */
+    static const uint8_t late_minis[3] = {0x35, 0x41, 0x42};
+    static const char* const late_data[3] = {"0.00E", " WORL", "D"};
+    slow_data_blocks(bytes, late_minis, late_data, 3);
+    pack_slow_data_bytes(bytes, bits);
+    processDSTAR_SD(&opts, &state, bits);
+    assert(strcmp(state.dstar_txt, "HELLO WORLD") == 0);
+    assert(strcmp(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO WORLD") == 0);
+    assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "0.00E") == NULL);
     dsd_state_ext_free_all(&state);
     free(history);
 }
@@ -489,7 +514,7 @@ main(void) {
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
-    test_slow_data_text_keeps_byte_after_marker();
+    test_slow_data_text_by_mini_header();
     test_slow_data_unchecked_aprs_is_no_position();
     return 0;
 }

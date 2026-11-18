@@ -202,25 +202,6 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
 }
 
-static void
-dstar_sd_emit_truncated_ascii(const uint8_t* sd_bytes, char* out, int capture) {
-    int i;
-    for (i = 1; i < 59; i++) {
-        if (i % 6 == 0) {
-            continue;
-        }
-        if (dstar_sd_is_printable(sd_bytes[i])) {
-            DSD_FPRINTF(stderr, "%c", sd_bytes[i]);
-            if (capture && out != NULL) {
-                out[i] = (char)sd_bytes[i];
-            }
-        }
-    }
-    if (capture && out != NULL) {
-        out[59] = '\0';
-    }
-}
-
 /* ---- D-PRS (GPS-A) records: JARL STD 6.0 section 6.8.1 and Ap2.1, issue #800 2.10 ---- */
 
 enum {
@@ -457,27 +438,48 @@ dstar_dprs_begin(const dsd_opts* opts, dsd_state* state) {
     dsd_position_origin_capture(opts, state, &a->origin);
 }
 
+/* One GPS data byte while no record is being collected: the last five bytes are kept to find "$$CRC". */
+static void
+dstar_dprs_hunt(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    if (a->len == DSTAR_DPRS_TAG_LEN) {
+        for (int i = 1; i < DSTAR_DPRS_TAG_LEN; i++) {
+            a->text[i - 1] = a->text[i];
+        }
+        a->len--;
+    }
+    a->text[a->len++] = byte;
+    if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
+        dstar_dprs_begin(opts, state);
+    }
+}
+
+/* A record grew past DSTAR_DPRS_RECORD_MAX: it is dropped, but its last bytes may be the start of the next record's
+ * "$$CRC" (its CR was lost), so they and @p byte go on to the hunt for it. */
+static void
+dstar_dprs_overflow(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
+    dstar_dprs_assembly* a = &state->dstar_dprs;
+    uint8_t tail[DSTAR_DPRS_TAG_LEN - 1];
+    DSD_MEMCPY(tail, a->text + a->len - sizeof(tail), sizeof(tail));
+    dstar_dprs_reset(a);
+    for (size_t i = 0U; i < sizeof(tail); i++) {
+        dstar_dprs_hunt(opts, state, tail[i]);
+    }
+    dstar_dprs_hunt(opts, state, byte);
+}
+
 /* One GPS data byte: until "$$CRC" is seen, the last five bytes are kept to find it; then the record grows through its
  * CR, or is dropped once longer than DSTAR_DPRS_RECORD_MAX. A "$$CRC" inside a record means the one collected lost
- * its CR: the new record starts there, so a lost CR costs only its own record. */
+ * its CR: the new record starts there, so a lost CR costs only its own record, at the bound too. */
 static void
 dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     dstar_dprs_assembly* a = &state->dstar_dprs;
     if (!a->collecting) {
-        if (a->len == DSTAR_DPRS_TAG_LEN) {
-            for (int i = 1; i < DSTAR_DPRS_TAG_LEN; i++) {
-                a->text[i - 1] = a->text[i];
-            }
-            a->len--;
-        }
-        a->text[a->len++] = byte;
-        if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
-            dstar_dprs_begin(opts, state);
-        }
+        dstar_dprs_hunt(opts, state, byte);
         return;
     }
     if (a->len >= DSTAR_DPRS_RECORD_MAX) {
-        dstar_dprs_reset(a);
+        dstar_dprs_overflow(opts, state, byte);
         return;
     }
     a->text[a->len++] = byte;
@@ -516,33 +518,94 @@ dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw)
     }
 }
 
+/* The 20-character text message (JARL STD 6.0 6.8.1(3)): four blocks of five characters, each block's mini-header 0x40
+ * + its place in the message (0-3). */
+enum { DSTAR_SD_TEXT_CHARS = 20, DSTAR_SD_TEXT_BLOCK_CHARS = 5 };
+
+#define DSTAR_SD_TYPE_TEXT 0x40U
+
+/* Whether block @p b of the raw slow data @p raw is a text block, and its place in the message. */
+static int
+dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
+    const uint8_t mini = raw[(size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES];
+    if ((mini & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_TEXT || (mini & 0x0FU) > 3U) {
+        return 0;
+    }
+    *place = mini & 0x0FU;
+    return 1;
+}
+
+/* Each block by its own mini-header: a text block's five characters go to their place in the message, and nothing of
+ * another block (GPS data among them) ever does. A block 0 starts a new message; a later block of the message fills its
+ * place in the one being shown. Returns 1 when the superframe held a text block. */
+static int
+dstar_sd_collect_text(dsd_state* state, const uint8_t* raw) {
+    char* const msg = state->dstar_txt;
+    int any = 0;
+    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+        unsigned place = 0U;
+        if (!dstar_sd_text_block(raw, b, &place)) {
+            continue;
+        }
+        size_t len = strnlen(msg, DSTAR_SD_TEXT_CHARS);
+        if (place == 0U) {
+            len = 0U;
+        }
+        for (; len < DSTAR_SD_TEXT_CHARS; len++) {
+            msg[len] = ' ';
+        }
+        msg[DSTAR_SD_TEXT_CHARS] = '\0';
+        const uint8_t* data = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES) + 1U;
+        for (unsigned i = 0U; i < DSTAR_SD_TEXT_BLOCK_CHARS; i++) {
+            msg[(place * DSTAR_SD_TEXT_BLOCK_CHARS) + i] = dstar_sd_is_printable(data[i]) ? (char)data[i] : ' ';
+        }
+        any = 1;
+    }
+    if (any) {
+        size_t len = strnlen(msg, DSTAR_SD_TEXT_CHARS);
+        while (len > 0U && msg[len - 1U] == ' ') {
+            msg[--len] = '\0';
+        }
+    }
+    return any;
+}
+
 static void
-dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
-    DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
-    DSD_FPRINTF(stderr, " TEXT: ");
-    dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 1);
-    DSD_MEMCPY(state->dstar_txt, ctx->strt, sizeof(ctx->strt));
+dstar_sd_handle_text_message(dsd_state* state) {
+    DSD_FPRINTF(stderr, " TEXT: %s", state->dstar_txt);
     // The display keeps the text either way; the history row takes it only through an open call.
     (void)dsd_event_set_open_call_detail(state, 0U, DSD_EVENT_DETAIL_TEXT, state->dstar_txt);
 }
 
-/* A superframe that opens with a full GPS block (type 3): GPS data (a D-PRS record or NMEA sentences), shown as it
- * arrived and never taken for a text message (type 4). The "$$CRC" literal checks nothing: a D-PRS record is evidence
- * and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). */
+/* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived. The "$$CRC" literal checks nothing: a
+ * D-PRS record is evidence and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). */
 static void
-dstar_sd_handle_gps_data(dstar_sd_ctx* ctx) {
-    DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
+dstar_sd_handle_gps_data(const uint8_t* raw) {
     DSD_FPRINTF(stderr, " DATA: ");
-    dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);
+    for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
+        const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
+        if ((block[0] & DSTAR_SD_TYPE_MASK) != DSTAR_SD_TYPE_GPS) {
+            continue;
+        }
+        const int count = block[0] & 0x0F;
+        for (int i = 1; i <= count && i <= DSTAR_SD_BLOCK_DATA_MAX; i++) {
+            if (dstar_sd_is_printable(block[i])) {
+                DSD_FPRINTF(stderr, "%c", block[i]);
+            }
+        }
+    }
 }
 
+/* A superframe that is no header: its text blocks and its GPS blocks, each chosen by its own mini-header. */
 static void
-dstar_sd_handle_non_header(dsd_state* state, dstar_sd_ctx* ctx) {
-    if (ctx->sd_bytes[0] == 0x35) {
-        dstar_sd_handle_gps_data(ctx);
-    } else if (ctx->sd_bytes[0] == 0x40) {
-        dstar_sd_handle_text_message(state, ctx);
-    } else {
+dstar_sd_handle_non_header(dsd_state* state, const dstar_sd_ctx* ctx) {
+    const int text = dstar_sd_collect_text(state, ctx->payload);
+    if (text) {
+        dstar_sd_handle_text_message(state);
+    }
+    if ((ctx->payload[0] & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_GPS) {
+        dstar_sd_handle_gps_data(ctx->payload);
+    } else if (!text) {
         DSD_FPRINTF(stderr, " _UNK:");
         DSD_FPRINTF(stderr, " %s", ctx->strf);
     }

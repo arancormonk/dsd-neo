@@ -2588,7 +2588,10 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches; its source is the header callsign
-    only when the record arrived within that call. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
+    only when the record arrived within that call. Each slow-data block goes by its own mini-header: only GPS blocks
+    (0x3n) feed the record and the `DATA:` display, only text blocks (0x40-0x43) the 20-character message, each at its
+    place. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go on
+    to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
