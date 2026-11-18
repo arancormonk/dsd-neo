@@ -33,18 +33,22 @@ draw_rank(const MapViewItem::TrackDraw& t) {
     return t.emergency ? 1 : 0;
 }
 
-/**
- * @brief Label priority rank (higher is placed first): emergencies, then the selected track, then the rest.
- *
- * An emergency's label carries the word, so it is never the one dropped for another label (spec 4.6: never hue
- * alone).
- */
+/** @brief Label priority rank (higher is placed first): the selected track, then emergencies, then the rest. */
 inline int
 label_rank(const MapViewItem::TrackDraw& t) {
-    if (t.emergency) {
+    if (t.selected) {
         return 2;
     }
-    return t.selected ? 1 : 0;
+    return t.emergency ? 1 : 0;
+}
+
+/** @brief Whether @p a was heard more recently than @p b (a fix of no known age is the oldest). */
+inline bool
+heard_sooner(const MapViewItem::TrackDraw& a, const MapViewItem::TrackDraw& b) {
+    if (a.ageS < 0 || b.ageS < 0) {
+        return a.ageS >= 0 && b.ageS < 0;
+    }
+    return a.ageS < b.ageS;
 }
 
 } // namespace map_view_detail

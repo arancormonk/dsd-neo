@@ -61,9 +61,14 @@ constexpr double kSpriteScale = 1.75;
 /* Trails and circles are built for the view grown by this fraction of its larger side each way; a pan within it
  * only moves them. */
 constexpr double kPanMarginFraction = 0.5;
+/* How far trails and circles may be scaled while a zoom is in progress before they are built again: half a zoom
+ * step each way. */
+constexpr double kZoomScaleReach = 1.41421356237;
 /* Space between a marker's edge and its label, logical pixels, and the label's halo around its text. */
 constexpr double kLabelGap = 3.0;
 constexpr double kLabelHalo = 2.0;
+/* Cell of the grid labels are checked against their neighbours in, logical pixels. */
+constexpr float kLabelGridCell = 48.0F;
 
 quint8
 unit_to_byte(float v) {
@@ -291,7 +296,9 @@ stroke(QPainter& p, const QPainterPath& path, const QColor& color, double width,
     pen.setJoinStyle(Qt::RoundJoin);
     pen.setCapStyle(dashed ? Qt::FlatCap : Qt::RoundCap);
     if (dashed) {
-        pen.setDashPattern({1.6, 1.2});
+        /* In pen widths: dashes of 2, gaps of 1.6 (3 and 2.4 px at the 1.5 px outline): two to a side of the diamond,
+         * gaps wide enough to read at marker size. */
+        pen.setDashPattern({2.0, 1.6});
     }
     p.setBrush(Qt::NoBrush);
     p.setPen(pen);
@@ -315,12 +322,16 @@ paint_marker_cell(QPainter& p, const ms::MarkerStyle& style, double cell_px, dou
     }
     stroke(p, shape, colors.halo, halo, false);
     if (!style.ring) {
-        /* Fill strength reads the same on any tile: over the halo colour, not over the map. */
+        /* Fill strength reads the same on any tile: over the halo colour, not over the map. A dashed outline stands
+         * apart from the fill, a band of halo between them, so its gaps show as gaps: a fill touching it closed them
+         * and a fresh unconfirmed marker read as a notched solid one. */
+        const QPainterPath body =
+            style.dashed_outline ? diamond_path(c, (size_px / 2.0) - outline - (1.25 * ratio)) : shape;
         p.setPen(Qt::NoPen);
         p.fillPath(shape, colors.halo);
         QColor fill = color;
         fill.setAlphaF(fill.alphaF() * static_cast<double>(ms::fill_opacity(style.fill_level)));
-        p.fillPath(shape, fill);
+        p.fillPath(body, fill);
     }
     stroke(p, shape, color, outline, style.dashed_outline);
 }
@@ -468,26 +479,45 @@ MapViewItem::prepareLabels() {
 void
 MapViewItem::buildLabels(double ratio) {
     ensureLabelCache(ratio);
-    m_labelBoxes.clear();
+    /* What a label may not cover: every marker drawn (its own included: no side reaches it), the device's dot, and
+     * the screen's controls and chips. */
+    const auto view_w = static_cast<float>(m_vp.width);
+    const auto view_h = static_cast<float>(m_vp.height);
+    m_labelGrid.reset(view_w, view_h, kLabelGridCell);
+    const auto half = static_cast<float>((m_markerSize / 2.0) + 1.0);
+    for (const MarkerDraw& m : m_markers) {
+        const mm::ScreenPoint at = mm::screen_from_world(m_vp, m.at);
+        m_labelGrid.add(
+            ms::LabelBox{static_cast<float>(at.x) - half, static_cast<float>(at.y) - half, 2.0F * half, 2.0F * half});
+    }
+    mm::WorldPoint device{};
+    if (deviceWorld(&device)) {
+        const mm::ScreenPoint at = mm::screen_from_world(m_vp, device);
+        m_labelGrid.add(
+            ms::LabelBox{static_cast<float>(at.x) - half, static_cast<float>(at.y) - half, 2.0F * half, 2.0F * half});
+    }
+    for (const ms::LabelBox& b : m_labelObstacles) {
+        m_labelGrid.add(b);
+    }
+    m_labelRequests.clear();
     m_labelKeys.clear();
-    const double offset = (m_markerSize / 2.0) + kLabelGap;
     for (const int i : m_labelOrder) {
         const TrackDraw& t = m_scene[static_cast<size_t>(i)];
         const QSizeF size = labelImage(t, ratio).deviceIndependentSize();
         const mm::ScreenPoint at = mm::screen_from_world(m_vp, t.hasMarker ? t.marker : t.ring);
-        m_labelBoxes.push_back(ms::LabelBox{
-            static_cast<float>(at.x + offset),
-            static_cast<float>(at.y - (size.height() / 2.0)),
-            static_cast<float>(size.width()),
-            static_cast<float>(size.height()),
-        });
+        m_labelRequests.push_back(ms::LabelRequest{static_cast<float>(at.x), static_cast<float>(at.y),
+                                                   static_cast<float>(size.width()),
+                                                   static_cast<float>(size.height())});
         m_labelKeys.push_back(t.labelKey);
     }
-    m_labelKeep.assign(m_labelBoxes.size(), 0U);
-    (void)ms::place_labels(m_labelBoxes.data(), static_cast<int>(m_labelBoxes.size()), static_cast<float>(m_vp.width),
-                           static_cast<float>(m_vp.height), m_labelKeep.data());
+    m_labelBoxes.resize(m_labelRequests.size());
+    m_labelKeep.assign(m_labelRequests.size(), 0U);
+    const auto reach = static_cast<float>((m_markerSize / 2.0) + kLabelGap);
+    (void)ms::place_labels(m_labelRequests.data(), static_cast<int>(m_labelRequests.size()), reach,
+                           ms::LabelBox{0.0F, 0.0F, view_w, view_h}, m_labelGrid, m_labelBoxes.data(),
+                           m_labelKeep.data());
     m_labels.clear();
-    for (size_t i = 0; i < m_labelBoxes.size(); i++) {
+    for (size_t i = 0; i < m_labelRequests.size(); i++) {
         if (m_labelKeep[i] != 0U) {
             const ms::LabelBox& b = m_labelBoxes[i];
             m_labels.push_back(LabelDraw{m_labelKeys[i], b.left, b.top, b.width, b.height});
@@ -673,11 +703,18 @@ void
 MapViewItem::gpuOverlay(GpuRoot* root, double ratio) {
     const double margin = kPanMarginFraction * std::max(m_vp.width, m_vp.height);
     wrapCopies(m_vp, m_copies);
-    if (root->overlaySerial == m_sceneSerial && !differs(root->overlayRatio, ratio)
-        && ms::reusable(root->overlayVp, m_vp, margin) && root->overlayCopies == m_copies) {
-        const mm::ScreenPoint d = ms::pan_offset(root->overlayVp, m_vp);
+    /* A pan within the margin only moves the trails and circles. While a zoom is in progress (a pinch, the camera)
+     * they are scaled as well, up to half a zoom step each way, and built again once it settles: rebuilding 200
+     * trails of 100 points for every pinch frame cost a phone about 30 ms a frame. */
+    const bool same =
+        root->overlaySerial == m_sceneSerial && !differs(root->overlayRatio, ratio) && root->overlayCopies == m_copies;
+    const bool fits = m_zooming ? ms::reusable_scaled(root->overlayVp, m_vp, margin, kZoomScaleReach)
+                                : ms::reusable(root->overlayVp, m_vp, margin);
+    if (same && fits) {
+        const ms::ViewTransform t = ms::view_transform(root->overlayVp, m_vp);
         QMatrix4x4 matrix;
-        matrix.translate(static_cast<float>(d.x), static_cast<float>(d.y));
+        matrix.translate(static_cast<float>(t.dx), static_cast<float>(t.dy));
+        matrix.scale(static_cast<float>(t.scale));
         if (root->overlay->matrix() != matrix) {
             root->overlay->setMatrix(matrix);
         }

@@ -538,5 +538,33 @@ Item {
             root.width = 360;
             Ui.Theme.resetFontScale();
         }
+
+        // Labels keep clear of what the screen lays over the canvas: the control column, the chips at the top and
+        // the attribution are the canvas's label keep-outs, where they are drawn.
+        function test_16_labels_keep_clear_of_the_controls_chips_and_attribution() {
+            var c = canvas();
+            var ctl = item("mapControls");
+            var keepOut = c.labelObstacles;
+            compare(keepOut.length, 3);
+            var at = c.mapFromItem(ctl, 0, 0);
+            compare(keepOut[0].x, at.x);
+            compare(keepOut[0].y, at.y);
+            compare(keepOut[0].width, ctl.width);
+            compare(keepOut[0].height, ctl.height);
+            var attribution = item("mapAttribution");
+            var a = c.mapFromItem(attribution, 0, 0);
+            compare(keepOut[2].x, a.x);
+            compare(keepOut[2].y, a.y);
+            compare(keepOut[2].width, attribution.width);
+            // A chip shown at the top joins them.
+            screen.tilesEnabled = true;
+            testContext.setMapTilesFailing(true);
+            var chip = item("mapTilesState");
+            tryVerify(function () { return chip.visible; }, 5000);
+            var status = item("mapStatus");
+            tryVerify(function () { return c.labelObstacles[1].height > 0; });
+            compare(c.labelObstacles[1].y, c.mapFromItem(status, 0, 0).y);
+            compare(c.labelObstacles[1].height, status.height);
+        }
     }
 }

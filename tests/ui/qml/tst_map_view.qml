@@ -66,6 +66,7 @@ Item {
             map.followTrackId = 0
             map.cameraDurationMs = 0
             map.trailColor = "#ff00ff"
+            map.labelObstacles = []
             map.followDevice = false
             map.deviceValid = false
             map.resetCameraUsedDevicePosition()
@@ -192,19 +193,42 @@ Item {
             verify(near(rgb(image, tc.cx, tc.cy), 255, 0, 255, 40), "opaque: " + JSON.stringify(rgb(image, tc.cx, tc.cy)))
         }
 
-        // An emergency's label carries the word, so it is never the label dropped for the selected track's.
-        function test_06b_an_emergency_label_outranks_the_selected_one() {
+        // Two labels that want the same side: the selected track keeps it, and the emergency's label (its word)
+        // takes another side rather than being dropped.
+        function test_06b_a_label_that_cannot_have_its_side_takes_another() {
             push({ source: 1015, lat: 10.0, lon: 20.0, label: "Car 12 long name" })
             var selected = map.trackAt(tc.cx, tc.cy)
             map.selectedTrackId = selected
             push({ source: 1016, lat: 10.0001, lon: 20.0, emergency: true, label: "Unit 7" })
             waitForRendering(map)
             var image = grabImage(root)
-            // From past the selection halo (the sprite is 28 px wide) to the right edge.
-            verify(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 255, 128, 0, 50) > 20,
-                   "the emergency's label is drawn")
-            compare(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 0, 255, 255, 30), 0,
-                    "the overlapping selected label gave way")
+            // From past the selection halo (the sprite is 28 px wide) to the right edge: the selected label.
+            verify(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 0, 255, 255, 30) > 20,
+                   "the selected label keeps the right")
+            compare(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 255, 128, 0, 50), 0,
+                    "the emergency's label is not over it")
+            verify(countNear(image, 0, 0, tc.cx - 16, root.height, 255, 128, 0, 50)
+                   + countNear(image, tc.cx - 40, 0, tc.cx + 40, tc.cy - 16, 255, 128, 0, 50) > 20,
+                   "the emergency's label is drawn on another side")
+        }
+
+        // A label never covers another marker, nor the screen's controls: it takes another side.
+        function test_06c_labels_keep_clear_of_markers_and_obstacles() {
+            push({ source: 1018, lat: 10.0, lon: 20.0, label: "Unit 9" })
+            // A neighbour 40 px to the right, where the label would go (unnamed, so only its marker is in the way).
+            push({ anonymous: true, lat: 10.0, lon: 20.0 + 40 * 360 / (256 * 4096) })
+            waitForRendering(map)
+            var image = grabImage(root)
+            compare(countNear(image, tc.cx + 16, tc.cy - 12, tc.cx + 30, tc.cy + 12, 255, 255, 0, 50), 0,
+                    "not toward the neighbour")
+            verify(countNear(image, 0, tc.cy - 12, tc.cx - 12, tc.cy + 12, 255, 255, 0, 50) > 20, "to the left instead")
+            // A keep-out box over the left side (the neighbour still holds the right): it goes above.
+            map.labelObstacles = [Qt.rect(0, tc.cy - 30, tc.cx - 30, 60)]
+            waitForRendering(map)
+            image = grabImage(root)
+            compare(countNear(image, 0, tc.cy - 30, tc.cx - 30, tc.cy + 30, 255, 255, 0, 50), 0, "never under the keep-out")
+            verify(countNear(image, tc.cx - 40, tc.cy - 40, tc.cx + 40, tc.cy - 12, 255, 255, 0, 50) > 20, "above instead")
+            map.labelObstacles = []
         }
 
         // The settings sheet checks a template and names the server the viewed area goes to.
@@ -249,6 +273,21 @@ Item {
             }
             verify(differ > 6, "a dashed outline: " + differ + " pixels differ")
             verify(near(rgb(image, tc.cx, tc.cy), 255, 255, 255, 12), "the same solid fill")
+            // Even when fresh, the outline's gaps read as gaps: along one edge of the diamond some pixels are the
+            // halo's (the fill stands apart from the outline), where a solid outline is unbroken.
+            var gaps = 0, dashes = 0, solidGaps = 0
+            for (var t = 1; t < 8; t++) {
+                var ex = Math.round(tc.cx + t), ey = Math.round(tc.cy - 8 + t)
+                var c = rgb(image, ex, ey)
+                if (c.r < 80)
+                    gaps++
+                else if (c.r > 180)
+                    dashes++
+                if (named.red(ex, ey) < 80)
+                    solidGaps++
+            }
+            verify(gaps >= 2 && dashes >= 2, "dashes and gaps on the edge: " + dashes + " / " + gaps)
+            compare(solidGaps, 0, "a confirmed source's outline is unbroken")
             compare(countNear(image, tc.cx + 12, tc.cy - 10, root.width, tc.cy + 10, 255, 255, 0, 50), 0,
                     "no name for an unconfirmed source")
         }

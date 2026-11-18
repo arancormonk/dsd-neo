@@ -528,25 +528,88 @@ test_split_trail() {
     assert(runs.solid_x.empty());
 }
 
-/* Labels are placed in priority order and never overlap; one off screen is not placed. */
+/* Place labels for @p n requests in a 400 x 300 view with marker boxes and keep-outs already in @p grid. */
+int
+place(const ms::LabelRequest* requests, int n, ms::BoxGrid& grid, ms::LabelBox* placed, uint8_t* keep) {
+    return ms::place_labels(requests, n, 11.0F, ms::LabelBox{0.0F, 0.0F, 400.0F, 300.0F}, grid, placed, keep);
+}
+
+ms::LabelBox
+marker_box(float x, float y) {
+    return ms::LabelBox{x - 9.0F, y - 9.0F, 18.0F, 18.0F};
+}
+
+/* Labels take the first clear side (right, left, above, below), in priority order: never over another label, a
+ * marker or a keep-out box, never past the view's edge, and dropped only when no side is clear. */
 void
 test_place_labels() {
-    const ms::LabelBox boxes[5] = {
-        {100.0F, 100.0F, 60.0F, 16.0F}, /* first: always placed */
-        {130.0F, 108.0F, 60.0F, 16.0F}, /* overlaps the first: dropped */
-        {160.0F, 100.0F, 60.0F, 16.0F}, /* touches the first's edge: placed */
-        {-80.0F, 10.0F, 60.0F, 16.0F},  /* off screen: dropped */
-        {10.0F, 10.0F, 0.0F, 16.0F},    /* empty: dropped */
+    ms::BoxGrid grid;
+    ms::LabelBox placed[4];
+    uint8_t keep[4] = {9U, 9U, 9U, 9U};
+
+    /* Alone: to the right, clear of its own marker. */
+    grid.reset(400.0F, 300.0F, 48.0F);
+    grid.add(marker_box(100.0F, 100.0F));
+    const ms::LabelRequest alone{100.0F, 100.0F, 60.0F, 16.0F};
+    assert(place(&alone, 1, grid, placed, keep) == 1 && keep[0] == 1U);
+    assert(near(placed[0].left, 111.0F, 0.0F) && near(placed[0].top, 92.0F, 0.0F));
+    assert(!ms::boxes_overlap(placed[0], marker_box(100.0F, 100.0F)));
+
+    /* A neighbour's marker to the right: the label goes left instead of covering it. */
+    grid.reset(400.0F, 300.0F, 48.0F);
+    grid.add(marker_box(100.0F, 100.0F));
+    grid.add(marker_box(140.0F, 100.0F));
+    assert(place(&alone, 1, grid, placed, keep) == 1);
+    assert(near(placed[0].left, 100.0F - 11.0F - 60.0F, 0.0F));
+
+    /* At the right edge, or with the control column there (a keep-out box): it goes left too. */
+    grid.reset(400.0F, 300.0F, 48.0F);
+    const ms::LabelRequest edge{360.0F, 200.0F, 60.0F, 16.0F};
+    grid.add(marker_box(360.0F, 200.0F));
+    assert(place(&edge, 1, grid, placed, keep) == 1 && placed[0].left + placed[0].width <= 360.0F);
+    grid.reset(400.0F, 300.0F, 48.0F);
+    const ms::LabelRequest by_controls{300.0F, 250.0F, 60.0F, 16.0F};
+    grid.add(marker_box(300.0F, 250.0F));
+    grid.add(ms::LabelBox{340.0F, 150.0F, 48.0F, 140.0F}); /* the controls */
+    assert(place(&by_controls, 1, grid, placed, keep) == 1);
+    assert(!ms::boxes_overlap(placed[0], ms::LabelBox{340.0F, 150.0F, 48.0F, 140.0F}));
+
+    /* Hemmed in on every side: not drawn. */
+    grid.reset(400.0F, 300.0F, 48.0F);
+    grid.add(marker_box(200.0F, 150.0F));
+    grid.add(ms::LabelBox{0.0F, 0.0F, 400.0F, 146.0F});
+    grid.add(ms::LabelBox{0.0F, 154.0F, 400.0F, 146.0F});
+    const ms::LabelRequest hemmed{200.0F, 150.0F, 60.0F, 16.0F};
+    keep[0] = 9U;
+    assert(place(&hemmed, 1, grid, placed, keep) == 0 && keep[0] == 0U);
+
+    /* Priority: two markers one above the other, their right-hand labels would overlap. The first label in the
+     * order keeps the right; the second takes another side, and neither covers the other or either marker. */
+    const auto two_markers = [&grid] {
+        grid.reset(400.0F, 300.0F, 48.0F);
+        grid.add(marker_box(100.0F, 100.0F));
+        grid.add(marker_box(100.0F, 112.0F));
     };
-    uint8_t keep[5] = {9U, 9U, 9U, 9U, 9U};
-    assert(ms::place_labels(boxes, 5, 400.0F, 300.0F, keep) == 2);
-    assert(keep[0] == 1U && keep[1] == 0U && keep[2] == 1U && keep[3] == 0U && keep[4] == 0U);
-    /* The order is the priority: the same two boxes the other way round keep the other one. */
-    const ms::LabelBox swapped[2] = {boxes[1], boxes[0]};
-    uint8_t keep2[2] = {0U, 0U};
-    assert(ms::place_labels(swapped, 2, 400.0F, 300.0F, keep2) == 1);
-    assert(keep2[0] == 1U && keep2[1] == 0U);
-    assert(ms::place_labels(nullptr, 2, 400.0F, 300.0F, keep2) == 0);
+    two_markers();
+    const ms::LabelRequest pair[2] = {{100.0F, 100.0F, 60.0F, 16.0F}, {100.0F, 112.0F, 60.0F, 16.0F}};
+    assert(place(pair, 2, grid, placed, keep) == 2);
+    assert(near(placed[0].left, 111.0F, 0.0F) && !near(placed[1].left, 111.0F, 0.0F));
+    assert(!ms::boxes_overlap(placed[0], placed[1]) && !ms::boxes_overlap(placed[1], marker_box(100.0F, 100.0F)));
+    const ms::LabelRequest reversed[2] = {pair[1], pair[0]};
+    two_markers();
+    assert(place(reversed, 2, grid, placed, keep) == 2);
+    assert(near(placed[0].left, 111.0F, 0.0F) && near(placed[0].top, 104.0F, 0.0F)
+           && !near(placed[1].left, 111.0F, 0.0F));
+
+    /* The grid finds overlaps across cells and ignores what lies outside the view; reset keeps nothing. */
+    grid.reset(400.0F, 300.0F, 48.0F);
+    grid.add(ms::LabelBox{90.0F, 90.0F, 20.0F, 20.0F}); /* straddles four cells */
+    assert(grid.hits(ms::LabelBox{105.0F, 105.0F, 2.0F, 2.0F}) && !grid.hits(ms::LabelBox{111.0F, 90.0F, 5.0F, 5.0F}));
+    grid.add(ms::LabelBox{-50.0F, -50.0F, 10.0F, 10.0F});
+    assert(!grid.hits(ms::LabelBox{-45.0F, -45.0F, 2.0F, 2.0F}));
+    grid.reset(400.0F, 300.0F, 48.0F);
+    assert(!grid.hits(ms::LabelBox{105.0F, 105.0F, 2.0F, 2.0F}));
+    assert(place(nullptr, 2, grid, placed, keep) == 0);
 }
 
 /* A tile's place on screen, for any zoom: the view's own tiles where visible_tiles() puts them, a parent covering
@@ -640,6 +703,47 @@ test_pan_reuse() {
     assert(ms::wrap_copy(wide, mm::WorldPoint{std::numeric_limits<double>::quiet_NaN(), 0.5}) == 0);
 }
 
+/* During a zoom, the trails built for one view stand in for the next by one scale and offset: exact for every point
+ * on the same copy, within half a zoom step, and only while the built area still covers the view. */
+void
+test_scaled_reuse() {
+    mm::Viewport built;
+    built.width = 412.0;
+    built.height = 915.0;
+    built.zoom = 10.5;
+    built.center_x = 0.555;
+    built.center_y = 0.47;
+    built = mm::clamp_viewport(built);
+    const mm::Viewport now = mm::zoom_about(built, 10.8, 120.0, 610.0);
+    const ms::ViewTransform t = ms::view_transform(built, now);
+    assert(std::fabs(t.scale - std::exp2(0.3)) < 1.0e-9);
+    for (const mm::WorldPoint p : {mm::WorldPoint{0.5551, 0.4701}, mm::WorldPoint{0.5549, 0.4699}}) {
+        const mm::ScreenPoint a = mm::screen_from_world(built, p);
+        const mm::ScreenPoint b = mm::screen_from_world(now, p);
+        assert(std::fabs(((t.scale * a.x) + t.dx) - b.x) < 1.0e-6
+               && std::fabs(((t.scale * a.y) + t.dy) - b.y) < 1.0e-6);
+    }
+    /* The anchor of the zoom stays put. */
+    const mm::WorldPoint anchor = mm::world_from_screen_raw(built, 120.0, 610.0);
+    const mm::ScreenPoint s = mm::screen_from_world(now, anchor);
+    assert(std::fabs(s.x - 120.0) < 1.0e-6 && std::fabs(s.y - 610.0) < 1.0e-6);
+    const double margin = 0.5 * 915.0;
+    assert(ms::reusable_scaled(built, now, margin, 1.41421356237));
+    /* Zooming out shrinks the built area: past the margin's cover it must be built again. */
+    const mm::Viewport out = mm::zoom_about(built, 10.0, 0.0, 0.0);
+    assert(!ms::reusable_scaled(built, out, 0.0, 1.41421356237));
+    /* Past half a zoom step either way. */
+    const mm::Viewport in_far = mm::zoom_about(built, 11.1, 206.0, 457.0);
+    const mm::Viewport out_far = mm::zoom_about(built, 9.9, 206.0, 457.0);
+    assert(!ms::reusable_scaled(built, in_far, margin, 1.41421356237));
+    assert(!ms::reusable_scaled(built, out_far, 1.0e6, 1.41421356237));
+    /* At the same zoom it is the pan offset. */
+    const mm::Viewport panned = mm::pan(built, 12.0, -7.0);
+    const ms::ViewTransform p = ms::view_transform(built, panned);
+    const mm::ScreenPoint d = ms::pan_offset(built, panned);
+    assert(std::fabs(p.scale - 1.0) < 1.0e-12 && std::fabs(p.dx - d.x) < 1.0e-9 && std::fabs(p.dy - d.y) < 1.0e-9);
+}
+
 /* The camera's path: the ends exactly, east-west the short way across 180 degrees. */
 void
 test_interpolate_viewport() {
@@ -688,6 +792,7 @@ main(void) {
     test_tile_rects();
     test_pan_reuse();
     test_interpolate_viewport();
+    test_scaled_reuse();
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_GEOMETRY: ok\n");
     return 0;
 }

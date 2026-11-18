@@ -403,6 +403,15 @@ Item {
             // location notices) cover the canvas there: fits and centring aim
             // below them.
             topInset: status.visible && status.height > 0 ? status.y + status.height : 0
+            // What a label keeps clear of: the control column, the chips at
+            // the top and the attribution (in the canvas's coordinates; the
+            // attribution sits beside the area, not in it). A label with no
+            // clear side is left out; the List has every name.
+            labelObstacles: [
+                controls.visible ? Qt.rect(controls.x, controls.y, controls.width, controls.height) : Qt.rect(0, 0, 0, 0),
+                status.visible ? Qt.rect(status.x, status.y, status.width, status.height) : Qt.rect(0, 0, 0, 0),
+                attribution.visible ? Qt.rect(attribution.x - area.x, attribution.y - area.y, attribution.width, attribution.height) : Qt.rect(0, 0, 0, 0)
+            ]
             cameraDurationMs: Theme.reducedMotion ? 0 : 250
 
             deviceValid: locator.deviceValid

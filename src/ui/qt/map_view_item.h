@@ -48,7 +48,9 @@
 #include <QQuickItem>
 #include <QSet>
 #include <QString>
+#include <QTimer>
 #include <QVariant>
+#include <QVariantList>
 #include <QtGlobal>
 #include <cstdint>
 #include <vector>
@@ -133,6 +135,8 @@ class MapViewItem : public QQuickItem {
     Q_PROPERTY(double fitMaxZoom READ fitMaxZoom WRITE setFitMaxZoom NOTIFY behaviourChanged)
     /** The height at the top the screen covers with chips (logical px): fits and centring aim below it. */
     Q_PROPERTY(double topInset READ topInset WRITE setTopInset NOTIFY behaviourChanged)
+    /** Rectangles (item coordinates) a label must keep clear of: the screen's controls and chips over the canvas. */
+    Q_PROPERTY(QVariantList labelObstacles READ labelObstacles WRITE setLabelObstacles NOTIFY behaviourChanged)
     Q_PROPERTY(int cameraDurationMs READ cameraDurationMs WRITE setCameraDurationMs NOTIFY behaviourChanged)
 
   public:
@@ -285,6 +289,8 @@ class MapViewItem : public QQuickItem {
     double fitMaxZoom() const { return m_fitMaxZoom; }
     void setFitMaxZoom(double level);
     double topInset() const { return m_topInset; }
+    QVariantList labelObstacles() const { return m_labelObstacleList; }
+    void setLabelObstacles(const QVariantList& rects);
     void setTopInset(double inset);
     int cameraDurationMs() const { return m_cameraMs; }
     void setCameraDurationMs(int ms);
@@ -341,6 +347,18 @@ class MapViewItem : public QQuickItem {
     void
     testPolish() {
         updatePolish();
+    }
+
+    /** @brief End the zoom in progress now, as its settle timer would. */
+    void
+    testSettleZoom() {
+        m_zoomSettle.stop();
+        zoomSettled();
+    }
+
+    bool
+    testZooming() const {
+        return m_zooming;
     }
 
     /** @brief Deliver an application state change as QGuiApplication would. */
@@ -400,6 +418,7 @@ class MapViewItem : public QQuickItem {
         int labelRole = 0; /**< 0 labelColor, 1 selectedColor, 2 alertColor (an emergency outranks the selection) */
         bool emergency = false;
         bool selected = false;
+        qint64 ageS = -1; /**< of the fix the label stands by (current, else the ring); -1 unknown */
     };
 
     /** @brief A marker in draw order, for hit testing and the sprite pass. */
@@ -456,6 +475,7 @@ class MapViewItem : public QQuickItem {
     bool assignColor(QColor& member, const QColor& next);
     bool assignSize(double& member, double next);
     void setViewport(const map_math::Viewport& next);
+    void zoomSettled();
     void moveCamera(const map_math::Viewport& target);
     void stopCamera();
     void stopFollowing();
@@ -547,6 +567,10 @@ class MapViewItem : public QQuickItem {
 
     /* The camera's animation, from m_animFrom to m_animTo. */
     QVariantAnimation* m_camera = nullptr;
+    /* A zoom in progress: trails and circles are scaled, not rebuilt, until the zoom holds still this long. */
+    static constexpr int kZoomSettleMs = 150;
+    QTimer m_zoomSettle;
+    bool m_zooming = false;
     map_math::Viewport m_animFrom;
     map_math::Viewport m_animTo;
 
@@ -572,7 +596,11 @@ class MapViewItem : public QQuickItem {
     int m_atlasCellPx = 0;
     std::vector<LabelDraw> m_labels;
     std::vector<int> m_labelOrder; /* scene indices of the labelled tracks, highest priority first */
+    std::vector<map_scene::LabelRequest> m_labelRequests;
     std::vector<map_scene::LabelBox> m_labelBoxes;
+    map_scene::BoxGrid m_labelGrid;
+    QVariantList m_labelObstacleList;
+    std::vector<map_scene::LabelBox> m_labelObstacles;
     std::vector<QString> m_labelKeys;
     std::vector<uint8_t> m_labelKeep;
     QSet<QString> m_usedLabels;

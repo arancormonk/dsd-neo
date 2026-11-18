@@ -89,7 +89,7 @@ layers(QSGNode* root) {
 }
 
 void
-push(uint32_t source, double lat, double lon, uint32_t err_m = 0U, uint16_t flags = 0U) {
+push(uint32_t source, double lat, double lon, uint32_t err_m = 0U, uint16_t flags = 0U, int64_t age_s = 0) {
     dsd_position_fix f;
     dsd_position_fix_init(&f);
     f.protocol = DSD_SYNC_DMR_BS_DATA_POS;
@@ -100,7 +100,7 @@ push(uint32_t source, double lat, double lon, uint32_t err_m = 0U, uint16_t flag
     f.lon_e7 = static_cast<int32_t>(std::llround(lon * 1.0e7));
     f.err_m = err_m;
     f.rx_clock = static_cast<uint8_t>(DSD_DECODE_CLOCK_SYSTEM);
-    f.rx_time_s = stub::map_wall_seconds();
+    f.rx_time_s = stub::map_wall_seconds() - age_s;
     f.reception_scope.kind = DSD_POS_SCOPE_DMR;
     f.reception_scope.a = 1U;
     f.reception_scope.b = 2U;
@@ -261,12 +261,44 @@ test_pan_moves_the_overlay() {
     l = layers(root);
     assert(l.overlay->matrix().isIdentity());
 
+    /* A zoom in progress (a pinch frame) only scales the overlay: the trails are not built again. */
+    f.map->testSettleZoom();
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    const int settledVertices = layers(root).trails->geometry()->vertexCount();
+    const float settledX = layers(root).trails->geometry()->vertexDataAsColoredPoint2D()[0].x;
+    const QPointF built(settledX, layers(root).trails->geometry()->vertexDataAsColoredPoint2D()[0].y);
     f.map->zoomAbout(f.map->zoom() + 0.25, 10.0, 10.0);
+    assert(f.map->testZooming());
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        const QMatrix4x4 scaled = now.overlay->matrix();
+        assert(std::fabs(scaled(0, 0) - std::exp2(0.25F)) < 1.0e-5F
+               && std::fabs(scaled(1, 1) - std::exp2(0.25F)) < 1.0e-5F);
+        assert(now.trails->geometry()->vertexCount() == settledVertices);
+        assert(std::fabs(now.trails->geometry()->vertexDataAsColoredPoint2D()[0].x - settledX) < 1.0e-6F);
+        /* The scaled overlay lands where the zoom about (10, 10) puts every point. */
+        const QPointF mapped = scaled.map(built);
+        const double k = std::exp2(0.25);
+        assert(std::fabs(mapped.x() - (10.0 + ((built.x() - 10.0) * k))) < 1.0e-3);
+        assert(std::fabs(mapped.y() - (10.0 + ((built.y() - 10.0) * k))) < 1.0e-3);
+    }
+    /* Once the zoom holds still it is built again at its own scale. */
+    f.map->testSettleZoom();
+    assert(!f.map->testZooming());
     root = f.map->testUpdateGpuTree(root, 1.0);
     {
         const Layers now = layers(root);
         assert(now.overlay->matrix().isIdentity());
     }
+    /* More than half a zoom step from what was built: built again at once, zooming or not. */
+    f.map->zoomAbout(f.map->zoom() + 0.75, 10.0, 10.0);
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    f.map->testSettleZoom();
 
     /* A new report rebuilds even without a pan. */
     f.map->panBy(5.0, 0.0);
@@ -467,6 +499,55 @@ test_labels_render_on_the_gui_thread() {
 
 } // namespace
 
+namespace {
+
+/* The label on the right of a marker at the view's centre, by its width (the names differ in length); 0 for none. */
+double
+right_label_width(QSGNode* root, double centre_x) {
+    const Layers l = layers(root);
+    for (QSGNode* n = l.labels->firstChild(); n != nullptr; n = n->nextSibling()) {
+        const QRectF r = static_cast<QSGImageNode*>(n)->rect();
+        if (r.left() > centre_x) {
+            return r.width();
+        }
+    }
+    return 0.0;
+}
+
+/* Two radios at one place want the same side for their labels: the selected one keeps it, else the one heard most
+ * recently; the other takes another side. */
+void
+test_label_priority() {
+    Fixture f;
+    const double cx = f.map->width() / 2.0;
+    push(7U, 10.0, 20.0, 0U, 0U, 30);           /* label "7": heard 30 s ago */
+    push(1234567890U, 10.0, 20.0, 0U, 0U, 600); /* label "1234567890": heard 10 min ago */
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.labels->childCount() == 2);
+    }
+    const double newest = right_label_width(root, cx);
+    assert(newest > 0.0);
+    push(7U, 10.0, 20.0, 0U, 0U, 900); /* now the other one is the more recent */
+    f.model.poll();
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    const double other = right_label_width(root, cx);
+    assert(other > newest); /* the long name took the right */
+    /* Selecting the short one gives it the right back. */
+    for (const PositionModel::Row& row : f.model.rows()) {
+        if (row.current.source_id == 7U) {
+            f.map->setSelectedTrackId(row.id);
+        }
+    }
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    assert(std::fabs(right_label_width(root, cx) - newest) < 0.5);
+    delete root;
+}
+
+} // namespace
+
 int
 main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
@@ -477,6 +558,7 @@ main(int argc, char** argv) {
     test_background_stops_loading();
     test_overlay_follows_the_wrap_copy();
     test_labels_render_on_the_gui_thread();
+    test_label_priority();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

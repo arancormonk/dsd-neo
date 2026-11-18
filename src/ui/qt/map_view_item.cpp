@@ -117,6 +117,9 @@ MapViewItem::MapViewItem(QQuickItem* parent) : QQuickItem(parent), m_camera(new 
     m_camera->setStartValue(0.0);
     m_camera->setEndValue(1.0);
     m_camera->setEasingCurve(QEasingCurve::OutCubic);
+    m_zoomSettle.setSingleShot(true);
+    m_zoomSettle.setInterval(kZoomSettleMs);
+    connect(&m_zoomSettle, &QTimer::timeout, this, &MapViewItem::zoomSettled);
     connect(m_camera, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
         setViewport(ms::interpolate_viewport(m_animFrom, m_animTo, value.toDouble()));
     });
@@ -284,6 +287,7 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
         t.markerStyle.fill_level = ms::fill_level(row.ageS, fresh_s, faded_s);
         t.errM = static_cast<double>(row.current.err_m);
         t.latDeg = static_cast<double>(row.current.lat_e7) / 1.0e7;
+        t.ageS = row.ageS;
         /* An anonymous row holds one point (the model never extends it), so it has no trail. */
         world_trail(row, t);
     }
@@ -293,6 +297,9 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
         t.ringStyle.dashed_outline = row.anonymous;
         t.ringStyle.double_outline = (row.unknown.flags & DSD_POS_FLAG_FORMAT_PROVISIONAL) != 0U;
         t.ringStyle.alert = t.emergency;
+        if (!t.hasMarker) {
+            t.ageS = row.unknownAgeS;
+        }
     }
     return t.hasMarker || t.hasRing;
 }
@@ -301,20 +308,20 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
 
 void
 MapViewItem::orderLabels() {
-    /* Highest priority first: emergencies (their label carries the word), the selected track, then the freshest. */
+    /* Highest priority first: the selected track, emergencies, then the most recently heard. Labels are placed in this
+     * order, and one that cannot find a clear side is the one left out. */
     m_labelOrder.clear();
     for (size_t i = m_scene.size(); i-- > 0;) {
         if (!m_scene[i].label.isEmpty()) {
             m_labelOrder.push_back(static_cast<int>(i));
         }
     }
-    const auto fill = [](const TrackDraw& t) { return t.hasMarker ? t.markerStyle.fill_level : ms::kFillLevels; };
     std::stable_sort(m_labelOrder.begin(), m_labelOrder.end(), [&](int a, int b) {
         const TrackDraw& ta = m_scene[static_cast<size_t>(a)];
         const TrackDraw& tb = m_scene[static_cast<size_t>(b)];
         const int ra = map_view_detail::label_rank(ta);
         const int rb = map_view_detail::label_rank(tb);
-        return ra != rb ? ra > rb : fill(ta) < fill(tb);
+        return ra != rb ? ra > rb : map_view_detail::heard_sooner(ta, tb);
     });
 }
 
@@ -384,9 +391,20 @@ MapViewItem::setViewport(const mm::Viewport& next) {
     if (same_viewport(vp, m_vp)) {
         return;
     }
+    if (differs(vp.zoom, m_vp.zoom)) {
+        /* Zooming: the overlay is scaled until the zoom has held still for kZoomSettleMs (zoomSettled()). */
+        m_zooming = true;
+        m_zoomSettle.start();
+    }
     m_vp = vp;
     Q_EMIT viewportChanged();
     polish();
+    update();
+}
+
+void
+MapViewItem::zoomSettled() {
+    m_zooming = false;
     update();
 }
 
@@ -1003,6 +1021,24 @@ MapViewItem::setFadedSeconds(int seconds) {
     m_fadedS = seconds;
     Q_EMIT styleChanged();
     sceneChanged();
+}
+
+void
+MapViewItem::setLabelObstacles(const QVariantList& rects) {
+    if (m_labelObstacleList == rects) {
+        return;
+    }
+    m_labelObstacleList = rects;
+    m_labelObstacles.clear();
+    for (const QVariant& v : rects) {
+        const QRectF r = v.toRectF();
+        if (r.isValid() && std::isfinite(r.x()) && std::isfinite(r.y())) {
+            m_labelObstacles.push_back(ms::LabelBox{static_cast<float>(r.x()), static_cast<float>(r.y()),
+                                                    static_cast<float>(r.width()), static_cast<float>(r.height())});
+        }
+    }
+    Q_EMIT behaviourChanged();
+    update();
 }
 
 void
