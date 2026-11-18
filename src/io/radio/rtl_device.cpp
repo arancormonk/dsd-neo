@@ -10571,7 +10571,9 @@ rtl_device_set_sample_rate_impl(struct rtl_device* dev, uint32_t samp_rate, uint
                 DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested, applied);
             }
             dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
-            applied_rate = (uint32_t)std::lround(applied);
+            /* llround, not lround: long is 32 bits on Windows. An advertised rate past 32 bits is recorded as the
+               largest one, which every capture ceiling refuses. */
+            applied_rate = applied >= (double)UINT32_MAX ? UINT32_MAX : (uint32_t)std::llround(applied);
             return 0;
         });
         if (rc == 0) {
@@ -10648,7 +10650,7 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
             return -1;
         }
-        actual = (uint32_t)std::lround(applied);
+        actual = (uint32_t)std::llround(applied);
         dev->soapy_nearest_rate_cache_requested = requested;
         dev->soapy_nearest_rate_cache_actual = actual;
         return 0;
@@ -10720,11 +10722,15 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
             if (actual >= (double)INT_MAX) {
                 return INT_MAX;
             }
-            const int rounded = (int)std::lround(actual);
+            const int rounded = (int)std::llround(actual);
             dev->rate = (uint32_t)rounded;
             return rounded;
         }
 #endif
+        /* No usable read-back: the rate written stands for it, bounded the same way. */
+        if (dev->rate >= (uint32_t)INT_MAX) {
+            return INT_MAX;
+        }
         return (dev->rate > 0) ? (int)dev->rate : -1;
     }
     return (int)dev->rate;
@@ -12667,6 +12673,9 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
     setSampleRate(const int, const size_t, const double rate) override {
         const size_t write = (size_t)fake_->rate_writes;
         fake_->rate_writes++;
+        if (fake_->rate_write_refused_at > 0 && (size_t)fake_->rate_write_refused_at == write + 1U) {
+            throw std::runtime_error("sample rate refused");
+        }
         fake_->rate_hz = rate;
         if (fake_->delivered_by_write && write < fake_->delivered_by_write_count) {
             fake_->readback_rate_hz = fake_->delivered_by_write[write];

@@ -8932,10 +8932,13 @@ Key public headers:
     list a few rates and advertise a range too), else the nearest listed or range rate, and never the preference: the
     stream asks for the planned rate, and a refused retune's rollback (`controller_restore_refused_capture()`) for the
     rate the device delivered before the retune (`capture_snapshot_restore_rate_hz()`), which must not become the
-    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. When the device
-    writes another rate for that one (a delivered rate it cannot be asked for, snapped to the nearest it lists), the
-    rollback asks again for the rate that capture was programmed with (`capture_write_restore_rate()`), and the plan is
-    made for the rate written (`rtl_device_set_sample_rate_written()`), checked by the read-back. Every rate and
+    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. The rollback
+    reads that write back first; only when it did not bring the capture's rate back (the device refused the write, or
+    wrote another rate for it that delivers something else) does it write the rate that capture was programmed with
+    (`capture_write_restore_rate()`). The plan is made for the rate written (`rtl_device_set_sample_rate_written()`),
+    checked by the read-back. The start and every retune likewise judge the read-back against the rate written, not
+    the rate staged (`controller_take_initial_readback()`, `program_capture_frequency_and_rate()`), while the capture
+    frequency stays placed for the staged rate until the read-back moves it. Every rate and
     bandwidth these helpers return is a point a range holds (a step, or for a range with no step a value within its
     ends), never above its maximum (`range_last_point()`: the last whole step at or below it; the 1 Hz tolerance only
     compares a request with a point), never the preference or the floor itself. Profile detection
@@ -8964,8 +8967,11 @@ Key public headers:
     when the request's is in range (`capture_provisional_rate_fits()`: the device is asked for the request, and the
     capture is placed for the rate it delivers). A final plan refused on the rate written is made again on a SoapySDR
     read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
-    3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
-    a SoapySDR rate of `INT_MAX` Hz or more as `INT_MAX`, which every ceiling refuses, never as no read-back. The binding
+    3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and
+    the device as having forced its rate when that differs from the request. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
+    a SoapySDR rate of `INT_MAX` Hz or more as `INT_MAX`, which every ceiling refuses, never as no read-back; with no
+    usable read-back the rate written stands for it, bounded the same way (rates are rounded with `llround()`, since
+    `long` is 32 bits on Windows). The binding
     check is `capture_rate_within_limits()` on the rate a device delivers
     (read-back, else programmed), at the start (`controller_take_initial_readback()`) and on every later read-back
     (`apply_actual_capture_rate()`, refused as a rate-plan refusal with the existing rollback). The input ring holds the
@@ -8985,7 +8991,9 @@ Key public headers:
     `IO_SOAPY_PROFILE` (helpers, Airspy HF+ detection, advertised points), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay,
     ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists and ranges: rate planned and written, a
     rollback to the saved rate, to the rate delivered, to the rate written and to the request that gave it, a usable
-    read-back of an unusable advertised rate, a preferred rate out of tuning range, opened filters, notices on the driver's read-back (an infinite one
+    read-back of an unusable advertised rate and its forced flag, a preferred rate out of tuning range, a read-back
+    judged against the rate written, a rollback that stops once restored or retries after a refused write, a 2.4 GS/s
+    rate written, opened filters, notices on the driver's read-back (an infinite one
     included) and after the write, no read-back with the Fs/4 shift off, a stream open's capture and ring, an advertised
     rate above the ceiling or one the chain cannot use, a 2.4 GS/s read-back at the open and on a hop, a failed ring
     size, the filter on retunes and after a failed rate write), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the advertised rate, a

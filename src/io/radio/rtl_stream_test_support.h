@@ -744,6 +744,9 @@ typedef struct {
        readback_rate_hz is left as it is. */
     const double* delivered_by_write;
     size_t delivered_by_write_count;
+    /* The setSampleRate() call (1 for the first) that throws without taking the rate, as a driver refusing a rate it
+       does not list; 0: none. */
+    int rate_write_refused_at;
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);

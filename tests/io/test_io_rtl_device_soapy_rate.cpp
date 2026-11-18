@@ -23,12 +23,14 @@
  * Skips in a build without SoapySDR.
  */
 
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -618,6 +620,163 @@ test_rollback_falls_back_to_the_request(void) {
     dsd_exitflag_store(0);
 }
 
+/* Infinity from its bit pattern: the global fast-math option warns on INFINITY. */
+double
+positive_infinity(void) {
+    const uint64_t bits = UINT64_C(0x7FF0000000000000);
+    double value = 0.0;
+    DSD_MEMCPY(&value, &bits, sizeof value);
+    return value;
+}
+
+/* The HackRF that delivered 3 MS/s for 10 MS/s, whose rollback write of 3 MS/s snaps to 2 MS/s and already brings the
+ * 3 MS/s back: the read-back says so, and the rollback stops there instead of writing 10 MS/s again. */
+void
+test_rollback_stops_once_restored(void) {
+    static const double both[] = {2e6, 10e6};
+    static const double delivered[] = {3e6, 10e6, 3e6, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = both;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 4U;
+    rtl_stream_test_capture_result got{};
+    if (!refused_hop(&fake, &got)) {
+        return;
+    }
+    expect_eq("rate writes: start, hop and one rollback", (double)fake.rate_writes, 3.0);
+    expect_eq("the stream goes back on 3 MS/s", got.capture_rate_hz, 3000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    dsd_exitflag_store(0);
+}
+
+/* A rollback write the driver refuses outright: the rate the capture was programmed with is tried next. */
+void
+test_rollback_retries_after_a_refused_write(void) {
+    static const double both[] = {2e6, 10e6};
+    static const double delivered[] = {3e6, 10e6, 0.0, 3e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = both;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 4U;
+    fake.rate_write_refused_at = 3;
+    rtl_stream_test_capture_result got{};
+    if (!refused_hop(&fake, &got)) {
+        return;
+    }
+    expect_eq("the device is asked for 10 MS/s again", fake.rate_hz, 10000000.0);
+    expect_eq("the stream goes back on the 3 MS/s it ran", got.capture_rate_hz, 3000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    dsd_exitflag_store(0);
+}
+
+/* Near the top of the tuning range a HackRF is asked for the request, 1.536 MS/s, which it writes as the 3,072,000 Hz
+ * it lists and reads back 3,072,025 Hz: the read-back is judged against the rate written, which it is within the
+ * planner's tolerance of, at the open and on a retune there. */
+void
+test_rate_written_judges_the_readback(void) {
+    static const double listed[] = {3072000.0, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = listed;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    fake.readback_rate_hz = 3072025.0;
+    const uint32_t high_hz = 4293000000U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, high_hz, &got) == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("the open starts", got.rc == 0);
+    expect_eq("it runs the 3,072,025 Hz read back", got.capture_rate_hz, 3072025.0);
+
+    /* The same device started at 10 MS/s further down, then retuned near the top. */
+    static const double delivered[] = {0.0, 3072025.0};
+    rtl_device_test_soapy_gain_fake hopper = fake;
+    hopper.readback_rate_hz = 0.0;
+    hopper.rate_writes = 0;
+    hopper.delivered_by_write = delivered;
+    hopper.delivered_by_write_count = 2U;
+    dev = rtl_device_test_soapy_gain_device(&hopper, 0);
+    opts = make_soapy_opts(hopper.bandwidth_request_hz);
+    if (dev && opts) {
+        dsd_exitflag_store(0);
+        rtl_stream_test_capture_result hop{};
+        expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &hop) == 0);
+        expect_eq("the session starts at 10 MS/s", hop.capture_rate_hz, 10000000.0);
+        expect_true("the retune runs",
+                    rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, high_hz, 48000, &hop)
+                        == 0);
+        expect_true("the retune near the top lands", hop.completion != RTL_STREAM_TUNE_FAILED);
+        expect_eq("it runs the 3,072,025 Hz read back", hop.capture_rate_hz, 3072025.0);
+        rtl_stream_test_capture_session_end();
+        dsd_exitflag_store(0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A device that lists only 2.4 GS/s and reports no usable rate (infinity): the rate written is past every capture
+ * ceiling, so the open is refused rather than run on a plan for the rate asked for. */
+void
+test_oversized_rate_written_refused(void) {
+    static const double huge[] = {2.4e9};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = huge;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = positive_infinity();
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, 4000000000U, &got)
+                        == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("an open that wrote 2.4 GS/s is refused", got.rc != 0);
+
+    /* With no usable read-back the rate written stands for it, bounded as a read-back is. */
+    fake.rate_writes = 0;
+    dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (!dev) {
+        return;
+    }
+    expect_true("the 2.4 GS/s write takes", rtl_device_set_sample_rate(dev, 2000000U) == 0);
+    expect_eq("the rate reported for it", (double)rtl_device_get_sample_rate(dev), (double)INT_MAX);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A 1,536,000 Hz request written as 1,536,025 Hz and delivered as 1,536,000 Hz: the plan made on the rate delivered
+ * still counts the device as having forced its rate, since it was given another than the request. */
+void
+test_delivered_plan_keeps_the_forced_flag(void) {
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!opts) {
+        return;
+    }
+    rtl_stream_test_live_chain_result r{};
+    expect_true("the live chain seam runs",
+                rtl_stream_test_live_rate_chain(opts, DSD_RATE_PLAN_BACKEND_SOAPY, 48000, 1536025U, 1536000U, &r) == 0);
+    free(opts);
+    expect_true("the open starts", r.rc == 0);
+    expect_eq("the device forced its rate", (double)r.forced, 1.0);
+}
+
 /* A device that lists 3,072,025 Hz, which the 48 kHz chain cannot use, and delivers 3,072,000 Hz, which it can: the
  * plan refused on the rate written is made again on the rate delivered. */
 void
@@ -750,15 +909,6 @@ narrow_filter_fake(void) {
     return fake;
 }
 
-/* Infinity from its bit pattern: the global fast-math option warns on INFINITY. */
-double
-positive_infinity(void) {
-    const uint64_t bits = UINT64_C(0x7FF0000000000000);
-    double value = 0.0;
-    DSD_MEMCPY(&value, &bits, sizeof value);
-    return value;
-}
-
 /* A driver whose getBandwidth() reports infinity has reported nothing: the filter written is judged, and the 1 MHz
  * filter at 10 MS/s is warned about. */
 void
@@ -881,6 +1031,11 @@ main(int argc, char** argv) {
         {"rollback_plans_the_rate_written", test_rollback_plans_the_rate_written},
         {"rollback_falls_back_to_the_request", test_rollback_falls_back_to_the_request},
         {"usable_readback_of_an_unusable_rate", test_usable_readback_of_an_unusable_rate},
+        {"rollback_stops_once_restored", test_rollback_stops_once_restored},
+        {"delivered_plan_keeps_the_forced_flag", test_delivered_plan_keeps_the_forced_flag},
+        {"rollback_retries_after_a_refused_write", test_rollback_retries_after_a_refused_write},
+        {"rate_written_judges_the_readback", test_rate_written_judges_the_readback},
+        {"oversized_rate_written_refused", test_oversized_rate_written_refused},
         {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},

@@ -1245,7 +1245,9 @@ rate_chain_plan_delivered(uint32_t programmed_hz, uint32_t readback_hz, dsd_rate
         return false;
     }
     g_rate_plan_refused = refused;
+    /* What was written, and so whether the device forced the rate: the rate asked for, or the one it delivers. */
     out->programmed_hz = programmed_hz;
+    out->device_forced = programmed_hz != out->request_hz || out->nominal_hz != programmed_hz;
     return true;
 }
 
@@ -6160,11 +6162,13 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     if (rate_kept) {
         rc = capture_kept_rate_programmed(programmed.capture_rate_hz, &previous, &refusal);
     } else {
-        rc = rtl_device_set_sample_rate(rtl_device_handle, programmed.capture_rate_hz);
-        rc = rc != 0
-                 ? capture_rate_write_failed(center_freq_hz, programmed.capture_freq_hz, programmed.capture_rate_hz,
-                                             &previous, rc, &refusal)
-                 : capture_rate_write_took(&programmed, cacheable, generation, requested_rate_hz, &previous, &refusal);
+        /* The plan judges the read-back against the rate written, which a SoapySDR device can snap from the one
+           staged; the capture frequency stays placed for the staged rate, and the read-back moves it if need be. */
+        CaptureReadback written = programmed;
+        rc = rtl_device_set_sample_rate_written(rtl_device_handle, programmed.capture_rate_hz, &written.programmed_hz);
+        rc = rc != 0 ? capture_rate_write_failed(center_freq_hz, programmed.capture_freq_hz, programmed.capture_rate_hz,
+                                                 &previous, rc, &refusal)
+                     : capture_rate_write_took(&written, cacheable, generation, requested_rate_hz, &previous, &refusal);
     }
     if (out_refusal) {
         *out_refusal = refusal;
@@ -6509,19 +6513,24 @@ capture_snapshot_restore_rate_hz(const CaptureSettingsSnapshot* snapshot) {
     return capture_snapshot_programmed_rate_hz(snapshot);
 }
 
-/* Write a refused retune's restore rate on @p device: the rate @p snapshot delivered, and when the device wrote
- * another rate for it (a SoapySDR rate it cannot be asked for, snapped to the advertised rate nearest it), the rate
- * that capture was programmed with, which gave it. The rate written is in @p out_written_hz; the read-back checks the
- * outcome. Returns the last write's code. */
+/* Write a refused retune's restore rate on @p device and read the outcome back: first the rate @p snapshot delivered.
+ * When that did not bring the capture's rate back (the device refused the write, or wrote another rate for it that
+ * delivers something else: a SoapySDR rate it cannot be asked for, snapped to the advertised rate nearest it), the rate
+ * that capture was programmed with, which gave it, is written next. The rate last written is in @p out_written_hz and
+ * its read-back in @p out_actual (0 or less: none). Returns the last write's code. */
 static int
 capture_write_restore_rate(const RefusedCaptureDeviceOps* device, const CaptureSettingsSnapshot* snapshot,
-                           uint32_t* out_written_hz) {
+                           uint32_t* out_written_hz, int* out_actual) {
     const uint32_t ask_hz = capture_snapshot_restore_rate_hz(snapshot);
     *out_written_hz = ask_hz;
     int rc = device->set_sample_rate(rtl_device_handle, ask_hz, out_written_hz);
+    *out_actual = device->get_sample_rate(rtl_device_handle);
+    const bool restored = rc == 0 && *out_actual > 0 && (uint32_t)*out_actual == snapshot->dongle_rate_hz;
     const uint32_t programmed_hz = capture_snapshot_programmed_rate_hz(snapshot);
-    if (rc == 0 && *out_written_hz != ask_hz && programmed_hz != 0U && programmed_hz != *out_written_hz) {
+    if (!restored && programmed_hz != 0U && programmed_hz != ask_hz && (rc != 0 || programmed_hz != *out_written_hz)) {
+        *out_written_hz = programmed_hz;
         rc = device->set_sample_rate(rtl_device_handle, programmed_hz, out_written_hz);
+        *out_actual = device->get_sample_rate(rtl_device_handle);
     }
     if (rc != 0) {
         LOG_ERROR("Failed to return the device to sample rate %u Hz (rc=%d).\n", ask_hz, rc);
@@ -6568,11 +6577,11 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     }
     /* The plan is made for the rate written, which a SoapySDR device can snap from the one asked for. */
     uint32_t programmed_hz = 0U;
-    const int rate_rc = capture_write_restore_rate(device, previous, &programmed_hz);
+    int actual = 0;
+    const int rate_rc = capture_write_restore_rate(device, previous, &programmed_hz, &actual);
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
     int correction_rc = 0;
     int refusal = kCaptureRefusalNone;
-    const int actual = device->get_sample_rate(rtl_device_handle);
     if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
         const CaptureReadback rb = {center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, programmed_hz,
                                     (uint32_t)actual};
@@ -7494,11 +7503,13 @@ controller_apply_initial_offset_tuning(const dsd_opts* opts) {
 /* The start's read-back @p actual_hz (0: none) of @p io_capture_rate_hz: the rate the device delivers held to the
  * capture ceiling, the final plan and its I/Q rate step. */
 static int
-controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t actual_hz) {
+controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t written_hz, uint32_t actual_hz) {
     /* The ceiling holds on the rate the device delivers, which can differ from the one it advertised before the open
-       (stream_open_validate_device_capture_rate()); the input ring is sized for it once the start is programmed. */
-    const uint32_t delivered_hz = actual_hz != 0U ? actual_hz : *io_capture_rate_hz;
-    if (!capture_rate_within_limits(delivered_hz, 0) || rate_chain_replan(*io_capture_rate_hz, actual_hz) != 0
+       (stream_open_validate_device_capture_rate()); the input ring is sized for it once the start is programmed. The
+       read-back is judged against @p written_hz, the rate written, which a SoapySDR device can snap from the one
+       staged. */
+    const uint32_t delivered_hz = actual_hz != 0U ? actual_hz : written_hz;
+    if (!capture_rate_within_limits(delivered_hz, 0) || rate_chain_replan(written_hz, actual_hz) != 0
         || rate_chain_sync_step() != 0) {
         LOG_ERROR("The stream cannot start: %s.\n", g_rate_chain_refusal);
         return kCaptureRateChainRefused;
@@ -7511,10 +7522,10 @@ controller_take_initial_readback(uint32_t* io_capture_rate_hz, uint32_t actual_h
  * for it and its I/Q rate step (issue #806). Returns 0 with @p io_capture_rate_hz the rate the chain runs at, or
  * kCaptureRateChainRefused (logged): the start fails. */
 static int
-controller_sync_initial_capture_rate(uint32_t* io_capture_rate_hz, uint32_t* out_actual_hz) {
+controller_sync_initial_capture_rate(uint32_t* io_capture_rate_hz, uint32_t written_hz, uint32_t* out_actual_hz) {
     int actual = rtl_device_get_sample_rate(rtl_device_handle);
     *out_actual_hz = actual > 0 ? (uint32_t)actual : 0U;
-    return controller_take_initial_readback(io_capture_rate_hz, *out_actual_hz);
+    return controller_take_initial_readback(io_capture_rate_hz, written_hz, *out_actual_hz);
 }
 
 static int
@@ -7546,13 +7557,14 @@ controller_program_initial_capture_settings(const struct controller_state* s, co
     LOG_INFO("Oversampling input by: %ix.\n", (demod.downsample_passes > 0) ? (1 << demod.downsample_passes) : 1);
     LOG_INFO("Oversampling output by: %ix.\n", demod.post_downsample);
     LOG_INFO("Buffer size: %0.2fms\n", 1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)capture_rate_hz);
-    rc = rtl_device_set_sample_rate(rtl_device_handle, capture_rate_hz);
+    uint32_t written_rate_hz = capture_rate_hz;
+    rc = rtl_device_set_sample_rate_written(rtl_device_handle, capture_rate_hz, &written_rate_hz);
     if (rc != 0) {
         LOG_ERROR("Failed to apply the initial device sample rate %u Hz (rc=%d).\n", capture_rate_hz, rc);
         return rc;
     }
     uint32_t actual_rate_hz = 0U;
-    rc = controller_sync_initial_capture_rate(&capture_rate_hz, &actual_rate_hz);
+    rc = controller_sync_initial_capture_rate(&capture_rate_hz, written_rate_hz, &actual_rate_hz);
     if (rc != 0) {
         return rc;
     }
@@ -17335,7 +17347,8 @@ live_chain_test_program(int backend, uint32_t device_rate_hz, uint32_t readback_
     int rc = capture_stage_provisional_plan(kFamilyTestCenterHz, request_hz, programmed_hz);
     uint32_t capture_rate_hz = load_dongle_rate();
     if (rc == 0) {
-        rc = controller_take_initial_readback(&capture_rate_hz, readback_hz != 0U ? readback_hz : programmed_hz);
+        rc = controller_take_initial_readback(&capture_rate_hz, capture_rate_hz,
+                                              readback_hz != 0U ? readback_hz : programmed_hz);
     }
     g_test_rate_plan_backend = -1;
     if (rc == 0) {
