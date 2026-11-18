@@ -15824,8 +15824,10 @@ Qt Quick frontend (`src/ui/qt`):
       known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
       `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
       receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
-      to its first fragment still folded in (gate g62-r8): a new reading of that fragment is judged as the row's own
-      reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
+      to its first fragment still folded in (gate g62-r8), chosen from the parts as they stand once the reading is in
+      (gate g62-r9: a withdrawn fragment restored at its own place ahead of the others is the anchor again, so the row
+      returns to its reception and phase and takes that fragment's new fix): a new reading of that fragment is judged as
+      the row's own reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
       alias neither withdraws its fix nor moves it to another fragment's phase; after every fold the fixes the row
       keeps are only those of fragments heard on its reception now (`requalify_row_gps()`), so a row rebuilt onto the
       other P25 phase (its anchor withdrawn) keeps no fix of the first. The merge of the conversation is

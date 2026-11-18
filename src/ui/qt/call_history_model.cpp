@@ -2602,24 +2602,27 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     // raw destination) gives nothing and takes back what its earlier readings gave; a later reading that agrees again
     // gives its part back (merge_parts()). Every row field a part gives is rebuilt from the parts on every fold.
     const QStringList own = reading_part_keys(reading);
-    // The row's anchor (its first fragment still folded in) gives it its sync type and reception: a new reading of the
-    // anchor is the row's own reception read again, so an update of its span or alias leaves the row where it was heard.
-    const QString anchor = anchor_fragment(existing);
-    const bool readsAnchor = !anchor.isEmpty() && own.contains(anchor);
     Row rest = existing;
     const bool restKnown = rest_of_row(rest, own);
     const bool callOk = !restKnown || fragment_call_compatible(rest, reading);
+    if (callOk) {
+        merge_parts(existing, reading);
+    } else {
+        withdraw_parts(existing, own);
+    }
+    // The row's anchor (its first fragment still folded in) gives it its sync type and reception: a new reading of the
+    // anchor is the row's own reception read again, so an update of its span or alias leaves the row where it was heard.
+    // The anchor is the one the parts give once this reading is in (issue #800, fail closed): a withdrawn fragment
+    // restored at its own place ahead of the others (merge_parts()) is the row's anchor again, so the row goes back to
+    // where it was heard and its fix with it.
+    const QString anchor = anchor_fragment(existing);
+    const bool readsAnchor = !anchor.isEmpty() && own.contains(anchor);
     // A fix lands only where it was heard (issue #800, fail closed): on the row's reception, by one protocol class
     // (fragment_same_reception()). For any fragment but the anchor that is the reception the row's other fragments,
     // the anchor first, were heard on, read as they were before this reading folds in anything (a stronger scope it
     // brings is the reading's own). A conversation may still merge across carriers or both P25 phases; its fixes do
     // not.
     const bool positionHere = !restKnown || readsAnchor || fragment_same_reception(rest, reading);
-    if (callOk) {
-        merge_parts(existing, reading);
-    } else {
-        withdraw_parts(existing, own);
-    }
     if (restKnown) {
         fold_reading_after_rest(existing, rest, own, callOk, readsAnchor);
     } else {
