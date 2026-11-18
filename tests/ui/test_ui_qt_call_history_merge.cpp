@@ -715,6 +715,30 @@ test_identity_compatibility(void) {
     expect("Capacity Plus is a weak DMR scope", dsd_qt::call_history_scope_strength(capPlus) == 2, true);
     expect("a Tier III network is a full DMR scope", dsd_qt::call_history_scope_strength(tier3) == 3, true);
     expect("a weak DMR scope joins a full one", call_history_scopes_compatible(capPlus, tier3), true);
+    // Identities known in part: an EDACS site joins its site and system, never another system or a system-only one.
+    CallHistoryScope site;
+    site.kind = DSD_POS_SCOPE_FEED_EDACS;
+    site.a = 0x10000U | 5U;
+    CallHistoryScope siteSystem = site;
+    siteSystem.b = 0x10000U | 7U;
+    CallHistoryScope otherSystem = site;
+    otherSystem.b = 0x10000U | 8U;
+    CallHistoryScope systemOnly;
+    systemOnly.kind = DSD_POS_SCOPE_FEED_EDACS;
+    systemOnly.b = 0x10000U | 7U;
+    expect("an EDACS site joins its site and system", call_history_scopes_compatible(site, siteSystem), true);
+    expect("an EDACS site and system joins its site", call_history_scopes_compatible(siteSystem, site), true);
+    expect("two EDACS systems on one site are two", call_history_scopes_compatible(siteSystem, otherSystem), false);
+    expect("an EDACS site-only and system-only identity are two", call_history_scopes_compatible(site, systemOnly),
+           false);
+    expect("a row learns the EDACS system", dsd_qt::call_history_scope_learns(site, siteSystem), true);
+    expect("a row keeps what it knows over less", dsd_qt::call_history_scope_learns(siteSystem, site), false);
+    CallHistoryScope nacNoFreq = nac1;
+    nacNoFreq.freqHz = 0;
+    expect("a NAC with no frequency joins one with it", call_history_scopes_compatible(nacNoFreq, nac1), true);
+    expect("a row learns the NAC's frequency", dsd_qt::call_history_scope_learns(nacNoFreq, nac1), true);
+    expect("a row learns a stronger scope", dsd_qt::call_history_scope_learns(nac1, p25), true);
+    expect("nothing is learned from no scope", dsd_qt::call_history_scope_learns(nac1, none), false);
 }
 
 void

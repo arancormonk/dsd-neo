@@ -568,15 +568,17 @@ fold_payload(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
 
 /**
  * @brief Fill what @p existing does not know of its raw identity from @p row (issue #800): the reception system when
- * @p row names it more strongly (call_history_scope_strength()); and, only from a fragment of the row's own radio
- * (fragment_identity_compatible()), the sync type, the target text, the source text and a stronger sender system.
+ * @p row names more of it (call_history_scope_learns(): a stronger scope, or the same one with a part the row did not
+ * know, such as an EDACS system beside its site); and, only from a fragment of the row's own radio
+ * (fragment_identity_compatible()), the sync type, the target text, the source text and a sender system the row learns
+ * more of the same way.
  * Other known values stay: a merge joins only rows whose known ones agree (rows_identity_compatible()).
  */
 void
 fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
     // Where the row was heard is the reception's, whoever sent the fragment: the stronger of the two the merge found
     // compatible (a trunked call's NAC gives way to its system).
-    if (call_history_scope_strength(row.rxScope) > call_history_scope_strength(existing.rxScope)) {
+    if (call_history_scope_learns(existing.rxScope, row.rxScope)) {
         existing.rxScope = row.rxScope;
     }
     // The sender's identity only from a fragment of the row's own radio, as its texts and position (fold_payload()).
@@ -586,7 +588,7 @@ fill_identity(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row)
     if (call_history_protocol_family(existing.protocol) < 0) {
         existing.protocol = row.protocol;
     }
-    if (call_history_scope_strength(row.sourceScope) > call_history_scope_strength(existing.sourceScope)) {
+    if (call_history_scope_learns(existing.sourceScope, row.sourceScope)) {
         existing.sourceScope = row.sourceScope;
     }
     if (existing.targetText.simplified().isEmpty()) {

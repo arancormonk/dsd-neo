@@ -6099,6 +6099,85 @@ test_weaker_identity_joins_stronger(void) {
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
 }
 
+/* B5: an identity known in part is the same system as one that knows more of it. An EDACS call whose first fragment knew
+ * only the site joins the fragment that also learned the system, in either order, and the row keeps the site and the
+ * system; a conventional P25 fragment whose tuned frequency was not known joins the one heard with it. Two fragments
+ * whose known parts differ (another system on the same site, a site-only and a system-only identity that cannot be told
+ * apart) stay two calls. */
+void
+test_partial_identity_joins_fuller(void) {
+    const time_t when = 1754706700;
+    constexpr uint32_t kSite = 0x10000U | 5U;
+    constexpr uint32_t kSystem = 0x10000U | 7U;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a[2];
+        uint32_t b[2];
+        int64_t freq[2];
+        int rows;
+    };
+
+    const Case cases[] = {
+        {"B5: an EDACS site, then its system learned",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {0U, kSystem},
+         {0, 0},
+         1},
+        {"B5: an EDACS site and system, then a site-only fragment",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {kSystem, 0U},
+         {0, 0},
+         1},
+        {"B5: two EDACS systems on one site",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {kSystem, 0x10000U | 8U},
+         {0, 0},
+         2},
+        {"B5: an EDACS site-only and a system-only identity",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, 0U},
+         {0U, kSystem},
+         {0, 0},
+         2},
+        {"B5: a P25 NAC, then its tuned frequency known",
+         DSD_POS_SCOPE_P25_NAC,
+         {0x293U, 0x293U},
+         {0U, 0U},
+         {0, 155100000},
+         1},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                Event_History* item = ring.commit(0, 80631U, 8631U, when + 5 * i, when + 5 * i + 3);
+                item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_EDACS_POS;
+                item->access_code_kind = DSD_ACCESS_CODE_NONE;
+                with_rx(item, c.kind, c.a[i], c.b[i], c.freq[i]);
+                model.refresh(ring.state);
+            }
+            expect(c.what, model.count() == c.rows);
+        }
+        CallHistoryModel reloaded;
+        expect(c.what, reloaded.count() == c.rows);
+        if (c.rows == 1) {
+            const QJsonObject rx = stored_row_with(80631U, 8631U).value(QLatin1String("rx")).toObject();
+            const bool fuller = c.kind == DSD_POS_SCOPE_FEED_EDACS
+                                    ? rx.value(QLatin1String("a")).toInt() == static_cast<int>(kSite)
+                                          && rx.value(QLatin1String("b")).toInt() == static_cast<int>(kSystem)
+                                    : rx.value(QLatin1String("f")).toInteger() == 155100000;
+            expect("B5: the merged row keeps every part either fragment knew", fuller);
+        }
+    }
+}
+
 /* B2/B5: an update found by its fragment is not merged again, so its reception system is checked before it gives the
  * row anything. A P25 call row heard on one full system (its sender scope unknown: no fix yet) merges a NAC-only
  * fragment of the same radio; when that fragment's later reading names another full system and brings a fix local to
@@ -6323,6 +6402,7 @@ main(int argc, char** argv) {
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
     test_late_position_rechecks_reception_system();
+    test_partial_identity_joins_fuller();
     test_repeated_notice_compares_the_fix();
 
     QDir(dataDir).removeRecursively();

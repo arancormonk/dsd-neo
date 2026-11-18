@@ -355,13 +355,38 @@ call_history_scope_family(const CallHistoryScope& scope) {
 }
 
 /**
+ * @brief Whether identity @p y names everything identity @p x names: the same kind, and each part @p x knows with the
+ *        value @p x gives it (issue #800, B5).
+ *
+ * Two kinds can know part of themselves: an EDACS scope its site and its system, each 0 until known
+ * (DSD_POS_SCOPE_FEED_EDACS), and a P25 NAC scope its discriminator, the tuned frequency, 0 when none was known. Every
+ * other kind is known whole or not at all, so for it this is equality.
+ */
+inline bool
+call_history_scope_covers(const CallHistoryScope& x, const CallHistoryScope& y) {
+    if (x.kind != y.kind) {
+        return false;
+    }
+    if (x.kind == static_cast<uint8_t>(DSD_POS_SCOPE_FEED_EDACS)) {
+        return (x.a == 0U || x.a == y.a) && (x.b == 0U || x.b == y.b) && x.freqHz == y.freqHz;
+    }
+    if (x.kind == static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC)) {
+        return x.a == y.a && x.b == y.b && (x.freqHz == 0 || x.freqHz == y.freqHz);
+    }
+    return x.a == y.a && x.b == y.b && x.freqHz == y.freqHz;
+}
+
+/**
  * @brief Whether two identities may be one system (issue #800, B5).
  *
- * Only two identities known at the same strength (call_history_scope_strength()) that differ are two systems: two
- * conventional DMR systems on two frequencies, two conventional P25 channels of one NAC. A weaker identity is
- * compatible with a stronger one of the same family, so a trunked call whose first fragment knew only the NAC still
- * joins the fragment that learned the WACN and SYSID. A row with no recorded identity (one an older build stored, a
- * protocol that has none) is compatible with any, which keeps the merge it always had.
+ * Only two identities known at the same strength (call_history_scope_strength()) neither of which names everything the
+ * other does (call_history_scope_covers()) are two systems: two conventional DMR systems on two frequencies, two
+ * conventional P25 channels of one NAC, two EDACS systems on one site. One that knows part of what the other knows
+ * fully is the same system, so an EDACS call whose first fragment knew only the site joins the fragment that also
+ * learned the system. A weaker identity is compatible with a stronger one of the same family, so a trunked call whose
+ * first fragment knew only the NAC still joins the fragment that learned the WACN and SYSID. A row with no recorded
+ * identity (one an older build stored, a protocol that has none) is compatible with any, which keeps the merge it
+ * always had.
  */
 inline bool
 call_history_scopes_compatible(const CallHistoryScope& x, const CallHistoryScope& y) {
@@ -371,11 +396,26 @@ call_history_scopes_compatible(const CallHistoryScope& x, const CallHistoryScope
         return true;
     }
     if (sx == sy) {
-        return x.kind == y.kind && x.a == y.a && x.b == y.b && x.freqHz == y.freqHz;
+        return call_history_scope_covers(x, y) || call_history_scope_covers(y, x);
     }
     const int fx = call_history_scope_family(x);
     const int fy = call_history_scope_family(y);
     return fx == 0 || fy == 0 || fx == fy;
+}
+
+/**
+ * @brief Whether a row that knows identity @p held learns more of its system from a compatible fragment's @p seen
+ *        (issue #800, B5): @p seen is stronger, or as strong and names everything @p held does and more (an EDACS
+ *        system learned beside the site, a P25 NAC's tuned frequency). The row then keeps @p seen.
+ */
+inline bool
+call_history_scope_learns(const CallHistoryScope& held, const CallHistoryScope& seen) {
+    const int sh = call_history_scope_strength(held);
+    const int ss = call_history_scope_strength(seen);
+    if (ss != sh) {
+        return ss > sh;
+    }
+    return ss != 0 && call_history_scope_covers(held, seen) && !call_history_scope_covers(seen, held);
 }
 
 /**

@@ -15557,8 +15557,11 @@ Qt Quick frontend (`src/ui/qt`):
       requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
       plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
       matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
-      Capacity Plus / EDACS, then a full system) must be equal; a weaker one joins a stronger one of its family, and the
-      row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
+      Capacity Plus / EDACS, then a full system) must be equal, except that one known in part
+      (`call_history_scope_covers()`: an EDACS scope's site or system still 0, a P25 NAC scope with no tuned frequency)
+      joins one that knows those parts with the same values, and the row keeps the fuller
+      (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
+      stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
       rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
     - Fold (`fold_payload()`, `fill_identity()`, `foldRow()`): a fragment gives the row its texts, position, sender
       scope, protocol, target and source texts, source number and source label only when it names the same radio
