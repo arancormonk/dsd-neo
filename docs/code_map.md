@@ -2758,7 +2758,10 @@ suite runs under this compiler.
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
     suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
     field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
-    voice call) is read from the bytes its CRC covered, never from the printable display copy. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked slow-data
+    header with DATA set names no call and opens none, and revokes what a header heard before named
+    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared, the record and message assembled under it dropped), so a voice
+    call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.

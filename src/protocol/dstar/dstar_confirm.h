@@ -64,6 +64,13 @@ void dstar_confirm_reset(dsd_state* state);
  */
 void dstar_tx_begin(dsd_state* state);
 
+/**
+ * @brief The transmission names no call any more, within it (a checked header that names no voice call, issue #800):
+ * clears dsd_state::dstar_tx_call_epoch and the reception it holds on, and drops the D-PRS record and the text message
+ * being assembled under that naming. The transmission and its confirmation stay.
+ */
+void dstar_tx_unname(dsd_state* state);
+
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void dstar_confirm_begin_frame(dsd_state* state);
 

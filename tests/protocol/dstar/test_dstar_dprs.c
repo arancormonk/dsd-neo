@@ -820,6 +820,46 @@ test_data_header_names_no_voice_call(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9): N0OLD's voice call is ACTIVE and named (its terminator and the next RF header missed) when a
+ * CRC-valid slow-data header with the DATA bit set names N0DATA. That header is no voice call's, so it revokes
+ * N0OLD's naming without making a new one: a D-PRS record and a whole text message heard after it reach the feed
+ * anonymous and no row, and the text message begun under N0OLD's naming before it never completes on N0OLD's row. */
+static void
+test_data_header_revokes_the_voice_naming(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0OLD");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    expect_int("voice header names the call", r.state->dstar_tx_call_epoch != 0U, 1);
+    send_text(&r, 0U, "OLD MESSAGE TEXT    ", 4U);
+    expect_str("N0OLD's own message", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    send_text(&r, 0U, "PART1", 1U);
+    expect_str("first block of N0OLD's next message", open_row(&r)->text_message, "PART1");
+
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0DATA", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("data header revokes the voice naming", (long long)r.state->dstar_tx_call_epoch, 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("call still open", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_str("data header changes no voice call's source", call.source_text, "N0OLD");
+
+    send_text(&r, 1U, " PART2 PART3", 3U);
+    expect_str("message begun before the data header completes on no row", open_row(&r)->text_message, "PART1");
+    send_text(&r, 0U, "NEW DATA MESSAGE    ", 4U);
+    expect_str("message after the data header stays off the row", open_row(&r)->text_message, "PART1");
+
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[2];
+    expect_int("record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record after the data header names nobody", f[0].source_text, "");
+    expect_int("record after the data header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", open_row(&r)->pos.valid, 0);
+    rig_close(&r);
+}
+
 /* Issue #800 (g62-r8): a rebroadcast header fills nine of a superframe's ten blocks; the tenth may be a text block.
  * It is read like any other text block: the message's first block ("HELLO"), heard after the header that names
  * N0TEXT, starts the message, and with the rest of it the whole message reaches N0TEXT's row. */
@@ -890,6 +930,7 @@ main(void) {
     test_header_bound_across_a_protocol_switch();
     test_new_message_starts_empty();
     test_data_header_names_no_voice_call();
+    test_data_header_revokes_the_voice_naming();
     test_text_block_after_a_header();
     test_missed_first_block_starts_a_new_message();
     if (g_failures != 0) {

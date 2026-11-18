@@ -190,6 +190,11 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         if ((ctx->header_flag1 & 0x80U) == 0U) {
             const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
             dstar_header_observe(state, protocol, 0, ctx->str1, ctx->str2, ctx->str3, ctx->str4);
+        } else {
+            /* A data transmission's header names no call and opens none. Whatever a header heard before named -- a
+               voice call left ACTIVE after its terminator and this transmission's RF header were missed among them --
+               is not this transmission's: that naming goes, with the slow data assembled under it (issue #800). */
+            dstar_tx_unname(state);
         }
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal

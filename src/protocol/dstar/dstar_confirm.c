@@ -38,6 +38,17 @@ dstar_tx_begin(dsd_state* state) {
 }
 
 void
+dstar_tx_unname(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
+    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+    DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
+}
+
+void
 dstar_confirm_begin_frame(dsd_state* state) {
     if (!state) {
         return;
