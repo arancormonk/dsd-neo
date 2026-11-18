@@ -12204,10 +12204,13 @@ Private per-protocol modules worth knowing about:
   (7-bit CRC, `nxdn_scch_info::acts`) is printed, but its recent-activity entries, idle-repeater clears and expiry, its
   termination's call end, its busy message's control channel and tune, and its call option's cipher, key and crypto
   publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
-  frame, 80 ms, later). Its IV parts (IV A in an INFO2 naming ID 31, IV B and C in an INFO1) are the decoder's working
-  IV (`payload_miN`), kept either way and cleared with it at no carrier and when a tuned call is released, so IV A
-  sent before the confirmation still completes the IV the call takes once it is
-  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The "Type-D" category it names stays with its own frame only,
+  frame, 80 ms, later). `nxdn_scch_parse()` reads the field layout of NXDN TS 1-E §6.5 (its comment has the bit table;
+  TS 2-B §5.1.2's test vectors pin it): the ID of an INFO2, INFO3 or INFO4 is always a unit or group ID (31 is a
+  standard ID), an INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (Table 6.6-4) names no unit and acts on
+  nothing, and an INFO1 with its Spare bit set is not defined and acts on nothing. No SCCH carries an IV or writes
+  the decoder's scrambler register or IV (`payload_miN`): Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F
+  §16), and the bits some decoders read as IV parts go out only through the key redaction
+  (`test_type_d_scch_never_rewrites_cipher_state`). The "Type-D" category it names stays with its own frame only,
   the frame's FACCH1 reading it
   (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
   release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the
