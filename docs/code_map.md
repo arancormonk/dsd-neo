@@ -2764,7 +2764,8 @@ suite runs under this compiler.
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
     suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
     field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
-    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked slow-data
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked RF header with DATA
+    set opens its data call but names no call for slow data; a checked slow-data
     header with DATA set names no call and opens none, and revokes what a header heard before named
     (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared, the record and message assembled under it dropped), so a voice
     call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go

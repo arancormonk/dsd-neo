@@ -232,6 +232,26 @@ test_soft_header_decode_names_the_dprs_source_only_with_a_callsign(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #800 (g62-r9): an RF header with the DATA flag (0x80) opens its data call, but names no call for the
+ * transmission's slow data, as a slow-data header with DATA set does not: one rule for both header paths. */
+static void
+test_soft_data_header_names_no_call_for_slow_data(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x80U);
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == DSD_CALL_KIND_DATA);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+    assert(state.dstar_tx_call_epoch == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
 /* Issue #800: a suffix with a blank MY field is no caller. On a fresh call the RF header's suffix alone never becomes
  * the call's source: the call is anonymous, as its D-PRS records are. */
 static void
@@ -824,6 +844,7 @@ main(void) {
     test_soft_header_decode_reports_a_failed_crc();
     test_soft_header_decode_names_the_dprs_source_only_with_a_callsign();
     test_soft_header_decode_suffix_alone_is_no_source();
+    test_soft_data_header_names_no_call_for_slow_data();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_header_search_evidence_follows_the_published_call();
