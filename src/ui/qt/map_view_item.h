@@ -46,11 +46,14 @@
 #include <QObject>
 #include <QPointer>
 #include <QQuickItem>
+#include <QSet>
 #include <QString>
 #include <QVariant>
 #include <QtGlobal>
+#include <cstdint>
 #include <vector>
 
+#include "map_geometry.h"
 #include "map_math.h"
 #include "map_scene.h"
 #include "map_tile_cache.h"
@@ -331,9 +334,21 @@ class MapViewItem : public QQuickItem {
         updatePolish();
     }
 
+    /** @brief Deliver an application state change as QGuiApplication would. */
+    void
+    testApplicationState(Qt::ApplicationState state) {
+        onApplicationStateChanged(state);
+    }
+
     int
     testHeldTiles() const {
         return static_cast<int>(m_tileImages.size());
+    }
+
+    /** @brief Label images rendered so far (on the GUI thread, ahead of any sync). */
+    int
+    testLabelImages() const {
+        return static_cast<int>(m_labelImages.size());
     }
 #endif
 
@@ -372,6 +387,8 @@ class MapViewItem : public QQuickItem {
         map_math::WorldPoint ring;
         map_scene::MarkerStyle ringStyle;
         QString label;
+        QString labelKey;  /**< its image in the label cache: colour role and text */
+        int labelRole = 0; /**< 0 labelColor, 1 selectedColor, 2 alertColor (an emergency outranks the selection) */
         bool emergency = false;
         bool selected = false;
     };
@@ -425,6 +442,7 @@ class MapViewItem : public QQuickItem {
     void onTileSettingsChanged();
     void onApplicationStateChanged(Qt::ApplicationState state);
     void rebuildScene();
+    void orderLabels();
     void sceneChanged();
     bool assignColor(QColor& member, const QColor& next);
     bool assignSize(double& member, double next);
@@ -437,6 +455,9 @@ class MapViewItem : public QQuickItem {
     bool deviceWorld(map_math::WorldPoint* out) const;
     bool tilesWanted() const;
     void dropTileRequests();
+    void releaseTiles();
+    void keepStandIns(const QSet<MapTileKey>& inView, bool complete);
+    map_math::Viewport cameraBase() const;
     void retoneTiles();
     QImage toneTile(const QImage& image) const;
     map_math::Viewport viewportForSize() const;
@@ -444,12 +465,17 @@ class MapViewItem : public QQuickItem {
     std::vector<map_math::WorldPoint> markerPoints() const;
     const TrackDraw* findTrack(qulonglong trackId) const;
     std::vector<TileDraw> tileDraws(double ratio) const;
-    std::vector<SpriteQuad> spriteQuads() const;
-    std::vector<Circle> circles() const;
+    const std::vector<SpriteQuad>& spriteQuads();
+    const std::vector<Circle>& circles();
+    void wrapCopies(const map_math::Viewport& vp, std::vector<long long>& out) const;
     template <typename Visit>
     void forEachTrail(Visit&& visit);
     void buildAtlas(double ratio);
     void buildLabels(double ratio);
+    void prepareLabels();
+    void ensureLabelCache(double ratio);
+    const QImage& labelImage(const TrackDraw& t, double ratio);
+    const QColor& labelColorFor(int role) const;
 
     QSGNode* updateGpuTree(QSGNode* old, QQuickWindow* win, double ratio);
     void gpuGrid(GpuRoot* root, double ratio);
@@ -531,6 +557,11 @@ class MapViewItem : public QQuickItem {
     quint64 m_atlasVersion = 0; /* bumped by every redraw of it */
     int m_atlasCellPx = 0;
     std::vector<LabelDraw> m_labels;
+    std::vector<int> m_labelOrder; /* scene indices of the labelled tracks, highest priority first */
+    std::vector<map_scene::LabelBox> m_labelBoxes;
+    std::vector<QString> m_labelKeys;
+    std::vector<uint8_t> m_labelKeep;
+    QSet<QString> m_usedLabels;
     QHash<QString, QImage> m_labelImages;
     double m_labelRatio = 0.0;
     quint64 m_labelBuilt = 0;   /* m_labelSerial the images were drawn at */
@@ -538,6 +569,13 @@ class MapViewItem : public QQuickItem {
     std::vector<float> m_xs;
     std::vector<float> m_ys;
     map_scene::TrailRuns m_runs;
+    std::vector<SpriteQuad> m_quads;
+    std::vector<Circle> m_circles;
+    std::vector<long long> m_copies;
+    std::vector<map_geometry::StrokeVertex> m_discs;
+    std::vector<map_geometry::StrokeVertex> m_plainTrails;
+    std::vector<map_geometry::StrokeVertex> m_chosenTrails;
+    std::vector<map_geometry::SpriteVertex> m_sprites;
 };
 
 } // namespace dsd_qt

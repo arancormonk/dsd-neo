@@ -139,6 +139,20 @@ class MapTileWorker : public QObject {
      */
     static bool validTemplate(const QString& urlTemplate, QString* host = nullptr);
 
+    /** @brief validTemplate() for QML (the map settings sheet): whether @p text can be used. */
+    Q_INVOKABLE static bool
+    isValidTemplate(const QString& text) {
+        return validTemplate(text);
+    }
+
+    /** @brief The host (with any port) a valid template @p text sends the viewed area to, for the settings sheet's
+     *         "sent to" line; empty when the template is not valid. */
+    Q_INVOKABLE static QString
+    templateHost(const QString& text) {
+        QString host;
+        return validTemplate(text, &host) ? host : QString();
+    }
+
     /** @brief @p urlTemplate with @p key's coordinates in place; empty when the template is not valid. */
     static QString tileUrl(const QString& urlTemplate, const MapTileKey& key);
 

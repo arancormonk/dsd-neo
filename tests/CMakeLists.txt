@@ -6445,6 +6445,7 @@ if(DSD_ENABLE_QT_UI)
             ui/qml_map_stub.h
             ui/qml_map_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
@@ -26564,6 +26565,7 @@ if(DSD_ENABLE_QT_UI)
         ui/qml_map_stub.h
         ui/qml_map_stub.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp

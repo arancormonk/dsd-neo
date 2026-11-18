@@ -356,6 +356,21 @@ reusable(const map_math::Viewport& built, const map_math::Viewport& now, double 
 }
 
 /**
+ * @brief Which copy of the world @p p is drawn on in @p vp (screen_from_world()): whole worlds from the raw one.
+ *
+ * Content built for one view may be moved to show a pan only while every point it was placed by is still drawn on
+ * the same copy; across the flip line, half a world from the centre, the marker jumps a world width and its trail
+ * must jump with it.
+ */
+inline long long
+wrap_copy(const map_math::Viewport& vp, map_math::WorldPoint p) {
+    if (!std::isfinite(p.x)) {
+        return 0;
+    }
+    return static_cast<long long>(std::floor((p.x - vp.center_x) + 0.5));
+}
+
+/**
  * @brief The viewport @p t of the way from @p from to @p to (0..1): zoom and centre linear, east-west the short way.
  *
  * The camera's animation (fit, follow, the zoom buttons). Returned clamped.

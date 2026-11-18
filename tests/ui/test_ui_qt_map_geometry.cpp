@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -455,7 +456,8 @@ test_marker_cells() {
             const int cell = ms::marker_cell(style);
             assert(cell >= 0 && cell < ms::kSelectionHaloCell);
             ms::MarkerStyle back;
-            assert(ms::marker_style_of_cell(cell, &back));
+            const bool known = ms::marker_style_of_cell(cell, &back);
+            assert(known);
             assert(back.ring == style.ring && back.alert == style.alert && back.double_outline == style.double_outline
                    && back.dashed_outline == style.dashed_outline);
             /* A ring has no fill, so its freshness does not pick another cell. */
@@ -469,10 +471,12 @@ test_marker_cells() {
         assert(seen[static_cast<size_t>(cell)] == 1);
     }
     ms::MarkerStyle none;
-    assert(!ms::marker_style_of_cell(ms::kSelectionHaloCell, &none));
-    assert(!ms::marker_style_of_cell(ms::kDeviceDotCell, &none));
-    assert(!ms::marker_style_of_cell(-1, &none) && !ms::marker_style_of_cell(ms::kMarkerCellCount, &none));
-    assert(!ms::marker_style_of_cell(0, nullptr));
+    for (const int cell : {ms::kSelectionHaloCell, ms::kDeviceDotCell, -1, ms::kMarkerCellCount}) {
+        const bool known = ms::marker_style_of_cell(cell, &none);
+        assert(!known);
+    }
+    const bool to_null = ms::marker_style_of_cell(0, nullptr);
+    assert(!to_null);
     assert(ms::kAtlasRows * ms::kAtlasColumns >= ms::kMarkerCellCount);
     /* An out-of-range freshness is clamped, never another axis. */
     ms::MarkerStyle wild;
@@ -505,9 +509,9 @@ test_split_trail() {
     assert(runs.dashed_x.size() == 2U);
     /* Drawn, the solid list never bridges the dashed stretch. */
     std::vector<mg::StrokeVertex> out;
-    assert(mg::append_trail(runs.solid_x.data(), runs.solid_y.data(), static_cast<int>(runs.solid_x.size()),
-                            pen(0.0F, 0.0F), nullptr, out)
-           > 0);
+    const int drawn = mg::append_trail(runs.solid_x.data(), runs.solid_y.data(), static_cast<int>(runs.solid_x.size()),
+                                       pen(0.0F, 0.0F), nullptr, out);
+    assert(drawn > 0);
     for (const mg::StrokeVertex& v : out) {
         assert(!(v.x > 12.0F && v.x < 18.0F));
     }
@@ -620,6 +624,20 @@ test_pan_reuse() {
     mm::Viewport resized = now;
     resized.width += 1.0;
     assert(!ms::reusable(built, resized, 1.0e9));
+    /* The copy a point is drawn on: the same while it stays within half a world of the centre, the next one past. */
+    mm::Viewport wide = built;
+    wide.zoom = 2.0;
+    wide.center_x = 0.5;
+    wide = mm::clamp_viewport(wide);
+    const mm::WorldPoint near_flip{0.99, 0.5};
+    assert(ms::wrap_copy(wide, near_flip) == 0);
+    const mm::Viewport crossed = mm::pan(wide, 30.0, 0.0); /* 0.49 + 30/1024 > 0.5 */
+    assert(ms::wrap_copy(crossed, near_flip) == 1);
+    assert(ms::reusable(wide, crossed, 200.0)); /* the pan alone would allow reuse: the copy is what forbids it */
+    const mm::ScreenPoint a = mm::screen_from_world(wide, near_flip);
+    const mm::ScreenPoint b = mm::screen_from_world(crossed, near_flip);
+    assert(std::fabs((b.x - a.x) - (30.0 - 1024.0)) < 1.0e-6);
+    assert(ms::wrap_copy(wide, mm::WorldPoint{std::numeric_limits<double>::quiet_NaN(), 0.5}) == 0);
 }
 
 /* The camera's path: the ends exactly, east-west the short way across 180 degrees. */

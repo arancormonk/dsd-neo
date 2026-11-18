@@ -381,6 +381,90 @@ test_tiles() {
     delete root;
 }
 
+/* Backgrounding stops loading at once, from the state change itself: a hidden window is never polished, so a stop
+ * left to the next polish would let the worker go on fetching the last view. Coming back asks again. */
+void
+test_background_stops_loading() {
+    Fixture f;
+    stub::MapTileSourceStub tiles;
+    f.map->setTileSource(&tiles);
+    tiles.setEnabled(true);
+    f.map->testPolish();
+    assert(!f.map->testRequestedTiles().isEmpty());
+    assert(spin_until([&] { return f.map->testHeldTiles() > 0; }));
+    /* Read through a function: the generation moves inside the call below, not in this scope. */
+    const auto generation_now = [&tiles] { return tiles.generation(); };
+    const quint64 generation = generation_now();
+
+    f.map->testApplicationState(Qt::ApplicationSuspended); /* no polish follows */
+    assert(f.map->testRequestedTiles().isEmpty());
+    const quint64 cleared = generation_now();
+    assert(cleared > generation); /* the worker's requests were cleared */
+    assert(f.map->testHeldTiles() == 0);
+    const int asked = stub::map_tile_requests();
+    for (int i = 0; i < 50; i++) {
+        QCoreApplication::processEvents();
+    }
+    assert(stub::map_tile_requests() == asked);
+
+    /* A window that only lost focus keeps loading. */
+    f.map->testApplicationState(Qt::ApplicationActive);
+    f.map->testPolish();
+    assert(!f.map->testRequestedTiles().isEmpty());
+    f.map->testApplicationState(Qt::ApplicationInactive);
+    assert(!f.map->testRequestedTiles().isEmpty());
+
+    /* Leaving the window, or being hidden, stops it the same way. */
+    f.map->setVisible(false);
+    assert(f.map->testRequestedTiles().isEmpty() && f.map->testHeldTiles() == 0);
+    f.map->setVisible(true);
+    f.map->testPolish();
+    assert(!f.map->testRequestedTiles().isEmpty());
+    f.map->setParentItem(nullptr);
+    assert(f.map->testRequestedTiles().isEmpty());
+    f.map->setParentItem(f.window.contentItem());
+    f.map->setTileSource(nullptr);
+}
+
+/* A pan that moves a trail-bearing marker across the flip line (half a world from the centre) rebuilds the overlay:
+ * the marker jumps a world width, and its trail and circle must jump with it rather than stay on the old copy. */
+void
+test_overlay_follows_the_wrap_copy() {
+    Fixture f;
+    f.map->centerOn(10.0, 0.0, 2.0); /* world 1024 px: half a world is 512 px, the overlay margin 200 px */
+    push(1005U, 10.0, 176.0);
+    push(1005U, 10.0, 176.4, 200000U); /* 0.49 world east of the centre: just inside the flip line */
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    f.map->panBy(5.0, 0.0); /* stays on its copy: reused */
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(!now.overlay->matrix().isIdentity());
+    }
+    f.map->panBy(25.0, 0.0); /* crosses: the marker is now drawn a world to the west */
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    delete root;
+}
+
+/* Label images are rendered when the scene is rebuilt, on the GUI thread, not inside the sync. */
+void
+test_labels_render_on_the_gui_thread() {
+    Fixture f;
+    assert(f.map->testLabelImages() == 0);
+    push(1006U, 10.0, 20.0);
+    f.model.poll();
+    assert(f.map->testLabelImages() == 1);
+}
+
 } // namespace
 
 int
@@ -390,6 +474,9 @@ main(int argc, char** argv) {
     test_break_is_not_bridged();
     test_pan_moves_the_overlay();
     test_tiles();
+    test_background_stops_loading();
+    test_overlay_follows_the_wrap_copy();
+    test_labels_render_on_the_gui_thread();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

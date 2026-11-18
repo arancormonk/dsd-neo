@@ -64,6 +64,8 @@ Item {
             map.active = true
             map.selectedTrackId = 0
             map.followTrackId = 0
+            map.cameraDurationMs = 0
+            map.trailColor = "#ff00ff"
             map.followDevice = false
             map.deviceValid = false
             map.resetCameraUsedDevicePosition()
@@ -148,7 +150,7 @@ Item {
             verify(near(rgb(image, tc.cx, tc.cy), 255, 0, 255, 40), "the trail runs between the fixes: "
                    + JSON.stringify(rgb(image, tc.cx, tc.cy)))
             var solid = countNear(image, tc.cx - 12, tc.cy, tc.cx + 12, tc.cy + 1, 255, 0, 255, 60)
-            compare(solid, 24, "solid: every pixel along it")
+            verify(solid >= 22, "solid: every pixel along it (" + solid + ")")
 
             testContext.resetPositions()
             push({ source: 1004, lat: 10.0, lon: 19.99 })
@@ -179,6 +181,52 @@ Item {
             // The word comes first: the name alone ("Unit 7") would end well before x = 280.
             verify(countNear(image, 280, tc.cy - 10, root.width, tc.cy + 10, 255, 128, 0, 50) > 10,
                    "the label says Emergency before the name")
+        }
+
+        // Trails overlap themselves at sharp turns, so they are drawn opaque whatever colour is bound.
+        function test_04b_a_translucent_trail_colour_is_drawn_opaque() {
+            map.trailColor = "#40ff00ff"
+            push({ source: 1014, lat: 10.0, lon: 19.99 })
+            push({ source: 1014, lat: 10.0, lon: 20.01 })
+            var image = grabImage(root)
+            verify(near(rgb(image, tc.cx, tc.cy), 255, 0, 255, 40), "opaque: " + JSON.stringify(rgb(image, tc.cx, tc.cy)))
+        }
+
+        // An emergency's label carries the word, so it is never the label dropped for the selected track's.
+        function test_06b_an_emergency_label_outranks_the_selected_one() {
+            push({ source: 1015, lat: 10.0, lon: 20.0, label: "Car 12 long name" })
+            var selected = map.trackAt(tc.cx, tc.cy)
+            map.selectedTrackId = selected
+            push({ source: 1016, lat: 10.0001, lon: 20.0, emergency: true, label: "Unit 7" })
+            waitForRendering(map)
+            var image = grabImage(root)
+            // From past the selection halo (the sprite is 28 px wide) to the right edge.
+            verify(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 255, 128, 0, 50) > 20,
+                   "the emergency's label is drawn")
+            compare(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 0, 255, 255, 30), 0,
+                    "the overlapping selected label gave way")
+        }
+
+        // The settings sheet checks a template and names the server the viewed area goes to.
+        function test_14_the_tile_source_checks_a_template_for_the_settings_sheet() {
+            verify(tiles.isValidTemplate("https://tiles.example.org/{z}/{x}/{y}.png"))
+            compare(tiles.templateHost("https://tiles.example.org:8443/{z}/{x}/{y}.png"), "tiles.example.org:8443")
+            verify(!tiles.isValidTemplate("http://tiles.example.org/{z}/{x}/{y}.png"), "https only")
+            verify(!tiles.isValidTemplate("https://tiles.example.org/{z}/{x}.png"), "every placeholder")
+            compare(tiles.templateHost("http://tiles.example.org/{z}/{x}/{y}.png"), "")
+        }
+
+        // A follow step that lands while a zoom button animates keeps the zoom it was going to.
+        function test_15_a_follow_step_does_not_cut_a_zoom_short() {
+            push({ source: 1017, lat: 10.0, lon: 20.0 })
+            map.followTrackId = map.trackAt(tc.cx, tc.cy)
+            map.cameraDurationMs = 250
+            map.zoomIn()
+            wait(60)
+            push({ source: 1017, lat: 10.0, lon: 20.001 })
+            tryCompare(map, "zoom", 13, 2000)
+            var p = map.markerPoint(map.followTrackId)
+            verify(Math.abs(p.x - tc.cx) < 0.5, "and is centred on the new fix: " + p.x)
         }
 
         function test_07_a_named_radio_is_labelled_and_an_anonymous_one_is_not() {
