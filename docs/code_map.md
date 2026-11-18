@@ -14981,10 +14981,13 @@ Qt Quick frontend (`src/ui/qt`):
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
     clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
-    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared, or
+    while the fragment is withdrawn from it (issue #800: its reading named another call, `FragmentPart::withdrawn`); a
     double, which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and
     `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
-    is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
+    is set with `setRecordingProvider()`) by the row's fragments, a withdrawn one left out (`recording_fragments()`, as
+    the export's recording names are): the row keeps its key only to know its later readings, and a reading that agrees
+    again gives its recording back; the provider names the fragments whose recordings
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
     store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
     read (`recordingEntryNames()`, the recording store below), for a History export.

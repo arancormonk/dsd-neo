@@ -3776,6 +3776,21 @@ class FakeRecordings : public dsd_qt::CallRecordingProvider {
         }
         return false;
     }
+
+    QList<QStringList>
+    recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override {
+        QList<QStringList> names;
+        for (const QStringList& fragments : fragmentsPerRow) {
+            QStringList row;
+            for (const QString& fragment : fragments) {
+                if (recorded.contains(fragment)) {
+                    row.append(fragment);
+                }
+            }
+            names.append(row);
+        }
+        return names;
+    }
 };
 
 /* The fragment key of the newest row @p slot committed. */
@@ -6451,6 +6466,65 @@ test_fragment_on_another_system_withdraws_call_fields(void) {
     }
 }
 
+/* B2/B5: a fragment withdrawn from its row (its reading names another system) is another call's, so its recording is
+ * not the row's: the row's recording roles, recordingsForUid(), the export's recording names and uidForFragment() leave
+ * it out, live and after a reload, while the row keeps the fragment's key to know its later readings. A reading that
+ * agrees again gives the recording back. */
+void
+test_withdrawn_fragment_recordings(void) {
+    const time_t when = 1754706900;
+    resetStorage();
+    RingFixture ring;
+    FakeRecordings recordings;
+    QString joined;
+    qint64 uid = 0;
+    {
+        CallHistoryModel model;
+        model.setRecordingProvider(&recordings);
+        Event_History* a = ring.commit(0, 80681U, 8681U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        Event_History* b = ring.commit(0, 80681U, 8681U, when + 5, when + 8);
+        b->systype = DSD_SYNC_P25P1_POS;
+        with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+        joined = newest_fragment(ring, 0);
+        recordings.recorded = {joined};
+        model.refresh(ring.state);
+        uid = uid_at(model, 0);
+        expect("withdrawn recording: the NAC-only fragment joins the call with its recording",
+               model.count() == 1 && has_recording(model, 0) && model.recordingsForUid(uid).size() == 1
+                   && qRound64(model.uidForFragment(joined)) == uid);
+        b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        const QList<CallHistoryModel::ExportRow> exported = model.exportRows({0});
+        expect("withdrawn recording: the row no longer offers the other system's recording",
+               model.count() == 1 && !has_recording(model, 0)
+                   && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().isEmpty()
+                   && model.recordingsForUid(uid).isEmpty());
+        expect("withdrawn recording: the export names no recording of it",
+               exported.size() == 1 && exported.at(0).recordingNames.isEmpty());
+        expect("withdrawn recording: its recording names no row", qRound64(model.uidForFragment(joined)) == 0);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel reloaded;
+        reloaded.setRecordingProvider(&recordings);
+        expect("withdrawn recording: the same after a reload", reloaded.count() == 1 && !has_recording(reloaded, 0)
+                                                                   && reloaded.recordingsForUid(uid).isEmpty()
+                                                                   && qRound64(reloaded.uidForFragment(joined)) == 0);
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        reloaded.refresh(ring.state);
+        expect("withdrawn recording: a reading that agrees again gives the recording back",
+               reloaded.count() == 1 && has_recording(reloaded, 0) && reloaded.recordingsForUid(uid).size() == 1
+                   && qRound64(reloaded.uidForFragment(joined)) == uid);
+    }
+}
+
 /* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
  * number past 64 bits is refused, and no stand-in value counts as a stored one. */
 void
@@ -6766,6 +6840,7 @@ main(int argc, char** argv) {
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
     test_fragment_on_another_system_withdraws_call_fields();
+    test_withdrawn_fragment_recordings();
     test_json_field_fits_judges_conversion();
     test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();

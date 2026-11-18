@@ -247,7 +247,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /**
      * @brief The uid of the row that holds the ring fragment @p fragment now, or 0 when none does (never logged,
-     * trimmed, cleared).
+     * trimmed, cleared) or the fragment is withdrawn from it (issue #800: another call's, FragmentPart::withdrawn).
      *
      * Issue #809: a Signal search recording names its call by fragment; the row it merged into is the one found. A
      * double because QML reads it as a JS number, which holds every uid this model hands out exactly.

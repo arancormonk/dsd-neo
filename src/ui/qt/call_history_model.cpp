@@ -508,6 +508,29 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
     }
 }
 
+/** @brief Whether fragment @p fragment's part in @p row is withdrawn (issue #800): its reading named another call than
+ * the row's, so the row keeps its key only to know its later readings. */
+bool
+fragment_withdrawn(const CallHistoryModel::Row& row, const QString& fragment) {
+    return std::any_of(row.parts.cbegin(), row.parts.cend(), [&fragment](const CallHistoryModel::FragmentPart& part) {
+        return part.withdrawn && part.fragment == fragment;
+    });
+}
+
+/** @brief The fragments whose recordings are @p row's: every fragment it holds but the withdrawn ones, whose
+ * recordings belong to another call. */
+QStringList
+recording_fragments(const CallHistoryModel::Row& row) {
+    QStringList fragments;
+    fragments.reserve(row.fragments.size());
+    for (const QString& fragment : row.fragments) {
+        if (!fragment_withdrawn(row, fragment)) {
+            fragments.append(fragment);
+        }
+    }
+    return fragments;
+}
+
 } // namespace
 
 QVariant
@@ -521,13 +544,14 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
         // A trunk-scan target's id is the app's uid for its entry: shown as the entry's name (setChannelNames()).
         case NameRole: return !row.channel.isEmpty() && row.name == row.channel ? channelDisplayName(row) : row.name;
         case ChannelRole: return channelDisplayName(row);
-        case RecordingsRole:
-            return m_recordings != nullptr && !row.fragments.isEmpty()
-                       ? m_recordings->recordingsForFragments(row.fragments)
-                       : QVariantList();
-        case HasRecordingRole:
-            return m_recordings != nullptr && !row.fragments.isEmpty()
-                   && m_recordings->hasRecordingForFragments(row.fragments);
+        case RecordingsRole: {
+            const QStringList fragments = m_recordings != nullptr ? recording_fragments(row) : QStringList();
+            return !fragments.isEmpty() ? m_recordings->recordingsForFragments(fragments) : QVariantList();
+        }
+        case HasRecordingRole: {
+            const QStringList fragments = m_recordings != nullptr ? recording_fragments(row) : QStringList();
+            return !fragments.isEmpty() && m_recordings->hasRecordingForFragments(fragments);
+        }
         default: return row_role_value(row, role);
     }
 }
@@ -554,7 +578,12 @@ CallHistoryModel::recordingsForUid(qint64 uid) const {
 double
 CallHistoryModel::uidForFragment(const QString& fragment) const {
     const auto it = m_fragmentIndex.constFind(fragment);
-    return it != m_fragmentIndex.constEnd() ? static_cast<double>(it.value()) : 0.0;
+    if (it == m_fragmentIndex.constEnd()) {
+        return 0.0;
+    }
+    // A withdrawn fragment is another call's: the row only keeps its key, so its recording names no row.
+    const int row = rowForUid(it.value());
+    return row >= 0 && !fragment_withdrawn(m_rows.at(row), fragment) ? static_cast<double>(it.value()) : 0.0;
 }
 
 QVariantMap
@@ -642,7 +671,7 @@ CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
             continue;
         }
         rows.append(export_row_at(*this, index(source)));
-        fragments.append(m_rows.at(source).fragments);
+        fragments.append(recording_fragments(m_rows.at(source)));
     }
     if (m_recordings == nullptr) {
         return rows;
