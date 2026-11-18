@@ -1073,7 +1073,8 @@ turned it on).
 On these the scan keeps its normal timing, as if the setting were off:
 
 - A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs. An Airspy through
-  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s, and a HackRF through SoapySDR at the 10 MS/s it runs.
+  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s, and a HackRF through SoapySDR at the 10 MS/s it normally runs (a HackRF
+  moved to a lower rate near the top of the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
   which also removes that shift.
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning

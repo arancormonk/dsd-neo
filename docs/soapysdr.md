@@ -56,8 +56,8 @@ What dsd-neo does with each (none of this is tested on real hardware yet):
 - **Airspy R2 and Mini** get the Airspy profile and the device's own rate nearest what dsd-neo asks for (2.5 MS/s on
   an R2, 3 MS/s on a Mini). Gains: `LNA`, `MIX`, `VGA`. They also have a native input, `-i airspy`
   ([airspy.md](airspy.md)); through SoapySDR, Skip silent channels can check them (see [trunk-scan.md](trunk-scan.md)).
-- **HackRF One** gets the HackRF profile and runs at 10 MS/s, whatever DSP bandwidth you pick: its makers list 2 MS/s
-  as its lowest rate and recommend 8 MS/s or more. dsd-neo halves 10 MS/s down to the DSP bandwidth, as it does for an
+- **HackRF One** gets the HackRF profile and runs at 10 MS/s, whatever DSP bandwidth you pick, except where that does
+  not fit (see Sample rates below): its makers list 2 MS/s as its lowest rate and recommend 8 MS/s or more. dsd-neo halves 10 MS/s down to the DSP bandwidth, as it does for an
   Airspy. Its filter opens to 5.5 MHz (see Tuner filter below). That is 20 MB/s over USB, 80 MB/s for a cf32
   `--iq-capture`, and a 32 MiB input buffer (about 419 ms at 10 MS/s). `soapy_profile = "generic"` keeps the old
   behaviour, the listed rate nearest the request: 1 or 2 MS/s, depending on the DSP bandwidth. Gains: `LNA`, `VGA` and the
@@ -157,8 +157,12 @@ changes it plans again. A device slower than the DSP bandwidth does not start (`
 than the 72000 Hz DSP bandwidth; choose a smaller DSP bandwidth`), nor does
 one whose rate cannot be resampled to the bandwidth within 5 ppm (`dsd-neo cannot convert the device's ... Hz to the
 48000 Hz DSP bandwidth closely enough ...; choose another DSP bandwidth`); every rate grid listed here converts
-exactly. A profile can prefer a rate of its own: the HackRF profile runs 10 MS/s whenever the radio offers exactly that
-rate, and dsd-neo halves it down the same way. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
+exactly. A profile can prefer a rate of its own: the HackRF profile asks for 10 MS/s when the radio offers that rate,
+and dsd-neo halves it down the same way. It is a preference, not a promise. Near the top of the tuning range, where 10
+MS/s would put the capture (a quarter of the rate above the channel) past the highest frequency dsd-neo can tune, the
+HackRF is asked instead for its listed rate nearest the plain request (2 MS/s at the default DSP bandwidth), if that one
+fits. And the radio's read-back decides in the end: the rate it reports is the rate dsd-neo runs, if the chain can use
+it. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
 a radio that reports more does not start (`the device runs ... Hz, above the 10000000 Hz capture ceiling`), and dsd-neo
 sizes its input buffer for the rate the radio delivers. A retune whose reported rate moves above what that buffer holds
 is refused and the radio stays where it was; restart the stream to use the new rate.

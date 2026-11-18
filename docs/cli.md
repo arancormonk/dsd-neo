@@ -2897,7 +2897,8 @@ Advanced (env)
   again.
 - RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
   ADC clock, and throughput requirements.
-- A HackRF runs at 10 MS/s (the `hackrf` profile's rate) with its filter opened to 5.5 MHz; `soapy_profile = "generic"`
+- A HackRF runs at 10 MS/s (the `hackrf` profile's preferred rate; near the top of the tuning range it may run a lower
+  rate it lists, see [soapysdr.md](soapysdr.md)) with its filter opened to 5.5 MHz; `soapy_profile = "generic"`
   keeps the rate nearest the request. While the Fs/4 shift runs (unless `DSD_NEO_DISABLE_FS4_SHIFT=1`), every
   profile's default filter opens to keep the channel a quarter of the sample rate off centre, and a filter the radio
   reports narrower than that, an explicit `soapy_bandwidth_hz` included, is warned about (`docs/soapysdr.md`, Tuner
