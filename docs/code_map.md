@@ -15629,7 +15629,11 @@ Qt Quick frontend (`src/ui/qt`):
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), each only when known (`detail` only for a legacy text); spill lines
-      add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
+      add `ord`. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
+      part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
+      could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on
+      a NAC or frequency scope, a frequency scope's frequency known, EDACS parts 0 or `0x10000 |` the number), and a
+      stored `proto` that is no whole number loads as not known. Tests: `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only

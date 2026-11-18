@@ -38,14 +38,16 @@ qint64 json_i64_or(const QJsonObject& obj, const char* key, qint64 fallback);
  * @brief A stored integer that fits @p T, or false when the key is missing, holds no integer or does not fit.
  *
  * For values a ring row carries in fields of that width, so a hand-edited store cannot wrap one into another value.
+ * Whether the value is an integer is judged apart from its range: no stand-in value means "none", so a 64-bit field
+ * cannot take one for a stored value.
  */
 template <typename T>
 bool
 json_field_fits(const QJsonObject& obj, const char* key, T* out) {
-    constexpr qint64 kNone = std::numeric_limits<qint64>::min();
     const QJsonValue value = obj.value(QLatin1String(key));
-    const qint64 n = value.isDouble() ? value.toInteger(kNone) : kNone;
-    if (n < static_cast<qint64>(std::numeric_limits<T>::min())
+    // toInteger() gives its fallback for anything but a whole number a qint64 holds: two fallbacks tell that apart.
+    const qint64 n = value.toInteger(0);
+    if (!value.isDouble() || n != value.toInteger(1) || n < static_cast<qint64>(std::numeric_limits<T>::min())
         || n > static_cast<qint64>(std::numeric_limits<T>::max())) {
         return false;
     }

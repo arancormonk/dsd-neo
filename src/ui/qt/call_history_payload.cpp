@@ -217,7 +217,37 @@ scope_kind_valid(uint8_t kind) {
                && kind <= static_cast<uint8_t>(DSD_POS_SCOPE_FEED_TUNED_FREQ));
 }
 
-/** @brief A stored identity (issue #800) under @p key, or none when it is missing or no record could hold it. */
+/** @brief Whether an EDACS scope part (dsd_position_scope_kind) is one the core writes: 0 (not known) or 0x10000 with a
+ * 16-bit site or system number. */
+bool
+edacs_scope_part_valid(uint32_t part) {
+    return part == 0U || (part >> 16) == 1U;
+}
+
+/**
+ * @brief Whether a scope's parts are ones a record could hold (dsd_position_scope_kind, dsd_event_rx_scope): the
+ * identity discriminator, a tuned frequency in Hz, only on a P25 NAC scope; b 0 where the kind has none; a frequency
+ * scope's frequency known; an EDACS scope with a known site or system part, each in its stored form.
+ */
+bool
+scope_values_valid(const CallHistoryScope& scope) {
+    const bool nac = scope.kind == static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC);
+    if (scope.freqHz < 0 || scope.freqHz > static_cast<int64_t>(UINT32_MAX) || (!nac && scope.freqHz != 0)) {
+        return false;
+    }
+    switch (scope.kind) {
+        case DSD_POS_SCOPE_P25_NAC: return scope.b == 0U;
+        case DSD_POS_SCOPE_FEED_CC_FREQ:
+        case DSD_POS_SCOPE_FEED_TUNED_FREQ: return scope.a != 0U && scope.b == 0U;
+        case DSD_POS_SCOPE_FEED_EDACS:
+            return (scope.a != 0U || scope.b != 0U) && edacs_scope_part_valid(scope.a)
+                   && edacs_scope_part_valid(scope.b);
+        default: return true;
+    }
+}
+
+/** @brief A stored identity (issue #800) under @p key, or none when it is missing, a part is missing or no integer, or
+ * no record could hold it. */
 CallHistoryScope
 scope_from_json(const QJsonObject& obj, const char* key) {
     const QJsonValue value = obj.value(QLatin1String(key));
@@ -225,7 +255,7 @@ scope_from_json(const QJsonObject& obj, const char* key) {
     CallHistoryScope scope;
     if (!value.isObject() || !json_field_fits(stored, "k", &scope.kind) || !scope_kind_valid(scope.kind)
         || !json_field_fits(stored, "a", &scope.a) || !json_field_fits(stored, "b", &scope.b)
-        || !json_field_fits(stored, "f", &scope.freqHz)) {
+        || !json_field_fits(stored, "f", &scope.freqHz) || !scope_values_valid(scope)) {
         return CallHistoryScope();
     }
     return scope;
@@ -654,8 +684,9 @@ row_position_digest(const CallHistoryModel::Position& pos) {
  */
 void
 row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
-    const qint64 stored = json_i64_or(obj, "proto", -1);
-    const int protocol = stored >= 0 && stored <= INT8_MAX ? static_cast<int>(stored) : -1;
+    // A sync type (Event_History::systype); missing, no integer or out of range reads as not known.
+    int8_t stored = -1;
+    const int protocol = json_field_fits(obj, "proto", &stored) && stored >= 0 ? static_cast<int>(stored) : -1;
     row.protocol = call_history_protocol_family(protocol) >= 0 ? protocol : -1;
     row.sourceText = raw_identity_text(row.protocol, true, obj.value(QLatin1String("srcText")).toString());
     row.targetText = raw_identity_text(row.protocol, false, obj.value(QLatin1String("tgtText")).toString());

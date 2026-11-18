@@ -103,6 +103,7 @@
 #include "call_history_filter.h"
 #include "call_history_merge.h"
 #include "call_history_model.h"
+#include "call_history_payload.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -6295,6 +6296,142 @@ test_fragment_on_another_system_withdraws_payload(void) {
     }
 }
 
+/* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
+ * number past 64 bits is refused, and no stand-in value counts as a stored one. */
+void
+test_json_field_fits_judges_conversion(void) {
+    const QJsonObject obj{{QStringLiteral("text"), QStringLiteral("12")},
+                          {QStringLiteral("half"), 0.5},
+                          {QStringLiteral("huge"), 1e300},
+                          {QStringLiteral("neg"), static_cast<qint64>(-5)},
+                          {QStringLiteral("big"), static_cast<qint64>(1) << 40}};
+    qint64 out = 7;
+    expect("json_field_fits: a missing key is refused", !dsd_qt::json_field_fits(obj, "none", &out) && out == 7);
+    expect("json_field_fits: a string is refused", !dsd_qt::json_field_fits(obj, "text", &out) && out == 7);
+    expect("json_field_fits: a fraction is refused", !dsd_qt::json_field_fits(obj, "half", &out) && out == 7);
+    expect("json_field_fits: a number past 64 bits is refused",
+           !dsd_qt::json_field_fits(obj, "huge", &out) && out == 7);
+    expect("json_field_fits: a negative whole number fits", dsd_qt::json_field_fits(obj, "neg", &out) && out == -5);
+    expect("json_field_fits: a 40-bit whole number fits",
+           dsd_qt::json_field_fits(obj, "big", &out) && out == (static_cast<qint64>(1) << 40));
+    uint32_t narrow = 3U;
+    expect("json_field_fits: a value past the field is refused", !dsd_qt::json_field_fits(obj, "big", &narrow)
+                                                                     && !dsd_qt::json_field_fits(obj, "neg", &narrow)
+                                                                     && narrow == 3U);
+}
+
+/* A stored system identity (`rx`, `sscope`) with a part no record could hold reads as not known, so the stored row still
+ * takes in a fragment of its call: a discriminator that is missing, no number, fractional, negative or past a 32-bit
+ * frequency; a discriminator on a scope that has none; a b part where the kind has none; a frequency scope without its
+ * frequency; an EDACS part not in its stored form. So does a stored sync type that is no integer. Each corruption is
+ * applied to a row the model wrote, whose valid identity the next fragment repeats. */
+void
+test_stored_identity_parts_are_validated(void) {
+    const time_t when = 1754706750;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a;
+        uint32_t b;
+        int64_t freq;
+        const char* key;
+        QJsonValue value;
+    };
+
+    const QJsonValue removed(QJsonValue::Undefined);
+    const Case cases[] = {
+        {"stored scope: a missing discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f", removed},
+        {"stored scope: a discriminator that is no number", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(QStringLiteral("452500000"))},
+        {"stored scope: a fractional discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(452500000.5)},
+        {"stored scope: a negative discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(-452500000))},
+        {"stored scope: a discriminator past 32 bits", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(0x100000000LL + 452500000LL))},
+        {"stored scope: a NAC scope with a b part", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "b", QJsonValue(7)},
+        {"stored scope: a discriminator on a full system", DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0, "f",
+         QJsonValue(static_cast<qint64>(452500000))},
+        {"stored scope: a tuned-frequency scope without its frequency", DSD_POS_SCOPE_FEED_TUNED_FREQ, 446006250U, 0U,
+         0, "a", QJsonValue(0)},
+        {"stored scope: an EDACS part not in its stored form", DSD_POS_SCOPE_FEED_EDACS, 0x10005U, 0U, 0, "a",
+         QJsonValue(5)},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            Event_History* first = ring.commit(0, 80661U, 8661U, when, when + 3);
+            first->systype = DSD_SYNC_P25P1_POS;
+            with_rx(first, c.kind, c.a, c.b, c.freq);
+            first->pos.scope.kind = c.kind;
+            first->pos.scope.a = c.a;
+            first->pos.scope.b = c.b;
+            first->pos.identity_freq_hz = c.freq;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        for (const char* scopeKey : {"rx", "sscope"}) {
+            QJsonObject scope = row.value(QLatin1String(scopeKey)).toObject();
+            expect(c.what, !scope.isEmpty());
+            if (c.value.isUndefined()) {
+                scope.remove(QLatin1String(c.key));
+            } else {
+                scope.insert(QLatin1String(c.key), c.value);
+            }
+            row.insert(QLatin1String(scopeKey), scope);
+        }
+        rows.replace(0, row);
+        expect(c.what, dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            Event_History* next = ring.commit(0, 80661U, 8661U, when + 5, when + 8);
+            next->systype = DSD_SYNC_P25P1_POS;
+            with_rx(next, c.kind, c.a, c.b, c.freq);
+            next->pos.scope.kind = c.kind;
+            next->pos.scope.a = c.a;
+            next->pos.scope.b = c.b;
+            next->pos.identity_freq_hz = c.freq;
+            reloaded.refresh(ring.state);
+            expect(c.what, reloaded.count() == 1);
+        }
+        const QJsonObject rx = stored_row_with(80661U, 8661U).value(QLatin1String("rx")).toObject();
+        expect(c.what, rx.value(QLatin1String("k")).toInt() == c.kind
+                           && rx.value(QLatin1String("a")).toInteger() == static_cast<qint64>(c.a)
+                           && rx.value(QLatin1String("b")).toInteger() == static_cast<qint64>(c.b)
+                           && rx.value(QLatin1String("f")).toInteger() == c.freq);
+    }
+
+    // A stored sync type that is no integer is not known: the row reads no protocol, not the sync type 0 a string
+    // converts to.
+    for (const QJsonValue& proto : {QJsonValue(QStringLiteral("x")), QJsonValue(0.5)}) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            ring.commit(0, 80662U, 8662U, when, when + 3)->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        expect("stored sync type: written", row.contains(QLatin1String("proto")));
+        row.insert(QLatin1String("proto"), proto);
+        rows.replace(0, row);
+        expect("stored sync type: rewritten", dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            reloaded.startSaveForTest();
+            reloaded.waitForSaveForTest();
+        }
+        expect("stored sync type: one that is no integer reads as not known",
+               !stored_row_with(80662U, 8662U).isEmpty()
+                   && !stored_row_with(80662U, 8662U).contains(QLatin1String("proto")));
+    }
+}
+
 /* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
  * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
 void
@@ -6473,6 +6610,8 @@ main(int argc, char** argv) {
     test_weaker_identity_joins_stronger();
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
+    test_json_field_fits_judges_conversion();
+    test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();
     test_repeated_notice_compares_the_fix();
 
