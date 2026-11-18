@@ -39,6 +39,8 @@ static atomic_int g_call_state_alloc_mutex_state = 0; /* 0=uninit, 1=initing, 2=
 #ifdef DSD_NEO_TEST_HOOKS
 static long g_call_state_alloc_fail_after = -1;
 static long g_call_state_alloc_calls = 0;
+/* Whole-call snapshots dsd_call_state_get() copied out. */
+static atomic_long g_call_state_snapshot_copies = 0;
 #endif
 
 static void
@@ -1136,7 +1138,28 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
     dsd_call_state_ext_lock(ext);
     *out = ext->calls.slots[slot];
     dsd_call_state_ext_unlock(ext);
+#ifdef DSD_NEO_TEST_HOOKS
+    atomic_fetch_add(&g_call_state_snapshot_copies, 1);
+#endif
     return out->epoch != 0U ? 1 : 0;
+}
+
+int
+dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision) {
+    if (!state || !epoch || !revision || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    *epoch = 0U;
+    *revision = 0U;
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    *epoch = ext->calls.slots[slot].epoch;
+    *revision = ext->calls.slots[slot].revision;
+    dsd_call_state_ext_unlock(ext);
+    return *epoch != 0U ? 1 : 0;
 }
 
 int
@@ -1529,6 +1552,11 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
+long
+dsd_call_state_test_snapshot_copies(void) {
+    return atomic_load(&g_call_state_snapshot_copies);
+}
+
 void
 dsd_call_state_test_alloc_reset(void) {
     g_call_state_alloc_calls = 0;

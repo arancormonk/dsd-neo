@@ -624,6 +624,11 @@ int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m)
 typedef void (*dsd_call_state_reacquire_hook)(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous);
 void dsd_call_state_set_reacquire_hook(dsd_call_state_reacquire_hook hook);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
+/**
+ * The slot's call epoch and revision alone, into @p epoch and @p revision (0 and 0 with no call state), where a caller
+ * only compares them across a step and needs no snapshot copy. Returns as dsd_call_state_get().
+ */
+int dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
 int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);
@@ -658,6 +663,8 @@ int dsd_recent_activity_restore(dsd_state* state, const dsd_recent_activity_tran
 int dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src);
 
 #ifdef DSD_NEO_TEST_HOOKS
+/** How many whole-call snapshots dsd_call_state_get() has copied out since the process started. */
+long dsd_call_state_test_snapshot_copies(void);
 void dsd_call_state_test_alloc_reset(void);
 void dsd_call_state_test_alloc_fail_after(long fail_after);
 int dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch);

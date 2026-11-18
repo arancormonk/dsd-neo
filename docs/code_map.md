@@ -20430,7 +20430,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   another site's control channel holds (discussion #748; Protocols, NXDN). The single-slot DMR lane is re-proven
   when a burst names the other slot. A voice LC header the single-slot output folds onto lane 0 applies that rule once
   the lane's call took it (its epoch or revision moved during the dispatch, on the header's slot;
-  `dmr_data_header_opened_lane_call()`), instead of the voice
+  `dmr_data_header_opened_lane_call()`; only a voice LC header marks its lane before the dispatch, by epoch and
+  revision alone, `dsd_call_state_get_revision()`, so no other standalone burst copies a call), instead of the voice
   lane's restored proof, so the call it opens on the other slot is not ended by the previous call's proof; its `-J` line
   names the row's proven over-the-air slot (`watchdog_event_log_slot_number()`), the lane only while none is proven. A
   rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while

@@ -14857,6 +14857,11 @@ target_link_libraries(
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
 )
+# DSD_NEO_TEST_HOOKS: the call state's snapshot copy count (a standalone burst copies no call but a voice header's).
+target_compile_definitions(
+    dsd-neo_test_dmr_data_sync
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 
 add_executable(
