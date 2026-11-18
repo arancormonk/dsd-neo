@@ -43,6 +43,8 @@ typedef struct dstar_sd_ctx_s {
     char strt[60];
     uint16_t crc_ext;
     uint16_t crc_cmp;
+    uint8_t
+        header_flag1; /* the header's first flag byte as received: the header CRC covers it, never its display copy */
     int len;
 } dstar_sd_ctx;
 
@@ -174,6 +176,9 @@ dstar_sd_print_header_flags(uint8_t flags) {
     }
 }
 
+/* A rebroadcast header whose CRC passed. Every field it acts on -- the callsigns and the DATA flag that decides whether it
+ * names a voice call -- is read from the bytes the CRC was taken over, never from the display copy (whose clean-up turns
+ * a flag byte of 0x80 into a space). */
 static void
 dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
@@ -181,8 +186,8 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
         DSD_FPRINTF(stderr, " DST: %s", ctx->str3);
         DSD_FPRINTF(stderr, " SRC: %s", ctx->str4);
-        dstar_sd_print_header_flags(ctx->sd_bytes[1]);
-        if ((ctx->sd_bytes[1] & 0x80U) == 0U) {
+        dstar_sd_print_header_flags(ctx->header_flag1);
+        if ((ctx->header_flag1 & 0x80U) == 0U) {
             const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
             dstar_header_observe(state, protocol, 0, ctx->str1, ctx->str2, ctx->str3, ctx->str4);
         }
@@ -752,6 +757,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     dstar_sd_load_truncated_payload(ctx.sd_bytes, ctx.hd_bytes, ctx.len);
     ctx.crc_ext = (uint16_t)((ctx.hd_bytes[39] << 8) + ctx.hd_bytes[40]);
     ctx.crc_cmp = dstar_crc16(ctx.hd_bytes, 39);
+    ctx.header_flag1 = ctx.hd_bytes[0];
 
     dstar_sd_init_display_buffers(&ctx);
     dstar_sd_capture_header_strings(&ctx);

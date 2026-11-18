@@ -2719,7 +2719,9 @@ suite runs under this compiler.
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
     Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
-    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
+    field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
