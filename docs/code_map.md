@@ -12349,7 +12349,9 @@ Private per-protocol modules worth knowing about:
   repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
   hard-decoded voice-user LC record (`p25_p1_lc_checked_id`, `p25_lcw.c`), which follows the same rule. A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
-  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). Tests:
+  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A fixed-network ID (`0xFFFFFD`, `0xFFFFFF`) is never a checked source
+  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet,
+  so a report during such a call or from such an LLID is kept anonymous. Tests:
   `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the

@@ -673,6 +673,33 @@ test_uncorrectable_verdict(void) {
     fixture_close(&f);
 }
 
+/* A hard-decoded voice user whose source field holds a fixed-network ID (0xFFFFFD, 0xFFFFFF) names no subscriber: a
+ * report during that call is kept, anonymous, never a track of the reserved ID. */
+static void
+test_reserved_source(void) {
+    static const uint32_t reserved[] = {0xFFFFFDU, 0xFFFFFFU};
+    for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+        fixture f;
+        fixture_open(&f);
+        const uint32_t src = reserved[i];
+        const uint8_t user[PART_OCTETS] = {
+            0x00, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(src >> 16), (uint8_t)(src >> 8), (uint8_t)src};
+        send_lc(&f, 0x00, 0x00, user, 0);
+        body_fields b = fields_default();
+        uint8_t body[BODY_OCTETS];
+        make_body(&b, body);
+        send_update(&f, LCO_A_ODD, LCO_B_ODD, body);
+        dsd_position_fix fix;
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "reserved source %06X: anonymous record", (unsigned)src);
+        expect_true(label, feed_next(&f, &fix) && fix.source_id == 0U && fix.target_id == 0U
+                               && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+        DSD_SNPRINTF(label, sizeof label, "reserved source %06X: row without it", (unsigned)src);
+        expect_true(label, last_row_is(&f, "00000000", "22.500000", "45.000000", 0, 90));
+        fixture_close(&f);
+    }
+}
+
 /* V1, V3, the time field, quality, emergency and speed, through the decoder with a checked context. */
 static int
 decode(fixture* f, const body_fields* b, dsd_position_fix* fix) {
@@ -783,6 +810,7 @@ main(void) {
     test_event_log_one_label();
     test_checks();
     test_uncorrectable_verdict();
+    test_reserved_source();
     test_fields();
     dsd_decode_clock_use_system();
     if (g_fail) {

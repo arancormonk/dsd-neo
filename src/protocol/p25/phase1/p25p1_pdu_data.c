@@ -25,6 +25,7 @@
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
@@ -951,7 +952,8 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
     const int nmea_shaped = nmea_payload_framed(payload_bits, span);
     if (nmea_shaped) {
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
-        state->dmr_lrrp_source[slot] = pdu->source_id;
+        /* A fixed-network LLID names no radio: its report is kept, anonymous (p25_source_id_is_subscriber()). */
+        state->dmr_lrrp_source[slot] = p25_source_id_is_subscriber(pdu->source_id) ? pdu->source_id : 0U;
         state->dmr_lrrp_target[slot] = pdu->target_id;
         // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
         // --dmr-tg-key-csv lookup treat this address as one.

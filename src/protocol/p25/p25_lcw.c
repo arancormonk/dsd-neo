@@ -180,10 +180,11 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
 }
 
 /* A voice-user link control that passed a hard RS decode is checked provenance for its call's identity (issue #800,
- * spec 2.2): noted once slot 0's ACTIVE call carries exactly this target and source. */
+ * spec 2.2): noted once slot 0's ACTIVE call carries exactly this target and source. A fixed-network ID in the source
+ * field (p25_source_id_is_subscriber()) names no radio, so a position during that call stays anonymous. */
 static void
 p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, uint8_t group) {
-    if (!ctx->lc_hard || source == 0U) {
+    if (!ctx->lc_hard || !p25_source_id_is_subscriber(source)) {
         return;
     }
     dsd_call_snapshot call;
