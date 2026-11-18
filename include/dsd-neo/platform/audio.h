@@ -137,8 +137,10 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  *   the device.
  * - AAudio (Android): the frames the device wrote and no read took (AAudioStream_getFramesWritten() less
  *   AAudioStream_getFramesRead()), less those kept, read with no wait: at most 96000 frames (2 s at 48 kHz), no read
- *   begun after 250 ms. A read after which the device's overrun count (AAudioStream_getXRunCount()) moved ends it, as
- *   on PortAudio.
+ *   begun after 250 ms. A read whose chunk may hold audio captured after the mark ends it, as on PortAudio: the
+ *   device's overrun count (AAudioStream_getXRunCount()) moved, or, since some input devices always report 0 there,
+ *   the device has written more than its buffer capacity past the chunk's frame position, so the chunk may have been
+ *   overwritten.
  * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept.
  *
  * @param stream     Input stream handle.

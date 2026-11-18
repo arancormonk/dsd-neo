@@ -114,6 +114,10 @@ static struct {
     int16_t input_next;
     int overrun_at_read;
     int16_t overrun_next;
+    /* An overrun leaves the overrun count alone (as some input devices always report 0, issue #834), and the device
+       has written overrun_written_frames more by then. */
+    int overrun_uncounted;
+    int64_t overrun_written_frames;
     int32_t xruns;
     int16_t captured[FAKE_CAPTURE_SAMPLES];
     size_t captured_samples;
@@ -424,7 +428,10 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
     if (g.overrun_at_read > 0) {
         g.overrun_at_read--;
         if (g.overrun_at_read == 0) {
-            g.xruns++;
+            if (!g.overrun_uncounted) {
+                g.xruns++;
+            }
+            g.frames_written += g.overrun_written_frames;
             g.input_next = g.overrun_next;
         }
     }
@@ -1120,6 +1127,39 @@ test_input_stream(void) {
         assert(dsd_audio_discard_input(stream, g.now_ns) == 256 + 100);
         assert(dsd_audio_read(stream, &one, 1) == 1);
         assert(one == (int16_t)(30256 + 100));
+    }
+    dsd_audio_close(stream);
+
+    /* Issue #834: a device whose overrun count stays 0. The overrun at the second read is seen from the frame
+       positions instead: the device wrote more than its buffer holds past the chunk the read took, so that chunk may
+       have been overwritten with audio captured after the mark, and it is kept. */
+    reset_fakes();
+    g.device_rate = 48000;
+    g.device_channels = 1;
+    stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.frames_read_step = 0;
+    g.frames_written = 4800;
+    g.frames_read = 0;
+    g.input_numbered = 1;
+    g.input_next = 0;
+    g.overrun_at_read = 2;
+    g.overrun_next = 20000;
+    g.overrun_uncounted = 1;
+    g.overrun_written_frames = (int64_t)g.buffer_capacity_frames;
+    {
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
+        int16_t next[4] = {0};
+        const int got = dsd_audio_read(stream, next, 4);
+        if (dropped != 256 || got != 4 || next[0] != 20000) {
+            DSD_FPRINTF(stderr,
+                        "an uncounted overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n",
+                        dropped, (int)next[0]);
+        }
+        assert(dropped == 256 && got == 4);
+        for (int i = 0; i < 4; i++) {
+            assert(next[i] == (int16_t)(20000 + i));
+        }
     }
     dsd_audio_close(stream);
 

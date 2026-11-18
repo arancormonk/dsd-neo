@@ -10843,9 +10843,11 @@ Notes:
   before the mark: once it cannot tell old audio from new it stops and keeps what it holds. PortAudio and AAudio count
   first and then read that budget, which a device overrun during the reads makes stale (the oldest audio is gone, and
   the reads would take audio captured after the mark): a read that reports one (PortAudio's `paInputOverflowed`, or
-  AAudio's `AAudioStream_getXRunCount()` moved since before the counts) ends the drop, and its chunk goes to the
-  stream's carry (the same `struct audio_input_carry` PulseAudio uses, allocated with every input stream), which
-  `dsd_audio_read()` returns first; an earlier drop's carry no read took counts as the oldest audio held. PulseAudio
+  AAudio's `AAudioStream_getXRunCount()` moved since before the counts), or after which AAudio's frame positions say
+  the chunk may have been overwritten (the device wrote more than its buffer capacity past the chunk's position, which
+  some input devices never report as an overrun: `aaudio_discard_chunk_may_be_new()`), ends the drop, and its chunk
+  goes to the stream's carry (the same `struct audio_input_carry` PulseAudio uses, allocated with every input stream),
+  which `dsd_audio_read()` returns first; an earlier drop's carry no read took counts as the oldest audio held. PulseAudio
   takes no budget first: it reads what its client holds and keeps the newest frames by time, so a server overrun
   loses only old audio. The UDP ring never overwrites (samples that do not fit are dropped as they arrive, never
   written or counted) and drops under its lock; the TCP and stdin readers drop by byte count from a stream that loses
