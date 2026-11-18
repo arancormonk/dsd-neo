@@ -56,9 +56,21 @@ dsd_api_topic_interest(uint32_t topic) {
 
 void
 dsd_api_broadcast(const char* line, size_t len, uint32_t topic) {
-    if (topic == DSD_API_TOPIC_POSITIONS) {
-        assert(dsd_json_buf_append(&g_position_lines, line, len) == 0);
+    (void)line;
+    (void)len;
+    assert(topic != DSD_API_TOPIC_POSITIONS); /* positions go through dsd_api_broadcast_positions() */
+}
+
+/* One subscriber that subscribed before every report: it gets the whole batch, whose index must describe it. */
+void
+dsd_api_broadcast_positions(const char* data, size_t len, const dsd_api_position_line* lines, size_t count) {
+    assert(data != NULL && lines != NULL && count > 0U && lines[0].offset == 0U);
+    for (size_t i = 0; i < count; i++) {
+        const size_t end = (i + 1U < count) ? lines[i + 1U].offset : len;
+        assert(lines[i].offset < end && data[end - 1U] == '\n' && lines[i].rev > 0U);
+        assert(i == 0U || lines[i].rev > lines[i - 1U].rev);
     }
+    assert(dsd_json_buf_append(&g_position_lines, data, len) == 0);
 }
 
 /*============================================================================
@@ -551,6 +563,29 @@ test_positions_topic(void) {
     dsd_json_buf_free(&g_position_lines);
 }
 
+/* A line that cannot be built or appended stops the batch there: the cursor stays before it, so the next publish sends
+   it and the rest, within a page and across pages, and no record still in the ring is skipped. */
+static void
+test_positions_failed_line(void) {
+    dsd_json_buf_init(&g_position_lines);
+    assert(dsd_position_feed_start(g_state) == 0);
+    const uint64_t s = dsd_position_feed_stream_id(g_state);
+    g_interest = DSD_API_TOPIC_POSITIONS;
+    admit_reports(1U, 5U);
+    dsd_api_feed_test_fail_position_line(3);
+    assert(publish_positions(s, 1U, 0U) == 2U);
+    assert(publish_positions(s, 3U, 0U) == 3U);
+
+    admit_reports(6U, 40U); /* more than one page */
+    dsd_api_feed_test_fail_position_line(35);
+    assert(publish_positions(s, 6U, 0U) == 34U);
+    assert(publish_positions(s, 40U, 0U) == 6U);
+    assert(publish_positions(s, 0U, 0U) == 0U);
+
+    g_interest = 0U;
+    dsd_json_buf_free(&g_position_lines);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -567,6 +602,7 @@ main(void) {
     test_status_tunable();
     test_event_row_position();
     test_positions_topic();
+    test_positions_failed_line();
 
     dsd_api_feed_stop();
     dsd_app_frontend_runtime_stop();

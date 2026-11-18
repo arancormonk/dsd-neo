@@ -713,7 +713,9 @@ int p25_sm_checked_call_identity(const dsd_state* state, int slot, p25_sm_publis
  *
  * For a message that observes the canonical call itself (a Phase 2 MAC_SIGNAL voice user), after that observation.
  * Each field it names with the value the ACTIVE call now holds takes @p checked when the call is a new epoch or the
- * value changed, and gains it otherwise; a field it leaves 0 keeps what it had.
+ * value changed, and gains it otherwise; a field it leaves 0 keeps what it had. The slot's assignment takes it too: a
+ * message naming the assignment's kind and target applies its fields there with @p checked, so a later source-less
+ * voice start inherits this talker; one naming another kind or target drops the assignment's source.
  *
  * @param state Decoder state (canonical call state).
  * @param slot Slot index (0 or 1).

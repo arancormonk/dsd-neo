@@ -551,6 +551,33 @@ test_p25_sap48(void) {
     CHECK(strstr(notice_row()->text_message, "HELLO") != NULL || strstr(notice_row()->gps_s, "HELLO") != NULL);
 }
 
+/* An inbound SAP 48 packet whose LLID is a fixed-network ID (0xFFFFFD, 0xFFFFFF) names no radio: its checked report is
+   kept anonymous, never as a track of the reserved ID. */
+static void
+test_p25_sap48_reserved_source(void) {
+    static const uint32_t reserved[] = {0xFFFFFDU, 0xFFFFFFU};
+    char s[128];
+    sentence(s, sizeof s, "GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A", "\r\n");
+    const size_t n = strlen(s);
+    for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+        reset_fixture();
+        uint8_t pdu[256];
+        DSD_MEMSET(pdu, 0, sizeof pdu);
+        pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
+        pdu[1] = 48;
+        pdu[3] = (uint8_t)(reserved[i] >> 16);
+        pdu[4] = (uint8_t)(reserved[i] >> 8);
+        pdu[5] = (uint8_t)reserved[i];
+        pdu[6] = 0x05;
+        DSD_MEMCPY(pdu + 12, s, n);
+        p25_decode_pdu_data(&g_opts, &g_state, pdu, (int)(12U + n + 4U));
+        dsd_position_fix recs[4];
+        CHECK(feed_records(recs, 4) == 1);
+        CHECK(recs[0].source_id == 0U && (recs[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) == 0U);
+        CHECK(notice_row()->pos.valid == 1U && notice_row()->source_id == 0U);
+    }
+}
+
 /* ---- P25: a report is admitted against the reception its MDPU's header was heard on (issue #800 2.3 step 3) ---- */
 
 /* An LRRP POINT_2D response (lat 11.25, lon 45) in IPv4/UDP to port 4001, as a SAP 0 packet from LLID 1234. */
@@ -724,6 +751,7 @@ main(void) {
     test_producer_per_sentence();
     test_producer_sentence_choice();
     test_p25_sap48();
+    test_p25_sap48_reserved_source();
     test_p25_origin();
     test_p25_destination();
     test_producer_reads_the_century_from_the_decode_clock();

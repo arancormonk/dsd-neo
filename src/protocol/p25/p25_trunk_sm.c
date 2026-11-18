@@ -1554,6 +1554,24 @@ p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity
     slot_ctx->identity_checked = checked;
 }
 
+/* A voice user observing the slot's call names who is talking now. Within the assignment it describes (the same kind
+ * and target) it applies to the assignment as a repeated grant does (p25_slot_apply_identity_claim()): a talker it names
+ * replaces the assignment's, with its own verdict, so a later source-less voice start inherits the latest talker, never
+ * the grant's. One naming another kind or target is not the assignment's call: the assignment's source no longer names
+ * who is talking on the slot, and is dropped with its flag. */
+static void
+p25_slot_note_voice_user(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+    const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
+    const uint8_t same_call = (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND);
+    if (held.target != 0U
+        && (p25_sm_claim_names(claim, held.source, held.target, held.kind) & same_call) == same_call) {
+        p25_slot_apply_identity_claim(slot_ctx, claim);
+        return;
+    }
+    slot_ctx->src = 0;
+    slot_ctx->identity_checked &= 0xFEU /* ~P25_SM_IDENTITY_CHECKED_SOURCE */;
+}
+
 /* Brings the record @p rec of the slot's canonical call up to date after a message naming @p claim. The record takes
  * the call's current source, target and kind and its epoch; a field keeps its flag only within the same epoch and
  * with the same value, and gains the message's verdict where the message named the value the call now holds. A call
@@ -2666,6 +2684,48 @@ p25_grant_duplicate_crypto_needs_restart(int previous_svc, int current_svc, int 
     return classification_changed || clear_override_removed || unapplied_clear_override;
 }
 
+/* Whether @p ev, a repeat of the grant the slot holds, names another call than the assignment's (spec 2.19): another
+ * talker where both name one, or another kind or target. A source the assignment did not have is learned, not a
+ * change. */
+static int
+p25_grant_duplicate_names_another_call(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx);
+    const p25_sm_identity_claim claim = p25_sm_event_claim(ev);
+    const uint8_t named = p25_sm_claim_names(&claim, held.source, held.target, held.kind);
+    const int talker_changed =
+        held.source != 0U && claim.source != 0U && (named & P25_SM_IDENTITY_CHECKED_SOURCE) == 0U;
+    const int kind_changed =
+        claim.kind != (uint8_t)DSD_CALL_KIND_UNKNOWN && (named & P25_SM_IDENTITY_CHECKED_KIND) == 0U;
+    const int target_changed = claim.target != 0U && (named & P25_SM_IDENTITY_CHECKED_TARGET) == 0U;
+    return talker_changed || kind_changed || target_changed;
+}
+
+/* A repeat naming another call (p25_grant_duplicate_names_another_call()) starts that call with nothing of the earlier
+ * one's call-specific state: not its ALG ID, key ID or MI, not its service options (emergency, priority), not its talker
+ * alias. Only what the repeat itself establishes classifies it: its own service options, or none (encryption pending
+ * until the traffic channel says). */
+static void
+p25_grant_duplicate_start_new_call(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
+                                   const dsd_tg_policy_call_route* route, const p25_grant_eval_ctx_t* eval_ctx,
+                                   int crypto_slot, int data_call, double now_m) {
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[crypto_slot];
+    const int svc_known = p25_sm_svc_bits_valid(ev->svc_bits);
+    const int force_clear = svc_known && eval_ctx && eval_ctx->enc_override_clear;
+    slot_ctx->svc_bits = svc_known ? ev->svc_bits : P25_SM_SVC_UNKNOWN;
+    slot_ctx->enc_override_clear = force_clear ? 1 : 0;
+    slot_ctx->algid = 0;
+    slot_ctx->keyid = 0;
+    if (data_call) {
+        return;
+    }
+    state->generic_talker_alias[crypto_slot][0] = '\0';
+    p25_sm_event_t crypto_ev = *ev;
+    crypto_ev.svc_bits = slot_ctx->svc_bits;
+    p25_grant_eval_ctx_t crypto_eval = eval_ctx ? *eval_ctx : p25_grant_eval_ctx_from_event(&crypto_ev);
+    crypto_eval.enc_override_clear = force_clear ? 1 : 0;
+    p25_grant_begin_crypto_classification(ctx, state, &crypto_ev, &crypto_eval, route->slot, 0, now_m);
+}
+
 static void
 p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
                                    const dsd_tg_policy_call_route* route, const p25_grant_eval_ctx_t* eval_ctx,
@@ -2675,6 +2735,10 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[crypto_slot];
+    if (p25_grant_duplicate_names_another_call(slot_ctx, ev)) {
+        p25_grant_duplicate_start_new_call(ctx, state, ev, route, eval_ctx, crypto_slot, data_call, now_m);
+        return;
+    }
     const int previous_svc = slot_ctx->svc_bits;
     const int previous_clear_override = slot_ctx->enc_override_clear;
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
@@ -7478,7 +7542,9 @@ p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uin
         .kind = (uint8_t)(is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
         .checked = (uint8_t)(checked & P25_SM_IDENTITY_CHECKED_ALL),
     };
-    p25_sm_merge_published_identity(&p25_sm_get_ctx()->slots[slot].published, state, slot, &claim);
+    p25_sm_slot_ctx_t* slot_ctx = &p25_sm_get_ctx()->slots[slot];
+    p25_sm_merge_published_identity(&slot_ctx->published, state, slot, &claim);
+    p25_slot_note_voice_user(slot_ctx, &claim);
 }
 
 int

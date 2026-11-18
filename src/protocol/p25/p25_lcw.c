@@ -180,10 +180,11 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
 }
 
 /* A voice-user link control that passed a hard RS decode is checked provenance for its call's identity (issue #800,
- * spec 2.2): noted once slot 0's ACTIVE call carries exactly this target and source. */
+ * spec 2.2): noted once slot 0's ACTIVE call carries exactly this target and source. A fixed-network ID in the source
+ * field (p25_source_id_is_subscriber()) names no radio, so a position during that call stays anonymous. */
 static void
 p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, uint8_t group) {
-    if (!ctx->lc_hard || source == 0U) {
+    if (!ctx->lc_hard || !p25_source_id_is_subscriber(source)) {
         return;
     }
     dsd_call_snapshot call;
@@ -1278,7 +1279,6 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
 static void
 p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
                uint8_t allow_voice_start, const dsd_event_closing_call* closing) {
-    UNUSED(irrecoverable_errors);
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
     }
@@ -1296,7 +1296,9 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
     ctx.allow_voice_start = allow_voice_start;
-    ctx.lc_hard = (uint8_t)(state->p25_p1_lcw_soft == 0U);
+    /* Checked only from a hard RS decode that corrected every error: not a soft-erasure retry (spec 2.20), and not a
+       caller's uncorrectable verdict (the CRC/FEC publication rule). */
+    ctx.lc_hard = (uint8_t)(state->p25_p1_lcw_soft == 0U && irrecoverable_errors == 0U);
     ctx.closing = closing;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 

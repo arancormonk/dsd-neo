@@ -6724,8 +6724,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a decimal string, `pos_seq`) only while a client subscribes; with none it moves its cursor to the newest seq. A
     new stream is followed from its first record. `dsd_api_feed_start()` takes the baseline from the published ring
     (`dsd_app_position_copy_since()`), so a server started during a run sends none of the run's earlier records.
-    There is no backlog and no `get`; a gap in `pos_seq` is a report kept while unsubscribed or overwritten in the
-    1,024-record ring between two publishes
+    There is no backlog and no `get`: a batch can hold records kept since the previous publish, before a session
+    subscribed, so each session keeps its own cutoff (`pos_after_rev`, `dsd_position_last_rev()` when it subscribed to
+    positions) and `dsd_api_broadcast_positions()` queues it only the lines whose record `rev` is later (tests
+    `API_SERVER`, `API_FEED`). A line that cannot be built or appended stops the batch, and the feed's cursor moves only
+    past the lines gathered, so the next publish retries the rest. A gap in `pos_seq` is a report kept while
+    unsubscribed or overwritten in the 1,024-record ring between two publishes
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
@@ -12329,10 +12333,16 @@ Private per-protocol modules worth knowing about:
   repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
   by the target its call is judged by that names another target or kind, replaces that field in the assignment with
   its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
-  with the new talker, a new canonical epoch; test `P25_P2_HARRIS_GPS`), voice starts that change the call
-  (`p25_voice_start_commit_identity`) and ones that change nothing (`p25_voice_start_promote_identity`), the
-  trunk-off publication (`p25_sm_conventional_note_identity`), and Phase 2 MAC_SIGNAL voice users that observe the
-  canonical call themselves (`p25p2_vpdu_observe_voice()` → `p25_sm_note_call_identity()`, with the MAC CRC verdict).
+  with the new talker, a new canonical epoch, and `p25_grant_duplicate_start_new_call()` drops everything call-specific
+  the earlier talker left on the slot (ALG ID, key ID and MI, service options, talker alias) and classifies the new
+  call from the repeat's own service options alone, encryption pending when it carries none; test
+  `P25_P2_HARRIS_GPS`), voice starts that change the call (`p25_voice_start_commit_identity`) and ones that change
+  nothing (`p25_voice_start_promote_identity`), the trunk-off publication (`p25_sm_conventional_note_identity`), and
+  Phase 2 MAC_SIGNAL voice users that observe the canonical call themselves (`p25p2_vpdu_observe_voice()` →
+  `p25_sm_note_call_identity()`, with the MAC CRC verdict). A voice user also updates the slot's assignment
+  (`p25_slot_note_voice_user()`): naming the assignment's kind and target, it applies there as a repeated grant does,
+  so a later source-less MAC_ACTIVE inherits the latest talker with that voice user's verdict, never the grant's; naming
+  another kind or target, it drops the assignment's source, which no longer says who is talking.
   The record holds the call's current source, target and kind; `p25_sm_merge_published_identity()` keeps a flag only
   within the same epoch and value. Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
   older convenience emitters publish unchecked, and the event builders default to unchecked.
@@ -12341,7 +12351,11 @@ Private per-protocol modules worth knowing about:
   it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no radio on its
   positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a checked
   repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
-  hard-decoded voice-user LC record (`p25_p1_lc_checked_id`, `p25_lcw.c`), which follows the same rule. Tests:
+  hard-decoded voice-user LC record (`p25_p1_lc_checked_id`, `p25_lcw.c`), which follows the same rule. A link control
+  counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
+  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A fixed-network ID (`0xFFFFFD`, `0xFFFFFF`) is never a checked source
+  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet,
+  so a report during such a call or from such an LLID is kept anonymous. Tests:
   `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the

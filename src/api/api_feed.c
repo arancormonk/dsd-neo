@@ -93,6 +93,12 @@ static uint64_t g_pos_stream = 0;
 static uint64_t g_pos_seq = 0;
 static dsd_position_fix g_pos_page[DSD_API_POSITION_PAGE];
 static dsd_json_buf g_positions;
+/* Where each line of g_positions starts and its record's rev, for each subscriber's own cutoff. */
+static dsd_api_position_line g_pos_lines[DSD_POSITION_FEED_CAPACITY];
+static size_t g_pos_line_count = 0U;
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_pos_test_fail_line = 0; /* decode thread: the n-th next position line fails (0: none) */
+#endif
 
 static uint64_t g_last_telemetry_ms = 0;
 /* Decode thread: the cache (g_latest and the scan avoid copy) holds records of this run, refreshed while a client is
@@ -962,33 +968,63 @@ build_position(const dsd_position_fix* f, uint64_t stream) {
     return end_line(&g_line, &w);
 }
 
-/* Gather a line for every kept record after g_pos_seq into g_positions, page by page, and move the cursor past them. */
+/* Append the line of kept record @p f to g_positions and index it; 0 when it is whole in the batch. */
+static int
+gather_position_line(const dsd_position_fix* f, uint64_t stream) {
+    if (g_pos_line_count >= (size_t)DSD_POSITION_FEED_CAPACITY) {
+        return -1;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_pos_test_fail_line > 0 && --g_pos_test_fail_line == 0) {
+        return -1;
+    }
+#endif
+    const size_t offset = g_positions.len;
+    if (build_position(f, stream) != 0 || dsd_json_buf_append(&g_positions, g_line.data, g_line.len) != 0) {
+        return -1;
+    }
+    g_pos_lines[g_pos_line_count].offset = offset;
+    g_pos_lines[g_pos_line_count].rev = f->rev;
+    g_pos_line_count++;
+    return 0;
+}
+
+/* Gather a line for every kept record after g_pos_seq into g_positions, page by page, and move the cursor past each one
+   gathered. A line that cannot be built or appended stops the batch there: the cursor stays before it, so the next
+   publish tries it and the rest again, and a subscriber misses none of the records still in the ring. */
 static void
 gather_positions(const dsd_state* state) {
     dsd_json_buf_reset(&g_positions);
+    g_pos_line_count = 0U;
     for (;;) {
         dsd_position_feed_meta meta;
         const int n = dsd_position_feed_copy_since(state, g_pos_seq, g_pos_page, DSD_API_POSITION_PAGE, &meta);
         for (int i = 0; i < n; i++) {
-            if (build_position(&g_pos_page[i], meta.stream_id) == 0) {
-                (void)dsd_json_buf_append(&g_positions, g_line.data, g_line.len);
+            if (gather_position_line(&g_pos_page[i], meta.stream_id) != 0) {
+                return;
             }
+            g_pos_seq = g_pos_page[i].seq;
         }
-        if (n <= 0) {
-            return;
-        }
-        g_pos_seq = meta.last_seq;
-        if (!meta.more) {
+        if (n <= 0 || !meta.more) {
             return;
         }
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_api_feed_test_fail_position_line(int nth) {
+    g_pos_test_fail_line = nth;
+}
+#endif
+
 /* Follow the live position feed at every publish, whether or not anyone listens, and send what was kept since the last
    publish to the subscribers when there are any: like the event rings, so a subscriber gets every record kept after it
-   subscribed (a cursor taken at its first publish would skip one kept in between), and none from before. A new run is
-   a new stream, sent from its first record. While nobody listens this reads the ring's newest seq and builds nothing.
-   A record the ring overwrote before a publish could send it is a gap in pos_seq. */
+   subscribed (a cursor taken at its first publish would skip one kept in between). The batch can hold records kept
+   before a subscriber subscribed (since the previous publish); the server sends each subscriber only the records after
+   its own cutoff, the revision when it subscribed (dsd_api_broadcast_positions()), so none from before reach it. A new
+   run is a new stream, sent from its first record. While nobody listens this reads the ring's newest seq and builds
+   nothing. A record the ring overwrote before a publish could send it is a gap in pos_seq. */
 static void
 track_positions(const dsd_state* state) {
     dsd_position_feed_meta live;
@@ -1005,8 +1041,8 @@ track_positions(const dsd_state* state) {
         return;
     }
     gather_positions(state);
-    if (g_positions.len > 0U && g_positions.data != NULL) {
-        dsd_api_broadcast(g_positions.data, g_positions.len, DSD_API_TOPIC_POSITIONS);
+    if (g_pos_line_count > 0U && g_positions.data != NULL) {
+        dsd_api_broadcast_positions(g_positions.data, g_positions.len, g_pos_lines, g_pos_line_count);
     }
 }
 

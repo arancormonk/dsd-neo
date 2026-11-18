@@ -72,6 +72,23 @@ int dsd_api_response_end(dsd_json_buf* out, dsd_json_writer* w);
 /** Append @p line (including its trailing newline) to every session subscribed to @p topic. */
 void dsd_api_broadcast(const char* line, size_t len, uint32_t topic);
 
+/** One line of a positions batch: where it starts in the batch and the rev of the record it carries. */
+typedef struct {
+    size_t offset;
+    uint64_t rev;
+} dsd_api_position_line;
+
+/**
+ * @brief Send a positions batch to every session subscribed to the positions topic, each only the lines after its own
+ * cutoff.
+ *
+ * @p data holds @p count whole lines (@p len bytes), @p lines[i] the start and record rev of line i, in feed order (so
+ * in increasing rev). A session gets the lines whose rev is greater than dsd_position_last_rev() when it subscribed to
+ * positions: none of the records kept before its subscribe response, which the batch can hold when they were kept
+ * since the decoder's previous publish (issue #800, the topic has no backlog).
+ */
+void dsd_api_broadcast_positions(const char* data, size_t len, const dsd_api_position_line* lines, size_t count);
+
 /** Nonzero when at least one authenticated session is subscribed to @p topic. */
 int dsd_api_topic_interest(uint32_t topic);
 
@@ -119,6 +136,9 @@ void dsd_api_feed_test_fail_block_allocs(int count);
 int dsd_api_feed_test_encode_event_row(const Event_History* e, char* out, size_t cap);
 /** The fingerprint the event topic compares to tell an update of a committed row. */
 uint64_t dsd_api_feed_test_row_fingerprint(const Event_History* e);
+/** Fail the @p nth position line the feed gathers from now (1: the next one; 0: none), as a failed build or append
+    would (decode thread). */
+void dsd_api_feed_test_fail_position_line(int nth);
 #endif
 
 /* ---- commands ---- */
