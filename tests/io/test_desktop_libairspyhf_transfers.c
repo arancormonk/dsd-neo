@@ -644,11 +644,12 @@ restart_reuses_only_returned_transfers(int after_stop) {
     close_case(name, dev);
 }
 
-/* The third submission of a start is refused: the two in flight come back only when cancelled, 50 ms later. The stop
- * after the failed start must wait for both, and a later start must work. */
+/* The third submission of a start is refused: the two in flight come back only when cancelled, 50 ms later. The failed
+ * start must take both back before it returns, so the device is idle: a start can follow at once, and a stop after the
+ * failed start (as a caller may make) finds nothing to do. */
 static void
-partial_start_submit(void) {
-    const char* name = "partial_start_submit";
+partial_start_submit(int stop_first) {
+    const char* name = stop_first ? "partial_start_submit (stop, then start)" : "partial_start_submit (start again)";
     airspyhf_device_t* dev = open_case(name);
     pthread_mutex_lock(&g_mu);
     g_refuse_submit_at = 2;
@@ -657,11 +658,16 @@ partial_start_submit(void) {
     const int rc = airspyhf_start(dev, on_samples, NULL);
     expect(name, rc == AIRSPYHF_ERROR, "the start fails");
     expect(name, read_counter(&g_submits) == 3, "the start stopped at the refused submission");
-    (void)airspyhf_stop(dev);
-    expect(name, read_counter(&g_queued) == 0, "no transfer in flight when the stop returned");
-    expect(name, read_counter(&g_cancelled_callbacks) == 2, "both submitted transfers called back as cancelled");
+    expect(name, read_counter(&g_queued) == 0, "no transfer in flight when the failed start returned");
+    expect(name, read_counter(&g_cancelled_callbacks) == 2,
+           "both submitted transfers called back as cancelled before the failed start returned");
+    expect(name, !airspyhf_is_streaming(dev), "not streaming after the failed start");
+    if (stop_first) {
+        expect(name, airspyhf_stop(dev) == AIRSPYHF_SUCCESS, "stop after the failed start");
+    }
     release_stream();
     stream_run(name, dev, "start after the failed start");
+    expect(name, read_counter(&g_busy_submits) == 0, "the start after the failed one submitted no transfer in flight");
     hold_stream();
     (void)airspyhf_stop(dev);
     close_case(name, dev);
@@ -753,7 +759,8 @@ main(void) {
     close_after_stop_frees_nothing_outstanding(0);
     restart_reuses_only_returned_transfers(1);
     restart_reuses_only_returned_transfers(0);
-    partial_start_submit();
+    partial_start_submit(0);
+    partial_start_submit(1);
     failed_resubmit_returns_its_slot();
     drain_cancels_a_late_resubmit(0);
     drain_cancels_a_late_resubmit(1);

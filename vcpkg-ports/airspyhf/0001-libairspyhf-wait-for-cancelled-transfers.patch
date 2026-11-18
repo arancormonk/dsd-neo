@@ -9,7 +9,8 @@ airspyhf_close() then freed them, and a restart (airspyhf_start() after a
 stop, as a sample-rate change does) resubmitted them: freeing a transfer
 libusb still owns is undefined behaviour, and libusb refuses to submit one
 as busy. A failed submission at start left the transfers already submitted
-the same way.
+the same way, and left the device marked as streaming with no threads, so
+the next start failed too.
 
 The device already counted its live transfers, but on plain fields: the
 count was read on the caller's thread and changed by callbacks on whichever
@@ -19,7 +20,10 @@ is now atomic. A start reserves the whole batch before the first
 submission, and a failed submission gives back its own slot and those of
 the transfers never submitted. The callback keeps the slot when it
 resubmits; any other outcome (stopping, a failed status or resubmission)
-gives it back as its last touch of the device. The stop's bounded polls are
+gives it back as its last touch of the device. A start that fails after
+submitting some of the batch (a refused submission, or a thread that cannot
+start) takes them back before it returns, as a stop would, so it leaves the
+device idle and a start can follow at once. The stop's bounded polls are
 replaced by a wait: cancel the transfers and handle events until the count
 is zero, with no timeout, since libusb guarantees each callback. Each pass
 cancels again, in case a callback on another thread resubmitted before it
@@ -44,7 +48,7 @@ CRLF line endings, which the patch keeps.
 Generated against airspyhf 24fe8ffcb00b14f827268bbad89ae1392de055e5.
 
 diff --git a/libairspyhf/src/airspyhf.c b/libairspyhf/src/airspyhf.c
-index a4400f6..e5b1c45 100644
+index a4400f6..059e0d2 100644
 --- a/libairspyhf/src/airspyhf.c
 +++ b/libairspyhf/src/airspyhf.c
 @@ -34,6 +34,52 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
@@ -300,7 +304,7 @@ index a4400f6..e5b1c45 100644
  		cancel_transfers(device);
  
  		pthread_mutex_lock(&device->consumer_mp);
-@@ -518,21 +598,30 @@ static int kill_io_threads(airspyhf_device_t* device)
+@@ -518,25 +598,37 @@ static int kill_io_threads(airspyhf_device_t* device)
  			device->consumer_thread_running = false;
  		}
  
@@ -334,7 +338,30 @@ index a4400f6..e5b1c45 100644
  
  		result = prepare_transfers(device, LIBUSB_ENDPOINT_IN | AIRSPYHF_ENDPOINT_IN, (libusb_transfer_cb_fn)airspyhf_libusb_transfer_callback);
  		if (result != AIRSPYHF_SUCCESS)
-@@ -987,8 +1076,8 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
+ 		{
++			/* the transfers already submitted are in flight: take them
++			 * back, so the failed start leaves the device idle */
++			reap_ended_stream(device);
+ 			return result;
+ 		}
+ 
+@@ -550,6 +642,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
+ 		result = pthread_create(&device->consumer_thread, &attr, consumer_threadproc, device);
+ 		if (result != 0)
+ 		{
++			reap_ended_stream(device);
+ 			return AIRSPYHF_ERROR;
+ 		}
+ 		device->consumer_thread_running = true;
+@@ -557,6 +650,7 @@ static int create_io_threads(airspyhf_device_t* device, airspyhf_sample_block_cb
+ 		result = pthread_create(&device->transfer_thread, &attr, transfer_threadproc, device);
+ 		if (result != 0)
+ 		{
++			reap_ended_stream(device);
+ 			return AIRSPYHF_ERROR;
+ 		}
+ 		device->transfer_thread_running = true;
+@@ -987,8 +1081,8 @@ static int airspyhf_open_init(airspyhf_device_t** device, uint64_t serial_number
  	lib_device->callback = NULL;
  	lib_device->transfer_count = 16;
  	lib_device->buffer_size = SAMPLES_TO_TRANSFER * sizeof(airspyhf_complex_int16_t);
@@ -345,7 +372,7 @@ index a4400f6..e5b1c45 100644
  
  	lib_device->supported_samplerates = NULL;
  	lib_device->samplerate_architectures = NULL;
-@@ -1309,6 +1398,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+@@ -1309,6 +1403,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
  {
  	int result;
  
@@ -359,7 +386,7 @@ index a4400f6..e5b1c45 100644
  	memset(device->dropped_buffers_queue, 0, RAW_BUFFER_COUNT * sizeof(uint32_t));
  	device->dropped_buffers = 0;
  
-@@ -1335,13 +1431,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
+@@ -1335,13 +1436,13 @@ int ADDCALL airspyhf_start(airspyhf_device_t* device, airspyhf_sample_block_cb_f
  
  int ADDCALL airspyhf_is_streaming(airspyhf_device_t* device)
  {

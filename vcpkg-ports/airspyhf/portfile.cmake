@@ -9,8 +9,9 @@
 vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 
 # dsd-neo's libairspyhf patch: the stop waits for every cancelled USB transfer
-# before the transfers are freed or resubmitted (the patch header has the
-# details; upstream has no fix at this commit). It is the series
+# before the transfers are freed or resubmitted, and a failed start takes back
+# the transfers it submitted (the patch header has the details; upstream has no
+# fix at this commit). It is the series
 # tools/usb_dependency_patches.sh applies to the source the
 # DESKTOP_LIBAIRSPYHF_TRANSFERS test builds, so the digest is recorded here:
 # tools/check_vcpkg_overlay_pins.sh (guardrails CI and pre-push) fails while it
@@ -20,7 +21,7 @@ vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 # itself. The series is that one patch, so its digest is the series digest.
 set(DSD_NEO_PATCH_SERIES 0001-libairspyhf-wait-for-cancelled-transfers.patch)
 set(DSD_NEO_PATCH_SERIES_SHA256
-    19755eb08541b3e5875f157c015c770cf152520a0bd201371670c79569ae60ba
+    475f0b91266ab58d7811c389f515e4534e0b0e634f5c3b080f810b2211501058
 )
 set(dsd_neo_patches "${CMAKE_CURRENT_LIST_DIR}/${DSD_NEO_PATCH_SERIES}")
 file(SHA256 "${dsd_neo_patches}" dsd_neo_series_sha256)
