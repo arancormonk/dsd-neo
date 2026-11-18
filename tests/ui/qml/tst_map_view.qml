@@ -193,8 +193,8 @@ Item {
             verify(near(rgb(image, tc.cx, tc.cy), 255, 0, 255, 40), "opaque: " + JSON.stringify(rgb(image, tc.cx, tc.cy)))
         }
 
-        // Two labels that want the same side: the selected track keeps it, and the emergency's label (its word)
-        // takes another side rather than being dropped.
+        // Two labels that want the same side: the emergency's label (its word) keeps it, and every other label,
+        // the selected one included, yields and takes another side.
         function test_06b_a_label_that_cannot_have_its_side_takes_another() {
             push({ source: 1015, lat: 10.0, lon: 20.0, label: "Car 12 long name" })
             var selected = map.trackAt(tc.cx, tc.cy)
@@ -202,14 +202,15 @@ Item {
             push({ source: 1016, lat: 10.0001, lon: 20.0, emergency: true, label: "Unit 7" })
             waitForRendering(map)
             var image = grabImage(root)
-            // From past the selection halo (the sprite is 28 px wide) to the right edge: the selected label.
-            verify(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 0, 255, 255, 30) > 20,
-                   "the selected label keeps the right")
-            compare(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 255, 128, 0, 50), 0,
-                    "the emergency's label is not over it")
-            verify(countNear(image, 0, 0, tc.cx - 16, root.height, 255, 128, 0, 50)
-                   + countNear(image, tc.cx - 40, 0, tc.cx + 40, tc.cy - 16, 255, 128, 0, 50) > 20,
-                   "the emergency's label is drawn on another side")
+            // From past the selection halo (the sprite is 28 px wide) to the right edge: the emergency's label.
+            verify(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 255, 128, 0, 50) > 20,
+                   "the emergency's label keeps the right")
+            compare(countNear(image, tc.cx + 16, tc.cy - 12, root.width, tc.cy + 12, 0, 255, 255, 30), 0,
+                    "the selected label is not over it")
+            verify(countNear(image, 0, 0, tc.cx - 16, root.height, 0, 255, 255, 30)
+                   + countNear(image, tc.cx - 60, 0, tc.cx + 60, tc.cy - 16, 0, 255, 255, 30)
+                   + countNear(image, tc.cx - 60, tc.cy + 16, tc.cx + 60, root.height, 0, 255, 255, 30) > 20,
+                   "the selected label is drawn on another side")
         }
 
         // A label never covers another marker, nor the screen's controls: it takes another side.
@@ -229,6 +230,24 @@ Item {
             compare(countNear(image, 0, tc.cy - 30, tc.cx - 30, tc.cy + 30, 255, 255, 0, 50), 0, "never under the keep-out")
             verify(countNear(image, tc.cx - 40, tc.cy - 40, tc.cx + 40, tc.cy - 12, 255, 255, 0, 50) > 20, "above instead")
             map.labelObstacles = []
+        }
+
+        // An emergency hemmed in by markers on every side still says so: its label is never dropped.
+        function test_06d_an_emergency_label_is_never_dropped() {
+            var px = 360 / (256 * 4096) // degrees of longitude per pixel at zoom 12
+            var py = px * Math.cos(10.0 * Math.PI / 180)
+            push({ source: 1020, lat: 10.0, lon: 20.0, emergency: true })
+            var around = [[30, 0], [-30, 0], [0, -24], [0, 24]]
+            for (var i = 0; i < around.length; i++)
+                push({ anonymous: true, lat: 10.0 - around[i][1] * py, lon: 20.0 + around[i][0] * px })
+            compare(map.markerCount, 5)
+            var image = grabImage(root)
+            // The word, in the alert colour, somewhere past the marker itself.
+            var outside = countNear(image, 0, 0, root.width, tc.cy - 10, 255, 128, 0, 50)
+                + countNear(image, 0, tc.cy + 10, root.width, root.height, 255, 128, 0, 50)
+                + countNear(image, 0, tc.cy - 10, tc.cx - 10, tc.cy + 10, 255, 128, 0, 50)
+                + countNear(image, tc.cx + 10, tc.cy - 10, root.width, tc.cy + 10, 255, 128, 0, 50)
+            verify(outside > 20, "the emergency's label is drawn: " + outside)
         }
 
         // The settings sheet checks a template and names the server the viewed area goes to.

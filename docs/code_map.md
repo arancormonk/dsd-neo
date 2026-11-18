@@ -18146,8 +18146,22 @@ Qt Quick frontend (`src/ui/qt`):
     `QImage` instead. One visual variable per state: freshness is fill strength over a halo base (4 levels, ages from
     the model), an unconfirmed source a dashed outline, validity unknown an open ring at its own fix (no freshness: it
     has no fill), a provisional format a double outline and a dashed trail, emergency the alert colour with the word
-    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). Labels never
-    overlap: emergencies first, then the selected track, then the freshest; the List has every name. While a new
+    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). Labels
+    (`map_scene.h` `place_labels()`) try each side of their marker (right, left, above, below) and take the first one
+    inside the view that covers no marker (the device dot included), no `labelObstacles` keep-out and no label already
+    placed. Order: the selected track, then emergencies, then the most recently heard (`map_view_detail.h`). An
+    emergency's label is never dropped (spec 4.6, never hue alone): emergencies are placed first, so every other label,
+    the selected one included, yields to them; with no clear side it takes the side covering the least, keeping clear
+    of keep-outs while any side does, and may cover a plain marker or another emergency's label (both drawn, the
+    newest on top; labels are drawn lowest priority first). Any other label with no clear side is left out; the List
+    has every name. `labelObstacles` is a list of rects (item coordinates) labels keep clear of: `MapScreen.qml` binds
+    the control column, the chip column and the attribution, each while visible. The marker sprite itself differs for
+    an emergency by colour only; the word is the label's. A pan within half the view's larger side only moves the
+    trails and circles (one transform node). While a zoom is in progress (any zoom change starts a 150 ms single-shot
+    settle timer, `m_zooming`) they are also scaled (`map_scene.h` `view_transform()`, `reusable_scaled()`: same view
+    size, within half a zoom step, the built area still covering the view) and built again once the zoom has held still,
+    so a pinch no longer rebuilds 200 × 100 trails per frame. New data, a colour, a wrap-copy flip or a resize rebuilds
+    at once. While a new
     zoom's tiles load, earlier zooms' tiles in view stand in (at most 64). The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
     also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
@@ -18160,8 +18174,10 @@ Qt Quick frontend (`src/ui/qt`):
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
     saved-view rule below reads it. Tile loading stops at once (not at the next polish, which a hidden window never
     gets) when the app goes Hidden/Suspended, the item hides or leaves its window, or `active` goes false (the List).
-    Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the software picture, pan reuse across the wrap, background
-    stop).
+    Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the software picture, pan reuse across the wrap, zoom-time
+    scaling and the settle rebuild, label priority, background stop), `UI_QT_MAP_GEOMETRY` (label placement and the
+    emergency rule, `BoxGrid`, `view_transform()`), `tst_map_view.qml` (labels clear of markers and keep-outs, the
+    emergency label never dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
   - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
     tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
     what is followed, tile trouble, location notices) that `topInset` follows, the control column of 48 px buttons,

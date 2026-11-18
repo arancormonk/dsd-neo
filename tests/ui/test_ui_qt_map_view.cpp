@@ -530,6 +530,12 @@ test_label_priority() {
     }
     const double newest = right_label_width(root, cx);
     assert(newest > 0.0);
+    /* Drawn lowest priority first, so where two must overlap the higher one is on top: the newest is the last node. */
+    {
+        const Layers now = layers(root);
+        const auto* last = static_cast<QSGImageNode*>(now.labels->lastChild());
+        assert(std::fabs(last->rect().width() - newest) < 0.5);
+    }
     push(7U, 10.0, 20.0, 0U, 0U, 900); /* now the other one is the more recent */
     f.model.poll();
     root = f.map->testUpdateGpuTree(root, 1.0);
@@ -546,6 +552,32 @@ test_label_priority() {
     delete root;
 }
 
+/* The settle timer itself: after a zoom step the item reports a zoom in progress, and once the zoom has held still
+ * (the real single-shot timer, run by the event loop) it is over and the overlay is built at its own scale. */
+void
+test_zoom_settles_by_itself() {
+    Fixture f;
+    push(1007U, 10.0, 19.99);
+    push(1007U, 10.0, 20.01, 300U);
+    f.model.poll();
+    assert(spin_until([&] { return !f.map->testZooming(); })); /* the fixture's own centring settles too */
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    f.map->zoomAbout(f.map->zoom() + 0.2, 200.0, 150.0);
+    assert(f.map->testZooming());
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(!now.overlay->matrix().isIdentity());
+    }
+    assert(spin_until([&] { return !f.map->testZooming(); }));
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    delete root;
+}
+
 } // namespace
 
 int
@@ -559,6 +591,7 @@ main(int argc, char** argv) {
     test_overlay_follows_the_wrap_copy();
     test_labels_render_on_the_gui_thread();
     test_label_priority();
+    test_zoom_settles_by_itself();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

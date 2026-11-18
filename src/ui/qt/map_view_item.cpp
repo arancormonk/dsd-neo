@@ -1032,7 +1032,8 @@ MapViewItem::setLabelObstacles(const QVariantList& rects) {
     m_labelObstacles.clear();
     for (const QVariant& v : rects) {
         const QRectF r = v.toRectF();
-        if (r.isValid() && std::isfinite(r.x()) && std::isfinite(r.y())) {
+        if (r.isValid() && std::isfinite(r.x()) && std::isfinite(r.y()) && std::isfinite(r.width())
+            && std::isfinite(r.height())) {
             m_labelObstacles.push_back(ms::LabelBox{static_cast<float>(r.x()), static_cast<float>(r.y()),
                                                     static_cast<float>(r.width()), static_cast<float>(r.height())});
         }

@@ -227,6 +227,14 @@ boxes_overlap(const LabelBox& a, const LabelBox& b) {
            && b.top < a.top + a.height;
 }
 
+/** @brief The area @p a and @p b share; 0 when they do not overlap. */
+inline float
+intersection_area(const LabelBox& a, const LabelBox& b) {
+    const float w = std::min(a.left + a.width, b.left + b.width) - std::max(a.left, b.left);
+    const float h = std::min(a.top + a.height, b.top + b.height) - std::max(a.top, b.top);
+    return (w > 0.0F && h > 0.0F) ? w * h : 0.0F;
+}
+
 /** @brief Whether @p inner lies wholly inside @p outer. */
 inline bool
 box_inside(const LabelBox& inner, const LabelBox& outer) {
@@ -247,6 +255,7 @@ class BoxGrid {
         cols_ = std::max(1, static_cast<int>(std::ceil(std::max(width, 1.0F) / cell_)));
         rows_ = std::max(1, static_cast<int>(std::ceil(std::max(height, 1.0F) / cell_)));
         boxes_.clear();
+        stamps_.clear();
         const size_t cells = static_cast<size_t>(cols_) * static_cast<size_t>(rows_);
         if (cells_.size() < cells) {
             cells_.resize(cells);
@@ -268,11 +277,38 @@ class BoxGrid {
         }
         const int index = static_cast<int>(boxes_.size());
         boxes_.push_back(box);
+        stamps_.push_back(0U);
         for (int r = r0; r <= r1; r++) {
             for (int c = c0; c <= c1; c++) {
                 cells_[(static_cast<size_t>(r) * static_cast<size_t>(cols_)) + static_cast<size_t>(c)].push_back(index);
             }
         }
+    }
+
+    /** @brief The area of @p box that boxes added cover, each counted once (overlaps between them counted twice). */
+    float
+    overlap_area(const LabelBox& box) {
+        int c0 = 0;
+        int c1 = 0;
+        int r0 = 0;
+        int r1 = 0;
+        if (!span(box, &c0, &c1, &r0, &r1)) {
+            return 0.0F;
+        }
+        query_++;
+        float area = 0.0F;
+        for (int r = r0; r <= r1; r++) {
+            for (int c = c0; c <= c1; c++) {
+                for (const int i :
+                     cells_[(static_cast<size_t>(r) * static_cast<size_t>(cols_)) + static_cast<size_t>(c)]) {
+                    if (stamps_[static_cast<size_t>(i)] != query_) {
+                        stamps_[static_cast<size_t>(i)] = query_;
+                        area += intersection_area(box, boxes_[static_cast<size_t>(i)]);
+                    }
+                }
+            }
+        }
+        return area;
     }
 
     /** @brief Whether @p box overlaps any box added (inside the view). */
@@ -305,15 +341,18 @@ class BoxGrid {
         if (!(box.width > 0.0F) || !(box.height > 0.0F) || !std::isfinite(box.left) || !std::isfinite(box.top)) {
             return false;
         }
-        const float right = box.left + box.width;
-        const float bottom = box.top + box.height;
         const float grid_w = static_cast<float>(cols_) * cell_;
         const float grid_h = static_cast<float>(rows_) * cell_;
-        if (right <= 0.0F || bottom <= 0.0F || box.left >= grid_w || box.top >= grid_h) {
+        /* Clamped to the grid before any cast: a width of any size (an infinite one too) reaches its last cell. */
+        const float left = std::max(0.0F, box.left);
+        const float top = std::max(0.0F, box.top);
+        const float right = std::min(grid_w, box.left + box.width);
+        const float bottom = std::min(grid_h, box.top + box.height);
+        if (!(right > 0.0F) || !(bottom > 0.0F) || left >= grid_w || top >= grid_h) {
             return false;
         }
-        *c0 = std::max(0, static_cast<int>(std::floor(box.left / cell_)));
-        *r0 = std::max(0, static_cast<int>(std::floor(box.top / cell_)));
+        *c0 = std::min(cols_ - 1, static_cast<int>(std::floor(left / cell_)));
+        *r0 = std::min(rows_ - 1, static_cast<int>(std::floor(top / cell_)));
         *c1 = std::min(cols_ - 1, static_cast<int>(std::floor(right / cell_)));
         *r1 = std::min(rows_ - 1, static_cast<int>(std::floor(bottom / cell_)));
         return true;
@@ -323,15 +362,19 @@ class BoxGrid {
     int cols_ = 1;
     int rows_ = 1;
     std::vector<LabelBox> boxes_;
+    std::vector<uint32_t> stamps_; /* overlap_area()'s mark: a box in several cells is counted once */
+    uint32_t query_ = 0U;
     std::vector<std::vector<int>> cells_;
 };
 
 /** @brief A label to place: the centre of its marker, and the label's size, logical pixels. */
 struct LabelRequest {
-    float x;
-    float y;
-    float width;
-    float height;
+    float x = 0.0F;
+    float y = 0.0F;
+    float width = 0.0F;
+    float height = 0.0F;
+    /** An emergency's label (it carries the word): never dropped, see place_labels(). */
+    bool urgent = false;
 };
 
 /** @brief Sides a label may take around its marker, in the order tried: right, left, above, below. */
@@ -348,37 +391,128 @@ label_side_box(const LabelRequest& r, float reach, int side) {
     }
 }
 
+/** @brief What a label must keep clear of: the markers drawn, the screen's keep-outs, and the labels placed so far. */
+struct LabelSpace {
+    BoxGrid markers;
+    BoxGrid keep_out;
+    BoxGrid labels;
+
+    void
+    reset(float width, float height, float cell) {
+        markers.reset(width, height, cell);
+        keep_out.reset(width, height, cell);
+        labels.reset(width, height, cell);
+    }
+
+    bool
+    clear(const LabelBox& box) const {
+        return !markers.hits(box) && !keep_out.hits(box) && !labels.hits(box);
+    }
+};
+
+/** @brief @p box moved the least distance to lie inside @p area (its top left kept in when it is the larger). */
+inline LabelBox
+moved_inside(LabelBox box, const LabelBox& area) {
+    box.left = std::max(area.left, std::min(box.left, (area.left + area.width) - box.width));
+    box.top = std::max(area.top, std::min(box.top, (area.top + area.height) - box.height));
+    return box;
+}
+
 /**
- * @brief Place labels beside their markers without covering anything: in the order given (highest priority first),
- *        each takes the first side (right, left, above, below) where it lies wholly inside @p area and overlaps
- *        neither a box in @p blocked (the markers, the screen's controls and chips) nor a label already placed.
- *        A label with no such side is not drawn.
+ * @brief The side of an emergency's label when none is clear: the one that covers the least, keep-outs avoided
+ *        first.
  *
- * @param reach   From the marker's centre to the label's near edge: half the marker and a gap, so a label never
- *                covers its own marker.
- * @param blocked Marker boxes and the screen's keep-out boxes, already added; placed labels are added to it.
- * @param placed  @p count entries: the box of each placed label.
- * @param keep    @p count entries, 1 for a placed label and 0 otherwise.
+ * A side clear of every keep-out (the screen's controls and chips) wins over any side that is not; among those, the
+ * one overlapping the least marker and label area. With no side clear of the keep-outs, the least overlap of all.
+ */
+inline LabelBox
+least_covering_side(const LabelRequest& r, float reach, const LabelBox& area, LabelSpace& space) {
+    LabelBox best{};
+    bool best_clear_of_keep_out = false;
+    float best_cover = 0.0F;
+    for (int side = 0; side < kLabelSides; side++) {
+        const LabelBox box = moved_inside(label_side_box(r, reach, side), area);
+        const float keep_out = space.keep_out.overlap_area(box);
+        const bool clear_of_keep_out = !(keep_out > 0.0F);
+        const float cover = space.markers.overlap_area(box) + space.labels.overlap_area(box) + keep_out;
+        const bool better = side == 0 || (clear_of_keep_out && !best_clear_of_keep_out)
+                            || (clear_of_keep_out == best_clear_of_keep_out && cover < best_cover);
+        if (better) {
+            best = box;
+            best_clear_of_keep_out = clear_of_keep_out;
+            best_cover = cover;
+        }
+    }
+    return best;
+}
+
+/** @brief The first side of @p r that lies inside @p area and is clear in @p space; false when none is. */
+inline bool
+clear_side(const LabelRequest& r, float reach, const LabelBox& area, const LabelSpace& space, LabelBox* out) {
+    for (int side = 0; side < kLabelSides; side++) {
+        const LabelBox box = label_side_box(r, reach, side);
+        if (box_inside(box, area) && space.clear(box)) {
+            *out = box;
+            return true;
+        }
+    }
+    return false;
+}
+
+/** @brief Whether @p r can be labelled at all: a label with size, for a marker inside @p area. */
+inline bool
+label_wanted(const LabelRequest& r, const LabelBox& area) {
+    const bool anchored =
+        r.x >= area.left && r.x <= area.left + area.width && r.y >= area.top && r.y <= area.top + area.height;
+    return anchored && r.width > 0.0F && r.height > 0.0F;
+}
+
+/**
+ * @brief Place labels beside their markers: in the order given (highest priority first), each takes the first side
+ *        (right, left, above, below) where it lies wholly inside @p area and covers no marker, keep-out or label
+ *        already placed.
+ *
+ * An emergency's label (LabelRequest::urgent) is never dropped (spec 4.6: never hue alone): emergencies are placed
+ * first, so every other label yields to them; one with no clear side takes least_covering_side() (it may cover a
+ * marker, or another emergency's label: both are drawn). Any other label with no clear side is not drawn.
+ * Only labels whose marker lies inside @p area are considered.
+ *
+ * @param reach  From the marker's centre to the label's near edge: half the marker and a gap, so a label never
+ *               covers its own marker.
+ * @param space  Markers and keep-outs already added; each placed label is added to its labels.
+ * @param placed @p count entries: the box of each placed label.
+ * @param keep   @p count entries, 1 for a placed label and 0 otherwise.
  * @return Labels placed.
  */
 inline int
-place_labels(const LabelRequest* requests, int count, float reach, const LabelBox& area, BoxGrid& blocked,
+place_labels(const LabelRequest* requests, int count, float reach, const LabelBox& area, LabelSpace& space,
              LabelBox* placed, uint8_t* keep) {
     if (requests == nullptr || placed == nullptr || keep == nullptr || count <= 0) {
         return 0;
     }
     int kept = 0;
-    for (int i = 0; i < count; i++) {
-        keep[i] = 0U;
-        for (int side = 0; side < kLabelSides; side++) {
-            const LabelBox box = label_side_box(requests[i], reach, side);
-            if (box.width > 0.0F && box.height > 0.0F && box_inside(box, area) && !blocked.hits(box)) {
-                placed[i] = box;
-                keep[i] = 1U;
-                blocked.add(box);
-                kept++;
-                break;
+    for (int pass = 0; pass < 2; pass++) {
+        const bool urgent = pass == 0;
+        for (int i = 0; i < count; i++) {
+            const LabelRequest& r = requests[i];
+            if (r.urgent != urgent) {
+                continue;
             }
+            keep[i] = 0U;
+            if (!label_wanted(r, area)) {
+                continue;
+            }
+            LabelBox box{};
+            if (!clear_side(r, reach, area, space, &box)) {
+                if (!urgent) {
+                    continue;
+                }
+                box = least_covering_side(r, reach, area, space);
+            }
+            placed[i] = box;
+            keep[i] = 1U;
+            space.labels.add(box);
+            kept++;
         }
     }
     return kept;
@@ -480,6 +614,9 @@ reusable(const map_math::Viewport& built, const map_math::Viewport& now, double 
     return std::fabs(d.x) <= margin && std::fabs(d.y) <= margin;
 }
 
+/** @brief How far content built for one zoom may be scaled to stand in for another: half a zoom step, sqrt(2). */
+constexpr double kZoomScaleReach = 1.4142135623730951;
+
 /** @brief How content drawn for one view maps onto another: screen(now, p) = scale * screen(built, p) + (dx, dy). */
 struct ViewTransform {
     double scale = 1.0;
@@ -507,12 +644,16 @@ view_transform(const map_math::Viewport& built, const map_math::Viewport& now) {
 /**
  * @brief Whether content built for @p built (clipped to its view grown by @p margin) can stand in for @p now, scaled.
  *
- * For a zoom in progress (a pinch, a zoom animation): the scale stays within 1 / @p max_scale .. @p max_scale (lines
+ * For a zoom in progress (a pinch, a zoom animation), at the same view size: the scale stays within 1 / @p max_scale .. @p max_scale (lines
  * and edges are drawn that much thicker or thinner until the zoom settles and the content is built again), and the
  * built area, carried by view_transform(), still covers the whole of @p now's view.
  */
 inline bool
 reusable_scaled(const map_math::Viewport& built, const map_math::Viewport& now, double margin, double max_scale) {
+    /* The same size only: @p margin is the one the content was clipped with, which a resize would change. */
+    if (std::fabs(built.width - now.width) > kSameZoom || std::fabs(built.height - now.height) > kSameZoom) {
+        return false;
+    }
     const ViewTransform t = view_transform(built, now);
     if (!(t.scale <= max_scale) || !(t.scale * max_scale >= 1.0)) {
         return false;

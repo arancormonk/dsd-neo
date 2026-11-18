@@ -289,9 +289,9 @@ class MapViewItem : public QQuickItem {
     double fitMaxZoom() const { return m_fitMaxZoom; }
     void setFitMaxZoom(double level);
     double topInset() const { return m_topInset; }
+    void setTopInset(double inset);
     QVariantList labelObstacles() const { return m_labelObstacleList; }
     void setLabelObstacles(const QVariantList& rects);
-    void setTopInset(double inset);
     int cameraDurationMs() const { return m_cameraMs; }
     void setCameraDurationMs(int ms);
     // clang-format on
@@ -598,7 +598,7 @@ class MapViewItem : public QQuickItem {
     std::vector<int> m_labelOrder; /* scene indices of the labelled tracks, highest priority first */
     std::vector<map_scene::LabelRequest> m_labelRequests;
     std::vector<map_scene::LabelBox> m_labelBoxes;
-    map_scene::BoxGrid m_labelGrid;
+    map_scene::LabelSpace m_labelSpace;
     QVariantList m_labelObstacleList;
     std::vector<map_scene::LabelBox> m_labelObstacles;
     std::vector<QString> m_labelKeys;

@@ -528,10 +528,10 @@ test_split_trail() {
     assert(runs.solid_x.empty());
 }
 
-/* Place labels for @p n requests in a 400 x 300 view with marker boxes and keep-outs already in @p grid. */
+/* Place labels for @p n requests in a 400 x 300 view with markers and keep-outs already in @p space. */
 int
-place(const ms::LabelRequest* requests, int n, ms::BoxGrid& grid, ms::LabelBox* placed, uint8_t* keep) {
-    return ms::place_labels(requests, n, 11.0F, ms::LabelBox{0.0F, 0.0F, 400.0F, 300.0F}, grid, placed, keep);
+place(const ms::LabelRequest* requests, int n, ms::LabelSpace& space, ms::LabelBox* placed, uint8_t* keep) {
+    return ms::place_labels(requests, n, 11.0F, ms::LabelBox{0.0F, 0.0F, 400.0F, 300.0F}, space, placed, keep);
 }
 
 ms::LabelBox
@@ -539,77 +539,141 @@ marker_box(float x, float y) {
     return ms::LabelBox{x - 9.0F, y - 9.0F, 18.0F, 18.0F};
 }
 
+/* A fresh 400 x 300 space holding markers at @p xs, @p ys. */
+void
+fresh_space(ms::LabelSpace& space, std::initializer_list<float> xs, std::initializer_list<float> ys) {
+    space.reset(400.0F, 300.0F, 48.0F);
+    auto y = ys.begin();
+    for (const float x : xs) {
+        space.markers.add(marker_box(x, *y));
+        ++y;
+    }
+}
+
 /* Labels take the first clear side (right, left, above, below), in priority order: never over another label, a
  * marker or a keep-out box, never past the view's edge, and dropped only when no side is clear. */
 void
 test_place_labels() {
-    ms::BoxGrid grid;
+    ms::LabelSpace space;
     ms::LabelBox placed[4];
     uint8_t keep[4] = {9U, 9U, 9U, 9U};
 
     /* Alone: to the right, clear of its own marker. */
-    grid.reset(400.0F, 300.0F, 48.0F);
-    grid.add(marker_box(100.0F, 100.0F));
+    fresh_space(space, {100.0F}, {100.0F});
     const ms::LabelRequest alone{100.0F, 100.0F, 60.0F, 16.0F};
-    assert(place(&alone, 1, grid, placed, keep) == 1 && keep[0] == 1U);
+    assert(place(&alone, 1, space, placed, keep) == 1 && keep[0] == 1U);
     assert(near(placed[0].left, 111.0F, 0.0F) && near(placed[0].top, 92.0F, 0.0F));
     assert(!ms::boxes_overlap(placed[0], marker_box(100.0F, 100.0F)));
 
     /* A neighbour's marker to the right: the label goes left instead of covering it. */
-    grid.reset(400.0F, 300.0F, 48.0F);
-    grid.add(marker_box(100.0F, 100.0F));
-    grid.add(marker_box(140.0F, 100.0F));
-    assert(place(&alone, 1, grid, placed, keep) == 1);
+    fresh_space(space, {100.0F, 140.0F}, {100.0F, 100.0F});
+    assert(place(&alone, 1, space, placed, keep) == 1);
     assert(near(placed[0].left, 100.0F - 11.0F - 60.0F, 0.0F));
 
     /* At the right edge, or with the control column there (a keep-out box): it goes left too. */
-    grid.reset(400.0F, 300.0F, 48.0F);
+    fresh_space(space, {360.0F}, {200.0F});
     const ms::LabelRequest edge{360.0F, 200.0F, 60.0F, 16.0F};
-    grid.add(marker_box(360.0F, 200.0F));
-    assert(place(&edge, 1, grid, placed, keep) == 1 && placed[0].left + placed[0].width <= 360.0F);
-    grid.reset(400.0F, 300.0F, 48.0F);
+    assert(place(&edge, 1, space, placed, keep) == 1 && placed[0].left + placed[0].width <= 360.0F);
+    fresh_space(space, {300.0F}, {250.0F});
+    const ms::LabelBox controls{340.0F, 150.0F, 48.0F, 140.0F};
+    space.keep_out.add(controls);
     const ms::LabelRequest by_controls{300.0F, 250.0F, 60.0F, 16.0F};
-    grid.add(marker_box(300.0F, 250.0F));
-    grid.add(ms::LabelBox{340.0F, 150.0F, 48.0F, 140.0F}); /* the controls */
-    assert(place(&by_controls, 1, grid, placed, keep) == 1);
-    assert(!ms::boxes_overlap(placed[0], ms::LabelBox{340.0F, 150.0F, 48.0F, 140.0F}));
+    assert(place(&by_controls, 1, space, placed, keep) == 1 && !ms::boxes_overlap(placed[0], controls));
 
     /* Hemmed in on every side: not drawn. */
-    grid.reset(400.0F, 300.0F, 48.0F);
-    grid.add(marker_box(200.0F, 150.0F));
-    grid.add(ms::LabelBox{0.0F, 0.0F, 400.0F, 146.0F});
-    grid.add(ms::LabelBox{0.0F, 154.0F, 400.0F, 146.0F});
+    fresh_space(space, {200.0F}, {150.0F});
+    space.keep_out.add(ms::LabelBox{0.0F, 0.0F, 400.0F, 146.0F});
+    space.keep_out.add(ms::LabelBox{0.0F, 154.0F, 400.0F, 146.0F});
     const ms::LabelRequest hemmed{200.0F, 150.0F, 60.0F, 16.0F};
     keep[0] = 9U;
-    assert(place(&hemmed, 1, grid, placed, keep) == 0 && keep[0] == 0U);
+    assert(place(&hemmed, 1, space, placed, keep) == 0 && keep[0] == 0U);
 
     /* Priority: two markers one above the other, their right-hand labels would overlap. The first label in the
      * order keeps the right; the second takes another side, and neither covers the other or either marker. */
-    const auto two_markers = [&grid] {
-        grid.reset(400.0F, 300.0F, 48.0F);
-        grid.add(marker_box(100.0F, 100.0F));
-        grid.add(marker_box(100.0F, 112.0F));
-    };
-    two_markers();
+    fresh_space(space, {100.0F, 100.0F}, {100.0F, 112.0F});
     const ms::LabelRequest pair[2] = {{100.0F, 100.0F, 60.0F, 16.0F}, {100.0F, 112.0F, 60.0F, 16.0F}};
-    assert(place(pair, 2, grid, placed, keep) == 2);
+    assert(place(pair, 2, space, placed, keep) == 2);
     assert(near(placed[0].left, 111.0F, 0.0F) && !near(placed[1].left, 111.0F, 0.0F));
     assert(!ms::boxes_overlap(placed[0], placed[1]) && !ms::boxes_overlap(placed[1], marker_box(100.0F, 100.0F)));
     const ms::LabelRequest reversed[2] = {pair[1], pair[0]};
-    two_markers();
-    assert(place(reversed, 2, grid, placed, keep) == 2);
+    fresh_space(space, {100.0F, 100.0F}, {100.0F, 112.0F});
+    assert(place(reversed, 2, space, placed, keep) == 2);
     assert(near(placed[0].left, 111.0F, 0.0F) && near(placed[0].top, 104.0F, 0.0F)
            && !near(placed[1].left, 111.0F, 0.0F));
 
-    /* The grid finds overlaps across cells and ignores what lies outside the view; reset keeps nothing. */
+    /* A marker off the view gets no label. */
+    const ms::LabelRequest outside{-30.0F, 100.0F, 60.0F, 16.0F};
+    fresh_space(space, {}, {});
+    assert(place(&outside, 1, space, placed, keep) == 0);
+}
+
+/* An emergency's label is never dropped (never hue alone): it goes first, every other label yields to it, and with
+ * no clear side it takes the side that covers least, keep-outs avoided while any side clears them. */
+void
+test_place_emergency_labels() {
+    ms::LabelSpace space;
+    ms::LabelBox placed[3];
+    uint8_t keep[3] = {9U, 9U, 9U};
+    ms::LabelRequest urgent{200.0F, 150.0F, 60.0F, 16.0F};
+    urgent.urgent = true;
+
+    /* Hemmed in by markers on every side: drawn anyway, on the side covering least (right: one marker's corner). */
+    fresh_space(space, {200.0F, 232.0F, 140.0F, 200.0F, 200.0F}, {150.0F, 162.0F, 150.0F, 125.0F, 175.0F});
+    assert(place(&urgent, 1, space, placed, keep) == 1 && keep[0] == 1U);
+    assert(near(placed[0].left, 211.0F, 0.0F));
+
+    /* Every side touches something, the right only a keep-out: a side clear of keep-outs wins even covering more. */
+    fresh_space(space, {200.0F, 140.0F, 200.0F, 200.0F}, {150.0F, 150.0F, 125.0F, 175.0F});
+    space.keep_out.add(ms::LabelBox{265.0F, 140.0F, 10.0F, 20.0F});
+    assert(place(&urgent, 1, space, placed, keep) == 1
+           && !ms::boxes_overlap(placed[0], ms::LabelBox{265.0F, 140.0F, 10.0F, 20.0F}));
+    assert(near(placed[0].left, 200.0F - 11.0F - 60.0F, 0.0F) || near(placed[0].top, 150.0F - 11.0F - 16.0F, 0.0F)
+           || near(placed[0].top, 161.0F, 0.0F));
+    /* Keep-outs on every side: the least overlap of all. */
+    fresh_space(space, {200.0F}, {150.0F});
+    space.keep_out.add(ms::LabelBox{0.0F, 0.0F, 400.0F, 148.0F});
+    space.keep_out.add(ms::LabelBox{0.0F, 152.0F, 400.0F, 148.0F});
+    assert(place(&urgent, 1, space, placed, keep) == 1);
+
+    /* A label earlier in the order yields to the emergency: the emergency keeps the right, the other moves. */
+    fresh_space(space, {100.0F, 100.0F}, {100.0F, 112.0F});
+    ms::LabelRequest first{100.0F, 100.0F, 60.0F, 16.0F};
+    ms::LabelRequest second{100.0F, 112.0F, 60.0F, 16.0F};
+    second.urgent = true;
+    const ms::LabelRequest order[2] = {first, second};
+    assert(place(order, 2, space, placed, keep) == 2);
+    assert(near(placed[1].left, 111.0F, 0.0F) && near(placed[1].top, 104.0F, 0.0F));
+    assert(!ms::boxes_overlap(placed[0], placed[1]));
+
+    /* Two emergencies on one spot, hemmed in: both are drawn. */
+    fresh_space(space, {200.0F, 200.0F, 140.0F, 260.0F, 200.0F, 200.0F},
+                {150.0F, 150.0F, 150.0F, 150.0F, 125.0F, 175.0F});
+    const ms::LabelRequest both[2] = {urgent, urgent};
+    assert(place(both, 2, space, placed, keep) == 2 && keep[0] == 1U && keep[1] == 1U);
+}
+
+/* The grid finds overlaps across cells, ignores what lies outside the view, takes boxes of any size (an infinite
+ * keep-out reaches the last cell), measures covered area once per box, and reset keeps nothing. */
+void
+test_box_grid() {
+    ms::BoxGrid grid;
     grid.reset(400.0F, 300.0F, 48.0F);
     grid.add(ms::LabelBox{90.0F, 90.0F, 20.0F, 20.0F}); /* straddles four cells */
     assert(grid.hits(ms::LabelBox{105.0F, 105.0F, 2.0F, 2.0F}) && !grid.hits(ms::LabelBox{111.0F, 90.0F, 5.0F, 5.0F}));
+    const float covered = grid.overlap_area(ms::LabelBox{80.0F, 80.0F, 20.0F, 20.0F});
+    assert(near(covered, 100.0F, 1.0e-3F));
     grid.add(ms::LabelBox{-50.0F, -50.0F, 10.0F, 10.0F});
     assert(!grid.hits(ms::LabelBox{-45.0F, -45.0F, 2.0F, 2.0F}));
+    grid.add(ms::LabelBox{0.0F, 280.0F, std::numeric_limits<float>::infinity(), 10.0F});
+    grid.add(ms::LabelBox{0.0F, 250.0F, 1.0e30F, 10.0F});
+    assert(grid.hits(ms::LabelBox{395.0F, 285.0F, 2.0F, 2.0F}) && grid.hits(ms::LabelBox{395.0F, 255.0F, 2.0F, 2.0F}));
     grid.reset(400.0F, 300.0F, 48.0F);
     assert(!grid.hits(ms::LabelBox{105.0F, 105.0F, 2.0F, 2.0F}));
-    assert(place(nullptr, 2, grid, placed, keep) == 0);
+    ms::LabelSpace space;
+    ms::LabelBox placed[1];
+    uint8_t keep[1] = {0U};
+    space.reset(400.0F, 300.0F, 48.0F);
+    assert(ms::place_labels(nullptr, 2, 11.0F, ms::LabelBox{0.0F, 0.0F, 400.0F, 300.0F}, space, placed, keep) == 0);
 }
 
 /* A tile's place on screen, for any zoom: the view's own tiles where visible_tiles() puts them, a parent covering
@@ -728,15 +792,20 @@ test_scaled_reuse() {
     const mm::ScreenPoint s = mm::screen_from_world(now, anchor);
     assert(std::fabs(s.x - 120.0) < 1.0e-6 && std::fabs(s.y - 610.0) < 1.0e-6);
     const double margin = 0.5 * 915.0;
-    assert(ms::reusable_scaled(built, now, margin, 1.41421356237));
+    assert(ms::reusable_scaled(built, now, margin, ms::kZoomScaleReach));
     /* Zooming out shrinks the built area: past the margin's cover it must be built again. */
     const mm::Viewport out = mm::zoom_about(built, 10.0, 0.0, 0.0);
-    assert(!ms::reusable_scaled(built, out, 0.0, 1.41421356237));
+    assert(!ms::reusable_scaled(built, out, 0.0, ms::kZoomScaleReach));
     /* Past half a zoom step either way. */
     const mm::Viewport in_far = mm::zoom_about(built, 11.1, 206.0, 457.0);
     const mm::Viewport out_far = mm::zoom_about(built, 9.9, 206.0, 457.0);
-    assert(!ms::reusable_scaled(built, in_far, margin, 1.41421356237));
-    assert(!ms::reusable_scaled(built, out_far, 1.0e6, 1.41421356237));
+    assert(!ms::reusable_scaled(built, in_far, margin, ms::kZoomScaleReach));
+    assert(!ms::reusable_scaled(built, out_far, 1.0e6, ms::kZoomScaleReach));
+    /* A resize during the zoom: the margin the content was clipped with no longer holds, so it is built again. */
+    mm::Viewport resized = now;
+    resized.height += 40.0;
+    resized = mm::clamp_viewport(resized);
+    assert(!ms::reusable_scaled(built, resized, margin, ms::kZoomScaleReach));
     /* At the same zoom it is the pan offset. */
     const mm::Viewport panned = mm::pan(built, 12.0, -7.0);
     const ms::ViewTransform p = ms::view_transform(built, panned);
@@ -789,6 +858,8 @@ main(void) {
     test_marker_cells();
     test_split_trail();
     test_place_labels();
+    test_place_emergency_labels();
+    test_box_grid();
     test_tile_rects();
     test_pan_reuse();
     test_interpolate_viewport();

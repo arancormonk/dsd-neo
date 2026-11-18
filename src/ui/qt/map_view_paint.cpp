@@ -61,9 +61,6 @@ constexpr double kSpriteScale = 1.75;
 /* Trails and circles are built for the view grown by this fraction of its larger side each way; a pan within it
  * only moves them. */
 constexpr double kPanMarginFraction = 0.5;
-/* How far trails and circles may be scaled while a zoom is in progress before they are built again: half a zoom
- * step each way. */
-constexpr double kZoomScaleReach = 1.41421356237;
 /* Space between a marker's edge and its label, logical pixels, and the label's halo around its text. */
 constexpr double kLabelGap = 3.0;
 constexpr double kLabelHalo = 2.0;
@@ -483,21 +480,21 @@ MapViewItem::buildLabels(double ratio) {
      * the screen's controls and chips. */
     const auto view_w = static_cast<float>(m_vp.width);
     const auto view_h = static_cast<float>(m_vp.height);
-    m_labelGrid.reset(view_w, view_h, kLabelGridCell);
+    m_labelSpace.reset(view_w, view_h, kLabelGridCell);
     const auto half = static_cast<float>((m_markerSize / 2.0) + 1.0);
     for (const MarkerDraw& m : m_markers) {
         const mm::ScreenPoint at = mm::screen_from_world(m_vp, m.at);
-        m_labelGrid.add(
+        m_labelSpace.markers.add(
             ms::LabelBox{static_cast<float>(at.x) - half, static_cast<float>(at.y) - half, 2.0F * half, 2.0F * half});
     }
     mm::WorldPoint device{};
     if (deviceWorld(&device)) {
         const mm::ScreenPoint at = mm::screen_from_world(m_vp, device);
-        m_labelGrid.add(
+        m_labelSpace.markers.add(
             ms::LabelBox{static_cast<float>(at.x) - half, static_cast<float>(at.y) - half, 2.0F * half, 2.0F * half});
     }
     for (const ms::LabelBox& b : m_labelObstacles) {
-        m_labelGrid.add(b);
+        m_labelSpace.keep_out.add(b);
     }
     m_labelRequests.clear();
     m_labelKeys.clear();
@@ -505,19 +502,21 @@ MapViewItem::buildLabels(double ratio) {
         const TrackDraw& t = m_scene[static_cast<size_t>(i)];
         const QSizeF size = labelImage(t, ratio).deviceIndependentSize();
         const mm::ScreenPoint at = mm::screen_from_world(m_vp, t.hasMarker ? t.marker : t.ring);
-        m_labelRequests.push_back(ms::LabelRequest{static_cast<float>(at.x), static_cast<float>(at.y),
-                                                   static_cast<float>(size.width()),
-                                                   static_cast<float>(size.height())});
+        ms::LabelRequest request{static_cast<float>(at.x), static_cast<float>(at.y), static_cast<float>(size.width()),
+                                 static_cast<float>(size.height())};
+        request.urgent = t.emergency;
+        m_labelRequests.push_back(request);
         m_labelKeys.push_back(t.labelKey);
     }
     m_labelBoxes.resize(m_labelRequests.size());
     m_labelKeep.assign(m_labelRequests.size(), 0U);
     const auto reach = static_cast<float>((m_markerSize / 2.0) + kLabelGap);
     (void)ms::place_labels(m_labelRequests.data(), static_cast<int>(m_labelRequests.size()), reach,
-                           ms::LabelBox{0.0F, 0.0F, view_w, view_h}, m_labelGrid, m_labelBoxes.data(),
+                           ms::LabelBox{0.0F, 0.0F, view_w, view_h}, m_labelSpace, m_labelBoxes.data(),
                            m_labelKeep.data());
+    /* Drawn lowest priority first, so where two must overlap (two emergencies) the higher one is on top. */
     m_labels.clear();
-    for (size_t i = 0; i < m_labelRequests.size(); i++) {
+    for (size_t i = m_labelRequests.size(); i-- > 0;) {
         if (m_labelKeep[i] != 0U) {
             const ms::LabelBox& b = m_labelBoxes[i];
             m_labels.push_back(LabelDraw{m_labelKeys[i], b.left, b.top, b.width, b.height});
@@ -708,7 +707,7 @@ MapViewItem::gpuOverlay(GpuRoot* root, double ratio) {
      * trails of 100 points for every pinch frame cost a phone about 30 ms a frame. */
     const bool same =
         root->overlaySerial == m_sceneSerial && !differs(root->overlayRatio, ratio) && root->overlayCopies == m_copies;
-    const bool fits = m_zooming ? ms::reusable_scaled(root->overlayVp, m_vp, margin, kZoomScaleReach)
+    const bool fits = m_zooming ? ms::reusable_scaled(root->overlayVp, m_vp, margin, ms::kZoomScaleReach)
                                 : ms::reusable(root->overlayVp, m_vp, margin);
     if (same && fits) {
         const ms::ViewTransform t = ms::view_transform(root->overlayVp, m_vp);
