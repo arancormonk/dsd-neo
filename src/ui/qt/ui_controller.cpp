@@ -65,6 +65,13 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistory
 UiController::~UiController() {
     // The GUI thread reads no more snapshots through this controller.
     wipeSnapshotKeys();
+    withholdSnapshotKeys(false);
+}
+
+void
+UiController::withholdSnapshotKeys(bool withhold) {
+    dsd_app_snapshot_consumer_withhold_keys(withhold ? 1 : 0);
+    dsd_app_opts_snapshot_consumer_withhold_keys(withhold ? 1 : 0);
 }
 
 void
@@ -75,9 +82,8 @@ UiController::wipeSnapshotKeys() {
 
 void
 UiController::onApplicationStateChanged(Qt::ApplicationState state) {
-    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
-        wipeSnapshotKeys();
-    }
+    // Off screen the timer may still tick: its reads copy no key back, until the app is on screen again.
+    withholdSnapshotKeys(state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden);
 }
 
 // WP-S2: attachment consumption and target lookup happen outside this pure decision.

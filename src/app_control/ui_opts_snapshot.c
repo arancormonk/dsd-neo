@@ -27,6 +27,8 @@ static unsigned long long g_consume_opts_seq = 0;
 static int g_consume_opts_wipe_keys = 0;
 /* The consumer's buffer lost its API keys while the published copy kept them: its next read copies it again. */
 static int g_consume_opts_stale = 0;
+/* The reader keeps no API keys in its buffer for now (dsd_app_opts_snapshot_consumer_withhold_keys()). */
+static int g_consume_opts_keys_withheld = 0;
 /* A publication the P25 SM tick guard put off (dsd_app_telemetry_opts_snapshot_pending()). */
 static atomic_int g_pub_opts_pending = 0;
 
@@ -118,6 +120,9 @@ dsd_app_get_latest_opts_snapshot(void) {
         DSD_MEMCPY(&g_consume_opts, &g_pub_opts, sizeof(dsd_opts));
         g_consume_opts_seq = g_pub_opts_seq;
         g_consume_opts_stale = 0;
+        if (g_consume_opts_keys_withheld) {
+            ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+        }
     }
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
@@ -131,6 +136,18 @@ dsd_app_opts_snapshot_wipe_keys(void) {
     /* The consumer's buffer is read without the lock on its own thread (snapshot.h), so that thread wipes it, at its
        next read. */
     g_consume_opts_wipe_keys = 1;
+    dsd_mutex_unlock(&g_opts_mu);
+}
+
+void
+dsd_app_opts_snapshot_consumer_withhold_keys(int withhold) {
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    g_consume_opts_keys_withheld = withhold != 0;
+    if (g_consume_opts_keys_withheld) {
+        ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+    }
+    g_consume_opts_stale = 1;
     dsd_mutex_unlock(&g_opts_mu);
 }
 

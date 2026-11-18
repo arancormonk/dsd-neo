@@ -326,14 +326,15 @@ test_history_handoff_after_resume_without_redraw() {
 // The GUI thread reads the snapshots through one buffer each (snapshot.h). Off screen (Android suspends it in the
 // background) it may read none for hours, so a session stopped meanwhile, from the notification, would leave the last
 // keys and API keys it read in those buffers: they go when the app is suspended or hidden, and when the controller
-// goes, without waiting for a next read.
+// goes, without waiting for a next read. A read made while the app is off screen (a hidden tick) copies none back; once
+// the app is on screen again a read copies them again while the session runs.
 static void
 test_gui_snapshot_buffers_keep_no_key_off_screen() {
     static dsd_opts opts;
     static dsd_state state;
     initOpts(&opts);
     initState(&state);
-    for (int c = 0; c < 2; ++c) {
+    for (int c = 0; c < 3; ++c) {
         state.K = 0x5A5AULL;
         state.R = 0x0102030405ULL;
         DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
@@ -346,8 +347,24 @@ test_gui_snapshot_buffers_keep_no_key_off_screen() {
             opts_snapshot = dsd_app_get_latest_opts_snapshot();
             check(snapshot != nullptr && snapshot->K == 0x5A5AULL && opts_snapshot != nullptr
                   && strcmp(opts_snapshot->rr_app_key, "rr-test-key") == 0);
-            if (c == 0) {
+            if (c != 1) {
+                Q_EMIT qGuiApp->applicationStateChanged(c == 0 ? Qt::ApplicationSuspended : Qt::ApplicationHidden);
+                // A tick while off screen reads both snapshots: no key comes back into the buffers.
+                snapshot = dsd_app_get_latest_snapshot();
+                opts_snapshot = dsd_app_get_latest_opts_snapshot();
+                check(snapshot != nullptr && snapshot->K == 0ULL && snapshot->R == 0ULL && opts_snapshot != nullptr
+                      && opts_snapshot->rr_app_key[0] == '\0');
+            }
+            if (c == 2) {
+                // On screen again while the session runs: the next read has the keys.
+                Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+                snapshot = dsd_app_get_latest_snapshot();
+                opts_snapshot = dsd_app_get_latest_opts_snapshot();
+                check(snapshot != nullptr && snapshot->K == 0x5A5AULL && opts_snapshot != nullptr
+                      && strcmp(opts_snapshot->rr_app_key, "rr-test-key") == 0);
                 Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+            }
+            if (c != 1) {
                 dsd_app_frontend_runtime_stop();
             }
         }

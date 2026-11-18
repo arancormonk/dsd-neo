@@ -81,6 +81,8 @@ static const ui_snapshot_marks k_live_marks = {
 static int g_consume_needs_retry = 0;
 /* The session ended (dsd_app_snapshot_wipe_keys()): the consumer's next read wipes the key copies its buffer holds. */
 static int g_consume_wipe_keys = 0;
+/* The reader keeps no keys in its buffer for now (dsd_app_snapshot_consumer_withhold_keys()). */
+static int g_consume_keys_withheld = 0;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
@@ -651,6 +653,18 @@ dsd_app_snapshot_wipe_keys(void) {
 }
 
 void
+dsd_app_snapshot_consumer_withhold_keys(int withhold) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    g_consume_keys_withheld = withhold != 0;
+    if (g_consume_keys_withheld) {
+        ui_snapshot_wipe_key_copies(&g_consume);
+    }
+    g_consume_needs_retry = 1;
+    dsd_mutex_unlock(&g_mu);
+}
+
+void
 dsd_app_snapshot_consumer_wipe_keys(void) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
@@ -680,6 +694,9 @@ dsd_app_get_latest_snapshot(void) {
         (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;
         g_consume_needs_retry = !ui_snapshot_marks_whole(&g_consume_marks);
+        if (g_consume_keys_withheld) {
+            ui_snapshot_wipe_key_copies(&g_consume);
+        }
     }
     // Deep copy event history only when the published history changed. g_pub_eh_seq counts this module's own copies
     // into g_pub_eh and never restarts, so unlike the decoder's revision it needs no ring identity beside it.

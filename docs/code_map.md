@@ -4916,7 +4916,9 @@ thread reads no more once it exits, so it wipes its own buffer then (`dsd_app_sn
 curses closes); Qt and Android keep polling, so theirs goes at their next read, and also when the app is suspended or
 hidden and when its `UiController` goes (`UiController::wipeSnapshotKeys()`, on the GUI thread): Android pauses that
 thread in the background, so a session stopped from the notification would otherwise leave the keys and API keys it
-last read there for hours. Everything else in the last snapshot
+last read there for hours. While the app is off screen the buffers keep no key across reads either
+(`dsd_app_snapshot_consumer_withhold_keys()`, `dsd_app_opts_snapshot_consumer_withhold_keys()`): a tick or another
+GUI-thread read copies none back, and the first read once the app is on screen again copies them while a session runs. Everything else in the last snapshot
 stays. The options snapshots carry the rdio-scanner API key and URL (a URL can carry credentials) and the RadioReference
 API key (`rdio_api_key`, `rdio_api_url`, `rr_app_key`), which a running frontend reads from its copy (the terminal UI's
 RadioReference panel and its config save); the API token never reaches them (zeroed at each publish). The stop wipes
