@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 
@@ -36,6 +37,15 @@ void nxdn_reset_payload_seed_if_forced(dsd_state* state);
 /* Forget a data call's header, packet assembly, crypto and LRRP identities (nxdn_data_call.c). */
 void nxdn_reset_data_call_state(dsd_state* state);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
+
+/* The MI a call of NXDN cipher @p cipher publishes (call state, event history and every output built on them): the IV
+   a DES or AES call sends over the air (VCALL_IV, the SACCH superframe), held in dsd_state::payload_miN. A scrambled
+   call sends none: there payload_miN is the scrambler's LFSR, seeded from the loaded key, which is no MI and goes to no
+   output. 0 for every cipher but DES and AES. */
+static inline uint64_t
+nxdn_published_mi(const dsd_state* state, uint8_t cipher) {
+    return (cipher == 2U || cipher == 3U) ? (uint64_t)state->payload_miN : 0U;
+}
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
    protocol's call there is not NXDN's to touch, whatever an NXDN sync read on its carrier says. */

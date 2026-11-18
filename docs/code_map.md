@@ -4906,7 +4906,9 @@ are read under `dsd_event_history_transaction_begin()`, as every other cross-thr
 **Key copies:** the state snapshots carry the scalar and AES keys, the talkgroup autoload's copies of them, the
 CSI key, which the terminal UI shows redacted unless `--show-keys`, and `payload_miN`, into which an NXDN voice call
 assignment or scrambled frame copies the scrambler key as its LFSR seed (also wiped from the live state with its keys,
-`dsd_key_state_secure_wipe()`). A publish overwrites them with the live values.
+`dsd_key_state_secure_wipe()`). That seed is never published as a call's MI: an NXDN call's published MI is the IV a
+DES or AES call sends, and a scrambled call has none (`nxdn_published_mi()`), so no call, event row or output built on
+them carries the key. A publish overwrites them with the live values.
 The snapshots outlive the session (`snapshot.h`), so `dsd_app_frontend_runtime_stop()` wipes them, once the hooks are
 cleared and nothing can publish them again (`dsd_app_snapshot_wipe_keys()`, `DSD_SECURE_ZERO`): the published copy at
 once, the consumer's at its own thread's next read, which then copies the published state again. The terminal UI
