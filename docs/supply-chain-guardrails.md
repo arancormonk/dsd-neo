@@ -87,10 +87,11 @@ tools/check_vcpkg_overlay_pins.sh
 Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
 `tools/check_vcpkg_overlay_pins.sh` covers every overlay with a GitHub source: `mbe-neo` (and its PFFFT),
-`codec2`, `rtlsdr`, `airspy`, and the SoapySDR load path the Windows ZIP ships:
+`codec2`, `rtlsdr`, `airspy`, `portaudio`, and the SoapySDR load path the Windows ZIP ships:
 
 | Overlay | Upstream | Pins | Pinned to |
 | --- | --- | --- | --- |
+| `portaudio` | `PortAudio/portaudio` | `PORTAUDIO_SHA`, `PORTAUDIO_TARBALL_SHA512` | the `v19.7.0` tag, the release vcpkg's port builds at port-version 8 |
 | `soapysdr` | `pothosware/SoapySDR` | `SOAPY_SDR_SHA`, `SOAPY_SDR_TARBALL_SHA512` | the `soapy-sdr-0.8.1` tag (the AppImage builds the same commit) |
 | `soapy-airspy` | `pothosware/SoapyAirspy` | `SOAPY_AIRSPY_SHA`, `SOAPY_AIRSPY_TARBALL_SHA512` | the `soapy-airspy-0.2.1` tag |
 | `soapy-hackrf` | `pothosware/SoapyHackRF` | `SOAPY_HACKRF_SHA`, `SOAPY_HACKRF_TARBALL_SHA512` | the `soapy-hackrf-0.3.6` tag |

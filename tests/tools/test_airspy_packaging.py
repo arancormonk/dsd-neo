@@ -398,7 +398,8 @@ class AirspyPackaging(unittest.TestCase):
         shutil.copytree(PATCHES, self.work / "android/third_party/patches")
         command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
         self.assert_success(run(command, cwd=self.work))
-        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "soapy-hackrf"):
+        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "soapy-hackrf", "codec2",
+                          "portaudio"):
             port = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
             original = port.read_text()
             for key, length in (("REF", 40), ("SHA512", 128)):

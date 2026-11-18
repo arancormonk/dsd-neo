@@ -9,7 +9,7 @@ usage() {
 Usage: tools/check_vcpkg_overlay_pins.sh [--fix]
 
 Checks that the GitHub source pins of the vcpkg overlays (mbe-neo, codec2,
-rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) match
+portaudio, rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) match
 tools/ci-dependency-pins.env, and that the airspy, rtlsdr and soapy-airspy
 overlays apply dsd-neo's patch series (tools/usb_dependency_patches.sh) with its
 current digest.
@@ -286,6 +286,7 @@ check_port_patches() {
 check_port "mbe-neo" "arancormonk/mbelib-neo" "MBELIB_NEO_SHA" "MBELIB_NEO_TARBALL_SHA512"
 check_port "mbe-neo" "arancormonk/pffft" "MBELIB_PFFFT_SHA" "MBELIB_PFFFT_TARBALL_SHA512" "vcpkg-ports/mbe-neo/pffft.cmake"
 check_port "codec2" "arancormonk/codec2" "CODEC2_SHA" "CODEC2_TARBALL_SHA512"
+check_port "portaudio" "PortAudio/portaudio" "PORTAUDIO_SHA" "PORTAUDIO_TARBALL_SHA512"
 check_port "rtlsdr" "arancormonk/rtl-sdr" "RTL_SDR_SHA" "RTL_SDR_TARBALL_SHA512"
 check_port "airspy" "airspy/airspyone_host" "AIRSPY_SHA" "AIRSPY_TARBALL_SHA512"
 check_port "soapysdr" "pothosware/SoapySDR" "SOAPY_SDR_SHA" "SOAPY_SDR_TARBALL_SHA512"
