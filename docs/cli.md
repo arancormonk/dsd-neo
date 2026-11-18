@@ -442,7 +442,8 @@ Windows console runs:
   (the hash is not a radio ID). A D-STAR position or text message joins a call only when a header of the same
   transmission whose check passed named the caller (a callsign suffix alone names no one), and a text message only
   when all of it, its first block included, was heard after the transmission proved itself; anything pieced together
-  across two transmissions, a retune or that moment is dropped. A call position decoded after the call's line was written (the L3Harris or Motorola
+  across two transmissions, a retune, a frame of another protocol (an M17 frame between two D-STAR ones) or that moment
+  is dropped. A call position decoded after the call's line was written (the L3Harris or Motorola
   report in the terminator that ends a P25 Phase 1 call) appends that call's `GPS:` line then, carrying the call
   line's stamp. A report with LIP position error 7 reads `fix may be old or invalid`. A voice
   transmission reacquired after a sync loss appends a `Reacquired:` continuation carrying the stamp of the row it
