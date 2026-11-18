@@ -2543,7 +2543,10 @@ suite runs under this compiler.
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
   row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
   same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
-  WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  WACN and SYSID read after a sync loss, but only when the row and the segment were heard on one reception by the
+  reception rule, read on both as they were before anything is adopted: a stronger identity never overrides two known,
+  different tuned frequencies or NAC discriminators, so a row committed on one carrier keeps its frequency and
+  reception and refuses the other carrier's GPS, `watchdog_event_rx_scope_learns()`), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
   segment's GPS (a position, GPS text, a sender scope) only when it was heard on the row's reception by the reception
@@ -2619,7 +2622,10 @@ suite runs under this compiler.
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM keeps the same reception in its published record (`p25_sm_published_identity::rx_epoch`) and in
     the slot's assignment (`identity_rx_epoch`, rebound by every message applied after the epoch moved:
-    `p25_slot_bind_reception()`). The other producers name the sender from the report's own carrier
+    `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
+    inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
+    `p25_sm_verdicts_now()`, which counts none earned under another reception (test `P25_P2_HARRIS_GPS`). The other
+    producers name the sender from the report's own carrier
     (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
     the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
   - A P25 special address (`$FFFFFC`-`$FFFFFF`: FNE use, System Default, Registration Default, ALL units; the table
@@ -12441,7 +12447,13 @@ Private per-protocol modules worth knowing about:
   report only through it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no
   radio on its positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a
   checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
-  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c`), which follows the same rule. A link control
+  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c` `p25_lcw_note_checked_identity()`), which
+  follows the same rule and fails closed: any later voice user of the call (LCO $00, $03, $4A, LCGRGR) that does not
+  record a radio takes the record away, unless it only repeats the record's source by a soft decode or names source 0
+  (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
+  ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
+  a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
+  display (test `P25_P1_HARRIS_GPS`). A link control
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
@@ -12450,6 +12462,16 @@ Private per-protocol modules worth knowing about:
   talker either (fail closed, `p25_sm_identity_claim::source_placeholder`): the call may keep the assignment's talker
   for display, as before, but that talker loses its checked flag in the assignment and in the record, so a dispatcher
   or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
+  identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
+  user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
+  than reading as an omitted field. A source that is not a complete local address of the reception is read the same
+  way (`p25_sm_event_t::source_nonlocal`, the `source_nonlocal` argument): its value stays for display, but it is never
+  checked and it takes the source's flag away. That is a unit named only by its home SUID whose WACN and System ID are
+  not the reception's checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is
+  not known): the Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone) and the
+  extended voice users (0x21/0x22, as MAC_SIGNAL and inside MAC_PTT/MAC_ACTIVE, `p25p2_mac_voice_identity::has_suid`);
+  and a Phase 1 voice-user LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A foreign
+  unit's home ID therefore never names a report's sender, a sender scope or a local radio-list label. The
   verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
   flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
   starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names

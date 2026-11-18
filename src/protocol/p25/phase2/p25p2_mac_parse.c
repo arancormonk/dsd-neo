@@ -289,6 +289,15 @@ p25p2_mac_telephone_voice_identity_segment(const unsigned long long mac[24], con
     return 1;
 }
 
+/* The home of the SUID whose WACN starts at MAC octet @p pos (WACN 20 bits, System ID 12 bits) into @p out. */
+static void
+p25p2_mac_voice_identity_suid(const unsigned long long mac[24], int pos, struct p25p2_mac_voice_identity* out) {
+    out->has_suid = 1;
+    out->suid_wacn = (uint32_t)((p25p2_mac_octet(mac, pos) << 12) | (p25p2_mac_octet(mac, pos + 1) << 4)
+                                | (p25p2_mac_octet(mac, pos + 2) >> 4));
+    out->suid_sysid = (uint32_t)(((p25p2_mac_octet(mac, pos + 2) & 0x0FU) << 8) | p25p2_mac_octet(mac, pos + 3));
+}
+
 static int
 p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
                                  struct p25p2_mac_voice_identity* out) {
@@ -303,6 +312,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         if (opcode == 0x21u) {
             out->src = (int)((p25p2_mac_octet(mac, pos + 11) << 16) | (p25p2_mac_octet(mac, pos + 12) << 8)
                              | p25p2_mac_octet(mac, pos + 13));
+            p25p2_mac_voice_identity_suid(mac, pos + 7, out);
         }
         out->is_group = 1;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
@@ -319,6 +329,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         if (opcode == 0x22u) {
             out->src = (int)((p25p2_mac_octet(mac, pos + 12) << 16) | (p25p2_mac_octet(mac, pos + 13) << 8)
                              | p25p2_mac_octet(mac, pos + 14));
+            p25p2_mac_voice_identity_suid(mac, pos + 8, out);
         }
         out->is_group = 0;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
@@ -359,12 +370,21 @@ p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], stru
     out->is_group = 1;
     out->svc_bits = -1;
     out->source_optional = 0;
+    out->has_suid = 0;
+    out->suid_wacn = 0U;
+    out->suid_sysid = 0U;
     if (p25p2_mac_parse(type, mac, &result) != 0) {
         return -1;
     }
 
     for (int i = 0; i < result.segment_count; i++) {
-        if (p25p2_mac_voice_identity_segment(mac, &result.segments[i], out)) {
+        /* The last voice user wins whole: a home SUID belongs only to the segment that sent it. */
+        struct p25p2_mac_voice_identity segment = *out;
+        segment.has_suid = 0;
+        segment.suid_wacn = 0U;
+        segment.suid_sysid = 0U;
+        if (p25p2_mac_voice_identity_segment(mac, &result.segments[i], &segment)) {
+            *out = segment;
             found = 1;
         }
     }

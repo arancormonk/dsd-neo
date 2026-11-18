@@ -242,10 +242,12 @@ p25p2_vpdu_voice_observable(const dsd_opts* opts, const dsd_state* state, int sl
 }
 
 /* A voice user observes the slot's canonical call itself; @p crc_ok is its MAC's CRC verdict, the provenance of the
- * identity it names (spec 2.19, p25_sm_note_call_identity()). */
+ * identity it names (spec 2.19, p25_sm_note_call_identity()), and @p source_nonlocal 1 when @p source is a home SUID's
+ * unit ID that is no local address of this reception (p25_sm_suid_home_is_local()). */
 static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                         uint64_t source, int service_options, p25_mac_pdu_type pdu_type, int crc_ok) {
+                         uint64_t source, int service_options, p25_mac_pdu_type pdu_type, int crc_ok,
+                         int source_nonlocal) {
     if (!p25p2_vpdu_voice_observable(opts, state, slot, kind, target)) {
         return 0;
     }
@@ -280,9 +282,10 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     };
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     if (began >= 0) {
-        p25_sm_note_call_identity(state, slot, (uint32_t)subscriber_source, (uint32_t)target,
-                                  kind == DSD_CALL_KIND_GROUP_VOICE,
-                                  crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U);
+        // The identity tracking reads the source field as received: a special address there is evidence (it names no
+        // radio, so the talker kept for display loses its verdict), never an omitted field.
+        p25_sm_note_call_identity(state, slot, (uint32_t)source, (uint32_t)target, kind == DSD_CALL_KIND_GROUP_VOICE,
+                                  crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U, source_nonlocal);
     }
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);
     if (began > 0) {
@@ -543,7 +546,7 @@ p25p2_vpdu_dispatch_grant_event(dsd_opts* opts, dsd_state* state, p25_sm_event_t
 static void
 p25p2_mac_handle_indiv(const p25p2_vpdu_ctx* ctx, int channel, int svc_bits, int target, int source,
                        p25_sm_grant_provenance_e provenance, int policy_encrypted_override, int policy_data_override,
-                       int dispatch) {
+                       int dispatch, int source_nonlocal) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     dsd_tg_policy_decision decision;
@@ -571,11 +574,13 @@ p25p2_mac_handle_indiv(const p25p2_vpdu_ctx* ctx, int channel, int svc_bits, int
     }
     if (policy_data_override > 0) {
         p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, svc_bits);
+        ev.source_nonlocal = (uint8_t)(source_nonlocal != 0);
         p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch, ctx->crc_ok);
     } else {
         p25_sm_event_t ev = provenance == P25_SM_GRANT_PROVENANCE_UPDATE
                                 ? p25_sm_ev_indiv_grant_update(channel, 0, target, source, svc_bits)
                                 : p25_sm_ev_indiv_grant(channel, 0, target, source, svc_bits);
+        ev.source_nonlocal = (uint8_t)(source_nonlocal != 0);
         p25p2_vpdu_dispatch_grant_event(opts, state, &ev, dispatch, ctx->crc_ok);
     }
 }
@@ -949,6 +954,14 @@ p25p2_vpdu_ua_unit(uint32_t id) {
 static int
 p25p2_vpdu_tdma_paging_count(const unsigned long long int* mac, int len_a) {
     return (int)((mac[2 + len_a] & 0x03U) + 1U);
+}
+
+/* 1 when the 56-bit SUID @p suid (WACN 20 bits, System ID 12, unit ID 24) names a unit whose home is not the
+ * reception's system: its unit ID is then no local address (p25_sm_suid_home_is_local()). */
+static int
+p25p2_vpdu_suid_nonlocal(const dsd_state* state, unsigned long long int suid) {
+    return !p25_sm_suid_home_is_local(state, (uint32_t)((suid >> 36) & 0xFFFFFULL),
+                                      (uint32_t)((suid >> 24) & 0xFFFULL));
 }
 
 static int
@@ -1569,7 +1582,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         if (dispatch != P25P2_DISPATCH_NONE) {
             p25p2_mac_handle_indiv(ctx, channel, svc, (int)target, /*src*/ 0,
                                    p25p2_grant_provenance((MAC[1 + len_a] & 0x01) != 0),
-                                   /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch);
+                                   /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch, 0);
         }
         if (opts->trunk_enable == 0 && p25p2_vpdu_active_target_matches(state, target)) {
             p25_set_playback_vc_freq(opts, state, (uint32_t)target, freq);
@@ -1625,7 +1638,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(ctx, channel, P25_SM_SVC_UNKNOWN, target, source,
                                opcode == 0x46 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
-                               policy_encrypted, /*policy_data*/ 0, dispatch);
+                               policy_encrypted, /*policy_data*/ 0, dispatch, 0);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -1673,7 +1686,9 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(ctx, channelt, P25_SM_SVC_UNKNOWN, target, source,
                                opcode == 0xC6 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
-                               policy_encrypted, /*policy_data*/ 0, dispatch);
+                               policy_encrypted, /*policy_data*/ 0, dispatch,
+                               // The VCH form names the source by its home SUID alone (TIA-102.BBAD-A Fig 33, 44).
+                               !p25_sm_suid_home_is_local(state, (uint32_t)source_wacn, (uint32_t)source_sys));
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -2009,7 +2024,8 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         if (dispatch != P25P2_DISPATCH_NONE) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
             p25p2_mac_handle_indiv(ctx, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
-                                   P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1, dispatch);
+                                   P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1, dispatch,
+                                   0);
         }
         if (opts->trunk_enable == 0) {
             if (p25p2_vpdu_active_target_matches(state, (uint64_t)(uint32_t)target)) {
@@ -3162,7 +3178,7 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok, 0);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3211,7 +3227,7 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok, 0);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3719,12 +3735,14 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
         int src = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
         int slot_idx = slot & 1;
         unsigned long long int src_suid = 0;
+        int src_nonlocal = 0;
 
         if (MAC[1 + len_a] == 0x21) {
             src_suid = (MAC[8 + len_a] << 48ULL) | (MAC[9 + len_a] << 40ULL) | (MAC[10 + len_a] << 32ULL)
                        | (MAC[11 + len_a] << 24ULL) | (MAC[12 + len_a] << 16ULL) | (MAC[13 + len_a] << 8ULL)
                        | (MAC[14 + len_a] << 0ULL);
             src = src_suid & 0xFFFFFF;
+            src_nonlocal = p25p2_vpdu_suid_nonlocal(state, src_suid);
         }
 
         DSD_FPRINTF(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot + 1, gr, src);
@@ -3736,7 +3754,7 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, " Group Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok, src_nonlocal);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -3778,12 +3796,14 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         int gr = (MAC[3 + len_a] << 16) | (MAC[4 + len_a] << 8) | MAC[5 + len_a];
         int src = (MAC[6 + len_a] << 16) | (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         unsigned long long int src_suid = 0;
+        int src_nonlocal = 0;
 
         if (MAC[1 + len_a] == 0x22) {
             src_suid = (MAC[9 + len_a] << 48ULL) | (MAC[10 + len_a] << 40ULL) | (MAC[11 + len_a] << 32ULL)
                        | (MAC[12 + len_a] << 24ULL) | (MAC[13 + len_a] << 16ULL) | (MAC[14 + len_a] << 8ULL)
                        | (MAC[15 + len_a] << 0ULL);
             src = src_suid & 0xFFFFFF;
+            src_nonlocal = p25p2_vpdu_suid_nonlocal(state, src_suid);
         }
 
         DSD_FPRINTF(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot + 1, gr, src);
@@ -3795,7 +3815,7 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok, src_nonlocal);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -4817,7 +4837,7 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
     p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
     if (p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target,
-                                 0U, svc, ctx->pdu_type, ctx->crc_ok)) {
+                                 0U, svc, ctx->pdu_type, ctx->crc_ok, 0)) {
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)target, 0U, 0U, 0, (uint16_t)svc,
@@ -5435,7 +5455,7 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
     if (dispatch != P25P2_DISPATCH_NONE) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(ctx, channel, P25_SM_SVC_UNKNOWN, target, source, P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
-                               policy_encrypted, /*policy_data*/ 1, dispatch);
+                               policy_encrypted, /*policy_data*/ 1, dispatch, 0);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -5459,7 +5479,7 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
             p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         }
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
-                                     (uint64_t)(uint32_t)source, -1, ctx->pdu_type, ctx->crc_ok)) {
+                                     (uint64_t)(uint32_t)source, -1, ctx->pdu_type, ctx->crc_ok, 0)) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
         }
@@ -5751,7 +5771,7 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
     if (dispatch != P25P2_DISPATCH_NONE) {
         p25p2_mac_handle_indiv(ctx, channelt, svc, target, source,
                                is_service_grant ? P25_SM_GRANT_PROVENANCE_ASSIGNMENT : P25_SM_GRANT_PROVENANCE_UPDATE,
-                               /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch);
+                               /*policy_encrypted*/ -1, /*policy_data*/ -1, dispatch, 0);
     }
 }
 

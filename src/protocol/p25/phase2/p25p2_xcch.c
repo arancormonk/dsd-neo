@@ -186,6 +186,8 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
                                                                       identity.is_group, identity.svc_bits)
                                 : p25_sm_ev_active_call(slot, identity.tg, identity.dst, identity.src,
                                                         identity.is_group, identity.svc_bits);
+        ev.source_nonlocal =
+            (uint8_t)(identity.has_suid && !p25_sm_suid_home_is_local(state, identity.suid_wacn, identity.suid_sysid));
         return p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
     }
     return p25_sm_emit_active(opts, state, slot);

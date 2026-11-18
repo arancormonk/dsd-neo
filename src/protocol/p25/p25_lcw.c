@@ -180,42 +180,79 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
 }
 
-/* A voice-user link control that passed a hard RS decode is checked provenance for its call's identity (issue #800,
- * spec 2.2): noted once slot 0's ACTIVE call carries exactly this target and source. A fixed-network ID in the source
- * field (p25_source_id_is_subscriber()) names no radio, so a position during that call stays anonymous. */
+/* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
+ * else slot 0's ACTIVE Phase 1 call, never an ended one. */
+typedef struct {
+    dsd_position_attribution_call view;    /* open 0: no call */
+    const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
+} p25_lcw_gps_call;
+
 static void
-p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, uint8_t group) {
-    if (!ctx->lc_hard || !p25_source_id_is_subscriber(source)) {
+p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
+        out->closing = ctx->closing;
         return;
     }
-    dsd_position_attribution_call call;
-    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &call) || !DSD_SYNC_IS_P25P1(call.protocol)
-        || call.target != (uint64_t)target) {
+    /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
+       rides on. */
+    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &out->view)
+        || !DSD_SYNC_IS_P25P1(out->view.protocol)) {
+        DSD_MEMSET(&out->view, 0, sizeof(out->view));
+    }
+}
+
+/* The voice-user evidence (issue #800, spec 2.2): p25_p1_lc_attribution, the record of who a later GPS link control
+ * of the call names. A hard-decoded voice user naming a radio by a complete local address records it once the call
+ * (the one p25_lcw_gps_call_get() names: a terminator's closing call, else slot 0's ACTIVE Phase 1 call) carries exactly
+ * this target and source. Fail closed: any other voice user takes the record away unless it only repeats the record's
+ * own source by a soft decode. That is one naming a special address in its source field (p25_source_id_is_subscriber():
+ * no radio), a source that is not a complete local address (@p source_local 0: the Source ID Extension Required flag,
+ * or LCO $4A), another radio by a soft decode, or a radio the call does not hold, whether or not the call keeps its
+ * earlier talker for display. A source of 0 with @p source_local omits the field and leaves the record, as the trunk
+ * state machine reads it. */
+static void
+p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, uint8_t group, int source_local) {
+    dsd_position_attribution* evidence = &ctx->state->p25_p1_lc_attribution;
+    if (source == 0U && source_local) {
         return;
     }
-    (void)dsd_position_attribution_learn(ctx->state, &call, source, target, group, DSD_POSITION_ATTRIBUTION_BIND_EPOCH,
-                                         &ctx->state->p25_p1_lc_attribution);
+    const int names_radio = source_local && p25_source_id_is_subscriber(source);
+    if (names_radio && ctx->lc_hard) {
+        p25_lcw_gps_call call;
+        p25_lcw_gps_call_get(ctx, &call);
+        if (call.view.open && call.view.target == (uint64_t)target
+            && dsd_position_attribution_learn(ctx->state, &call.view, source, target, group,
+                                              DSD_POSITION_ATTRIBUTION_BIND_EPOCH, evidence)) {
+            return;
+        }
+    } else if (names_radio && evidence->call_epoch != 0U && source == evidence->source) {
+        return;
+    }
+    dsd_position_attribution_clear(evidence);
 }
 
 /* A link control reaches the trunk state machine with its identity checked only when it was hard-decoded (spec 2.20); a
  * soft-erasure retry also succeeds, but its identity stays unchecked. The identity it names reaches the
- * trunk state machine with the verdict of that decode (spec 2.19). */
+ * trunk state machine with the verdict of that decode (spec 2.19), and a source that is not a complete local address
+ * (@p source_local 0: Source ID Extension Required, LCO $4A) as p25_sm_event_t::source_nonlocal, never checked. */
 static int
-p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group) {
+p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group, int source_local) {
     p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
     ev.identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
+    ev.source_nonlocal = (uint8_t)(source_local ? 0U : 1U);
     return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
 }
 
 static int
-p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, int source_local) {
     ctx->state->generic_talker_alias[0][0] = '\0';
     ctx->state->dmr_so = ctx->lc_svcopt;
 
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0)) {
+    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
@@ -226,7 +263,7 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
  * drop the previous talker's alias and note the affiliation, then start the voice. A rejected start (or a TDULC,
  * which starts none) returns before the LC's encrypted service option marks the crypto pending. */
 static int
-p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source) {
+p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->generic_talker_alias[0][0] = '\0';
 
@@ -237,7 +274,7 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1)) {
+    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
@@ -248,14 +285,15 @@ static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
     uint8_t res = (uint8_t)convert_bits_into_output(&ctx->bits[24], 7);
-    uint8_t explicit_src = ctx->bits[24];
+    /* S, Source ID Extension Required (TIA-102.AABF-D §7.3.1): octet 3 bit 0. */
+    uint8_t explicit_src = ctx->bits[31];
     uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
-    UNUSED2(res, explicit_src);
+    UNUSED(res);
 
-    (void)p25_lcw_accept_group_voice_user(ctx, group, source);
-    p25_lcw_note_checked_identity(ctx, group, source, 1U);
+    (void)p25_lcw_accept_group_voice_user(ctx, group, source, explicit_src == 0U);
+    p25_lcw_note_checked_identity(ctx, group, source, 1U, explicit_src == 0U);
 }
 
 static void
@@ -265,8 +303,8 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
-    p25_lcw_note_checked_identity(ctx, target, source, 0U);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source, 1);
+    p25_lcw_note_checked_identity(ctx, target, source, 0U, 1);
 }
 
 static void p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint16_t* groups,
@@ -498,7 +536,7 @@ p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
                 (double)timer / 10.0);
 
-    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0, 1);
     if (ctx->allow_voice_start && !identity_accepted) {
         return;
     }
@@ -553,8 +591,9 @@ p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
-    p25_lcw_note_checked_identity(ctx, target, src, 0U);
+    /* The Source ID is not a complete local address: S is always 1 (TIA-102.AABF-D §7.3.29). */
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src, 0);
+    p25_lcw_note_checked_identity(ctx, target, src, 0U, 0);
 }
 
 /* Group Affiliation Query (TIA-102.AABF-D §7.3.9): octets 1-2 reserved, Target Address octets 3-5, Source Address
@@ -891,28 +930,6 @@ p25_lcw_handle_unknown_standard(const p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unknown Format %02X MFID %02X SVC %02X", ctx->lc_format, ctx->lc_mfid, ctx->lc_svcopt);
 }
 
-/* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
- * else slot 0's ACTIVE Phase 1 call, never an ended one. */
-typedef struct {
-    dsd_position_attribution_call view;    /* open 0: no call */
-    const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
-} p25_lcw_gps_call;
-
-static void
-p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
-    DSD_MEMSET(out, 0, sizeof(*out));
-    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
-        out->closing = ctx->closing;
-        return;
-    }
-    /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
-       rides on. */
-    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &out->view)
-        || !DSD_SYNC_IS_P25P1(out->view.protocol)) {
-        DSD_MEMSET(&out->view, 0, sizeof(out->view));
-    }
-}
-
 /* The call's source as the Part A pairing compares it: 0 when none fits 32 bits. */
 static uint32_t
 p25_lcw_gps_call_source(const p25_lcw_gps_call* call) {
@@ -969,8 +986,8 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     // The layout is the standard Group Voice Channel User's, with the supergroup for the group.
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src);
-    p25_lcw_note_checked_identity(ctx, sg, src, 1U);
+    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src, ctx->bits[31] == 0U);
+    p25_lcw_note_checked_identity(ctx, sg, src, 1U, ctx->bits[31] == 0U);
 }
 
 static void

@@ -1298,13 +1298,16 @@ watchdog_event_rx_scope_covers(const dsd_event_rx_scope* x, const dsd_event_rx_s
     return x->scope.a == y->scope.a && x->scope.b == y->scope.b && x->identity_freq_hz == y->identity_freq_hz;
 }
 
-/* Whether a row heard under @p held learns more of where it was heard from a reacquired segment's @p seen: the row has
- * read none yet, or @p seen is a stronger identity of the same family (a NAC, then the WACN and SYSID learned after the
- * sync loss), or as strong and names everything @p held does and more. Another system's identity, or a weaker one,
- * leaves the row's. */
+/* Whether a row heard under @p held learns more of where it was heard from a reacquired segment's @p seen. Only on the
+ * reception the row was heard on, by the one reception rule (dsd_position_same_reception()) read on the two as they
+ * were, before anything is adopted: another tuned frequency or NAC discriminator, another system, or a side whose
+ * reception is unknown in another or an unknown generation is another reception, and a stronger identity never
+ * overrides it (issue #800, fail closed). On it, the row learns when it has read none yet, when @p seen is a stronger
+ * identity of the same family (a NAC, then the WACN and SYSID learned after the sync loss), or when it is as strong and
+ * names everything @p held does and more. Another system's identity, or a weaker one, leaves the row's. */
 static int
 watchdog_event_rx_scope_learns(const dsd_event_rx_scope* held, const dsd_event_rx_scope* seen) {
-    if (!seen->resolved) {
+    if (!seen->resolved || !watchdog_event_rx_scope_admits_position(held, seen)) {
         return 0;
     }
     if (!held->resolved) {
