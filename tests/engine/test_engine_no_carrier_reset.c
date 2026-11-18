@@ -4645,6 +4645,7 @@ test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
     rc |= expect_true("-fr: with slot 2's call on lane 0, its PI header's ALG ID, key ID and MI reach lane 0",
                       state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi != 0ULL
                           && state->payload_algidR == 0);
+    rc |= expect_true("-fr: the folded PI header leaves its burst's slot as it found it", state->currentslot == 1);
     char recorded[49] = {0};
     rc |= expect_true("-fr: lane 0's frame after a slot 2 PI header decrypts as on the dual-slot decoder",
                       dmr_hop_record_frame(opts, state, frame, recorded)
