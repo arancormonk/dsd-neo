@@ -50,7 +50,26 @@ WINDOWS_NOTICES = {
     "android/third_party/libusb/COPYING": "libusb-LGPL-2.1-or-later.txt",
     "packaging/windows/PThreads4W-LICENSE.txt": "PThreads4W-Apache-2.0.txt",
     "packaging/windows/PThreads4W-NOTICE.txt": "PThreads4W-NOTICE.txt",
+    "packaging/windows/PThreads4W-CONTRIBUTORS.txt": "PThreads4W-CONTRIBUTORS.txt",
+    "packaging/windows/libusb-COPYRIGHT.txt": "libusb-COPYRIGHT.txt",
 }
+# Holders named in the sources compiled into SoapySDR.dll and SoapySDRUtil.exe at SOAPY_SDR_SHA.
+SOAPYSDR_HOLDERS = ("Josh Blum", "Bastille Networks", "Coburn Wightman", "Nicholas Corgan")
+# Holders and attributions in the libusb 1.0.30 sources the Windows libusb-1.0.dll is built from
+# (msvc/libusb_dll.vcxproj), and in its AUTHORS file.
+LIBUSB_ATTRIBUTIONS = (
+    "Copyright © 2009-2012 Pete Batard <pete@akeo.ie>",
+    "Copyright © 2016-2018 Chris Dickens <christopher.a.dickens@gmail.com>",
+    "Copyright © 2014 Red Hat, Inc.", "Dmitry Fleytman <dmitry@daynix.com>", "Pavel Gurvich <pavel@daynix.com>",
+    "Copyright © 2001 Johannes Erdfelt <johannes@erdfelt.com>", "Copyright © 2007-2009 Daniel Drake <dsd@gentoo.org>",
+    "Copyright © 2012-2023 Nathan Hjelm <hjelmn@cs.unm.edu>", "Copyright © 2019-2022 Google LLC. All rights reserved.",
+    "Copyright © 2012-2013 Peter Stuge <peter@stuge.se>", "Copyright © 2010 Michael Plante <michael.plante@gmail.com>",
+    "Copyright © 2013 Hans de Goede <hdegoede@redhat.com>", "Copyright © 2024 Sylvain Fasel <sylvain@sonatique.net>",
+    "Copyright © 2012-2013 RealVNC Ltd.", "With contributions from Michael Plante, Orin Eman et al.",
+    "Parts of this code adapted from libusb-win32-v1 by Stephan Meyer",
+    "HID Reports IOCTLs inspired from HIDAPI by Alan Ott, Signal 11 Software",
+    "Hash table functions adapted from glibc, by Ulrich Drepper et al.", "Major code testing contribution by Xiaofan Chen",
+    "Other contributors:")
 MIT_GRANT = "The above copyright notice and this permission notice shall be included"
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
 
@@ -197,18 +216,36 @@ class SoapyModulePackaging(unittest.TestCase):
                 for holder in holders:
                     self.assertIn(holder, notice)
 
+    def test_notices_name_every_soapysdr_libusb_and_pthreads4w_holder(self):
+        soapysdr = read("LICENSES/SoapySDR-COPYRIGHT.txt")
+        for holder in SOAPYSDR_HOLDERS:
+            self.assertIn(holder, soapysdr)
+        self.assertIn(self.pins["SOAPY_SDR_SHA"], soapysdr)
+        self.assertIn("This file has no copyright assigned and is placed in the Public Domain.", soapysdr)
+        libusb = read("packaging/windows/libusb-COPYRIGHT.txt")
+        for line in LIBUSB_ATTRIBUTIONS:
+            self.assertIn(line, libusb)
+        # The NOTICE shipped with PThreads4W names its contributors by pointing at this file.
+        self.assertIn("listed in the file\nCONTRIBUTORS included with this software", read("packaging/windows/PThreads4W-NOTICE.txt"))
+        self.assertIn("Ross Johnson", read("packaging/windows/PThreads4W-CONTRIBUTORS.txt"))
+        self.assertIn("licenses/SoapySDR-COPYRIGHT.txt",
+                      re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split())
+
     def test_legal_records(self):
         inventory = {c["id"]: c for c in json.loads(read("legal/components.json"))["components"]}
         expected = {
-            "soapysdr": (["linux", "windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt"]),
+            "soapysdr": (["linux", "windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt",
+                                                                            "LICENSES/SoapySDR-COPYRIGHT.txt"]),
             "soapy-airspy": (["windows"], "MIT", "SOAPY_AIRSPY_SHA", ["vcpkg-ports/soapy-airspy/copyright"]),
             "soapy-hackrf": (["windows"], "MIT", "SOAPY_HACKRF_SHA", ["vcpkg-ports/soapy-hackrf/copyright"]),
             "soapy-airspyhf": (["windows"], "MIT", "SOAPY_AIRSPYHF_SHA", ["vcpkg-ports/soapy-airspyhf/copyright"]),
             "libhackrf": (["windows"], "BSD-3-Clause", "HACKRF_SHA", ["vcpkg-ports/hackrf/copyright"]),
             "libairspyhf": (["windows"], "BSD-3-Clause", "AIRSPYHF_SHA", ["vcpkg-ports/airspyhf/copyright"]),
-            "windows-libusb": (["windows"], "LGPL-2.1-or-later", None, ["android/third_party/libusb/COPYING"]),
+            "windows-libusb": (["windows"], "LGPL-2.1-or-later", None, ["android/third_party/libusb/COPYING",
+                                                                         "packaging/windows/libusb-COPYRIGHT.txt"]),
             "pthreads4w": (["windows"], "Apache-2.0", None, ["packaging/windows/PThreads4W-LICENSE.txt",
-                                                             "packaging/windows/PThreads4W-NOTICE.txt"]),
+                                                             "packaging/windows/PThreads4W-NOTICE.txt",
+                                                             "packaging/windows/PThreads4W-CONTRIBUTORS.txt"]),
         }
         required = read("tools/legal_inventory.py")
         for ident, (platforms, license_id, pin, notices) in expected.items():
@@ -243,6 +280,7 @@ class SoapyModulePackaging(unittest.TestCase):
                 self.assertIn(f"    '{source}' = '{shipped}'\n", script)
                 self.assertIn(f"'licenses/{shipped}'", required)
         self.assertIn("'licenses/BSL-1.0.txt'", required)
+        self.assertIn("'licenses/SoapySDR-COPYRIGHT.txt'", required)
         self.assertIn("$expectedModules = @(" + ", ".join(f"'{m}'" for m in MODULE_FILES) + ")", script)
 
     def test_release_jobs_stage_and_verify(self):

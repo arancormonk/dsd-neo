@@ -30,7 +30,9 @@ Import-Module (Join-Path $PSScriptRoot 'release_tree_checks.psm1') -Force
 # the module folder is an error, so a dependency change cannot add a module unseen.
 $expectedModules = @('airspySupport.dll', 'airspyhfSupport.dll', 'HackRFSupport.dll')
 # Windows-only notices of the SoapySDR load path: the modules, the libraries they
-# need, and the libusb and PThreads4W those libraries load.
+# need, and the libusb and PThreads4W those libraries load (license texts and the
+# holders and contributors their sources name). SoapySDR's own notices come with the
+# legal component, from LICENSES/.
 $soapyNotices = [ordered]@{
     'vcpkg-ports/soapy-airspy/copyright' = 'SoapyAirspy-MIT.txt'
     'vcpkg-ports/soapy-hackrf/copyright' = 'SoapyHackRF-MIT.txt'
@@ -40,6 +42,8 @@ $soapyNotices = [ordered]@{
     'android/third_party/libusb/COPYING' = 'libusb-LGPL-2.1-or-later.txt'
     'packaging/windows/PThreads4W-LICENSE.txt' = 'PThreads4W-Apache-2.0.txt'
     'packaging/windows/PThreads4W-NOTICE.txt' = 'PThreads4W-NOTICE.txt'
+    'packaging/windows/PThreads4W-CONTRIBUTORS.txt' = 'PThreads4W-CONTRIBUTORS.txt'
+    'packaging/windows/libusb-COPYRIGHT.txt' = 'libusb-COPYRIGHT.txt'
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot '..') '..')).Path

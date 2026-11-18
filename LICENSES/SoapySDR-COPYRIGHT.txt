@@ -1,0 +1,95 @@
+SoapySDR (https://github.com/pothosware/SoapySDR) copyright notices, reproduced from the
+headers of the sources compiled into SoapySDR and SoapySDRUtil at commit
+1cf5a539a21414ff509ff7d0eedfc5fa8edb90c6 (release 0.8.1): lib/, include/SoapySDR/ and
+apps/SoapySDRUtil.cpp, apps/SoapySDRProbe.cpp and apps/SoapyRateTest.cpp. Every one of
+those files is under the Boost Software License 1.0 (SPDX-License-Identifier: BSL-1.0),
+whose text is BSL-1.0.txt.
+
+Copyright (c) 2016-2016 Bastille Networks
+    lib/Device.cpp
+    lib/DeviceC.cpp
+    include/SoapySDR/Device.h
+    include/SoapySDR/Device.hpp
+    include/SoapySDR/Version.h
+    apps/SoapySDRProbe.cpp
+Copyright (c) 2017-2017 Coburn Wightman
+    lib/ConverterRegistry.cpp
+Copyright (c) 2017-2018 Coburn Wightman
+    lib/DefaultConverters.cpp
+    include/SoapySDR/ConverterPrimitives.hpp
+    include/SoapySDR/ConverterRegistry.hpp
+Copyright (c) 2014-2014 Josh Blum
+    include/SoapySDR/Config.h
+    include/SoapySDR/Config.hpp
+Copyright (c) 2014-2015 Josh Blum
+    lib/NullDevice.cpp
+    lib/Logger.cpp
+    include/SoapySDR/Errors.h
+    include/SoapySDR/Logger.h
+    include/SoapySDR/Logger.hpp
+    include/SoapySDR/Registry.hpp
+Copyright (c) 2014-2016 Josh Blum
+    lib/VersionC.cpp
+    include/SoapySDR/Constants.h
+    include/SoapySDR/Version.hpp
+Copyright (c) 2014-2017 Josh Blum
+    lib/Types.cpp
+    lib/Version.in.cpp
+Copyright (c) 2014-2018 Josh Blum
+    lib/Factory.cpp
+    lib/Registry.cpp
+    lib/FactoryC.cpp
+    include/SoapySDR/Device.h
+Copyright (c) 2014-2019 Josh Blum
+    lib/Device.cpp
+    include/SoapySDR/Device.hpp
+Copyright (c) 2014-2020 Josh Blum
+    lib/TypesC.cpp
+    lib/ModulesC.cpp
+    lib/DeviceC.cpp
+    lib/TypeHelpers.hpp
+    include/SoapySDR/Modules.h
+    include/SoapySDR/Modules.hpp
+    include/SoapySDR/Types.h
+Copyright (c) 2014-2021 Josh Blum
+    lib/LoggerC.cpp
+    lib/Modules.in.cpp
+    include/SoapySDR/Types.hpp
+    include/SoapySDR/Version.h
+    apps/SoapySDRUtil.cpp
+Copyright (c) 2015-2015 Josh Blum
+    lib/Errors.cpp
+    lib/Formats.cpp
+    lib/TimeC.cpp
+    lib/ErrorsC.cpp
+    lib/FormatsC.cpp
+    include/SoapySDR/Errors.hpp
+    include/SoapySDR/Formats.h
+    include/SoapySDR/Formats.hpp
+    include/SoapySDR/Time.h
+    include/SoapySDR/Time.hpp
+Copyright (c) 2015-2017 Josh Blum
+    apps/SoapySDRProbe.cpp
+Copyright (c) 2015-2018 Josh Blum
+    lib/DefaultConverters.cpp
+    include/SoapySDR/ConverterRegistry.hpp
+Copyright (c) 2016-2017 Josh Blum
+    apps/SoapyRateTest.cpp
+Copyright (c) 2016-2020 Josh Blum
+    lib/ErrorHelpers.hpp
+Copyright (c) 2018-2018 Josh Blum
+    lib/ConverterRegistry.cpp
+Copyright (c) 2020 Nicholas Corgan
+    lib/ConvertersC.cpp
+    include/SoapySDR/Converters.h
+
+SoapySDRUtil built with MSVC (Windows) also compiles apps/msvc/getopt.h from mingw-w64,
+whose header reads:
+
+    DISCLAIMER
+    This file has no copyright assigned and is placed in the Public Domain.
+    This file is part of the mingw-w64 runtime package.
+    The mingw-w64 runtime package and its code is distributed in the hope that it
+    will be useful but WITHOUT ANY WARRANTY.  ALL WARRANTIES, EXPRESSED OR
+    IMPLIED ARE HEREBY DISCLAIMED.  This includes but is not limited to
+    warranties of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.

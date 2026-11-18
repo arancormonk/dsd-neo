@@ -561,7 +561,8 @@
       "name": "SoapySDR and SoapySDRUtil",
       "paths": [
         "vcpkg-ports/soapysdr/",
-        "LICENSES/BSL-1.0.txt"
+        "LICENSES/BSL-1.0.txt",
+        "LICENSES/SoapySDR-COPYRIGHT.txt"
       ],
       "distribution": [
         "binary"
@@ -573,15 +574,17 @@
       "license_declared": "BSL-1.0",
       "license_concluded": "BSL-1.0",
       "notices": [
-        "LICENSES/BSL-1.0.txt"
+        "LICENSES/BSL-1.0.txt",
+        "LICENSES/SoapySDR-COPYRIGHT.txt"
       ],
-      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR) and the Windows ZIP (SoapySDR.dll, plus SoapySDRUtil.exe from the soapysdr overlay's tools feature). SoapySDRUtil's MSVC getopt.h is the public-domain mingw-w64 file. The macOS DMG bundles Homebrew's build, which this record does not cover.",
+      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR) and the Windows ZIP (SoapySDR.dll, plus SoapySDRUtil.exe from the soapysdr overlay's tools feature). The BSL-1.0 text names no holder; SoapySDR-COPYRIGHT.txt lists every holder the compiled library and SoapySDRUtil sources name (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan) and SoapySDRUtil's public-domain MSVC getopt.h from mingw-w64. The macOS DMG bundles Homebrew's build, which this record does not cover.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-17",
       "notice_sha256": {
-        "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+        "LICENSES/BSL-1.0.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+        "LICENSES/SoapySDR-COPYRIGHT.txt": "e4a78d26416963f91128ea1b92d993571ac3fb0b797ac5cbf217f3c90a6ab598"
       },
       "pin": "SOAPY_SDR_SHA"
     },
@@ -724,7 +727,8 @@
       "id": "windows-libusb",
       "name": "libusb Windows build",
       "paths": [
-        "vcpkg.json"
+        "vcpkg.json",
+        "packaging/windows/libusb-COPYRIGHT.txt"
       ],
       "distribution": [
         "binary"
@@ -735,15 +739,17 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "notices": [
-        "android/third_party/libusb/COPYING"
+        "android/third_party/libusb/COPYING",
+        "packaging/windows/libusb-COPYRIGHT.txt"
       ],
-      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin), whose COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt. Corresponding source remains open (CORRESPONDING-SOURCE).",
+      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin). Its COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt; libusb-COPYRIGHT.txt, shipped as licenses/libusb-COPYRIGHT.txt, carries the holders and attributions of every source the Windows DLL is built from and the upstream AUTHORS file. Corresponding source remains open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-17",
       "notice_sha256": {
-        "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+        "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
+        "packaging/windows/libusb-COPYRIGHT.txt": "e2fa5c205ba163c0ef0a1252f8476e64eaf112d7d967fdb94d5770d5204f7dde"
       }
     },
     {
@@ -752,7 +758,8 @@
       "paths": [
         "vcpkg.json",
         "packaging/windows/PThreads4W-LICENSE.txt",
-        "packaging/windows/PThreads4W-NOTICE.txt"
+        "packaging/windows/PThreads4W-NOTICE.txt",
+        "packaging/windows/PThreads4W-CONTRIBUTORS.txt"
       ],
       "distribution": [
         "binary"
@@ -764,16 +771,18 @@
       "license_concluded": "Apache-2.0",
       "notices": [
         "packaging/windows/PThreads4W-LICENSE.txt",
-        "packaging/windows/PThreads4W-NOTICE.txt"
+        "packaging/windows/PThreads4W-NOTICE.txt",
+        "packaging/windows/PThreads4W-CONTRIBUTORS.txt"
       ],
-      "assessment": "pthreadVC3.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's pthreads port at the manifest baseline (PThreads4W 3.0.0, no project pin). Its LICENSE and NOTICE, from that release's archive, ship as licenses/PThreads4W-Apache-2.0.txt and licenses/PThreads4W-NOTICE.txt.",
+      "assessment": "pthreadVC3.dll in the Windows ZIP, which librtlsdr, libairspy, libhackrf and libairspyhf load; vcpkg's pthreads port at the manifest baseline (PThreads4W 3.0.0, no project pin). Its LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, ship as licenses/PThreads4W-Apache-2.0.txt, licenses/PThreads4W-NOTICE.txt and licenses/PThreads4W-CONTRIBUTORS.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-17",
       "notice_sha256": {
         "packaging/windows/PThreads4W-LICENSE.txt": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
-        "packaging/windows/PThreads4W-NOTICE.txt": "ab620b4fe865583cca883b258f728f7f2234802f7c1b8d74fdb6a4dd2642ae2c"
+        "packaging/windows/PThreads4W-NOTICE.txt": "ab620b4fe865583cca883b258f728f7f2234802f7c1b8d74fdb6a4dd2642ae2c",
+        "packaging/windows/PThreads4W-CONTRIBUTORS.txt": "effb91775c0046810206ca4b1fcd5e9cac856b99bb54db80bab0069d14ef5eca"
       }
     }
   ]

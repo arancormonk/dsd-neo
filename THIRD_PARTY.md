@@ -192,8 +192,8 @@ librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsd
 `packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`. The Windows release
 package also carries the notices of its SoapySDR load path (below): `licenses/SoapyAirspy-MIT.txt`,
 `licenses/SoapyHackRF-MIT.txt`, `licenses/SoapyAirspyHF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`,
-`licenses/libairspyhf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`,
-`licenses/PThreads4W-Apache-2.0.txt` and `licenses/PThreads4W-NOTICE.txt`.
+`licenses/libairspyhf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/libusb-COPYRIGHT.txt`,
+`licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and `licenses/PThreads4W-CONTRIBUTORS.txt`.
 
 Packages also carry `legal/`, the full notices in `LICENSES/` under `licenses/`,
 and the selected mbelib installation's documentation under `licenses/mbelib-neo/`.
@@ -208,10 +208,13 @@ The Windows release ZIP runs SoapySDR devices through modules it carries in `lib
 their libraries in `bin\`. Each is built by a vcpkg overlay in `vcpkg-ports/` from the commit and archive hash pinned
 in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
 
-- **SoapySDR** and **SoapySDRUtil** (Josh Blum and contributors, https://github.com/pothosware/SoapySDR) -
-  BSL-1.0; license text `LICENSES/BSL-1.0.txt`, installed as `licenses/BSL-1.0.txt`. The Windows ZIP and the AppImage
-  build the 0.8.1 release commit (`SOAPY_SDR_SHA`). The ZIP's `SoapySDRUtil.exe` comes from the `soapysdr` overlay's
-  `tools` feature; its MSVC `getopt.h` is mingw-w64's public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
+- **SoapySDR** and **SoapySDRUtil** (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan,
+  https://github.com/pothosware/SoapySDR) - BSL-1.0; license text `LICENSES/BSL-1.0.txt`, installed as
+  `licenses/BSL-1.0.txt`. The license text names no holder, so `LICENSES/SoapySDR-COPYRIGHT.txt`, installed as
+  `licenses/SoapySDR-COPYRIGHT.txt`, lists every copyright line of the sources the library and SoapySDRUtil are
+  compiled from. The Windows ZIP and the AppImage build the 0.8.1 release commit (`SOAPY_SDR_SHA`). The ZIP's
+  `SoapySDRUtil.exe` comes from the `soapysdr` overlay's `tools` feature; its MSVC `getopt.h` is mingw-w64's
+  public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
 - **SoapyAirspy** (Charles J. Cliffe, https://github.com/pothosware/SoapyAirspy) - MIT; release 0.2.1, built against
   the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. Notice
   `vcpkg-ports/soapy-airspy/copyright`, shipped as `licenses/SoapyAirspy-MIT.txt`.
@@ -232,8 +235,13 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   `vcpkg-ports/airspyhf/copyright`, shipped as `licenses/libairspyhf-BSD-3-Clause.txt`.
 - **libusb** (https://github.com/libusb/libusb) - LGPL-2.1-or-later; vcpkg's 1.0.30 port at the manifest baseline,
   `libusb-1.0.dll`, which librtlsdr, libairspy, libhackrf and libairspyhf load. Its COPYING is the one retained in
-  `android/third_party/libusb/COPYING`, shipped as `licenses/libusb-LGPL-2.1-or-later.txt`.
+  `android/third_party/libusb/COPYING`, shipped as `licenses/libusb-LGPL-2.1-or-later.txt`. The holders and
+  attributions in the headers of the sources that DLL is built from (Johannes Erdfelt, Daniel Drake, Nathan Hjelm,
+  Peter Stuge, Google LLC, Hans de Goede, Pete Batard, Chris Dickens, Michael Plante, RealVNC Ltd., Red Hat, Inc.,
+  Sylvain Fasel and others), and the upstream AUTHORS file, are kept in `packaging/windows/libusb-COPYRIGHT.txt` and
+  shipped as `licenses/libusb-COPYRIGHT.txt`.
 - **PThreads4W** (John E. Bossom and the Pthreads4w contributors, https://sourceforge.net/projects/pthreads4w/) -
   Apache-2.0; vcpkg's 3.0.0 port at the manifest baseline, `pthreadVC3.dll`, which the same libraries load. Its
-  LICENSE and NOTICE from that release's archive are kept in `packaging/windows/` and shipped as
-  `licenses/PThreads4W-Apache-2.0.txt` and `licenses/PThreads4W-NOTICE.txt`.
+  LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, are kept in
+  `packaging/windows/` and shipped as `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
+  `licenses/PThreads4W-CONTRIBUTORS.txt`.
