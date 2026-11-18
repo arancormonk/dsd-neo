@@ -29,6 +29,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -646,6 +647,70 @@ test_sender_network_labels(void) {
     session_close(&s);
 }
 
+/* Issue #800 (g62-r7): a whole SDS message under PID 10 in a BL-UDATA without its optional FCS, sent as a TM-SDU in
+ * two MAC fragments (EN 300 392-2 clause 23.4.3.1.1): a MAC-RESOURCE first fragment to ADDRESSED, then a MAC-END, both
+ * SCH/F blocks of timeslot 1. Heard on one reception, the rebuilt TM-SDU is the sender's report. When the receiver
+ * moved between the fragments -- a retune that left the TETRA state machine's fragment context standing (a trunk
+ * tuning generation step), or a received identity change -- the MAC-END continues nothing: no position, no notice, no
+ * -L row, whatever the colour code and timeslot. */
+static void
+test_mac_fragmented_report(void) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    const ttb_block cmce = sds_lip(1, SENDER_SSI, 0, 0, &lip);
+    ttb_block sdu = {0};
+    ttb_put(&sdu, 2u, 4); /* LLC PDU type 0010: BL-UDATA, no FCS */
+    ttb_put_bits(&sdu, cmce.bits, cmce.n);
+    const int first_bits = 64;
+    for (int run = 0; run < 3; run++) {
+        session s = session_open();
+        tetra_state_t* const ts = tetra_st(s.state);
+        ts->tdma_valid = 1;
+        ts->tn = 1;
+
+        ttb_block b = {0};
+        const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, ADDRESSED);
+        ttb_set(&b, start + 7, 63, 6); /* length indication 111111: first fragment */
+        ttb_resource_flags(&b, 0u);
+        ttb_put_bits(&b, sdu.bits, first_bits);
+        ttb_finish(&b, TTB_SCH_F_BITS, start + 2);
+        tetra_test_mac_logged(b.bits, b.n, 1, s.opts, s.state, s.log, sizeof s.log);
+        assert(ts->mac_frag[1].active);
+
+        if (run == 1) {
+            dsd_trunk_tuning_generation_advance(); /* a retune the TETRA state machine did not see */
+        } else if (run == 2) {
+            dsd_rxid_reset(s.state); /* the received identity moved */
+            dsd_rxid_note_tetra_cell(s.state, HOME_MCC, HOME_MNC, 25U);
+        }
+
+        b = (ttb_block){0};
+        const int end = ttb_end(&b);
+        ttb_put(&b, 0u, 1); /* channel allocation flag */
+        ttb_put_bits(&b, sdu.bits + first_bits, sdu.n - first_bits);
+        ttb_close_end(&b, end);
+        ttb_finish(&b, TTB_SCH_F_BITS, -1);
+        tetra_test_mac_logged(b.bits, b.n, 1, s.opts, s.state, s.log, sizeof s.log);
+
+        dsd_position_fix rec[2];
+        char lfile[512];
+        read_lfile(&s, lfile, sizeof lfile);
+        if (run == 0) {
+            assert(strstr(s.log, "src_SSI=4242 dst_SSI=257 short location report; LIP: 22.50000") != NULL);
+            assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].source_id == SENDER_SSI);
+            assert(notice_row(&s)->pos.valid == 1U && strstr(lfile, "\t00004242\t22.500000\t45.000000") != NULL);
+        } else {
+            assert(strstr(s.log, "TETRA SDS LIP") == NULL && strstr(s.log, "D-SDS-DATA") == NULL);
+            assert(!ts->mac_frag[1].active);
+            assert(feed_since(&s, 0, rec, 2) == 0 && lfile[0] == '\0');
+            for (int i = 0; i < 255; i++) {
+                const Event_History* any = &s.state->event_history_s[0].Event_History_Items[i];
+                assert(strstr(any->event_string, "SDS SRC: 4242") == NULL && any->pos.valid == 0U);
+            }
+        }
+        session_close(&s);
+    }
+}
+
 int
 main(void) {
     test_direct_with_and_without_fcs();
@@ -657,6 +722,7 @@ main(void) {
     test_concatenated_one_recipient();
     test_concatenated_first_part_pid();
     test_sender_network_labels();
+    test_mac_fragmented_report();
     DSD_FPRINTF(stdout, "TETRA_LIP: PASS\n");
     return 0;
 }

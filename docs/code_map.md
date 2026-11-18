@@ -2709,7 +2709,9 @@ suite runs under this compiler.
     sender's own MCC/MNC as the sender scope when sent.
   - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
     DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
-    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA concatenation) and pass it to admission (LRRP
+    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU
+    (`tetra_mac_fragment::origin`, which `tetra_mac_sdu::origin` carries to the MLE) and each TETRA concatenation, whose
+    first part keeps its own first fragment's) and pass it to admission (LRRP
     and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
     `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
     retune, target switch or reception change came in between. Such a report publishes nothing of its own under the
@@ -12882,13 +12884,18 @@ its SYSINFO names another location area, whose call identifiers may differ (clau
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
 timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
 timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
-first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). The first fragment
+captures the reception it came from (`dsd_position_origin_capture()`), and a MAC-FRAG or MAC-END heard under another
+one (a retune however made, the trunking state machine's Next Channel with no carrier boundary among them, a trunk-scan
+switch, a received identity change) drops the TM-SDU instead of continuing it (`fragment_continues()`, issue #800, fail
+closed), so nothing rebuilt from two receptions reaches the MLE. It is dropped
 after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
 `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
 a network change drops),
-`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot), `TETRA_LIP`
+(a LIP report in a TM-SDU whose fragments straddle a retune or identity change gives nothing),
 `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
 over).
