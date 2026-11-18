@@ -21,6 +21,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
 //first 24-bits of the larger scramble table
 enum { DSTAR_SLOW_DATA_SCRAMBLER_BITS = 24 };
@@ -365,7 +366,7 @@ dstar_aprs_text(const dstar_aprs_position* pos, char* out, size_t cap) {
     }
 }
 
-/* ---- What slow data is bound to (state.h dstar_sd_binding), and the only call it reaches ---- */
+/* ---- What slow data is bound to (dstar_sd_state.h dstar_sd_binding), and the only call it reaches ---- */
 
 /* The slot 0 call a checked header of the current transmission named (dsd_state::dstar_tx_call_epoch), or 0. The one
  * rule every use of the header's naming goes through: the name holds only on the reception the header was heard on
@@ -417,8 +418,8 @@ dstar_sd_bound_call(const dsd_state* state, const dstar_sd_binding* b, dsd_call_
  * field) has no checked source and reaches no row; the feed still takes it, anonymous.
  */
 static void
-dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {
-    const dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_dprs_assembly* a,
+                   const dstar_aprs_position* pos) {
     dsd_position_fix fix;
     dsd_position_fix_init(&fix);
     fix.kind = (uint8_t)DSD_POS_DSTAR_DPRS;
@@ -445,8 +446,7 @@ dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_posi
 /* A record through its CR: only a CRC-16/X.25 over the text after "$$CRCxxxx," (CR included) that equals the four
  * upper-case hex digits proves it, and only then is it evidence or a position. */
 static void
-dstar_dprs_complete(const dsd_opts* opts, dsd_state* state) {
-    const dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_complete(const dsd_opts* opts, dsd_state* state, const dstar_dprs_assembly* a) {
     /* Checked before the record counts as anything, evidence included: one assembled under another transmission,
        call, confirmation or reception proves nothing about this carrier. */
     if (!dstar_sd_binding_holds(state, &a->bind)) {
@@ -471,7 +471,7 @@ dstar_dprs_complete(const dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, " D-PRS (NO POSITION)");
         return;
     }
-    dstar_dprs_publish(opts, state, &pos);
+    dstar_dprs_publish(opts, state, a, &pos);
 }
 
 static void
@@ -481,8 +481,7 @@ dstar_dprs_reset(dstar_dprs_assembly* a) {
 
 /* A record starts at "$$CRC", under the binding its first byte (the hunt's) was captured with. */
 static void
-dstar_dprs_begin(dsd_state* state) {
-    dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_begin(dstar_dprs_assembly* a) {
     DSD_MEMCPY(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN);
     a->len = DSTAR_DPRS_TAG_LEN;
     a->collecting = 1U;
@@ -490,8 +489,7 @@ dstar_dprs_begin(dsd_state* state) {
 
 /* One GPS data byte while no record is being collected: the last five bytes are kept to find "$$CRC". */
 static void
-dstar_dprs_hunt(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
-    dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_hunt(const dsd_opts* opts, const dsd_state* state, dstar_dprs_assembly* a, uint8_t byte) {
     if (a->len == 0U) {
         dstar_sd_bind(opts, state, &a->bind);
     }
@@ -503,46 +501,44 @@ dstar_dprs_hunt(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
     }
     a->text[a->len++] = byte;
     if (a->len == DSTAR_DPRS_TAG_LEN && memcmp(a->text, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
-        dstar_dprs_begin(state);
+        dstar_dprs_begin(a);
     }
 }
 
 /* A record grew past DSTAR_DPRS_RECORD_MAX: it is dropped, but its last bytes may be the start of the next record's
  * "$$CRC" (its CR was lost), so they and @p byte go on to the hunt for it. */
 static void
-dstar_dprs_overflow(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
-    dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_overflow(const dsd_opts* opts, const dsd_state* state, dstar_dprs_assembly* a, uint8_t byte) {
     uint8_t tail[DSTAR_DPRS_TAG_LEN - 1];
     DSD_MEMCPY(tail, a->text + a->len - sizeof(tail), sizeof(tail));
     dstar_dprs_reset(a);
     for (size_t i = 0U; i < sizeof(tail); i++) {
-        dstar_dprs_hunt(opts, state, tail[i]);
+        dstar_dprs_hunt(opts, state, a, tail[i]);
     }
-    dstar_dprs_hunt(opts, state, byte);
+    dstar_dprs_hunt(opts, state, a, byte);
 }
 
 /* One GPS data byte: until "$$CRC" is seen, the last five bytes are kept to find it; then the record grows through its
  * CR, or is dropped once longer than DSTAR_DPRS_RECORD_MAX. A "$$CRC" inside a record means the one collected lost
  * its CR: the new record starts there, so a lost CR costs only its own record, at the bound too. */
 static void
-dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
-    dstar_dprs_assembly* a = &state->dstar_dprs;
+dstar_dprs_push(const dsd_opts* opts, dsd_state* state, dstar_dprs_assembly* a, uint8_t byte) {
     if (!a->collecting) {
-        dstar_dprs_hunt(opts, state, byte);
+        dstar_dprs_hunt(opts, state, a, byte);
         return;
     }
     if (a->len >= DSTAR_DPRS_RECORD_MAX) {
-        dstar_dprs_overflow(opts, state, byte);
+        dstar_dprs_overflow(opts, state, a, byte);
         return;
     }
     a->text[a->len++] = byte;
     if (byte == 0x0DU) {
-        dstar_dprs_complete(opts, state);
+        dstar_dprs_complete(opts, state, a);
         dstar_dprs_reset(a);
     } else if (a->len >= 2U * DSTAR_DPRS_TAG_LEN
                && memcmp(a->text + a->len - DSTAR_DPRS_TAG_LEN, "$$CRC", DSTAR_DPRS_TAG_LEN) == 0) {
         DSD_FPRINTF(stderr, " D-PRS (NO CR)");
-        dstar_dprs_begin(state);
+        dstar_dprs_begin(a);
     }
 }
 
@@ -551,7 +547,11 @@ dstar_dprs_push(const dsd_opts* opts, dsd_state* state, uint8_t byte) {
  * dropped first. */
 static void
 dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw, int first) {
-    dstar_dprs_assembly* a = &state->dstar_dprs;
+    dstar_sd_state* sd = dstar_sd_st(state);
+    if (sd == NULL) {
+        return; /* no assembly: no record */
+    }
+    dstar_dprs_assembly* a = &sd->dprs;
     if (a->len != 0U && !dstar_sd_binding_holds(state, &a->bind)) {
         dstar_dprs_reset(a);
     }
@@ -566,7 +566,7 @@ dstar_sd_collect_gps(const dsd_opts* opts, dsd_state* state, const uint8_t* raw,
             continue;
         }
         for (int i = 1; i <= count; i++) {
-            dstar_dprs_push(opts, state, block[i]);
+            dstar_dprs_push(opts, state, a, block[i]);
         }
     }
 }
@@ -598,9 +598,8 @@ dstar_sd_text_block(const uint8_t* raw, int b, unsigned* place) {
  * missed among them) starts from an empty message, so no character of the last one is shown with it. Returns 1 when
  * the superframe held a text block. */
 static int
-dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw, int first) {
+dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, dstar_text_assembly* t, const uint8_t* raw, int first) {
     char* const msg = state->dstar_txt;
-    dstar_text_assembly* t = &state->dstar_text;
     int any = 0;
     for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
         unsigned place = 0U;
@@ -643,12 +642,11 @@ dstar_sd_collect_text(const dsd_opts* opts, dsd_state* state, const uint8_t* raw
 }
 
 static void
-dstar_sd_handle_text_message(dsd_state* state) {
+dstar_sd_handle_text_message(dsd_state* state, const dstar_text_assembly* t) {
     DSD_FPRINTF(stderr, " TEXT: %s", state->dstar_txt);
     // The display keeps the text either way. The text carries no check of its own: the history row takes it only when
     // every block of it, its first (place 0) among them, was heard while the transmission was confirmed
     // (dstar_confirm.h) under one binding, and only through the call a checked header of that transmission named.
-    const dstar_text_assembly* t = &state->dstar_text;
     dsd_call_snapshot call;
     if (t->bind.confirmed != 0U && (t->places & 1U) != 0U && dstar_sd_binding_holds(state, &t->bind)
         && dstar_sd_bound_call(state, &t->bind, &call)) {
@@ -726,9 +724,11 @@ dstar_sd_print_unknown(const uint8_t* raw, int first) {
 static void
 dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx, int header) {
     const int first = dstar_sd_first_block(header);
-    const int text = dstar_sd_collect_text(opts, state, ctx->payload, first);
+    /* Without the slow-data state (it could not be created) no message is assembled. */
+    dstar_sd_state* sd = dstar_sd_st(state);
+    const int text = sd != NULL && dstar_sd_collect_text(opts, state, &sd->text, ctx->payload, first);
     if (text) {
-        dstar_sd_handle_text_message(state);
+        dstar_sd_handle_text_message(state, &sd->text);
     }
     int gps = 0;
     int other = 0;

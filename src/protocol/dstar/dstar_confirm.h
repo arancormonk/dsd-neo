@@ -58,9 +58,9 @@ void dstar_confirm_reset(dsd_state* state);
 
 /**
  * @brief A transmission boundary (an RF header, decoded or not, or the carrier's end): the next transmission begins.
- * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets (state.h
- * dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS record and the text
- * message being assembled. Confirmation is left to dstar_confirm_reset().
+ * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets
+ * (dstar_sd_state.h dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS
+ * record and the text message being assembled. Confirmation is left to dstar_confirm_reset().
  */
 void dstar_tx_begin(dsd_state* state);
 

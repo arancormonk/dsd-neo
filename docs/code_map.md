@@ -2492,7 +2492,8 @@ suite runs under this compiler.
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these seven.
+  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`, issue #800). `CORE_STATE_EXT` pins these eight.
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -2733,7 +2734,8 @@ suite runs under this compiler.
     the rest). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
-    `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
+    `dstar_dprs_assembly`; both slow-data assemblies live in the D-STAR state extension, slot 30, `dstar_sd_st()`,
+    created at first use, never in public `dsd_state`; if it cannot be created no record or message is assembled) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
     its own mini-header, except a rebroadcast header's own nine blocks (`dstar_sd_first_block()`): the header CRC covers
     their octets but not their mini-headers, so none of them is ever text or GPS data, whatever type its mini-header
     names; the block after them is read like any other. Only GPS blocks (0x3n) feed the record and the `GPS DATA:`
@@ -2741,7 +2743,7 @@ suite runs under this compiler.
     of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
-    rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
+    rule (fail closed, `dstar_sd_binding` in `dstar_sd_state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
     `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
     (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
@@ -2792,8 +2794,8 @@ suite runs under this compiler.
     Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
-    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, a D-PRS record begun in a
-    call, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
+    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, the call a D-STAR header
+    named, `dstar_tx_call_epoch`, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's

@@ -33,6 +33,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
 /* The published vector: CRC-16/X.25 of the text after the comma, CR included, is 9E3E. */
 static const char k_vector[] = "$$CRC9E3E,N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";
@@ -88,6 +89,13 @@ rig_close(rig* r) {
     free(r->history);
     free(r->state);
     free(r->opts);
+}
+
+/* Whether a D-PRS record is being collected (the D-STAR slow-data state extension, created empty on first use). */
+static int
+dprs_collecting(const rig* r) {
+    const dstar_sd_state* sd = dstar_sd_st(r->state);
+    return sd != NULL && sd->dprs.collecting != 0U;
 }
 
 /* Open a D-STAR voice call as a decoded RF header leaves it (dstar_header_decode_soft() hands its fields to
@@ -203,6 +211,30 @@ test_vector_position(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9): the slow-data assemblies live in the D-STAR protocol's state extension, not in public dsd_state:
+ * a state that never heard D-STAR slow data holds none, the first superframe creates them, and the state's extension
+ * cleanup frees them, so the next run's first superframe starts from empty assemblies. */
+static void
+test_assemblies_in_protocol_extension(void) {
+    rig r;
+    rig_open(&r);
+    expect_int("no slow data, no extension", dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL,
+               0);
+    open_call(&r, "N0CALL");
+    send_gps(&r, k_vector, 25U, 0);
+    expect_int("slow data creates the extension",
+               dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL, 1);
+    expect_int("record collected there", dprs_collecting(&r), 1);
+    dsd_state_ext_free_all(r.state);
+    expect_int("extension freed with the state's extensions",
+               dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL, 0);
+    expect_int("feed restarts", dsd_position_feed_start(r.state), 0);
+    send_gps(&r, k_vector + 25U, strlen(k_vector) - 25U, 0);
+    dsd_position_fix f[2];
+    expect_int("the last run's half record completes nothing", feed_records(&r, f, 2U), 0);
+    rig_close(&r);
+}
+
 /* One changed character, or a CRC written without the CR: no position, no evidence. */
 static void
 test_crc_mismatch(void) {
@@ -232,7 +264,7 @@ test_literal_alone_is_no_evidence(void) {
     rig_open(&r);
     send_gps(&r, "$$CRC1234,N0CALL>API51,DSTAR*:!22", 33U, 0);
     expect_int("literal alone does not confirm", r.state->dstar_confirmed, 0);
-    expect_int("record still being collected", r.state->dstar_dprs.collecting, 1);
+    expect_int("record still being collected", dprs_collecting(&r), 1);
     rig_close(&r);
 }
 
@@ -322,7 +354,7 @@ test_bounded_record(void) {
     DSD_MEMSET(longrec, 'x', sizeof(longrec));
     DSD_MEMCPY(longrec, "$$CRC0000,", 10U);
     send_gps(&r, longrec, sizeof(longrec), 0);
-    expect_int("over-long record dropped", r.state->dstar_dprs.collecting, 0);
+    expect_int("over-long record dropped", dprs_collecting(&r), 0);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     dsd_position_fix f[2];
     expect_int("next record decodes", feed_records(&r, f, 2U), 1);
@@ -338,7 +370,7 @@ test_record_bound_to_its_call(void) {
     open_call(&r, "N0CALL");
     const size_t half = 25U;
     send_gps(&r, k_vector, half, 0);
-    expect_int("record half collected", r.state->dstar_dprs.collecting, 1);
+    expect_int("record half collected", dprs_collecting(&r), 1);
     open_call(&r, "N1CALL");
     const uint64_t rev = dsd_position_last_rev();
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
@@ -359,7 +391,7 @@ test_record_bound_to_its_call(void) {
     open_call(&r, "N0CALL");
     send_gps(&r, k_vector, half, 0);
     dstar_confirm_reset(r.state);
-    expect_int("carrier end clears the record", r.state->dstar_dprs.collecting, 0);
+    expect_int("carrier end clears the record", dprs_collecting(&r), 0);
     rig_close(&r);
 }
 
@@ -427,7 +459,7 @@ test_malformed_records(void) {
     DSD_MEMSET(bytes, 0x66, sizeof(bytes));
     bytes[0] = 0x36U; /* six data bytes: no such block */
     send_superframe(&r, bytes);
-    expect_int("oversized block drops the record", r.state->dstar_dprs.collecting, 0);
+    expect_int("oversized block drops the record", dprs_collecting(&r), 0);
     uint64_t rev = dsd_position_last_rev();
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
     expect_int("dropped record admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
@@ -612,7 +644,7 @@ test_reception_change_before_cr_proves_nothing(void) {
     rig_open(&r);
     open_call(&r, "N0CALL");
     send_gps(&r, k_vector, strlen(k_vector) - 1U, 0);
-    expect_int("record waits for its CR", r.state->dstar_dprs.collecting, 1);
+    expect_int("record waits for its CR", dprs_collecting(&r), 1);
     dsd_trunk_tuning_generation_advance();
     const uint64_t rev = dsd_position_last_rev();
     send_gps(&r, "\r", 1U, 0);
@@ -941,6 +973,7 @@ test_missed_first_block_starts_a_new_message(void) {
 int
 main(void) {
     test_vector_position();
+    test_assemblies_in_protocol_extension();
     test_crc_mismatch();
     test_literal_alone_is_no_evidence();
     test_time_stamps();

@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_sd_state.h"
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -566,11 +568,13 @@ test_every_header_forgets_a_half_collected_dprs_record(void) {
         opts.pulse_digi_out_channels = 1;
         reset_counters();
         header_decode_soft_result = verified;
-        state.dstar_dprs.collecting = 1U;
-        state.dstar_dprs.len = 12U;
-        state.dstar_dprs.bind.call_epoch = 7U;
-        DSD_MEMCPY(state.dstar_dprs.text, "$$CRC9E3E,N0", 12U);
-        state.dstar_text.places = 1U;
+        dstar_sd_state* sd = dstar_sd_st(&state);
+        assert(sd != NULL);
+        sd->dprs.collecting = 1U;
+        sd->dprs.len = 12U;
+        sd->dprs.bind.call_epoch = 7U;
+        DSD_MEMCPY(sd->dprs.text, "$$CRC9E3E,N0", 12U);
+        sd->text.places = 1U;
         state.dstar_tx_seq = 3U;
         state.dstar_tx_call_epoch = 7U;
 
@@ -578,10 +582,11 @@ test_every_header_forgets_a_half_collected_dprs_record(void) {
         /* The stub decode names no callsign, so neither outcome names the transmission. */
         assert(state.dstar_tx_seq == 4U);
         assert(state.dstar_tx_call_epoch == 0U);
-        assert(state.dstar_dprs.collecting == 0U);
-        assert(state.dstar_dprs.len == 0U);
-        assert(state.dstar_dprs.bind.call_epoch == 0U);
-        assert(state.dstar_text.places == 0U);
+        assert(sd->dprs.collecting == 0U);
+        assert(sd->dprs.len == 0U);
+        assert(sd->dprs.bind.call_epoch == 0U);
+        assert(sd->text.places == 0U);
+        dsd_state_ext_free_all(&state);
     }
     header_decode_soft_result = 1;
 }

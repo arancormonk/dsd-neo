@@ -6,6 +6,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -33,8 +34,7 @@ dstar_tx_begin(dsd_state* state) {
     state->dstar_tx_seq++;
     state->dstar_tx_call_epoch = 0U;
     DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
-    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
-    DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
+    dstar_sd_state_clear(state);
 }
 
 void
@@ -44,8 +44,7 @@ dstar_tx_unname(dsd_state* state) {
     }
     state->dstar_tx_call_epoch = 0U;
     DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
-    DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
-    DSD_MEMSET(&state->dstar_text, 0, sizeof(state->dstar_text));
+    dstar_sd_state_clear(state);
 }
 
 void
