@@ -7349,7 +7349,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the
   receive thread and the mark both take datagrams from the non-blocking socket only under the ring's lock,
   `udp_input_take_queued_locked()`, so a datagram queued in the socket while the thread was descheduled, or one the
-  thread is moving, counts as before the mark, and one that arrives after it does not; `IO_UDP_INPUT_INGRESS`); each
+  thread is moving, counts as before the mark; `IO_UDP_INPUT_INGRESS`). Both drains are bounded, as a sender may keep
+  the socket readable faster than it is drained: the thread lets the lock go after each batch of 64 datagrams, and the
+  mark stops once the datagrams it took are charged past the socket's receive buffer (`SO_RCVBUF` as granted, each
+  datagram at its size and a byte: by then every datagram queued at the mark is in the ring, so the cutoff never falls
+  before the mark) or after 250 ms (`test_endless_sender_holds_no_lock()`); each
   count is safe to read from any thread, and each queue detaches before it is freed. The mark holds that count, the attachment it was read on and the time. The queue's drop discards up to the
   count, and only on that attachment (`dsd_input_backlog_cut_applies()`): `dsd_pcm_stream_discard_through()` and the
   `udp_discard_through` and `tcp_discard_through` network-audio hooks. A device input attaches nothing, since neither

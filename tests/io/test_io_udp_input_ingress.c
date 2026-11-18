@@ -10,18 +10,24 @@
  * the old channel's datagram waits in the socket when the mark is taken; the new channel's, sent after the mark, is
  * read after the drop. The hold is set before the input starts, so the thread never waits on the socket with it set
  * (a thread waiting there would wake for the datagram and take it).
+ *
+ * A sender that never lets the socket go quiet (udp_input_test_endless_socket()) holds no lock for long: the decoder
+ * still reads, a mark still returns, and the input still stops.
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "udp_input_test_support.h"
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -148,6 +154,81 @@ test_mark_counts_queued_datagrams(void) {
     return rc;
 }
 
+/* What the endless sender's case does on a thread of its own, so a lock held without end shows as a case that never
+   finishes: a sample read, a mark taken and the input stopped, each while the socket never goes quiet. */
+typedef struct {
+    dsd_opts* opts;
+    atomic_int read_one;
+    atomic_int marked;
+    atomic_int stopped;
+} endless_case;
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    endless_case_run(void* arg) {
+    endless_case* c = (endless_case*)arg;
+    int16_t s = 1;
+    for (int tries = 0; tries < 500 && !atomic_load(&c->read_one); tries++) {
+        if (udp_input_read_sample_wait(c->opts, &s, 20U) == 1) {
+            atomic_store(&c->read_one, 1);
+        }
+    }
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    atomic_store(&c->marked, 1);
+    udp_input_stop(c->opts);
+    atomic_store(&c->stopped, 1);
+    DSD_THREAD_RETURN;
+}
+
+/* Issue #834: a sender that keeps the socket readable faster than it is drained never keeps the ring's lock taken: the
+   receive thread lets it go between batches, so the decoder reads and a stop gets through, and a backlog mark drains
+   for a bounded budget. Before, the drain ran while the socket held anything, so with such a sender nothing else ever
+   took the lock again. A case that has not finished after 10 s ends the test. */
+static int
+test_endless_sender_holds_no_lock(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "udp_input_start failed\n");
+        return 1;
+    }
+    const int port = bound_port(opts.udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    int rc = expect("a sender for the endless case", tx != DSD_INVALID_SOCKET && port > 0);
+    const int16_t wake[] = {1};
+    udp_input_test_endless_socket(1);
+    /* The first real datagram wakes the receive thread, which then finds the socket never empty. */
+    rc |= expect("the waking datagram sent", rc == 0 && send_samples(tx, port, wake, 1U) == 0);
+    static endless_case c;
+    c.opts = &opts;
+    atomic_store(&c.read_one, 0);
+    atomic_store(&c.marked, 0);
+    atomic_store(&c.stopped, 0);
+    dsd_thread_t th;
+    if (rc != 0 || dsd_thread_create(&th, endless_case_run, &c) != 0) {
+        udp_input_test_endless_socket(0);
+        udp_input_stop(&opts);
+        return 1;
+    }
+    for (int waited = 0; waited < 1000 && !atomic_load(&c.stopped); waited++) {
+        dsd_sleep_ms(10U);
+    }
+    if (!atomic_load(&c.stopped)) {
+        DSD_FPRINTF(stderr, "FAIL: with a sender that never stops, the case is stuck after 10 s (read %d, marked %d)\n",
+                    atomic_load(&c.read_one), atomic_load(&c.marked));
+        exit(1); /* the stuck thread holds the input: nothing can be cleaned up */
+    }
+    (void)dsd_thread_join(th);
+    udp_input_test_endless_socket(0);
+    rc |= expect("the decoder read a sample while the sender went on", atomic_load(&c.read_one));
+    (void)dsd_socket_close(tx);
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -155,7 +236,8 @@ main(void) {
         DSD_FPRINTF(stderr, "dsd_socket_init failed\n");
         return 1;
     }
-    const int rc = test_mark_counts_queued_datagrams();
+    int rc = test_mark_counts_queued_datagrams();
+    rc |= test_endless_sender_holds_no_lock();
     dsd_socket_cleanup();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "IO_UDP_INPUT_INGRESS: OK\n");

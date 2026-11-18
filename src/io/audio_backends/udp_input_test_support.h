@@ -20,6 +20,10 @@ void udp_input_test_fail_thread_starts(int count);
    thread already waiting on the socket when it is set wakes for the next datagram and takes it. */
 void udp_input_test_hold_receive(int hold);
 
+/* While @p endless is set, the socket reads as a sender that never stops: every read takes a datagram of silence, as a
+   producer that keeps the socket readable faster than it is drained. */
+void udp_input_test_endless_socket(int endless);
+
 #ifdef __cplusplus
 }
 #endif
