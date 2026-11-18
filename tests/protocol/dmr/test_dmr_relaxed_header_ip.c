@@ -321,7 +321,7 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     g_utf8_first_byte = input ? input[0] : 0U;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
@@ -330,6 +330,7 @@ dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     // As the real decoder leaves the slot text after a report it did not admit (issue #800).
     DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s",
                  "NMEA / LOCN; Source: 1 Position suppressed (CRC ERR);");
+    return 0;
 }
 
 static void

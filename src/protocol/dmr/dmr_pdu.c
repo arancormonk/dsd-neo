@@ -239,7 +239,8 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
             // An admitted LOCN position is staged for this packet's notice by dmr_locn() itself. It reads the user
             // data only: the header's bit padding fills the end of the last octet(s), and a digit it completes was
             // never sent.
-            dmr_locn(opts, state, dmr_sd_pdu_whole_user_octets(len, state->data_header_bit_padding[slot]), dmr_pdu);
+            (void)dmr_locn(opts, state, dmr_sd_pdu_whole_user_octets(len, state->data_header_bit_padding[slot]),
+                           dmr_pdu);
         }
     } else {
         uint16_t bounded_len = len;
@@ -1874,11 +1875,14 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, const dmr_lrrp_par
     velstr[0] = '\0';
     degstr[0] = '\0';
     dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &fix, admitted != DSD_POSITION_REFUSED, ctx);
-    if (best->have_speed) {
-        DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", dmr_lrrp_number_value(&best->speed) * 3.6);
+    // The summary is the packet's notice text: the motion of an admitted report only, as admission left it (a value
+    // out of range unknown), never a failed, refused or incomplete report's (issue #800, fail closed). The explicit
+    // payload diagnostics (dmr_lrrp_print_details() under -Z) keep the rest.
+    if (admitted != DSD_POSITION_REFUSED && fix.speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) {
+        DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", (double)fix.speed_dkmh / 10.0);
     }
-    if (best->have_heading) {
-        DSD_SNPRINTF(degstr, sizeof degstr, " %d%s  ", (int)best->heading_units * 2, dsd_degrees_glyph());
+    if (admitted != DSD_POSITION_REFUSED && fix.heading_ddeg != DSD_POSITION_HEADING_UNKNOWN) {
+        DSD_SNPRINTF(degstr, sizeof degstr, " %u%s  ", (unsigned)(fix.heading_ddeg / 10U), dsd_degrees_glyph());
     }
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
     if (admitted == DSD_POSITION_REFUSED) {
@@ -2145,10 +2149,10 @@ dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const d
     }
 }
 
-void
+int
 dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
     if (DMR_PDU == NULL) {
-        return;
+        return 0;
     }
     const uint8_t slot = (uint8_t)(state->currentslot & 1);
     const uint32_t source = (uint32_t)state->dmr_lrrp_source[slot];
@@ -2156,7 +2160,7 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
     DSD_MEMSET(&d, 0, sizeof(d));
     dmr_locn_parse_fields(DMR_PDU, len, &d);
     if (!(d.lat && d.lon)) {
-        return;
+        return 0;
     }
 
     const uint8_t scope = state->event_crc_invalid[slot];
@@ -2177,10 +2181,12 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
     }
     dmr_locn_emit(state, slot, source, &d, &fix, withheld,
                   dsd_gps_report_content_printable(scope == 0U, opts->payload));
-    if (withheld == NULL) {
-        (void)dsd_event_stage_position(state, slot, &fix, state->dmr_lrrp_gps[slot]);
-        dmr_pdu_write_location_row(opts, &fix);
+    if (withheld != NULL) {
+        return 0;
     }
+    (void)dsd_event_stage_position(state, slot, &fix, state->dmr_lrrp_gps[slot]);
+    dmr_pdu_write_location_row(opts, &fix);
+    return 1;
 }
 
 static inline void

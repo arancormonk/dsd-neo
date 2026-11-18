@@ -936,6 +936,45 @@ test_mnis_unchecked_trailer(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* Issue #800, fail closed: a checked MNIS LOCN report's text is a position in any form, so the console shows it only
+ * once its position was admitted, or with -Z. A clean packet whose position admission refuses (0, 0) prints only that
+ * the position was suppressed. */
+static int
+test_mnis_locn_text_needs_admission(dsd_opts* opts, dsd_state* state) {
+    static const char* const reports[] = {"A123456070826N0000.0000E00000.0000", "A123456070826N2230.0000E04500.0000"};
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (size_t r = 0; r < 2U; ++r) {
+        for (int payload = 0; payload <= 1; ++payload) {
+            opts->payload = payload;
+            uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+            DSD_MEMCPY(pdu + 7, reports[r], strlen(reports[r]));
+            dsd_test_capture_stderr cap;
+            char out[8192];
+            out[0] = '\0';
+            if (dsd_test_capture_stderr_begin(&cap, "dmr_locn_text_admission") != 0) {
+                return 1;
+            }
+            send_mnis_packet(opts, state, pdu, 3U, 1U, 0);
+            dsd_test_capture_stderr_end(&cap);
+            if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+                return 1;
+            }
+            const int shows = strstr(out, "LOCN Text:") != NULL;
+            const int want = r == 1U || payload == 1;
+            if (shows != want || (r == 0U && strstr(out, "Position suppressed (not usable)") == NULL)) {
+                DSD_FPRINTF(stderr, "\nLOCN %s, -Z %d: text shown %d (want %d): %s\n", r == 0U ? "(0, 0)" : "admitted",
+                            payload, shows, want, out);
+                rc = 1;
+            }
+        }
+    }
+    opts->payload = 0;
+    return rc;
+}
+
 /* An MNIS LRRP response document of more than 150 octets: a point-2d (11.25, 45) near its start, 150 one-octet
  * tokens, then a circle-2d (22.5, 22.5) with a 10 m radius, which ranks above the point. @p declared_extra adds to the
  * document length it declares (a document the payload holds only part of). Returns the octets used. */
@@ -988,6 +1027,43 @@ test_mnis_long_lrrp_document(dsd_opts* opts, dsd_state* state) {
             rc = 1;
         }
     }
+    return rc;
+}
+
+/* Issue #800, fail closed: the LRRP summary is the packet's notice text, so it carries the speed and heading of an
+ * admitted report only. A report whose packet failed its CRC32 (decoded under -F) shows neither, with -Z or without;
+ * the explicit payload diagnostics keep them under -Z. */
+static int
+test_lrrp_summary_motion(dsd_opts* opts, dsd_state* state) {
+    // POINT_2D (11.25, 45), speed 10 m/s (36 km/h), direction 45 x 2 degrees.
+    static const uint8_t lrrp_doc[] = {0x07, 16, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0, 0x6C, 0x0A, 0, 0x56, 45};
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 1;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int corrupt = 0; corrupt <= 1; ++corrupt) {
+        for (int payload = 0; payload <= 1; ++payload) {
+            opts->payload = payload;
+            uint8_t user[32] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+            DSD_MEMCPY(user + 7, lrrp_doc, sizeof lrrp_doc);
+            const uint64_t before = state->event_history_s[0].push_seq;
+            send_sap3(opts, state, user, 7U + sizeof lrrp_doc, 3, !corrupt);
+            const Event_History* notice = newest_row(state, 0);
+            const int motion = strstr(notice->event_string, "km/h") != NULL
+                               || strstr(state->dmr_lrrp_gps[0], "km/h") != NULL
+                               || strstr(state->dmr_lrrp_gps[0], " 90") != NULL;
+            const int want = !corrupt;
+            if (state->event_history_s[0].push_seq != before + 1U || motion != want
+                || (want && strstr(notice->event_string, "36.00 km/h") == NULL)) {
+                DSD_FPRINTF(stderr, "\nLRRP summary, %s, -Z %d: motion %d (want %d): '%s'\n",
+                            corrupt ? "CRC ERR" : "clean", payload, motion, want, notice->event_string);
+                rc = 1;
+            }
+        }
+    }
+    opts->payload = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->aggressive_framesync = 1;
     return rc;
 }
 
@@ -1172,7 +1248,9 @@ main(void) {
     rc |= test_position_group_from_checked_header(opts, state);
     rc |= test_failed_locn_prints_no_content(opts, state);
     rc |= test_mnis_unchecked_trailer(opts, state);
+    rc |= test_mnis_locn_text_needs_admission(opts, state);
     rc |= test_mnis_long_lrrp_document(opts, state);
+    rc |= test_lrrp_summary_motion(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);

@@ -2602,11 +2602,14 @@ suite runs under this compiler.
     parse, and a resync-guessed position is never published. Every caller hands `dmr_lrrp()` its whole checked payload
     (an MNIS one of any length; only the console echo of a LOCN report's text is bounded), and a position comes only
     from the whole declared document: one that declares more than the payload holds gives none (`Position suppressed
-    (incomplete document)`), since the shape that ranks highest may be in the part missing. (Tests `DMR_EVENT_CRC`,
-    `DMR_LRRP_RESPONSE_TOKEN_LENGTHS`.) An MNIS payload (`dmr_block_type1_handle_mnis()`) ends where the packet CRC32's
+    (incomplete document)`), since the shape that ranks highest may be in the part missing. The LRRP summary (the
+    packet's notice text) carries the speed and heading of an admitted report only, as admission left them; a failed,
+    refused or incomplete report's motion prints only in the `-Z` details (tests `DMR_EVENT_CRC`,
+    `DMR_LRRP_RESPONSE_TOKEN_LENGTHS`). An MNIS payload (`dmr_block_type1_handle_mnis()`) ends where the packet CRC32's
     span ends: Motorola's compressed data leaves the octet just before the CRC32 out of the CRC
     (`dmr_block_type1_update_crc()`), so that octet is never payload, and no DMR packet service reads past the span its
-    CRC covered (`dmr_block_type1_checked_len()`). UDT NMEA needs Q=1 and the format's fields (80 bits
+    CRC covered (`dmr_block_type1_checked_len()`). A checked MNIS LOCN report's text (`LOCN Text:`) prints only once
+    `dmr_locn()` admitted its position, else only with `-Z`. UDT NMEA needs Q=1 and the format's fields (80 bits
     short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length, and a
     short report is read no further than its 80 bits). These go to their own data notice
     (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no

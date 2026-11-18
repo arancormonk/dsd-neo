@@ -1428,13 +1428,13 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // Upstream subtracted the CRC32 bit-reordering loop's `offset` here, which is a constant
         // for locating confirmed-data DBSN octets and has no bearing on a text length; the
         // dmr_locn() call below passes the same pointer with the unadjusted length.
-        // The report's text only from a packet whose checks passed (not RAS), else only with -Z: a failed report
-        // prints no part of its position (dsd_gps_report_content_printable()).
-        if (dsd_gps_report_content_printable(ctx->state->event_crc_invalid[ctx->slot] == 0U, ctx->opts->payload)) {
+        // An admitted position is staged for this notice by dmr_locn() itself, never the text alone. The report's
+        // text is a position in any form, so it prints only once its position was admitted (not for a failed check,
+        // a refusal or a report with no position read), else only with -Z (issue #800, fail closed).
+        const int admitted = dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        if (admitted || ctx->opts->payload == 1) {
             dmr_block_print_locn_text(ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
         }
-        // An admitted position is staged for this notice by dmr_locn() itself, never the text alone.
-        dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
     }
 
     // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,
