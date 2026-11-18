@@ -1778,9 +1778,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     or on neither; a sample read from the buffer takes no lock. `PLATFORM_PCM_STREAM_MARK` runs a refill inside the
     count's readiness query (a GNU ld `--wrap` seam).
     `dsd_pcm_stream_discard_through()` drops the whole samples the reader and its descriptor held at a rigctl retune's
-    mark, read without a wait (at most 21 buffers of 19200 bytes: about 4 s of 48 kHz mono, 2 s of stereo; and no refill
-    after 250 ms on the monotonic clock), keeps every byte that arrived after the mark, and keeps a part sample so the
-    next is whole (the TCP and stdin inputs). A mark made on another input or attachment, and a descriptor that is not a
+    mark, read without a wait, one bounded pass at a time (at most 21 buffers of 19200 bytes: about 4 s of 48 kHz mono,
+    2 s of stereo; and no refill after 250 ms on the monotonic clock), keeps every byte that arrived after the mark, and
+    keeps a part sample so the next is whole (the TCP and stdin inputs). What a pass's bound leaves stays owed on the
+    reader (`dsd_pcm_stream::drop_through`, `owing`): the reader pays it, a bounded pass per read, at its refills, before
+    it returns a sample, so no old audio past the bound is read on the new channel (`test_fd_discard_past_its_bound()`);
+    a later cut keeps the larger cutoff, and a pass that finds the owed bytes neither held nor ready gives them up. A mark made on another input or attachment, and a descriptor that is not a
     pipe, FIFO or socket (`dsd_fd_is_stream()`: a regular file, a console), drop nothing.
     `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in

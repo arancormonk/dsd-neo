@@ -25,6 +25,7 @@
 #include <io.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -341,6 +342,52 @@ test_fd_discard_through(void) {
     (void)remove(path);
 }
 
+#ifdef F_SETPIPE_SZ
+/* Issue #834: a pipe that held more old audio at the mark than one drop takes (the buffer and 20 refills, about 4 s
+   of 48 kHz mono): the drop stops at its bound, and the rest of the old audio is still owed. The reader pays it before
+   it returns a sample, so the first sample read is the one written after the mark. */
+static void
+test_fd_discard_past_its_bound(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the bounded discard");
+        return;
+    }
+    /* Room for all of it at once: the bound is 21 buffers of 19200 bytes, 403200 bytes. */
+    const size_t old_bytes = 21U * 19200U + 4000U;
+    if (fcntl(fds[1], F_SETPIPE_SZ, 1 << 20) < (int)old_bytes) {
+        DSD_FPRINTF(stderr, "pcm stream: the pipe cannot hold %zu bytes, the bounded discard is not run\n", old_bytes);
+        (void)dsd_close(fds[0]);
+        (void)dsd_close(fds[1]);
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the bounded discard");
+    static uint8_t old_audio[21U * 19200U + 4000U];
+    for (size_t i = 0; i < old_bytes; i += 2U) {
+        old_audio[i] = 0x01U; /* sample 1, the old channel's */
+        old_audio[i + 1U] = 0x00U;
+    }
+    put_bytes(fds[1], old_audio, old_bytes);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == old_bytes, "the mark counts all the old audio");
+    const uint8_t new_audio[] = {0x07U, 0x00U};
+    put_bytes(fds[1], new_audio, sizeof new_audio);
+    const long dropped = dsd_pcm_stream_discard_through(stream, &cut);
+    check(dropped > 0 && (uint64_t)dropped * 2U < old_bytes, "one drop stops at its bound");
+    int16_t s = 0;
+    const int got = dsd_pcm_stream_read_wait(stream, &s, 1000U);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the old audio past the bound is not read (read %d, %d; want a sample of 7)", got,
+                 (int)s);
+    check(got == DSD_PCM_STREAM_SAMPLE && s == 7, label);
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+}
+#endif
+
 /* A retune confirmed off the decoder thread the moment it was asked for: its mark, posted at once. */
 static void
 post_now(void) {
@@ -595,6 +642,9 @@ main(void) {
     test_socket_idle_then_close();
     test_socket_discard_through();
     test_fd_discard_through();
+#ifdef F_SETPIPE_SZ
+    test_fd_discard_past_its_bound();
+#endif
     test_post_before_the_input_opens();
     test_post_while_the_input_opens();
     test_post_while_the_input_opens_is_measured_when_posted();

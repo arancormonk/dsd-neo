@@ -2629,9 +2629,9 @@ channel is delayed.
     held. On sound-card input (PulseAudio on Linux and macOS, PortAudio on Windows, AAudio on Android), which says
     nothing of when its audio arrived, DSD-neo drops what the sound system has handed over but it has not read yet, and
     keeps the newest part of it, as much audio as the time since it asked for the tune (the audio captured since). What
-    one retune drops is bounded: on TCP and stdin about 4 seconds of 48 kHz mono audio, on UDP what its buffer holds
-    (about 1 second at 48 kHz), and on sound-card input about 2 seconds; no drop spends more than a quarter of a second
-    reading, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
+    one retune drops at a time is bounded: on TCP and stdin about 4 seconds of 48 kHz mono audio, the rest going with the
+    next reads, before any of it is decoded; on UDP what its buffer holds (about 1 second at 48 kHz), and on sound-card
+    input about 2 seconds; no drop spends more than a quarter of a second reading at a time, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
     tune asked for while TCP input reconnects drops what the new connection held when it was asked for. It also starts
     its timing over, so nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence,
     the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream. A

@@ -38,6 +38,11 @@ struct dsd_pcm_stream {
     size_t pos;       /* the next unread byte */
     size_t len;       /* the bytes held */
     uint64_t read_in; /* the bytes read in so far: written by the reader with fill_mu held */
+    /* A retune's cutoff not paid yet (issue #834): the bytes read in (read_in's count) through which whole samples
+       still go, when a drop reached its bound before them (owing set). The reader pays the rest, in bounded passes, at
+       its refills, before it returns a sample. Reader thread only. */
+    uint64_t drop_through;
+    int owing;
     /* Held around each read into the buffer and its read_in update, and around a backlog mark's count, so a mark sees a
        read's bytes either still ready on the descriptor or already in read_in, never both or neither. */
     dsd_mutex_t fill_mu;
@@ -232,20 +237,24 @@ pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {
     return dsd_fd_wait_readable(stream->fd, timeout_ms);
 }
 
-long
-dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut) {
-    /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
-       queued stream, and a read could wait or take the rest of a file. */
-    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))
-        || !dsd_input_backlog_cut_applies(cut, stream)) {
-        return 0;
-    }
-    /* The bytes whole samples took so far: those read in, less what the buffer still holds. Only whole samples that
-       had arrived by the mark go; a part of one stays, so the samples after it stay whole. */
-    const uint64_t used = stream->read_in - (uint64_t)(stream->len - stream->pos);
-    uint64_t owed = cut->arrived > used ? (cut->arrived - used) & ~(uint64_t)1U : 0U;
+/* The bytes whole samples took so far: those read in, less what the buffer still holds. */
+static uint64_t
+pcm_stream_used(const dsd_pcm_stream* stream) {
+    return stream->read_in - (uint64_t)(stream->len - stream->pos);
+}
+
+/* One bounded pass of the drop the stream owes (dsd_pcm_stream::drop_through): from the buffer, then from the
+   descriptor or socket, read without waiting, at most the buffer and DSD_PCM_STREAM_DISCARD_MAX_FILLS refills and no
+   refill but the first after DSD_PCM_STREAM_DISCARD_MAX_MS. What a bound leaves stays owed. A pass that finds the
+   bytes owed neither held nor ready gives the rest up: what comes later is newer than the mark. Returns the samples
+   dropped. */
+static long
+pcm_stream_pay_owed(dsd_pcm_stream* stream) {
+    const uint64_t used = pcm_stream_used(stream);
+    uint64_t owed = stream->drop_through > used ? stream->drop_through - used : 0U;
     const uint64_t start_ms = dsd_time_monotonic_ms();
     long dropped = 0;
+    int bounded = 0;
     for (unsigned int fills = 0U; owed > 0U && stream->ended == PCM_STREAM_OPEN; fills++) {
         size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
         if ((uint64_t)whole > owed) {
@@ -254,15 +263,43 @@ dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut)
         stream->pos += whole;
         owed -= (uint64_t)whole;
         dropped += (long)(whole / 2U);
+        if (owed == 0U) {
+            break;
+        }
         /* The rest was ready at the mark, so a refill does not wait for it. The time cap never skips the first refill:
            a pause of the decoder inside the drop does not decide what it takes. */
-        if (owed == 0U || fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
-            || (fills > 0U && dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS)
-            || pcm_stream_wait(stream, 0U) <= 0 || pcm_stream_fill(stream) <= 0) {
+        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
+            || (fills > 0U && dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS)) {
+            bounded = 1;
+            break;
+        }
+        if (pcm_stream_wait(stream, 0U) <= 0 || pcm_stream_fill(stream) <= 0) {
             break;
         }
     }
+    stream->owing = bounded && stream->ended == PCM_STREAM_OPEN;
+    if (!stream->owing) {
+        stream->drop_through = pcm_stream_used(stream); /* paid, or given up: nothing later is owed */
+    }
     return dropped;
+}
+
+long
+dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut) {
+    /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
+       queued stream, and a read could wait or take the rest of a file. */
+    if (stream == NULL || (stream->sock == DSD_INVALID_SOCKET && !dsd_fd_is_stream(stream->fd))
+        || !dsd_input_backlog_cut_applies(cut, stream)) {
+        return 0;
+    }
+    /* Only whole samples that had arrived by the mark go; a part of one stays, so the samples after it stay whole. A
+       later cut of the stream discards at least as much as an earlier one still owed. */
+    const uint64_t used = pcm_stream_used(stream);
+    const uint64_t through = cut->arrived > used ? used + ((cut->arrived - used) & ~(uint64_t)1U) : used;
+    if (through > stream->drop_through) {
+        stream->drop_through = through;
+    }
+    return pcm_stream_pay_owed(stream);
 }
 
 int
@@ -275,6 +312,20 @@ dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int time
     }
     if (stream->ended != PCM_STREAM_OPEN) {
         return DSD_PCM_STREAM_END;
+    }
+    /* A retune's cutoff a drop's bound left (issue #834): the buffer holds none of it, so it is paid here, when the
+       buffer ran dry, one bounded pass per read, before any sample is returned. */
+    if (stream->owing) {
+        (void)pcm_stream_pay_owed(stream);
+        if (pcm_stream_take(stream, out)) {
+            return DSD_PCM_STREAM_SAMPLE;
+        }
+        if (stream->ended != PCM_STREAM_OPEN) {
+            return DSD_PCM_STREAM_END;
+        }
+        if (stream->owing) {
+            return DSD_PCM_STREAM_TIMEOUT;
+        }
     }
     /* Readiness is checked here only, when the buffer ran dry, and the buffer refills at most once per wait. */
     const int ready = pcm_stream_wait(stream, timeout_ms);
