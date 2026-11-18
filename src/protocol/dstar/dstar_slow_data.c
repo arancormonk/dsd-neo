@@ -192,6 +192,8 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
             DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
             DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
             (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+            /* The transmission's own callsigns are on the call: a D-PRS record of it may name them again. */
+            state->dstar_dprs_source_unchecked = 0U;
         }
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
@@ -367,7 +369,9 @@ dstar_dprs_call_epoch(const dsd_state* state) {
 /*
  * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call it was heard
  * in, which only a header whose CRC-16/X.25 passed names (dstar_header.c and the slow-data header above), and only
- * when the whole record arrived within that call. A record begun outside an active call has no checked source.
+ * when the whole record arrived within that call. A record begun outside an active call has no checked source, and
+ * neither has one completed after an RF header that failed its CRC (another transmission began, maybe another radio's)
+ * until a checked header names the transmission again (dsd_state::dstar_dprs_source_unchecked).
  */
 static void
 dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {
@@ -381,8 +385,8 @@ dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_posi
     fix.lon_e7 = dstar_aprs_e7(pos->lon_deg, pos->lon_min, pos->lon_hund, pos->lon_hemi == 'W');
     dsd_call_snapshot call;
     int source_verified = 0;
-    if (a->epoch != 0U && dstar_dprs_active_call(state, &call) && call.epoch == a->epoch
-        && call.source_text[0] != '\0') {
+    if (a->epoch != 0U && state->dstar_dprs_source_unchecked == 0U && dstar_dprs_active_call(state, &call)
+        && call.epoch == a->epoch && call.source_text[0] != '\0') {
         DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", call.source_text);
         source_verified = 1;
     }

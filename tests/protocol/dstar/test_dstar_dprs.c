@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -491,6 +492,61 @@ test_late_entry_record_kept_unverified(void) {
     rig_close(&r);
 }
 
+/* A slow-data superframe carrying the voice header naming @p mycall, its CRC-16/X.25 correct: the header as it is
+ * repeated through a transmission (a mini-header 0x55, then five bytes per six-byte block). */
+static void
+send_slow_data_header(rig* r, const char* mycall) {
+    uint8_t header[51];
+    DSD_MEMSET(header, 0x20, sizeof(header));
+    header[0] = 0x00U;
+    header[1] = 0x00U;
+    header[2] = 0x00U;
+    DSD_MEMCPY(header + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(header + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
+    char source[13];
+    DSD_SNPRINTF(source, sizeof(source), "%-12s", mycall);
+    DSD_MEMCPY(header + 27, source, 12);
+    const uint16_t crc = dstar_crc16(header, 39U);
+    header[39] = (uint8_t)(crc >> 8);
+    header[40] = (uint8_t)(crc & 0xFFU);
+    uint8_t bytes[60];
+    DSD_MEMSET(bytes, 0x20, sizeof(bytes));
+    bytes[0] = 0x55U;
+    size_t at = 0U;
+    for (size_t i = 1U; i < sizeof(bytes) && at < sizeof(header); i++) {
+        if (i % 6U != 0U) {
+            bytes[i] = header[at++];
+        }
+    }
+    send_superframe(r, bytes);
+}
+
+/* N0ONE's call is ACTIVE (its terminator missed) when another transmission's RF header fails its CRC
+ * (processDSTAR_HD() leaves dstar_dprs_source_unchecked set: DSTAR_PROCESS). A whole, CRC-valid D-PRS record heard
+ * after it is not N0ONE's: it names no one, until a header whose CRC passed names the transmission (here the slow-data
+ * header of N0TWO's), whose next record is N0TWO's. */
+static void
+test_failed_header_leaves_records_anonymous(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0ONE");
+    r.state->dstar_dprs_source_unchecked = 1U;
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[3];
+    expect_int("record after a failed header admitted", feed_records(&r, f, 3U), 1);
+    expect_str("record after a failed header names nobody", f[0].source_text, "");
+    expect_int("record after a failed header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    send_slow_data_header(&r, "N0TWO");
+    expect_int("a checked header names the transmission", r.state->dstar_dprs_source_unchecked, 0);
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 2);
+    expect_str("record after the checked header is N0TWO's", f[1].source_text, "N0TWO");
+    expect_int("record after the checked header is checked", f[1].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -506,6 +562,7 @@ main(void) {
     test_lost_cr_costs_only_its_record();
     test_tag_across_the_bound();
     test_late_entry_record_kept_unverified();
+    test_failed_header_leaves_records_anonymous();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

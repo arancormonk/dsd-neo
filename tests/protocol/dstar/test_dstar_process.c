@@ -551,7 +551,8 @@ test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
 }
 
 /* Issue #800 2.10: a verified header opens a transmission, so a D-PRS record the one before it left half collected is
- * forgotten; a header whose CRC failed proves nothing and leaves it. */
+ * forgotten; a header whose CRC failed proves nothing and leaves it, but it began a transmission whose radio is not
+ * known: no D-PRS record names a source until a checked header does (dstar_dprs_source_unchecked). */
 static void
 test_verified_header_forgets_a_half_collected_dprs_record(void) {
     static dsd_opts opts;
@@ -567,8 +568,10 @@ test_verified_header_forgets_a_half_collected_dprs_record(void) {
         state.dstar_dprs.len = 12U;
         state.dstar_dprs.epoch = 7U;
         DSD_MEMCPY(state.dstar_dprs.text, "$$CRC9E3E,N0", 12U);
+        state.dstar_dprs_source_unchecked = (uint8_t)verified;
 
         assert(processDSTAR_HD(&opts, &state) == verified);
+        assert(state.dstar_dprs_source_unchecked == (verified ? 0U : 1U));
         assert(state.dstar_dprs.collecting == (verified ? 0U : 1U));
         assert(state.dstar_dprs.len == (verified ? 0U : 12U));
         assert(state.dstar_dprs.epoch == (verified ? 0U : 7U));
