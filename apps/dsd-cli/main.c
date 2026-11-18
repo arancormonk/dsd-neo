@@ -52,6 +52,7 @@ main(int argc, char** argv) {
     /* initState() logged which buffer it could not allocate; a state missing one cannot decode. */
     if (state->init_failed || dsd_exitflag_load() != 0) {
         freeState(state);
+        freeOpts(opts);
         free(opts);
         free(state);
         return 1;
@@ -64,6 +65,7 @@ main(int argc, char** argv) {
            its per-call WAVs only at the run's start (issue #708), so none is left behind as an empty TEMP file. */
         dsd_engine_release_outputs(opts, state);
         freeState(state);
+        freeOpts(opts);
         free(opts);
         free(state);
         return exit_rc;
@@ -90,6 +92,7 @@ main(int argc, char** argv) {
         rc = dsd_cli_frontend_run(opts, state);
     }
     freeState(state);
+    freeOpts(opts);
     free(opts);
     free(state);
     return rc;

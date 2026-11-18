@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/nonce.h>
@@ -1613,6 +1614,17 @@ initState(dsd_state* state) {
 } //init_state
 
 void
+freeOpts(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    DSD_SECURE_ZERO(opts->rdio_api_key, sizeof opts->rdio_api_key);
+    DSD_SECURE_ZERO(opts->rdio_api_url, sizeof opts->rdio_api_url);
+    DSD_SECURE_ZERO(opts->rr_app_key, sizeof opts->rr_app_key);
+    DSD_SECURE_ZERO(opts->api_token, sizeof opts->api_token);
+}
+
+void
 freeState(dsd_state* state) {
     if (!state) {
         return;
@@ -1623,6 +1635,7 @@ freeState(dsd_state* state) {
     dsd_state_trunk_scan_avoids_free(state);
     dsd_state_trunk_scan_entry_reasons_free(state);
     dsd_key_state_secure_wipe(state); // its keys go with it, whatever armed them (keyloader or not)
+    retevis_rc2_context_release(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

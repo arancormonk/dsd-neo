@@ -58,6 +58,7 @@ SessionObjects::destroy() {
     if (state_ != nullptr) {
         freeState(state_);
     }
+    freeOpts(opts_);
     free(opts_);
     free(state_);
     opts_ = nullptr;

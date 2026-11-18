@@ -78,6 +78,15 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     DSD_SECURE_ZERO(state->A3, sizeof(state->A3));
     DSD_SECURE_ZERO(state->A4, sizeof(state->A4));
     DSD_SECURE_ZERO(state->tetra_air_keys, sizeof(state->tetra_air_keys));
+    /* The vendor and static keys and keystreams (CSI EE72, -S, Vertex ALG 0x07 map) and the working keystreams. */
+    DSD_SECURE_ZERO(state->csi_ee_key, sizeof(state->csi_ee_key));
+    DSD_SECURE_ZERO(state->static_ks_bits, sizeof(state->static_ks_bits));
+    DSD_SECURE_ZERO(state->vertex_ks_key, sizeof(state->vertex_ks_key));
+    DSD_SECURE_ZERO(state->vertex_ks_bits, sizeof(state->vertex_ks_bits));
+    DSD_SECURE_ZERO(state->ks_octetL, sizeof(state->ks_octetL));
+    DSD_SECURE_ZERO(state->ks_octetR, sizeof(state->ks_octetR));
+    DSD_SECURE_ZERO(state->ks_bitstreamL, sizeof(state->ks_bitstreamL));
+    DSD_SECURE_ZERO(state->ks_bitstreamR, sizeof(state->ks_bitstreamR));
 }
 
 static void

@@ -7,8 +7,10 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
@@ -763,6 +765,52 @@ test_free_state_wipes_keys(void) {
     return failed;
 }
 
+/* The final teardown also wipes the vendor and static keys and keystreams and the working keystreams (CSI EE72, -S,
+   the Vertex ALG 0x07 map), and wipes and frees the Retevis AP RC2 key schedule. freeOpts() wipes the options'
+   secrets. */
+static int
+test_teardown_wipes_keystreams_and_opts_secrets(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    initState(state);
+    state->csi_ee_key[0] = 0x5AU;
+    state->static_ks_bits[1][5] = 1U;
+    state->vertex_ks_key[3] = 0x77ULL;
+    state->vertex_ks_bits[2][7] = 1U;
+    state->ks_octetL[9] = 0xA5U;
+    state->ks_octetR[9] = 0xA5U;
+    state->ks_bitstreamL[11] = 1U;
+    state->ks_bitstreamR[11] = 1U;
+    retevis_rc2_keystream_creation(state, "00112233445566778899AABBCCDDEEFF", 0);
+    int failed = state->rc2_context == NULL;
+    freeState(state);
+    if (state->csi_ee_key[0] != 0U || state->static_ks_bits[1][5] != 0U || state->vertex_ks_key[3] != 0ULL
+        || state->vertex_ks_bits[2][7] != 0U || state->ks_octetL[9] != 0U || state->ks_octetR[9] != 0U
+        || state->ks_bitstreamL[11] != 0U || state->ks_bitstreamR[11] != 0U || state->rc2_context != NULL) {
+        DSD_FPRINTF(stderr, "freeState left a keystream, vendor key or key schedule in the state\n");
+        failed = 1;
+    }
+    initOpts(opts);
+    DSD_SNPRINTF(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", "rdio-test-key");
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "https://name:word@rdio.invalid/api");
+    DSD_SNPRINTF(opts->rr_app_key, sizeof opts->rr_app_key, "%s", "rr-test-key");
+    DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", "api-test-token");
+    freeOpts(opts);
+    if (opts->rdio_api_key[0] != '\0' || opts->rdio_api_url[0] != '\0' || opts->rr_app_key[0] != '\0'
+        || opts->api_token[0] != '\0') {
+        DSD_FPRINTF(stderr, "freeOpts left an API key or token in the options\n");
+        failed = 1;
+    }
+    free(state);
+    free(opts);
+    return failed;
+}
+
 /* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
    overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
    does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
@@ -868,6 +916,9 @@ main(void) {
         return 1;
     }
     if (test_free_state_wipes_keys() != 0) {
+        return 1;
+    }
+    if (test_teardown_wipes_keystreams_and_opts_secrets() != 0) {
         return 1;
     }
     if (test_forget_slot_wipes_on_the_change_to_none() != 0) {

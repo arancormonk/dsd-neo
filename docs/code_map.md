@@ -1930,7 +1930,11 @@ suite runs under this compiler.
   replaced (`dsd_state::dmr_tg_autoload`): a frame of a call whose talkgroup has no key puts that back (a key set
   directly with `-b`, or none) and ends the autoload's ownership, wiping its copies of both keys
   (`dsd_dmr_tg_autoload_hand_back()`), so no call keeps another talkgroup's key. `freeState()` wipes the state's keys
-  (`dsd_key_state_secure_wipe()`), the autoload's copies included, whatever armed them. Each slot also keeps the talkgroup its own
+  (`dsd_key_state_secure_wipe()`), the autoload's copies included, whatever armed them, and with them the vendor and
+  static keys and keystreams (`csi_ee_key`, `static_ks_bits`, the Vertex map), the working keystreams (`ks_octetL/R`,
+  `ks_bitstreamL/R`) and the Retevis AP RC2 key schedule (`retevis_rc2_context_release()`); `freeOpts()` wipes the
+  options' API keys, rdio-scanner URL and API token before the CLI and the Android session free them, and the RTL
+  stream's copy of the options is wiped before it is freed. Each slot also keeps the talkgroup its own
   call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
   change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
   The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left calls'
