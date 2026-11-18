@@ -4400,11 +4400,11 @@ dmr_hold_hytera_pi(dsd_opts* opts, dsd_state* state, uint8_t alg) {
     dmr_pi(opts, state, pi, 0U, 0U);
 }
 
-/* A Hytera Enhanced LC on slot 1 (ALG ID 0x02, FID 0x68, key ID 5) whose own checksum passed, read past the FEC failure
-   its shape always reports. */
+/* A Hytera Enhanced LC on slot 1 (ALG ID @p alg, whose low six bits are its FLCO 0x02; FID 0x68, key ID 5) whose own
+   checksum passed, read past the FEC failure its shape always reports. */
 static void
-dmr_hold_hytera_lc(dsd_opts* opts, dsd_state* state) {
-    uint8_t bytes[9] = {0x02U, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
+dmr_hold_hytera_lc_alg(dsd_opts* opts, dsd_state* state, uint8_t alg) {
+    uint8_t bytes[9] = {alg, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
     bytes[8] = dmr_hytera_checksum(bytes, 8U);
     uint8_t bits[96];
     DSD_MEMSET(bits, 0, sizeof bits);
@@ -4415,6 +4415,51 @@ dmr_hold_hytera_lc(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     dmr_flco(opts, state, bits, 0U, &errors, 3U);
+}
+
+/* The Hytera Enhanced LC naming RC4 (ALG ID 0x02). */
+static void
+dmr_hold_hytera_lc(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_hytera_lc_alg(opts, state, 0x02U);
+}
+
+/* A checked PI header or Hytera Enhanced LC naming an ALG ID the decoder has no cipher for, after a hop: a Kirisun PI
+   with ALG ID 0x80 and service options without the privacy bit (which the vocoder would read as clear), a DMRA PI with
+   ALG ID 0x23 (no RC4, DES or AES), a Hytera Enhanced LC with ALG ID 0x42. Each keeps the slot held and trusts no MI
+   chain: the frame is neither played nor recorded. */
+static int
+test_dmr_hold_unknown_cipher(char frame[4][24]) {
+    static const char* const names[] = {"a Kirisun PI with ALG ID 0x80", "a DMRA PI with ALG ID 0x23",
+                                        "a Hytera LC with ALG ID 0x42"};
+    int rc = 0;
+    for (int c = 0; c < 3; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        if (c == 0) {
+            uint8_t pi[10] = {0x80U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+            state->currentslot = 0;
+            state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            dmr_pi(opts, state, pi, 1U, 0U);
+        } else if (c == 1) {
+            dmr_hop_pi_header_on(opts, state, 0, 0x23U);
+        } else {
+            dmr_hold_hytera_lc_alg(opts, state, 0x42U);
+        }
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the slot stays held and trusts no MI chain", names[c]);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_crypto_pi_verified[0] == 0U);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the frame is not played or recorded", names[c]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
 }
 
 /* A Hytera Enhanced PI header naming ALG ID 0 says the call is encrypted with no cipher the decoder knows, as a DMRA or
@@ -4663,6 +4708,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
     rc |= test_dmr_hold_kirisun_pi_naming_no_cipher(frame);
     rc |= test_dmr_hold_hytera_pi_and_lc(frame);
+    rc |= test_dmr_hold_unknown_cipher(frame);
     rc |= test_dmr_hold_heal_keeps_hold(frame);
     rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);

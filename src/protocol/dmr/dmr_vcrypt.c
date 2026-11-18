@@ -43,6 +43,16 @@ dmr_vcrypt_algid_uses_mi(int algid) {
     }
 }
 
+int
+dmr_vcrypt_vendor_cipher_known(uint8_t mfid, int algid) {
+    switch (mfid) {
+        case 0x10U: return algid == 0x21 || algid == 0x22 || algid == 0x24 || algid == 0x25;
+        case 0x68U: return algid == 0x02;
+        case 0x0AU: return algid == 0x36 || algid == 0x37;
+        default: return 0;
+    }
+}
+
 static void
 vcrypt_stamp(dsd_state* state, uint8_t slot) {
     state->dmr_vc_ref_clock[slot] = state->symbol_clock;

@@ -3369,9 +3369,12 @@ suite runs under this compiler.
     the held slot what was classified and the live FID and service options go first, as on a first landing, and a
     Kirisun LC (FID 0x0A, read on that path too) then classifies the slot by its own privacy bit,
     `dmr_flco_release_unread_voice_hold()`);
-  - a PI header naming a cipher the decoder knows (one that leaves the ALG ID 0 keeps the slot held, a Kirisun one
-    forcing no classification either, a Hytera Enhanced one too: `dmr_pi_note_verified_first()` ends the hold);
-  - a Hytera Enhanced LC whose own checksum passed, which names its cipher as such a PI header does.
+  - a PI header naming a cipher the decoder knows for its vendor (`dmr_vcrypt_vendor_cipher_known()`: DMRA RC4, DES,
+    AES-128, AES-256; Hytera Enhanced RC4; Kirisun Advanced and Universal). One that leaves the ALG ID 0, or names an
+    identifier the decoder has no cipher for (a Kirisun ALG ID 0x80 beside service options without the privacy bit
+    would read as clear), keeps the slot held and trusts no MI chain, a Kirisun one forcing no classification either,
+    a Hytera Enhanced one too: `dmr_pi_note_verified_first()` ends the hold;
+  - a Hytera Enhanced LC whose own checksum passed, which names its cipher as such a PI header does, by the same rule.
 
   Setting the classification ends no hold (`dmr_enc_class_force()`): each caller with the call's checked word ends it
   itself (`dmr_enc_class_release_hold()`). The heal of an unverified terminator (`dmr_flco_heal_restore()`) restores
@@ -12471,8 +12474,9 @@ Private per-protocol modules worth knowing about:
   now starting is kept: a FIRST whose voice sync is still due on this timeline. Once that PI's voice runs, an epoch
   fork cannot tell it from the replaced call's, so the chain goes and late entry re-keys the slot (decided limit). Only
   a PI whose CRC passed (or a Hytera PI whose checksum did) trusts the slot: one `-F` accepted as RAS sets its fields
-  but checks nothing, so it loses the chain and any earlier PI's trust, as do a PI naming no cipher the decoder knows
-  and an SB identifier naming another cipher or key. A forgotten or lost chain mutes the slot's MI-keyed frames at once (the VC6 an LC was read ahead of), not
+  but checks nothing, so it loses the chain and any earlier PI's trust, as do a PI or Hytera Enhanced LC naming no
+  cipher the decoder knows for its vendor (`dmr_vcrypt_vendor_cipher_known()`) and an SB identifier naming another
+  cipher or key. A forgotten or lost chain mutes the slot's MI-keyed frames at once (the VC6 an LC was read ahead of), not
   from the next voice sync. A failed trunk-scan switch
   that rolls back to the original carrier does not restore the chain (decided limit): the switch already cleared the
   carrier's ALG ID, key id and confirmation evidence, and the slot re-keys as the original carrier proves itself

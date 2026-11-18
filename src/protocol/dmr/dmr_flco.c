@@ -565,10 +565,17 @@ dmr_flco_handle_hytera_unknown_or_fid(dmr_flco_ctx* ctx) {
 }
 
 /* A checked Hytera Enhanced LC re-keys the slot as a PI header does (issue #729): in the voice header its MI is
-   superframe 0's; embedded, it is assembled at VC6 ahead of that burst's audio, and keys the next superframe. */
+   superframe 0's; embedded, it is assembled at VC6 ahead of that burst's audio, and keys the next superframe. One
+   naming no cipher the decoder knows (@p cipher_known 0) checks nothing to keep, as such a PI header does: whatever
+   trust an earlier one gave the slot, and the chain it anchored, are gone. */
 static void
-dmr_flco_note_hytera_rekey(const dmr_flco_ctx* ctx) {
+dmr_flco_note_hytera_rekey(const dmr_flco_ctx* ctx, int cipher_known) {
     const uint8_t slot = ctx->slot != 0U ? 1U : 0U;
+    if (!cipher_known) {
+        ctx->state->dmr_crypto_pi_verified[slot] = 0U;
+        dmr_vcrypt_lose(ctx->state, slot);
+        return;
+    }
     ctx->state->dmr_crypto_pi_verified[slot] = 1U;
     if (ctx->type == 1U) {
         dmr_vcrypt_note_first(ctx->state, slot);
@@ -625,11 +632,15 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
         }
         dmr_enc_class_force(ctx->state, ctx->slot, 1);
         // Its own checksum passed and it names the call's cipher, as a PI header does (its FLCO 0x02 is the ALG ID's
-        // low six bits, so the ALG ID is never 0): the slot's voice is held no more.
-        dmr_enc_class_release_hold(ctx->state, ctx->slot);
+        // low six bits, so the ALG ID is never 0): the slot's voice is held no more, for a cipher the decoder knows
+        // (Hytera Enhanced RC4, 0x02), as for that PI header.
+        const int cipher_known = dmr_vcrypt_vendor_cipher_known(0x68U, alg);
+        if (cipher_known) {
+            dmr_enc_class_release_hold(ctx->state, ctx->slot);
+        }
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
-        dmr_flco_note_hytera_rekey(ctx);
+        dmr_flco_note_hytera_rekey(ctx, cipher_known);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
