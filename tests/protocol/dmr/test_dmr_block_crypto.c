@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
@@ -16,17 +17,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
-
-static int g_lfsr_calls = 0;
-
-void
-LFSR128d(dsd_state* state) {
-    g_lfsr_calls++;
-    uint8_t* iv = (state->currentslot == 0) ? state->aes_iv : state->aes_ivR;
-    for (int i = 0; i < 16; i++) {
-        iv[i] = (uint8_t)i;
-    }
-}
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -234,13 +224,11 @@ test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     // The three cipher blocks were received: they end at start + 48.
     state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes128 ctx start", ctx.start, start);
     rc |= expect_int("aes128 ctx end", ctx.end, 38);
     rc |= expect_int("aes128 key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes128 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes128 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes128 alg normalized", state.payload_algid, 0x24);
     rc |= expect_u8("aes128 prefix byte 0", state.dmr_pdu_sf[slot][0], 0xE0);
     rc |= expect_u8("aes128 prefix byte 1", state.dmr_pdu_sf[slot][1], 0xE1);
@@ -278,11 +266,9 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
     state.dmr_pdu_sf[slot][start + 48] = 0xB0;
     state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes256 manual key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes256 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes256 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes256 alg normalized", state.payload_algidR, 0x25);
     rc |= expect_bytes("aes256 block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
     rc |= expect_bytes("aes256 block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
@@ -356,18 +342,22 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
     state.payload_keyid = kid;
     state.payload_mi = 0x11223344ULL;
     seed_key_array(&state, kid, 0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL, 0, 0);
+    /* The slot's voice IV, MI and frame counter: the packet's IV is expanded apart from them. */
+    DSD_MEMSET(state.aes_iv, 0xEE, sizeof(state.aes_iv));
+    state.DMRvcL = 5;
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
-    for (int i = 0; i < 16; i++) {
-        iv[i] = (uint8_t)i;
-    }
+    (void)dmr_aes_expand_iv(0x11223344U, iv);
     DSD_MEMSET(stream, 0, sizeof(stream));
     aes_ofb_keystream_output(iv, ctx.aes_key, stream, DSD_AES_KEY_128, 3);
 
     rc |= expect_int("aes ofb ctx end", ctx.end, 16);
     rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes nonzero-mi calls lfsr", g_lfsr_calls, 1);
+    uint8_t voice_iv[16];
+    DSD_MEMSET(voice_iv, 0xEE, sizeof(voice_iv));
+    rc |= expect_bytes("aes ofb leaves the voice iv", state.aes_iv, voice_iv, sizeof(voice_iv));
+    rc |= expect_int("aes ofb leaves the voice frame counter", state.DMRvcL, 5);
+    rc |= expect_int("aes ofb leaves the voice mi", state.payload_mi == 0x11223344ULL ? 1 : 0, 1);
     rc |= expect_int("aes ofb alg normalized", state.payload_algid, 0x24);
     rc |= expect_bytes("aes ofb skips discard block", state.dmr_pdu_sf[slot], stream + 16, 16);
     return rc;

@@ -89,6 +89,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "analog_call_test_support.h"
+#include "dmr_block_crypto.h"
 #include "dmr_hytera.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -4913,6 +4914,44 @@ test_dmr_mono_data_terminator_resets_its_own_packet(void) {
     return rc;
 }
 
+/* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: lane 0's
+   voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL), which the single-slot decoder's lane carrying a slot 2 AES
+   call is keyed by while a slot 1 packet runs on index 0, stay as they were. */
+static int
+test_dmr_packet_aes_keeps_the_voice_iv(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const int kid = 0x33;
+    state->currentslot = 0;
+    state->data_ks_start[0] = 0;
+    state->data_block_poc[0] = 28;
+    state->data_byte_ctr[0] = 48;
+    state->payload_algid = 4;
+    state->payload_keyid = kid;
+    state->payload_mi = 0x11223344ULL;
+    const unsigned long long words[2] = {0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL};
+    for (int i = 0; i < 2; i++) {
+        state->rkey_array[kid + (i == 0 ? 0x000 : 0x101)] = words[i];
+        state->rkey_array_loaded[kid + (i == 0 ? 0x000 : 0x101)] = 1U;
+    }
+    DSD_MEMSET(state->aes_iv, 0xEE, sizeof(state->aes_iv));
+    state->DMRvcL = 5;
+    dmr_block_crypto_ctx ctx;
+    dmr_block_crypto_load_ctx(state, 0U, 48U, &ctx);
+    int rc = expect_true("packet AES: the packet decrypts", dmr_block_crypto_decrypt_payload(state, 0U, &ctx, 0) == 1);
+    int iv_kept = 1;
+    for (size_t i = 0; i < sizeof(state->aes_iv); i++) {
+        iv_kept &= state->aes_iv[i] == 0xEEU;
+    }
+    rc |= expect_true("packet AES: the voice IV, MI and frame counter stay",
+                      iv_kept && state->DMRvcL == 5 && state->payload_mi == 0x11223344ULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
 static int
 test_dmr_hold_edges(void) {
@@ -4940,6 +4979,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
+    rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
 }
 

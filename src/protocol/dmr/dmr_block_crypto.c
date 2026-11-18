@@ -10,8 +10,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/key_presence.h"
@@ -224,14 +226,20 @@ dmr_block_crypto_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_cr
     }
 }
 
+/* The packet's AES IV, expanded from its header's MI (@p ctx) into @p maes alone, and printed as a PI header's is: the
+   slot's voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL) are its voice's, which a packet heard between
+   superframes, or on the single-slot decoder's other slot while lane 0 carries an AES call, must not change. */
 static void
-dmr_block_crypto_prepare_aes_iv(dsd_state* state, uint8_t maes[16]) {
-    LFSR128d(state);
-    if (state->currentslot == 0) {
-        DSD_MEMCPY(maes, state->aes_iv, 16);
-    } else {
-        DSD_MEMCPY(maes, state->aes_ivR, 16);
+dmr_block_crypto_prepare_aes_iv(const dsd_state* state, const dmr_block_crypto_ctx* ctx, uint8_t maes[16]) {
+    (void)dmr_aes_expand_iv((uint32_t)ctx->mi, maes);
+    const int slot = state->currentslot == 1 ? 1 : 0;
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const int keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    DSD_FPRINTF(stderr, "%s Slot %d DMR PI C- ALG ID: %02X; KEY ID: %02X; MI(128): ", KYEL, slot + 1, algid, keyid);
+    for (int x = 0; x < 16; x++) {
+        DSD_FPRINTF(stderr, "%02X", maes[x]);
     }
+    DSD_FPRINTF(stderr, "%s;%s", KNRM, algid == 0x24 ? " AES-128;" : " AES-256;");
 }
 
 static void
@@ -253,7 +261,7 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
     DSD_MEMSET(stream, 0, sizeof(stream));
     DSD_MEMSET(maes, 0, sizeof(maes));
     DSD_FPRINTF(stderr, "\n");
-    dmr_block_crypto_prepare_aes_iv(state, maes);
+    dmr_block_crypto_prepare_aes_iv(state, ctx, maes);
     const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
     aes_ofb_keystream_output(maes, ctx->aes_key, stream, key_size, nblocks);
     dmr_block_crypto_apply_stream(state, slot, ctx, stream, DMR_AES_OFB_DISCARD_BYTES);
