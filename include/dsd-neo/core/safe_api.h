@@ -166,9 +166,12 @@ dsd_safe_memset_impl(void* dst, size_t dst_size, int value, size_t count) {
 /**
  * @brief Compiler-resistant zeroing for buffers that held secret material.
  *
- * Volatile stores keep the wipe observable even when the buffer is released or
- * leaves scope immediately afterward. This is intentionally separate from
- * DSD_MEMSET, whose ordinary memset semantics permit dead-store elimination.
+ * The wipe stays observable even when the buffer is released or leaves scope immediately afterward. This is
+ * intentionally separate from DSD_MEMSET, whose ordinary memset semantics permit dead-store elimination. On GCC and
+ * Clang an ordinary memset is followed by an empty asm statement that takes the buffer's address and clobbers memory,
+ * so the compiler must assume the zeroed bytes are read and keeps every store (the explicit_bzero technique); a large
+ * buffer (the 1 MB key ID table) is wiped at memset speed. Elsewhere, and under the static analyzers, volatile byte
+ * stores do it.
  */
 static inline void*
 dsd_safe_secure_zero_impl(void* dst, size_t dst_size, size_t count) {
@@ -181,6 +184,11 @@ dsd_safe_secure_zero_impl(void* dst, size_t dst_size, size_t count) {
     if (!dsd_safe_count_fits(dst_size, count)) {
         return NULL;
     }
+#if (defined(__GNUC__) || defined(__clang__)) && !DSD_NEO_ANALYZER
+    (void)__builtin_memset(dst, 0, count);
+    __asm__ __volatile__("" : : "r"(dst) : "memory");
+    return dst;
+#else
 #if defined(__cplusplus)
     volatile unsigned char* bytes = static_cast<volatile unsigned char*>(dst);
 #else
@@ -191,6 +199,7 @@ dsd_safe_secure_zero_impl(void* dst, size_t dst_size, size_t count) {
         count--;
     }
     return dst;
+#endif
 }
 
 static inline int dsd_safe_vfprintf(FILE* stream, const char* fmt, va_list ap) DSD_NEO_PRINTF_FORMAT(2, 0);
