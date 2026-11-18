@@ -2486,7 +2486,8 @@ suite runs under this compiler.
   group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
   the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
   (`dsd_position_origin_capture()`/`_matches()`: the received identity's epoch with the trunk tuning generation), or
-  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays),
+  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
+  a source that names no radio (`dsd_position_source_names_radio()`: a P25 fixed-network ID, destination kept),
   freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
   none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
   tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
@@ -2581,6 +2582,11 @@ suite runs under this compiler.
     ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
     and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
     `p25_sm_checked_call_identity()` (P25 SM below).
+  - A P25 fixed-network ID (`$FFFFFD`, `$FFFFFF`) names no radio wherever a report's source comes from
+    (`dsd_position_source_names_radio()`): admission clears such a source and keeps the destination, so a checked
+    report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits as the source: LRRP, LOCN,
+    LIP over UDP from 10.255.255.253) is anonymous, and its data notice names no sender. DMR addressing is unchanged.
+    Test: `DMR_LIP_CARRIERS`.
   - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
     P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
     A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
@@ -12369,8 +12375,8 @@ Private per-protocol modules worth knowing about:
   counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
   0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A fixed-network ID (`0xFFFFFD`, `0xFFFFFF`) is never a checked source
   (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet,
-  so a report during such a call or from such an LLID is kept anonymous. Tests:
-  `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
+  so a report during such a call or from such an LLID is kept anonymous (and admission clears one that reaches a
+  report another way, `dsd_position_source_names_radio()`). Tests: `P25_P2_HARRIS_GPS`, `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as

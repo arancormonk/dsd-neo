@@ -561,6 +561,9 @@ does.
     packet's checked header: a report without one gets no row.
   - TETRA LIP short location reports sent as SDS (PID 10); the source is the calling party's SSI.
 
+  The source column is `00000000` when the report names no radio: a P25 fixed network ID (a report from a network
+  address) is never a radio.
+
   Never written:
   - D-STAR and M17 positions: their source is a callsign and the column is a number. They still reach History and
     the API.
