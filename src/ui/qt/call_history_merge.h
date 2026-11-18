@@ -636,6 +636,49 @@ call_history_position_digest(bool valid, int32_t lat_e7, int32_t lon_e7, uint32_
     return hash != 0U ? hash : 1U;
 }
 
+/** @brief The length of @p text up to its NUL, at most @p capacity. */
+inline size_t
+call_history_text_len(const char* text, size_t capacity) {
+    size_t len = 0U;
+    while (len < capacity && text[len] != '\0') {
+        len++;
+    }
+    return len;
+}
+
+/** @brief @p scope's fields folded into FNV-1a @p hash, one by one (no padding is read). */
+inline uint32_t
+call_history_scope_fnv1a(uint32_t hash, const CallHistoryScope& scope) {
+    hash = call_history_fnv1a(hash, &scope.kind, sizeof scope.kind);
+    hash = call_history_fnv1a(hash, &scope.a, sizeof scope.a);
+    hash = call_history_fnv1a(hash, &scope.b, sizeof scope.b);
+    return call_history_fnv1a(hash, &scope.freqHz, sizeof scope.freqHz);
+}
+
+/**
+ * @brief A digest of a ring row's raw identity (issue #800): its sync type, where it was heard (Event_History::rx_scope,
+ *        and whether it was read), its sender's system (pos.scope with its discriminator) and its source and target
+ *        text, each text up to its NUL within its capacity; never 0.
+ *
+ * The core can resolve a committed voice row's identity in place (a reacquired segment that learned its system), and a
+ * fragment that then names another system than the row it joined must take back what it gave that row, so any change
+ * is an advance.
+ */
+inline uint32_t
+call_history_identity_digest(int systype, bool rx_resolved, const CallHistoryScope& rx, const CallHistoryScope& sender,
+                             const char* src_text, size_t src_capacity, const char* tgt_text, size_t tgt_capacity) {
+    const uint8_t resolved = rx_resolved ? 1U : 0U;
+    uint32_t hash = call_history_fnv1a(2166136261U, &systype, sizeof systype);
+    hash = call_history_fnv1a(hash, &resolved, sizeof resolved);
+    hash = call_history_scope_fnv1a(hash, rx);
+    hash = call_history_scope_fnv1a(hash, sender);
+    hash = call_history_fnv1a(hash, src_text, call_history_text_len(src_text, src_capacity));
+    const uint8_t separator = 0U;
+    hash = call_history_fnv1a(hash, &separator, sizeof separator);
+    hash = call_history_fnv1a(hash, tgt_text, call_history_text_len(tgt_text, tgt_capacity));
+    return hash != 0U ? hash : 1U;
+}
+
 /**
  * @brief Whether an admitted position's values are ones a report could hold: latitude within +/-90 and longitude within
  *        +/-180 degrees (x 1e7), not exactly (0, 0), a known kind and only defined flags (position.h).

@@ -15599,7 +15599,19 @@ Qt Quick frontend (`src/ui/qt`):
       again) keeps all of them to itself and leaves the row's own as they were. So does one heard on a reception
       system the row's own is not compatible with (`call_history_scopes_compatible()` on `rxScope`): an update found by
       its fragment can name another system than the one it merged under, and a late position from it never lands on
-      the row. The texts anonymous fragments gave are
+      the row. Such a reading also takes back what that fragment's earlier readings gave while they agreed with the row
+      (`withdraw_fragment_payload()`, `withdraw_source_label()`): its GPS unit (the row shows the best remaining
+      fragment's, or none), and the message and source label when they are that fragment's (by provenance), so a
+      NAC-only fragment that later names another system leaves no fix, message or label of its own on the row, live,
+      saved or after a reload. A reading that names another system (`fragment_system_compatible()`: protocol family,
+      reception or sender system) also gives nothing else and takes back every other field it gave
+      (`withdraw_fragment_fields()`): each fragment's contribution is kept as a `Row::FragmentPart` (span, crypto and
+      emergency flags, frequency and access code, site and call channel, reception scope, receive evidence, service
+      and the name it gave), and the row is rebuilt from the parts not withdrawn by the merge's own rules
+      (`rebuild_from_parts()`: newest known frequency, code and channel by provenance, site union, strongest scope,
+      first receive evidence, earliest start and latest end, flags OR'd), then re-sorted. A later reading that agrees
+      again gives its part back (`merge_parts()`). A row an older build stored with several fragments has no parts:
+      the withdrawal clears only the frequency, code and channel that are that fragment's (by provenance). The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
@@ -15621,12 +15633,22 @@ Qt Quick frontend (`src/ui/qt`):
       every stop, so a later run's fix wins whatever order the fragments are read in.
     - Re-ingest and notices: `SeenState` keeps digests of the GPS text, message and position (`gpx`, `msx`, `psx`),
       so a late fix or message on a committed row is read again; an entry from an older build reads 0, so such a row
-      is read once more. A repeated notice (`notices_same_delivery()`) must match the texts, the fix (coordinates,
-      error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      is read once more. It also keeps a digest of the raw identity (`idx`, `call_history_identity_digest()`: sync
+      type, `rx_scope` and whether it was read, `pos.scope` with its discriminator, `src_str`, `tgt_str`), so a row
+      whose system the core resolves in place is read again and its fragment checked against the row again; an entry
+      without one (an older build's, or `load()`'s seed) takes the first read's without counting it as a change, as
+      the site text digest does. A repeated notice (`notices_same_delivery()`) must match the texts, the fix
+      (coordinates, error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
-      `frv` (fragment key to reading version), each only when known (`detail` only for a legacy text); spill lines
-      add `ord`. An impossible stored position loads as none, its text kept. Tests: `UI_QT_CALL_HISTORY_MODEL`,
+      `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
+      under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only
+      when known (`detail` only for a legacy text); spill lines
+      add `ord`. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
+      part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
+      could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on
+      a NAC or frequency scope, a frequency scope's frequency known, EDACS parts 0 or `0x10000 |` the number), and a
+      stored `proto` that is no whole number loads as not known. Tests: `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only

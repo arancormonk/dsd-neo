@@ -38,20 +38,28 @@ qint64 json_i64_or(const QJsonObject& obj, const char* key, qint64 fallback);
  * @brief A stored integer that fits @p T, or false when the key is missing, holds no integer or does not fit.
  *
  * For values a ring row carries in fields of that width, so a hand-edited store cannot wrap one into another value.
+ * Whether the value is an integer is judged apart from its range: no stand-in value means "none", so a 64-bit field
+ * cannot take one for a stored value.
  */
 template <typename T>
 bool
 json_field_fits(const QJsonObject& obj, const char* key, T* out) {
-    constexpr qint64 kNone = std::numeric_limits<qint64>::min();
     const QJsonValue value = obj.value(QLatin1String(key));
-    const qint64 n = value.isDouble() ? value.toInteger(kNone) : kNone;
-    if (n < static_cast<qint64>(std::numeric_limits<T>::min())
+    // toInteger() gives its fallback for anything but a whole number a qint64 holds: two fallbacks tell that apart.
+    const qint64 n = value.toInteger(0);
+    if (!value.isDouble() || n != value.toInteger(1) || n < static_cast<qint64>(std::numeric_limits<T>::min())
         || n > static_cast<qint64>(std::numeric_limits<T>::max())) {
         return false;
     }
     *out = static_cast<T>(n);
     return true;
 }
+
+/** @brief A stored system identity under @p key (`rx`, `sscope`), or none when it is missing or invalid. */
+CallHistoryScope stored_scope_from_json(const QJsonObject& obj, const char* key);
+
+/** @brief Store @p scope under @p key; nothing for an unknown one. */
+void stored_scope_to_json(const CallHistoryScope& scope, const char* key, QJsonObject& obj);
 
 /** @brief Keep the newest of @p rings' session ordinals (CallHistoryModel::SessionOrdinals), by ordinal. */
 void bound_session_ordinals(QHash<quint64, qint64>& rings);
@@ -74,6 +82,10 @@ void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
 
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
+
+/** @brief Whether fragment @p row is of @p existing's system: one protocol family, and a reception and sender system the
+ * row's are compatible with (call_history_scopes_compatible()). */
+bool fragment_system_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
 /** @brief Whether fragment @p row is of @p existing's radio, so it may give the row its texts, position and source
  * label: one protocol family and sender system, no other source number or text, and not anonymous beside a named row. */

@@ -103,6 +103,7 @@
 #include "call_history_filter.h"
 #include "call_history_merge.h"
 #include "call_history_model.h"
+#include "call_history_payload.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -6225,6 +6226,367 @@ test_late_position_rechecks_reception_system(void) {
     }
 }
 
+/* B2/B5: a fragment that gave a row its fix, message and source label while its identity agreed with the row's takes
+ * them back when its later reading names another reception system. A P25 call row heard on one full system merges a
+ * NAC-only fragment of the same radio that brings a fix, a message and a label; when that fragment's later reading
+ * names another full system, the row shows none of them (or the best remaining fragment's fix, when its own fragment
+ * has one), live, saved and after a reload. */
+void
+test_fragment_on_another_system_withdraws_payload(void) {
+    const time_t when = 1754706650;
+    for (int ownFix = 0; ownFix < 2; ownFix++) {
+        resetStorage();
+        RingFixture ring;
+        const QString shownAfter = ownFix != 0 ? QStringLiteral("GPS: A") : QString();
+        {
+            CallHistoryModel model;
+            Event_History* a = ring.commit(0, 80651U, 8651U, when, when + 3);
+            a->systype = DSD_SYNC_P25P1_POS;
+            with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            if (ownFix != 0) {
+                with_gps(a, "GPS: A", 100000000, 200000000, 3U);
+                a->pos.scope.kind = DSD_POS_SCOPE_P25;
+                a->pos.scope.a = 0xBEE00U;
+                a->pos.scope.b = 0x1A3U;
+            }
+            Event_History* b = ring.commit(0, 80651U, 8651U, when + 5, when + 8);
+            b->systype = DSD_SYNC_P25P1_POS;
+            with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+            with_gps(b, "GPS: B", 225000000, 450000000, 7U);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25_NAC;
+            b->pos.scope.a = 0x293U;
+            b->pos.identity_freq_hz = 452500000;
+            DSD_SNPRINTF(b->text_message, sizeof(b->text_message), "%s", "Copy B");
+            DSD_SNPRINTF(b->s_name, sizeof(b->s_name), "%s", "Alias B");
+            model.refresh(ring.state);
+            expect("withdraw: the NAC-only fragment joins the call and gives it its fix, message and label",
+                   model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy B · GPS: B")
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              == QStringLiteral("Alias B"));
+            b = &ring.rings[0].Event_History_Items[1];
+            with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25;
+            b->pos.scope.a = 0xBEE00U;
+            b->pos.scope.b = 0x1A4U;
+            b->pos.identity_freq_hz = 0;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect(ownFix != 0 ? "withdraw: another system's fragment gives way to the row's own fix"
+                               : "withdraw: another system's fragment leaves the row no fix and no message",
+                   model.count() == 1 && detail_of(model, 0) == shownAfter);
+            expect("withdraw: another system's fragment takes its label back",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              != QStringLiteral("Alias B"));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        const QJsonObject stored = stored_row_with(80651U, 8651U);
+        const QJsonObject pos = stored.value(QLatin1String("pos")).toObject();
+        const bool posSaved = stored.contains(QLatin1String("pos"));
+        expect("withdraw: the withdrawn fix, message and label are not saved",
+               !stored.contains(QLatin1String("msg")) && !stored.contains(QLatin1String("gpsAlt"))
+                   && stored.value(QLatin1String("srcName")).toString() != QStringLiteral("Alias B")
+                   && posSaved == (ownFix != 0) && (!posSaved || pos.value(QLatin1String("lat")).toInt() == 100000000));
+        CallHistoryModel reloaded;
+        expect("withdraw: the same after a reload",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == shownAfter
+                   && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                          != QStringLiteral("Alias B"));
+    }
+}
+
+/** The fields of row @p row that a fragment's part gives it (FragmentPart), as one line to compare. */
+QString
+part_fields_of(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return QStringLiteral("freq=%1 code=%2 site=%3 svc=%4 name=%5 em=%6 enc=%7 dur=%8 when=%9")
+        .arg(model.data(idx, CallHistoryModel::FreqHzRole).toLongLong())
+        .arg(model.data(idx, CallHistoryModel::AccessCodeRole).toString())
+        .arg(model.data(idx, CallHistoryModel::SiteTextRole).toString())
+        .arg(model.data(idx, CallHistoryModel::ServiceNameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::NameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::EmergencyRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::EncRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::DurationSecsRole).toInt())
+        .arg(model.data(idx, CallHistoryModel::WhenRole).toLongLong());
+}
+
+/* The ruling on B2/B5: a fragment that turns out to be another system's takes back every field it gave its row, not
+ * only its texts: its frequency, access code, site, receive evidence and service (with the name it gave), emergency and
+ * crypto flags, the span it added and the reception scope it strengthened. The row rebuilds them from its other
+ * fragments by the merge's own rules, live and when the withdrawal comes after a reload (the parts are stored). */
+void
+test_fragment_on_another_system_withdraws_call_fields(void) {
+    const time_t when = 1754706800;
+    for (int reloadFirst = 0; reloadFirst < 2; reloadFirst++) {
+        resetStorage();
+        RingFixture ring;
+        QString alone;
+        auto model = std::make_unique<CallHistoryModel>();
+        Event_History* a = ring.commit(0, 80671U, 8671U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(a, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        model->refresh(ring.state);
+        alone = part_fields_of(*model, 0);
+        {
+            Event_History* joining = ring.commit(0, 80671U, 8671U, when + 5, when + 12);
+            joining->systype = DSD_SYNC_P25P1_POS;
+            with_rx(joining, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+            RingFixture::carrier(joining, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+            joining->site_id.family = DSD_RXID_FAMILY_P25;
+            joining->site_id.valid = DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+            joining->site_id.p25_sysid = 0x1A3U;
+            joining->site_id.p25_rfss = 1U;
+            joining->site_id.p25_site = 2U;
+            DSD_SNPRINTF(joining->service_label, sizeof(joining->service_label), "%s", "Service B");
+            joining->receive_identity.known = 1;
+            joining->receive_identity.kind = DSD_RECEIVE_NAC;
+            joining->receive_identity.value = 0x293U;
+            joining->emergency = 1U;
+            joining->enc = 1U;
+        }
+        model->refresh(ring.state);
+        expect("fields: the NAC-only fragment joins the call and gives it its fields",
+               model->count() == 1 && part_fields_of(*model, 0) != alone
+                   && model->data(model->index(0), CallHistoryModel::FreqHzRole).toLongLong() == 453000000);
+        if (reloadFirst != 0) {
+            // Saved and loaded again before the core resolves the fragment: the row's parts come from the store.
+            model->startSaveForTest();
+            model->waitForSaveForTest();
+            model.reset();
+            model = std::make_unique<CallHistoryModel>();
+            expect("fields: the merged row reloads as it was",
+                   model->count() == 1 && part_fields_of(*model, 0) != alone);
+        }
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        b->freq_hz = 453000000;
+        ring.touchCommitted(0);
+        model->refresh(ring.state);
+        const QString after = model->count() == 1 ? part_fields_of(*model, 0) : QStringLiteral("<rows>");
+        expect(reloadFirst != 0 ? "fields: after a reload, another system's fragment gives back every field it gave"
+                                : "fields: another system's fragment gives back every field it gave",
+               after == alone);
+        if (after != alone) {
+            DSD_FPRINTF(stderr, "  want %s\n  got  %s\n", alone.toUtf8().constData(), after.toUtf8().constData());
+        }
+        model->startSaveForTest();
+        model->waitForSaveForTest();
+        model.reset();
+        const QJsonObject stored = stored_row_with(80671U, 8671U);
+        expect("fields: the withdrawn fragment's receive evidence and service are not saved",
+               !stored.isEmpty() && !stored.contains(QLatin1String("receiveKnown"))
+                   && !stored.contains(QLatin1String("service")));
+        expect("fields: the end the withdrawn fragment gave is not saved",
+               stored.value(QLatin1String("end")).toInteger() == static_cast<qint64>(when + 3));
+        CallHistoryModel reloaded;
+        expect("fields: the rebuilt row is the one saved",
+               reloaded.count() == 1 && part_fields_of(reloaded, 0) == alone);
+    }
+
+    // The reception scope the withdrawn fragment strengthened goes back to what the rest knew.
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* a = ring.commit(0, 80672U, 8672U, when, when + 3);
+    a->systype = DSD_SYNC_P25P1_POS;
+    with_rx(a, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+    Event_History* b = ring.commit(0, 80672U, 8672U, when - 6, when + 1);
+    b->systype = DSD_SYNC_P25P1_POS;
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+    model.refresh(ring.state);
+    expect("fields: an earlier fragment starts the row",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when - 6));
+    b = &ring.rings[0].Event_History_Items[1];
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonObject rx = stored_row_with(80672U, 8672U).value(QLatin1String("rx")).toObject();
+    expect("fields: the reception scope the withdrawn fragment strengthened is the rest's again",
+           model.count() == 1 && rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_P25_NAC
+               && rx.value(QLatin1String("a")).toInt() == 0x293);
+    expect("fields: the start the withdrawn fragment gave is the rest's again",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when)
+               && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 3);
+
+    // A row an older build stored with several fragments keeps no parts to rebuild from: the frequency and access code
+    // the withdrawn fragment gave are cleared rather than kept.
+    resetStorage();
+    RingFixture legacy;
+    {
+        CallHistoryModel merged;
+        Event_History* first = legacy.commit(0, 80673U, 8673U, when, when + 3);
+        first->systype = DSD_SYNC_P25P1_POS;
+        with_rx(first, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(first, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        Event_History* second = legacy.commit(0, 80673U, 8673U, when + 5, when + 8);
+        second->systype = DSD_SYNC_P25P1_POS;
+        with_rx(second, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+        RingFixture::carrier(second, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+        merged.refresh(legacy.state);
+        expect("fields: the older row merges", merged.count() == 1);
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    expect("fields: a merged row stores its parts", row.contains(QLatin1String("fp")));
+    row.remove(QLatin1String("fp"));
+    rows.replace(0, row);
+    expect("fields: the older row is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel older;
+        Event_History* second = &legacy.rings[0].Event_History_Items[1];
+        with_rx(second, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        second->freq_hz = 453000000;
+        legacy.touchCommitted(0);
+        older.refresh(legacy.state);
+        expect("fields: an older row clears the frequency and code the withdrawn fragment gave",
+               older.count() == 1 && older.data(older.index(0), CallHistoryModel::FreqHzRole).toLongLong() == 0
+                   && older.data(older.index(0), CallHistoryModel::AccessCodeRole).toString().isEmpty());
+    }
+}
+
+/* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
+ * number past 64 bits is refused, and no stand-in value counts as a stored one. */
+void
+test_json_field_fits_judges_conversion(void) {
+    const QJsonObject obj{{QStringLiteral("text"), QStringLiteral("12")},
+                          {QStringLiteral("half"), 0.5},
+                          {QStringLiteral("huge"), 1e300},
+                          {QStringLiteral("neg"), static_cast<qint64>(-5)},
+                          {QStringLiteral("big"), static_cast<qint64>(1) << 40}};
+    qint64 out = 7;
+    expect("json_field_fits: a missing key is refused", !dsd_qt::json_field_fits(obj, "none", &out) && out == 7);
+    expect("json_field_fits: a string is refused", !dsd_qt::json_field_fits(obj, "text", &out) && out == 7);
+    expect("json_field_fits: a fraction is refused", !dsd_qt::json_field_fits(obj, "half", &out) && out == 7);
+    expect("json_field_fits: a number past 64 bits is refused",
+           !dsd_qt::json_field_fits(obj, "huge", &out) && out == 7);
+    expect("json_field_fits: a negative whole number fits", dsd_qt::json_field_fits(obj, "neg", &out) && out == -5);
+    expect("json_field_fits: a 40-bit whole number fits",
+           dsd_qt::json_field_fits(obj, "big", &out) && out == (static_cast<qint64>(1) << 40));
+    uint32_t narrow = 3U;
+    expect("json_field_fits: a value past the field is refused", !dsd_qt::json_field_fits(obj, "big", &narrow)
+                                                                     && !dsd_qt::json_field_fits(obj, "neg", &narrow)
+                                                                     && narrow == 3U);
+}
+
+/* A stored system identity (`rx`, `sscope`) with a part no record could hold reads as not known, so the stored row still
+ * takes in a fragment of its call: a discriminator that is missing, no number, fractional, negative or past a 32-bit
+ * frequency; a discriminator on a scope that has none; a b part where the kind has none; a frequency scope without its
+ * frequency; an EDACS part not in its stored form. So does a stored sync type that is no integer. Each corruption is
+ * applied to a row the model wrote, whose valid identity the next fragment repeats. */
+void
+test_stored_identity_parts_are_validated(void) {
+    const time_t when = 1754706750;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a;
+        uint32_t b;
+        int64_t freq;
+        const char* key;
+        QJsonValue value;
+    };
+
+    const QJsonValue removed(QJsonValue::Undefined);
+    const Case cases[] = {
+        {"stored scope: a missing discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f", removed},
+        {"stored scope: a discriminator that is no number", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(QStringLiteral("452500000"))},
+        {"stored scope: a fractional discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(452500000.5)},
+        {"stored scope: a negative discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(-452500000))},
+        {"stored scope: a discriminator past 32 bits", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(0x100000000LL + 452500000LL))},
+        {"stored scope: a NAC scope with a b part", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "b", QJsonValue(7)},
+        {"stored scope: a discriminator on a full system", DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0, "f",
+         QJsonValue(static_cast<qint64>(452500000))},
+        {"stored scope: a tuned-frequency scope without its frequency", DSD_POS_SCOPE_FEED_TUNED_FREQ, 446006250U, 0U,
+         0, "a", QJsonValue(0)},
+        {"stored scope: an EDACS part not in its stored form", DSD_POS_SCOPE_FEED_EDACS, 0x10005U, 0U, 0, "a",
+         QJsonValue(5)},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            Event_History* first = ring.commit(0, 80661U, 8661U, when, when + 3);
+            first->systype = DSD_SYNC_P25P1_POS;
+            with_rx(first, c.kind, c.a, c.b, c.freq);
+            first->pos.scope.kind = c.kind;
+            first->pos.scope.a = c.a;
+            first->pos.scope.b = c.b;
+            first->pos.identity_freq_hz = c.freq;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        for (const char* scopeKey : {"rx", "sscope"}) {
+            QJsonObject scope = row.value(QLatin1String(scopeKey)).toObject();
+            expect(c.what, !scope.isEmpty());
+            if (c.value.isUndefined()) {
+                scope.remove(QLatin1String(c.key));
+            } else {
+                scope.insert(QLatin1String(c.key), c.value);
+            }
+            row.insert(QLatin1String(scopeKey), scope);
+        }
+        rows.replace(0, row);
+        expect(c.what, dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            Event_History* next = ring.commit(0, 80661U, 8661U, when + 5, when + 8);
+            next->systype = DSD_SYNC_P25P1_POS;
+            with_rx(next, c.kind, c.a, c.b, c.freq);
+            next->pos.scope.kind = c.kind;
+            next->pos.scope.a = c.a;
+            next->pos.scope.b = c.b;
+            next->pos.identity_freq_hz = c.freq;
+            reloaded.refresh(ring.state);
+            expect(c.what, reloaded.count() == 1);
+        }
+        const QJsonObject rx = stored_row_with(80661U, 8661U).value(QLatin1String("rx")).toObject();
+        expect(c.what, rx.value(QLatin1String("k")).toInt() == c.kind
+                           && rx.value(QLatin1String("a")).toInteger() == static_cast<qint64>(c.a)
+                           && rx.value(QLatin1String("b")).toInteger() == static_cast<qint64>(c.b)
+                           && rx.value(QLatin1String("f")).toInteger() == c.freq);
+    }
+
+    // A stored sync type that is no integer is not known: the row reads no protocol, not the sync type 0 a string
+    // converts to.
+    for (const QJsonValue& proto : {QJsonValue(QStringLiteral("x")), QJsonValue(0.5)}) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            ring.commit(0, 80662U, 8662U, when, when + 3)->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        expect("stored sync type: written", row.contains(QLatin1String("proto")));
+        row.insert(QLatin1String("proto"), proto);
+        rows.replace(0, row);
+        expect("stored sync type: rewritten", dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            reloaded.startSaveForTest();
+            reloaded.waitForSaveForTest();
+        }
+        expect("stored sync type: one that is no integer reads as not known",
+               !stored_row_with(80662U, 8662U).isEmpty()
+                   && !stored_row_with(80662U, 8662U).contains(QLatin1String("proto")));
+    }
+}
+
 /* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
  * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
 void
@@ -6402,6 +6764,10 @@ main(int argc, char** argv) {
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
     test_late_position_rechecks_reception_system();
+    test_fragment_on_another_system_withdraws_payload();
+    test_fragment_on_another_system_withdraws_call_fields();
+    test_json_field_fits_judges_conversion();
+    test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();
     test_repeated_notice_compares_the_fix();
 

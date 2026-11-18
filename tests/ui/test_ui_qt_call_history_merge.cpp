@@ -33,6 +33,7 @@ using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
 using dsd_qt::call_history_gps_adopts;
 using dsd_qt::call_history_gps_withdraws;
+using dsd_qt::call_history_identity_digest;
 using dsd_qt::call_history_merge_within_window;
 using dsd_qt::call_history_position_digest;
 using dsd_qt::call_history_position_values_valid;
@@ -765,6 +766,43 @@ test_digests_and_stored_position(void) {
            call_history_position_values_valid(1, 1, 3, static_cast<int64_t>(DSD_POS_FLAG_ALL) + 1), false);
 }
 
+/* Issue #800: the raw identity digest moves with every part of it, so a row whose system the core resolves in place is
+ * read again. */
+void
+test_identity_digest(void) {
+    CallHistoryScope nac;
+    nac.kind = DSD_POS_SCOPE_P25_NAC;
+    nac.a = 0x293U;
+    nac.freqHz = 452500000;
+    CallHistoryScope full;
+    full.kind = DSD_POS_SCOPE_P25;
+    full.a = 0xBEE00U;
+    full.b = 0x1A3U;
+    const CallHistoryScope none;
+    const char src[8] = "N0CALL";
+    const char tgt[8] = "CQCQCQ";
+    const uint32_t base = call_history_identity_digest(0, true, nac, none, src, sizeof src, tgt, sizeof tgt);
+    expect("an identity has a digest", base != 0U, true);
+    expect("no identity has a digest too", call_history_identity_digest(0, false, none, none, "", 1U, "", 1U) != 0U,
+           true);
+    expect("the same identity has the same digest",
+           base == call_history_identity_digest(0, true, nac, none, src, sizeof src, tgt, sizeof tgt), true);
+    expect("a resolved reception changes the digest",
+           base != call_history_identity_digest(0, true, full, none, src, sizeof src, tgt, sizeof tgt), true);
+    expect("a sender system changes the digest",
+           base != call_history_identity_digest(0, true, nac, full, src, sizeof src, tgt, sizeof tgt), true);
+    expect("a reception read changes the digest",
+           base != call_history_identity_digest(0, false, nac, none, src, sizeof src, tgt, sizeof tgt), true);
+    expect("a sync type changes the digest",
+           base != call_history_identity_digest(1, true, nac, none, src, sizeof src, tgt, sizeof tgt), true);
+    expect("a source text changes the digest",
+           base != call_history_identity_digest(0, true, nac, none, "N0CALM", 8U, tgt, sizeof tgt), true);
+    expect("the texts do not run together",
+           call_history_identity_digest(0, true, nac, none, "AB", 8U, "C", 8U)
+               != call_history_identity_digest(0, true, nac, none, "A", 8U, "BC", 8U),
+           true);
+}
+
 } // namespace
 
 int
@@ -788,6 +826,7 @@ main(void) {
     test_gps_withdrawal();
     test_identity_compatibility();
     test_digests_and_stored_position();
+    test_identity_digest();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
