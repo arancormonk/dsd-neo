@@ -42,12 +42,36 @@ struct NetJob {
     MapTileKey key;
     quint64 generation = 0;
     quint64 epoch = 0;
+    /* Asked for by a view the device's position placed: the cache keeps its result in memory only. */
+    bool memoryOnly = false;
     QByteArray ifNoneMatch;
     QByteArray ifModifiedSince;
 };
 
-/* What one fetch came to. */
-enum class Outcome { Success, Cancelled, Invalid, Unsupported, Failure };
+/* What one fetch came to. Miss: the server answered, but has no PNG for this tile (404, 410, 204, or a 200 that is
+ * not a PNG): that tile is skipped for its generation, with no backoff. */
+enum class Outcome { Success, Miss, Cancelled, Invalid, Unsupported, Failure };
+
+/* The answer with the times it went out and came back, before it is decoded or stored. */
+struct Exchange {
+    dsd_tile_fetch_response resp{};
+    qint64 requestTime = 0;
+    qint64 responseTime = 0;
+};
+
+/* Whether @p resp says the server has no tile there: gone, or empty (a 204, or a 200 without a body). */
+bool
+tile_missing(const dsd_tile_fetch_response& resp) {
+    if (resp.status != DSD_TILE_FETCH_ERR_HTTP) {
+        return false;
+    }
+    return resp.http_status == 404 || resp.http_status == 410 || resp.http_status == 204 || resp.http_status == 200;
+}
+
+MapTileCache::Storage
+storage_for(bool memoryOnly) {
+    return memoryOnly ? MapTileCache::Storage::MemoryOnly : MapTileCache::Storage::DiskAndMemory;
+}
 
 struct FetchResult {
     Outcome outcome = Outcome::Failure;
@@ -188,11 +212,18 @@ struct MapTileWorker::Core {
     quint64 templateSerial = 0;
     quint64 epoch = 0;
     quint64 generation = 0;
+    /* The latest generation was asked for by a view the device's position placed. */
+    bool memoryOnly = false;
+    /* This epoch has seen a PNG from its source (a cache hit or a fetch); until then a miss may mean the source
+     * sends no PNG tiles at all. */
+    bool pngSeen = false;
     std::deque<MapTileKey> pending;
     std::deque<NetJob> network;
     bool inflight = false;
     MapTileKey inflightKey;
     quint64 inflightGeneration = 0;
+    /* Set when any generation that kept the fetch in flight was a device-placed view: its result stays in memory. */
+    bool inflightMemoryOnly = false;
     /* The epoch the fetch in flight began in: a restart since then makes its outcome belong to nobody. */
     quint64 inflightEpoch = 0;
     MapTileWorker* receiver = nullptr;
@@ -232,10 +263,11 @@ struct MapTileWorker::Core {
     void requestStop();
     void lookupNext(std::unique_lock<std::mutex>& lock);
     void fetchNext(std::unique_lock<std::mutex>& lock);
-    FetchResult perform(const NetJob& job, const QString& url, MapTileCache& tiles, const MapTileRequestFields& fields);
-    static FetchResult interpret(const NetJob& job, dsd_tile_fetch_response* resp, MapTileCache& tiles,
-                                 qint64 requestTime, qint64 responseTime, const MapTileRequestFields& fields);
+    void perform(const NetJob& job, const QString& url, Exchange* ex) const;
+    static FetchResult interpret(const NetJob& job, Exchange* ex, MapTileCache& tiles,
+                                 const MapTileRequestFields& fields);
     void apply(const NetJob& job, const FetchResult& result);
+    void answered(bool png);
     MapTileCache& cacheFor(const QString& templateText, quint64 serial);
     MapTileRequestFields fieldsFor(const QString& templateText) const;
     void postState(State next);
@@ -333,14 +365,21 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
     const MapTileKey key = pending.front();
     pending.pop_front();
     const quint64 gen = generation;
+    const bool genMemoryOnly = memoryOnly;
     const QString templateText = templ;
     const quint64 serial = templateSerial;
     lock.unlock();
     const MapTileRequestFields fields = fieldsFor(templateText);
-    const MapTileCache::Lookup found = cacheFor(templateText, serial).lookup(key, fields);
+    const MapTileCache::Lookup found = cacheFor(templateText, serial).lookup(key, fields, storage_for(genMemoryOnly));
     lock.lock();
     if (gen != generation) {
         return;
+    }
+    if (!found.image.isNull() && !pngSeen) {
+        pngSeen = true;
+        if (lastPosted == State::NoPngTiles) {
+            postState(State::Ready);
+        }
     }
     postTile(gen, key, found.image, found.reuse == MapTileCache::Reuse::StaleUsable);
     if (found.reuse != MapTileCache::Reuse::Fresh) {
@@ -348,6 +387,7 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
         job.key = key;
         job.generation = gen;
         job.epoch = epoch;
+        job.memoryOnly = genMemoryOnly;
         job.ifNoneMatch = found.ifNoneMatch;
         job.ifModifiedSince = found.ifModifiedSince;
         network.push_back(job);
@@ -375,20 +415,32 @@ MapTileWorker::Core::fetchNext(std::unique_lock<std::mutex>& lock) {
     inflightKey = job.key;
     inflightGeneration = job.generation;
     inflightEpoch = job.epoch;
+    inflightMemoryOnly = job.memoryOnly;
     dsd_tile_fetch_cancel_clear(cancel);
     lock.unlock();
-    const MapTileRequestFields fields = fieldsFor(templateText);
-    const FetchResult result = perform(job, url, cacheFor(templateText, serial), fields);
+    Exchange ex;
+    perform(job, url, &ex);
+    lock.lock();
+    /* Decided once the answer is in: a device-placed view that kept the fetch while it ran makes it memory only. */
+    NetJob done = job;
+    done.memoryOnly = inflightMemoryOnly;
+    lock.unlock();
+    FetchResult result;
+    if (stopping.load()) {
+        /* Torn down while it ran: no decode and no disk write, so the thread leaves as soon as libcurl has. */
+        result.outcome = Outcome::Cancelled;
+    } else {
+        result = interpret(done, &ex, cacheFor(templateText, serial), fieldsFor(templateText));
+    }
+    dsd_tile_fetch_response_free(&ex.resp);
     lock.lock();
     inflight = false;
-    NetJob done = job;
     done.generation = inflightGeneration;
     apply(done, result);
 }
 
-FetchResult
-MapTileWorker::Core::perform(const NetJob& job, const QString& url, MapTileCache& tiles,
-                             const MapTileRequestFields& fields) {
+void
+MapTileWorker::Core::perform(const NetJob& job, const QString& url, Exchange* ex) const {
     const QByteArray urlBytes = url.toLatin1();
     dsd_tile_fetch_request req{};
     req.url = urlBytes.constData();
@@ -396,39 +448,34 @@ MapTileWorker::Core::perform(const NetJob& job, const QString& url, MapTileCache
     req.if_modified_since = job.ifModifiedSince.isEmpty() ? nullptr : job.ifModifiedSince.constData();
     req.cancel = cancel;
     req.transport = options.transport;
-    const qint64 requestTime = wallSecs();
-    dsd_tile_fetch_response resp;
-    (void)dsd_tile_fetch(&req, &resp);
-    const qint64 responseTime = wallSecs();
-    FetchResult result;
-    if (stopping.load()) {
-        /* Torn down while it ran: no decode and no disk write, so the thread leaves as soon as libcurl has. */
-        result.outcome = Outcome::Cancelled;
-    } else {
-        result = interpret(job, &resp, tiles, requestTime, responseTime, fields);
-    }
-    dsd_tile_fetch_response_free(&resp);
-    return result;
+    ex->requestTime = wallSecs();
+    (void)dsd_tile_fetch(&req, &ex->resp);
+    ex->responseTime = wallSecs();
 }
 
 FetchResult
-MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp, MapTileCache& tiles,
-                               qint64 requestTime, qint64 responseTime, const MapTileRequestFields& fields) {
+MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& tiles,
+                               const MapTileRequestFields& fields) {
     FetchResult result;
+    dsd_tile_fetch_response* resp = &ex->resp;
+    const MapTileCache::Storage storage = storage_for(job.memoryOnly);
     switch (resp->status) {
         case DSD_TILE_FETCH_OK: {
             const QByteArray png(reinterpret_cast<const char*>(resp->body), static_cast<qsizetype>(resp->body_len));
             result.image = mapTileDecodePng(png);
-            if (!result.image.isNull()) {
-                (void)tiles.store(job.key, *resp, png, result.image, requestTime, responseTime, fields);
-                result.outcome = Outcome::Success;
+            if (result.image.isNull()) {
+                /* Not a PNG (a JPEG source, an HTML page): this tile is skipped, not retried. */
+                result.outcome = Outcome::Miss;
+                return result;
             }
+            (void)tiles.store(job.key, *resp, png, result.image, ex->requestTime, ex->responseTime, fields, storage);
+            result.outcome = Outcome::Success;
             return result;
         }
         case DSD_TILE_FETCH_NOT_MODIFIED:
             /* A 304 to a request that carried no validator selects nothing. */
             if (!job.ifNoneMatch.isEmpty() || !job.ifModifiedSince.isEmpty()) {
-                result.image = tiles.refresh(job.key, *resp, requestTime, responseTime, fields);
+                result.image = tiles.refresh(job.key, *resp, ex->requestTime, ex->responseTime, fields, storage);
             }
             result.outcome = result.image.isNull() ? Outcome::Failure : Outcome::Success;
             result.dropValidators = result.image.isNull();
@@ -438,10 +485,14 @@ MapTileWorker::Core::interpret(const NetJob& job, dsd_tile_fetch_response* resp,
         case DSD_TILE_FETCH_ERR_UNSUPPORTED: result.outcome = Outcome::Unsupported; return result;
         default: break;
     }
+    if (tile_missing(*resp)) {
+        result.outcome = Outcome::Miss;
+        return result;
+    }
     if ((resp->header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U
         && (resp->header_invalid & DSD_TILE_FETCH_HDR_RETRY_AFTER) == 0U) {
         result.hasRetryAfter =
-            MapTileWorker::retryAfterMs(QByteArray(resp->retry_after), responseTime, &result.retryAfterMs);
+            MapTileWorker::retryAfterMs(QByteArray(resp->retry_after), ex->responseTime, &result.retryAfterMs);
     }
     return result;
 }
@@ -456,10 +507,12 @@ MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
     }
     switch (result.outcome) {
         case Outcome::Success:
-            backoffStepMs = 0;
-            backoffUntilMs = 0;
-            postState(State::Ready);
+            answered(true);
             postTile(job.generation, job.key, result.image, false);
+            return;
+        case Outcome::Miss:
+            /* Skipped for this generation; the rest of the view goes on at once. */
+            answered(false);
             return;
         case Outcome::Cancelled:
             /* Cancelled by a clear that a later request for the same tile overtook: still wanted, so again. */
@@ -488,6 +541,20 @@ MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
             again.ifModifiedSince.clear();
         }
         network.push_front(again);
+    }
+}
+
+void
+MapTileWorker::Core::answered(bool png) {
+    /* The server answered: whatever wait a failure set is over. */
+    backoffStepMs = 0;
+    backoffUntilMs = 0;
+    pngSeen = pngSeen || png;
+    if (pngSeen) {
+        postState(State::Ready);
+    } else if (network.empty()) {
+        /* This view is done and not one PNG came from this source since it was chosen or turned on. */
+        postState(State::NoPngTiles);
     }
 }
 
@@ -614,6 +681,7 @@ MapTileWorker::restart(bool templateChanged, bool resetBackoff) {
         std::lock_guard<std::mutex> lock(m_core->mutex);
         m_core->generation++;
         m_core->epoch++;
+        m_core->pngSeen = false;
         m_core->pending.clear();
         m_core->network.clear();
         m_core->lastPosted = idle;
@@ -637,13 +705,15 @@ MapTileWorker::restart(bool templateChanged, bool resetBackoff) {
 }
 
 quint64
-MapTileWorker::requestTiles(const QList<MapTileKey>& keys) {
+MapTileWorker::requestTiles(const QList<MapTileKey>& keys, ViewOrigin origin) {
     if (idleState() != State::Ready || !m_threadStarted) {
         return m_generation;
     }
+    const bool memoryOnly = origin != ViewOrigin::ByHand;
     {
         std::lock_guard<std::mutex> lock(m_core->mutex);
         m_core->generation++;
+        m_core->memoryOnly = memoryOnly;
         m_core->pending.clear();
         m_core->network.clear();
         bool keepInflight = false;
@@ -661,6 +731,7 @@ MapTileWorker::requestTiles(const QList<MapTileKey>& keys) {
         }
         if (keepInflight) {
             m_core->inflightGeneration = m_core->generation;
+            m_core->inflightMemoryOnly = m_core->inflightMemoryOnly || memoryOnly;
         } else if (m_core->inflight) {
             dsd_tile_fetch_cancel_request(m_core->cancel);
         }
@@ -716,7 +787,7 @@ MapTileWorker::validTemplate(const QString& urlTemplate, QString* host) {
         return false;
     }
     int counts[3] = {0, 0, 0};
-    if (!scan_placeholders(rest, counts) || counts[0] == 0 || counts[1] == 0 || counts[2] == 0
+    if (!scan_placeholders(rest, counts) || counts[0] != 1 || counts[1] != 1 || counts[2] != 1
         || longest_url(urlTemplate.size(), counts) > static_cast<qint64>(DSD_TILE_FETCH_URL_MAX)) {
         return false;
     }
@@ -805,6 +876,12 @@ MapTileWorker::shutdownThreads(int timeoutMs) {
 void
 MapTileWorker::wakeForTest() {
     m_core->wake.notify_all();
+}
+
+bool
+MapTileWorker::memoryOnlyForTest() const {
+    std::lock_guard<std::mutex> lock(m_core->mutex);
+    return m_core->memoryOnly;
 }
 
 qint64

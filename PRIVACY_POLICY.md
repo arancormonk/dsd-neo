@@ -95,9 +95,14 @@ at is around you, so the tile server can tell roughly where you are. The app sen
 positions, radio IDs or other decoded data. The tile server handles this under its own terms;
 for OpenStreetMap that is the OpenStreetMap Foundation's privacy policy.
 
-Tiles the app received are kept in its cache on your device (up to 50 MB), so the same area
-does not have to be fetched again. The cache is not part of the app's backup file, and Android
-can clear it at any time.
+The app keeps the tiles of areas you looked at by hand in a cache on your device, so the same
+area does not have to be fetched again. Each cached tile is stored with the time it was fetched
+and stays until newer tiles push it out (the cache holds up to 50 MB) or the cache is cleared,
+so the cache shows which areas you looked at, and when. Once your own position has placed the
+map (Locate me, Follow my position, Show every radio when it took in your dot, or a map that
+first opened around you), the tiles of the rest of that visit to the map are kept in memory
+only and never written to the cache, so the cache holds no trail of where you were. The cache
+is not part of the app's backup file, and Android can clear it at any time.
 
 The app saves on your device whether tiles are on, the tile server you entered and its
 attribution, the age filter you chose, and the area you last looked at, so the map can open
@@ -131,9 +136,10 @@ GPS roaming and on the map:
   coordinates once, with no postal-code lookup, as the nearby-site chooser does, and saves the
   result the same way (see below). **Follow my position**, if you turn it on, uses your precise
   location to keep the map on you as you move, only while the map is on screen; leaving the map
-  or the app stops it. Those locations are never saved. The dot is drawn on your device, and
-  nothing about your position is sent anywhere, apart from the map tiles of the area you look
-  at (see [Map](#map)).
+  or the app stops it. Those locations are never saved, and neither are the map tiles fetched
+  around you: they stay in memory only. The dot is drawn on your device, and nothing about your
+  position is sent anywhere, apart from the map tiles of the area you look at (see
+  [Map](#map)).
 
 The first time you use location, the app asks for approximate location (Use my location) or
 for approximate and precise location (the nearby-site chooser, Listen's Nearest order, GPS

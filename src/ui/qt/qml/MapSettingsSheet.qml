@@ -97,7 +97,7 @@ ModalSheet {
         width: parent.width
         mono: true
         label: qsTr("Tile address")
-        hint: qsTr("An https address with {z}, {x} and {y} where the tile's zoom and position go.")
+        hint: qsTr("An https address for PNG tiles, with {z}, {x} and {y} where the tile's zoom and position go.")
         error: sheet.trimmedUrl.length > 0 && !sheet.urlValid ? qsTr("Use an https address that has {z}, {x} and {y} once each.") : sheet.trimmedUrl.length === 0 ? qsTr("Enter a tile address.") : ""
         inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
         nextField: attributionField

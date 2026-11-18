@@ -716,6 +716,7 @@ MapViewItem::setFollowDevice(bool on) {
     }
     Q_EMIT followChanged();
     followNow();
+    polish(); /* the tiles' origin may have changed */
 }
 
 void
@@ -762,6 +763,7 @@ MapViewItem::markUsedDevice() {
     }
     m_usedDevice = true;
     Q_EMIT cameraUsedDevicePositionChanged();
+    polish(); /* the view's tiles are asked for again, from the device */
 }
 
 void
@@ -771,6 +773,7 @@ MapViewItem::resetCameraUsedDevicePosition() {
     }
     m_usedDevice = false;
     Q_EMIT cameraUsedDevicePositionChanged();
+    polish();
 }
 
 void
@@ -1061,6 +1064,12 @@ MapViewItem::tilesWanted() const {
            && width() > 0.0 && height() > 0.0;
 }
 
+bool
+MapViewItem::tilesFromDevice() const {
+    /* Sticky for the visit: after Locate me or a fit around the dot, a pan by hand still starts near the device. */
+    return m_usedDevice || m_followDevice;
+}
+
 void
 MapViewItem::dropTileRequests() {
     if (m_tiles && !m_requested.isEmpty()) {
@@ -1095,9 +1104,12 @@ MapViewItem::updatePolish() {
             keys.append(key);
         }
     }
-    if (keys != m_requested) {
+    const bool fromDevice = tilesFromDevice();
+    if (keys != m_requested || fromDevice != m_requestedFromDevice) {
         m_requested = keys;
-        (void)m_tiles->requestTiles(keys);
+        m_requestedFromDevice = fromDevice;
+        (void)m_tiles->requestTiles(keys, fromDevice ? MapTileWorker::ViewOrigin::FromDevice
+                                                     : MapTileWorker::ViewOrigin::ByHand);
     }
     /* Held images: the view's own, and stand-ins from another zoom while some of the view's are still loading. */
     bool complete = true;

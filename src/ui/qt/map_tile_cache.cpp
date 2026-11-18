@@ -443,7 +443,7 @@ MapTileCache::now() const {
 }
 
 MapTileCache::Lookup
-MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent) {
+MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent, Storage storage) {
     Lookup out;
     if (!key.valid()) {
         return out;
@@ -453,11 +453,11 @@ MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent) {
     if (found != m_memory.cend()) {
         entry = found.value();
         remember(key, entry);
-    } else if (!loadFromDisk(key, &entry)) {
+    } else if (storage == Storage::MemoryOnly || !loadFromDisk(key, &entry)) {
         return out;
     }
     if (must_not_store(entry.meta)) {
-        remove(key);
+        drop(key, storage);
         return out;
     }
     if (!vary_matches(entry.meta, sent)) {
@@ -478,7 +478,8 @@ MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent) {
 
 bool
 MapTileCache::store(const MapTileKey& key, const dsd_tile_fetch_response& response, const QByteArray& png,
-                    const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent) {
+                    const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent,
+                    Storage storage) {
     if (!key.valid() || image.isNull() || png.isEmpty()) {
         return false;
     }
@@ -486,17 +487,18 @@ MapTileCache::store(const MapTileKey& key, const dsd_tile_fetch_response& respon
     entry.image = image;
     entry.meta = mapTileMetaFromResponse(response, requestTime, responseTime, sent);
     if (must_not_store(entry.meta)) {
-        remove(key);
+        drop(key, storage);
         return false;
     }
+    /* A failed write leaves an older file, whose image this one is not: never write a later 304 over it. */
+    entry.persistable = storage == Storage::DiskAndMemory && writeEntry(key, entry.meta, png);
     remember(key, entry);
-    (void)writeEntry(key, entry.meta, png);
     return true;
 }
 
 QImage
 MapTileCache::refresh(const MapTileKey& key, const dsd_tile_fetch_response& response, qint64 requestTime,
-                      qint64 responseTime, const MapTileRequestFields& sent) {
+                      qint64 responseTime, const MapTileRequestFields& sent, Storage storage) {
     if (!key.valid()) {
         return QImage();
     }
@@ -504,21 +506,23 @@ MapTileCache::refresh(const MapTileKey& key, const dsd_tile_fetch_response& resp
     const auto found = m_memory.constFind(key);
     if (found != m_memory.cend()) {
         entry = found.value();
-    } else if (!loadFromDisk(key, &entry)) {
+    } else if (storage == Storage::MemoryOnly || !loadFromDisk(key, &entry)) {
         return QImage();
     }
     if (!validators_select(entry.meta, response, now())) {
-        remove(key);
+        drop(key, storage);
         return QImage();
     }
     merge_not_modified(&entry.meta, response, requestTime, responseTime, sent);
     if (must_not_store(entry.meta)) {
-        remove(key);
+        drop(key, storage);
         return entry.image;
     }
+    /* Metadata a device-placed view merged (its Date, Expires, ETag) is never written, now or by a later 304. */
+    entry.persistable = entry.persistable && storage == Storage::DiskAndMemory;
     remember(key, entry);
     QByteArray png;
-    if (readPng(key, &png)) {
+    if (entry.persistable && readPng(key, &png)) {
         (void)writeEntry(key, entry.meta, png);
     }
     return entry.image;
@@ -530,6 +534,15 @@ MapTileCache::remove(const MapTileKey& key) {
     const QString path = pathFor(key);
     if (!path.isEmpty()) {
         dropFile(path);
+    }
+}
+
+void
+MapTileCache::drop(const MapTileKey& key, Storage storage) {
+    if (storage == Storage::MemoryOnly) {
+        forget(key);
+    } else {
+        remove(key);
     }
 }
 
@@ -590,6 +603,7 @@ MapTileCache::loadFromDisk(const MapTileKey& key, MemoryEntry* entry) {
     noteFile(path, bytes.size(), stamp);
     entry->image = image;
     entry->meta = meta;
+    entry->persistable = true;
     remember(key, *entry);
     return true;
 }

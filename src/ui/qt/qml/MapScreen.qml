@@ -529,9 +529,10 @@ Item {
 
             MapChip {
                 objectName: "mapTilesState"
-                visible: screen.tilesEnabled && (tiles.state === MapTileSource.Retrying || tiles.state === MapTileSource.Unavailable || tiles.state === MapTileSource.InvalidSource)
+                visible: screen.tilesEnabled && (tiles.state === MapTileSource.Retrying || tiles.state === MapTileSource.Unavailable || tiles.state === MapTileSource.InvalidSource || tiles.state === MapTileSource.NoPngTiles)
                 text: tiles.state === MapTileSource.Retrying ? qsTr("Map tiles unavailable — retrying")
                     : tiles.state === MapTileSource.Unavailable ? qsTr("Online map tiles are not available in this build")
+                    : tiles.state === MapTileSource.NoPngTiles ? qsTr("The tile server sent no PNG tiles. Check Map settings.")
                     : qsTr("The tile address is not valid. Check Map settings.")
             }
             // The pin's words and its button: the drawn pin is not a node,

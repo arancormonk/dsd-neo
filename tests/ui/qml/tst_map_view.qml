@@ -266,6 +266,7 @@ Item {
             compare(tiles.templateHost("https://tiles.example.org:8443/{z}/{x}/{y}.png"), "tiles.example.org:8443")
             verify(!tiles.isValidTemplate("http://tiles.example.org/{z}/{x}/{y}.png"), "https only")
             verify(!tiles.isValidTemplate("https://tiles.example.org/{z}/{x}.png"), "every placeholder")
+            verify(!tiles.isValidTemplate("https://tiles.example.org/{z}/{x}/{y}/{z}.png"), "each placeholder once")
             compare(tiles.templateHost("http://tiles.example.org/{z}/{x}/{y}.png"), "")
         }
 

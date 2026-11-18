@@ -724,24 +724,29 @@ read. Every map action has a button: zoom in and out, **Show every radio**, **Lo
 Until you turn tiles on, the map is a plain grid and the app sends nothing. **Load map tiles** (on the empty map, or in
 the prompt on the map) or the switch in **Map settings** (the menu at the top right) turns them on. The prompt and the
 settings name the server first: OpenStreetMap's (`tile.openstreetmap.org`) unless you enter another `https://` address
-with `{z}`, `{x}` and `{y}` in it, and the attribution that server asks for. The attribution stays at the bottom of the
-map, above any open sheet, and for OpenStreetMap it opens its copyright page.
+for PNG tiles with `{z}`, `{x}` and `{y}` in it once each, and the attribution that server asks for. The attribution
+stays at the bottom of the map, above any open sheet, and for OpenStreetMap it opens its copyright page.
 
 With tiles on, the app asks the server only for the tiles of the area on screen, over HTTPS, with the User-Agent
 `dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`. The server sees which area you look at, your IP address
 and that User-Agent (see `PRIVACY_POLICY.md`, "Map"). It never gets positions, radio IDs or anything else the app
-decoded. Tiles are kept in the app's cache (up to 50 MB) and follow the server's cache rules, or 7 days when it gives
-none. There is no download for offline use: OpenStreetMap's tile policy does not allow it. When the server cannot be
-reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries again later, waiting
-longer each time (up to 5 minutes).
+decoded. Tiles of areas you looked at by hand are kept in the app's cache, each with the time it was fetched, until
+newer tiles push them out (up to 50 MB) or the cache is cleared. They follow the server's cache rules, or 7 days when it
+gives none. Once your own position has placed the map (Locate me, Follow my position, **Show every radio** when it took
+in your dot, or a map that first opened around you), the tiles of the rest of that visit stay in memory and are never
+written to the cache. There is no download for offline use: OpenStreetMap's tile policy does not allow it. When the
+server cannot be reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries again
+later, waiting longer each time (up to 5 minutes). A tile the server does not have stays blank, and the rest still load.
+If the server sends no PNG tiles at all, the line says **The tile server sent no PNG tiles. Check Map settings.**
 
 ### Your own position
 
 **Locate me** asks for your location once and puts a dot there. It is saved like the nearby-site chooser's fix and
 dropped after 24 hours. Press the button again while the map is still on the dot to **Follow my position**: the map
 then moves with you, using precise location, only while the map is on screen. Leaving the map, moving it by hand or
-pressing the button a third time stops it, and those live positions are never saved. Without precise location the map
-says **Live position needs precise location.**
+pressing the button a third time stops it, and those live positions are never saved. Nor are the map tiles fetched
+around you: they stay in memory (see "Map tiles"). Without precise location the map says **Live position needs precise
+location.**
 
 ### What the map keeps
 

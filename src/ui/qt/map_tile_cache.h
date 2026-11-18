@@ -14,6 +14,11 @@
  * every template's directory, stamped by the file's modification time, which a disk hit renews. CacheLocation is
  * not in the backup allowlist (backup_archive.h), so tiles are never backed up.
  *
+ * A view the device's position placed (Locate me, Follow my position, a fit that took in the device's dot) must
+ * leave no trace on disk: its lookups, stores and 304 merges take Storage::MemoryOnly. They never read, write, stamp
+ * or delete a file (a read alone can stamp the access time), and an entry such a view stored or refreshed is never
+ * written later either, until a 200 fetched by hand replaces it.
+ *
  * Freshness follows RFC 9111 for a private cache, on the real-time wall clock (HTTP dates are wall time):
  * - lifetime is `max-age`, else `Expires − Date`; with neither the lifetime is seven days (the OpenStreetMap tile
  *   policy's floor). A malformed `max-age`, `Expires`, `Date` or `Age`, or conflicting `max-age` values, make the
@@ -139,6 +144,12 @@ class MapTileCache {
 
     using WallClock = std::function<qint64()>;
 
+    /** @brief Whether an operation may touch the disk. */
+    enum class Storage {
+        DiskAndMemory, /**< A view placed by hand: the disk is read, written and stamped. */
+        MemoryOnly,    /**< A view the device's position placed: the disk is not touched at all. */
+    };
+
     /** @brief How a lookup may reuse what is stored. */
     enum class Reuse {
         Miss,            /**< Nothing reusable: fetch unconditionally. */
@@ -170,27 +181,29 @@ class MapTileCache {
     /** @brief This template's directory. */
     QString directory() const;
 
-    /** @brief Look @p key up, memory first, then disk. */
-    Lookup lookup(const MapTileKey& key, const MapTileRequestFields& sent);
+    /** @brief Look @p key up, memory first, then disk (memory only for Storage::MemoryOnly). */
+    Lookup lookup(const MapTileKey& key, const MapTileRequestFields& sent, Storage storage = Storage::DiskAndMemory);
 
     /**
      * @brief Take a 200 response whose @p png decoded to @p image.
      *
-     * @return whether it was stored. `no-store`, `Vary: *` and an unparseable Cache-Control are not, and remove the
-     *         older entry.
+     * @return whether it was stored (in memory only for Storage::MemoryOnly). `no-store`, `Vary: *` and an
+     *         unparseable Cache-Control are not, and remove the older entry (from memory only for MemoryOnly).
      */
     bool store(const MapTileKey& key, const dsd_tile_fetch_response& response, const QByteArray& png,
-               const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent);
+               const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent,
+               Storage storage = Storage::DiskAndMemory);
 
     /**
      * @brief Merge a 304 into the stored entry and return the image it validates.
      *
      * A 304 whose ETag or Last-Modified differs from the stored one selects nothing (§4.3.4): the entry is removed
      * and a null image returned, as when nothing is stored. When the merged fields say `no-store` or `Vary: *` the
-     * image is returned for this one use and the entry removed.
+     * image is returned for this one use and the entry removed. With Storage::MemoryOnly only the memory entry is
+     * merged or removed, and an entry held only on disk selects nothing.
      */
     QImage refresh(const MapTileKey& key, const dsd_tile_fetch_response& response, qint64 requestTime,
-                   qint64 responseTime, const MapTileRequestFields& sent);
+                   qint64 responseTime, const MapTileRequestFields& sent, Storage storage = Storage::DiskAndMemory);
 
     /** @brief Drop @p key from memory and disk. */
     void remove(const MapTileKey& key);
@@ -211,6 +224,9 @@ class MapTileCache {
     struct MemoryEntry {
         QImage image;
         MapTileMeta meta;
+        /* Everything in it came from a view placed by hand and its image is the one in its file, so a 304 may write
+         * the merged metadata back. False once a MemoryOnly store or merge touched it. */
+        bool persistable = false;
     };
 
     struct DiskRecord {
@@ -224,6 +240,7 @@ class MapTileCache {
     bool readPng(const MapTileKey& key, QByteArray* png) const;
     void remember(const MapTileKey& key, const MemoryEntry& entry);
     void forget(const MapTileKey& key);
+    void drop(const MapTileKey& key, Storage storage);
     void ensureScanned();
     void scanNamespace(const QString& dirPath);
     void noteFile(const QString& path, qint64 bytes, qint64 stamp);

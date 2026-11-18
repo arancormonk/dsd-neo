@@ -32,6 +32,7 @@ uint64_t g_stream = 1;
 qint64 g_wall = kMapWallSeconds;
 std::atomic<int> g_tile_requests{0};
 std::atomic<bool> g_tiles_failing{false};
+std::atomic<bool> g_tiles_not_png{false};
 
 char*
 dup_bytes(const QByteArray& bytes, size_t* len) {
@@ -67,11 +68,12 @@ canned_perform(void* /*ctx*/, const dsd_tile_fetch_request* /*req*/, dsd_tile_fe
         ex->headers = dup_bytes(failed, &ex->headers_len);
         return 0;
     }
+    static const QByteArray notPng = QByteArrayLiteral("\xFF\xD8\xFF\xE0 not a png");
     const QByteArray headers = "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\n\r\n";
     ex->http_status = 200;
     ex->headers = dup_bytes(headers, &ex->headers_len);
     size_t len = 0;
-    ex->body = reinterpret_cast<unsigned char*>(dup_bytes(body, &len));
+    ex->body = reinterpret_cast<unsigned char*>(dup_bytes(g_tiles_not_png.load() ? notPng : body, &len));
     ex->body_len = len;
     return 0;
 }
@@ -154,6 +156,11 @@ map_tile_requests() {
 void
 set_map_tiles_failing(bool failing) {
     g_tiles_failing.store(failing);
+}
+
+void
+set_map_tiles_not_png(bool notPng) {
+    g_tiles_not_png.store(notPng);
 }
 
 MapTileSourceStub::MapTileSourceStub(QObject* parent) : dsd_qt::MapTileWorker(canned_options(), parent) {}

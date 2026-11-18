@@ -17,6 +17,8 @@
  *    nodes where the tile list puts them, a tile from an older view that is no longer in view is dropped, the
  *    previous zoom's tiles stand in only until the new zoom's have all arrived, and nothing of them stays once
  *    tiles are off;
+ *  - a view the device's position placed (Locate me, Follow my position, a fit around the dot) asks for its tiles
+ *    memory only for the rest of the visit, and a change of origin alone asks again;
  *  - the sprite atlas is rebuilt when a marker colour changes.
  */
 
@@ -459,6 +461,54 @@ test_background_stops_loading() {
     f.map->setTileSource(nullptr);
 }
 
+/* Final review I1: every tile request of a view the device's position placed is memory only (Locate me, Follow my
+ * position, a fit that took in the dot), for the rest of the visit, even after a pan; a new visit asks by hand. */
+void
+test_device_views_ask_memory_only() {
+    Fixture f;
+    stub::MapTileSourceStub tiles;
+    f.map->setTileSource(&tiles);
+    tiles.setEnabled(true);
+    f.map->testPolish();
+    assert(!f.map->testRequestedTiles().isEmpty() && !tiles.memoryOnlyForTest()); /* placed by hand */
+
+    f.map->setDeviceLatitude(10.01);
+    f.map->setDeviceLongitude(20.01);
+    f.map->setDeviceValid(true);
+    f.map->testPolish();
+    assert(!tiles.memoryOnlyForTest()); /* the dot alone does not move the camera */
+
+    const bool centred = f.map->centerOnDevice();
+    assert(centred);
+    f.map->testPolish();
+    assert(f.map->cameraUsedDevicePosition() && tiles.memoryOnlyForTest());
+    f.map->panBy(40.0, 0.0);
+    f.map->testPolish();
+    assert(tiles.memoryOnlyForTest()); /* still near the device */
+
+    /* Same keys, new origin: a new visit asks again by hand; following asks again from the device. */
+    /* Read through a function: the generation moves inside the calls below, not in this scope. */
+    const auto generation_now = [&tiles] { return tiles.generation(); };
+    const quint64 before = generation_now();
+    f.map->resetCameraUsedDevicePosition();
+    f.map->testPolish();
+    assert(generation_now() > before && !tiles.memoryOnlyForTest());
+    f.map->setDeviceValid(false);
+    f.map->setFollowDevice(true); /* no fix yet: the camera does not move, the request is still memory only */
+    f.map->testPolish();
+    assert(tiles.memoryOnlyForTest());
+    f.map->setFollowDevice(false);
+    f.map->testPolish();
+    assert(!tiles.memoryOnlyForTest());
+
+    f.map->setDeviceValid(true);
+    const bool fitted = f.map->fitAll(); /* the fit takes in the dot */
+    assert(fitted);
+    f.map->testPolish();
+    assert(tiles.memoryOnlyForTest());
+    f.map->setTileSource(nullptr);
+}
+
 /* A pan that moves a trail-bearing marker across the flip line (half a world from the centre) rebuilds the overlay:
  * the marker jumps a world width, and its trail and circle must jump with it rather than stay on the old copy. */
 void
@@ -631,6 +681,7 @@ main(int argc, char** argv) {
     test_pan_moves_the_overlay();
     test_tiles();
     test_background_stops_loading();
+    test_device_views_ask_memory_only();
     test_overlay_follows_the_wrap_copy();
     test_labels_render_on_the_gui_thread();
     test_label_priority();

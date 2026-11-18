@@ -20,9 +20,15 @@
  *   background. A tile already being fetched that the new generation still wants is kept, not cancelled.
  * - One tile at a time, in the order given (the owner puts the centre first). Cache hits are answered before any
  *   request goes out. A PNG is decoded on the worker, at most 512×512.
- * - After a failure the worker waits before its next request: 1 s, doubling to 5 min, or the server's Retry-After
- *   (seconds or a date) when the failure carried one, never less than 1 s. A success resets the wait; so does a
- *   template change. Cache hits are still answered while it waits.
+ * - After a failure (no answer, 429, 5xx, a redirect) the worker waits before its next request: 1 s, doubling to 5
+ *   min, or the server's Retry-After (seconds or a date) when the failure carried one, never less than 1 s. A tile
+ *   or a miss (below) resets the wait; so does a template change. Cache hits are still answered while it waits.
+ * - A tile the server has no PNG for (404, 410, 204, or a 200 that is not a PNG) is a miss: skipped for that
+ *   generation, with no wait, so the rest of the view still loads. A source that has sent no PNG at all since it was
+ *   chosen or turned on, once a view's requests are done, is NoPngTiles, not Retrying.
+ * - A view the device's position placed (ViewOrigin::FromDevice) leaves nothing on disk: the cache serves and keeps its
+ *   tiles in memory only and does not read, write or stamp a file for it. The origin belongs to the generation the
+ *   request starts; a fetch that a device-placed generation kept in flight is memory only too.
  * - The destructor never waits for the thread: it sets the stop flag and the cancel token. The thread ends on its own
  *   once the fetch in flight returns (about 100 ms after the cancel with libcurl 8.20 or later; an older libcurl
  *   stuck in a name lookup returns when the system resolver does). A fetch that returns after the stop is neither
@@ -78,8 +84,15 @@ class MapTileWorker : public QObject {
         Retrying,      /**< The last request failed; the next waits out the backoff. */
         Unavailable,   /**< This build cannot fetch tiles (no libcurl, or no asynchronous resolver). */
         InvalidSource, /**< The URL template is not a valid https template, or the server refused it as such. */
+        NoPngTiles,    /**< The server answers, but has sent no PNG tile since this source was chosen or turned on. */
     };
     Q_ENUM(State)
+
+    /** @brief What placed the view a request is for: the user's hand, or the device's own position. */
+    enum class ViewOrigin {
+        ByHand,     /**< Panned, zoomed or fitted by hand, or restored: its tiles may be kept on disk. */
+        FromDevice, /**< Locate me, Follow my position, or a fit that took in the device's dot: memory only. */
+    };
 
     struct Options {
         /** Cache root; empty means MapTileCache::defaultRoot(). */
@@ -117,10 +130,12 @@ class MapTileWorker : public QObject {
     /**
      * @brief Ask for the tiles in view, in priority order. Duplicates and invalid keys are skipped.
      *
+     * @param origin What placed the view. FromDevice keeps this generation's tiles off the disk entirely (spec 4.8:
+     *               the device's live position is never stored), a fetch it keeps in flight included.
      * @return The new generation; every tileReady() for this request carries it. Ignored (returns the current
      *         generation unchanged) while tiles are off or the template is invalid.
      */
-    quint64 requestTiles(const QList<MapTileKey>& keys);
+    quint64 requestTiles(const QList<MapTileKey>& keys, ViewOrigin origin);
 
     /** @brief Drop every request and cancel the one in flight (map closed, List shown, app in the background). */
     void clearRequests();
@@ -132,8 +147,8 @@ class MapTileWorker : public QObject {
      * @brief Whether @p urlTemplate is a usable tile template.
      *
      * It must be `https://` with a non-empty host free of placeholders and of userinfo, visible ASCII only, hold each
-     * of `{z}`, `{x}` and `{y}` and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the longest
-     * coordinates.
+     * of `{z}`, `{x}` and `{y}` exactly once and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the
+     * longest coordinates.
      *
      * @param host Receives the host (with any port) for the "sent to" line when valid.
      */
@@ -185,6 +200,8 @@ class MapTileWorker : public QObject {
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Wake the thread so it reads an injected clock again. */
     void wakeForTest();
+    /** @brief Whether the latest generation was asked for by a device-placed view (memory only). */
+    bool memoryOnlyForTest() const;
     /** @brief The wait the next failure-free request is held for, in milliseconds from the injected clock. */
     qint64 backoffRemainingMsForTest() const;
 #endif

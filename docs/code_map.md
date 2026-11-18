@@ -18084,7 +18084,11 @@ Qt Quick frontend (`src/ui/qt`):
     file per tile (`<z>-<x>-<y>.tile`: magic, metadata JSON, PNG; written whole by `QSaveFile`, owner-only) under
     `QStandardPaths::CacheLocation/map-tiles/<first 128 bits of the template's SHA-256>`, so the template itself is
     never written. 64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
-    entries are deleted and stray temp files removed at the first scan. The cache is outside the backup allowlist
+    entries are deleted and stray temp files removed at the first scan. `Storage::MemoryOnly` (a view the device's
+    position placed; spec 4.8, final review I1) never touches the disk: no read (a read can stamp the access time), no
+    write, no mtime stamp, no delete, no directory. A memory entry is `persistable` only while its image is its file's
+    and no MemoryOnly store or 304 merge touched it, so a later 304 by hand never writes what a device-placed view
+    merged. The cache is outside the backup allowlist
     (`backup_archive.h`), so it is never backed up. Wall clock through `realtime_clock.h`.
   - `map_tile_worker.{h,cpp}` (`MapTileWorker`, registered as `MapTileSource`): GUI-thread object, off by default
     (no thread, no disk, no request while off; started lazily at the first enable). Its work runs on one
@@ -18094,17 +18098,25 @@ Qt Quick frontend (`src/ui/qt`):
     the foreground. A key still asked for keeps its fetch in flight. Epochs: work started before an on/off or template
     change delivers nothing, posts no state, adds no backoff and is never retried, so one template's validators never
     reach another server. Backoff: 1 s doubling to 5 min, or `Retry-After` (seconds or date, at least 1 s); a success
-    or a template change resets it (on/off does not). Results go back with a queued `invokeMethod`; a fetch that
-    returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor stored. Teardown never waits on the
-    GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to the thread, which ends by itself.
-    Every thread is in a registry, joined at the next start; `shutdownThreads(kShutdownJoinMs)` (2 s, android/main.cpp
-    `TeardownStage("map tile threads")` right after `engine.reset()`, and a `qAddPostRoutine` on every platform)
-    joins what ends in time and releases only an old libcurl stuck in a name lookup. `validTemplate()`: `https://`, a
-    host without braces or userinfo, each of `{z}{x}{y}` once, no other braces, at most 2048 B filled; `templateHost()`
-    gives the host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL;
-    the template is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
+    or a template change resets it (on/off does not). A miss (404, 410, 204, an empty 200 or a 200 that is not a PNG)
+    skips that tile for its generation with no backoff and resets the wait like a success; when a view's requests end
+    and the epoch has seen no PNG at all (no fetch, no cache hit), the state is `NoPngTiles` ("The tile server sent no
+    PNG tiles. Check Map settings."), and the next PNG makes it `Ready`. Network failures, 429, 5xx, redirects and a
+    304 that selects nothing keep the global backoff. `requestTiles(keys, origin)`: `ViewOrigin::FromDevice` makes the
+    generation memory only; a fetch kept in flight takes the OR of every generation that kept it, read once its answer
+    is in, so a late result of a device-placed view never reaches the disk. Results go back with a queued
+    `invokeMethod`; a fetch that returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor
+    stored. Teardown never waits on the GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to
+    the thread, which ends by itself. Every thread is in a registry, joined at the next start;
+    `shutdownThreads(kShutdownJoinMs)` (2 s, android/main.cpp `TeardownStage("map tile threads")` right after
+    `engine.reset()`, and a `qAddPostRoutine` on every platform) joins what ends in time and releases only an old
+    libcurl stuck in a name lookup. `validTemplate()`: `https://`, a host without braces or userinfo, each of
+    `{z}{x}{y}` exactly once (a repeat is refused), no other braces, at most 2048 B filled; `templateHost()` gives the
+    host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL; the template
+    is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
     Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
-    epochs, backoff, Retry-After, UA, https only, the exit join).
+    epochs, backoff, Retry-After, UA, https only, each placeholder once, misses without backoff, `NoPngTiles`,
+    device-placed views kept off disk, the exit join).
   - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as
     `positionView`): the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
     `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at
@@ -18172,12 +18184,15 @@ Qt Quick frontend (`src/ui/qt`):
     (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId`
     and `followDevice` re-centre on every change; a pan ends either. `cameraUsedDevicePosition` turns true once the
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
-    saved-view rule below reads it. Tile loading stops at once (not at the next polish, which a hidden window never
-    gets) when the app goes Hidden/Suspended, the item hides or leaves its window, or `active` goes false (the List).
-    Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the software picture, pan reuse across the wrap, zoom-time
-    scaling and the settle rebuild, label priority, background stop), `UI_QT_MAP_GEOMETRY` (label placement and the
-    emergency rule, `BoxGrid`, `view_transform()`), `tst_map_view.qml` (labels clear of markers and keep-outs, the
-    emergency label never dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
+    saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
+    `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks
+    for the same keys again, so a device-placed view never rides on a request made by hand. Tile loading stops at once
+    (not at the next polish, which a hidden window never gets) when the app goes Hidden/Suspended, the item hides or
+    leaves its window, or `active` goes false (the List). Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the
+    software picture, pan reuse across the wrap, zoom-time scaling and the settle rebuild, label priority, background
+    stop, device-placed views asking memory only), `UI_QT_MAP_GEOMETRY` (label placement and the emergency rule,
+    `BoxGrid`, `view_transform()`), `tst_map_view.qml` (labels clear of markers and keep-outs, the emergency label never
+    dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
   - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
     tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
     what is followed, tile trouble, location notices) that `topInset` follows, the control column of 48 px buttons,

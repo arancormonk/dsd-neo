@@ -11,15 +11,18 @@
  * never stored; nominated Vary values compared on reuse (an app upgrade's new User-Agent goes out unconditionally);
  * no-store kept out of disk and memory and removing the older entry; the 304 merge (new fields, Date and Age
  * cleared when absent, the nominated values, a mismatched validator selecting nothing); unreadable entries deleted;
- * oversized PNGs refused; the disk LRU across template directories and the 64-image memory bound.
+ * oversized PNGs refused; the disk LRU across template directories and the 64-image memory bound; a device-placed
+ * view's lookups, stores and 304 merges never touching the disk, nor a later 304 by hand writing what one merged.
  *
  * The worker, through the fake transport and the real thread: nothing at all while tiles are off; one tile at a
  * time in the order asked, a memory hit answered without a request; a stale tile shown, then revalidated with its
  * ETag and shown fresh on the 304; generations (a tile no longer in view is cancelled, its queue mates are never
  * requested, a tile still in view is kept); the backoff (1 s doubling, to 5 min, Retry-After as seconds or a date,
- * cache hits served while waiting, reset by a success); https-only templates; a build without the transport; the
- * User-Agent stored for Vary; and a teardown during a stalled transfer that returns at once and whose thread ends
- * after the cancel. */
+ * cache hits served while waiting, reset by a success); https-only templates with each placeholder once; a build
+ * without the transport; the User-Agent stored for Vary; a device-placed view's tiles kept off disk (a fetch it keeps
+ * in flight included) and a stored tile neither read nor stamped by one; a 404, 410, 204 or non-PNG 200 skipped
+ * without backoff; a source that sends no PNG named as such; and a teardown during a stalled transfer that returns at
+ * once and whose thread ends after the cancel. */
 
 #include <QBuffer>
 #include <QByteArray>
@@ -77,6 +80,9 @@ std::atomic<quint64> g_mono{1000000};
 
 const QString kTemplate = QStringLiteral("https://tiles.example.test/{z}/{x}/{y}.png");
 const QByteArray kHost = QByteArrayLiteral("tiles.example.test");
+constexpr MapTileWorker::ViewOrigin kByHand = MapTileWorker::ViewOrigin::ByHand;
+constexpr MapTileWorker::ViewOrigin kFromDevice = MapTileWorker::ViewOrigin::FromDevice;
+constexpr MapTileCache::Storage kMemoryOnly = MapTileCache::Storage::MemoryOnly;
 
 void
 expect(const char* what, bool ok) {
@@ -181,10 +187,35 @@ meta_of(const QList<QByteArray>& lines, qint64 requestTime, qint64 responseTime)
 /* Store one 256×256 tile in @p cache with @p lines as its headers, received now. */
 bool
 store_tile(MapTileCache& cache, const MapTileKey& k, const QList<QByteArray>& lines,
-           const MapTileRequestFields& sent = fields()) {
+           const MapTileRequestFields& sent = fields(),
+           MapTileCache::Storage storage = MapTileCache::Storage::DiskAndMemory) {
     const QByteArray png = make_png(256, 256, Qt::darkGreen);
     const QImage image = dsd_qt::mapTileDecodePng(png);
-    return cache.store(k, response(DSD_TILE_FETCH_OK, lines), png, image, wall_now(), wall_now(), sent);
+    return cache.store(k, response(DSD_TILE_FETCH_OK, lines), png, image, wall_now(), wall_now(), sent, storage);
+}
+
+/* A file's bytes and modification time, to prove nothing touched it. */
+struct FileState {
+    bool exists = false;
+    QByteArray bytes;
+    qint64 mtime = 0;
+
+    bool
+    operator==(const FileState& o) const {
+        return exists == o.exists && bytes == o.bytes && mtime == o.mtime;
+    }
+};
+
+FileState
+file_state(const QString& path) {
+    FileState out;
+    QFile file(path);
+    out.exists = file.exists();
+    if (out.exists && file.open(QIODevice::ReadOnly)) {
+        out.bytes = file.readAll();
+        out.mtime = QFileInfo(path).lastModified().toSecsSinceEpoch();
+    }
+    return out;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -488,6 +519,65 @@ test_disk_lru_and_memory_bound(const QString& root) {
 /* Fake transport                                                             */
 /* ------------------------------------------------------------------------- */
 
+/* Spec 4.8: a view the device's position placed leaves nothing on disk (final review I1). */
+void
+test_memory_only_storage(const QString& root) {
+    {
+        MapTileCache fresh(root + QStringLiteral("/never"), kTemplate, wall_now);
+        const MapTileKey k = key(7, 1, 1);
+        expect("a device-placed view's tile is kept",
+               store_tile(fresh, k, {"Cache-Control: max-age=600"}, fields(), kMemoryOnly));
+        expect("in memory", fresh.lookup(k, fields(), kMemoryOnly).reuse == MapTileCache::Reuse::Fresh);
+        expect("and not on disk: not even the directory is made", !QFileInfo::exists(fresh.directory()));
+        expect("a later view by hand gets it from memory, still without writing it",
+               fresh.lookup(k, fields()).reuse == MapTileCache::Reuse::Fresh && !QFileInfo::exists(fresh.directory()));
+    }
+    MapTileCache hand(root, kTemplate, wall_now);
+    const MapTileKey k = key(7, 2, 2);
+    expect("a tile viewed by hand is stored",
+           store_tile(hand, k, {"Cache-Control: max-age=60", "ETag: \"h1\"", "Date: " + imf_date(wall_now())}));
+    const QString path = hand.pathFor(k);
+    QFile stamp(path);
+    expect("its stamp can be set back", stamp.open(QIODevice::ReadWrite)
+                                            && stamp.setFileTime(QDateTime::fromSecsSinceEpoch(wall_now() - 3600),
+                                                                 QFileDevice::FileModificationTime));
+    stamp.close();
+    const FileState before = file_state(path);
+    g_wall += 120;
+
+    MapTileCache device(root, kTemplate, wall_now);
+    expect("a device-placed view does not read the disk",
+           device.lookup(k, fields(), kMemoryOnly).reuse == MapTileCache::Reuse::Miss);
+    expect("so the hit stamps nothing", file_state(path) == before);
+    expect("a 304 for a tile only on disk selects nothing in that view",
+           device
+               .refresh(k, response(DSD_TILE_FETCH_NOT_MODIFIED, {"ETag: \"h1\""}), wall_now(), wall_now(), fields(),
+                        kMemoryOnly)
+               .isNull());
+    expect("its 200 is kept in memory",
+           store_tile(device, k, {"Cache-Control: max-age=60", "ETag: \"d1\""}, fields(), kMemoryOnly));
+    expect("and the file is untouched", file_state(path) == before);
+    expect("a no-store answer in that view removes nothing on disk",
+           !store_tile(device, k, {"Cache-Control: no-store"}, fields(), kMemoryOnly) && file_state(path) == before);
+
+    /* A 304 merged in a device-placed view is never written, not even by a later 304 by hand. */
+    MapTileCache mixed(root, kTemplate, wall_now);
+    expect("a view by hand loads the entry", mixed.lookup(k, fields()).reuse != MapTileCache::Reuse::Miss);
+    const FileState loaded = file_state(path);
+    g_wall += 120;
+    expect("a device-placed view's 304 is merged",
+           !mixed
+                .refresh(k, response(DSD_TILE_FETCH_NOT_MODIFIED, {"ETag: \"h1\"", "Date: " + imf_date(wall_now())}),
+                         wall_now(), wall_now(), fields(), kMemoryOnly)
+                .isNull());
+    expect("without writing it", file_state(path) == loaded);
+    g_wall += 120;
+    expect("a later 304 by hand is merged too",
+           !mixed.refresh(k, response(DSD_TILE_FETCH_NOT_MODIFIED, {"ETag: \"h1\""}), wall_now(), wall_now(), fields())
+                .isNull());
+    expect("but the entry the device-placed view touched is still not written", file_state(path) == loaded);
+}
+
 struct FakeReply {
     long status = 200;
     QList<QByteArray> headers;
@@ -708,14 +798,14 @@ test_off_means_nothing(const QString& root) {
     Harness h(dir);
     expect("tiles start off", !h.worker->enabled() && h.worker->state() == MapTileWorker::State::Off);
     const quint64 before = h.worker->generation();
-    expect("a request while off is ignored", h.worker->requestTiles({key(1, 0, 0)}) == before);
+    expect("a request while off is ignored", h.worker->requestTiles({key(1, 0, 0)}, kByHand) == before);
     settle();
     expect("no request goes out while tiles are off", h.server.seenCount() == 0U && h.tiles.empty());
     expect("no cache directory is made while tiles are off", !QFileInfo::exists(dir));
     expect("no thread runs while tiles are off", MapTileWorker::liveThreads() == 0);
     h.worker->setEnabled(true);
     expect("on, the worker is ready", h.worker->state() == MapTileWorker::State::Ready);
-    h.worker->requestTiles({key(1, 0, 0)});
+    h.worker->requestTiles({key(1, 0, 0)}, kByHand);
     expect("on, the tile is fetched", wait_for([&h] { return h.tiles.size() == 1U; }));
     h.worker->setEnabled(false);
     expect("off again", h.worker->state() == MapTileWorker::State::Off);
@@ -727,7 +817,7 @@ test_order_and_memory_hit(const QString& root) {
     h.worker->setEnabled(true);
     const MapTileKey a = key(3, 1, 1);
     const MapTileKey b = key(3, 2, 1);
-    const quint64 gen = h.worker->requestTiles({a, b, a, key(3, 9, 0)});
+    const quint64 gen = h.worker->requestTiles({a, b, a, key(3, 9, 0)}, kByHand);
     expect("both tiles arrive", wait_for([&h] { return h.tiles.size() == 2U; }));
     expect("one at a time, in the order asked, duplicates and invalid keys skipped",
            h.server.seenCount() == 2U && h.server.seenAt(0).url == MapTileWorker::tileUrl(kTemplate, a)
@@ -736,7 +826,7 @@ test_order_and_memory_hit(const QString& root) {
            h.tiles[0].generation == gen && h.tiles[0].key == a && !h.tiles[0].stale && h.tiles[1].key == b);
     expect("a first request is unconditional", h.server.seenAt(0).ifNoneMatch.isEmpty());
     h.tiles.clear();
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("a cached tile arrives again", wait_for([&h] { return h.tiles.size() == 1U; }));
     settle();
     expect("from memory, without a request", h.server.seenCount() == 2U);
@@ -755,16 +845,16 @@ test_stale_then_revalidated(const QString& root) {
     notModified.status = 304;
     notModified.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
     h.server.script(a, notModified);
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     g_wall += 120;
     h.tiles.clear();
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("stale, it is shown, then shown again once revalidated", wait_for([&h] { return h.tiles.size() == 2U; }));
     expect("first as stale, then fresh", h.tiles[0].stale && !h.tiles[1].stale);
     expect("the revalidation sent the stored ETag", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
     h.tiles.clear();
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("fresh again after the 304", wait_for([&h] { return h.tiles.size() == 1U; }) && !h.tiles[0].stale);
     settle();
     expect("without another request", h.server.seenCount() == 2U);
@@ -783,10 +873,10 @@ test_not_modified_for_another_etag(const QString& root) {
     other.status = 304;
     other.headers = {"ETag: \"v2\""};
     h.server.script(a, other);
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     g_wall += 120;
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("a 304 for another ETag is a failure",
            wait_for([&h] { return h.worker->state() == MapTileWorker::State::Retrying; }));
     expect("the revalidation had sent the stored ETag", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
@@ -810,9 +900,9 @@ test_generations_and_no_prefetch(const QString& root) {
     stalled.headers = {"Cache-Control: max-age=600"};
     stalled.body = make_png(256, 256, Qt::yellow);
     h.server.script(a, stalled);
-    h.worker->requestTiles({a, b, c});
+    h.worker->requestTiles({a, b, c}, kByHand);
     expect("the first tile is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
-    const quint64 panned = h.worker->requestTiles({d});
+    const quint64 panned = h.worker->requestTiles({d}, kByHand);
     expect("a pan away cancels the tile no longer in view", wait_for([&h] { return h.server.cancelledCount() == 1; }));
     expect("the new view's tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     settle();
@@ -825,9 +915,9 @@ test_generations_and_no_prefetch(const QString& root) {
     const MapTileKey g = key(5, 7, 0);
     h.server.script(e, stalled);
     h.tiles.clear();
-    h.worker->requestTiles({e, f});
+    h.worker->requestTiles({e, f}, kByHand);
     expect("the next view's first tile is in flight", wait_for([&h] { return h.server.stalledCount() == 2; }));
-    const quint64 kept = h.worker->requestTiles({g, e});
+    const quint64 kept = h.worker->requestTiles({g, e}, kByHand);
     settle();
     expect("a tile still in view is not cancelled", h.server.cancelledCount() == 1);
     h.server.releaseStall();
@@ -842,10 +932,10 @@ test_generations_and_no_prefetch(const QString& root) {
     const MapTileKey back = key(5, 8, 0);
     h.server.script(back, stalled);
     h.tiles.clear();
-    h.worker->requestTiles({back});
+    h.worker->requestTiles({back}, kByHand);
     expect("a tile is in flight again", wait_for([&h] { return h.server.stalledCount() == 3; }));
     h.worker->clearRequests();
-    const quint64 returned = h.worker->requestTiles({back});
+    const quint64 returned = h.worker->requestTiles({back}, kByHand);
     expect("the tile asked for again after the clear arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     expect("for the new request", h.tiles[0].key == back && h.tiles[0].generation == returned);
     expect("after a second request, the first having been cancelled",
@@ -857,19 +947,19 @@ test_backoff_and_retry_after(const QString& root) {
     Harness h(root + QStringLiteral("/backoff"));
     h.worker->setEnabled(true);
     const MapTileKey cached = key(6, 0, 0);
-    h.worker->requestTiles({cached});
+    h.worker->requestTiles({cached}, kByHand);
     expect("a tile is cached", wait_for([&h] { return h.tiles.size() == 1U; }));
     const MapTileKey a = key(6, 1, 0);
     FakeReply busy;
     busy.status = 503;
     h.server.script(a, busy);
     h.server.script(a, busy);
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("a failure puts the worker in Retrying",
            wait_for([&h] { return h.worker->state() == MapTileWorker::State::Retrying; }));
     expect("the first wait is 1 s", h.worker->backoffRemainingMsForTest() == 1000);
     h.tiles.clear();
-    h.worker->requestTiles({cached, a});
+    h.worker->requestTiles({cached, a}, kByHand);
     expect("a cache hit is still served while waiting", wait_for([&h] { return h.tiles.size() == 1U; }));
     settle();
     expect("no request goes out before the wait ends", h.server.seenCount() == 2U);
@@ -889,7 +979,7 @@ test_backoff_and_retry_after(const QString& root) {
     limited.status = 429;
     limited.headers = {"Retry-After: 120"};
     h.server.script(r, limited);
-    h.worker->requestTiles({r});
+    h.worker->requestTiles({r}, kByHand);
     expect("Retry-After in seconds sets the wait",
            wait_for([&h] { return h.worker->backoffRemainingMsForTest() == 120000; }));
     h.worker->setUrlTemplate(QStringLiteral("https://other.example.test/{z}/{x}/{y}.png"));
@@ -927,6 +1017,10 @@ test_templates() {
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}.png")));
     expect("an unknown placeholder is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://{s}.example.test/{z}/{x}/{y}.png")));
+    expect("a repeated placeholder is refused (once each)",
+           !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}/{z}.png"))
+               && !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{x}/{y}.png"))
+               && !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png?r={y}")));
     expect("a placeholder in the host is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://{z}.example.test/{x}/{y}.png")));
     expect("spaces are refused", !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z} /{x}/{y}")));
@@ -950,14 +1044,14 @@ test_invalid_template_and_unavailable(const QString& root) {
     h.worker->setUrlTemplate(QStringLiteral("http://tiles.example.test/{z}/{x}/{y}.png"));
     expect("an http template is an invalid source", h.worker->state() == MapTileWorker::State::InvalidSource);
     const quint64 gen = h.worker->generation();
-    expect("requests are ignored", h.worker->requestTiles({key(1, 0, 0)}) == gen);
+    expect("requests are ignored", h.worker->requestTiles({key(1, 0, 0)}, kByHand) == gen);
     settle();
     expect("nothing goes out", h.server.seenCount() == 0U);
     h.worker->setUrlTemplate(kTemplate);
     FakeReply unsupported;
     unsupported.failure = DSD_TILE_FETCH_ERR_UNSUPPORTED;
     h.server.script(key(1, 1, 0), unsupported);
-    h.worker->requestTiles({key(1, 1, 0), key(1, 0, 1)});
+    h.worker->requestTiles({key(1, 1, 0), key(1, 0, 1)}, kByHand);
     expect("a transport this build lacks makes the worker unavailable",
            wait_for([&h] { return h.worker->state() == MapTileWorker::State::Unavailable; }));
     settle();
@@ -977,7 +1071,7 @@ test_default_port_left_out_of_host(const QString& root) {
     h.worker->setUrlTemplate(withPort);
     h.worker->setEnabled(true);
     h.server.fallback.headers = {"Cache-Control: max-age=600", "Vary: Host"};
-    h.worker->requestTiles({key(2, 2, 2)});
+    h.worker->requestTiles({key(2, 2, 2)}, kByHand);
     expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     MapTileCache cache(dir, withPort, wall_now);
     MapTileRequestFields sent = fields();
@@ -999,7 +1093,7 @@ test_user_agent_stored_for_vary(const QString& root) {
     varies.headers = {"Cache-Control: max-age=600", "Vary: User-Agent"};
     varies.body = make_png(256, 256, Qt::cyan);
     h.server.script(a, varies);
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     char agent[128];
     expect("the User-Agent is known", dsd_tile_fetch_user_agent(agent, sizeof(agent)) == 0);
@@ -1029,14 +1123,14 @@ template_change_during_fetch(const QString& root, bool ignoreCancel) {
     revalidating.stall = true;
     revalidating.ignoreCancel = ignoreCancel;
     h.server.script(a, revalidating);
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("template A's tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     g_wall += 120;
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     expect("its revalidation is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
     h.worker->setUrlTemplate(QStringLiteral("https://other.example.test/{z}/{x}/{y}.png"));
     h.tiles.clear();
-    h.worker->requestTiles({a});
+    h.worker->requestTiles({a}, kByHand);
     h.server.releaseStall();
     expect("the tile for template B arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     settle();
@@ -1070,7 +1164,7 @@ test_tiles_off_during_fetch(const QString& root) {
     loading.stall = true;
     loading.ignoreCancel = true;
     h.server.script(key(3, 4, 4), loading);
-    h.worker->requestTiles({key(3, 3, 3)});
+    h.worker->requestTiles({key(3, 3, 3)}, kByHand);
     expect("a request is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
     h.worker->setEnabled(false);
     h.server.releaseStall();
@@ -1078,7 +1172,7 @@ test_tiles_off_during_fetch(const QString& root) {
     expect("a failure finishing while tiles are off leaves them Off", h.worker->state() == MapTileWorker::State::Off);
     expect("and adds no backoff", h.worker->backoffRemainingMsForTest() == 0);
     h.worker->setEnabled(true);
-    h.worker->requestTiles({key(3, 4, 4)});
+    h.worker->requestTiles({key(3, 4, 4)}, kByHand);
     expect("a second request is in flight", wait_for([&h] { return h.server.stalledCount() == 2; }));
     h.worker->setEnabled(false);
     h.server.releaseStall();
@@ -1094,7 +1188,7 @@ test_shutdown_joins_threads(const QString& root) {
     {
         Harness h(root + QStringLiteral("/shutdown-finished"));
         h.worker->setEnabled(true);
-        h.worker->requestTiles({key(1, 1, 1)});
+        h.worker->requestTiles({key(1, 1, 1)}, kByHand);
         expect("a tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
     }
     MapTileWorker::ShutdownResult done = MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
@@ -1105,7 +1199,7 @@ test_shutdown_joins_threads(const QString& root) {
     FakeReply stalled;
     stalled.stall = true;
     live.server.script(key(1, 0, 1), stalled);
-    live.worker->requestTiles({key(1, 0, 1)});
+    live.worker->requestTiles({key(1, 0, 1)}, kByHand);
     expect("a live worker's transfer stalls", wait_for([&live] { return live.server.stalledCount() == 1; }));
     uint64_t before = dsd_realtime_mono_ms();
     done = MapTileWorker::shutdownThreads(MapTileWorker::kShutdownJoinMs);
@@ -1121,7 +1215,7 @@ test_shutdown_joins_threads(const QString& root) {
     deaf.headers = {"Cache-Control: max-age=600"};
     deaf.body = make_png(256, 256, Qt::green);
     stuck.server.script(key(1, 1, 0), deaf);
-    stuck.worker->requestTiles({key(1, 1, 0)});
+    stuck.worker->requestTiles({key(1, 1, 0)}, kByHand);
     expect("a transfer that ignores the cancel stalls",
            wait_for([&stuck] { return stuck.server.stalledCount() == 1; }));
     before = dsd_realtime_mono_ms();
@@ -1142,7 +1236,7 @@ test_teardown_during_stalled_transfer(const QString& root) {
     FakeReply stalled;
     stalled.stall = true;
     h->server.script(key(2, 1, 1), stalled);
-    h->worker->requestTiles({key(2, 1, 1)});
+    h->worker->requestTiles({key(2, 1, 1)}, kByHand);
     expect("a transfer stalls", wait_for([h] { return h->server.stalledCount() == 1; }));
     const uint64_t before = dsd_realtime_mono_ms();
     delete h->worker;
@@ -1154,6 +1248,160 @@ test_teardown_during_stalled_transfer(const QString& root) {
     settle();
     expect("nothing is delivered after the teardown", h->tiles.empty());
     delete h;
+}
+
+/* Final review I1: what a device-placed view fetches never reaches the disk, a late result included. */
+void
+test_device_view_stays_off_disk(const QString& root) {
+    const QString dir = root + QStringLiteral("/device");
+    Harness h(dir);
+    h.worker->setEnabled(true);
+    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileKey a = key(8, 1, 1);
+    h.worker->requestTiles({a}, kFromDevice);
+    expect("the worker knows the view came from the device", h.worker->memoryOnlyForTest());
+    expect("a device-placed view's tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    expect("and is not written: no directory, no file", !QFileInfo::exists(paths.directory()));
+    h.tiles.clear();
+    h.worker->requestTiles({a}, kByHand);
+    expect("a view by hand gets it from memory", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("without a request or a write", h.server.seenCount() == 1U && !QFileInfo::exists(paths.directory()));
+    const MapTileKey b = key(8, 2, 1);
+    h.worker->requestTiles({b}, kByHand);
+    expect("a tile viewed by hand is written", wait_for([&] { return QFileInfo::exists(paths.pathFor(b)); }));
+    expect("that view is not memory only", !h.worker->memoryOnlyForTest());
+
+    /* A fetch begun by hand that a device-placed view keeps in flight answers that view: memory only. */
+    FakeReply stalled;
+    stalled.stall = true;
+    stalled.headers = {"Cache-Control: max-age=600"};
+    stalled.body = make_png(256, 256, Qt::yellow);
+    const MapTileKey c = key(8, 3, 1);
+    h.server.script(c, stalled);
+    h.tiles.clear();
+    h.worker->requestTiles({c}, kByHand);
+    expect("a tile asked by hand is in flight", wait_for([&h] { return h.server.stalledCount() == 1; }));
+    h.worker->requestTiles({c}, kFromDevice);
+    h.server.releaseStall();
+    expect("it arrives for the device-placed view", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("and is not written", !QFileInfo::exists(paths.pathFor(c)));
+
+    /* The other way round: a view by hand that keeps a device-placed view's fetch does not make it writable. */
+    const MapTileKey d = key(8, 4, 1);
+    h.server.script(d, stalled);
+    h.tiles.clear();
+    h.worker->requestTiles({d}, kFromDevice);
+    expect("a device-placed view's tile is in flight", wait_for([&h] { return h.server.stalledCount() == 2; }));
+    h.worker->requestTiles({d}, kByHand);
+    h.server.releaseStall();
+    expect("it arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("and is not written either", !QFileInfo::exists(paths.pathFor(d)));
+}
+
+/* Final review I1: a device-placed view does not stamp, read or rewrite a tile a view by hand stored. */
+void
+test_device_view_leaves_disk_entries_alone(const QString& root) {
+    const QString dir = root + QStringLiteral("/device-hit");
+    const MapTileKey a = key(9, 5, 5);
+    const MapTileCache paths(dir, kTemplate, wall_now);
+    {
+        Harness h(dir);
+        h.worker->setEnabled(true);
+        h.worker->requestTiles({a}, kByHand);
+        expect("a tile viewed by hand is written", wait_for([&] { return QFileInfo::exists(paths.pathFor(a)); }));
+    }
+    QFile stamp(paths.pathFor(a));
+    expect("its stamp can be set back", stamp.open(QIODevice::ReadWrite)
+                                            && stamp.setFileTime(QDateTime::fromSecsSinceEpoch(wall_now() - 3600),
+                                                                 QFileDevice::FileModificationTime));
+    stamp.close();
+    const FileState before = file_state(paths.pathFor(a));
+    Harness h(dir);
+    h.worker->setEnabled(true);
+    h.worker->requestTiles({a}, kFromDevice);
+    expect("a device-placed view shows the tile", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("fetched again rather than read from disk", h.server.seenCount() == 1U);
+    expect("and the stored file is untouched, its stamp included", file_state(paths.pathFor(a)) == before);
+}
+
+/* Final review M3: a tile the server has none of is skipped for its generation, with no backoff. */
+void
+test_missing_tile_is_skipped(const QString& root) {
+    struct Case {
+        const char* what = nullptr;
+        long status = 0;
+        QByteArray body;
+    };
+
+    const QByteArray jpeg = QByteArrayLiteral("\xFF\xD8\xFF\xE0 not a png");
+    const QList<Case> cases = {{"404", 404, QByteArray()},
+                               {"410", 410, QByteArray()},
+                               {"204", 204, QByteArray()},
+                               {"a 200 that is not a PNG", 200, jpeg},
+                               {"an empty 200", 200, QByteArray()}};
+    int n = 0;
+    for (const Case& c : cases) {
+        Harness h(root + QStringLiteral("/miss-") + QString::number(n));
+        h.worker->setEnabled(true);
+        const MapTileKey hole = key(10, n, 1);
+        const MapTileKey next = key(10, n, 2);
+        FakeReply missing;
+        missing.status = c.status;
+        missing.body = c.body;
+        missing.headers = {"Cache-Control: max-age=600"};
+        h.server.script(hole, missing);
+        h.worker->requestTiles({hole, next}, kByHand);
+        const bool arrived = wait_for([&h] { return h.tiles.size() == 1U; });
+        settle();
+        const QString what = QString::fromLatin1(c.what);
+        expect(qPrintable(what + QStringLiteral(": the rest of the view loads at once")),
+               arrived && h.tiles[0].key == next && h.server.seenCount() == 2U);
+        expect(qPrintable(what + QStringLiteral(": no backoff and no retrying")),
+               h.worker->backoffRemainingMsForTest() == 0 && h.worker->state() == MapTileWorker::State::Ready);
+        expect(qPrintable(what + QStringLiteral(": the missing tile is not asked again in that view")),
+               h.server.seenCount() == 2U);
+        n++;
+    }
+}
+
+/* Final review M3: a source that sends no PNG at all says so, not "retrying". */
+void
+source_without_png(const QString& root) {
+    Harness h(root + QStringLiteral("/no-png"));
+    h.server.fallback.body = QByteArrayLiteral("\xFF\xD8\xFF\xE0 not a png");
+    h.worker->setEnabled(true);
+    h.worker->requestTiles({key(11, 1, 1), key(11, 2, 1), key(11, 3, 1)}, kByHand);
+    expect("a source that sends no PNG is named as such",
+           wait_for([&h] { return h.worker->state() == MapTileWorker::State::NoPngTiles; }));
+    expect("after each tile was asked once, with no backoff",
+           h.server.seenCount() == 3U && h.worker->backoffRemainingMsForTest() == 0 && h.tiles.empty());
+    h.server.fallback.body = make_png(256, 256, Qt::gray);
+    h.worker->requestTiles({key(11, 4, 1)}, kByHand);
+    expect("a PNG makes it ready again", wait_for([&h] { return h.worker->state() == MapTileWorker::State::Ready; }));
+}
+
+/* A hole in a source that does send PNGs is not a source without PNGs. */
+void
+source_with_holes(const QString& root) {
+    Harness holes(root + QStringLiteral("/holes"));
+    holes.worker->setEnabled(true);
+    FakeReply gone;
+    gone.status = 404;
+    holes.server.script(key(11, 5, 1), gone);
+    holes.worker->requestTiles({key(11, 5, 1), key(11, 6, 1)}, kByHand);
+    expect("the other tile arrives", wait_for([&holes] { return holes.tiles.size() == 1U; }));
+    settle();
+    expect("and the source stays ready", holes.worker->state() == MapTileWorker::State::Ready);
+}
+
+void
+test_source_without_png(const QString& root) {
+    source_without_png(root);
+    source_with_holes(root);
 }
 
 } // namespace
@@ -1179,6 +1427,7 @@ main(int argc, char** argv) {
     test_not_modified_merge(root + QStringLiteral("/c5"));
     test_unreadable_and_oversized(root + QStringLiteral("/c6"));
     test_disk_lru_and_memory_bound(root + QStringLiteral("/c7"));
+    test_memory_only_storage(root + QStringLiteral("/c8"));
 
     test_off_means_nothing(root);
     expect("the off test's thread ended", wait_threads_gone());
@@ -1195,6 +1444,11 @@ main(int argc, char** argv) {
     test_template_change_during_fetch(root);
     test_tiles_off_during_fetch(root);
     test_teardown_during_stalled_transfer(root);
+    test_device_view_stays_off_disk(root);
+    test_device_view_leaves_disk_entries_alone(root);
+    test_missing_tile_is_skipped(root);
+    test_source_without_png(root);
+    expect("every worker thread so far ended", wait_threads_gone());
     test_shutdown_joins_threads(root);
 
     if (g_failures != 0) {

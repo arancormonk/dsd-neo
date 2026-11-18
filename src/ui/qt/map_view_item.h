@@ -33,6 +33,8 @@
  * view on every pan or zoom, keeps an image only while its tile is in view (or
  * stands in, scaled, for the new zoom's tiles while they load), and drops its
  * requests while it is inactive, hidden, or the app is in the background.
+ * While the device's position placed the camera this visit (cameraUsedDevicePosition) or the camera follows the
+ * device, every request is ViewOrigin::FromDevice, so the tile cache keeps nothing of it on disk.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_MAP_VIEW_ITEM_H_
@@ -484,6 +486,8 @@ class MapViewItem : public QQuickItem {
     bool deviceWorld(map_math::WorldPoint* out) const;
     bool tilesWanted() const;
     void dropTileRequests();
+    /** @brief Whether the view now comes from the device's position (the one place the tile requests read it). */
+    bool tilesFromDevice() const;
     void releaseTiles();
     void keepStandIns(const QSet<MapTileKey>& inView, bool complete);
     map_math::Viewport cameraBase() const;
@@ -577,6 +581,8 @@ class MapViewItem : public QQuickItem {
 
     /* Tiles: the keys asked for last, and the toned images held (only while in view, or standing in). */
     QList<MapTileKey> m_requested;
+    /* The origin m_requested was asked with: a change asks again, so a device-placed view never rides a hand one. */
+    bool m_requestedFromDevice = false;
     QList<map_math::VisibleTile> m_visible;
 
     struct HeldTile {

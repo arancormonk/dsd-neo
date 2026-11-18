@@ -88,6 +88,7 @@ Item {
         function cleanupTestCase() {
             loader.active = false;
             testContext.setMapTilesFailing(false);
+            testContext.setMapTilesNotPng(false);
             testContext.resetPositions();
             testContext.useAppPrefs(false);
             testContext.setLocationSupported(false);
@@ -96,6 +97,7 @@ Item {
         }
         function init() {
             testContext.setMapTilesFailing(false);
+            testContext.setMapTilesNotPng(false);
             testContext.resetPositions();
             testContext.setPositionWallSeconds(testContext.positionWallStart());
             screen.tilesEnabled = false;
@@ -176,6 +178,12 @@ Item {
             compare(Ui.Navigation.modals.length, 0, "no sheet or dialog");
             screen.tileUrl = "http://tiles.example.invalid/{z}/{x}/{y}.png";
             tryCompare(chip, "text", "The tile address is not valid. Check Map settings.");
+            // A server that answers with something other than PNG is named as such, not "retrying".
+            testContext.setMapTilesFailing(false);
+            testContext.setMapTilesNotPng(true);
+            screen.tileUrl = "https://jpeg.example.invalid/{z}/{x}/{y}.jpg";
+            tryCompare(chip, "text", "The tile server sent no PNG tiles. Check Map settings.", 5000);
+            verify(chip.visible);
         }
 
         // A marker's sheet says every state in words: freshness (its age), a source not confirmed, a fix that may be
@@ -373,6 +381,9 @@ Item {
             url.text = "http://tiles.example.org/{z}/{x}/{y}.png";
             verify(!item("mapSettingsSave").inputValid, "http is refused");
             verify(url.error.length > 0);
+            verify(url.hint.indexOf("PNG") >= 0, url.hint);
+            url.text = "https://tiles.example.org/{z}/{y}/{x}/{z}.png";
+            verify(!item("mapSettingsSave").inputValid, "a placeholder twice is refused, as the error says");
             url.text = "https://tiles.example.org/{z}/{x}/{y}.png";
             verify(item("mapSettingsSave").inputValid);
             verify(item("mapSettingsTiles").subtitle.indexOf("tiles.example.org") >= 0, item("mapSettingsTiles").subtitle);

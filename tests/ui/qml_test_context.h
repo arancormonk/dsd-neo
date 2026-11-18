@@ -4738,6 +4738,12 @@ class Setup : public QObject {
         dsd_neo_qml_stub::set_map_tiles_failing(failing);
     }
 
+    /** @brief Final review M3: the canned tile server answers 200 with a body that is not a PNG (true). */
+    Q_INVOKABLE void
+    setMapTilesNotPng(bool notPng) {
+        dsd_neo_qml_stub::set_map_tiles_not_png(notPng);
+    }
+
     /**
      * @brief Issue #782: publish a scan target's readings in one go, as MetricsModel does on a target change.
      *
