@@ -555,9 +555,9 @@ test_terminator_gps(void) {
     return rc;
 }
 
-/* Issue #800: the next engine run on a reused state (the engine's cleanup frees the call state, so the epochs restart
-   at 1) forgets the last run's hard-decoded voice-user identity: a GPS link control of the new run's first call,
-   opened by a soft-recovered link control of the same radio, is not attributed by it. */
+/* Issue #800: the next engine run on a reused state (the engine's cleanup frees the call state; the new one goes on
+   from the last run's epochs) is not attributed by the last run's hard-decoded voice-user identity: a GPS link control
+   of the new run's first call, opened by a soft-recovered link control of the same radio, names no one. */
 static int
 test_reused_state_forgets_checked_identity(void) {
     static dsd_opts opts;
@@ -582,16 +582,17 @@ test_reused_state_forgets_checked_identity(void) {
     p25_lcw(&opts, &state, lcw, 0);
     state.p25_p1_lcw_soft = 0U;
     dsd_call_snapshot call;
-    rc |= expect_true("next run: its first call reuses the epoch and the radio",
+    rc |= expect_true("next run: its first call is a new epoch of the same radio",
                       dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-                          && call.epoch == first && call.ota_source_id == 0x010203U);
+                          && call.epoch > first && call.ota_source_id == 0x010203U);
 
     g_gps_calls = 0;
     lcw_from_octets(lcw, 0x06, 0x90, apx);
     p25_lcw(&opts, &state, lcw, 0);
     rc |= expect_eq_int("next run: GPS dispatched", g_gps_calls, 1);
-    rc |= expect_true("next run: the call, but no checked identity",
-                      g_gps_ctx.call_epoch == first && g_gps_ctx.source_verified == 0U && g_gps_ctx.target_id == 0U);
+    rc |=
+        expect_true("next run: the call, but no checked identity",
+                    g_gps_ctx.call_epoch == call.epoch && g_gps_ctx.source_verified == 0U && g_gps_ctx.target_id == 0U);
     dsd_state_ext_free_all(&state);
     return rc;
 }

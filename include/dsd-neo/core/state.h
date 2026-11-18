@@ -561,8 +561,9 @@ typedef struct {
  * (issue #800). It owns its storage, so a talker alias between the two halves cannot wipe it (spec N3). It pairs only
  * with the Part B of its own parity (42 with 43, 44 with 45; D14) heard on the same call epoch (never outside a call)
  * and source within the pairing window on the decode clock, and the report keeps the reception it began on
- * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source,
- * expiry and a call state that starts over (a new call-state extension restarts the epochs) clear it.
+ * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source and
+ * expiry clear it. Epochs are never given out twice on one state (dsd_state::call_epoch_floor), so one left by another
+ * engine run matches no call of the next.
  */
 typedef struct {
     uint8_t valid;
@@ -578,8 +579,8 @@ typedef struct {
 /**
  * The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
  * named for the call of @c epoch, while that call was ACTIVE with this source (issue #800, spec 2.2): the checked
- * provenance a GPS link control of the same transmission takes its source, target and group flag from. Cleared when the
- * call state starts over (a new call-state extension restarts the epochs).
+ * provenance a GPS link control of the same transmission takes its source, target and group flag from. One left by
+ * another engine run matches no call of the next (dsd_state::call_epoch_floor).
  */
 typedef struct {
     uint64_t epoch; /* 0: none */
@@ -638,9 +639,9 @@ typedef struct dmr_talker_alias_assembly {
  * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
  * spans superframes, so it is bound to the slot 0 call it began in (epoch 0: none was active) and to the reception
  * captured with its first byte. A record that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was
- * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header, the carrier's
- * end (dstar_confirm_reset()) or, for a record begun in a call, a call state that starts over (its epochs restart)
- * clears it.
+ * lost gives way to the next "$$CRC". Another call (for a record begun in one), a verified RF header or the carrier's
+ * end (dstar_confirm_reset()) clears it; a record begun in a call of another engine run matches no call of this one
+ * (dsd_state::call_epoch_floor).
  */
 typedef struct dstar_dprs_assembly {
     uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */
@@ -1445,6 +1446,11 @@ struct dsd_state {
     uint8_t event_crc_invalid[2];
     // DMR header-chain DSD_CRC_* bits (failed, or RAS-accepted), retained until the protocol resets the assembly.
     uint8_t data_header_crc_invalid[2];
+    /* The last call epoch each slot's call state gave out (src/core/util/call_state.c), kept on the state across the
+       call-state extension's life: a new extension (another engine run on this state) goes on from it, so an epoch is
+       never given out twice on one state. A record a protocol keys to a call epoch or transmission (issue #800) thus
+       never matches a later run's call, and the call state needs to know nothing of those records. */
+    uint64_t call_epoch_floor[2];
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
     struct CODEC2* codec2_3200; // M17 fullrate
     struct CODEC2* codec2_1600; // M17 halfrate
@@ -2192,9 +2198,9 @@ struct dsd_state {
        the target the same LC named for the call (0 when the call's target was not it) with whether it is a talkgroup.
        The embedded GPS LC is attributed to the slot's ACTIVE call only while it is still this transmission and source,
        and names the target only while the call still has it.
-       Cleared when the call state starts over (a new call-state extension restarts its epochs) and at every carrier
-       change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a user's
-       move). */
+       Cleared by every voice LC header (a new transmission: only that header, checked, names its source) and at every
+       carrier change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a
+       user's move); one left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
     uint64_t dmr_lc_checked_transmission[2];
     uint32_t dmr_lc_checked_source[2];
     uint32_t dmr_lc_checked_target[2];
@@ -3047,7 +3053,7 @@ struct dsd_state {
      * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID; and
      * for both m17_gnss_tx_epoch, the slot 0 call epoch, so any end of the call -- a stream EOT, EOTX, DISC, an MPKT's
      * end, a timeout or a lost sync -- makes the next call another transmission) or changed META bytes; kind 0 = none
-     * yet. A call state that starts over (its epochs restart) forgets it. */
+     * yet. One left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
     uint8_t m17_gnss_meta_admitted[14];
     uint8_t m17_gnss_tx_kind;
     uint64_t m17_gnss_tx_id;

@@ -2620,9 +2620,12 @@ suite runs under this compiler.
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
     transmission (the DMR checked-LC source, `p25_p1_lc_checked_id`, the L3Harris Part A, a D-PRS record begun in a
-    call, the last admitted M17 META) are cleared when the call state starts over
-    (`call_state_forget_epoch_records()`: a new call-state extension restarts the epochs at 1, as another engine run on
-    a reused state does). Tests:
+    call, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
+    an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
+    reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
+    A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
+    checked-LC record, and a D-STAR RF header whose CRC failed leaves D-PRS records anonymous
+    (`dstar_dprs_source_unchecked`) until a checked header, on RF or in the slow data, names the transmission. Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
     `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.

@@ -96,34 +96,26 @@ call_state_ext_allocate(void) {
     return ext;
 }
 
-/* Forget every record keyed to a call epoch or transmission of the sequence that ends (issue #800): a new call-state
- * extension restarts the epochs at 1 (another engine run on a reused state), and a record of the old sequence would
- * match a call of the new one. They are the DMR checked-LC source (embedded GPS), the P25 Phase 1 hard-decoded
- * voice-user identity and L3Harris Part A, the D-STAR D-PRS record being collected in a call and the last admitted M17
- * GNSS META. A D-PRS record begun outside any call (epoch 0) is bound by its reception only, and stays: the call whose
- * first observation creates the extension may be the one it entered late. */
+_Static_assert(sizeof(((dsd_state*)0)->call_epoch_floor) == sizeof(((dsd_call_state_ext*)0)->epoch_sequence),
+               "one epoch floor per call-state slot");
+
+/* Raise the state's epoch floor (dsd_state::call_epoch_floor) to the extension's sequence: every write of the
+ * sequence goes through here, so a later extension of this state never gives out an epoch this one gave. */
 static void
-call_state_forget_epoch_records(dsd_state* state) {
-    DSD_MEMSET(state->dmr_lc_checked_transmission, 0, sizeof(state->dmr_lc_checked_transmission));
-    DSD_MEMSET(state->dmr_lc_checked_source, 0, sizeof(state->dmr_lc_checked_source));
-    DSD_MEMSET(state->dmr_lc_checked_target, 0, sizeof(state->dmr_lc_checked_target));
-    DSD_MEMSET(state->dmr_lc_checked_group, 0, sizeof(state->dmr_lc_checked_group));
-    DSD_MEMSET(&state->p25_p1_lc_checked_id, 0, sizeof(state->p25_p1_lc_checked_id));
-    DSD_MEMSET(&state->p25_p1_harris_part_a, 0, sizeof(state->p25_p1_harris_part_a));
-    if (state->dstar_dprs.epoch != 0U) {
-        DSD_MEMSET(&state->dstar_dprs, 0, sizeof(state->dstar_dprs));
+call_state_note_epoch_floor(dsd_state* state, const dsd_call_state_ext* ext) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (state->call_epoch_floor[slot] < ext->epoch_sequence[slot]) {
+            state->call_epoch_floor[slot] = ext->epoch_sequence[slot];
+        }
     }
-    DSD_MEMSET(state->m17_gnss_meta_admitted, 0, sizeof(state->m17_gnss_meta_admitted));
-    state->m17_gnss_tx_kind = 0U;
-    state->m17_gnss_tx_id = 0U;
-    state->m17_gnss_tx_epoch = 0U;
 }
 
-/* The extension, created when @p create and missing. A created one restarts the epoch sequence unless @p restore (the
- * caller copies another state's calls and epoch sequence into it): then the records keyed to the old transmissions
- * (call_state_forget_epoch_records()) must not match a call of the new sequence, so they are cleared. */
+/* The extension, created when @p create and missing. A created one goes on from the state's epoch floor, so its
+ * epochs never repeat one an earlier extension of this state gave (another engine run on a reused state): a record a
+ * protocol keyed to an old call epoch or transmission matches no new call. A restore or a copy into it (another
+ * state's calls and epoch sequence) then raises the state's floor with the sequence it brings. */
 static dsd_call_state_ext*
-call_state_ext_obtain(dsd_state* state, int create, int restore) {
+call_state_ext_obtain(dsd_state* state, int create) {
     if (!state) {
         return NULL;
     }
@@ -137,12 +129,12 @@ call_state_ext_obtain(dsd_state* state, int create, int restore) {
     ext = DSD_STATE_EXT_GET_AS(dsd_call_state_ext, state, DSD_STATE_EXT_CORE_CALL_STATE);
     if (!ext) {
         ext = call_state_ext_allocate();
+        if (ext) {
+            DSD_MEMCPY(ext->epoch_sequence, state->call_epoch_floor, sizeof(ext->epoch_sequence));
+        }
         if (ext && dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CALL_STATE, ext, call_state_ext_cleanup) != 0) {
             call_state_ext_cleanup(ext);
             ext = NULL;
-        }
-        if (ext && !restore) {
-            call_state_forget_epoch_records(state);
         }
     }
     (void)dsd_mutex_unlock(&g_call_state_alloc_mutex);
@@ -151,7 +143,7 @@ call_state_ext_obtain(dsd_state* state, int create, int restore) {
 
 dsd_call_state_ext*
 dsd_call_state_ext_get(dsd_state* state, int create) {
-    return call_state_ext_obtain(state, create, 0);
+    return call_state_ext_obtain(state, create);
 }
 
 const dsd_call_state_ext*
@@ -750,6 +742,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[slot] = call_state_next_nonzero(ext->epoch_sequence[slot]);
+        call_state_note_epoch_floor(state, ext);
         snapshot->epoch = ext->epoch_sequence[slot];
         snapshot->transmission_epoch = snapshot->epoch;
         snapshot->slot = slot;
@@ -1174,7 +1167,7 @@ dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot*
     if (!state || !snapshot) {
         return -1;
     }
-    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1, 1); // a restore: the snapshot carries its epoch sequence
+    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1); // a restore: the snapshot carries its epoch sequence
     if (!ext) {
         return 0;
     }
@@ -1185,6 +1178,7 @@ dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot*
             ext->epoch_sequence[slot] = snapshot->slots[slot].epoch;
         }
     }
+    call_state_note_epoch_floor(state, ext);
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
@@ -1258,7 +1252,7 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
     if (!state || !snapshot) {
         return -1;
     }
-    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1, 1); // a restore: the snapshot carries its epoch sequence
+    dsd_call_state_ext* ext = call_state_ext_obtain(state, 1); // a restore: the snapshot carries its epoch sequence
     if (!ext) {
         return 0;
     }
@@ -1284,6 +1278,7 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
             ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
         }
     }
+    call_state_note_epoch_floor(state, ext);
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
@@ -1528,7 +1523,7 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
     dsd_call_state_ext_unlock(src_ext);
 
     // The copy carries the source's epoch sequence: no restart, so the destination's records keyed to it stand.
-    dsd_call_state_ext* dst_ext = call_state_ext_obtain(dst, 1, 1);
+    dsd_call_state_ext* dst_ext = call_state_ext_obtain(dst, 1);
     if (!dst_ext) {
         (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
         return -1;
@@ -1538,6 +1533,7 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
     dst_ext->recent = recent;
     DSD_MEMCPY(dst_ext->events, events, sizeof(events));
     DSD_MEMCPY(dst_ext->epoch_sequence, epoch_sequence, sizeof(epoch_sequence));
+    call_state_note_epoch_floor(dst, dst_ext);
     dsd_call_state_ext_unlock(dst_ext);
     return 1;
 }
@@ -1568,6 +1564,7 @@ dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch) {
     ext->calls.slots[slot].epoch = epoch;
     ext->calls.slots[slot].transmission_epoch = epoch;
     ext->epoch_sequence[slot] = epoch;
+    call_state_note_epoch_floor(state, ext);
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

@@ -441,8 +441,9 @@ test_can_change_position_on_call_row(void) {
     rig_close(&r);
 }
 
-/* Issue #800: the next engine run on a reused state (its cleanup frees every extension, so the call epochs restart at
- * 1) forgets which META the last run admitted: the same META on the new run's first call is a new report. */
+/* Issue #800: the next engine run on a reused state (its cleanup frees every extension; the new call state goes on from
+ * the last run's epochs) does not take the last run's admitted META for a repeat: the same META on the new run's first
+ * call is a new report. */
 static void
 test_reused_state_admits_meta_again(void) {
     rig r;
@@ -452,6 +453,9 @@ test_reused_state_admits_meta_again(void) {
     uint64_t rev = dsd_position_last_rev();
     expect_int("first run's LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
     expect_int("first run admits the META", (long long)(dsd_position_last_rev() - rev), 1);
+    dsd_call_snapshot call;
+    expect_true("first run's call", dsd_call_state_get(r.state, 0U, &call) == 1);
+    const uint64_t first_epoch = call.epoch;
 
     dsd_state_ext_free_all(r.state);
     for (uint8_t slot = 0U; slot < 2U; slot++) {
@@ -460,9 +464,8 @@ test_reused_state_admits_meta_again(void) {
     expect_int("next run's feed starts", dsd_position_feed_start(r.state), 0);
     rev = dsd_position_last_rev();
     expect_int("next run's LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
-    dsd_call_snapshot call;
-    expect_true("next run's first call is epoch 1 again",
-                dsd_call_state_get(r.state, 0U, &call) == 1 && call.epoch == 1U);
+    expect_true("next run's first call is a new epoch",
+                dsd_call_state_get(r.state, 0U, &call) == 1 && call.epoch > first_epoch);
     expect_int("next run admits the same META", (long long)(dsd_position_last_rev() - rev), 1);
     expect_int("next run's call row takes it", row0(&r)->pos.valid, 1);
     rig_close(&r);
