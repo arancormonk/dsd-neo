@@ -425,11 +425,14 @@ Item {
             var status = item(sheet, data.status);
             verify(status.visible, "the status line shows");
             testContext.startAccessibilityCount();
+            // Every update a new reading, never the one already said: a reading that came round again every 15
+            // updates (about 100 ms at this tick, one period) was read by each period's catch-up at the same point
+            // of its cycle, the value already said, so the pacer rightly renamed nothing.
             var elapsed = run(function (i) {
-                set({squelchAutoStatus: "quieting " + (10 + i % 15) + " dB"});
+                set({squelchAutoStatus: "quieting " + (10 + i) + " dB"});
             });
             var counts = testContext.accessibilityCount();
-            compare(status.text, "quieting " + (10 + updates % 15) + " dB", "the status on screen follows");
+            compare(status.text, "quieting " + (10 + updates) + " dB", "the status on screen follows");
             verifyPaced(counts, "NameChanged", [data.value, data.status], elapsed);
             tryVerify(function () { return nameOf(value).indexOf(status.text) >= 0; }, period + 500, nameOf(value));
             tryVerify(function () { return nameOf(status) === status.text; }, period + 500, nameOf(status));
