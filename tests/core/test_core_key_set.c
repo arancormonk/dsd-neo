@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
@@ -650,6 +651,87 @@ test_key_set_install_wipes_slot_key_copies(void) {
     return failed;
 }
 
+/* Whether no byte of the autoload's key copies (the key it replaced, the one it installed, their flags) is set. */
+static int
+autoload_copies_wiped(const dsd_state* state) {
+    const unsigned char* parts[4] = {(const unsigned char*)state->dmr_tg_autoload.baseline,
+                                     (const unsigned char*)state->dmr_tg_autoload.installed,
+                                     state->dmr_tg_autoload.baseline_flags, state->dmr_tg_autoload.installed_flags};
+    const size_t sizes[4] = {sizeof(state->dmr_tg_autoload.baseline), sizeof(state->dmr_tg_autoload.installed),
+                             sizeof(state->dmr_tg_autoload.baseline_flags),
+                             sizeof(state->dmr_tg_autoload.installed_flags)};
+    for (size_t p = 0; p < 4U; p++) {
+        for (size_t i = 0; i < sizes[p]; i++) {
+            if (parts[p][i] != 0U) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* A call on talkgroup 123 keys from its imported key, replacing the operator's -b 70; a call on talkgroup 456, which
+   has none, then gives the operator's key back. The autoload owns the working key no more, so its copies of both keys
+   are wiped then: a later keyring clear disarms the no-carrier unload, which would otherwise be the next to wipe them. */
+static int
+test_autoload_miss_wipes_its_copies(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->keyloader = 1;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    uint32_t keyed_from = 0U;
+    if (keyring_dmr_tg_autoload_apply(state, 0U, 123U, &keyed_from) != 1 || state->K != 0x33ULL) {
+        DSD_FPRINTF(stderr, "talkgroup 123's call did not key from its imported key\n");
+        failed = 1;
+    }
+    if (keyring_dmr_tg_autoload_apply(state, 0U, 456U, &keyed_from) != 0 || state->K != 70ULL
+        || state->basic_key_present != 1U || state->K1 != 0ULL) {
+        DSD_FPRINTF(stderr, "talkgroup 456's call did not give the operator's key back\n");
+        failed = 1;
+    }
+    if (state->dmr_tg_autoload.active != 0U || !autoload_copies_wiped(state)) {
+        DSD_FPRINTF(stderr, "the autoload kept its copies of the keys after it gave the working key back\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* The final teardown wipes the keys the state holds, the autoload's copies of them included, whether or not a keyring
+   armed the no-carrier unload. */
+static int
+test_free_state_wipes_keys(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    initState(state);
+    seed_slot_keyed_from_tg(state);
+    state->keyloader = 0;
+    state->R = 0x0102030405ULL;
+    state->rkey_array[123] = 0x33ULL;
+    state->aes_key[0] = 0x5AU;
+    freeState(state);
+    int failed = 0;
+    const unsigned char* autoload = (const unsigned char*)&state->dmr_tg_autoload;
+    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload); i++) {
+        failed |= autoload[i] != 0U;
+    }
+    if (failed || state->K != 0ULL || state->K1 != 0ULL || state->H != 0ULL || state->R != 0ULL
+        || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
+        DSD_FPRINTF(stderr, "freeState left key material in the state\n");
+        failed = 1;
+    }
+    free(state);
+    return failed;
+}
+
 /* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
    overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
    does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
@@ -749,6 +831,12 @@ main(void) {
         return 1;
     }
     if (test_key_set_install_wipes_slot_key_copies() != 0) {
+        return 1;
+    }
+    if (test_autoload_miss_wipes_its_copies() != 0) {
+        return 1;
+    }
+    if (test_free_state_wipes_keys() != 0) {
         return 1;
     }
     if (test_capture_install_roundtrip() != 0) {

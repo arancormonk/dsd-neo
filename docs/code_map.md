@@ -1921,7 +1921,9 @@ suite runs under this compiler.
   (`p25p1_pdu_data.c`) and the SDRTrunk JSON replay keystreams and talkgroup-keyed lookup (`dsd_file.c`). The autoload's
   key is the one working Basic Privacy and Hytera key both slots share (`K`, `K1`..`K4`, `H`), so it keeps what it
   replaced (`dsd_state::dmr_tg_autoload`): a frame of a call whose talkgroup has no key puts that back (a key set
-  directly with `-b`, or none), so no call keeps another talkgroup's key. Each slot also keeps the talkgroup its own
+  directly with `-b`, or none) and ends the autoload's ownership, wiping its copies of both keys
+  (`dsd_dmr_tg_autoload_hand_back()`), so no call keeps another talkgroup's key. `freeState()` wipes the state's keys
+  (`dsd_key_state_secure_wipe()`), the autoload's copies included, whatever armed them. Each slot also keeps the talkgroup its own
   call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
   change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
   The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left calls'

@@ -40,6 +40,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "key_set_internal.h"
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
@@ -1621,6 +1622,8 @@ freeState(dsd_state* state) {
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
     dsd_state_trunk_scan_entry_reasons_free(state);
+    /* The keys the state holds go before its memory is handed back, whatever armed them (keyloader or not). */
+    dsd_key_state_secure_wipe(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

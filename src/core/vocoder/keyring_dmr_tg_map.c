@@ -312,10 +312,11 @@ keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint3
     *keyed_from = source;
     if (!found) {
         keyring_dmr_tg_autoload_forget_slot(state, idx);
-        if (holds) {
-            keyring_dmr_working_key_set(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
+        // The key it replaced comes back while its key is the working key, and its copies of both are wiped: its
+        // ownership ends here, and nothing later (a cleared keyring disarms the no-carrier unload) would wipe them.
+        if (state->dmr_tg_autoload.active) {
+            dsd_dmr_tg_autoload_hand_back(state);
         }
-        state->dmr_tg_autoload.active = 0U;
         return 0;
     }
     state->dmr_tg_autoload.slot_tg[idx] = source;

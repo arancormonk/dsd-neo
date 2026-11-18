@@ -7645,9 +7645,10 @@ target_include_directories(
     dsd-neo_test_core_key_set
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# ${LIBS} for initState()/freeState() (codec2): the final teardown wipes the keys.
 target_link_libraries(
     dsd-neo_test_core_key_set
-    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr ${LIBS}
 )
 add_test(NAME CORE_KEY_SET COMMAND dsd-neo_test_core_key_set)
 
