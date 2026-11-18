@@ -19971,6 +19971,13 @@ function(dsd_neo_add_libairspyhf_test airspyhf_src threads)
     )
     # Without it airspyhf.h declares the API __declspec(dllimport) on Windows.
     target_compile_definitions(${_lib} PUBLIC STATIC_AIRSPYHFPLUS)
+    if(MSVC)
+        # airspyhf.c declares a struct timeval. The vendored libusb.h leaves out
+        # <sys/time.h> under MSVC, and WIN32_LEAN_AND_MEAN (cmake/Platform.cmake)
+        # keeps winsock.h, which declares it, out of windows.h. The vcpkg port
+        # builds without WIN32_LEAN_AND_MEAN, so there windows.h brings it.
+        target_compile_options(${_lib} PRIVATE /FIwinsock2.h)
+    endif()
     target_link_libraries(
         ${_lib}
         PRIVATE dsd-neo_sanitizers ${threads} ${DSD_NEO_TEST_MATH_LIB}
