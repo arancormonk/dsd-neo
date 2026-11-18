@@ -1225,6 +1225,30 @@ retune_capture_frequency_for_actual_rate(uint32_t center_freq_hz, uint32_t reque
  * the read-back's nominal rate, and the dongle rate is the read-back, which the Fs/4 centre and the capture-rate
  * consumers run at. A chain with no plan follows the read-back's rate alone. Returns 0, or kCaptureRateChainRefused
  * with the chain left as it was. */
+/* A plan refused on the rate a SoapySDR device was given (@p programmed_hz), whose read-back (@p readback_hz) is a
+ * few Hz off it, as the planner's read-back tolerance takes it: a device that lists 3,072,025 Hz may deliver the
+ * 3,072,000 Hz a 48 kHz chain divides exactly. The plan is made again on the rate delivered, which is what streams,
+ * and still counts @p programmed_hz as written. Returns whether that plan was made, in @p out; the first refusal stays
+ * recorded otherwise. */
+static bool
+rate_chain_plan_delivered(uint32_t programmed_hz, uint32_t readback_hz, dsd_rate_plan* out) {
+    if (rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY || readback_hz == 0U || readback_hz == programmed_hz) {
+        return false;
+    }
+    const dsd_rate_plan refused = g_rate_plan_refused;
+    char refusal[sizeof g_rate_chain_refusal];
+    DSD_MEMCPY(refusal, g_rate_chain_refusal, sizeof refusal);
+    if (rate_chain_plan(g_live_rate_plan.request_hz, readback_hz, readback_hz, g_live_rate_plan.target_hz, out)
+        != DSD_RATE_PLAN_OK) {
+        g_rate_plan_refused = refused;
+        DSD_MEMCPY(g_rate_chain_refusal, refusal, sizeof refusal);
+        return false;
+    }
+    g_rate_plan_refused = refused;
+    out->programmed_hz = programmed_hz;
+    return true;
+}
+
 static int
 rate_chain_replan(uint32_t programmed_hz, uint32_t readback_hz) {
     const uint32_t rate_hz = readback_hz != 0U ? readback_hz : programmed_hz;
@@ -1234,7 +1258,8 @@ rate_chain_replan(uint32_t programmed_hz, uint32_t readback_hz) {
     }
     dsd_rate_plan plan;
     if (rate_chain_plan(g_live_rate_plan.request_hz, programmed_hz, readback_hz, g_live_rate_plan.target_hz, &plan)
-        != DSD_RATE_PLAN_OK) {
+            != DSD_RATE_PLAN_OK
+        && !rate_chain_plan_delivered(programmed_hz, readback_hz, &plan)) {
         return kCaptureRateChainRefused;
     }
     rate_chain_run_plan(&plan);
@@ -5919,6 +5944,21 @@ capture_stage_provisional_plan(uint32_t freq, uint32_t request_hz, uint32_t prog
     return 0;
 }
 
+/* Whether the rate a device says it delivers for @p request_hz (@p deliverable_hz) can be staged at @p freq. A
+ * SoapySDR device's rate is only a request until it reads back, so one whose capture frequency would be out of range
+ * there (a HackRF's preferred 10 MS/s 2.5 MHz above a centre near the top of the range) is asked for @p request_hz
+ * instead when that one fits: the write gives the advertised rate nearest it, and the read-back places the capture for
+ * the rate delivered. Other devices stage what they deliver, and a capture out of range refuses the tune. */
+static bool
+capture_provisional_rate_fits(uint32_t freq, uint32_t request_hz, uint32_t deliverable_hz) {
+    if (deliverable_hz == request_hz || rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY) {
+        return true;
+    }
+    uint32_t capture_freq_hz = 0U;
+    return capture_frequency_for_rate(freq, deliverable_hz, &capture_freq_hz) == 0
+           || capture_frequency_for_rate(freq, request_hz, &capture_freq_hz) != 0;
+}
+
 /**
  * @brief Compute and stage tuner/demodulator capture settings based on the
  * requested center frequency and current demod configuration. The actual
@@ -5944,7 +5984,7 @@ optimal_settings(uint32_t freq, int rate) {
     uint32_t programmed_hz = request_hz;
     uint32_t deliverable_hz = 0U;
     if (request_hz > 0U && rtl_device_nearest_supported_rate(rtl_device_handle, request_hz, &deliverable_hz) == 0
-        && deliverable_hz > 0U) {
+        && deliverable_hz > 0U && capture_provisional_rate_fits(freq, request_hz, deliverable_hz)) {
         programmed_hz = deliverable_hz;
     }
     return capture_stage_provisional_plan(freq, request_hz, programmed_hz);
@@ -6428,13 +6468,13 @@ namespace {
 /* The device calls that put a refused retune's capture back (controller_restore_refused_capture()). */
 struct RefusedCaptureDeviceOps {
     int (*set_frequency)(struct rtl_device* dev, uint32_t frequency_hz);
-    int (*set_sample_rate)(struct rtl_device* dev, uint32_t rate_hz);
+    int (*set_sample_rate)(struct rtl_device* dev, uint32_t rate_hz, uint32_t* out_written_hz);
     int (*get_sample_rate)(struct rtl_device* dev);
 };
 } // namespace
 
-static const RefusedCaptureDeviceOps kRefusedCaptureDeviceOps = {rtl_device_set_frequency, rtl_device_set_sample_rate,
-                                                                 rtl_device_get_sample_rate};
+static const RefusedCaptureDeviceOps kRefusedCaptureDeviceOps = {
+    rtl_device_set_frequency, rtl_device_set_sample_rate_written, rtl_device_get_sample_rate};
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* Stands in for the device a refused retune programs back, whether or not one is open. */
 static const RefusedCaptureDeviceOps* g_test_refused_capture_device_ops = NULL;
@@ -6451,17 +6491,42 @@ controller_refused_capture_device(void) {
     return rtl_device_handle ? &kRefusedCaptureDeviceOps : NULL;
 }
 
-/* The rate a refused retune's restore writes back. A SoapySDR device is asked for the rate it delivered before the
- * retune: its rate write programs the advertised rate nearest the request, and the rate the restored plan asked for
- * can be one the device delivered only on the refused hop (a HackRF asked for 10 MS/s that ran 2 MS/s until then).
- * Other devices are given the rate the restored plan counts as programmed (issue #806), which they quantize to the one
- * they delivered, or the capture rate a chain with no plan ran. */
+/* The rate the restored plan counts as programmed (issue #806), or the capture rate a chain with no plan ran. */
+static uint32_t
+capture_snapshot_programmed_rate_hz(const CaptureSettingsSnapshot* snapshot) {
+    return rate_plan_is_set(&snapshot->rate_plan) ? snapshot->rate_plan.programmed_hz : snapshot->dongle_rate_hz;
+}
+
+/* The rate a refused retune's restore writes back first. A SoapySDR device is asked for the rate it delivered before
+ * the retune: the rate the restored plan asked for can be one the device delivered only on the refused hop (a HackRF
+ * asked for 10 MS/s that ran 2 MS/s until then). Other devices are given the programmed rate, which they quantize to
+ * the one they delivered. */
 static uint32_t
 capture_snapshot_restore_rate_hz(const CaptureSettingsSnapshot* snapshot) {
     if (rate_chain_backend() == DSD_RATE_PLAN_BACKEND_SOAPY && snapshot->dongle_rate_hz != 0U) {
         return snapshot->dongle_rate_hz;
     }
-    return rate_plan_is_set(&snapshot->rate_plan) ? snapshot->rate_plan.programmed_hz : snapshot->dongle_rate_hz;
+    return capture_snapshot_programmed_rate_hz(snapshot);
+}
+
+/* Write a refused retune's restore rate on @p device: the rate @p snapshot delivered, and when the device wrote
+ * another rate for it (a SoapySDR rate it cannot be asked for, snapped to the advertised rate nearest it), the rate
+ * that capture was programmed with, which gave it. The rate written is in @p out_written_hz; the read-back checks the
+ * outcome. Returns the last write's code. */
+static int
+capture_write_restore_rate(const RefusedCaptureDeviceOps* device, const CaptureSettingsSnapshot* snapshot,
+                           uint32_t* out_written_hz) {
+    const uint32_t ask_hz = capture_snapshot_restore_rate_hz(snapshot);
+    *out_written_hz = ask_hz;
+    int rc = device->set_sample_rate(rtl_device_handle, ask_hz, out_written_hz);
+    const uint32_t programmed_hz = capture_snapshot_programmed_rate_hz(snapshot);
+    if (rc == 0 && *out_written_hz != ask_hz && programmed_hz != 0U && programmed_hz != *out_written_hz) {
+        rc = device->set_sample_rate(rtl_device_handle, programmed_hz, out_written_hz);
+    }
+    if (rc != 0) {
+        LOG_ERROR("Failed to return the device to sample rate %u Hz (rc=%d).\n", ask_hz, rc);
+    }
+    return rc;
 }
 
 /* The I/Q rate step once a refused retune's capture is back (issue #806): the design the transaction began with when
@@ -6501,11 +6566,9 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     } else {
         capture_writes_note_frequency();
     }
-    const uint32_t programmed_hz = capture_snapshot_restore_rate_hz(previous);
-    const int rate_rc = device->set_sample_rate(rtl_device_handle, programmed_hz);
-    if (rate_rc != 0) {
-        LOG_ERROR("Failed to return the device to sample rate %u Hz (rc=%d).\n", programmed_hz, rate_rc);
-    }
+    /* The plan is made for the rate written, which a SoapySDR device can snap from the one asked for. */
+    uint32_t programmed_hz = 0U;
+    const int rate_rc = capture_write_restore_rate(device, previous, &programmed_hz);
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
     int correction_rc = 0;
     int refusal = kCaptureRefusalNone;
@@ -18633,9 +18696,10 @@ refused_capture_test_set_frequency(struct rtl_device* dev, uint32_t frequency_hz
 }
 
 static int
-refused_capture_test_set_sample_rate(struct rtl_device* dev, uint32_t rate_hz) {
+refused_capture_test_set_sample_rate(struct rtl_device* dev, uint32_t rate_hz, uint32_t* out_written_hz) {
     (void)dev;
     g_refused_capture_test_device.rate_hz = rate_hz;
+    *out_written_hz = rate_hz;
     return g_refused_capture_test_device.rate_rc;
 }
 

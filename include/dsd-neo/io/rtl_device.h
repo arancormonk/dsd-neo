@@ -278,6 +278,20 @@ int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
 int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
 
 /**
+ * @brief Set device sample rate and report the rate written.
+ *
+ * As rtl_device_set_sample_rate(), with the rate the device was given in @p out_written_hz on success: for SoapySDR
+ * the advertised rate nearest @p samp_rate, which a driver that lists a few rates can snap to; for the other backends
+ * @p samp_rate itself.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param samp_rate Sample rate in Hz.
+ * @param out_written_hz The rate written (optional).
+ * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_sample_rate_written(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz);
+
+/**
  * @brief Report the sample rate the backend would deliver for a requested rate.
  *
  * Pure query; the device is not reconfigured. Backends with a fixed rate grid answer

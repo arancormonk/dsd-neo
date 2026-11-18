@@ -740,6 +740,10 @@ typedef struct {
     double readback_bandwidth_hz;
     /* getBandwidth() calls so far. */
     int bandwidth_reads;
+    /* The rate the n-th setSampleRate() delivers (readback_rate_hz from then on; 0: the rate written); past the list
+       readback_rate_hz is left as it is. */
+    const double* delivered_by_write;
+    size_t delivered_by_write_count;
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);

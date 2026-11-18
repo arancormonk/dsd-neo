@@ -81,6 +81,8 @@ const double k_sdrplay_bandwidths[] = {200000.0,  300000.0,  600000.0,  1536000.
 
 /* SoapyPlutoSDR. */
 const double k_pluto_rates[] = {65105.0, 1e6, 2e6, 3e6, 4e6, 5e6, 6e6, 7e6, 8e6, 9e6, 10e6};
+/* SoapyPlutoSDR also advertises a continuous range (25 MHz / 96 to 61.44 MHz without libad9361). */
+const rtl_device_test_soapy_range k_pluto_rate_range[] = {{25e6 / 96.0, 61440000.0, 0.0}};
 const double k_pluto_bandwidths[] = {0.2e6, 1e6, 2e6, 3e6, 4e6, 5e6, 6e6, 7e6, 8e6, 9e6, 10e6};
 
 /* SoapyLMS7: rates every 0.5 MHz, an RX low-pass range of 1.4001..130 MHz. */
@@ -127,6 +129,8 @@ pluto_fake(void) {
     fake.bandwidth_request_hz = -1;
     fake.listed_rates = k_pluto_rates;
     fake.listed_rate_count = sizeof k_pluto_rates / sizeof k_pluto_rates[0];
+    fake.rate_ranges = k_pluto_rate_range;
+    fake.rate_range_count = 1U;
     fake.bandwidths = k_pluto_bandwidths;
     fake.bandwidth_count = sizeof k_pluto_bandwidths / sizeof k_pluto_bandwidths[0];
     return fake;
@@ -233,14 +237,15 @@ test_default_filters_cover_offset_channel(void) {
     expect_eq("stepped-range device rate", got.rate_hz, 3000000.0);
     expect_eq("stepped-range filter at 3 MS/s", got.bandwidth_hz, 1700000.0);
 
+    /* Its continuous range holds the request, so the request is the rate. */
     rtl_device_test_soapy_gain_fake pluto = pluto_fake();
     got = program(&pluto, 1536000U);
-    expect_eq("ADALM-Pluto rate for a 1536000 Hz request", got.rate_hz, 2000000.0);
-    expect_eq("ADALM-Pluto filter at 2 MS/s", got.bandwidth_hz, 2000000.0);
+    expect_eq("ADALM-Pluto rate for a 1536000 Hz request", got.rate_hz, 1536000.0);
+    expect_eq("ADALM-Pluto filter at 1.536 MS/s", got.bandwidth_hz, 1000000.0);
     pluto = pluto_fake();
     got = program(&pluto, 1152000U);
-    expect_eq("ADALM-Pluto rate for a 1152000 Hz request", got.rate_hz, 1000000.0);
-    expect_eq("ADALM-Pluto filter at 1 MS/s", got.bandwidth_hz, 1000000.0);
+    expect_eq("ADALM-Pluto rate for a 1152000 Hz request", got.rate_hz, 1152000.0);
+    expect_eq("ADALM-Pluto filter at 1.152 MS/s", got.bandwidth_hz, 1000000.0);
 }
 
 /* Guards: a LimeSDR's filter (its narrowest, wider than the floor already), a driver-automatic bandwidth, a device with
@@ -425,6 +430,9 @@ test_write_programs_asked_rate(void) {
     rtl_device_test_soapy_gain_fake matched = hackrf_fake();
     matched.listed_rates = near_10m;
     matched.listed_rate_count = 2U;
+    /* No range: the HackRF's 2-20 MS/s range holds 10 MS/s exactly, which would win over the near point. */
+    matched.rate_ranges = nullptr;
+    matched.rate_range_count = 0U;
     const programmed got = program(&matched, 1536000U);
     expect_eq("the advertised point is planned", got.nearest_hz, 9999999.0);
 }
@@ -540,6 +548,113 @@ test_oversized_readback_refused(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 }
 
+/* A refused hop on @p fake (rtl_device_test_soapy_gain_fake::delivered_by_write sets what each write delivers): the
+ * session starts, the 72 kHz hop is refused, and @p out holds where the stream and the device ended up. */
+bool
+refused_hop(rtl_device_test_soapy_gain_fake* fake, rtl_stream_test_capture_result* out) {
+    rtl_device* dev = rtl_device_test_soapy_gain_device(fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return false;
+    }
+    dsd_exitflag_store(0);
+    *out = {};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, out) == 0);
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        kCenterHz + 25000U, 72000, out)
+                                       == 0);
+    expect_true("the hop is refused", out->completion == RTL_STREAM_TUNE_FAILED);
+    rtl_stream_test_capture_session_end();
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    return true;
+}
+
+/* A device that read back 3,072,025 Hz for the 3,072,000 Hz written, refused on a hop: the rollback asks for the
+ * 3,072,025 Hz it delivered, which the device snaps to the 3,072,000 Hz it lists and then delivers. The plan is made
+ * for the rate written, so the stream runs on. */
+void
+test_rollback_plans_the_rate_written(void) {
+    static const double listed[] = {3072000.0, 9e6};
+    static const double delivered[] = {3072025.0, 9e6, 0.0};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = listed;
+    fake.listed_rate_count = 2U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 3U;
+    rtl_stream_test_capture_result got{};
+    if (!refused_hop(&fake, &got)) {
+        return;
+    }
+    expect_eq("the device is back on 3,072,000 Hz", fake.rate_hz, 3072000.0);
+    expect_eq("the stream runs 3,072,000 Hz", got.capture_rate_hz, 3072000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    dsd_exitflag_store(0);
+}
+
+/* A HackRF listing 2 and 10 MS/s that delivered 3 MS/s for 10 MS/s: 3 MS/s is not a rate it can be asked for (the
+ * write snaps to 2 MS/s), so the rollback asks again for the 10 MS/s that gave the 3 MS/s, checked by its read-back. */
+void
+test_rollback_falls_back_to_the_request(void) {
+    static const double both[] = {2e6, 10e6};
+    static const double delivered[] = {3e6, 10e6, 0.0, 3e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = both;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 4U;
+    rtl_stream_test_capture_result got{};
+    if (!refused_hop(&fake, &got)) {
+        return;
+    }
+    expect_eq("the device is asked for 10 MS/s again", fake.rate_hz, 10000000.0);
+    expect_eq("the stream goes back on the 3 MS/s it ran", got.capture_rate_hz, 3000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    dsd_exitflag_store(0);
+}
+
+/* A device that lists 3,072,025 Hz, which the 48 kHz chain cannot use, and delivers 3,072,000 Hz, which it can: the
+ * plan refused on the rate written is made again on the rate delivered. */
+void
+test_usable_readback_of_an_unusable_rate(void) {
+    static const double listed[] = {3072025.0};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = listed;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = 3072000.0;
+    const rtl_stream_test_capture_result got = open_on(&fake);
+    expect_true("the open starts", got.rc == 0);
+    expect_eq("it runs the 3,072,000 Hz delivered", got.capture_rate_hz, 3072000.0);
+}
+
+/* A HackRF near the top of the tuning range: the preferred 10 MS/s would put the capture 2.5 MHz above the centre,
+ * past what a frequency holds, but the rate it is asked for instead does not. */
+void
+test_preference_out_of_tuning_range(void) {
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    const uint32_t center_hz = 4293000000U;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, center_hz, &got) == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("the open starts", got.rc == 0);
+    expect_true("a rate is written", fake.rate_writes > 0);
+    expect_eq("the capture runs 2 MS/s", got.capture_rate_hz, 2000000.0);
+    expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 500000.0);
+}
+
 /* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
  * read back, and the ring is sized for it. */
 void
@@ -593,7 +708,7 @@ test_failed_ring_sizing_keeps_ring(void) {
     expect_true("the I/Q stream sizing takes", rtl_stream_test_size_net_input(48000U, &capacity) == 0 && capacity > 0U);
 }
 
-/* What the driver reports after a filter write is what the warnings judge: an ADALM-Pluto whose 2 MHz write left
+/* What the driver reports after a filter write is what the warnings judge: an ADALM-Pluto whose 1 MHz write left
  * 200 kHz in place is warned about, and a default whose widest filter is still too narrow is not called opened. */
 void
 test_bandwidth_notices_follow_readback(void) {
@@ -614,7 +729,7 @@ test_bandwidth_notices_follow_readback(void) {
     char log[8192];
     expect_true("stderr capture reads", dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
     expect_true("the filter the driver kept is warned about",
-                strstr(log, "200000 Hz is narrower than 1072000 Hz") != nullptr);
+                strstr(log, "200000 Hz is narrower than 840000 Hz") != nullptr);
     expect_true("the widest filter is warned about", strstr(log, "1000000 Hz is narrower than 5072000 Hz") != nullptr);
     if (count_text(log, "opened the profile's") != 0) {
         DSD_FPRINTF(stderr, "FAIL a filter that does not keep the channel is called opened; log:\n%s\n", log);
@@ -763,6 +878,10 @@ main(int argc, char** argv) {
         {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},
         {"rollback_restores_delivered_rate", test_rollback_restores_delivered_rate},
         {"advertised_above_ceiling", test_advertised_above_ceiling_delivers_within},
+        {"rollback_plans_the_rate_written", test_rollback_plans_the_rate_written},
+        {"rollback_falls_back_to_the_request", test_rollback_falls_back_to_the_request},
+        {"usable_readback_of_an_unusable_rate", test_usable_readback_of_an_unusable_rate},
+        {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
         {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},

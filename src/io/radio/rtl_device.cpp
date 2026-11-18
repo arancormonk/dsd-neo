@@ -10517,8 +10517,9 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
  * @param samp_rate Sample rate in Hz.
  * @return 0 on success, negative on failure.
  */
-int
-rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
+static int
+rtl_device_set_sample_rate_impl(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz) {
+    *out_written_hz = samp_rate;
     if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
         int rc = airspy_source_rate(dev->airspy, samp_rate);
         if (!rc) {
@@ -10575,11 +10576,34 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
         });
         if (rc == 0) {
             dev->rate = applied_rate;
+            *out_written_hz = applied_rate;
         }
         return rc;
     }
 #endif
     return -1;
+}
+
+int
+rtl_device_set_sample_rate_written(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz) {
+    uint32_t written_hz = 0U;
+    const int rc = rtl_device_set_sample_rate_impl(dev, samp_rate, &written_hz);
+    if (rc == 0 && out_written_hz) {
+        *out_written_hz = written_hz;
+    }
+    return rc;
+}
+
+/**
+ * @brief Set device sample rate.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param samp_rate Sample rate in Hz.
+ * @return 0 on success, negative on failure.
+ */
+int
+rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
+    return rtl_device_set_sample_rate_written(dev, samp_rate, NULL);
 }
 
 /**
@@ -12641,8 +12665,12 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     void
     setSampleRate(const int, const size_t, const double rate) override {
+        const size_t write = (size_t)fake_->rate_writes;
         fake_->rate_writes++;
         fake_->rate_hz = rate;
+        if (fake_->delivered_by_write && write < fake_->delivered_by_write_count) {
+            fake_->readback_rate_hz = fake_->delivered_by_write[write];
+        }
         if (fake_->rate_write_throws) {
             throw std::runtime_error("sample rate write failed");
         }

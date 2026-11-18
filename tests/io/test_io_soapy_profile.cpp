@@ -500,22 +500,24 @@ test_returned_values_are_advertised(void) {
         expect_point("preference matched by a listed point",
                      dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {2e6, 9999999.0}, {}, &adjusted), 9999999.0);
     rc |= expect_point("preference matched by a stepped range point",
-                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{0.5, 20e6 + 0.5, 1e6}}, &adjusted),
-                       10000000.5);
+                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{0.25, 20e6 + 0.25, 1e6}}, &adjusted),
+                       10000000.25);
     rc |= expect_point("widest step of a range no step of which reaches the floor",
                        dsdneo::soapy_floor_bandwidth(5072000.0, {{200000.0, 5e6, 250000.0}}), 4950000.0);
-    rc |= expect_point("a point within 1 Hz below the floor",
+    rc |= expect_point("a point within 0.5 Hz below the floor",
                        dsdneo::soapy_floor_bandwidth(5000000.5, {{5e6, 5e6, 0.0}}), 5e6);
-    rc |= expect_point("a continuous range's end within 1 Hz below the floor",
+    rc |= expect_point("a continuous range's end within 0.5 Hz below the floor",
                        dsdneo::soapy_floor_bandwidth(5000000.5, {{200000.0, 5e6, 0.0}}), 5e6);
-    rc |= expect_point("a discrete point within 1 Hz below the floor",
-                       dsdneo::soapy_floor_bandwidth(1000001.0, {{1e6, 1e6, 0.0}, {2e6, 2e6, 0.0}}), 1e6);
+    rc |= expect_point("a discrete point within 0.5 Hz below the floor",
+                       dsdneo::soapy_floor_bandwidth(1000000.5, {{1e6, 1e6, 0.0}, {2e6, 2e6, 0.0}}), 1e6);
+    rc |= expect_point("a discrete point 1 Hz below the floor, which the warning flags",
+                       dsdneo::soapy_floor_bandwidth(1000001.0, {{1e6, 1e6, 0.0}, {2e6, 2e6, 0.0}}), 2e6);
     bool supported = false;
     rc |= expect_point("nearest of a stepped range above its last step",
                        dsdneo::soapy_nearest_in_ranges(6e6, {{200000.0, 5.1e6, 250000.0}}, &supported), 4950000.0);
     rc |= expect_point("nearest rate of a stepped range above its last step",
                        dsdneo::soapy_nearest_sample_rate(6e6, {}, {{200000.0, 5.1e6, 250000.0}}, &adjusted), 4950000.0);
-    rc |= expect_point("a stepped range's step within 1 Hz below the floor",
+    rc |= expect_point("a stepped range's step within 0.5 Hz below the floor",
                        dsdneo::soapy_floor_bandwidth(1200000.5, {{200000.0, 8e6, 250000.0}}), 1200000.0);
     return rc;
 }
@@ -548,6 +550,41 @@ test_points_stay_inside_the_advertised_ranges(void) {
     return rc;
 }
 
+/* The closest point wins, an exact one whatever the order, and the HackRF preference never takes a point that rounds
+ * above it (10 MS/s is the capture ceiling too). */
+static int
+test_closest_point_wins(void) {
+    int rc = 0;
+    bool adjusted = false;
+    const dsdneo::SoapyProfile& hackrf = dsdneo::soapy_profile_by_id(SoapyProfileId::Hackrf);
+    rc |= expect_point("an exact listed preference after a near one",
+                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {2e6, 10000001.0, 10e6}, {}, &adjusted),
+                       10e6);
+    rc |= expect_point(
+        "an exact range preference after a near listed one",
+        dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {2e6, 10000001.0}, {{2e6, 20e6, 0.0}}, &adjusted), 10e6);
+    rc |= expect_point("only a near point above the preference: the nearest rate instead",
+                       dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {2e6, 10000001.0}, {}, &adjusted), 2e6);
+    rc |= expect_point("an exact listed rate after a near one",
+                       dsdneo::soapy_nearest_sample_rate(8e6, {8000001.0, 8e6}, {}, &adjusted), 8e6);
+    return rc;
+}
+
+/* The filter chosen for the Fs/4 channel is one the warning accepts: at 2 MS/s on a 1 Hz grid, the 1,072,000 Hz floor
+ * itself. */
+static int
+test_floor_filter_passes_the_warning(void) {
+    int rc = 0;
+    const double floor_hz = dsdneo::soapy_fs4_channel_floor_hz(2e6);
+    const double chosen = dsdneo::soapy_floor_bandwidth(floor_hz, {{200000.0, 5e6, 1.0}});
+    rc |= expect_point("a 1 Hz grid's filter at the floor", chosen, 1072000.0);
+    if (dsdneo::soapy_bandwidth_cuts_offset(chosen, 2e6)) {
+        DSD_FPRINTF(stderr, "the filter chosen for the channel is warned about as too narrow\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -562,6 +599,8 @@ main(void) {
     rc |= test_offset_channel_floor();
     rc |= test_returned_values_are_advertised();
     rc |= test_points_stay_inside_the_advertised_ranges();
+    rc |= test_closest_point_wins();
+    rc |= test_floor_filter_passes_the_warning();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();
     rc |= test_settings_parser_rejects_invalid_items();

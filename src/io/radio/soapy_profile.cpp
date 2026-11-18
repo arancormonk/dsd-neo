@@ -236,6 +236,10 @@ constexpr double kSoapyExactHz = 1.0;
 /* Floating-point error in a range's step arithmetic, far below any step a driver advertises. */
 constexpr double kSoapyRoundingHz = 1e-3;
 
+/* How far below the Fs/4 channel floor a filter may be and still keep the channel: the filter chosen for the floor
+ * (range_point_at_or_above()) and the warning (soapy_bandwidth_cuts_offset()) use the same margin. */
+constexpr double kSoapyFloorToleranceHz = 0.5;
+
 /* The last point of @p range: its maximum, or its last whole step at or below the maximum. A step that passes the
  * maximum by no more than rounding error is the maximum. */
 double
@@ -491,38 +495,54 @@ range_point_near(double value, const SoapyRange& range, double* out_hz) {
     return true;
 }
 
-/* The narrowest point of @p range at or above @p floor_hz in @p out_hz (one within kSoapyExactHz below it counts), or
- * false when it has none. */
+/* The narrowest point of @p range at or above @p floor_hz in @p out_hz (one within kSoapyFloorToleranceHz below it
+ * counts), or false when it has none. */
 bool
 range_point_at_or_above(double floor_hz, const SoapyRange& range, double* out_hz) {
     const double last = range_last_point(range);
-    if (range.maximum < range.minimum || last < floor_hz - kSoapyExactHz) {
+    if (range.maximum < range.minimum || last < floor_hz - kSoapyFloorToleranceHz) {
         return false;
     }
     double point = std::min(std::max(range.minimum, floor_hz), last);
     if (range.step > 0.0) {
-        const double steps = std::ceil((floor_hz - kSoapyExactHz - range.minimum) / range.step);
+        const double steps = std::ceil((floor_hz - kSoapyFloorToleranceHz - range.minimum) / range.step);
         point = std::min(range.minimum + std::max(0.0, steps) * range.step, last);
     }
     *out_hz = point;
     return true;
 }
 
-/* The advertised rate within kSoapyExactHz of @p rate_hz in @p out_hz: a listed rate, or a range point. */
+/* The advertised rate closest to @p rate_hz, and within kSoapyExactHz of it, in @p out_hz: a listed rate or a range
+ * point, below @p below_hz. The closest wins whatever the order, so an exact point beats a near one listed first. */
 bool
 soapy_rate_supported_point(double rate_hz, const std::vector<double>& listed_rates,
-                           const std::vector<SoapyRange>& ranges, double* out_hz) {
+                           const std::vector<SoapyRange>& ranges, double* out_hz,
+                           double below_hz = std::numeric_limits<double>::max()) {
     if (!(rate_hz > 0.0)) {
         return false;
     }
-    const auto listed = std::find_if(listed_rates.begin(), listed_rates.end(),
-                                     [rate_hz](double rate) { return std::fabs(rate - rate_hz) <= kSoapyExactHz; });
-    if (listed != listed_rates.end()) {
-        *out_hz = *listed;
-        return true;
+    bool found = false;
+    double best = 0.0;
+    const auto consider = [&](double point) {
+        if (point < below_hz && std::fabs(point - rate_hz) <= kSoapyExactHz
+            && (!found || std::fabs(point - rate_hz) < std::fabs(best - rate_hz))) {
+            best = point;
+            found = true;
+        }
+    };
+    for (double rate : listed_rates) {
+        consider(rate);
     }
-    return std::any_of(ranges.begin(), ranges.end(),
-                       [rate_hz, out_hz](const SoapyRange& range) { return range_point_near(rate_hz, range, out_hz); });
+    for (const SoapyRange& range : ranges) {
+        double point = 0.0;
+        if (range_point_near(rate_hz, range, &point)) {
+            consider(point);
+        }
+    }
+    if (found) {
+        *out_hz = best;
+    }
+    return found;
 }
 
 } // namespace
@@ -579,8 +599,10 @@ double
 soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const std::vector<double>& listed_rates,
                           const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
     double point = 0.0;
+    /* Only a point that rounds to the preference or below it: the preferred 10 MS/s is the capture ceiling too. */
     if (requested > 0.0 && profile.preferred_sample_rate_hz > 0.0
-        && soapy_rate_supported_point(profile.preferred_sample_rate_hz, listed_rates, ranges, &point)) {
+        && soapy_rate_supported_point(profile.preferred_sample_rate_hz, listed_rates, ranges, &point,
+                                      profile.preferred_sample_rate_hz + 0.5)) {
         if (out_adjusted) {
             *out_adjusted = std::fabs(point - requested) > 0.5;
         }
@@ -641,7 +663,7 @@ soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges) {
 
 bool
 soapy_bandwidth_cuts_offset(double applied_hz, double capture_rate_hz) {
-    return capture_rate_hz > 0.0 && applied_hz < soapy_fs4_channel_floor_hz(capture_rate_hz) - 0.5;
+    return capture_rate_hz > 0.0 && applied_hz < soapy_fs4_channel_floor_hz(capture_rate_hz) - kSoapyFloorToleranceHz;
 }
 
 std::string

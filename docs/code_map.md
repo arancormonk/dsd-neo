@@ -8913,15 +8913,20 @@ Key public headers:
     meter's level the same).
   - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: the
     plan's call, `rtl_device_nearest_supported_rate()`, goes through `dsdneo::soapy_profile_sample_rate()`: the
-    advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: a listed rate,
-    or a range point `minimum + k * step`, within 1 Hz), else the nearest rate as before. Only the HackRF profile has
+    advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: the listed rate
+    or range point `minimum + k * step` closest to it within 1 Hz, an exact one winning whatever the order, and for the
+    preference only one that rounds to it or below, since 10 MS/s is the capture ceiling too), else the nearest rate as
+    before. Only the HackRF profile has
     one (10 MS/s); the request stays RTL-shaped, so the planner sees a device-forced rate and steps from it as for an
     Airspy, and `soapy_profile = "generic"` keeps the nearest rate. The write, `rtl_device_set_sample_rate()`, programs
     the rate it is asked for when the list or a range holds it (`dsdneo::soapy_nearest_sample_rate()`: a driver may
     list a few rates and advertise a range too), else the nearest listed or range rate, and never the preference: the
     stream asks for the planned rate, and a refused retune's rollback (`controller_restore_refused_capture()`) for the
     rate the device delivered before the retune (`capture_snapshot_restore_rate_hz()`), which must not become the
-    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. Every rate and
+    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. When the device
+    writes another rate for that one (a delivered rate it cannot be asked for, snapped to the nearest it lists), the
+    rollback asks again for the rate that capture was programmed with (`capture_write_restore_rate()`), and the plan is
+    made for the rate written (`rtl_device_set_sample_rate_written()`), checked by the read-back. Every rate and
     bandwidth these helpers return is a point a range holds (a step, or for a range with no step a value within its
     ends), never above its maximum (`range_last_point()`: the last whole step at or below it; the 1 Hz tolerance only
     compares a request with a point), never the preference or the floor itself. Profile detection
@@ -8929,7 +8934,8 @@ Key public headers:
     that names a profile ends the search. Filter: while the capture runs the Fs/4 shift (`fs4_shift_capture_active()`;
     not with `DSD_NEO_DISABLE_FS4_SHIFT=1`), a profile's default bandwidth that the device would snap below
     `soapy_fs4_channel_floor_hz()` (rate / 2 plus the widest DSP bandwidth, 72 kHz) opens to `soapy_floor_bandwidth()`,
-    the narrowest the device admits at or above it, or its widest (`soapy_open_default_bandwidth()`); an explicit
+    the narrowest the device admits at or above it (within the 0.5 Hz the warning allows, `kSoapyFloorToleranceHz`, so
+    the filter chosen is never one the warning flags), or its widest (`soapy_open_default_bandwidth()`); an explicit
     `soapy_bandwidth_hz` or tuner bandwidth is applied as the device takes it; 0 stays driver-automatic and a device
     with no bandwidth range gets none. Notices come after the write took and judge the filter the driver reports
     (`soapy_bandwidth_readback_locked()`: `getBandwidth()`, else the value written, a non-finite report included, checked
@@ -8945,7 +8951,11 @@ Key public headers:
     `stream_open_validate_device_capture_rate()` checks an advertised rate early for every backend but SoapySDR, whose
     drivers may deliver another; for the same reason a provisional plan refused on a SoapySDR device's advertised rate
     is deferred (`capture_provisional_plan()`: the chain runs the request's own plan until the read-back's final plan
-    validates the rate delivered). A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
+    validates the rate delivered), and a preferred rate whose capture frequency would be out of range is not staged
+    when the request's is in range (`capture_provisional_rate_fits()`: the device is asked for the request, and the
+    capture is placed for the rate it delivers). A final plan refused on the rate written is made again on a SoapySDR
+    read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
+    3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
     a SoapySDR rate of `INT_MAX` Hz or more as `INT_MAX`, which every ceiling refuses, never as no read-back. The binding
     check is `capture_rate_within_limits()` on the rate a device delivers
     (read-back, else programmed), at the start (`controller_take_initial_readback()`) and on every later read-back
@@ -8964,8 +8974,9 @@ Key public headers:
     between its read and the mute holds, 1,179,648 samples), and the default
     retune mute never ends inside it (`retune_mute_bytes()`); an explicit `DSD_NEO_RETUNE_MUTE_MS` is kept. Tests:
     `IO_SOAPY_PROFILE` (helpers, Airspy HF+ detection, advertised points), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay,
-    ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists: rate planned and written, a rollback to
-    the saved rate and to the rate delivered, opened filters, notices on the driver's read-back (an infinite one
+    ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists and ranges: rate planned and written, a
+    rollback to the saved rate, to the rate delivered, to the rate written and to the request that gave it, a usable
+    read-back of an unusable advertised rate, a preferred rate out of tuning range, opened filters, notices on the driver's read-back (an infinite one
     included) and after the write, no read-back with the Fs/4 shift off, a stream open's capture and ring, an advertised
     rate above the ceiling or one the chain cannot use, a 2.4 GS/s read-back at the open and on a hop, a failed ring
     size, the filter on retunes and after a failed rate write), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the advertised rate, a

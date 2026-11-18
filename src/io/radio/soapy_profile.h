@@ -149,7 +149,7 @@ bool soapy_driver_stream_queue(const std::string& driver_key, SoapyStreamQueue* 
  * shift at @p capture_rate_hz: the channel sits a quarter of the rate off centre, so the filter's full width must
  * reach half the rate plus the widest DSP bandwidth (72 kHz). */
 double soapy_fs4_channel_floor_hz(double capture_rate_hz);
-/* The narrowest bandwidth @p ranges admit at or above @p floor_hz (a range's steps rounded up; one within 1 Hz below
+/* The narrowest bandwidth @p ranges admit at or above @p floor_hz (a range's steps rounded up; one within 0.5 Hz below
  * counts), or the widest they admit when none reaches it; @p floor_hz when @p ranges admit none. Always a point a range
  * holds: a step, or for a range with no step a value within its ends. */
 double soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges);
