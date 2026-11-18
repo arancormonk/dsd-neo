@@ -748,7 +748,6 @@ test_free_state_wipes_keys(void) {
     seed_slot_keyed_from_tg(state);
     state->keyloader = 0;
     state->R = 0x0102030405ULL;
-    state->payload_miN = state->R;
     state->rkey_array[123] = 0x33ULL;
     state->aes_key[0] = 0x5AU;
     freeState(state);
@@ -758,7 +757,7 @@ test_free_state_wipes_keys(void) {
         failed |= autoload[i] != 0U;
     }
     if (failed || state->K != 0ULL || state->K1 != 0ULL || state->H != 0ULL || state->R != 0ULL
-        || state->payload_miN != 0ULL || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
+        || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
         DSD_FPRINTF(stderr, "freeState left key material in the state\n");
         failed = 1;
     }

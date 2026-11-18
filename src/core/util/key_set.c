@@ -70,8 +70,6 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     DSD_SECURE_ZERO(&state->R, sizeof(state->R));
     DSD_SECURE_ZERO(&state->RR, sizeof(state->RR));
     DSD_SECURE_ZERO(&state->H, sizeof(state->H));
-    /* The NXDN scrambler key (R) a voice call assignment or scrambled frame copies in as its LFSR seed. */
-    DSD_SECURE_ZERO(&state->payload_miN, sizeof(state->payload_miN));
     DSD_SECURE_ZERO(&state->dmr_tg_autoload, sizeof(state->dmr_tg_autoload));
     DSD_SECURE_ZERO(state->A1, sizeof(state->A1));
     DSD_SECURE_ZERO(state->A2, sizeof(state->A2));

@@ -158,8 +158,7 @@ bootstrap_snapshot_secrets(void) {
 }
 
 /* Every key copy a state snapshot carries: the scalar and AES keys, the talkgroup autoload's copies of them and its
-   slot keys, the CSI key, the scalar key presence, and the NXDN scrambler key a voice call assignment or the first
-   scrambled frame copies into payload_miN as its LFSR seed. */
+   slot keys, the CSI key, and the scalar key presence. */
 #define SNAPSHOT_KEY(field) {offsetof(dsd_state, field), sizeof(((dsd_state*)0)->field)}
 
 static const struct {
@@ -183,7 +182,6 @@ static const struct {
     SNAPSHOT_KEY(csi_ee_key),
     SNAPSHOT_KEY(scalar_key_present),
     SNAPSHOT_KEY(basic_key_present),
-    SNAPSHOT_KEY(payload_miN),
 };
 
 #undef SNAPSHOT_KEY

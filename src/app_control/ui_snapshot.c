@@ -495,9 +495,8 @@ ui_snapshot_copy_render_state(dsd_state* dst, ui_snapshot_marks* marks, const ds
 }
 
 /* The key material the copied ranges carry: the scalar and AES keys (as dsd_key_state_secure_wipe() wipes them on the
- * live state, the keyring and the TETRA air keys aside, which no range copies), the talkgroup autoload's copies of them,
- * the CSI key, and payload_miN, into which an NXDN voice call assignment or scrambled frame copies the scrambler key
- * (R) as its LFSR seed. */
+ * live state, the keyring and the TETRA air keys aside, which no range copies), the talkgroup autoload's copies of them
+ * and the CSI key. */
 static void
 ui_snapshot_wipe_key_copies(dsd_state* snap) {
     DSD_SECURE_ZERO(snap->scalar_key_present, sizeof snap->scalar_key_present);
@@ -517,7 +516,6 @@ ui_snapshot_wipe_key_copies(dsd_state* snap) {
     DSD_SECURE_ZERO(snap->A4, sizeof snap->A4);
     DSD_SECURE_ZERO(snap->aes_key, sizeof snap->aes_key);
     DSD_SECURE_ZERO(snap->csi_ee_key, sizeof snap->csi_ee_key);
-    DSD_SECURE_ZERO(&snap->payload_miN, sizeof snap->payload_miN);
 }
 
 static void
