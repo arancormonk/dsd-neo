@@ -399,9 +399,10 @@ static void
 slow_data_blocks(uint8_t bytes[60], const uint8_t* minis, const char* const* data, int blocks) {
     DSD_MEMSET(bytes, 0x20, 60);
     for (int b = 0; b < blocks; b++) {
-        bytes[b * 6] = minis[b];
+        uint8_t* block = bytes + ((size_t)b * 6U);
+        block[0] = minis[b];
         for (int i = 0; i < 5 && data[b][i] != '\0'; i++) {
-            bytes[(b * 6) + 1 + i] = (uint8_t)data[b][i];
+            block[1 + i] = (uint8_t)data[b][i];
         }
     }
 }

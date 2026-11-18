@@ -514,7 +514,7 @@ send_udt_nmea_padded(dsd_opts* opts, dsd_state* state, int header_crc_ok, int q,
     dsd_unpack_bytes_to_bits(hdr, sizeof hdr, hdr_bits, sizeof hdr_bits, sizeof hdr);
     dmr_dheader(opts, state, hdr, hdr_bits, header_crc_ok ? 1U : 0U, 0);
     for (unsigned b = 0; b < blocks; ++b) {
-        dmr_block_assembler(opts, state, packed + 12U * b, 12, 0x07, 3);
+        dmr_block_assembler(opts, state, packed + ((size_t)b * 12U), 12, 0x07, 3);
     }
 }
 
