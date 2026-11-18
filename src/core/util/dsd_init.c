@@ -1722,7 +1722,4 @@ freeState(dsd_state* state) {
     dsd_aligned_free(state->dmr_soft_buf);
     state->dmr_soft_buf = NULL;
     state->dmr_soft_p = NULL;
-
-    free(state->rc2_context);
-    state->rc2_context = NULL;
 }
