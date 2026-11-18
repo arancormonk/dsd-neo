@@ -274,6 +274,32 @@ test_reception_scope_refines_mid_call(void) {
     assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
 }
 
+/* A P25 call heard first by its NAC loses sync and learns its WACN and SYSID after reacquisition: the merged row keeps
+ * the stronger identity the reacquired segment read (a NAC-only row would refuse every report heard under the
+ * network's identity in a later reception). */
+static void
+test_reacquired_segment_strengthens_reception_scope(void) {
+    reset_fixture();
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 450000000U;
+    DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+    g_state.rx_id.family = DSD_RXID_FAMILY_P25;
+    g_state.rx_id.valid = DSD_RXID_ACCESS;
+    g_state.rx_id.access_kind = DSD_ACCESS_CODE_NAC;
+    g_state.rx_id.access = 0x293U;
+    const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25_NAC);
+    dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+    assert(observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN) != first);
+    assert(row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+    end_call(DSD_CALL_END_SYNC_LOSS);
+    assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+    assert(row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+    assert(row(1)->rx_scope.scope.a == 0xA1234U && row(1)->rx_scope.scope.b == 0x111U);
+    assert(row(1)->rx_scope.identity_freq_hz == 0);
+}
+
 /* A call that ended before any render takes the record as it ended, with the frequency the row is given (the call's
  * own), not whatever the staged row held. */
 static void
@@ -670,6 +696,7 @@ main(void) {
     test_same_number_two_scopes();
     test_foreign_sender_enriches_its_call();
     test_reception_scope_refines_mid_call();
+    test_reacquired_segment_strengthens_reception_scope();
     test_reception_scope_of_a_call_ended_unseen();
     test_declined_position_keeps_crc_marking();
     test_callsign_sources();

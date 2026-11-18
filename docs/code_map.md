@@ -2523,7 +2523,9 @@ suite runs under this compiler.
   across receptions; the sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
   its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
-  row's frequency), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
+  same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
+  WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
