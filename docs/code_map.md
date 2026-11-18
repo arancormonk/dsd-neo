@@ -15598,7 +15598,15 @@ Qt Quick frontend (`src/ui/qt`):
       (`withdraw_fragment_payload()`, `withdraw_source_label()`): its GPS unit (the row shows the best remaining
       fragment's, or none), and the message and source label when they are that fragment's (by provenance), so a
       NAC-only fragment that later names another system leaves no fix, message or label of its own on the row, live,
-      saved or after a reload. The texts anonymous fragments gave are
+      saved or after a reload. A reading that names another system (`fragment_system_compatible()`: protocol family,
+      reception or sender system) also gives nothing else and takes back every other field it gave
+      (`withdraw_fragment_fields()`): each fragment's contribution is kept as a `Row::FragmentPart` (span, crypto and
+      emergency flags, frequency and access code, site and call channel, reception scope, receive evidence, service
+      and the name it gave), and the row is rebuilt from the parts not withdrawn by the merge's own rules
+      (`rebuild_from_parts()`: newest known frequency, code and channel by provenance, site union, strongest scope,
+      first receive evidence, earliest start and latest end, flags OR'd), then re-sorted. A later reading that agrees
+      again gives its part back (`merge_parts()`). A row an older build stored with several fragments has no parts:
+      the withdrawal clears only the frequency, code and channel that are that fragment's (by provenance). The texts anonymous fragments gave are
       dropped when the row learns its radio. The reception scope folds by strength from any
       fragment. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
       greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
@@ -15628,7 +15636,9 @@ Qt Quick frontend (`src/ui/qt`):
       (coordinates, error, flags, kind), the raw target and identity. Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
-      `frv` (fragment key to reading version), each only when known (`detail` only for a legacy text); spill lines
+      `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
+      under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only
+      when known (`detail` only for a legacy text); spill lines
       add `ord`. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
       part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
       could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on

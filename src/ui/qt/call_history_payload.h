@@ -55,6 +55,12 @@ json_field_fits(const QJsonObject& obj, const char* key, T* out) {
     return true;
 }
 
+/** @brief A stored system identity under @p key (`rx`, `sscope`), or none when it is missing or invalid. */
+CallHistoryScope stored_scope_from_json(const QJsonObject& obj, const char* key);
+
+/** @brief Store @p scope under @p key; nothing for an unknown one. */
+void stored_scope_to_json(const CallHistoryScope& scope, const char* key, QJsonObject& obj);
+
 /** @brief Keep the newest of @p rings' session ordinals (CallHistoryModel::SessionOrdinals), by ordinal. */
 void bound_session_ordinals(QHash<quint64, qint64>& rings);
 
@@ -76,6 +82,10 @@ void drop_anonymous_gps_of_named(CallHistoryModel::Row& row);
 
 /** @brief Whether two raw texts (callsigns, dial strings) are known and differ, runs of spaces as one, trimmed. */
 bool raw_texts_differ(const QString& a, const QString& b);
+
+/** @brief Whether fragment @p row is of @p existing's system: one protocol family, and a reception and sender system the
+ * row's are compatible with (call_history_scopes_compatible()). */
+bool fragment_system_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
 /** @brief Whether fragment @p row is of @p existing's radio, so it may give the row its texts, position and source
  * label: one protocol family and sender system, no other source number or text, and not anonymous beside a named row. */

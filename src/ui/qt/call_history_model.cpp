@@ -1311,6 +1311,11 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     return SeenAdvanced;
 }
 
+namespace {
+// What a ring reading gives its row besides its texts and position (defined with the merge's fold below).
+CallHistoryModel::FragmentPart fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment);
+} // namespace
+
 void
 CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh) {
     const qulonglong pushSeq = static_cast<qulonglong>(ring.push_seq);
@@ -1383,6 +1388,9 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
         row.row.fragmentVers.insert(row.row.fragments.constLast(), static_cast<quint64>(ring.commit_rev));
+        if (kind == KindVoice) {
+            row.row.parts.append(fragment_part_of(row.row, row.row.fragments.constLast()));
+        }
         row.isUpdate = verdict == SeenAdvanced;
         row.again = verdict == SeenAgain;
         row.key = key;
@@ -1693,6 +1701,16 @@ fold_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
 }
 
+/** @brief Give @p to the call channel of @p from, with the fragment it came from. */
+void
+take_call_channel(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.callChannel = from.callChannel;
+    to.callChannelKind = from.callChannelKind;
+    to.cchWhen = from.cchWhen;
+    to.cchSeq = from.cchSeq;
+    to.cchSlot = from.cchSlot;
+}
+
 /**
  * @brief Fold @p row's site and call channel into @p existing (issue #799).
  *
@@ -1709,11 +1727,253 @@ fold_site(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
                                  provenance(existing.cchWhen, existing.cchSeq, existing.cchSlot),
                                  call_history_call_channel_known(row.callChannelKind, row.callChannel),
                                  provenance(row.cchWhen, row.cchSeq, row.cchSlot))) {
-        existing.callChannel = row.callChannel;
-        existing.callChannelKind = row.callChannelKind;
-        existing.cchWhen = row.cchWhen;
-        existing.cchSeq = row.cchSeq;
-        existing.cchSlot = row.cchSlot;
+        take_call_channel(existing, row);
+    }
+}
+
+/** @brief Give @p to the site and call channel of @p from, with the fragment the channel came from. */
+void
+take_site(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.siteId = from.siteId;
+    take_call_channel(to, from);
+}
+
+using FragmentPart = CallHistoryModel::FragmentPart;
+
+/** @brief Fold @p row's span and its crypto and emergency flags into @p existing, as a merge does. The row keeps its
+ * end, so one plausibility rule decides on every fold and update: a span past the cap reads unknown, and a later update
+ * of an earlier fragment cannot rebuild a duration from that fragment alone. With neither end known the duration stays
+ * unknown; a side whose end is unknown still counts from its start, so both ends are read before the start moves (a
+ * start-less row's end is its start). */
+void
+fold_span(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    const qint64 start = qMin(existing.when, row.when);
+    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
+    const bool endKnown = existing.end > 0 || row.end > 0;
+    existing.when = start;
+    if (endKnown) {
+        existing.end = end;
+        existing.durationSecs = call_history_duration_secs(start, end);
+    }
+    existing.enc = existing.enc || row.enc;
+    existing.emergency = existing.emergency || row.emergency;
+}
+
+/** @brief Fold the receive evidence and service of @p row into @p existing, and the service name it now earns. */
+void
+fold_receive(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (receive_adopt_identity(existing, row)) {
+        existing.service = row.service;
+        /* A service name outranks every other name a row has (row_take_name()). */
+        if (!row.service.isEmpty()) {
+            existing.name = row.service;
+        }
+    }
+}
+
+/** @brief What a one-fragment reading @p row gives its row (Row::parts), as fragment @p fragment. */
+FragmentPart
+fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
+    FragmentPart part;
+    part.fragment = fragment;
+    part.enc = row.enc;
+    part.emergency = row.emergency;
+    part.when = row.when;
+    part.end = row.end;
+    part.durationSecs = row.durationSecs;
+    part.receiveKnown = row.receiveKnown;
+    part.receiveKind = row.receiveKind;
+    part.receiveValue = row.receiveValue;
+    part.receiveSlot = row.receiveSlot;
+    part.freqHz = row.freqHz;
+    part.freqWhen = row.freqWhen;
+    part.freqSeq = row.freqSeq;
+    part.freqSlot = row.freqSlot;
+    part.codeKind = row.codeKind;
+    part.code = row.code;
+    part.acWhen = row.acWhen;
+    part.acSeq = row.acSeq;
+    part.acSlot = row.acSlot;
+    part.siteId = row.siteId;
+    part.callChannel = row.callChannel;
+    part.callChannelKind = row.callChannelKind;
+    part.cchWhen = row.cchWhen;
+    part.cchSeq = row.cchSeq;
+    part.cchSlot = row.cchSlot;
+    part.rxScope = row.rxScope;
+    part.name = row.name;
+    part.service = row.service;
+    return part;
+}
+
+/** @brief A voice row holding only @p part's fields, so the merge's own rules fold it. */
+CallHistoryModel::Row
+row_of_part(const FragmentPart& part) {
+    CallHistoryModel::Row row;
+    row.enc = part.enc;
+    row.emergency = part.emergency;
+    row.when = part.when;
+    row.end = part.end;
+    row.durationSecs = part.durationSecs;
+    row.receiveKnown = part.receiveKnown;
+    row.receiveKind = part.receiveKind;
+    row.receiveValue = part.receiveValue;
+    row.receiveSlot = part.receiveSlot;
+    row.freqHz = part.freqHz;
+    row.freqWhen = part.freqWhen;
+    row.freqSeq = part.freqSeq;
+    row.freqSlot = part.freqSlot;
+    row.codeKind = part.codeKind;
+    row.code = part.code;
+    row.acWhen = part.acWhen;
+    row.acSeq = part.acSeq;
+    row.acSlot = part.acSlot;
+    row.siteId = part.siteId;
+    row.callChannel = part.callChannel;
+    row.callChannelKind = part.callChannelKind;
+    row.cchWhen = part.cchWhen;
+    row.cchSeq = part.cchSeq;
+    row.cchSlot = part.cchSlot;
+    row.rxScope = part.rxScope;
+    row.name = part.name;
+    row.service = part.service;
+    return row;
+}
+
+/** @brief The fields a fragment's part folds into its row (FragmentPart), from @p from: the reception scope by
+ * strength, the receive evidence and service, the frequency and access code, the site and channel, the span and flags.
+ */
+void
+fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& from) {
+    if (call_history_scope_learns(existing.rxScope, from.rxScope)) {
+        existing.rxScope = from.rxScope;
+    }
+    fold_receive(existing, from);
+    fold_carrier(existing, from);
+    fold_site(existing, from);
+    fold_span(existing, from);
+}
+
+/** @brief The index of fragment @p fragment's part in @p row, or -1. */
+qsizetype
+part_index(const CallHistoryModel::Row& row, const QString& fragment) {
+    for (qsizetype i = 0; i < row.parts.size(); i++) {
+        if (row.parts.at(i).fragment == fragment) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/** @brief Whether every fragment of @p row has its part, so the row can be rebuilt from them. */
+bool
+parts_complete(const CallHistoryModel::Row& row) {
+    return !row.fragments.isEmpty()
+           && std::all_of(row.fragments.cbegin(), row.fragments.cend(),
+                          [&row](const QString& fragment) { return part_index(row, fragment) >= 0; });
+}
+
+/** @brief Put the parts of @p row into @p existing: a fragment's part replaces the one held when its reading is not
+ * older (Row::fragmentVers), else it is added. */
+void
+merge_parts(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    QList<FragmentPart> parts = existing.parts;
+    for (const FragmentPart& part : row.parts) {
+        const qsizetype held = part_index(existing, part.fragment);
+        if (held < 0) {
+            parts.append(part);
+        } else if (row.fragmentVers.value(part.fragment, 0U) >= existing.fragmentVers.value(part.fragment, 0U)) {
+            parts[held] = part;
+        }
+    }
+    existing.parts = std::move(parts);
+}
+
+/** @brief Rebuild what @p existing's fragments gave it (FragmentPart) from the parts not withdrawn, folded in their
+ * order by the merge's rules. False, changing nothing, when a fragment has no part or none is left. */
+bool
+rebuild_from_parts(CallHistoryModel::Row& existing) {
+    if (!parts_complete(existing)) {
+        return false;
+    }
+    CallHistoryModel::Row rebuilt;
+    bool any = false;
+    for (const FragmentPart& part : existing.parts) {
+        if (part.withdrawn) {
+            continue;
+        }
+        if (any) {
+            fold_part_fields(rebuilt, row_of_part(part));
+        } else {
+            rebuilt = row_of_part(part);
+            any = true;
+        }
+    }
+    if (!any) {
+        return false;
+    }
+    existing.enc = rebuilt.enc;
+    existing.emergency = rebuilt.emergency;
+    existing.when = rebuilt.when;
+    existing.end = rebuilt.end;
+    existing.durationSecs = rebuilt.durationSecs;
+    existing.receiveKnown = rebuilt.receiveKnown;
+    existing.receiveKind = rebuilt.receiveKind;
+    existing.receiveValue = rebuilt.receiveValue;
+    existing.receiveSlot = rebuilt.receiveSlot;
+    take_freq(existing, rebuilt);
+    take_access_code(existing, rebuilt);
+    take_site(existing, rebuilt);
+    existing.rxScope = rebuilt.rxScope;
+    existing.name = rebuilt.name;
+    existing.service = rebuilt.service;
+    return true;
+}
+
+/** @brief For a row that cannot be rebuilt (an older build's, with no parts): clear the frequency, access code and call
+ * channel when they are fragment @p row's (by provenance), so nothing of another system's stays. */
+void
+clear_fragment_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    const CallHistoryProvenance from = provenance(row.when, row.seq, row.slot);
+    if (call_history_provenance_compare(provenance(existing.freqWhen, existing.freqSeq, existing.freqSlot), from)
+        == 0) {
+        existing.freqHz = 0;
+    }
+    if (call_history_provenance_compare(provenance(existing.acWhen, existing.acSeq, existing.acSlot), from) == 0) {
+        existing.codeKind = 0;
+        existing.code = 0;
+    }
+    if (call_history_provenance_compare(provenance(existing.cchWhen, existing.cchSeq, existing.cchSlot), from) == 0) {
+        existing.callChannel = 0U;
+        existing.callChannelKind = DSD_CALL_CHANNEL_NONE;
+    }
+}
+
+/**
+ * @brief Take back from @p existing what its fragment @p row (one reading, found by its fragment) gave it, now that the
+ * reading names another system than the row's (fragment_system_compatible()): its part is withdrawn and the row
+ * rebuilt from its other fragments' (rebuild_from_parts()), or, with no parts to rebuild from, the values that are the
+ * fragment's cleared. A later reading that agrees again gives the part back (merge_parts()).
+ */
+void
+withdraw_fragment_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (row.fragments.size() != 1) {
+        return;
+    }
+    const QString& fragment = row.fragments.constFirst();
+    QList<FragmentPart> parts = existing.parts;
+    const qsizetype held = part_index(existing, fragment);
+    if (held >= 0) {
+        parts[held].withdrawn = true;
+    } else {
+        FragmentPart marker;
+        marker.fragment = fragment;
+        marker.withdrawn = true;
+        parts.append(marker);
+    }
+    existing.parts = std::move(parts);
+    if (!rebuild_from_parts(existing)) {
+        clear_fragment_fields(existing, row);
     }
 }
 
@@ -1821,34 +2081,23 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     }
     // Before the source below: what the fragment may give depends on the radio the row named until now.
     fold_payload(existing, row);
-    fill_identity(existing, row);
-    if (receive_adopt_identity(existing, row)) {
-        existing.service = row.service;
-        /* A service name outranks every other name a row has (row_take_name()). */
-        if (!row.service.isEmpty()) {
-            existing.name = row.service;
-        }
+    // An update found by its fragment is not merged again: one that now names another system than the row's was never
+    // this call's, so it gives nothing and takes back what its earlier readings gave (withdraw_fragment_fields()).
+    if (!fragment_system_compatible(existing, row)) {
+        withdraw_fragment_fields(existing, row);
+        unionFragments(existing, row.fragments);
+        existing.fragmentVers = newest_fragment_versions(existing.fragmentVers, row.fragmentVers);
+        return;
     }
+    fill_identity(existing, row);
+    fold_receive(existing, row);
     fold_carrier(existing, row);
     fold_site(existing, row);
     // The same analog reception read again: a row an older build stored learns the mode it did not keep.
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
         existing.analogMode = row.analogMode;
     }
-    // The row keeps its end, so one plausibility rule decides on every fold and update: a span past the cap reads
-    // unknown, and a later update of an earlier fragment cannot rebuild a duration from that fragment alone. With
-    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start, so both
-    // ends are read before the start moves (a start-less row's end is its start).
-    const qint64 start = qMin(existing.when, row.when);
-    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
-    const bool endKnown = existing.end > 0 || row.end > 0;
-    existing.when = start;
-    if (endKnown) {
-        existing.end = end;
-        existing.durationSecs = call_history_duration_secs(start, end);
-    }
-    existing.enc = existing.enc || row.enc;
-    existing.emergency = existing.emergency || row.emergency;
+    fold_span(existing, row);
     if (existing.src == 0 && sameRadio) {
         existing.src = row.src;
     }
@@ -1856,8 +2105,9 @@ CallHistoryModel::foldRow(Row& existing, const Row& row) {
     // A call heard again in a later session is part of that session too: its views show
     // the merged row, and a full log keeps it as that session's.
     existing.session = qMax(existing.session, row.session);
-    // The fragment's recordings are the merged row's now.
+    // The fragment's recordings are the merged row's now, and what it gave is kept with its part.
     unionFragments(existing, row.fragments);
+    merge_parts(existing, row);
     existing.fragmentVers = newest_fragment_versions(existing.fragmentVers, row.fragmentVers);
 }
 
@@ -1943,15 +2193,24 @@ CallHistoryModel::settleMerged(int merged) {
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
-    // A merge can only pull the absorbing row's start earlier, which may
-    // now sort below newer rows beneath it; restore the newest-first
-    // invariant the insertion scan and day sections depend on.
+    // A merge pulls the absorbing row's start earlier, which may now sort below newer rows beneath it; a fragment taken
+    // back (another system's, withdraw_fragment_fields()) can move it later, above older rows. Restore the
+    // newest-first invariant the insertion scan and day sections depend on.
     int newPos = merged;
     while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {
         newPos++;
     }
-    if (newPos != merged) {
+    if (newPos == merged) {
+        while (newPos > 0 && m_rows.at(newPos - 1).when < m_rows.at(merged).when) {
+            newPos--;
+        }
+    }
+    if (newPos > merged) {
         beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos + 1);
+        m_rows.move(merged, newPos);
+        endMoveRows();
+    } else if (newPos < merged) {
+        beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos);
         m_rows.move(merged, newPos);
         endMoveRows();
     }
@@ -2561,6 +2820,60 @@ row_end_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.end = row.kind == CallHistoryModel::KindVoice && row.when > 0 && end >= row.when ? end : 0;
 }
 
+/** @brief One stored fragment part (row_parts_to_json()), read as the row's own fields are. */
+FragmentPart
+part_from_json(const QJsonObject& entry, const QString& fragment) {
+    CallHistoryModel::Row fields;
+    fields.when = json_i64_or(entry, "when", 0);
+    const qint64 end = json_i64_or(entry, "end", 0);
+    fields.end = fields.when > 0 && end >= fields.when ? end : 0;
+    fields.durationSecs = static_cast<int>(qBound<qint64>(-1, json_i64_or(entry, "durationSecs", -1),
+                                                          static_cast<qint64>(std::numeric_limits<int>::max())));
+    fields.enc = entry.value(QLatin1String("enc")).toBool();
+    fields.emergency = entry.value(QLatin1String("em")).toBool();
+    fields.name = entry.value(QLatin1String("name")).toString();
+    fields.service = entry.value(QLatin1String("service")).toString();
+    fields.receiveKind = entry.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
+    fields.receiveValue = entry.value(QLatin1String("receiveValue")).toInt();
+    fields.receiveKnown = entry.value(QLatin1String("receiveKnown")).toBool();
+    fields.receiveSlot = entry.value(QLatin1String("receiveSlot")).toInt();
+    row_carrier_from_json(fields, entry);
+    row_site_from_json(fields, entry);
+    fields.rxScope = stored_scope_from_json(entry, "rx");
+    return fragment_part_of(fields, fragment);
+}
+
+/** @brief A stored voice row's fragment parts: one per fragment it holds, the first stored for each; a row of one
+ * fragment with none stored is its own part. A part of a fragment the row does not hold is dropped. */
+QList<FragmentPart>
+row_parts_from_json(const CallHistoryModel::Row& row, const QJsonObject& obj) {
+    QList<FragmentPart> parts;
+    if (row.kind != CallHistoryModel::KindVoice) {
+        return parts;
+    }
+    for (const auto& value : obj.value(QLatin1String("fp")).toArray()) {
+        const QJsonObject entry = value.toObject();
+        const QString fragment = entry.value(QLatin1String("fr")).toString();
+        if (!row.fragments.contains(fragment)
+            || std::any_of(parts.cbegin(), parts.cend(),
+                           [&fragment](const FragmentPart& held) { return held.fragment == fragment; })) {
+            continue;
+        }
+        FragmentPart part;
+        if (entry.value(QLatin1String("x")).toBool()) {
+            part.fragment = fragment;
+            part.withdrawn = true;
+        } else {
+            part = part_from_json(entry, fragment);
+        }
+        parts.append(part);
+    }
+    if (parts.isEmpty() && row.fragments.size() == 1) {
+        parts.append(fragment_part_of(row, row.fragments.constFirst()));
+    }
+    return parts;
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -2620,6 +2933,7 @@ row_from_json(const QJsonObject& obj) {
             row.fragmentVers.insert(it.key(), static_cast<quint64>(version));
         }
     }
+    row.parts = row_parts_from_json(row, obj);
     return row;
 }
 
@@ -2639,6 +2953,54 @@ row_carrier_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         obj.insert(QLatin1String("acSeq"), static_cast<qint64>(row.acSeq));
         obj.insert(QLatin1String("acSlot"), row.acSlot);
     }
+}
+
+/** @brief Store a voice row's fragment parts (`fp`, Row::parts) when it has two or more fragments; each part as the
+ * row's own fields are stored, under its fragment key (`fr`), with `x` when withdrawn. */
+void
+row_parts_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
+    if (row.kind != CallHistoryModel::KindVoice || row.fragments.size() < 2 || row.parts.isEmpty()) {
+        return;
+    }
+    QJsonArray stored;
+    for (const FragmentPart& part : row.parts) {
+        QJsonObject entry;
+        entry.insert(QLatin1String("fr"), part.fragment);
+        if (part.withdrawn) {
+            entry.insert(QLatin1String("x"), true);
+            stored.append(entry);
+            continue;
+        }
+        const CallHistoryModel::Row fields = row_of_part(part);
+        entry.insert(QLatin1String("when"), fields.when);
+        if (fields.end > 0) {
+            entry.insert(QLatin1String("end"), fields.end);
+        }
+        entry.insert(QLatin1String("durationSecs"), fields.durationSecs);
+        if (fields.enc) {
+            entry.insert(QLatin1String("enc"), true);
+        }
+        if (fields.emergency) {
+            entry.insert(QLatin1String("em"), true);
+        }
+        entry.insert(QLatin1String("name"), fields.name);
+        if (!fields.service.isEmpty()) {
+            entry.insert(QLatin1String("service"), fields.service);
+        }
+        if (fields.receiveKnown) {
+            entry.insert(QLatin1String("receiveKind"), fields.receiveKind);
+            entry.insert(QLatin1String("receiveValue"), fields.receiveValue);
+            entry.insert(QLatin1String("receiveKnown"), true);
+        }
+        if (fields.receiveSlot != 0) {
+            entry.insert(QLatin1String("receiveSlot"), fields.receiveSlot);
+        }
+        row_carrier_to_json(fields, entry);
+        row_site_to_json(fields, entry);
+        stored_scope_to_json(fields.rxScope, "rx", entry);
+        stored.append(entry);
+    }
+    obj.insert(QLatin1String("fp"), stored);
 }
 
 /** @brief One row as the rows store and the spill write it. */
@@ -2706,6 +3068,7 @@ row_to_json(const CallHistoryModel::Row& row) {
         }
         obj.insert(QLatin1String("frv"), versions);
     }
+    row_parts_to_json(row, obj);
     return obj;
 }
 

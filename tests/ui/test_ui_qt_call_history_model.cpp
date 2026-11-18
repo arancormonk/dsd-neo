@@ -6296,6 +6296,161 @@ test_fragment_on_another_system_withdraws_payload(void) {
     }
 }
 
+/** The fields of row @p row that a fragment's part gives it (FragmentPart), as one line to compare. */
+QString
+part_fields_of(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return QStringLiteral("freq=%1 code=%2 site=%3 svc=%4 name=%5 em=%6 enc=%7 dur=%8 when=%9")
+        .arg(model.data(idx, CallHistoryModel::FreqHzRole).toLongLong())
+        .arg(model.data(idx, CallHistoryModel::AccessCodeRole).toString())
+        .arg(model.data(idx, CallHistoryModel::SiteTextRole).toString())
+        .arg(model.data(idx, CallHistoryModel::ServiceNameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::NameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::EmergencyRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::EncRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::DurationSecsRole).toInt())
+        .arg(model.data(idx, CallHistoryModel::WhenRole).toLongLong());
+}
+
+/* The ruling on B2/B5: a fragment that turns out to be another system's takes back every field it gave its row, not
+ * only its texts: its frequency, access code, site, receive evidence and service (with the name it gave), emergency and
+ * crypto flags, the span it added and the reception scope it strengthened. The row rebuilds them from its other
+ * fragments by the merge's own rules, live and when the withdrawal comes after a reload (the parts are stored). */
+void
+test_fragment_on_another_system_withdraws_call_fields(void) {
+    const time_t when = 1754706800;
+    for (int reloadFirst = 0; reloadFirst < 2; reloadFirst++) {
+        resetStorage();
+        RingFixture ring;
+        QString alone;
+        auto model = std::make_unique<CallHistoryModel>();
+        Event_History* a = ring.commit(0, 80671U, 8671U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(a, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        model->refresh(ring.state);
+        alone = part_fields_of(*model, 0);
+        {
+            Event_History* joining = ring.commit(0, 80671U, 8671U, when + 5, when + 12);
+            joining->systype = DSD_SYNC_P25P1_POS;
+            with_rx(joining, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+            RingFixture::carrier(joining, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+            joining->site_id.family = DSD_RXID_FAMILY_P25;
+            joining->site_id.valid = DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+            joining->site_id.p25_sysid = 0x1A3U;
+            joining->site_id.p25_rfss = 1U;
+            joining->site_id.p25_site = 2U;
+            DSD_SNPRINTF(joining->service_label, sizeof(joining->service_label), "%s", "Service B");
+            joining->receive_identity.known = 1;
+            joining->receive_identity.kind = DSD_RECEIVE_NAC;
+            joining->receive_identity.value = 0x293U;
+            joining->emergency = 1U;
+            joining->enc = 1U;
+        }
+        model->refresh(ring.state);
+        expect("fields: the NAC-only fragment joins the call and gives it its fields",
+               model->count() == 1 && part_fields_of(*model, 0) != alone
+                   && model->data(model->index(0), CallHistoryModel::FreqHzRole).toLongLong() == 453000000);
+        if (reloadFirst != 0) {
+            // Saved and loaded again before the core resolves the fragment: the row's parts come from the store.
+            model->startSaveForTest();
+            model->waitForSaveForTest();
+            model.reset();
+            model = std::make_unique<CallHistoryModel>();
+            expect("fields: the merged row reloads as it was",
+                   model->count() == 1 && part_fields_of(*model, 0) != alone);
+        }
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        b->freq_hz = 453000000;
+        ring.touchCommitted(0);
+        model->refresh(ring.state);
+        const QString after = model->count() == 1 ? part_fields_of(*model, 0) : QStringLiteral("<rows>");
+        expect(reloadFirst != 0 ? "fields: after a reload, another system's fragment gives back every field it gave"
+                                : "fields: another system's fragment gives back every field it gave",
+               after == alone);
+        if (after != alone) {
+            DSD_FPRINTF(stderr, "  want %s\n  got  %s\n", alone.toUtf8().constData(), after.toUtf8().constData());
+        }
+        model->startSaveForTest();
+        model->waitForSaveForTest();
+        model.reset();
+        const QJsonObject stored = stored_row_with(80671U, 8671U);
+        expect("fields: the withdrawn fragment's receive evidence and service are not saved",
+               !stored.isEmpty() && !stored.contains(QLatin1String("receiveKnown"))
+                   && !stored.contains(QLatin1String("service")));
+        expect("fields: the end the withdrawn fragment gave is not saved",
+               stored.value(QLatin1String("end")).toInteger() == static_cast<qint64>(when + 3));
+        CallHistoryModel reloaded;
+        expect("fields: the rebuilt row is the one saved",
+               reloaded.count() == 1 && part_fields_of(reloaded, 0) == alone);
+    }
+
+    // The reception scope the withdrawn fragment strengthened goes back to what the rest knew.
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* a = ring.commit(0, 80672U, 8672U, when, when + 3);
+    a->systype = DSD_SYNC_P25P1_POS;
+    with_rx(a, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+    Event_History* b = ring.commit(0, 80672U, 8672U, when - 6, when + 1);
+    b->systype = DSD_SYNC_P25P1_POS;
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+    model.refresh(ring.state);
+    expect("fields: an earlier fragment starts the row",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when - 6));
+    b = &ring.rings[0].Event_History_Items[1];
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonObject rx = stored_row_with(80672U, 8672U).value(QLatin1String("rx")).toObject();
+    expect("fields: the reception scope the withdrawn fragment strengthened is the rest's again",
+           model.count() == 1 && rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_P25_NAC
+               && rx.value(QLatin1String("a")).toInt() == 0x293);
+    expect("fields: the start the withdrawn fragment gave is the rest's again",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when)
+               && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 3);
+
+    // A row an older build stored with several fragments keeps no parts to rebuild from: the frequency and access code
+    // the withdrawn fragment gave are cleared rather than kept.
+    resetStorage();
+    RingFixture legacy;
+    {
+        CallHistoryModel merged;
+        Event_History* first = legacy.commit(0, 80673U, 8673U, when, when + 3);
+        first->systype = DSD_SYNC_P25P1_POS;
+        with_rx(first, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(first, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        Event_History* second = legacy.commit(0, 80673U, 8673U, when + 5, when + 8);
+        second->systype = DSD_SYNC_P25P1_POS;
+        with_rx(second, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+        RingFixture::carrier(second, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+        merged.refresh(legacy.state);
+        expect("fields: the older row merges", merged.count() == 1);
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    expect("fields: a merged row stores its parts", row.contains(QLatin1String("fp")));
+    row.remove(QLatin1String("fp"));
+    rows.replace(0, row);
+    expect("fields: the older row is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel older;
+        Event_History* second = &legacy.rings[0].Event_History_Items[1];
+        with_rx(second, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        second->freq_hz = 453000000;
+        legacy.touchCommitted(0);
+        older.refresh(legacy.state);
+        expect("fields: an older row clears the frequency and code the withdrawn fragment gave",
+               older.count() == 1 && older.data(older.index(0), CallHistoryModel::FreqHzRole).toLongLong() == 0
+                   && older.data(older.index(0), CallHistoryModel::AccessCodeRole).toString().isEmpty());
+    }
+}
+
 /* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
  * number past 64 bits is refused, and no stand-in value counts as a stored one. */
 void
@@ -6610,6 +6765,7 @@ main(int argc, char** argv) {
     test_weaker_identity_joins_stronger();
     test_late_position_rechecks_reception_system();
     test_fragment_on_another_system_withdraws_payload();
+    test_fragment_on_another_system_withdraws_call_fields();
     test_json_field_fits_judges_conversion();
     test_stored_identity_parts_are_validated();
     test_partial_identity_joins_fuller();

@@ -377,6 +377,16 @@ gps_units_to_json(const QList<CallHistoryModel::GpsUnit>& units, QJsonObject& ob
 
 } // namespace
 
+CallHistoryScope
+stored_scope_from_json(const QJsonObject& obj, const char* key) {
+    return scope_from_json(obj, key);
+}
+
+void
+stored_scope_to_json(const CallHistoryScope& scope, const char* key, QJsonObject& obj) {
+    scope_to_json(scope, key, obj);
+}
+
 /**
  * @brief Whether fragment @p row may give @p existing its text message, GPS text and position (issue #800, B2): one
  * protocol family, reception system and sender system, and the same radio.
@@ -389,10 +399,15 @@ gps_units_to_json(const QList<CallHistoryModel::GpsUnit>& units, QJsonObject& ob
  * system the row's own disagrees with, which the merge (rows_identity_compatible()) would have refused.
  */
 bool
+fragment_system_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return call_history_protocols_compatible(existing.protocol, row.protocol)
+           && call_history_scopes_compatible(existing.rxScope, row.rxScope)
+           && call_history_scopes_compatible(existing.sourceScope, row.sourceScope);
+}
+
+bool
 fragment_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    if (!call_history_protocols_compatible(existing.protocol, row.protocol)
-        || !call_history_scopes_compatible(existing.rxScope, row.rxScope)
-        || !call_history_scopes_compatible(existing.sourceScope, row.sourceScope)) {
+    if (!fragment_system_compatible(existing, row)) {
         return false;
     }
     if (row_names_source(existing) && !row_names_source(row)) {

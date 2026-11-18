@@ -496,6 +496,47 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint64 ver = 0;
     };
 
+    /**
+     * @brief What one fragment's latest reading gave its voice row besides its texts, position and label (issue #800):
+     * its span, crypto and emergency flags, frequency and access code, site and call channel, reception scope, receive
+     * evidence, service and name, each with the provenance the row's own fields carry. A row keeps one per fragment
+     * (Row::parts), so when a fragment turns out to be another system's (fragment_system_compatible()) the row rebuilds
+     * these fields from its other fragments' by the rules a merge folds them with.
+     */
+    struct FragmentPart {
+        QString fragment;
+        /* The fragment's reading named another system than the row's: kept so the row knows the fragment, never
+         * folded. */
+        bool withdrawn = false;
+        bool enc = false;
+        bool emergency = false;
+        bool receiveKnown = false;
+        uint8_t callChannelKind = 0;
+        qint64 when = 0;
+        qint64 end = 0;
+        int durationSecs = -1;
+        int receiveKind = 6;
+        int receiveValue = 0;
+        int receiveSlot = 0;
+        int freqSlot = 0;
+        qint64 freqHz = 0;
+        qint64 freqWhen = 0;
+        qulonglong freqSeq = 0;
+        int codeKind = 0;
+        int code = 0;
+        qint64 acWhen = 0;
+        qulonglong acSeq = 0;
+        int acSlot = 0;
+        int cchSlot = 0;
+        uint32_t callChannel = 0;
+        qint64 cchWhen = 0;
+        qulonglong cchSeq = 0;
+        dsd_received_identity siteId = {};
+        CallHistoryScope rxScope;
+        QString name;
+        QString service;
+    };
+
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
     struct Row {
         qint64 when = 0;
@@ -595,6 +636,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * nothing (foldRow()), so no older label, message, frequency or code comes back. Persisted (`frv`) for the
          * fragments whose version is known. */
         QHash<QString, quint64> fragmentVers;
+        /* Issue #800. What each fragment gave a voice row (FragmentPart), one per fragment, so a fragment found to be
+         * another system's is taken back and the row rebuilt from the rest. Persisted (`fp`) for a row of two or more
+         * fragments; a one-fragment row is its own part. A row an older build stored with several fragments has none:
+         * a withdrawal then clears only the values that fragment gave (by provenance). */
+        QList<FragmentPart> parts;
         /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
          * (protocol, above), the source and target text as received (src_str, tgt_str:
          * callsigns, dial strings), the sender's system (pos.scope with its discriminator) and where it was heard
