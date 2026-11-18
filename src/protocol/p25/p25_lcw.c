@@ -910,8 +910,11 @@ p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
         out->closing = ctx->closing;
         return;
     }
+    /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
+       rides on. */
     dsd_call_snapshot call;
-    if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_P25P1(call.protocol)) {
         out->epoch = call.epoch;
         out->source = call.ota_source_id <= UINT32_MAX ? (uint32_t)call.ota_source_id : 0U;
     }

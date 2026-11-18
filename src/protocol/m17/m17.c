@@ -563,6 +563,13 @@ m17_gnss_row_text(const dsd_position_fix* fix, char* out, size_t cap) {
  * source is the same LSF's: the callsign of the call m17_publish_lsf() just observed. Nothing else in M17 carries a
  * position (D13).
  */
+/* The slot's ACTIVE M17 call: another protocol's call still open on the slot is no transmission of an M17 report. */
+static int
+m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
+    return dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_M17(call->protocol);
+}
+
 static void
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
@@ -579,7 +586,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     m17_format_address(res->src, 1, callsign);
     DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", callsign);
     dsd_call_snapshot call;
-    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int active = m17_active_call(state, &call);
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed),
        or a network stream's ID within its call. The call epoch is part of both, so however a call ended (stream EOT,
        EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. */

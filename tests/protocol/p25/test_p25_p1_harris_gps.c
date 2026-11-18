@@ -377,6 +377,28 @@ test_ended_call(void) {
     fixture_close(&f);
 }
 
+/* Another protocol's call still open on the slot (a DMR call whose end was missed) binds no P25 GPS halves: the
+ * L3Harris update has no P25 call to pair within, so it gives no position (issue #800). */
+static void
+test_other_protocol_call(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_call_observation dmr = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, SRC_A, TG_A);
+    dmr.kind = DSD_CALL_KIND_GROUP_VOICE;
+    expect_true("DMR call opens", dsd_call_state_observe(f.st, &dmr, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_event_sync_slot(f.opts, f.st, 0U);
+    body_fields b = fields_default();
+    uint8_t body[BODY_OCTETS];
+    make_body(&b, body);
+    send_update(&f, LCO_A_ODD, LCO_B_ODD, body);
+    dsd_position_fix fix;
+    char last[256];
+    expect_true("DMR call: no location row", lrrp_rows(&f, last) == 0);
+    expect_true("DMR call: no feed record", !feed_next(&f, &fix));
+    expect_true("DMR call: its row untouched", row0(&f)->pos.valid == 0U && row0(&f)->gps_s[0] == '\0');
+    fixture_close(&f);
+}
+
 /* Dispatch a link control as the TDULC that ended @p closing's call does (processTDULC() captures it first). */
 static void
 send_terminator_lc(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[PART_OCTETS],
@@ -802,6 +824,7 @@ test_fields(void) {
 
 int
 main(void) {
+    test_other_protocol_call();
     test_spec_vector();
     test_parity();
     test_alias_between_halves();
