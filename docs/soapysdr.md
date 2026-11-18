@@ -97,8 +97,12 @@ A module you add must be:
 - 64-bit, built with the Microsoft compiler (the bundled `MSVCP140.dll` and `VCRUNTIME140.dll` runtime).
 - Built for module ABI `0.8` exactly, that is against a SoapySDR 0.8.x release. Modules from SoapySDR development
   builds report ABIs such as `0.8-3` (PothosSDR installers ship these), and SoapySDR 0.9 modules report `0.9`; both
-  are skipped with `failed ABI check`. A second module for a driver that is already loaded is skipped with
-  `duplicate entry`, and the bundled one stays in use.
+  are skipped with `failed ABI check`. Only one module per driver loads: the first to register wins, and any later
+  one is skipped with `duplicate entry`. SoapySDR loads `lib\SoapySDR\modules0.8\` before the
+  `SOAPY_SDR_PLUGIN_PATH` folders, so a module there for a bundled driver is skipped and the bundled one stays in use.
+  Within one folder it loads files in the order Windows lists them, so which of two modules for the same driver in
+  the same folder wins is not defined. To replace a bundled driver, remove the bundled module rather than add a
+  second one beside it.
 - Able to find its own DLLs: Windows looks for them next to `dsd-neo.exe` (in `bin\`) and on `PATH`, not next to the
   module. SDRplay's module, for example, needs `sdrplay_api.dll` from the official SDRplay API installer on `PATH`.
   Do not put any DLL other than a module in the module folder: SoapySDR loads every DLL there as a module.
@@ -190,10 +194,11 @@ tuned on the channel itself, so none of this applies: profile filters stay as th
 
 **Retunes.** A radio can still hand over samples from before a retune; dsd-neo drops the first 120 ms after one. A
 HackRF's driver queues 15 buffers of samples by default (about 197 ms at 10 MS/s, on top of about 52 ms the USB
-transfers hold), so dsd-neo asks it for 4 (`buffers=4`): with the transfers that is about 105 ms at 10 MS/s, inside the
-120 ms. At a lower rate (`soapy_profile = "generic"`) the same samples take longer, and dsd-neo drops as many as the
-queue can hold. The cost is a smaller cushion when the computer falls behind: past about 52 ms the HackRF driver drops
-samples and dsd-neo logs an overflow.
+transfers hold), so dsd-neo asks it for 4 (`buffers=4`): with the transfers and the one buffer dsd-neo may be holding
+when the retune comes, that is about 118 ms at 10 MS/s, inside the 120 ms. At a lower rate (`soapy_profile =
+"generic"`) the same samples take longer, and dsd-neo drops as many as they hold (about 590 ms at 2 MS/s). The cost is
+a smaller cushion when the computer falls behind: past about 52 ms the HackRF driver drops samples and dsd-neo logs an
+overflow. That 52 ms figure comes from the driver's sources and has not been measured on a HackRF.
 
 Minimal config (recommended):
 

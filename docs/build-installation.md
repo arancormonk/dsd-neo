@@ -46,10 +46,15 @@ Package hints:
   (`hackrf.dll`, `airspyhf.dll`) are not copied next to `dsd-neo.exe`, since only the modules use them, so also put
   the same triplet's DLL folder first on `PATH`: `vcpkg_installed\x64-windows-dynamic-release\bin` for Release,
   `vcpkg_installed\x64-windows-dynamic\debug\bin` for Debug. Without it the modules are found but fail to load
-  (`LoadLibrary() failed`). Never mix the two: a Release module does not load into a Debug `SoapySDR.dll`, nor the
-  reverse. `SoapySDRUtil.exe` is built for Release
-  only (`vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\`). The release zip lays all of this out by
-  itself ([soapysdr.md](soapysdr.md) section 0a).
+  (`LoadLibrary() failed`). Never mix the two: Release and Debug modules both report module ABI `0.8`, so SoapySDR
+  does not reject a module built for the other configuration, which can then fail or crash. `SoapySDRUtil.exe` is
+  always a Release build, in the triplet's `tools\soapysdr\` folder:
+  `vcpkg_installed\x64-windows-dynamic-release\tools\soapysdr\` for `win-msvc-release`,
+  `vcpkg_installed\x64-windows-dynamic\tools\soapysdr\` for `win-msvc-debug`. Even in a Debug build it needs the
+  triplet's Release modules and DLLs, not the `debug\` folders a Debug `dsd-neo.exe` uses: run it with
+  `SOAPY_SDR_PLUGIN_PATH` set to `vcpkg_installed\x64-windows-dynamic\lib\SoapySDR\modules0.8` and
+  `vcpkg_installed\x64-windows-dynamic\bin` first on `PATH` (the same folders under `x64-windows-dynamic-release`
+  for Release). The release zip lays all of this out by itself ([soapysdr.md](soapysdr.md) section 0a).
 - Android: see [Android Cross Builds](#android-cross-builds).
 
 ## Build mbelib-neo
