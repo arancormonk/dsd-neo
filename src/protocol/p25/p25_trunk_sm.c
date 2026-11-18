@@ -1464,7 +1464,9 @@ p25_source_id_known(int src) {
  *  - a message naming a different value replaces the field, whose flag takes that message's verdict;
  *  - a message whose source field holds a special address ($FFFFFC-$FFFFFF, p25_source_id_is_subscriber()) names no
  *    radio and is no evidence for one: the source the call keeps for display loses its flag, and a talker inherited
- *    through such a message is never checked (issue #800, fail closed);
+ *    through such a message is never checked (issue #800, fail closed); so is one whose source is not a complete
+ *    local address (p25_sm_event_t::source_nonlocal: a home SUID of another or an unknown system, a Phase 1 link
+ *    control needing a Source ID Extension), which keeps its value for display but is never checked;
  *  - the flags count only under the reception they were earned under (identity_rx_epoch, published.rx_epoch): a message
  *    applied after the received identity's epoch moved first drops every flag inherited from the old one, then records
  *    the fields it checked itself under the current one (p25_slot_bind_reception()); every path that reuses a stored
@@ -1478,7 +1480,7 @@ typedef struct {
     uint32_t target;            // 0: not named
     uint8_t kind;               // dsd_call_kind; DSD_CALL_KIND_UNKNOWN: not named
     uint8_t checked;            // P25_SM_IDENTITY_CHECKED_* verdicts of the message
-    uint8_t source_placeholder; // 1: the source field held a special address (named, but no radio)
+    uint8_t source_placeholder; // 1: the source field named no local radio (a special address, or source_nonlocal)
 } p25_sm_identity_claim;
 
 /* A source field naming a special address: present, but no radio (p25_source_id_is_subscriber()). */
@@ -1521,6 +1523,23 @@ p25_published_verdicts_now(const p25_sm_published_identity* published, const dsd
     return p25_sm_verdicts_now(state, published->checked, published->rx_epoch);
 }
 
+int
+p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sysid) {
+    return state != NULL && (state->rx_id.valid & DSD_RXID_P25_WACN) != 0U && state->rx_id.p25_wacn == wacn
+           && (uint32_t)state->rx_id.p25_sysid == sysid;
+}
+
+/* The verdicts @p ev carries for its own fields: never the source's when its source field names no local radio (a
+ * special address, or p25_sm_event_t::source_nonlocal). */
+static uint8_t
+p25_sm_event_verdicts(const p25_sm_event_t* ev) {
+    uint8_t checked = (uint8_t)(ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL);
+    if (ev->source_nonlocal || p25_source_id_is_placeholder(ev->src)) {
+        checked &= (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND);
+    }
+    return checked;
+}
+
 /* The fields @p claim names with exactly the values @p source, @p target and @p kind; a target only with its kind. */
 static uint8_t
 p25_sm_claim_names(const p25_sm_identity_claim* claim, uint32_t source, uint32_t target, uint8_t kind) {
@@ -1545,8 +1564,8 @@ p25_sm_event_claim(const p25_sm_event_t* ev) {
         .source = p25_source_id_known(ev->src) ? (uint32_t)ev->src : 0U,
         .target = target > 0 ? (uint32_t)target : 0U,
         .kind = (uint8_t)(ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
-        .checked = (uint8_t)(ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL),
-        .source_placeholder = p25_source_id_is_placeholder(ev->src),
+        .checked = p25_sm_event_verdicts(ev),
+        .source_placeholder = (uint8_t)(p25_source_id_is_placeholder(ev->src) || ev->source_nonlocal),
     };
     return claim;
 }
@@ -2350,7 +2369,7 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
     slot_ctx->src = ev->src;
     slot_ctx->dst = ev->dst;
     slot_ctx->is_group = ev->is_group ? 1 : 0;
-    slot_ctx->identity_checked = (uint8_t)(ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL);
+    slot_ctx->identity_checked = p25_sm_event_verdicts(ev);
     slot_ctx->identity_rx_epoch = state ? state->rx_id.epoch : 0U;
     slot_ctx->data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     slot_ctx->svc_bits = ev->svc_bits;
@@ -4337,7 +4356,8 @@ p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state
         changes.identity_recovery = 1;
     }
     changes.ptt_evidence = p25_voice_start_is_p2_ptt(ctx, input);
-    changes.source_placeholder = input->identity_valid ? (int)p25_source_id_is_placeholder(input->src) : 0;
+    changes.source_placeholder =
+        input->identity_valid ? (int)(p25_source_id_is_placeholder(input->src) || input->source_nonlocal) : 0;
     // An ACTIVE-driven start may always fold into the epoch the
     // traffic-channel observation of the same transmission just began. A PTT
     // may do the same only for an epoch no PTT has claimed yet; identity and
@@ -7648,16 +7668,20 @@ p25_sm_published_identity_names_call(const p25_sm_published_identity* published,
 
 void
 p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
-                          uint8_t checked) {
+                          uint8_t checked, int source_nonlocal) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
+    p25_sm_event_t ev = {0};
+    ev.src = (int)source;
+    ev.identity_checked = checked;
+    ev.source_nonlocal = source_nonlocal ? 1 : 0;
     const p25_sm_identity_claim claim = {
         .source = (source != 0U && p25_source_id_is_subscriber(source)) ? source : 0U,
         .target = target,
         .kind = (uint8_t)(is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE),
-        .checked = (uint8_t)(checked & P25_SM_IDENTITY_CHECKED_ALL),
-        .source_placeholder = (uint8_t)(source != 0U && !p25_source_id_is_subscriber(source)),
+        .checked = p25_sm_event_verdicts(&ev),
+        .source_placeholder = (uint8_t)(p25_source_id_is_placeholder(ev.src) || ev.source_nonlocal),
     };
     p25_sm_slot_ctx_t* slot_ctx = &p25_sm_get_ctx()->slots[slot];
     p25_sm_merge_published_identity(&slot_ctx->published, state, slot, &claim);

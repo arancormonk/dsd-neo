@@ -306,6 +306,14 @@ p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, 
 }
 
 int
+p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sysid) {
+    (void)state;
+    (void)wacn;
+    (void)sysid;
+    return 0;
+}
+
+int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
     if (slot >= 0 && slot <= 1) {

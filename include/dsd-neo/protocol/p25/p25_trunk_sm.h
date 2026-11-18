@@ -102,6 +102,12 @@ enum {
     P25_SM_IDENTITY_CHECKED_ALL = 0x07,
 };
 
+/** 1 when a source named only by its home SUID (@p wacn, @p sysid) is a local radio of the current reception: the
+ * reception's checked network status (dsd_state::rx_id, DSD_RXID_P25_WACN) names exactly that WACN and System ID. A
+ * home of another system, or a reception whose system is not known yet, gives 0 (fail closed, issue #800): such an ID
+ * is not a local working address, so it never earns a checked source (p25_sm_event_t::source_nonlocal). */
+int p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sysid);
+
 /* The identity of a slot's canonical call as the state machine and the Phase 2 voice users last named it, and which of
  * its fields are checked, under which reception. */
 typedef struct {
@@ -163,6 +169,11 @@ typedef struct {
     // the producer ran and saw pass. Unchecked (0) unless the producer sets it; the builders below never do. A Phase 2
     // MAC_SIGNAL whose CRC failed (-F) leaves it 0 and is still followed, as documented for -F.
     uint8_t identity_checked;
+    // 1 when the source field names the talker only by an ID that is not a complete local address of this reception: a
+    // home SUID of another (or a not yet known) system (p25_sm_suid_home_is_local()), or a Phase 1 link control that
+    // needs a Source ID Extension. The value stays for display; as evidence it is a special address's: never checked,
+    // and it takes the source's flag away (spec 2.19, issue #800).
+    int source_nonlocal;
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -733,9 +744,10 @@ int p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_pr
  * @param target Talkgroup (group) or destination RID (private) the message named; 0 when none.
  * @param is_group 1 for a group call, 0 for a private call.
  * @param checked P25_SM_IDENTITY_CHECKED_* bits: the message's own check (0 when it failed).
+ * @param source_nonlocal 1 when @p source is not a complete local address (p25_sm_event_t::source_nonlocal).
  */
 void p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
-                               uint8_t checked);
+                               uint8_t checked, int source_nonlocal);
 
 /**
  * @brief Check whether a voice-user observation re-describes a call that just ended.

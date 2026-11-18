@@ -12461,7 +12461,14 @@ Private per-protocol modules worth knowing about:
   or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
   identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
   user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
-  than reading as an omitted field. The
+  than reading as an omitted field. A source that is not a complete local address of the reception is read the same
+  way (`p25_sm_event_t::source_nonlocal`, the `source_nonlocal` argument): its value stays for display, but it is never
+  checked and it takes the source's flag away. That is a unit named only by its home SUID whose WACN and System ID are
+  not the reception's checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is
+  not known): the Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone) and the
+  extended voice users (0x21/0x22, as MAC_SIGNAL and inside MAC_PTT/MAC_ACTIVE, `p25p2_mac_voice_identity::has_suid`);
+  and a Phase 1 voice-user LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A foreign
+  unit's home ID therefore never names a report's sender, a sender scope or a local radio-list label. The
   verdicts are bound to their reception: a claim applied after the received identity's epoch moved first drops every
   flag the assignment earned under the old one and rebinds `identity_rx_epoch` (`p25_slot_bind_reception()`: voice
   starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names

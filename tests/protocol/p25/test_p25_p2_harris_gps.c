@@ -1102,6 +1102,97 @@ test_special_address_voice_user(void) {
     }
 }
 
+#define HOME_WACN    0xBEE00U
+#define HOME_SYS     0x1A3U
+#define FOREIGN_WACN 0xABCDEU
+#define FOREIGN_SYS  0x222U
+
+/* The seven SUID octets (WACN 20 bits, System ID 12 bits, unit ID 24 bits) of @p wacn:@p sys.@p id into @p out. */
+static void
+put_suid(uint8_t* out, uint32_t wacn, uint16_t sys, uint32_t id) {
+    out[0] = (uint8_t)(wacn >> 12);
+    out[1] = (uint8_t)(wacn >> 4);
+    out[2] = (uint8_t)(((wacn & 0x0FU) << 4) | ((sys >> 8) & 0x0FU));
+    out[3] = (uint8_t)sys;
+    out[4] = (uint8_t)(id >> 16);
+    out[5] = (uint8_t)(id >> 8);
+    out[6] = (uint8_t)id;
+}
+
+/* Unit to Unit Voice Service Channel Grant - Extended VCH (0xC4, TIA-102.BBAD-A Fig 33): CHAN-T, CHAN-R, the source
+ * SUID, the target address UNIT_B. */
+static void
+extended_private_grant(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src) {
+    uint8_t grant[15] = {0xC4, (uint8_t)(VC_CHANNEL >> 8), (uint8_t)(VC_CHANNEL & 0xFFU), (uint8_t)(VC_CHANNEL >> 8),
+                         (uint8_t)(VC_CHANNEL & 0xFFU)};
+    put_suid(&grant[5], wacn, sys, src);
+    grant[12] = (uint8_t)(UNIT_B >> 16);
+    grant[13] = (uint8_t)(UNIT_B >> 8);
+    grant[14] = (uint8_t)UNIT_B;
+    send_mac(f, 0, grant, sizeof grant, 1);
+}
+
+/* Group Voice Channel User - Extended (0x21, TIA-102.BBAD-A Fig 20) of TG_A: the source address @p src and the source
+ * SUID @p wacn:@p sys.@p src, as a SACCH MAC_SIGNAL (@p active 0) or in a FACCH MAC_ACTIVE (1). */
+static void
+extended_group_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src, int active) {
+    uint8_t msg[15] = {
+        0x21, 0x00, (uint8_t)(TG_A >> 8), (uint8_t)TG_A, (uint8_t)(src >> 16), (uint8_t)(src >> 8), (uint8_t)src};
+    put_suid(&msg[7], wacn, sys, src);
+    if (!active) {
+        send_sacch_signal(f, msg, 14U);
+        return;
+    }
+    uint8_t mac[18] = {0x80};
+    DSD_MEMCPY(&mac[1], msg, 14U);
+    send_facch(f, mac);
+}
+
+/* Issue #800, fail closed: a source named only by a home SUID is a local radio only when that home is the reception's
+ * own system (its checked WACN and System ID). The extended VCH unit-to-unit grant (0xC4) carries the source's SUID
+ * alone: from another system, or with the reception's system not known yet, its source is never checked, so the
+ * addressless MAC_ACTIVE that follows leaves the next report anonymous (no sender scope, no local radio-list label);
+ * from the reception's own system it names the talker. An extended group voice user (0x21) whose SUID is another
+ * system's takes the talker's verdict away like a special address, as a SACCH MAC_SIGNAL and inside a MAC_ACTIVE,
+ * even naming the unit ID a checked PTT named; one of the reception's own system keeps it. */
+static void
+test_foreign_home_id(void) {
+    for (int home = 0; home < 3; home++) {
+        fixture f;
+        fixture_open(&f);
+        if (home != 2) {
+            dsd_rxid_note_p25_network(f.st, HOME_WACN, HOME_SYS);
+        }
+        extended_private_grant(&f, home == 1 ? HOME_WACN : FOREIGN_WACN, home == 1 ? HOME_SYS : FOREIGN_SYS, SRC_A);
+        expect_true("extended grant followed", f.opts->trunk_is_tuned == 1);
+        mac_active_addressless(&f);
+        send_gps(&f, 0);
+        static const char* const tags[] = {"0xC4 from another system", "0xC4 from the home system",
+                                           "0xC4 with no reception system"};
+        expect_report(&f, tags[home], home == 1 ? SRC_A : 0U, home == 1 ? UNIT_B : 0U, 0);
+        fixture_close(&f);
+    }
+    for (int k = 0; k < 4; k++) {
+        const int active = k & 1;
+        const int foreign = (k & 2) == 0;
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_p25_network(f.st, HOME_WACN, HOME_SYS);
+        group_grant(&f, SRC_A, 1);
+        mac_ptt(&f, TG_A, SRC_A);
+        send_gps(&f, 0);
+        expect_report(&f, "0x21: before", SRC_A, TG_A, 1);
+        extended_group_voice_user(&f, foreign ? FOREIGN_WACN : HOME_WACN, foreign ? FOREIGN_SYS : HOME_SYS, SRC_A,
+                                  active);
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof tag, "0x21 %s from %s", active ? "in MAC_ACTIVE" : "on SACCH",
+                     foreign ? "another system" : "the home system");
+        send_gps(&f, 0);
+        expect_report(&f, tag, foreign ? 0U : SRC_A, foreign ? 0U : TG_A, !foreign);
+        fixture_close(&f);
+    }
+}
+
 /* Issue #800: identity a checked message names after the reception changed is bound to the new reception. A trunked
  * assignment held from system 0x1A3 survives a change of the checked network identity to 0x1A4; the next checked
  * MAC_PTT names the talker (another one, or the grant's again) with its own verdicts under the new reception, so the
@@ -1252,7 +1343,12 @@ test_every_grant_kind(void) {
             DSD_SNPRINTF(label, sizeof label, "%s (crc %d): followed", grants[g].tag, crc_ok);
             expect_true(label, sm->state == P25_SM_TUNED && sm->slots[0].grant_active == 1);
             DSD_SNPRINTF(label, sizeof label, "%s (crc %d): verdict", grants[g].tag, crc_ok);
-            expect_true(label, sm->slots[0].identity_checked == (crc_ok ? P25_SM_IDENTITY_CHECKED_ALL : 0));
+            // The extended VCH grant names its source by a home SUID, and no reception system is known here: the
+            // source is no local address, so it is never checked (test_foreign_home_id()).
+            const uint8_t all = grants[g].octets[0] == 0xC4
+                                    ? (uint8_t)(P25_SM_IDENTITY_CHECKED_TARGET | P25_SM_IDENTITY_CHECKED_KIND)
+                                    : (uint8_t)P25_SM_IDENTITY_CHECKED_ALL;
+            expect_true(label, sm->slots[0].identity_checked == (crc_ok ? all : 0));
             fixture_close(&f);
         }
     }
@@ -1297,6 +1393,7 @@ main(void) {
     test_retune_rebinds_identity();
     test_reception_change_reuse();
     test_special_address_voice_user();
+    test_foreign_home_id();
     test_anonymous_phase2_report_stays_off_phase1_row();
     dsd_decode_clock_use_system();
     if (g_fail) {

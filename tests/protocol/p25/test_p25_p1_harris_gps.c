@@ -883,7 +883,8 @@ follow_fdma_grant(fixture* f, int private_call) {
  * voice user of the same call naming a special address ($FFFFFC-$FFFFFF), a source that is not a complete local
  * address (LCO $00 or LCGRGR with Source ID Extension Required, LCO $4A), or another radio by a soft decode takes it
  * away, whether or not the call keeps SRC_A for display (a trunked assignment does): the next L3Harris or APX report
- * is anonymous until a checked voice user names a radio again. A soft-decoded repeat of SRC_A, or a source of 0 (an
+ * is anonymous until a checked voice user names a radio again; the trunk state machine's assignment holds that source
+ * unchecked too. A soft-decoded repeat of SRC_A, or a source of 0 (an
  * omitted field, as the trunk state machine reads it), changes nothing. The private cases open the call with a Unit to
  * Unit Voice Channel User. */
 static void
@@ -924,6 +925,13 @@ test_voice_user_withdraws_evidence(void) {
             send_voice_user(&f, opener, 0x00, SRC_A, 0, 0);
             expect_gps_names(&f, apx, SRC_A, "withdraw: before");
             send_voice_user(&f, cases[i].format, cases[i].mfid, cases[i].src, cases[i].ext, cases[i].soft);
+            if (trunked && !cases[i].keeps) {
+                /* The trunk state machine reads the same voice user the same way: its source is not checked. */
+                char sm_tag[160];
+                DSD_SNPRINTF(sm_tag, sizeof sm_tag, "%s: assignment source unchecked", tag);
+                expect_true(sm_tag,
+                            (p25_sm_get_ctx()->slots[0].identity_checked & P25_SM_IDENTITY_CHECKED_SOURCE) == 0U);
+            }
             expect_gps_names(&f, apx, cases[i].keeps ? SRC_A : 0U, tag);
             send_voice_user(&f, opener, 0x00, SRC_A, 0, 0);
             expect_gps_names(&f, apx, SRC_A, "withdraw: named again");

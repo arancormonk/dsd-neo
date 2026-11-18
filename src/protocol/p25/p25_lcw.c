@@ -234,23 +234,25 @@ p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source
 
 /* A link control reaches the trunk state machine with its identity checked only when it was hard-decoded (spec 2.20); a
  * soft-erasure retry also succeeds, but its identity stays unchecked. The identity it names reaches the
- * trunk state machine with the verdict of that decode (spec 2.19). */
+ * trunk state machine with the verdict of that decode (spec 2.19), and a source that is not a complete local address
+ * (@p source_local 0: Source ID Extension Required, LCO $4A) as p25_sm_event_t::source_nonlocal, never checked. */
 static int
-p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group) {
+p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group, int source_local) {
     p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
     ev.identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
+    ev.source_nonlocal = source_local ? 0 : 1;
     return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
 }
 
 static int
-p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, int source_local) {
     ctx->state->generic_talker_alias[0][0] = '\0';
     ctx->state->dmr_so = ctx->lc_svcopt;
 
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0)) {
+    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
@@ -261,7 +263,7 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
  * drop the previous talker's alias and note the affiliation, then start the voice. A rejected start (or a TDULC,
  * which starts none) returns before the LC's encrypted service option marks the crypto pending. */
 static int
-p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source) {
+p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->generic_talker_alias[0][0] = '\0';
 
@@ -272,7 +274,7 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1)) {
+    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
@@ -290,7 +292,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
     UNUSED(res);
 
-    (void)p25_lcw_accept_group_voice_user(ctx, group, source);
+    (void)p25_lcw_accept_group_voice_user(ctx, group, source, explicit_src == 0U);
     p25_lcw_note_checked_identity(ctx, group, source, 1U, explicit_src == 0U);
 }
 
@@ -301,7 +303,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source, 1);
     p25_lcw_note_checked_identity(ctx, target, source, 0U, 1);
 }
 
@@ -534,7 +536,7 @@ p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
                 (double)timer / 10.0);
 
-    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0, 1);
     if (ctx->allow_voice_start && !identity_accepted) {
         return;
     }
@@ -589,8 +591,8 @@ p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
     /* The Source ID is not a complete local address: S is always 1 (TIA-102.AABF-D §7.3.29). */
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src, 0);
     p25_lcw_note_checked_identity(ctx, target, src, 0U, 0);
 }
 
@@ -984,7 +986,7 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     // The layout is the standard Group Voice Channel User's, with the supergroup for the group.
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src);
+    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src, ctx->bits[31] == 0U);
     p25_lcw_note_checked_identity(ctx, sg, src, 1U, ctx->bits[31] == 0U);
 }
 
