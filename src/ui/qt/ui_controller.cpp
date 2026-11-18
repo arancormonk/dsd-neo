@@ -30,6 +30,7 @@
 #include "decoder_host.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "position_model.h"
 #include "recording_status.h"
 #include "talkgroup_list_model.h"
 #include "unit_activity_model.h"
@@ -256,6 +257,10 @@ UiController::tick() {
         flushHistory();
         m_history->saveNow();
     }
+    if (sessionEnded && m_positions != nullptr) {
+        // The run's final publish carries its last reports; read them now, as History reads its last rows.
+        m_positions->poll();
+    }
     /* Back from the background: the first ingest takes over from History's background tap, whether or
      * not this tick had a redraw to ingest (a session that ended while the app was away publishes none). */
     if (m_history != nullptr && m_history->backgroundCaptureHandoffOwed()) {
@@ -265,6 +270,11 @@ UiController::tick() {
 
 void
 UiController::refreshModels() {
+    /* Positions are read on every tick, redraw or not: a run publishes them with any snapshot, and a stopped one
+     * leaves its last reports published for this read. */
+    if (m_positions != nullptr) {
+        m_positions->poll();
+    }
     const bool redraw = dsd_app_frontend_redraw_consume() != 0;
     const bool live = sessionIsLive();
     // Once this session has supplied its first redraw, age its held deadlines on

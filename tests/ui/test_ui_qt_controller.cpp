@@ -37,6 +37,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history_tap.h>
+#include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/access_code.h>
@@ -45,6 +46,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 /* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
@@ -82,6 +84,7 @@ extern "C" {
 #include "json_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
+#include "position_model.h"
 #include "qml_gc_policy.h"
 #include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
@@ -1946,6 +1949,59 @@ test_unit_activity_follows_the_session() {
     check(activity.count() == 3);
     freeState(&state);
 }
+
+/* Issue #800: one published report (stream 5, seq 1), and how often the controller read the view. */
+int g_position_reads = 0;
+
+int
+one_position_source(uint64_t stream_id, uint64_t after_seq, dsd_position_fix* out, size_t cap,
+                    dsd_app_position_cursor* next) {
+    ++g_position_reads;
+    DSD_MEMSET(next, 0, sizeof(*next));
+    next->stream_id = 5U;
+    next->oldest_seq = 1U;
+    next->newest_seq = 1U;
+    next->last_seq = 1U;
+    if ((stream_id == 5U && after_seq >= 1U) || cap == 0U) {
+        return 0;
+    }
+    dsd_position_fix_init(out);
+    out->stream_id = 5U;
+    out->seq = 1U;
+    out->protocol = DSD_SYNC_DMR_BS_DATA_POS;
+    out->kind = DSD_POS_DMR_LRRP;
+    out->source_id = 42U;
+    out->lat_e7 = 100000000; // 10.0
+    out->lon_e7 = 200000000; // 20.0
+    return 1;
+}
+
+// Issue #800: the map's tracks are read on every tick, with no decoder redraw, and kept when the session ends.
+static void
+test_positions_poll_without_redraw() {
+    Host host;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    dsd_qt::PositionModel positions;
+    positions.setSourceForTest(&one_position_source);
+    controller.setPositions(&positions);
+    controller.setPollIntervalMs(50);
+    const auto tick = [&]() {
+        (void)dsd_app_frontend_redraw_consume(); // no redraw owed: refreshModels() returns early
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    g_position_reads = 0;
+    tick();
+    check(g_position_reads >= 1);
+    check(positions.count() == 1);
+    host.setPhase(Host::Idle); // a session edge clears the live models, never the tracks
+    tick();
+    check(positions.count() == 1);
+}
+
 } // namespace
 
 int
@@ -1959,6 +2015,7 @@ main(int argc, char** argv) {
     test_history_handoff_after_resume_without_redraw();
     test_session_end_saves_after_final_ingest();
     test_unit_activity_follows_the_session();
+    test_positions_poll_without_redraw();
     test_startup_options_wait_for_redraw();
     test_metrics_age_without_decoder_redraw();
     test_target_change_publishes_once();

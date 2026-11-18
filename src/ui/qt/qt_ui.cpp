@@ -45,6 +45,7 @@
 #include "listen_pins.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "position_model.h"
 #include "radio_reference_model.h"
 #include "recording_status.h"
 #include "recording_store.h"
@@ -277,6 +278,18 @@ publish_unit_activity(QQmlContext* context, UiController* controller, QObject* o
     controller->setUnitActivity(activity);
     context->setContextProperty(QStringLiteral("unitActivity"), activity);
     context->setContextProperty(QStringLiteral("activityView"), activityView);
+}
+
+// Issue #800: the map's tracks, fed by the controller's tick (and by their own background tap while the app is away),
+// and the List's view of the ones the age filter shows.
+static void
+publish_positions(QQmlContext* context, UiController* controller, QObject* owner) {
+    auto* positions = new PositionModel(owner);
+    auto* positionView = new PositionFilterModel(owner);
+    positionView->setSourceModel(positions);
+    controller->setPositions(positions);
+    context->setContextProperty(QStringLiteral("positions"), positions);
+    context->setContextProperty(QStringLiteral("positionView"), positionView);
 }
 
 // Issue #708: the call recording store and status, to QML.
@@ -520,6 +533,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     publish_history_context(context, history, historyExport, &engine);
     publish_recording_context(context, recordings, recordingStatus);
     publish_unit_activity(context, controller, &engine);
+    publish_positions(context, controller, &engine);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);

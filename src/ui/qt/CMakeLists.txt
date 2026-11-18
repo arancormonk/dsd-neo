@@ -98,6 +98,8 @@ target_sources(
         talkgroup_list_model.cpp
         ui_controller.cpp
         unit_activity_model.cpp
+        position_model.cpp # Issue #800
+        position_tap.cpp # Issue #800
 )
 
 qt_add_resources(

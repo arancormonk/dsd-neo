@@ -26323,6 +26323,9 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
+        # Issue #800: the map's tracks, polled on every tick.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -27268,6 +27271,35 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_UNIT_ACTIVITY_MODEL
         COMMAND dsd-neo_test_ui_qt_unit_activity_model
+    )
+    # Issue #800: the map's tracks over the position view's cursor (the real read, on a ring the test publishes), and
+    # their background capture.
+    add_executable(
+        dsd-neo_test_ui_qt_position_model
+        ui/test_ui_qt_position_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_app_control
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_POSITION_MODEL
+        COMMAND dsd-neo_test_ui_qt_position_model
+    )
+    set_tests_properties(
+        UI_QT_POSITION_MODEL
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()
 
