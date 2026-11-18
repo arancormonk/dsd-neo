@@ -4601,21 +4601,35 @@ dsd_engine_test_live_scanner_run(dsd_opts* opts, dsd_state* state, int max_passe
     }
 }
 
+/* Where a run got to: decoding (its input open and its frontends started, so it may publish what it decodes) and,
+ * apart, whether a start hook ran, which only then has a stop hook to pair with. An embedder can attach telemetry
+ * without a start hook, so the final publish follows the first, not the second. */
+typedef struct {
+    int decoding;
+    int hook_started;
+} dsd_engine_run_started;
+
+/* The run starts decoding: the frontends' start hook first, when there is one. A failed start leaves the run unstarted:
+ * no lifecycle publish and no stop hook. */
 static int
 dsd_engine_lifecycle_start_if_needed(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                                     int* lifecycle_started) {
-    if (!hooks || !hooks->start || !lifecycle_started || *lifecycle_started) {
+                                     dsd_engine_run_started* lifecycle_started) {
+    if (!lifecycle_started || lifecycle_started->decoding) {
         return 0;
     }
-    if (hooks->start(opts, state, hooks->context) != 0) {
-        return -1;
+    if (hooks && hooks->start) {
+        if (hooks->start(opts, state, hooks->context) != 0) {
+            return -1;
+        }
+        lifecycle_started->hook_started = 1;
     }
-    *lifecycle_started = 1;
+    lifecycle_started->decoding = 1;
     return 0;
 }
 
 static int
-liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks, int* lifecycle_started) {
+liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+            dsd_engine_run_started* lifecycle_started) {
     if (!opts || !state) {
         return -1;
     }
@@ -4972,7 +4986,7 @@ dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts, const dsd_state* stat
 
 static int
 dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     /* The digital stream carries only the decoded 8 kHz Codec2 monitor (issue #658); the -8 baseband monitor writes
        the raw stream, which runs at the analog sink rate. */
@@ -5001,7 +5015,7 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
@@ -5016,7 +5030,7 @@ dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
@@ -5030,7 +5044,7 @@ dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                                   int* lifecycle_started) {
+                                   dsd_engine_run_started* lifecycle_started) {
     opts->pulse_digi_rate_out = 8000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
@@ -5043,7 +5057,7 @@ dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_e
 
 static int
 dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                             int* lifecycle_started) {
+                             dsd_engine_run_started* lifecycle_started) {
     if (opts->playfiles == 1) {
         if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
             return -1;
@@ -5164,7 +5178,7 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
 
     int rc = 0;
     int early_exit = 0;
-    int lifecycle_started = 0;
+    dsd_engine_run_started lifecycle_started = {0, 0};
     dsd_exitflag_store(0);
     /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
     dsd_engine_set_decoder_thread(1);
@@ -5203,17 +5217,18 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
 ENGINE_OUT:
     /* The run leaves its carrier: nothing it decoded says the receiver is on a two-slot carrier any more. */
     state->tdma_carrier = 0U;
-    if (lifecycle_started) {
+    if (lifecycle_started.decoding) {
         /* The session's last calls are committed and published while the frontends are still attached, so a
            frontend that records them (the control API's event subscribers) gets the final transmission too. A
            frontend with no stop hook (Android passes only start) still gets the final publish: its history tap reads
-           the last published rings after the stop. The exit flag is set before that publish: the published position
-           feed's clock sample (app-control's position view, issue #800) takes it as the run's end, so publishing first
-           would leave a stopped run reading as running (ENGINE_LIFECYCLE_FINALIZE pins the order). */
+           the last published rings after the stop, and so does one an embedder attached with no start hook at all.
+           The exit flag is set before that publish: the published position feed's clock sample (app-control's
+           position view, issue #800) takes it as the run's end, so publishing first would leave a stopped run reading
+           as running (ENGINE_LIFECYCLE_FINALIZE pins the order). */
         dsd_exitflag_store(1);
         dsd_engine_finalize_calls(opts, state);
         dsd_telemetry_publish_both_and_redraw(opts, state);
-        if (hooks && hooks->stop) {
+        if (lifecycle_started.hook_started && hooks && hooks->stop) {
             hooks->stop(opts, state, hooks->context);
         }
     }

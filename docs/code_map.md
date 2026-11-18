@@ -42,13 +42,15 @@ Generated (do not edit/commit):
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run whose
-    lifecycle started (its start hook ran and succeeded) `dsd_engine_run_with_lifecycle()` commits the session's last
-    calls (`dsd_engine_finalize_calls()`: end the slots as sync loss, commit their rows, retire the held VOICE_END
-    alerts) and publishes telemetry, then calls the frontends' stop hook when there is one, so a frontend that records
-    calls gets the final transmission; a frontend with only a start hook (Android) gets the final publish too, which
-    its history tap reads after the stop (bug B1, issue #800). A start hook that fails adds no publish and no stop
-    call. `dsd_engine_cleanup()` repeats the step, which then finds nothing left to do. At the start of every run the
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run that
+    started decoding (its input opened and its start hook, when it has one, ran and succeeded)
+    `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
+    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry, then calls the
+    frontends' stop hook when a start hook ran, so a frontend that records calls gets the final transmission; a
+    frontend with only a start hook (Android) gets the final publish too, which its history tap reads after the stop
+    (bug B1, issue #800), and so does an embedder that attached telemetry itself and passed no hooks (the published
+    position feed then reads as stopped, with the run's last records). A start hook that fails adds no publish and no
+    stop call. `dsd_engine_cleanup()` repeats the step, which then finds nothing left to do. At the start of every run the
     engine also starts the run's position feed (`dsd_position_feed_start()`, below), beside the debug start time
   - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
     and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
@@ -2523,7 +2525,9 @@ suite runs under this compiler.
   across receptions; the sender scope in `pos.scope` is only the track key), and lets only a newer `rev` replace a position. A call row takes
   its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
   began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
-  row's frequency), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
+  same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
+  WACN and SYSID read after a sync loss), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
   `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
   move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`.
   Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
@@ -2629,9 +2633,10 @@ suite runs under this compiler.
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
-    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and a D-STAR RF
-    header whose CRC failed leaves D-PRS records anonymous (`dstar_dprs_source_unchecked`) until a checked header, on
-    RF or in the slow data, names the transmission. Tests:
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_checked_id` and the L3Harris Part A, and every D-STAR RF
+    header, whatever its CRC, drops the half-collected D-PRS record and leaves D-PRS records anonymous
+    (`dstar_dprs_source_unchecked`) until a checked header, on RF or in the slow data, names the transmission's MY
+    callsign (a checked header with a blank MY field names no one and leaves them anonymous too). Tests:
     `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
     `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
     `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.

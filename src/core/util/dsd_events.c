@@ -1216,6 +1216,76 @@ watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
     return changed ? 1U : 0U;
 }
 
+/* How strongly a reception identity names a system (issue #800, B5; the rule History's merge applies too): 0 none; 1 a
+ * feed-only fallback (the control channel's or the tuned frequency); 2 a scope that is not unique (a conventional P25
+ * NAC with its tuned frequency, a Capacity Plus site and colour code, an EDACS site or system); 3 a full system scope
+ * (P25 WACN and SYSID, a Tier III or Connect Plus network, NXDN, TETRA). */
+static int
+watchdog_event_rx_scope_strength(const dsd_event_rx_scope* rx) {
+    switch (rx->scope.kind) {
+        case DSD_POS_SCOPE_NONE: return 0;
+        case DSD_POS_SCOPE_FEED_CC_FREQ:
+        case DSD_POS_SCOPE_FEED_TUNED_FREQ: return 1;
+        case DSD_POS_SCOPE_P25_NAC:
+        case DSD_POS_SCOPE_FEED_EDACS: return 2;
+        case DSD_POS_SCOPE_DMR:
+            /* a = (dsd_rxid_dmr_trunk << 8) | Tier III model (<dsd-neo/core/alias_learn.h>). */
+            return (rx->scope.a >> 8) == (uint32_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS ? 2 : 3;
+        default: return 3;
+    }
+}
+
+/* The system family of a reception identity: P25 for both P25 kinds; 0 for a feed-only fallback, which any family can
+ * have. */
+static int
+watchdog_event_rx_scope_family(const dsd_event_rx_scope* rx) {
+    if (watchdog_event_rx_scope_strength(rx) <= 1) {
+        return 0;
+    }
+    return rx->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? (int)DSD_POS_SCOPE_P25 : (int)rx->scope.kind;
+}
+
+/* Whether identity @p y names everything @p x names: the same kind, and each part @p x knows with the value @p x gives
+ * it (an EDACS scope knows its site and its system apart, each 0 until known; a P25 NAC scope its tuned frequency, 0
+ * when none was known). Every other kind is known whole or not at all. */
+static int
+watchdog_event_rx_scope_covers(const dsd_event_rx_scope* x, const dsd_event_rx_scope* y) {
+    if (x->scope.kind != y->scope.kind) {
+        return 0;
+    }
+    if (x->scope.kind == (uint8_t)DSD_POS_SCOPE_FEED_EDACS) {
+        return (x->scope.a == 0U || x->scope.a == y->scope.a) && (x->scope.b == 0U || x->scope.b == y->scope.b)
+               && x->identity_freq_hz == y->identity_freq_hz;
+    }
+    if (x->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC) {
+        return x->scope.a == y->scope.a && x->scope.b == y->scope.b
+               && (x->identity_freq_hz == 0 || x->identity_freq_hz == y->identity_freq_hz);
+    }
+    return x->scope.a == y->scope.a && x->scope.b == y->scope.b && x->identity_freq_hz == y->identity_freq_hz;
+}
+
+/* Whether a row heard under @p held learns more of where it was heard from a reacquired segment's @p seen: the row has
+ * read none yet, or @p seen is a stronger identity of the same family (a NAC, then the WACN and SYSID learned after the
+ * sync loss), or as strong and names everything @p held does and more. Another system's identity, or a weaker one,
+ * leaves the row's. */
+static int
+watchdog_event_rx_scope_learns(const dsd_event_rx_scope* held, const dsd_event_rx_scope* seen) {
+    if (!seen->resolved) {
+        return 0;
+    }
+    if (!held->resolved) {
+        return 1;
+    }
+    const int sh = watchdog_event_rx_scope_strength(held);
+    const int ss = watchdog_event_rx_scope_strength(seen);
+    if (ss != sh) {
+        const int fh = watchdog_event_rx_scope_family(held);
+        const int fs = watchdog_event_rx_scope_family(seen);
+        return ss > sh && (fh == 0 || fh == fs);
+    }
+    return ss != 0 && watchdog_event_rx_scope_covers(held, seen) && !watchdog_event_rx_scope_covers(seen, held);
+}
+
 // Fold the staged row into the row already in history: this is the same transmission, and
 // everything the reacquired segment learned -- a late-decoded SRC, the system identifiers, an
 // alias, GPS, a text message, the crypto header that finally arrived -- has to survive.
@@ -1236,8 +1306,8 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
     watchdog_event_merge_site(retained, staged);
-    if (!retained->rx_scope.resolved && staged->rx_scope.resolved) {
-        retained->rx_scope = staged->rx_scope; /* where the transmission was heard, once known */
+    if (watchdog_event_rx_scope_learns(&retained->rx_scope, &staged->rx_scope)) {
+        retained->rx_scope = staged->rx_scope; /* where the transmission was heard, as fully as it is known */
     }
     /* A segment that confirmed the service the interrupted one never did names the row; one that confirmed nothing
        only fills a name the row lacks (issue #637). The access code and the over-the-air slot are proven apart (the

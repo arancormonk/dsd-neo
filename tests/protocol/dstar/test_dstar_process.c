@@ -550,11 +550,12 @@ test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
     assert(slow_data_calls == 0);
 }
 
-/* Issue #800 2.10: a verified header opens a transmission, so a D-PRS record the one before it left half collected is
- * forgotten; a header whose CRC failed proves nothing and leaves it, but it began a transmission whose radio is not
- * known: no D-PRS record names a source until a checked header does (dstar_dprs_source_unchecked). */
+/* Issue #800 2.10: every RF header opens a transmission, whether its CRC passed or not, so a D-PRS record the one
+ * before it left half collected is forgotten (a record missing only its CR would otherwise be finished by this
+ * transmission and published as its position), and no D-PRS record names a source until a checked header names the
+ * transmission's MY callsign (dstar_dprs_source_unchecked; the real header decode clears it: DSTAR_HEADER_UTILS). */
 static void
-test_verified_header_forgets_a_half_collected_dprs_record(void) {
+test_every_header_forgets_a_half_collected_dprs_record(void) {
     static dsd_opts opts;
     static dsd_state state;
     for (int verified = 0; verified <= 1; verified++) {
@@ -568,13 +569,14 @@ test_verified_header_forgets_a_half_collected_dprs_record(void) {
         state.dstar_dprs.len = 12U;
         state.dstar_dprs.epoch = 7U;
         DSD_MEMCPY(state.dstar_dprs.text, "$$CRC9E3E,N0", 12U);
-        state.dstar_dprs_source_unchecked = (uint8_t)verified;
+        state.dstar_dprs_source_unchecked = 0U;
 
         assert(processDSTAR_HD(&opts, &state) == verified);
-        assert(state.dstar_dprs_source_unchecked == (verified ? 0U : 1U));
-        assert(state.dstar_dprs.collecting == (verified ? 0U : 1U));
-        assert(state.dstar_dprs.len == (verified ? 0U : 12U));
-        assert(state.dstar_dprs.epoch == (verified ? 0U : 7U));
+        /* The stub decode names no callsign, so neither outcome names the transmission. */
+        assert(state.dstar_dprs_source_unchecked == 1U);
+        assert(state.dstar_dprs.collecting == 0U);
+        assert(state.dstar_dprs.len == 0U);
+        assert(state.dstar_dprs.epoch == 0U);
     }
     header_decode_soft_result = 1;
 }
@@ -592,7 +594,7 @@ main(void) {
     test_voice_superframe_cut_by_an_input_interruption_is_dropped();
     test_header_cut_by_an_input_interruption_decodes_nothing();
     test_header_split_by_a_carrier_boundary_decodes_nothing();
-    test_verified_header_forgets_a_half_collected_dprs_record();
+    test_every_header_forgets_a_half_collected_dprs_record();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

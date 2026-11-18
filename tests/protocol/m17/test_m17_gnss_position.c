@@ -808,6 +808,43 @@ test_extended_callsign_meta_decodes(void) {
     rig_close(&r);
 }
 
+/* A stream LSF whose data type is 0 opens no M17 call (m17_publish_lsf() observes only voice and data), so a DMR call
+ * still open on the slot is the slot's ACTIVE call when its META position is read. That call is no transmission of
+ * the report: each such report has no transmission to repeat within and is admitted again, never deduplicated
+ * against the DMR call's epoch, and the DMR call's row is left alone (issue #800). */
+static void
+test_other_protocol_call_is_no_transmission(void) {
+    rig r;
+    rig_open(&r);
+    dsd_call_observation dmr = dsd_call_observation_data(DSD_SYNC_DMR_BS_VOICE_POS, 0U, 1001U, 2002U);
+    dmr.kind = DSD_CALL_KIND_GROUP_VOICE;
+    expect_true("DMR call opens", dsd_call_state_observe(r.state, &dmr, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    const uint64_t rev = dsd_position_last_rev();
+    for (int i = 0; i < 2; i++) {
+        uint8_t bits[LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        DSD_MEMSET(bits, 0, LSF_BITS);
+        m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, TEST_DST_CALLSIGN),
+                               m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN));
+        write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+        for (size_t k = 0U; k < M17_META_BYTES; k++) {
+            write_bits(bits + 112U + (k * 8U), meta[k], 8U);
+        }
+        const uint16_t crc = m17_attach_lsf_crc(bits, packed);
+        DSD_MEMCPY(r.state->m17_lsf, bits, sizeof(bits));
+        expect_int("data type 0 LSF passes", m17_finalize_lsf_crc(r.opts, r.state, packed, crc), 0);
+    }
+    dsd_call_snapshot call;
+    expect_true("the DMR call is still the slot's",
+                dsd_call_state_get(r.state, 0U, &call) > 0 && DSD_SYNC_IS_DMR(call.protocol));
+    expect_int("each report admitted", (long long)(dsd_position_last_rev() - rev), 2);
+    expect_int("DMR row untouched", row0(&r)->pos.valid, 0);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_rf_lsf_meta_position();
@@ -825,6 +862,7 @@ main(void) {
     test_mpkt_meta_and_0x91_packet();
     test_rf_packet_and_lsf_checked_apart();
     test_extended_callsign_meta_decodes();
+    test_other_protocol_call_is_no_transmission();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

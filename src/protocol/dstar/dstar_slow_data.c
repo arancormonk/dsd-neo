@@ -46,9 +46,11 @@ typedef struct dstar_sd_ctx_s {
     int len;
 } dstar_sd_ctx;
 
+/* Printable ASCII, space included: the only bytes slow data puts on the console or in a stored message. Control bytes
+ * (ESC among them) never reach either; the raw bytes stay for the checks (the header CRC, the D-PRS record CRC). */
 static int
 dstar_sd_is_printable(uint8_t value) {
-    return (value > 0x19) && (value < 0x7F);
+    return (value >= 0x20U) && (value < 0x7FU);
 }
 
 static void
@@ -123,6 +125,11 @@ dstar_sd_capture_header_strings(dstar_sd_ctx* ctx) {
     ctx->str2[8] = '\0';
     ctx->str3[8] = '\0';
     ctx->str4[12] = '\0';
+    /* Shown and put on the call: printable only. The CRC was taken over the raw header bytes. */
+    dstar_text_make_printable(ctx->str1);
+    dstar_text_make_printable(ctx->str2);
+    dstar_text_make_printable(ctx->str3);
+    dstar_text_make_printable(ctx->str4);
 }
 
 static void
@@ -192,8 +199,9 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
             DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
             DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
             (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-            /* The transmission's own callsigns are on the call: a D-PRS record of it may name them again. */
-            state->dstar_dprs_source_unchecked = 0U;
+            /* The transmission's own callsign is on the call: a D-PRS record of it may name it again. A blank MY
+               field names no one, so the callsign the call still carries is another transmission's. */
+            state->dstar_dprs_source_unchecked = dstar_callsign_present(ctx->str4, 8U) ? 0U : 1U;
         }
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
@@ -370,8 +378,8 @@ dstar_dprs_call_epoch(const dsd_state* state) {
  * An admitted D-PRS position: its check is the record's own CRC; its source is the callsign of the call it was heard
  * in, which only a header whose CRC-16/X.25 passed names (dstar_header.c and the slow-data header above), and only
  * when the whole record arrived within that call. A record begun outside an active call has no checked source, and
- * neither has one completed after an RF header that failed its CRC (another transmission began, maybe another radio's)
- * until a checked header names the transmission again (dsd_state::dstar_dprs_source_unchecked).
+ * neither has one completed after an RF header (another transmission began, maybe another radio's) until a checked
+ * header names the transmission's MY callsign (dsd_state::dstar_dprs_source_unchecked).
  */
 static void
 dstar_dprs_publish(const dsd_opts* opts, dsd_state* state, const dstar_aprs_position* pos) {
