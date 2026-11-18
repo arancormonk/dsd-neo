@@ -2496,7 +2496,9 @@ suite runs under this compiler.
   equal, kept less than 30 s ago on the decode clock; anonymous sources never fold; 256 tracks, the least recently
   kept forgotten). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
   (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
-  still works and nothing is kept. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
+  still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
+  it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
+  `pos_seq` cursor never matches a report of an earlier process. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
   seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
 - API note: history rows carry the admitted fix (`Event_History::pos`, a padding-free `dsd_event_pos`, issue #800).
   Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
