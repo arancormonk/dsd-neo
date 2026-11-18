@@ -5571,6 +5571,40 @@ test_cleared_fix_leaves_single_fragment_row(void) {
     expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* Issue #800, B5: on the single-slot DMR decoder a fragment whose over-the-air slot was still pending merges into a
+ * slot-1 call. When a later reading of it proves slot 2, that update (found by its fragment, never merged again) is
+ * held to the receive-service rule the merge applies: it is another service's, so its part and its fix are taken back
+ * and the slot-1 row shows none of it, live and after a reload. */
+void
+test_update_proving_other_slot_is_taken_back(void) {
+    const time_t when = kCaptureStart + 450;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* slot1 = ring.commit(0, 1101, 2101, when, when + 4, "", "", "Base channel");
+        slot1->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+        DSD_SNPRINTF(slot1->service_label, sizeof slot1->service_label, "%s", "Dispatch");
+        model.refresh(ring.state);
+        Event_History* pending = with_gps(ring.commit(0, 1101, 2101, when + 5, when + 9, "", "", "Base channel"),
+                                          "GPS: P", 225000000, 450000000, 4U);
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+        model.refresh(ring.state);
+        expect("slot proof: the pending-slot fragment joins the slot-1 call",
+               model.count() == 1 && detail_of(model, 0) == "GPS: P");
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 2, 0};
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("slot proof: the fragment proven on slot 2 gives the slot-1 row nothing",
+               model.count() == 1 && detail_of(model, 0).isEmpty()
+                   && model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Dispatch");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("slot proof: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
 /* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
  * (watchdog_event_merge_stamps()) or move the end, so the same fragment (ring, slot and push stamp) is read with another
  * start. That reading still replaces and withdraws its own GPS unit: a fragment is known by its ring identity, never by
@@ -7272,6 +7306,7 @@ main(int argc, char** argv) {
     test_cleared_fix_leaves_single_fragment_row();
     test_restamped_fragment_withdraws_its_fix();
     test_restamped_fragment_found_by_identity();
+    test_update_proving_other_slot_is_taken_back();
     test_spill_replay_keeps_newer_message();
     test_fragment_texts_follow_the_rows_radio();
     test_position_order_follows_runs_and_revs();

@@ -1456,26 +1456,6 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
 
 namespace {
 
-/* Two fragments are one service when their confirmed identities and labels agree. A fragment committed before its
-   access code or tone was confirmed carries no identity yet, and its label is at most a weaker (slot) name: it joins
-   the confirmed fragment, which tryMerge() lets name the row. Two unconfirmed fragments must agree on the label. The
-   over-the-air slot is proven on its own (receiveSlot, 0 while pending on the single-slot DMR decoder): two proven
-   slots that differ are two services whatever the codes, and a pending slot's fragment may carry no slot name. */
-bool
-receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
-    if (a.receiveSlot != 0 && b.receiveSlot != 0 && a.receiveSlot != b.receiveSlot) {
-        return false;
-    }
-    /* One fragment proved its slot and the other had it pending (FDMA rows carry no slot at all, on either side). */
-    const bool slotJustProven = (a.receiveSlot != 0) != (b.receiveSlot != 0);
-    if (a.receiveKnown && b.receiveKnown) {
-        /* The same confirmed service may gain the name it lacked (a name added, then the call reacquired). */
-        return a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue
-               && (a.service == b.service || slotJustProven || a.service.isEmpty() || b.service.isEmpty());
-    }
-    return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
-}
-
 /* Fold the identity evidence @p row carries into @p existing, which tryMerge() matched to it: a confirmed code the row
    holds and the row lacks, and a slot the row has proven, each on its own. Returns 1 when the row's service label,
    now the better-founded one, should name @p existing. */

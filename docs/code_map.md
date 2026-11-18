@@ -15708,7 +15708,9 @@ Qt Quick frontend (`src/ui/qt`):
       callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
       no radio again, and no other radio's part names it. Its other fields fold from every part of the call. An update
       found by its fragment, which is not merged again, is judged against what the row's other fragments gave
-      (`fragment_call_compatible()`: protocol family, reception and sender system, raw target text), never against
+      (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
+      fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
+      protocol family, reception and sender system, raw target text), never against
       its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
       other than the row's) is withdrawn (`withdraw_part()`) and gives nothing, and the row is rebuilt from the rest,
       every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,

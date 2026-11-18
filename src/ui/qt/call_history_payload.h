@@ -86,8 +86,13 @@ bool raw_texts_differ(const QString& a, const QString& b);
 /** @brief Whether a row (or fragment) names its sender: a source ID or a source text. */
 bool row_names_source(const CallHistoryModel::Row& row);
 
-/** @brief Whether fragment @p row is of @p existing's call: one protocol family, a reception and sender system the row's
- * are compatible with (call_history_scopes_compatible()), and no other raw target text. */
+/** @brief Whether two fragments are one receive service (issue #637): their confirmed access codes or tones, their
+ * labels and their proven over-the-air slots agree. */
+bool receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b);
+
+/** @brief Whether fragment @p row is of @p existing's call: one receive service (receive_services_compatible()), one
+ * protocol family, a reception and sender system the row's are compatible with (call_history_scopes_compatible()), and
+ * no other raw target text. */
 bool fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
 
 /** @brief Whether fragment @p row is of @p existing's radio, so it may give the row its texts, position and source
