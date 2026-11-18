@@ -4,7 +4,8 @@
  * no SDS-TL header, the LIP PDU right after the PID (table 29.49), whole or as a concatenated message (clause
  * 29.5.14.1). A short location report reaches the event history, the location file (-L) and the position feed only
  * when it is admitted: the block CRC passed (the MAC delivers nothing else), the LLC FCS too when the PDU carries one,
- * an earlier CRC-passed block proved the carrier, and a concatenated message was received on one reception. The SDS
+ * an earlier CRC-passed block proved the carrier, and a concatenated message was received on one reception and
+ * addressed to one party. The SDS
  * sender is the report's source, labelled from the local radio list only when it sends from the network the decoder
  * is on. Blocks are built field by field (tetra_test_pdu.h) and decoded by the real MAC, LLC, MLE and event layer.
  * Coordinates are made up.
@@ -181,12 +182,16 @@ sds_concat_part(uint32_t ssi, int transport, uint32_t reference, uint32_t sequen
     return c;
 }
 
-/* A MAC-RESOURCE to ADDRESSED carrying @p cmce in a BL-UDATA, or with @p fcs a BL-UDATA-FCS (table 21.1) whose FCS
- * (clause 22.3.3) is the right one, or one bit off with @p bad_fcs; decoded as one CRC-passed SCH/F block. */
+/* A MAC-RESOURCE to the SSI @p addressed (address type @p addr_type; for an event label alone, @p addressed is the
+ * label) carrying @p cmce in a BL-UDATA, or with @p fcs a BL-UDATA-FCS (table 21.1) whose FCS (clause 22.3.3) is the
+ * right one, or one bit off with @p bad_fcs; decoded as one CRC-passed SCH/F block. */
 static void
-send_sds(session* s, const ttb_block* cmce, int fcs, int bad_fcs) {
+send_sds_to(session* s, uint32_t addr_type, uint32_t addressed, const ttb_block* cmce, int fcs, int bad_fcs) {
     ttb_block b = {0};
-    const int start = ttb_resource(&b, 0, TETRA_MAC_ADDR_SSI, ADDRESSED);
+    const int start = ttb_resource(&b, 0, addr_type, addressed);
+    if (addr_type == TETRA_MAC_ADDR_EVENT_LABEL) {
+        ttb_put(&b, addressed, 10);
+    }
     ttb_resource_flags(&b, 0u);
     ttb_put(&b, fcs ? 6u : 2u, 4); /* LLC PDU type: BL-UDATA-FCS or BL-UDATA */
     ttb_put_bits(&b, cmce->bits, cmce->n);
@@ -200,6 +205,12 @@ send_sds(session* s, const ttb_block* cmce, int fcs, int bad_fcs) {
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_F_BITS, -1);
     tetra_test_mac_logged(b.bits, b.n, 1, s->opts, s->state, s->log, sizeof s->log);
+}
+
+/* send_sds_to() to ADDRESSED. */
+static void
+send_sds(session* s, const ttb_block* cmce, int fcs, int bad_fcs) {
+    send_sds_to(s, TETRA_MAC_ADDR_SSI, ADDRESSED, cmce, fcs, bad_fcs);
 }
 
 static const Event_History*
@@ -452,6 +463,44 @@ test_concatenated(void) {
     }
 }
 
+/* A concatenated message's parts go from one sender to one party: part 2 of a report to ADDRESSED + 1 and part 1 of
+ * another report to ADDRESSED, with the same sender and reference, assemble into nothing; the message completes from
+ * its own parts to one party. Parts addressed by an event label alone name no party: their message's position is
+ * refused (the notice still goes in). */
+static void
+test_concatenated_one_recipient(void) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    const ttb_block other = lip_short(LAT_MINUS_22, LON_MINUS_45, 1, 10, 4);
+    session s = session_open();
+    ttb_block c = sds_concat_part(SENDER_SSI, 0, 5, 2, other.bits + 40, other.n - 40);
+    send_sds_to(&s, TETRA_MAC_ADDR_SSI, ADDRESSED + 1u, &c, 0, 0);
+    c = sds_concat_part(SENDER_SSI, 0, 5, 1, lip.bits, 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "TETRA SDS LIP") == NULL);
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 0);
+    char lfile[512];
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+
+    c = sds_concat_part(SENDER_SSI, 0, 5, 2, lip.bits + 40, lip.n - 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "dst_SSI=257 short location report; LIP: 22.50000") != NULL);
+    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000 && rec[0].target_id == ADDRESSED);
+    session_close(&s);
+
+    s = session_open();
+    c = sds_concat_part(SENDER_SSI, 0, 6, 2, lip.bits + 40, lip.n - 40);
+    send_sds_to(&s, TETRA_MAC_ADDR_EVENT_LABEL, 9u, &c, 0, 0);
+    c = sds_concat_part(SENDER_SSI, 0, 6, 1, lip.bits, 40);
+    send_sds_to(&s, TETRA_MAC_ADDR_EVENT_LABEL, 9u, &c, 0, 0);
+    assert(strstr(s.log, "short location report; Position: (recipient unknown)") != NULL);
+    assert(notice_row(&s)->pos.valid == 0U && feed_since(&s, 0, rec, 2) == 0);
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+    session_close(&s);
+}
+
 /* One SSI in the local network and in foreign ones, with a populated local radio list: a sender of the network the
  * decoder is on (calling party type 1, or type 2 naming it) takes the radio list's name; a sender naming another
  * network takes only a name learned in that network, never the local list's (spec 2.3 step 5). */
@@ -511,6 +560,7 @@ main(void) {
     test_not_published();
     test_undecoded();
     test_concatenated();
+    test_concatenated_one_recipient();
     test_sender_network_labels();
     DSD_FPRINTF(stdout, "TETRA_LIP: PASS\n");
     return 0;

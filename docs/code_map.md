@@ -12665,7 +12665,8 @@ evidence (`air_ksg`: per network, the set of KSG numbers its signalling named; `
 the encryption mode
 of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
 and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
-and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44, and the party
+its MAC address names, so two messages' parts to two parties never make one message) and the D-MM
 STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
@@ -13436,7 +13437,8 @@ single "current call".
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
-  reception its first part arrived on. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  reception its first part arrived on, its parts addressed to one SSI (parts addressed by an event label alone name
+  no party, so their message's position is refused as `recipient unknown`). Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label

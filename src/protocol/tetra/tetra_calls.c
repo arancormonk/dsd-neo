@@ -2616,6 +2616,16 @@ tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
     return sdu_ssi(sdu, &ssi) ? ssi : 0u;
 }
 
+int
+tetra_calls_addressed_ssi_known(const tetra_mac_sdu* sdu, uint32_t* ssi) {
+    uint32_t value = 0;
+    const int known = sdu_ssi(sdu, &value);
+    if (ssi) {
+        *ssi = known ? value : 0u;
+    }
+    return known;
+}
+
 void
 tetra_calls_notice(dsd_opts* opts, dsd_state* state, int control, uint32_t src, uint32_t dst, const char* notice,
                    const char* text) {

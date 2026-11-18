@@ -570,7 +570,8 @@ does.
   - A report the [receive filters](#receive-filters-and-service-names) reject; a report in several parts (DMR and P25
     data packets, an NXDN data call, an L3Harris Part A and B, a TETRA concatenated SDS) whose parts were heard across
     a retune or a trunk scan switch; an NXDN GPS report not bound to the checked data header that opened it; an
-    L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart).
+    L3Harris Part A and B that do not pair (another call, source or update, or more than 2 s apart); a TETRA
+    concatenated SDS whose parts name no one addressed party.
   - An LRRP position after a token whose layout is not confirmed (0x50, 0x52, 0x54, 0x68, 0x6A or an unknown
     token): the report prints `Position: (suppressed; layout not confirmed)`.
 
