@@ -781,6 +781,53 @@ test_p25_destination(void) {
     CHECK(recs[1].kind == DSD_POS_LIP && recs[1].source_id == 1234U && recs[1].target_id == 88U);
 }
 
+/* Issue #800 (g62-r6): the sentences of a checked packet are shown (console and History) only after admission admitted
+ * its report. A packet with no measured fix (RMC status V, an active RMC at exactly 0, 0) carries coordinates the
+ * decoder rejected: neither the console nor the notice shows them. An admitted packet's sentences are shown. */
+static void
+test_producer_withholds_unadmitted_sentences(void) {
+    static const char* const bodies[2] = {
+        "GPRMC,120000,V,1000.0000,N,02000.0000,E,001.0,045.0,150626,,,N",
+        "GPRMC,120000,A,0000.0000,N,00000.0000,E,001.0,045.0,150626,,,A",
+    };
+    for (size_t i = 0U; i < 2U; i++) {
+        reset_fixture();
+        char r[128];
+        sentence(r, sizeof r, bodies[i], "\r\n");
+        dsd_test_capture_stderr cap;
+        char out[2048];
+        out[0] = '\0';
+        const int captured = dsd_test_capture_stderr_begin(&cap, "nmea_unadmitted") == 0;
+        CHECK(check_payload(r, 55U, 1) == 1U);
+        if (captured) {
+            (void)dsd_test_capture_stderr_end(&cap);
+            (void)dsd_test_capture_stderr_read(&cap, out, sizeof out);
+            CHECK(strstr(out, "GPRMC") == NULL);
+            CHECK(strstr(out, "NMEA Withheld (no admitted position);") != NULL);
+        }
+        dsd_position_fix recs[2];
+        CHECK(feed_records(recs, 2) == 0);
+        CHECK(notice_row()->write == 1U && notice_row()->pos.valid == 0U);
+        CHECK(strstr(notice_row()->text_message, "GPRMC") == NULL);
+        CHECK(strstr(notice_row()->text_message, "NMEA withheld (no admitted position)") != NULL);
+    }
+
+    reset_fixture();
+    char a[128];
+    sentence(a, sizeof a, "GPRMC,120000,A,1000.0000,N,02000.0000,E,001.0,045.0,150626,,,A", "\r\n");
+    dsd_test_capture_stderr cap;
+    char out[2048];
+    out[0] = '\0';
+    const int captured = dsd_test_capture_stderr_begin(&cap, "nmea_admitted") == 0;
+    CHECK(check_payload(a, 55U, 1) == 1U);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof out);
+        CHECK(strstr(out, "NMEA: $GPRMC,120000,A,1000.0000") != NULL);
+    }
+    CHECK(strstr(notice_row()->text_message, "$GPRMC,120000,A,1000.0000") != NULL);
+}
+
 int
 main(void) {
     int fd = dsd_test_mkstemp(g_lpath, sizeof g_lpath, "core_nmea_sentence");
@@ -798,6 +845,7 @@ main(void) {
     test_producer_withholds_failed_packet();
     test_producer_per_sentence();
     test_producer_sentence_choice();
+    test_producer_withholds_unadmitted_sentences();
     test_p25_sap48();
     test_p25_sap48_reserved_source();
     test_p25_sap48_long_payload();

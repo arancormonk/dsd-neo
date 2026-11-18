@@ -633,12 +633,17 @@ dstar_sd_handle_text_message(dsd_state* state) {
     }
 }
 
-/* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived. The "$$CRC" literal checks nothing: a
- * D-PRS record is evidence and a position only once it is whole and its CRC matches (dstar_sd_collect_gps()). The
- * "GPS DATA:" label names what the blocks are whatever part of a record they hold, so the diagnostics log can remove
- * them (issue #800, D10). */
+/* The GPS blocks' data (a D-PRS record or NMEA sentences), shown as it arrived: a raw dump, like every payload dump,
+ * only with the payload option (-Z). The "$$CRC" literal checks nothing, and a block is shown before its record is whole:
+ * a D-PRS record is evidence and a position only once its CRC matches and admission admitted it (dstar_dprs_publish()
+ * prints that one's position), so without -Z no part of a record reaches the output before then (issue #800, fail
+ * closed). The "GPS DATA:" label names what the blocks are whatever part of a record they hold, so the diagnostics log
+ * can remove them (D10). */
 static void
-dstar_sd_handle_gps_data(const uint8_t* raw) {
+dstar_sd_handle_gps_data(const dsd_opts* opts, const uint8_t* raw) {
+    if (opts->payload != 1) {
+        return;
+    }
     DSD_FPRINTF(stderr, " GPS DATA: ");
     for (int b = 0; b < DSTAR_SD_BLOCKS; b++) {
         const uint8_t* block = raw + ((size_t)b * (size_t)DSTAR_SD_BLOCK_BYTES);
@@ -662,7 +667,7 @@ dstar_sd_handle_non_header(const dsd_opts* opts, dsd_state* state, const dstar_s
         dstar_sd_handle_text_message(state);
     }
     if ((ctx->payload[0] & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_GPS) {
-        dstar_sd_handle_gps_data(ctx->payload);
+        dstar_sd_handle_gps_data(opts, ctx->payload);
     } else if (!text) {
         DSD_FPRINTF(stderr, " _UNK:");
         DSD_FPRINTF(stderr, " %s", ctx->strf);

@@ -669,6 +669,13 @@ test_control_bytes_never_reach_display_text(void) {
     slow_data_blocks(bytes, gps_minis, gps_data, 2);
     pack_slow_data_bytes(bytes, bits);
     capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+    /* Issue #800 (g62-r6): the GPS blocks are a raw dump of a record not yet checked or admitted: only with -Z. */
+    assert(strstr(out, "GPS DATA") == NULL);
+    assert(strstr(out, "$$CR") == NULL);
+    opts.payload = 1;
+    pack_slow_data_bytes(bytes, bits);
+    capture_stderr_of(run_slow_data, &run, out, sizeof(out));
+    opts.payload = 0;
     assert(strstr(out, "GPS DATA: ") != NULL);
     assert(!has_control_byte(out));
 

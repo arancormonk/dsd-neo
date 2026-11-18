@@ -1485,22 +1485,43 @@ nmea_admit_packet(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nm
     fix->source_id = (uint32_t)state->dmr_lrrp_source[slot];
     gps_fill_header_target(state, slot, fix);
     const dsd_position_admit_result r = dsd_position_admit(opts, state, fix, packet_verified, packet_verified, origin);
-    if (r != DSD_POSITION_REFUSED) {
-        nmea_print_fix(fix);
-    } else if (packet_verified == 1) {
+    if (r == DSD_POSITION_REFUSED && packet_verified == 1) {
         DSD_FPRINTF(stderr, "\n NMEA: position not admitted;");
     }
     return r;
 }
 
-/* History and -L: the checked sentences' text (none from a packet whose check failed), the data notice, and with an
- * admitted report its position (staged just before the notice) and its -L row. */
+/* The checked sentences' text as History and the console may show it: only a packet whose report admission admitted
+ * (issue #800, fail closed). The sentences of any other packet (one whose check failed, one with no measured fix, one
+ * admission refused) can hold the very coordinates the decoder rejected, in any sentence form: they are withheld. */
+static const char*
+nmea_packet_text(const nmea_packet* pkt, int packet_verified, int admitted) {
+    if (pkt->checked <= 0 || admitted) {
+        return pkt->text;
+    }
+    return packet_verified != 1 ? "NMEA withheld (CRC ERR)" : "NMEA withheld (no admitted position)";
+}
+
+/* The console after admission (a checked packet): the sentences and the fix only of an admitted report
+ * (nmea_packet_text()). Labelled, as the sentences can hold a position in any form (issue #800, D10). */
+static void
+nmea_print_admitted(const nmea_packet* pkt, dsd_position_admit_result result, const dsd_position_fix* fix) {
+    if (result == DSD_POSITION_REFUSED) {
+        DSD_FPRINTF(stderr, " NMEA Withheld (no admitted position);");
+        return;
+    }
+    DSD_FPRINTF(stderr, " NMEA: %s", pkt->text);
+    nmea_print_fix(fix);
+}
+
+/* History and -L: the checked sentences' text (only from a packet whose report was admitted, nmea_packet_text()), the
+ * data notice, and with an admitted report its position (staged just before the notice) and its -L row. */
 static void
 nmea_publish(const dsd_opts* opts, dsd_state* state, uint8_t slot, const nmea_packet* pkt, int packet_verified,
              dsd_position_admit_result result, const dsd_position_fix* fix) {
     const int admitted = result != DSD_POSITION_REFUSED;
     if (state->event_history_s != NULL) {
-        const char* text = (pkt->checked > 0 && packet_verified != 1) ? "NMEA withheld (CRC ERR)" : pkt->text;
+        const char* text = nmea_packet_text(pkt, packet_verified, admitted);
         dsd_event_stage_text(state, slot, text);
         if (pkt->checked > 0) {
             const uint32_t source = admitted ? fix->source_id : (uint32_t)state->dmr_lrrp_source[slot];
@@ -1573,10 +1594,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
         state->dmr_lrrp_target[slot_idx] = 0U;
         return 1U;
     }
-    if (pkt.checked > 0 && packet_verified == 1) {
-        /* Labelled: the sentences can hold a position in any form (issue #800, D10). */
-        DSD_FPRINTF(stderr, " NMEA: %s", pkt.text);
-    } else if (pkt.checked > 0) {
+    if (pkt.checked > 0 && packet_verified != 1) {
         DSD_FPRINTF(stderr, " NMEA Withheld (CRC ERR);");
     }
 
@@ -1585,6 +1603,9 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     const dsd_position_admit_result result =
         (pkt.checked > 0) ? nmea_admit_packet(opts, state, slot_idx, &pkt, packet_verified, origin, &fix)
                           : DSD_POSITION_REFUSED;
+    if (pkt.checked > 0 && packet_verified == 1) {
+        nmea_print_admitted(&pkt, result, &fix);
+    }
     nmea_publish(opts, state, slot_idx, &pkt, packet_verified, result, &fix);
 
     state->dmr_lrrp_source[slot_idx] = 0U;

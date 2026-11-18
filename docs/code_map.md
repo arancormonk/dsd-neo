@@ -2558,7 +2558,9 @@ suite runs under this compiler.
   `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
   nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
   gets its GPS text, history position, `-L` row and feed record; a refused or unchecked report prints its fields
-  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Raw fields are checked
+  without coordinates (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`, `(refused)`). Every producer prints
+  a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
+  sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
   before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
   month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
   (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). The record names the destination
@@ -2639,7 +2641,11 @@ suite runs under this compiler.
     type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
     date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
     replayed capture keeps its own century; with no century within 50 years, such as 29 February 00 received in 2080,
-    the fix time is unknown). A CRC-failed packet keeps no sentence text. A payload is NMEA
+    the fix time is unknown). The checked sentences' text reaches the console (`NMEA:`) and the notice only from a
+    packet whose report admission admitted (`nmea_packet_text()`, after admission): a CRC-failed packet's says
+    `NMEA withheld (CRC ERR)`, and one with no measured fix or a refused report (a status V RMC, an RMC at exactly
+    0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
+    rejected. A payload is NMEA
     when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
     plain text (P25 SAP 48's text fallback), whether or not its sentences pass. The sentences and the report are read
     from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
@@ -2666,7 +2672,8 @@ suite runs under this compiler.
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
     `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display, only text blocks
+    its own mini-header: only GPS blocks (0x3n) feed the record and the `GPS DATA:` display (a raw dump, `-Z` only: a part of a record not yet
+    checked or admitted), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
     rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
