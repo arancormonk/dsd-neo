@@ -2187,14 +2187,18 @@ checkReportRecords(const QByteArray& bytes, const QStringList& parts, const char
 
 /* Issue #800, D10: the redaction rests on the producer's label, not on the shape of what the air delivered. Each
  * decoder that prints received report text is driven through its real path, and every line it prints that holds a
- * byte of the report carries its producer's label: a CRC-valid D-STAR D-PRS report split across superframes, so its
- * GPS data blocks print a part of the record each ("12  z2230.00N/04500.00", "EA mobile": no shape gives them away),
- * an MNIS LOCN report's own text, and the checked NMEA sentences of a data payload. */
+ * byte of the report carries its producer's label: a CRC-valid D-STAR D-PRS report split across superframes, whose GPS
+ * data blocks print a part of the record each with the payload option (-Z: "12  z2230.00N/04500.00", "EA mobile", no
+ * shape gives them away) and none of it without, an MNIS LOCN report's own text, and the checked NMEA sentences of a
+ * data payload. */
 static void
 realProducersLabelReceivedPositions() {
     using namespace producers;
-    {
+    const QStringList dprsParts = {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("mobile"),
+                                   QStringLiteral("API51")};
+    for (int payload = 0; payload <= 1; payload++) {
         Rig rig;
+        rig.opts->payload = payload;
         rig.state->synctype = DSD_SYNC_DSTAR_VOICE_POS;
         const QByteArray body("N0CALL>API51,DSTAR*:/1012  z2230.00N/04500.00EA mobile\r");
         const QByteArray record =
@@ -2209,12 +2213,17 @@ realProducersLabelReceivedPositions() {
             sendDstarSuperframe(rig, record.mid(second));
         });
         check(rig.admitted() == 1, "D-STAR: the split report is a checked position");
+        if (payload == 0) {
+            // Without -Z no GPS data block prints: a partial record is a raw dump, and nothing of it is left to redact.
+            check(!bytes.contains("GPS DATA:") && !bytes.contains("12  z2230.00N/04500.00")
+                      && !bytes.contains("EA mobile"),
+                  "D-STAR: without -Z the GPS data blocks print nothing");
+            (void)checkReportRecords(bytes, dprsParts, "D-STAR default");
+            continue;
+        }
         check(bytes.contains("12  z2230.00N/04500.00") && bytes.contains("EA mobile"),
-              "D-STAR: the GPS data blocks print a part of the record each");
-        const int removed = checkReportRecords(
-            bytes, {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("mobile"), QStringLiteral("API51")},
-            "D-STAR");
-        check(removed >= 3, "D-STAR: each GPS data line is removed");
+              "D-STAR: with -Z the GPS data blocks print a part of the record each");
+        check(checkReportRecords(bytes, dprsParts, "D-STAR -Z") >= 3, "D-STAR: each GPS data line is removed");
     }
     {
         Rig rig;
