@@ -20,6 +20,11 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 # the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
 # the usb suite outlasted CTest's 90 s beside a full parallel build.
 JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+# The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
+# so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS)
+# or every java launch (JDK_JAVA_OPTIONS) reads, is left alone.
+COLLECTOR_SELECTION = re.compile(r"(?:^|\s)-XX:\+Use\w*GC(?=\s|$)")
+JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")
 # kotlinc takes its JVM's options from JAVA_OPTS, in both launchers (bin/kotlinc and bin/kotlinc.bat), and puts each
 # word on the java command line itself. Not as -J arguments: Windows runs kotlinc.bat, and cmd.exe splits a batch file's
 # arguments at "=", so -J-XX:TieredStopAtLevel=1 reached the JVM as -XX:TieredStopAtLevel and a stray 1. A set JAVA_OPTS
@@ -1770,11 +1775,20 @@ def cached_compiler():
     return jars
 
 
+def jvm_options(environ, given=""):
+    """JVM_OPTIONS for a JVM started with the options @p given under @p environ, without the serial collector when
+    @p given or the JVM-wide options in @p environ select a collector already."""
+    selected = [given, *(environ.get(name, "") for name in JVM_WIDE_OPTIONS)]
+    if any(COLLECTOR_SELECTION.search(options) for options in selected):
+        return tuple(option for option in JVM_OPTIONS if not COLLECTOR_SELECTION.search(option))
+    return JVM_OPTIONS
+
+
 def kotlinc_environment(environ):
-    """@p environ with JVM_OPTIONS in JAVA_OPTS, for the kotlinc launcher: after the options already set there, or after
-    the launchers' default when none are."""
+    """@p environ with jvm_options() in JAVA_OPTS, for the kotlinc launcher: after the options already set there, or
+    after the launchers' default when none are."""
     given = environ.get("JAVA_OPTS", "").strip()
-    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *JVM_OPTIONS))}
+    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, given)))}
 
 
 def compile_command(java, kotlinc, cached, files, output, environ):
@@ -1786,10 +1800,16 @@ def compile_command(java, kotlinc, cached, files, output, environ):
         return argv, kotlinc_environment(environ), str(output)
     classpath = os.pathsep.join(map(str, cached))
     argv = [
-        java, *JVM_OPTIONS, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+        java, *jvm_options(environ), "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
         "-no-stdlib", "-no-reflect", "-classpath", classpath, *map(str, files), "-d", str(output),
     ]
     return argv, dict(environ), os.pathsep.join((str(output), classpath))
+
+
+def test_command(java, runtime, test, environ):
+    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ."""
+    # Top-level functions in Foo.kt compile into the class FooKt.
+    return [java, *jvm_options(environ), "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
 
 
 def run_build(name, build, java, kotlinc, cached):
@@ -1804,8 +1824,7 @@ def run_build(name, build, java, kotlinc, cached):
         argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            # Top-level functions in Foo.kt compile into the class FooKt.
-            subprocess.run([java, *JVM_OPTIONS, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)
+            subprocess.run(test_command(java, runtime, test, os.environ), check=True, timeout=30)
 
 
 def run_suite(name, suite, java, kotlinc, cached):

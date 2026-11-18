@@ -105,5 +105,45 @@ class CachedCompilerCommand(unittest.TestCase):
         self.assertEqual(runtime, os.pathsep.join((str(OUTPUT), str(cached[0]))))
 
 
+class CollectorChoice(unittest.TestCase):
+    """The serial collector is a default only. HotSpot refuses to start with two collectors selected ("Multiple garbage
+    collectors selected"), so a collector the caller selected, in JAVA_OPTS for kotlinc or in the options every JVM or
+    every java launch reads (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS), is the one used, and no other is added."""
+
+    SERIAL = "-XX:+UseSerialGC"
+
+    def kotlinc_options(self, environ):
+        _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT, environ)
+        return env["JAVA_OPTS"].split()
+
+    def cached_argv(self, environ):
+        cached = (PureWindowsPath(r"C:\gradle\kotlin-compiler-embeddable.jar"),)
+        argv, _env, _runtime = runner.compile_command(JAVA_EXE, None, cached, FILES, OUTPUT, environ)
+        return argv
+
+    def test_java_opts_collector_is_kept_alone(self):
+        options = self.kotlinc_options({"JAVA_OPTS": "-XX:+UseG1GC"})
+        self.assertIn("-XX:+UseG1GC", options)
+        self.assertNotIn(self.SERIAL, options)
+        self.assertIn("-XX:TieredStopAtLevel=1", options)
+
+    def test_jvm_wide_collector_is_kept_alone(self):
+        for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"):
+            with self.subTest(name=name):
+                environ = {name: "-Xss1M -XX:+UseZGC"}
+                self.assertNotIn(self.SERIAL, self.kotlinc_options(environ))
+                self.assertNotIn(self.SERIAL, self.cached_argv(environ))
+                self.assertNotIn(self.SERIAL, runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ))
+
+    def test_serial_by_default(self):
+        self.assertIn(self.SERIAL, self.kotlinc_options({}))
+        self.assertIn(self.SERIAL, self.cached_argv({"JAVA_OPTS": "-XX:+UseG1GC"}))  # java itself never reads JAVA_OPTS
+        argv = runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {"JAVA_TOOL_OPTIONS": "-Xss1M"})
+        self.assertEqual(argv, [JAVA_EXE, *runner.JVM_OPTIONS, "-cp", "tests.jar", f"{runner.PACKAGE}.UsbBrokerTestKt"])
+
+    def test_a_deselected_collector_selects_none(self):
+        self.assertIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "-XX:-UseG1GC"}))
+
+
 if __name__ == "__main__":
     unittest.main()
