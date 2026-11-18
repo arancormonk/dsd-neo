@@ -12,7 +12,6 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -29,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/platform/timing.h>
 #include "udp_input_test_support.h"
 #endif
 
