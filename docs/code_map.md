@@ -8911,7 +8911,8 @@ Key public headers:
   - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: the
     plan's call, `rtl_device_nearest_supported_rate()`, goes through `dsdneo::soapy_profile_sample_rate()`: the
     advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: the listed rate
-    or range point `minimum + k * step` closest to it within 1 Hz, an exact one winning whatever the order, and for the
+    or range point `minimum + k * step` closest to it within 1 Hz, both neighbouring steps considered, an exact one
+    winning whatever the order and, of two equally close, the one that rounds to the rate asked for, and for the
     preference only one that rounds to it or below, since 10 MS/s is the capture ceiling too), else the nearest rate as
     before. Only the HackRF profile has
     one (10 MS/s); the request stays RTL-shaped, so the planner sees a device-forced rate and steps from it as for an
@@ -8952,8 +8953,9 @@ Key public headers:
     drivers may deliver another; for the same reason a provisional plan refused on a SoapySDR device's advertised rate
     is deferred (`capture_provisional_plan()`: the chain runs the request's own plan until the read-back's final plan
     validates the rate delivered), and a preferred rate whose capture frequency would be out of range is not staged
-    when the request's is in range (`capture_provisional_rate_fits()`: the device is asked for the request, and the
-    capture is placed for the rate it delivers). A final plan refused on the rate written is made again on a SoapySDR
+    when the rate the device would write for the plain request fits (`capture_provisional_rate()`,
+    `rtl_device_rate_written_for()`: the advertised rate nearest the request, without the preference; the capture is
+    placed for it and moved again for the rate the device delivers). A final plan refused on the rate written is made again on a SoapySDR
     read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
     3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and
     the device as having forced its rate when that differs from the request. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports

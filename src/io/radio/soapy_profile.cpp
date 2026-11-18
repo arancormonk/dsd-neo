@@ -475,24 +475,27 @@ soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges,
 
 namespace {
 
-/* The point of @p range within kSoapyExactHz of @p value in @p out_hz (a step, or any value a range with no step holds,
- * its ends included), or false when it has none. */
-bool
-range_point_near(double value, const SoapyRange& range, double* out_hz) {
+/* The points of @p range within kSoapyExactHz of @p value, passed to @p consider: for a range with a step, the steps on
+ * either side of @p value (both can be that close when the step is small), else the value held to the range's ends. */
+template <typename Consider>
+void
+range_points_near(double value, const SoapyRange& range, Consider consider) {
     if (!std::isfinite(value) || range.maximum < range.minimum || value < range.minimum - kSoapyExactHz
         || value > range.maximum + kSoapyExactHz) {
-        return false;
+        return;
     }
-    double point = std::min(std::max(value, range.minimum), range.maximum);
-    if (range.step > 0.0) {
-        point = range.minimum + std::round((value - range.minimum) / range.step) * range.step;
-        point = std::min(std::max(point, range.minimum), range_last_point(range));
-        if (std::fabs(point - value) > kSoapyExactHz) {
-            return false;
+    if (!(range.step > 0.0)) {
+        consider(std::min(std::max(value, range.minimum), range.maximum));
+        return;
+    }
+    const double last = range_last_point(range);
+    const double below = std::floor((value - range.minimum) / range.step);
+    for (double steps : {below, below + 1.0}) {
+        const double point = std::min(std::max(range.minimum + steps * range.step, range.minimum), last);
+        if (std::fabs(point - value) <= kSoapyExactHz) {
+            consider(point);
         }
     }
-    *out_hz = point;
-    return true;
 }
 
 /* The narrowest point of @p range at or above @p floor_hz in @p out_hz (one within kSoapyFloorToleranceHz below it
@@ -523,9 +526,18 @@ soapy_rate_supported_point(double rate_hz, const std::vector<double>& listed_rat
     }
     bool found = false;
     double best = 0.0;
+    /* Of two points equally close, the one that rounds to the rate asked for: the rate is planned and written in whole
+       hertz, and the point that rounds to it reads back as it. */
+    const long long whole_hz = std::llround(rate_hz);
+    const auto better = [&](double point) {
+        const double gap = std::fabs(point - rate_hz) - std::fabs(best - rate_hz);
+        if (gap < -kSoapyRoundingHz || gap > kSoapyRoundingHz) {
+            return gap < 0.0;
+        }
+        return std::llround(point) == whole_hz && std::llround(best) != whole_hz;
+    };
     const auto consider = [&](double point) {
-        if (point < below_hz && std::fabs(point - rate_hz) <= kSoapyExactHz
-            && (!found || std::fabs(point - rate_hz) < std::fabs(best - rate_hz))) {
+        if (point < below_hz && std::fabs(point - rate_hz) <= kSoapyExactHz && (!found || better(point))) {
             best = point;
             found = true;
         }
@@ -534,10 +546,7 @@ soapy_rate_supported_point(double rate_hz, const std::vector<double>& listed_rat
         consider(rate);
     }
     for (const SoapyRange& range : ranges) {
-        double point = 0.0;
-        if (range_point_near(rate_hz, range, &point)) {
-            consider(point);
-        }
+        range_points_near(rate_hz, range, consider);
     }
     if (found) {
         *out_hz = best;

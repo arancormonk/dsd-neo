@@ -7,6 +7,7 @@
  */
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <string>
@@ -482,7 +483,8 @@ test_offset_channel_floor(void) {
 /* @p got is @p want to within a micro-hertz: a driver that accepts only its listed values must get one exactly. */
 static int
 expect_point(const char* label, double got, double want) {
-    if (std::fabs(got - want) > 1e-6) {
+    /* Finite first: NaN compares false against any tolerance. This file is built with IEEE semantics. */
+    if (!std::isfinite(got) || std::fabs(got - want) > 1e-6) {
         DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
         return 1;
     }
@@ -570,6 +572,34 @@ test_closest_point_wins(void) {
     return rc;
 }
 
+/* expect_point() fails a value that is not a number: NaN is never within the tolerance. */
+static int
+test_expect_point_rejects_nan(void) {
+    const uint64_t nan_bits = UINT64_C(0x7FF8000000000000);
+    double nan_value = 0.0;
+    DSD_MEMCPY(&nan_value, &nan_bits, sizeof nan_value);
+    if (expect_point("a NaN rate (expected to fail)", nan_value, 10e6) == 0) {
+        DSD_FPRINTF(stderr, "expect_point() passes NaN\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* Two advertised points equally close to the rate asked for: the one that rounds to it wins, so the rate written reads
+ * back as the rate planned. A stepped range's lower step is considered too when the nearer one is out of bounds. */
+static int
+test_ties_and_lower_steps(void) {
+    int rc = 0;
+    bool adjusted = false;
+    const dsdneo::SoapyProfile& hackrf = dsdneo::soapy_profile_by_id(SoapyProfileId::Hackrf);
+    rc |= expect_point("the tied point that rounds to the rate asked for",
+                       dsdneo::soapy_nearest_sample_rate(10e6, {10000000.5, 9999999.5}, {}, &adjusted), 9999999.5);
+    rc |= expect_point(
+        "the preference's lower step when the nearer one rounds above it",
+        dsdneo::soapy_profile_sample_rate(hackrf, 1536000.0, {}, {{2000000.5, 20000000.5, 1.0}}, &adjusted), 9999999.5);
+    return rc;
+}
+
 /* The filter chosen for the Fs/4 channel is one the warning accepts: at 2 MS/s on a 1 Hz grid, the 1,072,000 Hz floor
  * itself. */
 static int
@@ -600,6 +630,8 @@ main(void) {
     rc |= test_returned_values_are_advertised();
     rc |= test_points_stay_inside_the_advertised_ranges();
     rc |= test_closest_point_wins();
+    rc |= test_ties_and_lower_steps();
+    rc |= test_expect_point_rejects_nan();
     rc |= test_floor_filter_passes_the_warning();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();

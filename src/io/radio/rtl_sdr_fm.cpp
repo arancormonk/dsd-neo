@@ -5946,19 +5946,27 @@ capture_stage_provisional_plan(uint32_t freq, uint32_t request_hz, uint32_t prog
     return 0;
 }
 
-/* Whether the rate a device says it delivers for @p request_hz (@p deliverable_hz) can be staged at @p freq. A
- * SoapySDR device's rate is only a request until it reads back, so one whose capture frequency would be out of range
- * there (a HackRF's preferred 10 MS/s 2.5 MHz above a centre near the top of the range) is asked for @p request_hz
- * instead when that one fits: the write gives the advertised rate nearest it, and the read-back places the capture for
- * the rate delivered. Other devices stage what they deliver, and a capture out of range refuses the tune. */
-static bool
-capture_provisional_rate_fits(uint32_t freq, uint32_t request_hz, uint32_t deliverable_hz) {
+/* The rate to stage at @p freq for @p request_hz on a device that says it delivers @p deliverable_hz. A SoapySDR
+ * device's rate is only a request until it reads back, so one whose capture frequency would be out of range there (a
+ * HackRF's preferred 10 MS/s 2.5 MHz above a centre near the top of the range) is given instead the advertised rate
+ * nearest the request, the rate its write would program without the preference, when that one fits; the read-back
+ * then places the capture for the rate delivered. Otherwise @p deliverable_hz, and a capture out of range refuses the
+ * tune. */
+static uint32_t
+capture_provisional_rate(uint32_t freq, uint32_t request_hz, uint32_t deliverable_hz) {
     if (deliverable_hz == request_hz || rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY) {
-        return true;
+        return deliverable_hz;
     }
     uint32_t capture_freq_hz = 0U;
-    return capture_frequency_for_rate(freq, deliverable_hz, &capture_freq_hz) == 0
-           || capture_frequency_for_rate(freq, request_hz, &capture_freq_hz) != 0;
+    if (capture_frequency_for_rate(freq, deliverable_hz, &capture_freq_hz) == 0) {
+        return deliverable_hz;
+    }
+    uint32_t fallback_hz = 0U;
+    if (rtl_device_rate_written_for(rtl_device_handle, request_hz, &fallback_hz) == 0 && fallback_hz != 0U
+        && capture_frequency_for_rate(freq, fallback_hz, &capture_freq_hz) == 0) {
+        return fallback_hz;
+    }
+    return deliverable_hz;
 }
 
 /**
@@ -5986,8 +5994,8 @@ optimal_settings(uint32_t freq, int rate) {
     uint32_t programmed_hz = request_hz;
     uint32_t deliverable_hz = 0U;
     if (request_hz > 0U && rtl_device_nearest_supported_rate(rtl_device_handle, request_hz, &deliverable_hz) == 0
-        && deliverable_hz > 0U && capture_provisional_rate_fits(freq, request_hz, deliverable_hz)) {
-        programmed_hz = deliverable_hz;
+        && deliverable_hz > 0U) {
+        programmed_hz = capture_provisional_rate(freq, request_hz, deliverable_hz);
     }
     return capture_stage_provisional_plan(freq, request_hz, programmed_hz);
 }

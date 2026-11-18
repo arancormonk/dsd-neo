@@ -10618,9 +10618,50 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
  * not pay a driver round-trip; `rtl_device_store_soapy_config_request` clears the
  * cache because driver settings (for example the SDDC ADC clock) can move the grid.
  */
-int
+#ifdef USE_SOAPYSDR
+/* The SoapySDR half of rtl_device_supported_rate(): the advertised rate for @p requested, with the profile's
+ * preference (cached per request while the device stays configured) or without it (the rate a write programs). */
+static int
+soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_preference, uint32_t* out_actual) {
+    /* The cache is read and refreshed under the Soapy lock so concurrent callers never
+       observe a torn requested/actual pair. */
+    uint32_t actual = 0U;
+    int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
+        if (with_preference && dev->soapy_nearest_rate_cache_requested == requested
+            && dev->soapy_nearest_rate_cache_actual != 0U) {
+            actual = dev->soapy_nearest_rate_cache_actual;
+            return 0;
+        }
+        bool adjusted = false;
+        std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+        std::vector<dsdneo::SoapyRange> ranges =
+            soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+        /* Without the preference: the advertised rate nearest the request, as rtl_device_set_sample_rate() writes. */
+        double applied = with_preference
+                             ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested,
+                                                                 listed, ranges, &adjusted)
+                             : dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
+            return -1;
+        }
+        actual = (uint32_t)std::llround(applied);
+        if (with_preference) {
+            dev->soapy_nearest_rate_cache_requested = requested;
+            dev->soapy_nearest_rate_cache_actual = actual;
+        }
+        return 0;
+    });
+    if (rc != 0 || actual == 0U) {
+        return -1;
+    }
+    *out_actual = actual;
+    return 0;
+}
+#endif
+
+static int
 // cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
-rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual, bool with_preference) {
     if (dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
         *out_actual = dev->rate;
         return 0;
@@ -10633,36 +10674,24 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         return 0;
     }
 #ifdef USE_SOAPYSDR
-    /* The cache is read and refreshed under the Soapy lock so concurrent callers never
-       observe a torn requested/actual pair. */
-    uint32_t actual = 0U;
-    int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
-        if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
-            actual = dev->soapy_nearest_rate_cache_actual;
-            return 0;
-        }
-        bool adjusted = false;
-        std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
-        std::vector<dsdneo::SoapyRange> ranges =
-            soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-        double applied = dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested, listed,
-                                                           ranges, &adjusted);
-        if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
-            return -1;
-        }
-        actual = (uint32_t)std::llround(applied);
-        dev->soapy_nearest_rate_cache_requested = requested;
-        dev->soapy_nearest_rate_cache_actual = actual;
-        return 0;
-    });
-    if (rc != 0 || actual == 0U) {
-        return -1;
-    }
-    *out_actual = actual;
-    return 0;
+    return soapy_supported_rate(dev, requested, with_preference, out_actual);
 #else
+    (void)with_preference;
     return -1;
 #endif
+}
+
+int
+rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+    return rtl_device_supported_rate(dev, requested, out_actual, true);
+}
+
+/**
+ * @brief Report the rate rtl_device_set_sample_rate() would write for @p requested (see the header).
+ */
+int
+rtl_device_rate_written_for(struct rtl_device* dev, uint32_t requested, uint32_t* out_written) {
+    return rtl_device_supported_rate(dev, requested, out_written, false);
 }
 
 dsd_rate_plan_backend

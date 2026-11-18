@@ -37,6 +37,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "rtl_finite.h"
 #include "rtl_stream_test_support.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -47,9 +48,11 @@ namespace {
 
 int g_failures = 0;
 
+/* Within half a hertz, and finite first: a NaN compares false both ways, and fast-math may fold a plain check away, so
+ * the finiteness test is the out-of-line IEEE one. */
 void
 expect_eq(const char* label, double got, double want) {
-    if (got < want - 0.5 || got > want + 0.5) {
+    if (!dsd::io::radio::rtl_is_finite(got) || got < want - 0.5 || got > want + 0.5) {
         DSD_FPRINTF(stderr, "FAIL %s: got %.0f, want %.0f\n", label, got, want);
         g_failures++;
     }
@@ -629,6 +632,61 @@ positive_infinity(void) {
     return value;
 }
 
+/* expect_eq() fails a value that is not a number: a NaN rate or filter is never "within half a hertz". */
+void
+test_expect_eq_rejects_nan(void) {
+    const int before = g_failures;
+    const uint64_t nan_bits = UINT64_C(0x7FF8000000000000);
+    double nan_value = 0.0;
+    DSD_MEMCPY(&nan_value, &nan_bits, sizeof nan_value);
+    expect_eq("a NaN filter (expected to fail)", nan_value, 10000000.0);
+    const bool flagged = g_failures == before + 1;
+    g_failures = before;
+    expect_true("expect_eq() fails NaN", flagged);
+}
+
+/* Listed 10,000,000.5 and 9,999,999.5 Hz, equally near the preferred 10 MS/s: the plan takes the one that rounds to
+ * 10 MS/s, and the write keeps it, so the read-back is not refused at the 10 MS/s ceiling. */
+void
+test_tied_points_keep_the_planned_rate(void) {
+    static const double tied[] = {10000000.5, 9999999.5};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = tied;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    const rtl_stream_test_capture_result got = open_on(&fake);
+    expect_true("the open starts", got.rc == 0);
+    expect_eq("the device was given 9,999,999.5 Hz", fake.rate_hz * 2.0, 19999999.0);
+}
+
+/* A centre so near the top of the tuning range that neither the preferred 10 MS/s nor the 1.536 MS/s request fits its
+ * quarter-rate offset (2.5 MHz and 384 kHz): the 1.5 MS/s the HackRF lists nearest the request does (375 kHz), so the
+ * device is asked for that. */
+void
+test_fallback_rate_near_the_top(void) {
+    static const double listed[] = {1500000.0, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = listed;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    const uint32_t center_hz = UINT32_MAX - 380000U;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, center_hz, &got) == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("the open starts", got.rc == 0);
+    expect_eq("the capture runs 1.5 MS/s", got.capture_rate_hz, 1500000.0);
+    expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 375000.0);
+}
+
 /* The HackRF that delivered 3 MS/s for 10 MS/s, whose rollback write of 3 MS/s snaps to 2 MS/s and already brings the
  * 3 MS/s back: the read-back says so, and the rollback stops there instead of writing 10 MS/s again. */
 void
@@ -1032,6 +1090,9 @@ main(int argc, char** argv) {
         {"rollback_falls_back_to_the_request", test_rollback_falls_back_to_the_request},
         {"usable_readback_of_an_unusable_rate", test_usable_readback_of_an_unusable_rate},
         {"rollback_stops_once_restored", test_rollback_stops_once_restored},
+        {"expect_eq_rejects_nan", test_expect_eq_rejects_nan},
+        {"tied_points_keep_the_planned_rate", test_tied_points_keep_the_planned_rate},
+        {"fallback_rate_near_the_top", test_fallback_rate_near_the_top},
         {"delivered_plan_keeps_the_forced_flag", test_delivered_plan_keeps_the_forced_flag},
         {"rollback_retries_after_a_refused_write", test_rollback_retries_after_a_refused_write},
         {"rate_written_judges_the_readback", test_rate_written_judges_the_readback},
