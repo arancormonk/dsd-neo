@@ -172,8 +172,11 @@ test_usbd_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
         if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
             return 100;
         }
-        if (!strstr(output, "Response to an immediate location request")) {
-            DSD_FPRINTF(stderr, "T1 reason: missing Response to an immediate location request in %s\n", output);
+        // A report whose check failed prints only that its position was suppressed: its reason (like the rest of
+        // it) only with -Z (issue #800, fail closed).
+        if ((strstr(output, "Response to an immediate location request") != NULL) != (i != 1)) {
+            DSD_FPRINTF(stderr, "T1 reason: Response to an immediate location request %s in %s\n",
+                        i == 1 ? "shown for a failed report" : "missing", output);
             rc = 1;
         }
         // The hash is no radio ID: a USBD reply never reaches the location file (decision D8).
@@ -240,7 +243,8 @@ test_short_lip(dsd_opts* opts, dsd_state* state, const char* path) {
         }
         if (!expect_rows(path, i == 1 ? 0 : 1, "00123456", "-22.500000", "-45.000000", 20, 0, "19990102",
                          "T7 short LIP")
-            || strcmp(state->dmr_embedded_gps[1], expected) != 0 || !strstr(output, labels[i])
+            || strcmp(state->dmr_embedded_gps[1], expected) != 0
+            || (strstr(output, labels[i]) != NULL) != (i != 1) /* a failed report's reason only with -Z */
             || (i == 2 && strstr(output, "Reason:"))) {
             DSD_FPRINTF(stderr, "T7 short LIP variant %d: state=%s; console=%s\n", i, state->dmr_embedded_gps[1],
                         output);

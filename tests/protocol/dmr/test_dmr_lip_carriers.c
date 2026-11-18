@@ -136,6 +136,18 @@ send_udt(dsd_opts* opts, dsd_state* state, int corrupt) {
     dmr_block_assembler(opts, state, block, 12, 0x07, 3);
 }
 
+/* send_udt() of a failed report, its console output in @p out. */
+static int
+capture_udt(dsd_opts* opts, dsd_state* state, char* out, size_t cap) {
+    dsd_test_capture_stderr capture;
+    if (dsd_test_capture_stderr_begin(&capture, "lip_carriers_udt") != 0) {
+        return 0;
+    }
+    send_udt(opts, state, 1);
+    dsd_test_capture_stderr_end(&capture);
+    return dsd_test_capture_stderr_read(&capture, out, cap) == 0;
+}
+
 static int
 test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     int failed = 0;
@@ -150,10 +162,18 @@ test_udt(dsd_opts* opts, dsd_state* state, const char* path) {
     send_udt(opts, state, 1);
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a invalid UDT"));
     CHECK(strcmp(state->dmr_embedded_gps[0], saved) == 0);
-    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11).
+    // Under -F the CRC-failed UDT is decoded and its notice committed, marked, without the position (spec 2.11). Its
+    // console line says the position was suppressed and shows no other part of the report (speed, heading, error),
+    // which only -Z prints.
     opts->dmr_crc_relaxed_default = 1;
-    CHECK(truncate_output(path));
-    send_udt(opts, state, 1);
+    for (int payload = 1; payload >= 0; payload--) {
+        opts->payload = payload;
+        CHECK(truncate_output(path));
+        char out[4096];
+        CHECK(capture_udt(opts, state, out, sizeof out));
+        CHECK(strstr(out, "Position: (suppressed; CRC ERR)") != NULL);
+        CHECK((strstr(out, "Spd:") != NULL) == (payload == 1));
+    }
     opts->dmr_crc_relaxed_default = 0;
     const Event_History* failed_notice = &state->event_history_s[0].Event_History_Items[1];
     CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8a relaxed invalid UDT"));
@@ -199,7 +219,16 @@ test_udp(dsd_opts* opts, dsd_state* state, const char* path) {
     for (uint8_t flags = 1U; flags <= 2U; flags++) {
         state->event_crc_invalid[0] = flags;
         CHECK(truncate_output(path));
+        dsd_test_capture_stderr capture;
+        char out[4096];
+        out[0] = '\0';
+        CHECK(dsd_test_capture_stderr_begin(&capture, "lip_carriers_udp") == 0);
         decode_ip_pdu(opts, state, sizeof packet, packet);
+        dsd_test_capture_stderr_end(&capture);
+        CHECK(dsd_test_capture_stderr_read(&capture, out, sizeof out) == 0);
+        // Only that the position was suppressed, none of the report's other fields (they print with -Z).
+        CHECK(strstr(out, "Position: (suppressed;") != NULL && strstr(out, "Spd:") == NULL);
+        CHECK(strstr(out, "Position Error") == NULL);
         CHECK(expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "T8b CRC-invalid UDP"));
         const Event_History* unchecked = &state->event_history_s[0].Event_History_Items[1];
         CHECK(strstr(unchecked->event_string, "LIP SRC: 111;") != NULL);

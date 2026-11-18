@@ -688,9 +688,10 @@ send_lrrp_packet(dsd_opts* opts, dsd_state* state, int retune) {
     }
 }
 
-// The same for an MNIS LOCN report: a standard header, the DPF 15 MNIS extension, then three data blocks.
+// The same for an MNIS LOCN report: a standard header, the DPF 15 MNIS extension, then three data blocks; @p corrupt
+// fails the packet CRC32.
 static void
-send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
+send_locn_packet_crc(dsd_opts* opts, dsd_state* state, int retune, int group, int corrupt) {
     static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
     uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
     DSD_MEMCPY(pdu + 7, locn, sizeof locn - 1U);
@@ -702,6 +703,7 @@ send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
     DSD_MEMCPY(span, pdu + 3, 38);
     crc32(span, sizeof span);
     DSD_MEMCPY(pdu + 42, span + 38, 4);
+    pdu[45] ^= (uint8_t)(corrupt ? 1U : 0U);
     DSD_MEMCPY(ext, pdu, 10);
     header(opts, state, hdr, 1);
     header(opts, state, ext, 1);
@@ -714,8 +716,50 @@ send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
 }
 
 static void
+send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
+    send_locn_packet_crc(opts, state, retune, group, 0);
+}
+
+static void
 send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
     send_locn_packet_to(opts, state, retune, 0);
+}
+
+// Issue #800, fail closed: a position report whose packet failed its check (accepted under -F) prints only that its
+// position was suppressed, never a part of it: an MNIS LOCN report's text, coordinates and time stay off the console
+// unless the payload option (-Z) asks for the packet's content. A clean packet prints them.
+static int
+test_failed_locn_prints_no_content(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    for (int run = 0; run < 3; run++) {
+        const int corrupt = run < 2;
+        opts->payload = run == 1 ? 1 : 0;
+        dsd_test_capture_stderr cap;
+        char out[8192];
+        out[0] = '\0';
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_failed_locn") != 0) {
+            return 1;
+        }
+        send_locn_packet_crc(opts, state, 0, 0, corrupt);
+        dsd_test_capture_stderr_end(&cap);
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+            return 1;
+        }
+        const int shows = strstr(out, "LOCN Text:") != NULL || strstr(out, "2230") != NULL
+                          || strstr(out, "04500") != NULL || strstr(out, "12:34:56") != NULL;
+        const int want = !corrupt || opts->payload == 1;
+        if (shows != want || (corrupt && strstr(out, "Position suppressed (CRC ERR)") == NULL)) {
+            DSD_FPRINTF(stderr, "\nLOCN %s, -Z %d: content shown %d (want %d): %s\n", corrupt ? "CRC ERR" : "clean",
+                        opts->payload, shows, want, out);
+            rc = 1;
+        }
+    }
+    opts->payload = 0;
+    opts->aggressive_framesync = 1;
+    return rc;
 }
 
 /* The newest kept position report, or a zeroed one. */
@@ -1000,6 +1044,7 @@ main(void) {
     rc |= test_sap3_lrrp_location_rows(opts, state);
     rc |= test_position_origin_across_retune(opts, state);
     rc |= test_position_group_from_checked_header(opts, state);
+    rc |= test_failed_locn_prints_no_content(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);

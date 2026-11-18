@@ -1783,10 +1783,17 @@ dmr_pdu_write_location_row(const dsd_opts* opts, const dsd_position_fix* fix) {
 }
 
 static void
-dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dsd_position_fix* fix, int admitted,
-                       const dmr_lrrp_emit_context* ctx) {
+dmr_lrrp_print_details(const dsd_opts* opts, const dmr_lrrp_parse_result* best, const dsd_position_fix* fix,
+                       int admitted, const dmr_lrrp_emit_context* ctx) {
     /* Each line is a part of the report, so each carries the producer's label (issue #800, D10): the diagnostics log
-       removes them. */
+       removes them. A report whose packet failed its checks prints only that its position was suppressed; the rest of
+       it only with -Z (dsd_gps_report_content_printable()). */
+    if (!dsd_gps_report_content_printable(ctx->pos_verified, opts->payload)) {
+        if (best->have_pos || ctx->guessed) {
+            DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", ctx->suppressed_label);
+        }
+        return;
+    }
     if (best->year) {
         DSD_FPRINTF(stderr, "\n LRRP Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day,
                     best->hour, best->minute, best->second);
@@ -1858,7 +1865,7 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, const dmr_lrrp_par
         }
     }
     DSD_FPRINTF(stderr, "%s", KYEL);
-    dmr_lrrp_print_details(best, &fix, admitted != DSD_POSITION_REFUSED, ctx);
+    dmr_lrrp_print_details(opts, best, &fix, admitted != DSD_POSITION_REFUSED, ctx);
 
     char lrrpstr[100];
     char velstr[20];
@@ -2078,15 +2085,17 @@ dmr_locn_parse_fields(const uint8_t* pdu, uint16_t len, dmr_locn_data* d) {
     }
 }
 
+/* The report's line: its coordinates when admitted, else why its position was withheld. @p content 0 (a report whose
+ * packet failed its checks, without -Z: dsd_gps_report_content_printable()) leaves its time out too. */
 static void
 dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d, const dsd_position_fix* fix,
-              const char* withheld) {
+              const char* withheld, int content) {
     const char* deg_glyph = dsd_degrees_glyph();
     char locnstr[50];
     char posstr[100];
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %u;", (unsigned)source);
-    if (d->time) {
+    if (d->time && content) {
         DSD_FPRINTF(stderr, " %04u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute, d->second);
     }
     DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %u ", (unsigned)source);
@@ -2154,7 +2163,8 @@ dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DM
             withheld = "not usable";
         }
     }
-    dmr_locn_emit(state, slot, source, &d, &fix, withheld);
+    dmr_locn_emit(state, slot, source, &d, &fix, withheld,
+                  dsd_gps_report_content_printable(scope == 0U, opts->payload));
     if (withheld == NULL) {
         (void)dsd_event_stage_position(state, slot, &fix, state->dmr_lrrp_gps[slot]);
         dmr_pdu_write_location_row(opts, &fix);

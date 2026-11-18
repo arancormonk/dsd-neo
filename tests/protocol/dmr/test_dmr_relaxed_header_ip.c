@@ -1115,6 +1115,8 @@ test_type1_mnis_short_pdu_length_underflow_guard(void) {
     DSD_MEMSET(history, 0, sizeof(history));
 
     opts.aggressive_framesync = 0;
+    // A failed packet's report text prints only with -Z (issue #800, fail closed); this test measures it.
+    opts.payload = 1;
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
@@ -1175,6 +1177,9 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
     DSD_MEMSET(history, 0, sizeof(history));
 
     opts.aggressive_framesync = 0;
+    // The report text of a packet whose checks failed prints only with -Z (issue #800, fail closed); this test reads
+    // that text to measure the length handed over.
+    opts.payload = 1;
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;

@@ -451,9 +451,10 @@ typedef struct {
 } lip_source;
 
 /* Print a LIP report. @p position_note NULL prints its coordinates (an admitted report); otherwise the coordinates are
- * left out and the note says why ("suppressed; CRC ERR", "refused"). */
+ * left out and the note says why ("suppressed; CRC ERR", "refused"). @p content 0 (a failed report without -Z,
+ * dsd_gps_report_content_printable()) leaves out the rest of the report too: its motion, error, reason and time. */
 static void
-lip_print_report(const lip_short_report* r, const lip_source* who, const char* position_note) {
+lip_print_report(const lip_short_report* r, const lip_source* who, const char* position_note, int content) {
     const char* deg_glyph = dsd_degrees_glyph();
     if (who->hash >= 0) {
         DSD_FPRINTF(stderr, "Src(Hash); %03d;  ", who->hash);
@@ -466,6 +467,9 @@ lip_print_report(const lip_short_report* r, const lip_source* who, const char* p
                     deg_glyph, p.lonstr, (double)r->lat_e7 / 1e7, (double)r->lon_e7 / 1e7);
     } else {
         DSD_FPRINTF(stderr, "Position: (%s); ", position_note);
+    }
+    if (!content) {
+        return;
     }
     char motion[80];
     lip_motion_text(r, deg_glyph, motion, sizeof motion);
@@ -585,7 +589,8 @@ lip_report(const dsd_opts* opts, dsd_state* state, const lip_short_report* r, co
     }
     dsd_position_fix fix;
     const int admitted = crc_flags == 0U && lip_admit(opts, state, r, who, &fix);
-    lip_print_report(r, who, crc_flags != 0U ? gps_suppressed_label(crc_flags) : (admitted ? NULL : "refused"));
+    lip_print_report(r, who, crc_flags != 0U ? gps_suppressed_label(crc_flags) : (admitted ? NULL : "refused"),
+                     dsd_gps_report_content_printable(crc_flags == 0U, opts->payload));
     if (!admitted) {
         return;
     }
@@ -840,13 +845,16 @@ nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, s
     const int admitted = crc_flags == 0U && f.q && in_range && udt_nmea_admit(opts, state, slot, &fix);
     udt_nmea_print_position(crc_flags, &f, in_range, admitted, &fix, deg_glyph);
 
-    //Speed in Knots
-    if (f.speed > 126) {
-        DSD_FPRINTF(stderr, " SPD > 126 knots;");
-    } else {
-        DSD_FPRINTF(stderr, " SPD: %d knots; %f kph;", f.speed, (double)f.speed * 1.852);
+    // A failed report's other fields print only with -Z (dsd_gps_report_content_printable()).
+    if (dsd_gps_report_content_printable(crc_flags == 0U, opts->payload)) {
+        //Speed in Knots
+        if (f.speed > 126) {
+            DSD_FPRINTF(stderr, " SPD > 126 knots;");
+        } else {
+            DSD_FPRINTF(stderr, " SPD: %d knots; %f kph;", f.speed, (double)f.speed * 1.852);
+        }
+        udt_nmea_print_time(&f, type, deg_glyph);
     }
-    udt_nmea_print_time(&f, type, deg_glyph);
     if (!admitted) {
         return;
     }
@@ -1184,7 +1192,9 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
         DSD_FPRINTF(stderr, " Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", p.lat, deg_glyph, p.latstr, p.lon,
                     deg_glyph, p.lonstr, (double)a.fix.lat_e7 / 1e7, (double)a.fix.lon_e7 / 1e7);
     }
-    gps_print_position_error(pos_err, (unsigned int)a.fix.err_m);
+    if (dsd_gps_report_content_printable(crc_flags == 0U, opts->payload)) {
+        gps_print_position_error(pos_err, (unsigned int)a.fix.err_m);
+    }
     if (admitted) {
         dmr_embedded_gps_publish(opts, state, slot, &a, pos_err);
     }

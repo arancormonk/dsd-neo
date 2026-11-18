@@ -579,7 +579,8 @@ does.
   - DMR USBD LIP poll responses (the source is an 8-bit hash, not a radio ID), USBD poll requests (no position) and
     USBD bursts without a repeater-mode sync (not decoded as a position).
   - A report whose check failed, or that `-F` accepted as RAS. It still prints, with `Position: (suppressed; CRC ERR)`
-    or `(suppressed; RAS)` in place of the coordinates (see `-F`).
+    or `(suppressed; RAS)` in place of the coordinates, and nothing else of the report (its text, time, speed,
+    heading, error or reason) unless `-Z` is on (see `-F`).
   - A report with no fix or an impossible position: a latitude past 90 or a longitude past 180 degrees (by any digit
     of its fraction, however far down), minutes of 60
     or more, exactly 0, 0, UDT NMEA with Q=0, an L3Harris update marked no fix or GPS not enabled, an NMEA GGA whose
@@ -2352,7 +2353,9 @@ setting, shown apart from what is received, and it is off by default: then the o
   system time or protection parameters come from it. P25 Phase 1 TSBK and trunking MBT always need their CRCs.
   Positions never come from content `-F` let through. A DMR or P25 data report (LRRP, LOCN, LIP, UDT NMEA, ASCII
   NMEA) or a DMR embedded GPS LC whose check failed, or that was accepted as RAS, still prints, and its data notice is
-  kept marked `[CRC ERR]` or `[RAS]`, but without coordinates (`Position: (suppressed; CRC ERR)`): nothing reaches
+  kept marked `[CRC ERR]` or `[RAS]`, but without coordinates (`Position: (suppressed; CRC ERR)`) or any other part
+  of the report (an MNIS LOCN report's text, a time, speed, heading, position error or reason), which only `-Z`
+  prints: nothing reaches
   History's position, `-L` or the API, and a failed P25 location-service (SAP 48) packet keeps none of its payload,
   NMEA sentences or text: it prints `P25 Location Service: payload withheld (CRC ERR);` instead. A DMR USBD LIP
   reply whose CRC failed leaves no notice at all. A position heard during a P25 Phase 2 call that was followed from a

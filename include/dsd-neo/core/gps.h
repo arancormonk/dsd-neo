@@ -156,6 +156,19 @@ void nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
                       const dsd_gps_address* addr, int type);
 
 /**
+ * @brief Whether a position report's own content (its text, time, motion, accuracy and the like, not only its
+ * coordinates) may print on the console: always for a report whose check passed (@p checked 1), and for one whose
+ * check failed or that -F accepted as RAS only with the payload option (-Z, @p payload_option dsd_opts::payload 1), as
+ * every raw payload dump (issue #800, fail closed). By default a failed report prints only that its position was
+ * suppressed, and why. Inline, so every producer (and a test that compiles one from its sources) has it without the GPS
+ * module.
+ */
+static inline int
+dsd_gps_report_content_printable(int checked, int payload_option) {
+    return checked == 1 || payload_option == 1;
+}
+
+/**
  * @brief A date sent with a two-digit year (NMEA RMC, DMR LOCN): the century that puts @p day / @p month / @p yy closest
  * to @p receive_utc_s (Unix seconds on the decode clock when the report was received), so the date is within 50 years
  * of its reception. A century in which the day is no calendar date (29 February) is no candidate, and neither is one
