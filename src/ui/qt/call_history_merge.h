@@ -514,6 +514,7 @@ struct CallHistoryReception {
     uint64_t ring = 0U;
     uint64_t gen = 0U;
     bool genKnown = false;
+    int64_t tunedHz = 0; /**< the tuned frequency it was read with (Event_History::rx_scope.tuned_hz); 0: unknown */
 };
 
 /** @brief The tuned frequency a reception names: a tuned-frequency scope's, a P25 NAC scope's discriminator; else 0. */
@@ -567,7 +568,8 @@ call_history_reception_refines(const CallHistoryScope& x, const CallHistoryScope
 
 /**
  * @brief Whether two receptions are one (issue #800, fail closed), the core's reception rule
- * (dsd_position_same_reception()) on History's fragments: both scopes known and equal, with one discriminator; or the
+ * (dsd_position_same_reception()) on History's fragments: never on two known tuned frequencies that differ; else both
+ * scopes known and equal, with one discriminator; or the
  * same reception generation of one ring (no retune, epoch move or change of P25 phase between) and nothing that says
  * otherwise (an unknown scope, or one scope only
  * refining the other: a NAC then the WACN and SYSID, an EDACS site then its system). Two families, two tuned frequencies
@@ -576,6 +578,10 @@ call_history_reception_refines(const CallHistoryScope& x, const CallHistoryScope
  */
 inline bool
 call_history_same_reception(const CallHistoryReception& x, const CallHistoryReception& y) {
+    // Two carriers are two receptions, also of one system whose scope names no carrier (a P25 WACN and SYSID).
+    if (x.tunedHz != 0 && y.tunedHz != 0 && x.tunedHz != y.tunedHz) {
+        return false;
+    }
     const bool knownX = call_history_scope_known(x.scope);
     const bool knownY = call_history_scope_known(y.scope);
     if (knownX && knownY && call_history_scopes_equal(x.scope, y.scope)) {

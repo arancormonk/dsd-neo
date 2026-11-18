@@ -1850,6 +1850,7 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.rxRing = row.rxRing;
     part.rxGen = row.rxGen;
     part.rxGenKnown = row.rxGenKnown;
+    part.rxHz = row.rxHz;
     part.name = row.name;
     part.service = row.service;
     part.session = row.session;
@@ -1899,6 +1900,7 @@ row_of_part(const FragmentPart& part) {
     row.rxRing = part.rxRing;
     row.rxGen = part.rxGen;
     row.rxGenKnown = part.rxGenKnown;
+    row.rxHz = part.rxHz;
     row.name = part.name;
     row.service = part.service;
     row.session = part.session;

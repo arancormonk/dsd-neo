@@ -58,7 +58,7 @@
 
 /* A row stays comparable byte for byte (watchdog_event_commit_candidate()): its position has no padding. */
 _Static_assert(sizeof(dsd_event_pos) == 64U, "dsd_event_pos must stay free of padding");
-_Static_assert(sizeof(dsd_event_rx_scope) == 32U, "dsd_event_rx_scope must stay free of padding");
+_Static_assert(sizeof(dsd_event_rx_scope) == 40U, "dsd_event_rx_scope must stay free of padding");
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -1192,8 +1192,8 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
     dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
-/* A row's reception as the reception rule reads it (dsd_position_same_reception()): its scope once resolved, else
- * unknown, the generation it was read under when known, and the protocol class of the row's protocol @p systype (P25
+/* A row's reception as the reception rule reads it (dsd_position_same_reception()): its scope and carrier once
+ * resolved, else unknown, the generation it was read under when known, and the protocol class of the row's protocol @p systype (P25
  * Phase 1 and Phase 2 apart; none for a row of no protocol). */
 static void
 watchdog_event_row_reception(const dsd_event_rx_scope* rx, int systype, dsd_position_reception* out) {
@@ -1203,6 +1203,7 @@ watchdog_event_row_reception(const dsd_event_rx_scope* rx, int systype, dsd_posi
         out->scope.a = rx->scope.a;
         out->scope.b = rx->scope.b;
         out->identity_freq_hz = rx->identity_freq_hz;
+        out->tuned_hz = rx->tuned_hz;
     }
     out->rx_gen = rx->rx_gen;
     out->epoch_known = rx->epoch_known;
@@ -1889,14 +1890,15 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // 0 is "not received", as before any was decoded.
 //
 // They come from the received identity record of the call's protocol family, never from decoder state a seed, a
-// preset, a control-channel anchor or another carrier writes. The row takes them whole from the record of the carrier
-// the call began on (the record's epoch is the call's dsd_call_snapshot::rx_id_epoch): the record keeps them one
+// preset, a control-channel anchor or another carrier writes. The row takes them whole from the record of the reception
+// the call began on (its generation is the call's dsd_call_snapshot::rx_gen): the record keeps them one
 // consistent observation, a part it does not hold being one this carrier has not sent, or one a newer part invalidated
 // (an IDAS site ID that disagreed with the Type-D system ID, another EDACS or P25 system), so the row drops it too.
 // While the call is active it takes the live record; once it has ended, the record the canonical layer captured at the
 // end transition (dsd_call_snapshot::ended_rx_id), so a part received after the last active render and before the end
-// (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another carrier (reset since the
-// call began: a boundary, a trunk-scan switch, another protocol in between), or no capture, leaves the row what it took
+// (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another reception (reset since
+// the call began: a boundary, a trunk-scan switch, another protocol; or kept across a retune or a change of P25 phase
+// or DMR burst mode, issue #800), or no capture, leaves the row what it took
 // last: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or a trunk-scan switch, when the
 // record already describes the next carrier.
 //
@@ -1998,7 +2000,9 @@ watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapsho
         }
         sys[2] = 0U;
     }
-    if (state->rx_id.epoch == call->rx_id_epoch) {
+    /* The live record only while the reception is the one the call began on (its generation): a retune or a change of
+       P25 phase or DMR burst mode keeps the record's epoch, and the system it then holds is another carrier's. */
+    if (dsd_state_reception_generation(state) == call->rx_gen) {
         watchdog_event_system_take(&state->rx_id, family, sys);
         watchdog_event_site_take(&state->rx_id, family, site);
     }
@@ -2051,8 +2055,8 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
     ctx->sys_id5 = sys[4];
 }
 
-/* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz for a scope of the tuned frequency
- * and the P25 NAC discriminator, and the reception generation @p rx was read under (@p gen); no scope for the callsign
+/* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz as the carrier, for a scope of the
+ * tuned frequency and the P25 NAC discriminator, and the reception generation @p rx was read under (@p gen); no scope for the callsign
  * protocols (M17, D-STAR), whose positions carry none either. */
 static void
 watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_received_identity* rx, uint32_t tuned_hz,
@@ -2061,6 +2065,7 @@ watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_re
     out->resolved = 1U;
     out->rx_gen = gen;
     out->epoch_known = 1U;
+    out->tuned_hz = (int64_t)tuned_hz;
     if (DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DSTAR(protocol)) {
         return;
     }
@@ -2088,7 +2093,7 @@ watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* stat
     /* The live record only while the reception is still the one the call began on: the same generation, so a scope a
        retune or a change of P25 phase brought (the record keeps its epoch across both) is never the row's. */
     const uint64_t gen = dsd_state_reception_generation(state);
-    if (call->phase == DSD_CALL_PHASE_ACTIVE && state->rx_id.epoch == call->rx_id_epoch && gen == call->rx_gen) {
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && gen == call->rx_gen) {
         watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &state->rx_id, dsd_opts_tuned_freq_hz(opts), gen);
         return;
     }
@@ -2098,7 +2103,7 @@ watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* stat
     DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
     if (call->phase == DSD_CALL_PHASE_ENDED) {
         const uint32_t hz = (row_hz > 0 && row_hz <= (int64_t)UINT32_MAX) ? (uint32_t)row_hz : 0U;
-        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, hz, call->ended_rx_gen);
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, hz, call->rx_gen);
     }
 }
 
@@ -4121,6 +4126,7 @@ dsd_event_pos_write_notice(Event_History* item, const dsd_position_fix* fix, con
     DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
     item->rx_scope.scope = fix->reception_scope;
     item->rx_scope.identity_freq_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    item->rx_scope.tuned_hz = fix->freq_hz;
     item->rx_scope.rx_gen = fix->origin_gen;
     item->rx_scope.epoch_known = 1U;
     item->rx_scope.resolved = 1U;

@@ -1052,16 +1052,17 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
     return 1;
 }
 
-/* The system and site the call's carrier had named when the call ended, while the record is still that carrier's (not
-   reset or replaced since the call began); none otherwise. */
+/* The system and site the call's carrier had named when the call ended, while the reception is still the one the call
+   began on: the same reception generation (dsd_state_reception_generation()), so not reset or replaced since, and no
+   retune or change of P25 phase or DMR burst mode in between, which keep the record's epoch (issue #800, fail closed).
+   Otherwise none: a row that never read its reception keeps an unknown one under the call's own generation, never the
+   scope of the reception the receiver is on now. */
 static void
 call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* snapshot) {
-    if (state->rx_id.epoch == snapshot->rx_id_epoch) {
+    if (dsd_state_reception_generation(state) == snapshot->rx_gen) {
         snapshot->ended_rx_id = state->rx_id;
-        snapshot->ended_rx_gen = dsd_state_reception_generation(state);
     } else {
         DSD_MEMSET(&snapshot->ended_rx_id, 0, sizeof(snapshot->ended_rx_id));
-        snapshot->ended_rx_gen = 0U;
     }
     call_state_retain_rx_id(snapshot, &state->rx_id);
     const uint8_t mode = state->tetra_pub.mode;

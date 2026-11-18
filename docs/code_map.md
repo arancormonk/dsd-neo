@@ -2296,20 +2296,25 @@ suite runs under this compiler.
   else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system (`sys_id1`..`_3`), the TETRA
   MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part not received takes the value a
   row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
-  X2-TDMA rows carry none. The row takes the parts whole from the record of the carrier the call began on (the record's
-  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, and a note
+  X2-TDMA rows carry none. The row takes the parts whole from the record of the reception the call began on (the
+  reception generation is the call's `dsd_call_snapshot::rx_gen`, `dsd_state_reception_generation()`: a retune or a
+  change of P25 phase or DMR burst mode keeps the record's epoch but is another reception, issue #800): the record keeps
+  them one consistent observation, and a note
   naming another system, site or access code (an IDAS SCCH site ID that disagrees with the Type-D system ID, another
   EDACS or P25 system, another NAC on the carrier) moves the record's epoch, so the row keeps the identity it was heard
   under, never a mix. While the call is ACTIVE it takes the live record; once it has ENDED, the record the canonical
   layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
-  `dsd_call_snapshot::ended_rx_id` while its epoch is still the call's, else captures none): identity received after the
+  `dsd_call_snapshot::ended_rx_id` while the reception generation is still the call's, else captures none, so a call
+  that ends unrendered after a retune keeps none of the next carrier's system or scope, only its own frequency, test
+  `CORE_EVENT_POSITION` `test_ended_scope_of_the_calls_own_reception()`): identity received after the
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
   what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
   switch never takes the next carrier's. Direct mode empties the record, so the end also notes whether a TETRA call
   ended on a direct mode carrier (`dsd_call_snapshot::ended_tetra_direct`), and the ended row keeps its DMO mark from
   that. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
-  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
+  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch and reception generation, as the grant
+  was heard on this carrier
   (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - History site and call channel (issue #799; `dsd_events.c`). Beside the `sys_id` slots a row keeps the whole site it
   was heard on, `Event_History::site_id` (a `dsd_received_identity` holding only the site parts,
@@ -2550,10 +2555,14 @@ suite runs under this compiler.
   the row was, and lets only a newer `rev` replace a position. Where it was heard is one reception rule
   (`dsd_position_same_reception()`, `<dsd-neo/core/position.h>`, fail closed), used by every row writer, the
   reacquisition merge and the attribution rule: two receptions (`dsd_position_reception`: scope, NAC discriminator,
-  protocol class, reception generation) of two known protocol classes that differ (P25 Phase 1 and Phase 2,
-  `dsd_sync_protocol_class()`) are never one; else they are one when both scopes are known and equal, or when they
+  protocol class, reception generation, the tuned frequency it was read with) of two known protocol classes that differ
+  (P25 Phase 1 and Phase 2, `dsd_sync_protocol_class()`), or of two known tuned frequencies that differ (two carriers
+  of one system, whose scope, a P25 WACN and SYSID, names no carrier: `dsd_position_reception::tuned_hz`, a row's
+  `dsd_event_rx_scope::tuned_hz`, a report's `freq_hz`), are never one; else they are one when both scopes are known
+  and equal, or when they
   share the reception generation (`dsd_state_reception_generation()`: the received identity's epoch, plus the applied
-  trunking retunes, `dsd_state::rx_tune_seq`, and the P25 phase changes, `dsd_state::rx_phase_seq`, both of which keep
+  trunking retunes, `dsd_state::rx_tune_seq`, and the changes of P25 phase or DMR burst mode, `dsd_state::rx_mode_seq`,
+  both of which keep
   the system the record holds) and nothing says otherwise (an unknown scope, or one scope only refining the other: a
   NAC then the WACN and SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one
   kind are two receptions within one generation, and an unknown side never matches across generations, so a NAC heard
@@ -15827,7 +15836,9 @@ Qt Quick frontend (`src/ui/qt`):
       fragment heard on the row's reception (`fragment_same_reception()`, read on the row as it was before the reading
       folds in anything): one protocol class (`call_history_position_class()`, the core's
       `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
-      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: both scopes
+      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: never on two
+      known carriers, `Row::rxHz`, the tuned frequency the reception was read with, which goes with `rxScope` and not
+      with the newest fragment's `freqHz`; else both scopes
       known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
       `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
       receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
@@ -15922,6 +15933,7 @@ Qt Quick frontend (`src/ui/qt`):
       parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
       (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
       `rx`, `rxGen`/`rxRing` (the reception generation the reception was read under and its ring, hex; both or neither),
+      `rxHz` (the tuned frequency the reception was read with, while known),
       `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
       `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
       `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each

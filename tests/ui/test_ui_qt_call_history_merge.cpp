@@ -841,6 +841,13 @@ test_reception_rule(void) {
     later.gen = 5U;
     expect("a refinement across epochs is not known to be one", call_history_same_reception(nac451, later), false);
     expect("equal known scopes are one across epochs", call_history_same_reception(network, later), true);
+    CallHistoryReception network450 = network;
+    network450.tunedHz = 450000000;
+    CallHistoryReception network451 = later;
+    network451.tunedHz = 451000000;
+    expect("equal known scopes on two carriers are two receptions", call_history_same_reception(network450, network451),
+           false);
+    expect("equal known scopes, one carrier unknown", call_history_same_reception(network450, later), true);
     CallHistoryReception otherRun = unknown;
     otherRun.ring = 0xBEEFU;
     expect("an unknown scope never matches another run", call_history_same_reception(unknown, otherRun), false);

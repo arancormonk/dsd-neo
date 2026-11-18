@@ -256,6 +256,10 @@ dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_
     if (a->protocol_class != 0 && b->protocol_class != 0 && a->protocol_class != b->protocol_class) {
         return 0;
     }
+    /* Two carriers are two receptions, also of one system whose scope names no carrier (a P25 WACN and SYSID). */
+    if (a->tuned_hz != 0 && b->tuned_hz != 0 && a->tuned_hz != b->tuned_hz) {
+        return 0;
+    }
     const int known_a = a->scope.kind != DSD_POS_SCOPE_NONE;
     const int known_b = b->scope.kind != DSD_POS_SCOPE_NONE;
     if (known_a && known_b && pos_scope_equal(&a->scope, &b->scope) && a->identity_freq_hz == b->identity_freq_hz) {
@@ -280,6 +284,7 @@ dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* 
     out->scope.a = fix->reception_scope.a;
     out->scope.b = fix->reception_scope.b;
     out->identity_freq_hz = fix->reception_scope.kind == DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    out->tuned_hz = fix->freq_hz;
     out->rx_gen = fix->origin_gen;
     out->protocol_class = fix->protocol != DSD_POSITION_PROTOCOL_NONE ? dsd_sync_protocol_class(fix->protocol) : 0;
     out->epoch_known = (uint8_t)(fix->rev != 0U);

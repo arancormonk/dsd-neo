@@ -542,6 +542,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         uint32_t callChannel = 0;
         /* The reception generation the reception was read under, and the ring it counts in (Row::rxGen). */
         quint64 rxGen = 0;
+        /* The tuned frequency the reception was read with (Row::rxHz). */
+        qint64 rxHz = 0;
         qint64 cchWhen = 0;
         qulonglong cchSeq = 0;
         dsd_received_identity siteId = {};
@@ -695,6 +697,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint64 rxRing = 0;
         quint64 rxGen = 0;
         bool rxGenKnown = false;
+        /* Issue #800. The tuned frequency rxScope was read with (Event_History::rx_scope.tuned_hz; 0 when unknown):
+         * two carriers are two receptions, also of one system whose scope names no carrier. Unlike freqHz, which a
+         * merge takes from the newest fragment, it goes with rxScope. Persisted (`rxHz`) while known. */
+        qint64 rxHz = 0;
         /* Issue #800, B2. The text message the row carries (Event_History::text_message), from the newest fragment
          * that had one, with that fragment's provenance. Persisted (`msg`, `msg*`). */
         QString messageText;

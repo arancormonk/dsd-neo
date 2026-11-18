@@ -233,6 +233,8 @@ typedef struct dsd_position_origin {
  */
 typedef struct dsd_position_reception {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    /** The tuned frequency it was heard on (dsd_opts_tuned_freq_hz()), whatever its scope; 0 when unknown. */
+    int64_t tuned_hz;
     uint64_t rx_gen;          /**< the reception generation it was read under (dsd_state_reception_generation()) */
     dsd_position_scope scope; /**< the reception scope (D7); DSD_POS_SCOPE_NONE when unknown */
     /** The protocol class it was heard in (dsd_sync_protocol_class(): P25 Phase 1 and Phase 2 apart); 0 when
@@ -281,7 +283,8 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
  * @brief The reception rule (issue #800, fail closed): 1 when @p a and @p b were heard on one reception, so a position
  * of one may land on (or merge into) the other.
  *
- * Two known protocol classes that differ (P25 Phase 1 and Phase 2) are two receptions, whatever else agrees; else:
+ * Two known protocol classes that differ (P25 Phase 1 and Phase 2), or two known tuned frequencies that differ (two
+ * carriers of one system), are two receptions, whatever else agrees; else:
  * - Both scopes known (not DSD_POS_SCOPE_NONE) and equal, with the same identity discriminator: one reception, whatever
  *   the generations; or
  * - the same uninterrupted reception generation (both known and equal: dsd_state_reception_generation(), retunes
@@ -295,8 +298,8 @@ int dsd_position_origin_matches(const dsd_state* state, const dsd_position_origi
  */
 int dsd_position_same_reception(const dsd_position_reception* a, const dsd_position_reception* b);
 
-/** The reception of an admitted report @p fix into @p out: its reception scope, the tuned frequency as the
- * discriminator of a P25 NAC scope, its protocol class, and the reception generation of its origin (origin_gen), known
+/** The reception of an admitted report @p fix into @p out: its reception scope, the tuned frequency (freq_hz, its
+ * origin's) as the carrier and as the discriminator of a P25 NAC scope, its protocol class, and the reception generation of its origin (origin_gen), known
  * once admission stamped it (rev set). NULL @p fix gives an unknown reception; NULL @p out does nothing. */
 void dsd_position_fix_reception(const dsd_position_fix* fix, dsd_position_reception* out);
 

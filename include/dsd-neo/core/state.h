@@ -731,17 +731,21 @@ typedef struct {
 /**
  * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
  * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()), its identity
- * discriminator (the tuned frequency for a P25 NAC scope, else 0) and the reception generation it was read under. A
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0), the tuned frequency it was read with and the
+ * reception generation it was read under. A
  * call row takes it by the rule its site follows (Event_History::site_id: the live record only while the call is
  * active on the carrier it began on, the record as the call ended once it has), pinned once resolved; a data notice at
  * emit. A position lands on a row, or merges into it, only under the reception rule (dsd_position_same_reception()):
- * both scopes known and equal, or the same generation with nothing that says otherwise; an unknown side never matches
- * across generations. Laid out without padding.
+ * both scopes known and equal on one carrier, or the same generation with nothing that says otherwise; an unknown side
+ * never matches across generations. Laid out without padding.
  */
 typedef struct {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    /** The tuned frequency the reception was read with, whatever its scope (0 when unknown): two carriers are two
+     * receptions, also of one system whose scope names no carrier. */
+    int64_t tuned_hz;
     /** The reception generation the reception was read under (dsd_state_reception_generation(): the record's epoch,
-     * the retunes and the P25 phase changes). */
+     * the retunes and the changes of P25 phase or DMR burst mode). */
     uint64_t rx_gen;
     dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
     uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
