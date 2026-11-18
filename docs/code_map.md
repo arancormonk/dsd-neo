@@ -2599,9 +2599,12 @@ suite runs under this compiler.
   coordinates (`(refused)`), and a report whose check failed or that `-F` accepted as RAS prints only that
   (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`): its other content (an MNIS LOCN report's text, an LRRP
   document's time, radius, altitude, speed and track, a LOCN time, a LIP report's motion, error, reason and time, a UDT
-  NMEA report's speed, time and course, an embedded GPS LC's position error) prints only with `-Z`, by one rule
+  NMEA report's speed, time and course, an embedded GPS LC's position error and protect flag, an L3Harris update's
+  quality, which an unchecked one, a soft-decoded half among them, reports only as `Harris GPS: not used (unchecked)`)
+  prints only with `-Z`, by one rule
   (`dsd_gps_report_content_printable()`, `<dsd-neo/core/gps.h>`; tests `DMR_EVENT_CRC`, `DMR_LRRP_CRC_GATING`,
-  `DMR_LIP_CARRIERS`, `DMR_EMBEDDED_GPS_ATTRIBUTION`, `CORE_GPS_LRRP_CRC_GATING`). Every producer prints
+  `DMR_LIP_CARRIERS`, `DMR_EMBEDDED_GPS_ATTRIBUTION`, `CORE_GPS_LRRP_CRC_GATING`, `P25_P1_HARRIS_GPS`). Every producer
+  prints
   a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
   sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
   before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per

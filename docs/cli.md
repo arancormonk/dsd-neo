@@ -622,7 +622,8 @@ does.
   Phase 1 call whose terminator was missed, or the other way round) counts as another reception: a call left open
   across it names no later report's sender until a checked voice link control or voice user of the call names it
   again, even when the call's talker is still shown. A grant's checked talker counts only on the voice channel the
-  grant tunes to.
+  grant tunes to. An L3Harris update with a soft-decoded half prints only `Harris GPS: not used (unchecked)` (its
+  quality and fields only with `-Z`).
 
   Speed and heading: LRRP speed is km/h with three decimals (earlier versions wrote 0.01 mph); a LIP speed above 1043
   km/h is written as 1043 and an ambiguous LIP direction as 0; UDT NMEA above 126 knots is written as 233; L3Harris rows

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
@@ -270,6 +271,41 @@ test_failed_report_prints_no_content(void) {
     }
 }
 
+/* Issue #800, fail closed: a protected embedded GPS LC whose burst failed its check says nothing of itself by default,
+ * its protect flag included: only that its position was suppressed. -Z shows the flag. */
+static void
+test_failed_protected_report_prints_no_flag(void) {
+    for (int payload = 0; payload <= 1; payload++) {
+        fixture f;
+        fixture_open(&f);
+        f.opts->payload = payload;
+        voice_lc(&f, 1U);
+        f.st->event_crc_invalid[0] = 1U;
+        uint8_t bits[80];
+        DSD_MEMSET(bits, 0, sizeof bits);
+        bits[0] = 1U; /* PF */
+        put_bits(bits, 2U, 6U, 0x08U);
+        put_bits(bits, 48U, 24U, 0x200000U);
+        dsd_test_capture_stderr cap;
+        char out[2048];
+        out[0] = '\0';
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_embedded_protected") != 0) {
+            expect_true("capture", 0);
+            fixture_close(&f);
+            return;
+        }
+        dmr_embedded_gps(f.opts, f.st, bits);
+        dsd_test_capture_stderr_end(&cap);
+        expect_true("capture read", dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+        f.st->event_crc_invalid[0] = 0U;
+        expect_true(payload ? "failed protected GPS: -Z shows the flag" : "failed protected GPS: no flag",
+                    (strstr(out, "Protected") != NULL) == (payload == 1));
+        expect_true("failed protected GPS: suppressed",
+                    payload == 1 || strstr(out, "Position: (suppressed; CRC ERR)") != NULL);
+        fixture_close(&f);
+    }
+}
+
 /* The single-slot decoder carries either over-the-air slot on its one lane (lane 0): its report publishes the slot the
  * CACH proved, not the lane, so the same fix heard on TS2 then on TS1 is two records (the repeat rule compares where it
  * was heard). One heard while no slot is proven names none: slot 0 marked DSD_POS_FLAG_SLOT_UNKNOWN, never a repeat of
@@ -390,6 +426,7 @@ main(void) {
     test_reception_change();
     test_same_reception();
     test_failed_report_prints_no_content();
+    test_failed_protected_report_prints_no_flag();
     test_single_slot_decoder_publishes_proven_slot();
     test_direct_to_repeater_transition();
     test_direct_mode_after_an_interruption();

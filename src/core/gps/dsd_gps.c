@@ -1070,6 +1070,12 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const d
     harris_gps_parse(body, &f);
     gps_report_print_prefix(ctx);
 
+    /* A report whose own check did not pass says nothing by default, its quality included: only that it was unchecked
+       (dsd_gps_report_content_printable(), issue #800, fail closed). With -Z it is read as far as admission. */
+    if (!dsd_gps_report_content_printable(ctx->pos_verified == 1U, opts->payload)) {
+        DSD_FPRINTF(stderr, " Harris GPS: not used (unchecked);");
+        return 0;
+    }
     // Quality %00 (no fix) and %11 (GPS not enabled): the coordinates are not a fix.
     if (f.quality == 0U || f.quality == 3U) {
         DSD_FPRINTF(stderr, " Harris GPS: %s;", f.quality == 0U ? "No Fix" : "GPS Not Enabled");
@@ -1166,14 +1172,19 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
     const uint32_t lon = (uint32_t)convert_bits_into_output(&lc_bits[23], 25);
     const uint32_t lat = (uint32_t)convert_bits_into_output(&lc_bits[48], 24);
 
-    if (pf) {
-        DSD_FPRINTF(stderr, " Protected");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-        return;
-    }
     const uint8_t slot = (uint8_t)(state->currentslot & 1);
     // The caller ran the embedded LC checksum; a burst scope that failed (a mono-collapsed slot's) still withholds it.
     const uint8_t crc_flags = state->event_crc_invalid[slot];
+    if (pf) {
+        /* A withheld LC says nothing of itself by default, its protect flag included (issue #800, fail closed). */
+        if (dsd_gps_report_content_printable(crc_flags == 0U, opts->payload)) {
+            DSD_FPRINTF(stderr, " Protected");
+        } else {
+            DSD_FPRINTF(stderr, " Position: (%s)", gps_suppressed_label(crc_flags));
+        }
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
     dmr_embedded_gps_admission a;
     DSD_MEMSET(&a, 0, sizeof a);
     dsd_position_fix_init(&a.fix);
