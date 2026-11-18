@@ -29,7 +29,9 @@ typedef struct {
     uint64_t list_rev;
     int dir;        /* a walk's direction (DSD_MANUAL_TUNE_LCN_CYCLE): 1 Next, -1 Previous; 0 for any other kind */
     int scan_owned; /* a walk the running -Y scan owns (DSD_MANUAL_TUNE_LCN_CYCLE) */
-    uint64_t id;    /* the tune's own ID, which an entry waiting on its row names (issue #644) */
+    int move_judge; /* a walk off any scan: how its press judged the move (dsd_engine_manual_tune_note_walk_judge()) */
+    long move_from_hz; /* and where it read the receiver before the tune */
+    uint64_t id;       /* the tune's own ID, which an entry waiting on its row names (issue #644) */
 } dsd_manual_tune_settled;
 
 /* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or

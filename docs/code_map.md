@@ -12715,8 +12715,11 @@ Private per-protocol modules worth knowing about:
     move under DMR trunking, or before the trunk's owner is known (a Return to CC, a lockout or skip return, a channel
     or candidate cycle) retunes through io_control, which reaches neither the tune hooks nor a carrier boundary, or
     through the P25 hook leg, marked as its caller's to judge; once the move ended the left calls,
-    `dmr_sm_note_operator_leave()` judges it from the receiver the machine read before the tune (unknown, as at a
-    timed-out walk's late landing, counts as leaving) and leaves the carrier as a follow does. Under P25 or NXDN
+    `dmr_sm_note_operator_leave()` judges it from the receiver the machine read before the tune (unknown counts as
+    leaving) and leaves the carrier as a follow does. A walk off any scan whose tune timed out keeps that judge and
+    reading with its pending record (`dsd_engine_manual_tune_note_walk_judge()`), and its late landing is judged from
+    them, exactly as the press would have judged a tune that landed at once
+    (`test_channel_walk_off_scan_judges_a_late_landing_as_the_press()`). Under P25 or NXDN
     trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
     does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. The decoder thread
     alone writes the left calls' decryption and the hold: it does so in its frames and in the no-carrier pass, which

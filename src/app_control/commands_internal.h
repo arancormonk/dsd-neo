@@ -31,9 +31,11 @@ void dsd_app_stream_notice_clear(void);
 /* The late settling of a Next or Previous walk off any scan whose tune timed out (issue #644 B-2), installed as the
    engine's walk hook (dsd_channel_walk_settle_hook_set()) with the session: a landing ends the calls, hands the
    trunking state machines over and, while the list and the row are still the ones walked, names the row; a late failure
-   passes the row or keeps it for a retry, by the walk's direction. Decoder thread, outside the P25 SM tick guard. */
+   passes the row or keeps it for a retry, by the walk's direction. A landing under trunking is judged as the press
+   judged it (@p move_judge, from @p move_from_hz: what the press kept with the walk, issue #834). Decoder thread,
+   outside the P25 SM tick guard. */
 void dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
-                                  uint64_t list_rev, int landed);
+                                  uint64_t list_rev, int landed, int move_judge, long move_from_hz);
 /* Decoder thread: apply a posted DSD_STREAM_NOTICE_CAPTURE_STOPPED, if any (issue #806 X9): the I/Q capture is turned
    off for the session (iq_capture_requested cleared and published) and a toast says so (@p state may be NULL). Every
    stream start of the session runs it before it opens, so it never reopens a sealed capture's file. */

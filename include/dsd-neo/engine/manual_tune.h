@@ -83,6 +83,14 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
                                            uint32_t prior_applied_hz, int row, int dir, int scan_owned);
 
 /**
+ * @brief Keep with the walk noted as @p id (dsd_engine_manual_tune_note_lcn_cycle(), a walk off any scan) how its press
+ * judged the move and where it read the receiver before the tune (@p move_judge and @p move_from_hz, app-control's own
+ * values, which the engine only keeps): its late settling judges the move as the press would have (issue #834), not
+ * from where the receiver is not known. Nothing for any other tune, or one no longer noted. Decoder thread.
+ */
+void dsd_engine_manual_tune_note_walk_judge(uint64_t id, int move_judge, long move_from_hz);
+
+/**
  * @brief The row a list tune still awaits on @p state's current list and scan session (dsd_state::lcn_list_rev,
  * dsd_state::lcn_scan_session), or -1 with none: a Next or Previous walk's (DSD_MANUAL_TUNE_LCN_CYCLE) or the untyped
  * -Y step's (DSD_MANUAL_TUNE_UNTYPED_STEP), noted and not yet settled.

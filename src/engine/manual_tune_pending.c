@@ -44,6 +44,10 @@ typedef struct {
     uint64_t list_rev;
     int dir;
     int scan_owned;
+    /* How a walk's press judged its move, and where it read the receiver before the tune (app-control's values,
+       dsd_engine_manual_tune_note_walk_judge()); 0 for any other tune. */
+    int move_judge;
+    long move_from_hz;
     uint32_t session_generation;
 } dsd_manual_tune_record;
 
@@ -321,6 +325,16 @@ dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t re
 }
 
 void
+dsd_engine_manual_tune_note_walk_judge(uint64_t id, int move_judge, long move_from_hz) {
+    if (id == 0U || !manual_tune_record_live() || g_record.id != id || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE
+        || g_record.scan_owned) {
+        return;
+    }
+    g_record.move_judge = move_judge;
+    g_record.move_from_hz = move_from_hz;
+}
+
+void
 dsd_engine_manual_tune_note_rr_import(dsd_state* state, uint64_t id, uint32_t requested_hz, uint32_t prior_applied_hz,
                                       const char* failure_text, const char* landed_text) {
     if (id == 0U) {
@@ -363,6 +377,8 @@ manual_tune_keep_settled(const dsd_manual_tune_record* record) {
     g_settled.list_rev = record->list_rev;
     g_settled.dir = record->dir;
     g_settled.scan_owned = record->scan_owned;
+    g_settled.move_judge = record->move_judge;
+    g_settled.move_from_hz = record->move_from_hz;
     g_settled.id = record->id;
 }
 

@@ -2092,7 +2092,8 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
     if (!settled->scan_owned) {
         const dsd_channel_walk_settle_fn settle = dsd_channel_walk_settle_hook_get();
         if (settle) {
-            settle(opts, state, settled->row, settled->dir, settled->requested_hz, settled->list_rev, landed);
+            settle(opts, state, settled->row, settled->dir, settled->requested_hz, settled->list_rev, landed,
+                   settled->move_judge, settled->move_from_hz);
         }
         return;
     }

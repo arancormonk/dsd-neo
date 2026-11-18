@@ -126,7 +126,9 @@ dsd_channel_walk_settle_hook_set(dsd_channel_walk_settle_fn fn) { // NOLINT(misc
 
 void
 dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir, // NOLINT(misc-use-internal-linkage)
-                             uint32_t requested_hz, uint64_t list_rev, int landed) {
+                             uint32_t requested_hz, uint64_t list_rev, int landed, int move_judge, long move_from_hz) {
+    (void)move_judge;
+    (void)move_from_hz;
     (void)opts;
     (void)state;
     (void)row;

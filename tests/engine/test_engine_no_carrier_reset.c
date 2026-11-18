@@ -12330,7 +12330,9 @@ static dsd_trunk_tune_result g_settling_return_result;
    tick between the completion's consumption and the walk's handoff would. */
 static void
 settle_after_a_trunk_return(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
-                            uint64_t list_rev, int landed) {
+                            uint64_t list_rev, int landed, int move_judge, long move_from_hz) {
+    (void)move_judge;
+    (void)move_from_hz;
     (void)row;
     (void)dir;
     (void)requested_hz;

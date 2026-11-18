@@ -4241,7 +4241,7 @@ lcn_cycle_row_still_current(const dsd_opts* opts, const dsd_state* state, int ro
 
 void
 dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
-                             uint64_t list_rev, int landed) {
+                             uint64_t list_rev, int landed, int move_judge, long move_from_hz) {
     if (!opts || !state) {
         return;
     }
@@ -4261,8 +4261,9 @@ dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir,
         p25_sm_tick_guard_enter();
     }
     manual_tune_moved(opts, state);
-    /* Where the receiver was before the press's tune is not known by its late landing: counted as a leave. */
-    const manual_move_judge judge = {manual_move_judge_kind(opts, state, 0), 0L};
+    /* Judged as the press judged the move, from where it read the receiver before its tune (issue #834): the receiver
+       may have reached the row by now, so reading it here would say nothing of where it was. */
+    const manual_move_judge judge = {move_judge, move_from_hz};
     lcn_cycle_finish(opts, state, row, freq, p25_live, row_current, DSD_TRUNK_TUNE_RESULT_OK, 0U, &judge);
     if (p25_live) {
         p25_sm_tick_guard_leave();
@@ -4328,6 +4329,8 @@ lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row,
     }
     if (pending_id != 0U) {
         dsd_engine_manual_tune_note_lcn_cycle(state, pending_id, (uint32_t)freq, prior_hz, row, dir, 0);
+        /* Its late landing is judged as this press would judge it (dsd_app_channel_walk_settled()). */
+        dsd_engine_manual_tune_note_walk_judge(pending_id, judge.kind, judge.receiver_hz);
         return UI_CMD_APPLY_COMPLETED;
     }
     lcn_cycle_finish(opts, state, row, freq, p25_live, 1, tune_result, request_id, &judge);

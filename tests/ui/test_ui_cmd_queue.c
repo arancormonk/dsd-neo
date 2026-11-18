@@ -5859,6 +5859,46 @@ test_channel_walk_off_scan_rules(void) {
     return rc;
 }
 
+/* Issue #834: a Next walk off any scan under DMR trunking that lands on the frequency the receiver is already on (a
+   one-row list) leaves the carrier's calls and their voice as they were: the DMR machine judges the move from where it
+   read the receiver before the tune. A walk whose tune times out and lands late is judged from that same reading, kept
+   with the pending tune, not as a move from an unknown frequency, which holds both slots' voice until another checked
+   header. */
+static int
+test_channel_walk_off_scan_judges_a_late_landing_as_the_press(void) {
+    static const long kRows[] = {897500000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int late = 0; late <= 1; late++) {
+        init_manual_walk_context(&opts, &state, kRows, 1);
+        opts.scanner_mode = 0;
+        opts.trunk_enable = 1;
+        opts.trunk_scan_enabled = 0;
+        opts.frame_dmr = 1;
+        state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+        opts.rtlsdr_center_freq = (uint32_t)kRows[0]; /* the receiver is on the row's frequency */
+        state.dmr_enc_class_held[0] = 0U;
+        state.dmr_enc_class_held[1] = 0U;
+        if (late) {
+            manual_leg_script((uint32_t)kRows[0], RTL_STREAM_TUNE_TIMEOUT);
+        }
+        rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "same-frequency walk: next");
+        if (late) {
+            rc |= expect_int("same-frequency walk: it lands late", settle_walk_tune(&opts, &state, RTL_STREAM_TUNE_OK),
+                             DSD_MANUAL_TUNE_LANDED);
+        }
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "same-frequency walk (%s): no slot's voice held (held %u/%u)",
+                     late ? "landed late" : "landed at once", (unsigned)state.dmr_enc_class_held[0],
+                     (unsigned)state.dmr_enc_class_held[1]);
+        rc |= expect_true(tag, state.dmr_enc_class_held[0] == 0U && state.dmr_enc_class_held[1] == 0U);
+        disarm_manual_leg();
+        freeState(&state);
+    }
+    return rc;
+}
+
 /* The candidate walk's index and use counter, as one value to compare. */
 static int
 expect_candidate_walk(const char* label, const dsd_state* state, int idx, unsigned int used) {
@@ -32186,6 +32226,7 @@ main(void) {
     rc |= test_channel_cycle_with_nothing_to_land_on(1);
 #endif
     rc |= test_channel_walk_off_scan_rules();
+    rc |= test_channel_walk_off_scan_judges_a_late_landing_as_the_press();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
     rc |= test_channel_cycle_prev_walks_back(0);
