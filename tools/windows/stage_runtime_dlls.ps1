@@ -156,6 +156,82 @@ function Test-ObjdumpDelayImports {
     return ($address -ne 0) -or ($size -ne 0)
 }
 
+# The DLL each Import and DelayImport block of llvm-readobj --coff-imports names in its
+# Name line. A block without exactly one Name that is a DLL name, or a line outside the
+# blocks other than the report's header, throws: a dependency must never go unread.
+function Get-ReadobjImportNames {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    $block = $null
+    $name = $null
+    foreach ($line in $Lines) {
+        if ($null -eq $block) {
+            if ($line -match '^(Import|DelayImport) \{$') {
+                $block = $Matches[1]
+                $name = $null
+            } elseif ($line -notmatch '^((File|Format|Arch|AddressSize):\s.*)?\s*$') {
+                throw "$Tool printed a line it does not recognise for ${BinaryPath}: '$line'"
+            }
+        } elseif ($line -eq '}') {
+            if ($null -eq $name) {
+                throw "$Tool printed a $block block without a DLL name for ${BinaryPath}"
+            }
+            $names.Add($name)
+            $block = $null
+        } elseif ($line -match '^  Name:(.*)$') {
+            $value = $Matches[1].Trim()
+            if ($null -ne $name -or -not (Test-ImportName $value)) {
+                throw "$Tool printed '$($line.Trim())' in a $block block for ${BinaryPath}, which is not one DLL name"
+            }
+            $name = $value
+        }
+    }
+    if ($null -ne $block) {
+        throw "$Tool printed an unfinished $block block for ${BinaryPath}"
+    }
+    return $names.ToArray()
+}
+
+# The DLL each DLL Name line of objdump -p names. A DLL Name line without a DLL name
+# throws.
+function Get-ObjdumpImportNames {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in $Lines) {
+        if ($line -match 'DLL Name:') {
+            if ($line -notmatch '^\s*DLL Name:(.*)$' -or -not (Test-ImportName $Matches[1].Trim())) {
+                throw "$Tool printed '$($line.Trim())' for ${BinaryPath}, which names no DLL"
+            }
+            $names.Add($Matches[1].Trim())
+        }
+    }
+    return $names.ToArray()
+}
+
 # The DLLs an image imports, those it delay-loads included: dumpbin /DEPENDENTS and
 # llvm-readobj --coff-imports list both; objdump -p lists only the import table, so it
 # is used only for an image without delay imports.
@@ -204,17 +280,16 @@ function Get-DependentDllNames {
         if (-not (Test-DumpbinImageReport -Text $text)) {
             throw "dumpbin printed no dependency report of an image for ${BinaryPath}:`n$text"
         }
-        $names = Get-DumpbinDependents -Text $text
+        try {
+            $names = Get-DumpbinDependents -Text $text
+        } catch {
+            throw "dumpbin's dependency report for ${BinaryPath}: $($_.Exception.Message)"
+        }
     } elseif ($ReadobjPath) {
         if (-not (Test-ReadobjReport -Lines $lines -BinaryPath $BinaryPath)) {
             throw "$tool printed no COFF import report for ${BinaryPath}:`n$text"
         }
-        # The Name line of each Import and DelayImport block.
-        $names = $lines |
-            ForEach-Object {
-                if ($_ -match '^\s+Name:\s*(.+\.dll)\s*$') { $Matches[1] }
-            } |
-            Where-Object { $_ }
+        $names = Get-ReadobjImportNames -Lines $lines -Tool $tool -BinaryPath $BinaryPath
     } else {
         if (-not (Test-ObjdumpReport -Lines $lines -BinaryPath $BinaryPath)) {
             throw "$tool printed no PE report for ${BinaryPath}:`n$text"
@@ -222,11 +297,7 @@ function Get-DependentDllNames {
         if (Test-ObjdumpDelayImports -Lines $lines -Tool $tool -BinaryPath $BinaryPath) {
             throw "${BinaryPath} has delay-loaded DLLs, which $tool cannot list; run from a Visual Studio developer shell (dumpbin) or put llvm-readobj on PATH"
         }
-        $names = $lines |
-            ForEach-Object {
-                if ($_ -match 'DLL Name:\s*(.+\.dll)\s*$') { $Matches[1] }
-            } |
-            Where-Object { $_ }
+        $names = Get-ObjdumpImportNames -Lines $lines -Tool $tool -BinaryPath $BinaryPath
     }
 
     # An empty list is valid: the report was read, and the binary imports no DLL.

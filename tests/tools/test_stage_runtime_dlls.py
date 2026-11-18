@@ -422,6 +422,49 @@ class StageRuntimeDlls(unittest.TestCase):
                     calls = normalized((self.tools / "calls.log").read_text(encoding="utf-8")).splitlines()
                     self.assertIn(f"llvm-readobj --coff-imports {self.target}", calls)
 
+    def test_every_dependency_name_is_staged(self):
+        # A DLL name may hold spaces and need not end in .dll; each tool's report names it as it names any other.
+        names = ["Vendor Support.dll", "vendor.drv"]
+        for name in names + ["Late Loader.dll"]:
+            (self.search / name).write_bytes(pe_image(name.encode()))
+        for tool, report, delayed in (
+                ("dumpbin", lambda: dumpbin_report("dsd-neo.exe", names, delay_loaded=["Late Loader.dll"]), True),
+                ("llvm-readobj", lambda: llvm_readobj_report(names, delay_loaded=["Late Loader.dll"]), True),
+                ("objdump", lambda: gnu_objdump_report(names), False),
+                ("llvm-objdump", lambda: llvm_objdump_report(names), False)):
+            with self.subTest(tool=tool):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report())
+                empty = {"dumpbin": dumpbin_report("x.dll", []), "llvm-readobj": llvm_readobj_report([]),
+                         "objdump": gnu_objdump_report([]), "llvm-objdump": llvm_objdump_report([])}[tool]
+                for name in names + ["Late Loader.dll"]:
+                    self.respond(tool, name, out=empty)
+                rc, output = self.stage()
+                self.assertEqual(rc, 0, output)
+                expected = names + (["Late Loader.dll"] if delayed else [])
+                self.assertEqual([name for name in self.staged() if name != "dlls-manifest.txt"], sorted(expected))
+
+    def test_unread_dependency_lines_stop_staging(self):
+        # A line of a dependency list that names no DLL stops staging: skipping it could leave a DLL the binary loads
+        # out of the release.
+        bad = "C:\\vendor\\late.dll"
+        for tool, report, words in (
+                ("dumpbin", dumpbin_report("dsd-neo.exe", ["KERNEL32.dll"], delay_loaded=[bad]), [bad]),
+                ("llvm-readobj", llvm_readobj_report(["KERNEL32.dll"]).replace("  Name: KERNEL32.dll\n", ""),
+                 ["Import block without a DLL name"]),
+                ("llvm-readobj", llvm_readobj_report(["KERNEL32.dll"]).replace("KERNEL32.dll", bad), [bad]),
+                ("llvm-readobj", llvm_readobj_report(["KERNEL32.dll"]) + "Unexpected: line\n", ["Unexpected: line"]),
+                ("objdump", gnu_objdump_report(["KERNEL32.dll"]).replace("KERNEL32.dll", bad), [bad]),
+                ("llvm-objdump", llvm_objdump_report(["KERNEL32.dll"]).replace("DLL Name: KERNEL32.dll", "DLL Name:"),
+                 ["DLL Name:"])):
+            with self.subTest(tool=tool, words=words):
+                self.reset_tools()
+                self.tool(tool)
+                self.respond(tool, "dsd-neo.exe", out=report)
+                output = self.assert_refused([tool, str(self.target)] + words)
+                self.assertNotIn("Traceback", output)
+
     def test_objdump_cannot_list_delay_loaded_dependencies(self):
         # GNU and LLVM objdump -p list only the import table: for an image whose one dependency is delay-loaded they
         # exit 0, name no DLL and show a non-empty Delay Import Directory. Staging stops rather than stage nothing.

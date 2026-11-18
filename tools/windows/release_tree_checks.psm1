@@ -259,7 +259,21 @@ function Test-DumpbinImageReport {
     return ($image.Count -gt 0) -and ($summary.Count -gt 0)
 }
 
-# The DLL names dumpbin /DEPENDENTS lists, delay-loaded ones included.
+# Whether a dependency an import table names is a file name Windows can load: not empty,
+# no folder, none of the characters Windows refuses in a file name, and not ending in a
+# dot or a space. Spaces inside and any extension are allowed (Vendor Support.dll,
+# WINSPOOL.DRV).
+function Test-ImportName {
+    param(
+        [AllowEmptyString()]
+        [string]$Name
+    )
+
+    return ($Name -match '^[^<>:"/\\|?*\x00-\x1f]+$') -and ($Name -notmatch '[. ]$') -and ($Name -ne '..')
+}
+
+# The DLL names dumpbin /DEPENDENTS lists, delay-loaded ones included. Every line of a
+# dependency list is one name; a line that is not throws, so no dependency goes unread.
 function Get-DumpbinDependents {
     param(
         [AllowEmptyString()]
@@ -274,7 +288,10 @@ function Get-DumpbinDependents {
             $inList = $true
         } elseif ($trimmed -eq 'Summary') {
             $inList = $false
-        } elseif ($inList -and $trimmed -match '^[A-Za-z0-9_.+-]+\.dll$') {
+        } elseif ($inList -and $trimmed -ne '') {
+            if (-not (Test-ImportName $trimmed)) {
+                throw "dumpbin /DEPENDENTS listed '$trimmed', which is not a DLL name"
+            }
             $names.Add($trimmed)
         }
     }
@@ -282,8 +299,10 @@ function Get-DumpbinDependents {
 }
 
 # Whether dumpbin /IMPORTS shows the function imported from the DLL by name. dumpbin
-# prints each DLL's name on a line of its own, then its tables, then a "<hint> <name>"
-# line per function.
+# prints each DLL's name four spaces in, then its tables and a line per function, all
+# further in: "<hint> <name>", "<address> <hint> <name>" for a delay-loaded one, or
+# "Ordinal <n>". A line of an import section that is none of these throws, so a DLL
+# name the reader did not recognise cannot lend its functions to the DLL before it.
 function Test-DumpbinImport {
     param(
         [AllowEmptyString()]
@@ -296,19 +315,38 @@ function Test-DumpbinImport {
         [string]$Function
     )
 
+    $tables = '^[0-9A-Fa-f]+ (Import Address Table|Import Name Table|time date stamp|Index of first forwarder reference|Characteristics|Address of HMODULE|Bound Import Name Table|Unload Import Name Table)$'
+    $found = $false
+    $inSection = $false
     $current = $null
     foreach ($line in (ConvertTo-CheckLines $Text)) {
         $trimmed = $line.Trim()
-        if ($trimmed -match '^[A-Za-z0-9_.+-]+\.dll$') {
-            $current = $trimmed
-        } elseif ($trimmed -eq 'Summary') {
+        if ($trimmed -match '^Section contains the following (delay load )?imports:$') {
+            $inSection = $true
             $current = $null
-        } elseif ($current -and $current -ieq $Dll -and $trimmed -match '^[0-9A-Fa-f]+\s+(\S+)$' -and
-            $Matches[1] -ceq $Function) {
-            return $true
+        } elseif ($trimmed -eq 'Summary') {
+            $inSection = $false
+            $current = $null
+        } elseif (-not $inSection -or $trimmed -eq '') {
+            continue
+        } elseif ($line -match '^ {4}\S') {
+            if (-not (Test-ImportName $trimmed)) {
+                throw "dumpbin /IMPORTS named '$trimmed' as a DLL, which is not a DLL name"
+            }
+            $current = $trimmed
+        } elseif ($null -eq $current -or $line -notmatch '^ {5}') {
+            throw "dumpbin /IMPORTS printed a line outside any DLL's imports: '$trimmed'"
+        } elseif ($trimmed -match $tables -or $trimmed -match '^([0-9A-Fa-f]+\s+)?Ordinal\s+[0-9]+$') {
+            continue
+        } elseif ($trimmed -match '^([0-9A-Fa-f]+\s+)?[0-9A-Fa-f]+\s+(\S+)$') {
+            if ($current -ieq $Dll -and $Matches[2] -ceq $Function) {
+                $found = $true
+            }
+        } else {
+            throw "dumpbin /IMPORTS printed a line it does not recognise under ${current}: '$trimmed'"
         }
     }
-    return $false
+    return $found
 }
 
 # Runs a program in a fresh process, from a new empty working directory, with PATH
@@ -382,4 +420,4 @@ function Invoke-IsolatedProcess {
 
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
     Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Test-PeImage, Test-DumpbinImageReport,
-    Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess
+    Test-ImportName, Get-DumpbinDependents, Test-DumpbinImport, Invoke-IsolatedProcess

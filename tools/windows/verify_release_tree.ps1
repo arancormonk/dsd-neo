@@ -77,7 +77,11 @@ function Get-ImageDependents {
     if (-not (Test-DumpbinImageReport $report)) {
         throw "dumpbin did not report ${Path} as an executable or a DLL:`n$report"
     }
-    return @(Get-DumpbinDependents $report)
+    try {
+        return @(Get-DumpbinDependents $report)
+    } catch {
+        throw "dumpbin's dependency report for ${Path}: $($_.Exception.Message)"
+    }
 }
 
 function Get-IsolatedPath {
@@ -273,9 +277,15 @@ function Test-LoadPath {
     }
 
     # SoapyAirspyHF compiles its gain controls out unless its build saw the gain API.
-    $imports = Invoke-Dumpbin '/IMPORTS' (Join-Path $moduleDir $Modules['airspyhf'])
+    $airspyhfModule = Join-Path $moduleDir $Modules['airspyhf']
+    $imports = Invoke-Dumpbin '/IMPORTS' $airspyhfModule
     foreach ($function in @('airspyhf_set_hf_att', 'airspyhf_set_hf_lna', 'airspyhf_set_hf_agc')) {
-        if (-not (Test-DumpbinImport -Text $imports -Dll 'airspyhf.dll' -Function $function)) {
+        try {
+            $imported = Test-DumpbinImport -Text $imports -Dll 'airspyhf.dll' -Function $function
+        } catch {
+            throw "dumpbin's import report for ${airspyhfModule}: $($_.Exception.Message)"
+        }
+        if (-not $imported) {
             throw "airspyhfSupport.dll does not import $function from airspyhf.dll: its gain controls are compiled out"
         }
     }

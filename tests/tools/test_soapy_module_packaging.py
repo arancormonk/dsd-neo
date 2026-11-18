@@ -416,6 +416,37 @@ IMPORTS = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
                    "", "    SoapySDR.dll", "             180012100 Import Address Table", "",
                    "                         1A7 airspyhf_set_hf_lna", "", "  Summary", "", "        1000 .data", ""])
 
+# A DLL whose name holds a space, in the delay-load list and between two DLLs of the import list: its functions are
+# its own, not those of the DLL listed before it.
+DEPENDENTS_SPACED = DEPENDENTS.replace("    WS2_32.dll", "    WS2_32.dll\r\n    Vendor Support.dll")
+IMPORTS_SPACED = dumpbin(["Dump of file airspyhfSupport.dll", "", "File Type: DLL", "",
+                          "  Section contains the following imports:", "", "    airspyhf.dll",
+                          "             180012000 Import Address Table", "",
+                          "                          12 airspyhf_set_hf_att", "", "    Vendor Support.dll",
+                          "             180012100 Import Address Table", "",
+                          "                          1A airspyhf_set_hf_agc", "", "    KERNEL32.dll",
+                          "                  Ordinal   115", "",
+                          "  Section contains the following delay load imports:", "", "    Late Loader.dll",
+                          "              00000001 Characteristics", "           0000000180015000 Address of HMODULE",
+                          "                     0 time date stamp", "",
+                          "           0000000180001010               0 airspyhf_set_hf_lna", "", "  Summary", ""])
+# Reads one dumpbin report with one reader; prints the result as JSON, or the reader's refusal.
+STRICT_READER = r"""param([string]$Module, [string]$File, [string]$Dll, [string]$Function)
+Import-Module $Module -Force
+$text = [System.IO.File]::ReadAllText($File)
+try {
+    if ($Dll) {
+        $result = Test-DumpbinImport -Text $text -Dll $Dll -Function $Function
+    } else {
+        $result = @(Get-DumpbinDependents $text)
+    }
+    ConvertTo-Json -Compress -InputObject @{ result = $result }
+} catch {
+    [Console]::Out.WriteLine('FAILED: ' + $_.Exception.Message)
+    exit 1
+}
+"""
+
 # How the release scripts treat a DLL a binary imports (Get-DllKind).
 DLL_KINDS = {
     # The Windows DLLs the release imports (the 2.12.1 ZIP and a later nightly), in the spellings the import tables
@@ -716,6 +747,50 @@ class SoapyReleaseScripts(unittest.TestCase):
             "SoapySDR.dll:airspyhf_set_hf_lna": True, "airspyhf.dll:Import": False,
             "airspyhf.dll:airspyhf_set_hf_agc": False})
 
+    def read_dumpbin(self, text, dll="", function=""):
+        report = self.work / f"report-{len(list(self.work.glob('report-*.txt')))}.txt"
+        report.write_bytes(text.encode("utf-8"))
+        rc, out, err = self.pwsh(STRICT_READER, "-Module", ROOT / "tools/windows/release_tree_checks.psm1",
+                                 "-File", report, "-Dll", dll, "-Function", function)
+        if rc != 0:
+            return None, out + err
+        return json.loads(out.strip().splitlines()[-1])["result"], out + err
+
+    def test_dumpbin_readers_read_every_name(self):
+        with self.subTest(report="dependents"):
+            result, output = self.read_dumpbin(DEPENDENTS_SPACED)
+            self.assertEqual(result, ["airspyhf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll", "WS2_32.dll",
+                                      "Vendor Support.dll"], output)
+        for dll, function, imported in (("airspyhf.dll", "airspyhf_set_hf_att", True),
+                                        ("airspyhf.dll", "airspyhf_set_hf_agc", False),
+                                        ("Vendor Support.dll", "airspyhf_set_hf_agc", True),
+                                        ("airspyhf.dll", "airspyhf_set_hf_lna", False),
+                                        ("Late Loader.dll", "airspyhf_set_hf_lna", True)):
+            with self.subTest(dll=dll, function=function):
+                result, output = self.read_dumpbin(IMPORTS_SPACED, dll, function)
+                self.assertIs(result, imported, output)
+
+    def test_dumpbin_readers_refuse_lines_they_cannot_read(self):
+        # A line of a dependency or import list that the reader cannot place stops it: skipped, it could hide a DLL.
+        cases = (
+            ("a path in the dependency list", DEPENDENTS.replace("    WS2_32.dll", "    C:\\vendor\\late.dll"),
+             "", "C:\\vendor\\late.dll"),
+            ("a warning in the dependency list",
+             DEPENDENTS.replace("    WS2_32.dll", "    LINK : warning LNK4048: Invalid format file; ignored"),
+             "", "LNK4048"),
+            ("an unknown line in a DLL's imports",
+             IMPORTS.replace("                     0 time date stamp", "                  forwarded somewhere else"),
+             "airspyhf.dll", "forwarded somewhere else"),
+            ("a line before any DLL", IMPORTS.replace("    airspyhf.dll\r\n", ""), "airspyhf.dll",
+             "outside any DLL"),
+        )
+        for label, text, dll, words in cases:
+            with self.subTest(case=label):
+                result, output = self.read_dumpbin(text, dll, "airspyhf_set_hf_att" if dll else "")
+                self.assertIsNone(result, output)
+                self.assertIn("FAILED: ", output)
+                self.assertIn(words, output)
+
     def test_isolated_process_runner(self):
         module = ROOT / "tools/windows/release_tree_checks.psm1"
         child = ("import os, sys; sys.stdout.write('out one\\r\\nout two\\r\\n'); sys.stderr.write('err\\r\\n');"
@@ -990,6 +1065,20 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.write_report(tools)
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)
+
+    def test_verify_release_tree_reads_every_dependency_name(self):
+        # A DLL whose name holds a space or does not end in .dll is a dependency like any other: the tree must carry it.
+        tools, root, windows = self.release_tree()
+        for name in ("Vendor Support.dll", "vendor.drv"):
+            with self.subTest(dll=name):
+                self.report["dependents"]["SoapySDR.dll"].append(name)
+                try:
+                    self.assert_verify_refuses(tools, root, windows, f"SoapySDR.dll -> {name}")
+                finally:
+                    self.report["dependents"]["SoapySDR.dll"].remove(name)
+        # A dependency list line that is no DLL name stops the check.
+        self.report["dependents"]["SoapySDR.dll"].append("C:\\vendor\\late.dll")
+        self.assert_verify_refuses(tools, root, windows, "C:\\vendor\\late.dll", str(root / "bin/SoapySDR.dll"))
 
     def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):
         # dsd-neo.exe's native Airspy input and librtlsdr must load the airspy.dll and libusb-1.0.dll the modules and
