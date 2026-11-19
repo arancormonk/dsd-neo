@@ -935,6 +935,10 @@ The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
 file in that folder; the app's "Open source licenses" screen shows the files it
 names, after the location of the Qt source code.
 
+Release builds (`Release`, `RelWithDebInfo`, `MinSizeRel`) leave Qt's QML debugger
+and profiler plugins (`qmltooling`) out of the APK; a `Debug` build keeps them for
+QML debugging.
+
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.
 

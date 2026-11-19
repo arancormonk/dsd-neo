@@ -1,7 +1,7 @@
 Qt 6.11.3 for Android in the dsd-neo APK: notices
 
-The dsd-neo Android app (APK and Play bundle) ships 78 Qt shared libraries in lib/arm64-v8a/ (31 Qt
-modules, 21 plugins, 26 QML import plugins) and Qt's Android Java code, compiled into classes.dex. They
+The dsd-neo Android app (APK and Play bundle) ships 66 Qt shared libraries in lib/arm64-v8a/ (31 Qt
+modules, 9 plugins, 26 QML import plugins) and Qt's Android Java code, compiled into classes.dex. They
 are the unmodified binaries of the Qt 6.11.3 android_arm64_v8a kit that aqtinstall installs, built by
 The Qt Company from the qtbase, qtdeclarative and qtsvg 6.11.3 sources
 (https://download.qt.io/official_releases/qt/6.11/6.11.3/submodules/):

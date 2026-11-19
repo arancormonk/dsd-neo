@@ -27,6 +27,14 @@ qt_add_executable(
 
 set_target_properties(dsd-neo-app PROPERTIES AUTOMOC ON)
 
+# Qt's QML debugger and profiler back ends (the qmltooling plugins) serve only a debugging
+# session that a debug build opens; nothing in the app loads them. Release packages leave
+# them out, debug packages keep them. androiddeployqt deploys the plugins this command
+# selects, and it takes the same configurations as release that Qt's own deployment does.
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    qt_import_plugins(dsd-neo-app EXCLUDE_BY_TYPE qmltooling)
+endif()
+
 # display_scale.cpp re-announces the display density Qt's Android plugin changes without an event; no
 # public API raises those events, so it uses Qt's platform API.
 find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
