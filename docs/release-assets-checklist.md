@@ -29,11 +29,14 @@ resource bundle, so they travel with the binary rather than as a separate file.
   - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files, plus
         `licenses/codec2-LGPL-2.1.txt`, `licenses/codec2-NOTICES.txt` and `licenses/LicenseRef-codec2-varicode.txt` for
         the codec2 library the AppImage bundles, and `licenses/librtlsdr-GPL-2.0-or-later.txt`,
-        `licenses/librtlsdr-PATCHES.txt` and `licenses/librtlsdr-NOTICES.txt` for its librtlsdr (the AppImage job fails
-        the build if any is missing).
+        `licenses/librtlsdr-PATCHES.txt` and `licenses/librtlsdr-NOTICES.txt` for its librtlsdr, and
+        `licenses/OpenSSL-3.5-NOTICES.txt`, `licenses/Apache-2.0.txt`, `licenses/OpenSSL-AUTHORS.md` and
+        `licenses/LicenseRef-OpenSSL-KISA-SEED.txt` for its OpenSSL 3.5 libcrypto (the AppImage job fails the build if
+        any is missing).
 - [ ] Download `dsd-neo-linux-aarch64-portable-*.AppImage`.
   - [ ] Extract with `--appimage-extract` on aarch64 or in a container.
-  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files and the two codec2 notices.
+  - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files, the codec2 notices and the
+        OpenSSL 3.5 notices.
 
 ### macOS (DMG)
 

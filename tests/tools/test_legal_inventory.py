@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -242,10 +243,12 @@ class InventoryTests(unittest.TestCase):
                 self.assertNotIn("licenseComments", packages["msvc-runtime"])
                 self.assertIn("Do not modify them.", notices[runtime])
             # The custom texts of the vcpkg libraries come from their retained files: PDCurses ships in the ZIP only,
-            # OpenSSL and libsndfile in the ZIP, the APK and the DMG, the ncurses terminal database in the DMG only. codec2's varicode grant is read as the LGPL 2.1: its note
-            # file (LICENSES/LicenseRef-codec2-varicode.txt) records that reading and adds no license to any SBOM.
+            # OpenSSL and libsndfile in the ZIP, the APK and the DMG (OpenSSL's SEED terms also in the AppImage, whose
+            # OpenSSL 3.5 carries them unchanged), the ncurses terminal database in the DMG only. codec2's varicode
+            # grant is read as the LGPL 2.1: its note file (LICENSES/LicenseRef-codec2-varicode.txt) records that
+            # reading and adds no license to any SBOM.
             for custom, platforms in (("LicenseRef-PDCurses-Public-Domain", ("windows",)),
-                                      ("LicenseRef-OpenSSL-KISA-SEED", ("windows", "android", "macos")),
+                                      ("LicenseRef-OpenSSL-KISA-SEED", ("windows", "android", "macos", "linux")),
                                       ("LicenseRef-Sun-G72x", ("windows", "android", "macos")),
                                       ("LicenseRef-ncurses-terminfo", ("macos",))):
                 self.assertEqual(custom in notices, platform in platforms)
@@ -395,6 +398,59 @@ class InventoryTests(unittest.TestCase):
         self.assertIn(notice, openssl["notices"])
         self.assertEqual(openssl["windows_release"]["notices"]["licenses/OpenSSL-NOTICES.txt"], "repo:" + notice)
         self.assertFalse((ROOT / "packaging/windows/OpenSSL-NOTICES.txt").exists())
+
+    def test_appimage_openssl_is_recorded_from_its_own_pin(self):
+        # The AppImage builds libcrypto.so.3 from the OpenSSL 3.5 LTS commit OPENSSL_SHA, not from the vcpkg baseline's
+        # 3.6.5 the openssl record covers: it has a record of its own, with the version, commit and holders of that
+        # source, and the AppImage job requires its notices.
+        components = {c["id"]: c for c in self.inventory["components"]}
+        self.assertIn("appimage-openssl", legal.REQUIRED)
+        record = components["appimage-openssl"]
+        self.assertEqual((record["platforms"], record["distribution"], record["pin"]), (["linux"], ["binary"],
+                                                                                         "OPENSSL_SHA"))
+        self.assertNotIn("linux", components["openssl"]["platforms"])
+        self.assertEqual(record["license_concluded"], "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED")
+        notice = "packaging/appimage/OpenSSL-3.5-NOTICES.txt"
+        self.assertEqual(record["notices"], ["LICENSES/Apache-2.0.txt", "LICENSES/OpenSSL-AUTHORS.md", notice,
+                                             "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"])
+        text = (ROOT / notice).read_text(encoding="utf-8")
+        self.assertIn(f"release 3.5.9 (tag openssl-3.5.9, commit\n{self.pins['OPENSSL_SHA']},", text)
+        self.assertIn("3.5.9", record["name"])
+        self.assertNotIn("3.6.5", text)
+        listed, holder = {}, None
+        for line in text[text.index("besides The OpenSSL Project"):text.index("\n-----")].split("\n")[2:]:
+            if line.startswith("    "):
+                listed[holder].add(line.strip())
+            elif line:
+                holder = line
+                listed[holder] = set()
+        for holder, path in (("Copyright Nokia 2007-2019", "crypto/cmp/cmp_ctx.c"),
+                             ("Copyright Siemens AG 2018-2020", "crypto/http/http_client.c"),
+                             ("Copyright Patrick Powell 1995", "crypto/bio/bio_print.c"),
+                             ("Copyright (c) 2008 Andy Polyakov <appro@openssl.org>",
+                              "crypto/camellia/asm/cmll-x86_64.pl"),
+                             ("Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .",
+                              "crypto/camellia/camellia.c")):
+            with self.subTest(holder=holder):
+                self.assertIn(path, listed.get(holder, ()))
+        # The default build leaves out the NIST P-224/256/384/521 code, and 3.5.9 has no Cavium files; libssl's own
+        # sources are not in the AppImage.
+        for absent in ("Google Inc.", "IBM Corp.", "Cavium", "ssl/s3_lib.c"):
+            self.assertNotIn(absent, text)
+        # The Linux SBOM names the AppImage's libcrypto by its pinned commit.
+        document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+        legal.add_spdx(document, self.inventory, self.pins, "linux")
+        packages = {p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-"): p for p in document["packages"]}
+        self.assertEqual(packages["appimage-openssl"]["versionInfo"], self.pins["OPENSSL_SHA"])
+        self.assertNotIn("openssl", packages)
+        # The AppImage carries the notice under licenses/ and its job requires the four files.
+        workflow = (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8")
+        self.assertIn('cp -f packaging/appimage/OpenSSL-3.5-NOTICES.txt "$docdir/licenses/OpenSSL-3.5-NOTICES.txt"',
+                      workflow)
+        required = re.search(r"(?m)^ +required=\((.*)\)$", workflow)[1].split()
+        for name in ("licenses/OpenSSL-3.5-NOTICES.txt", "licenses/Apache-2.0.txt", "licenses/OpenSSL-AUTHORS.md",
+                     "licenses/LicenseRef-OpenSSL-KISA-SEED.txt"):
+            self.assertIn(name, required)
 
     def test_android_records_name_the_vcpkg_libraries_the_app_links(self):
         # The APK links vcpkg's static builds of these libraries into libdsd-neo-app_arm64-v8a.so, from the same

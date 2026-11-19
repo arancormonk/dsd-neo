@@ -20,8 +20,8 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
             "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "libusb",
             "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util", "codec2", "portaudio", "pdcurses", "ncurses",
-            "openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis", "opus", "mp3lame",
-            "mpg123", "qt", "ndk-runtime", "androidx", "kotlin"}
+            "openssl", "appimage-openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis",
+            "opus", "mp3lame", "mpg123", "qt", "ndk-runtime", "androidx", "kotlin"}
 # The notices each package carries for a component, under its documentation folder, and where its staging takes
 # each one from: the record's <platform>_release map. A source is the repository or the configured build tree (each
 # a relative path under it), the copyright file a vcpkg port installs (share/<port>/copyright) or the package's

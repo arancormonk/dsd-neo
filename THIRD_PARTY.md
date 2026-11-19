@@ -322,6 +322,17 @@ the DMG's staging (`cmake/stage_release_notices.cmake`) and its check (`tools/ch
   - **mpg123** (`mpg123.dll`, 1.33.7) - LGPL-2.1-only AND MirOS; `licenses/mpg123-AUTHORS.txt` and
     `licenses/mpg123-NOTICES.txt`.
 
+## AppImage OpenSSL
+
+- **OpenSSL 3.5.9** (`usr/lib/libcrypto.so.3` in the Linux AppImage; https://www.openssl.org, the 3.5 LTS commit
+  `OPENSSL_SHA` in `tools/ci-dependency-pins.env`, tag `openssl-3.5.9`) - Apache-2.0 AND CC0-1.0 AND
+  LicenseRef-OpenSSL-KISA-SEED. The AppImage builds this libcrypto itself, apart from the vcpkg 3.6.5 the other
+  packages carry, and carries no libssl from it. `licenses/OpenSSL-3.5-NOTICES.txt`
+  (`packaging/appimage/OpenSSL-3.5-NOTICES.txt`) names the holders of the sources that commit compiles for x86_64 and
+  aarch64, with their dual-license, CC0 and public-domain notes; `licenses/Apache-2.0.txt`,
+  `licenses/OpenSSL-AUTHORS.md` (the same AUTHORS.md as 3.6.5) and `licenses/LicenseRef-OpenSSL-KISA-SEED.txt` (the
+  SEED terms, unchanged in 3.5.9) complete it.
+
 ## Windows Visual C++ Runtime
 
 - **Microsoft Visual C++ runtime** (Microsoft Corporation) - Microsoft's license terms, not an open-source license. The

@@ -1421,6 +1421,44 @@
       }
     },
     {
+      "id": "appimage-openssl",
+      "name": "OpenSSL 3.5.9 libcrypto (Linux AppImage)",
+      "paths": [
+        "tools/ci-dependency-pins.env",
+        ".github/workflows/linux-appimage.yaml",
+        "packaging/appimage/OpenSSL-3.5-NOTICES.txt",
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/OpenSSL-AUTHORS.md",
+        "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "license_declared": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
+      "license_concluded": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
+      "notices": [
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/OpenSSL-AUTHORS.md",
+        "packaging/appimage/OpenSSL-3.5-NOTICES.txt",
+        "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+      ],
+      "assessment": "usr/lib/libcrypto.so.3 in the Linux AppImage: OpenSSL 3.5.9 (the 3.5 LTS line), which the AppImage job builds from the commit OPENSSL_SHA (45e844fa2a14ec92d146bd8f5778ac130b6625fb, tag openssl-3.5.9, fetched by commit and checked) for linux-x86_64 and linux-aarch64 with OpenSSL's defaults plus shared and no-tests, separately from the vcpkg baseline's 3.6.5 that the openssl record covers. dsd-neo links only libcrypto, and the AppImage carries neither libssl.so.3 nor the engine and legacy provider modules, which this build makes as separate files (the v2.12.1 AppImage, built from the same commit, carries libcrypto.so.3 reporting \"OpenSSL 3.5.9 29 Sep 2026\" and none of them). The library is under the Apache License 2.0; crypto/siphash/siphash.c is dedicated under CC0-1.0, and the SEED sources carry the Korea Information Security Agency's terms, unchanged from 3.6.5 (LicenseRef-OpenSSL-KISA-SEED). Files also offered under other terms (crypto/LPdir_unix.c, include/internal/o_dir.h, crypto/x509/v3_pci*.c, the Camellia, CRYPTOGAMS and Arm assembly) are used under the Apache License 2.0. AUTHORS.md is identical to 3.6.5's, so the AppImage carries LICENSES/OpenSSL-AUTHORS.md, with LICENSES/Apache-2.0.txt and LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt; packaging/appimage/OpenSSL-3.5-NOTICES.txt, installed as licenses/OpenSSL-3.5-NOTICES.txt, names the holders of the sources the two architectures compile, from this commit: the holders of the 3.6.5 notice less Google's and IBM's NIST curve code (not built by default), Cavium's arm64 files and Intel's 2025 files (not in 3.5.9) and the libssl sources, each with the dual-license, CC0 and public-domain notes its files carry. No patent statement beyond the Apache License's grant. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-19",
+      "notice_sha256": {
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "LICENSES/OpenSSL-AUTHORS.md": "b9f638dfc06b59c2d3b808186c3b30f713805a5db390f5b77b1703ac58acb83e",
+        "packaging/appimage/OpenSSL-3.5-NOTICES.txt": "8a5de1ffd2ce1f94f500352152703b9adf790fb6b966e00fb7796137655761f4",
+        "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt": "c99ddbef66aee7e2d676e27c81ae748d0922b3d1f831ae952d5a1786b7aaf9ab"
+      },
+      "pin": "OPENSSL_SHA"
+    },
+    {
       "id": "curl",
       "name": "libcurl",
       "paths": [
