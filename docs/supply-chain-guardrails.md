@@ -99,9 +99,11 @@ Run the affected vcpkg build or packaging workflow. Use the same process for `ar
 
 The `ncurses` overlay, which the macOS DMG builds, has no GitHub source: it is vcpkg's builtin port at the manifest
 baseline, with the same release archive and SHA512 (`ncurses-6.5.tar.gz` from invisible-island.net), changed to install
-the terminal database in the layout macOS reads. When the baseline moves, diff the builtin port against the overlay,
-carry its changes over (including a new archive and SHA512), and recheck the notices the DMG ships for ncurses and its
-database.
+the terminal database in the layout macOS reads. `NCURSES_VERSION` and `NCURSES_TARBALL_SHA512` pin that archive: the
+overlay's `vcpkg.json` version names it (`ncurses-${VERSION}.tar.gz`) and its portfile's SHA512 must match, which
+`tools/check_vcpkg_overlay_pins.sh` checks (`--fix` rewrites both from the pins). When the baseline moves, diff the
+builtin port against the overlay, carry its changes over (including a new archive: update both pins), and recheck the
+notices the DMG ships for ncurses and its database.
 
 For a tag, pin the commit it points to (`git ls-remote https://github.com/<repo> 'refs/tags/<tag>^{}'`, or the plain
 tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` overlay builds the

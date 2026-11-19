@@ -9,11 +9,12 @@ usage() {
 Usage: tools/check_vcpkg_overlay_pins.sh [--fix]
 
 Checks that the GitHub source pins of the vcpkg overlays (mbe-neo, codec2,
-portaudio, rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) match
+portaudio, rtlsdr, airspy, soapysdr, the soapy-* modules and hackrf) and the
+ncurses overlay's release archive (its manifest's version and its SHA512) match
 tools/ci-dependency-pins.env, and that the airspy and rtlsdr overlays apply
 dsd-neo's patch series (tools/usb_dependency_patches.sh) with its current digest.
-With --fix, rewrites mirrored REF and SHA512 lines and the recorded patch digests
-in the overlay portfiles.
+With --fix, rewrites mirrored REF and SHA512 lines, the ncurses manifest's
+version and the recorded patch digests in the overlays.
 USAGE
 }
 
@@ -175,6 +176,67 @@ check_port() {
   fi
 }
 
+# An overlay that downloads a release archive (vcpkg_download_distfile) rather than
+# a GitHub commit: its manifest's "version" names the archive, which the portfile
+# reaches through ${VERSION}, and its SHA512 line pins the archive's content.
+check_distfile_port() {
+  local port="$1"
+  local version_var="$2"
+  local sha512_var="$3"
+  local portfile="vcpkg-ports/${port}/portfile.cmake"
+  local manifest="vcpkg-ports/${port}/vcpkg.json"
+  local want_version="${!version_var:-}"
+  local want_sha512="${!sha512_var:-}"
+  local port_version=""
+  local port_sha512=""
+  local tmp=""
+
+  if [[ ! -f "$portfile" || ! -f "$manifest" ]]; then
+    echo "Missing ${portfile} or ${manifest}." >&2
+    failed=1
+    return
+  fi
+  if [[ ! "$want_version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+    echo "${version_var} must be a dotted version; got '${want_version}'." >&2
+    failed=1
+    return
+  fi
+  validate_hex "$sha512_var" "$want_sha512" 128 || return
+
+  if ! grep -q "vcpkg_download_distfile(" "$portfile" || ! grep -q "/${port}-\${VERSION}\.tar\.gz\"" "$portfile"; then
+    echo "${portfile}: expected vcpkg_download_distfile() of ${port}-\${VERSION}.tar.gz." >&2
+    failed=1
+  fi
+
+  port_version=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$manifest")
+  if [[ "$port_version" != "$want_version" ]]; then
+    echo "${manifest}: version ${port_version:-<missing>} does not match ${version_var}=${want_version}." >&2
+    if [[ $fix -eq 1 && -n "$port_version" ]]; then
+      tmp=$(mktemp)
+      sed "s/^  \"version\": \"${port_version}\",\$/  \"version\": \"${want_version}\",/" "$manifest" > "$tmp"
+      mv "$tmp" "$manifest"
+      echo "Updated ${manifest} from ${pins_file}."
+      fixed=1
+    else
+      failed=1
+    fi
+  fi
+
+  if ! port_sha512=$(extract_port_value SHA512 "$portfile"); then
+    echo "${portfile}: missing SHA512 line." >&2
+    failed=1
+  elif [[ "$port_sha512" != "$want_sha512" ]]; then
+    echo "${portfile}: SHA512 ${port_sha512} does not match ${sha512_var}=${want_sha512}." >&2
+    if [[ $fix -eq 1 && "$port_sha512" =~ ^[0-9A-Fa-f]+$ ]]; then
+      rewrite_portfile "$portfile" "" "$want_sha512"
+      echo "Updated ${portfile} from ${pins_file}."
+      fixed=1
+    else
+      failed=1
+    fi
+  fi
+}
+
 # The words of a portfile's set(<name> ...) call, up to its closing parenthesis.
 extract_port_set() {
   local name="$1"
@@ -292,6 +354,7 @@ check_port "soapysdr" "pothosware/SoapySDR" "SOAPY_SDR_SHA" "SOAPY_SDR_TARBALL_S
 check_port "soapy-airspy" "pothosware/SoapyAirspy" "SOAPY_AIRSPY_SHA" "SOAPY_AIRSPY_TARBALL_SHA512"
 check_port "soapy-hackrf" "pothosware/SoapyHackRF" "SOAPY_HACKRF_SHA" "SOAPY_HACKRF_TARBALL_SHA512"
 check_port "hackrf" "greatscottgadgets/hackrf" "HACKRF_SHA" "HACKRF_TARBALL_SHA512"
+check_distfile_port "ncurses" "NCURSES_VERSION" "NCURSES_TARBALL_SHA512"
 check_port_patches "rtlsdr" "librtlsdr"
 check_port_patches "airspy" "libairspy"
 

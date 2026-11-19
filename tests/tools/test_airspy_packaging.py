@@ -388,7 +388,7 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertIn(expected, packages)
                 self.assertNotIn("airspy-dev", packages)
 
-    def test_m8_overlay_drift_is_rejected_and_repaired(self):
+    def copy_overlay_pin_check(self):
         for name in ("tools/ci-dependency-pins.env", "tools/check_vcpkg_overlay_pins.sh",
                      "tools/usb_dependency_patches.sh"):
             dest = self.work / name
@@ -396,7 +396,37 @@ class AirspyPackaging(unittest.TestCase):
             shutil.copy2(ROOT / name, dest)
         shutil.copytree(ROOT / "vcpkg-ports", self.work / "vcpkg-ports")
         shutil.copytree(PATCHES, self.work / "android/third_party/patches")
-        command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
+        return ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
+
+    def test_ncurses_archive_drift_is_rejected_and_repaired(self):
+        # The ncurses overlay downloads a release archive, not a GitHub commit: its
+        # manifest's version names the archive and its SHA512 pins it.
+        command = self.copy_overlay_pin_check()
+        self.assert_success(run(command, cwd=self.work))
+        port = self.work / "vcpkg-ports/ncurses/portfile.cmake"
+        manifest = self.work / "vcpkg-ports/ncurses/vcpkg.json"
+        port_text = port.read_text()
+        manifest_text = manifest.read_text()
+        self.assertIn('/ncurses-${VERSION}.tar.gz"', port_text)
+        cases = (
+            (port, port_text, re.sub(r"(?m)^(\s*SHA512 )\S+", rf"\g<1>{'0' * 128}", port_text),
+             "vcpkg-ports/ncurses/portfile.cmake: SHA512"),
+            (manifest, manifest_text, manifest_text.replace('"version": "6.5"', '"version": "6.6"'),
+             "vcpkg-ports/ncurses/vcpkg.json: version 6.6 does not match NCURSES_VERSION"),
+        )
+        for path, original, drifted, message in cases:
+            with self.subTest(path=path.name):
+                self.assertNotEqual(drifted, original)
+                path.write_text(drifted)
+                rejected = run(command, cwd=self.work)
+                self.assertEqual(rejected.returncode, 1, rejected.stdout)
+                self.assertIn(message, rejected.stdout)
+                self.assert_success(run(command + ["--fix"], cwd=self.work))
+                self.assertEqual(path.read_text(), original)
+                self.assert_success(run(command, cwd=self.work))
+
+    def test_m8_overlay_drift_is_rejected_and_repaired(self):
+        command = self.copy_overlay_pin_check()
         self.assert_success(run(command, cwd=self.work))
         for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "soapy-hackrf", "codec2",
                           "portaudio"):
