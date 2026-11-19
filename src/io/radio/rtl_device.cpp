@@ -10649,27 +10649,31 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
  * not pay a driver round-trip; `rtl_device_store_soapy_config_request` clears the
  * cache because driver settings (for example the SDDC ADC clock) can move the grid.
  */
+/* No limit on the rate a write query answers with (rtl_device_rate_written_for()): above every uint32_t limit, so a
+   caller's UINT32_MAX stays a limit like any other (rtl_device_rate_written_within()). */
+static const uint64_t kNoRateLimit = UINT64_MAX;
+
 #ifdef USE_SOAPYSDR
 /* The rate a write programs for @p requested among the advertised @p listed rates and @p ranges: with no limit
- * (@p max_hz UINT32_MAX) the setter's own choice (soapy_nearest_sample_rate(), as rtl_device_set_sample_rate() writes),
- * else the nearest advertised point within the limit (soapy_nearest_sample_rate_within(), a point the setter keeps).
- * @p out_found false when nothing advertised is within it. */
+ * (@p limit_hz kNoRateLimit) the setter's own choice (soapy_nearest_sample_rate(), as rtl_device_set_sample_rate()
+ * writes), else the nearest advertised point within the limit (soapy_nearest_sample_rate_within(), a point the setter
+ * keeps). @p out_found false when nothing advertised is within it. */
 static double
-soapy_rate_written(uint32_t requested, uint32_t max_hz, const std::vector<double>& listed,
+soapy_rate_written(uint32_t requested, uint64_t limit_hz, const std::vector<double>& listed,
                    const std::vector<dsdneo::SoapyRange>& ranges, bool* out_found) {
-    if (max_hz == UINT32_MAX) {
+    if (limit_hz == kNoRateLimit) {
         bool adjusted = false;
         *out_found = true;
         return dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
     }
-    return dsdneo::soapy_nearest_sample_rate_within((double)requested, (double)max_hz, listed, ranges, out_found);
+    return dsdneo::soapy_nearest_sample_rate_within((double)requested, (double)limit_hz, listed, ranges, out_found);
 }
 
 /* The SoapySDR half of rtl_device_supported_rate(): the advertised rate for @p requested, with the profile's
  * preference (cached per request while the device stays configured) or without it, the rate a write programs, among
  * the advertised rates not above @p max_hz. */
 static int
-soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_preference, uint32_t max_hz,
+soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_preference, uint64_t limit_hz,
                      uint32_t* out_actual) {
     /* The cache is read and refreshed under the Soapy lock so concurrent callers never
        observe a torn requested/actual pair. */
@@ -10688,7 +10692,7 @@ soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_prefe
         double applied = with_preference
                              ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested,
                                                                  listed, ranges, &adjusted)
-                             : soapy_rate_written(requested, max_hz, listed, ranges, &found);
+                             : soapy_rate_written(requested, limit_hz, listed, ranges, &found);
         if (!found || !(applied > 0.0) || applied > (double)UINT32_MAX) {
             return -1;
         }
@@ -10708,11 +10712,11 @@ soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_prefe
 #endif
 
 /* The rate for @p requested: with @p with_preference the rate the stream plans with (a native Airspy's own, a SoapySDR
- * profile's preference), else the rate a write programs, among those not above @p max_hz. */
+ * profile's preference), else the rate a write programs, among those not above @p limit_hz (kNoRateLimit: none). */
 static int
 // cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
 rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual, bool with_preference,
-                          uint32_t max_hz) {
+                          uint64_t limit_hz) {
     /* A native Airspy picks its own rate, which the stream plans with; a write programs the rate it is given. */
     if (with_preference && dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
         *out_actual = dev->rate;
@@ -10722,14 +10726,14 @@ rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* 
         return -1;
     }
     if (dev->backend != RTL_BACKEND_SOAPY) {
-        if (requested > max_hz) {
+        if (requested > limit_hz) {
             return -1;
         }
         *out_actual = requested;
         return 0;
     }
 #ifdef USE_SOAPYSDR
-    return soapy_supported_rate(dev, requested, with_preference, max_hz, out_actual);
+    return soapy_supported_rate(dev, requested, with_preference, limit_hz, out_actual);
 #else
     (void)with_preference;
     return -1;
@@ -10738,7 +10742,7 @@ rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* 
 
 int
 rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
-    return rtl_device_supported_rate(dev, requested, out_actual, true, UINT32_MAX);
+    return rtl_device_supported_rate(dev, requested, out_actual, true, kNoRateLimit);
 }
 
 /**
@@ -10746,7 +10750,7 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
  */
 int
 rtl_device_rate_written_for(struct rtl_device* dev, uint32_t requested, uint32_t* out_written) {
-    return rtl_device_supported_rate(dev, requested, out_written, false, UINT32_MAX);
+    return rtl_device_supported_rate(dev, requested, out_written, false, kNoRateLimit);
 }
 
 /**

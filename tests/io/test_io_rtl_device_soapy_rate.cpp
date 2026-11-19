@@ -1022,6 +1022,14 @@ test_write_query_follows_the_setter(void) {
         expect_true("the write takes", rtl_device_set_sample_rate(dev, c.request_hz) == 0);
         expect_eq("the setter programs the rate", fake.rate_hz, c.want_hz);
         expect_eq("the query predicted it", (double)predicted_hz, c.want_hz);
+        /* The bounded query compares listed rates with range points whatever its limit, UINT32_MAX included. */
+        uint32_t within_max_hz = 0U;
+        uint32_t within_below_hz = 0U;
+        expect_true("the bounded query answers at UINT32_MAX",
+                    rtl_device_rate_written_within(dev, c.request_hz, UINT32_MAX, &within_max_hz) == 0);
+        expect_true("and one below it",
+                    rtl_device_rate_written_within(dev, c.request_hz, UINT32_MAX - 1U, &within_below_hz) == 0);
+        expect_eq("the same answer at both limits", (double)within_max_hz, (double)within_below_hz);
         rtl_device_test_soapy_gain_device_free(dev);
     }
 }
