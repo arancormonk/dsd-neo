@@ -45,7 +45,8 @@ resource bundle, so they travel with the binary rather than as a separate file.
         library vcpkg builds, `licenses/libusb-macos-NOTICES.txt`, `licenses/portaudio-macos-NOTICES.txt`,
         `licenses/curl-macos-NOTICES.txt`, `licenses/X11-distribute-modifications-variant.txt` and
         `licenses/LicenseRef-ncurses-terminfo.txt`. The DMG job stages them from those maps
-        (`cmake/stage_release_notices.cmake`).
+        (`cmake/stage_release_notices.cmake`) and refuses a staged tree or a mounted DMG without one, or with one
+        that differs from its source (`tools/check_release_notices.py`).
   - [ ] Confirm every dylib in `dsd-neo-macos/lib/` comes from vcpkg or is the patched librtlsdr or libairspy (no
         PulseAudio, libintl or other Homebrew library), and that `share/terminfo/` holds the bundled database.
 

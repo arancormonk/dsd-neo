@@ -25831,6 +25831,14 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_legal_inventory.py
     )
+    # The release notice check: a package's documentation folder holds every
+    # notice its records' <platform>_release maps name, with its source's content.
+    add_test(
+        NAME TOOLS_CHECK_RELEASE_NOTICES
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_release_notices.py
+    )
     # The macOS DMG's dependency check, with a fake otool: every staged file is
     # built for the triplet's deployment target and loads only staged libraries.
     add_test(
