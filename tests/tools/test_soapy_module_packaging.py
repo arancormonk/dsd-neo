@@ -83,7 +83,7 @@ VCPKG_LIBRARY_NOTICES = {
     "portaudio.dll": {"portaudio-copyright.txt": "vcpkg:portaudio",
                       "portaudio-NOTICES.txt": "repo:packaging/windows/portaudio-NOTICES.txt"},
     "pdcurses.dll": {"LicenseRef-PDCurses-Public-Domain.txt": "repo:LICENSES/LicenseRef-PDCurses-Public-Domain.txt"},
-    "libcrypto-3-x64.dll": {"openssl-copyright.txt": "vcpkg:openssl",
+    "libcrypto-3-x64.dll": {"openssl-copyright.txt": "vcpkg:openssl", "Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
                             "OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
                             "OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
                             "LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"},

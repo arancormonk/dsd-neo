@@ -1196,7 +1196,8 @@
         "LICENSES/OpenSSL-NOTICES.txt",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "LICENSES/Apache-2.0.txt"
       ],
       "distribution": [
         "binary"
@@ -1208,6 +1209,7 @@
       "license_declared": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
       "license_concluded": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
       "notices": [
+        "LICENSES/Apache-2.0.txt",
         "LICENSES/OpenSSL-AUTHORS.md",
         "LICENSES/OpenSSL-NOTICES.txt",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
@@ -1218,6 +1220,7 @@
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "LICENSES/OpenSSL-AUTHORS.md": "b9f638dfc06b59c2d3b808186c3b30f713805a5db390f5b77b1703ac58acb83e",
         "LICENSES/OpenSSL-NOTICES.txt": "0f7cc1fc0e7f4c6c5c335096540aa52268eff68b25999c8600a6820a1632c044",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt": "c99ddbef66aee7e2d676e27c81ae748d0922b3d1f831ae952d5a1786b7aaf9ab"
@@ -1230,7 +1233,8 @@
           "licenses/openssl-copyright.txt": "vcpkg:openssl",
           "licenses/OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
           "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
-          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt",
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt"
         }
       },
       "android_release": {
@@ -1238,7 +1242,8 @@
           "licenses/openssl-copyright.txt": "vcpkg:openssl",
           "licenses/OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
           "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
-          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt",
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt"
         }
       }
     },
@@ -1751,6 +1756,184 @@
         "notices": {
           "licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt": "repo:packaging/windows/LicenseRef-Microsoft-Visual-CPP-Runtime.txt",
           "legal/msvc-runtime.md": "legal-component"
+        }
+      }
+    },
+    {
+      "id": "qt",
+      "name": "Qt 6.11.3 for Android",
+      "paths": [
+        ".github/workflows/android-ci.yaml",
+        ".github/requirements/aqtinstall.txt",
+        "tools/ci-dependency-pins.env",
+        "android/CMakeLists.txt",
+        "android/package/build.gradle",
+        "android/package/qt-rules.pro",
+        "packaging/android/Qt-NOTICES.txt",
+        "LICENSES/LGPL-3.0-only.txt",
+        "LICENSES/MPL-2.0.txt",
+        "LICENSES/Unicode-3.0.txt",
+        "LICENSES/LicenseRef-SHA1-Public-Domain.txt",
+        "LICENSES/LicenseRef-ICC-License.txt"
+      ],
+      "distribution": [
+        "source",
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "(LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only) AND BSD-3-Clause AND BSD-3-Clause WITH PCRE2-exception AND BSD-2-Clause AND Unicode-3.0 AND (CC0-1.0 OR Apache-2.0) AND CC0-1.0 AND LicenseRef-SHA1-Public-Domain AND MIT AND Apache-2.0 AND OGL-UK-3.0 AND Libpng AND libpng-2.0 AND (FTL OR GPL-2.0-or-later) AND FTL AND MIT-open-group AND MIT-Modern-Variant AND LicenseRef-ICC-License AND Imlib2 AND X11 AND HPND AND MIT-Khronos-old AND (Apache-2.0 OR MIT) AND MPL-2.0 AND IJG AND HPND-sell-variant",
+      "license_concluded": "LGPL-3.0-only AND BSD-3-Clause AND BSD-3-Clause WITH PCRE2-exception AND BSD-2-Clause AND Unicode-3.0 AND CC0-1.0 AND LicenseRef-SHA1-Public-Domain AND MIT AND Apache-2.0 AND OGL-UK-3.0 AND Libpng AND libpng-2.0 AND FTL AND MIT-open-group AND MIT-Modern-Variant AND LicenseRef-ICC-License AND Imlib2 AND X11 AND HPND AND MIT-Khronos-old AND MPL-2.0 AND IJG AND HPND-sell-variant",
+      "notices": [
+        "LICENSE",
+        "LICENSES/LGPL-3.0-only.txt",
+        "packaging/android/Qt-NOTICES.txt",
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/MPL-2.0.txt",
+        "LICENSES/Unicode-3.0.txt",
+        "LICENSES/LicenseRef-SHA1-Public-Domain.txt",
+        "LICENSES/LicenseRef-ICC-License.txt"
+      ],
+      "assessment": "The Qt libraries, plugins and QML import plugins in the APK's lib/arm64-v8a/ (31 Qt6 modules, 21 plugins, 26 QML plugins; android-ci installs Qt 6.11.3 for android_arm64_v8a with aqtinstall and androiddeployqt bundles them unmodified) and Qt's Android Java code, which R8 compiles with the app's into classes.dex. Each of the 78 libraries matches by SHA-1 a file of The Qt Company's build SBOM for that kit, and the files of its source SBOMs are those of the qtbase, qtdeclarative and qtsvg 6.11.3 source archives (SHA-256 46de0710b594945a5d446ae44354daa386141c6903c53781b2ca547bc62f8f8f, 6d6db328a02ae3bb0b1e6944aeef8dfe44cd6b55ab59b1708bbf0400f5759cb5, 9bdf6fa4b5a2d91c3eaa2edd12263fdff0ae19d0ac25d3c99946cd4189a07123; tags 138f955f, 95e4cecc, f5d99721). Every shipped module is offered as LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only (or commercially); dsd-neo uses LGPL-3.0-only. No GPL-only module or file ships: qmltoolingsettings and the test utilities are not linked, and none of the modules Qt 6.11 lists as GPL-only is used. The binding class QtApplication is BSD-3-Clause. The binaries also contain third-party code that Qt's qt_attribution.json files name and the Android build compiles: PCRE2 10.49 (BSD-3-Clause WITH PCRE2-exception, SLJIT BSD-2-Clause), Unicode UCD 36 and CLDR 48.2 data (Unicode-3.0), SipHash, MD4, MD5, SHA-3 Keccak, tl::expected and BLAKE2 (CC0-1.0), Dominik Reichl's SHA-1 (public domain), the SHA-3 endian header (BSD-2-Clause), RFC 6234, double-conversion 3.4.0, Penner's easing equations and AGLFN 1.7 (BSD-3-Clause), TinyCBOR 7.0, forkfd, MD4C 0.6.0, Vulkan Memory Allocator 3.2.1, WebGradients, Yoga 2.0.1, the Angular Material shadow values and the Vulkan registry (MIT), Apache Tika's MIME definitions (Apache-2.0, with PRONOM-derived entries under OGL-UK-3.0 per Tika's NOTICE), Google's emoji segmenter and AOSP's nine-patch header (Apache-2.0), libpng 1.6.59, FreeType 2.15.0 with its BDF and PCF drivers and Qt's qgrayraster.c (used under the FTL; FreeType also allows GPL-2.0 or later), HarfBuzz 14.6.0 (MIT-Modern-Variant), the sRGB2014 ICC profile, the Imlib2-derived image scaler, X Consortium region code (X11, HPND), Khronos GL headers (MIT-Khronos-old), the Public Suffix List (MPL-2.0) with libpsl's lookup (BSD-3-Clause), libjpeg-turbo 3.2.0 (IJG AND BSD-3-Clause), JavaScriptCore's macro assembler and YARR (BSD-2-Clause) and XSVG (HPND-sell-variant); FreeType's bundled zlib is not built (Qt uses the platform libz). Where Qt's metadata and the source differ, the source is recorded (PCRE2, FreeType's GPL option, HarfBuzz). The APK carries the LGPL-3.0 text, the GPL text (LICENSE) and packaging/android/Qt-NOTICES.txt, which reproduces Qt's notice, the holders of the compiled sources and each third-party notice from the archives, plus the Apache-2.0, MPL-2.0, Unicode-3.0, SHA-1 and ICC texts. The app's licences screen does not show them yet. android/package/build.gradle is Qt's androiddeployqt template (BSD-3-Clause) with dsd-neo changes. Corresponding source (the Qt archives, and the Public Suffix List's source form) is open (CORRESPONDING-SOURCE): Qt's source is not yet offered with the APK.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSE": "f817886ee6bb65ed3098a7987b1e9781653d15c71f85589ce0d2af663c66d373",
+        "LICENSES/LGPL-3.0-only.txt": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+        "packaging/android/Qt-NOTICES.txt": "3673af89ddbc6d6e95b19b183017f6c9c2d920e7b8116a52fe08274d23c4531e",
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "LICENSES/MPL-2.0.txt": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+        "LICENSES/Unicode-3.0.txt": "80bb6294022d8764adb36a9d65ebb6bd94efb1865918a71e31e6c247607d7634",
+        "LICENSES/LicenseRef-SHA1-Public-Domain.txt": "65d86b8ec6b1cd8b8f6e64fd8710274ba00d6a3c520e00dfdcd1c3d2071f3305",
+        "LICENSES/LicenseRef-ICC-License.txt": "9e34ff47b3a44814e183342e7e198d127a6740e29d20e8381fba7688dafc79dd"
+      },
+      "android_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/LGPL-3.0-only.txt": "repo:LICENSES/LGPL-3.0-only.txt",
+          "licenses/Qt-NOTICES.txt": "repo:packaging/android/Qt-NOTICES.txt",
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
+          "licenses/MPL-2.0.txt": "repo:LICENSES/MPL-2.0.txt",
+          "licenses/Unicode-3.0.txt": "repo:LICENSES/Unicode-3.0.txt",
+          "licenses/LicenseRef-SHA1-Public-Domain.txt": "repo:LICENSES/LicenseRef-SHA1-Public-Domain.txt",
+          "licenses/LicenseRef-ICC-License.txt": "repo:LICENSES/LicenseRef-ICC-License.txt"
+        }
+      }
+    },
+    {
+      "id": "ndk-runtime",
+      "name": "Android NDK r28c C++ runtime (LLVM libc++)",
+      "paths": [
+        "tools/ci-dependency-pins.env",
+        ".github/workflows/android-ci.yaml",
+        "packaging/android/NDK-runtime-NOTICES.txt",
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/LLVM-exception.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "Apache-2.0 WITH LLVM-exception AND (NCSA OR MIT) AND BSL-1.0 AND BSD-2-Clause",
+      "license_concluded": "Apache-2.0 WITH LLVM-exception AND (NCSA OR MIT) AND BSL-1.0 AND BSD-2-Clause",
+      "notices": [
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/LLVM-exception.txt",
+        "packaging/android/NDK-runtime-NOTICES.txt"
+      ],
+      "assessment": "lib/arm64-v8a/libc++_shared.so in the APK: the NDK r28c (28.2.13676358, ANDROID_NDK_VERSION) file sysroot/usr/lib/aarch64-linux-android/libc++_shared.so, unmodified except for the debug information AGP strips. It holds LLVM's libc++, libc++abi and libunwind and compiler-rt builtins, built by Google from llvm-project 3b5e7c83a6e226d5bd7ed2e9b67449b64812074c with toolchain/llvm_android e727bfb0 patches (clang r530567). They are under the Apache License 2.0 with LLVM Exceptions; code contributed before LLVM's relicensing is also under the legacy NCSA or MIT terms, and libc++'s Ryu files keep Ulf Adams' Boost licence (no binary notice required). The exception does not cover the shared library itself, which ships as LLVM's own object code, so the APK carries the Apache-2.0 and LLVM exception texts and the legacy notices; it does cover libc++ code inlined into dsd-neo's and Qt's libraries. Every NDK-built library in the APK also contains bionic's crtbegin_so/crtend_so objects (BSD-2-Clause, The Android Open Source Project), whose notice packaging/android/NDK-runtime-NOTICES.txt reproduces with the four legacy LLVM sections. The Android SDK terms (section 3.5) leave these components to their open-source licences.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "LICENSES/LLVM-exception.txt": "ddabf2be4dbf3d983bce354836ed5b72221aba21e807e308948f182423c79306",
+        "packaging/android/NDK-runtime-NOTICES.txt": "770666b740b7c206bdcd3fb4a4c2f3c8d86aec4fc0e394b034a5b9d98016dbc1"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
+          "licenses/LLVM-exception.txt": "repo:LICENSES/LLVM-exception.txt",
+          "licenses/NDK-runtime-NOTICES.txt": "repo:packaging/android/NDK-runtime-NOTICES.txt"
+        }
+      }
+    },
+    {
+      "id": "androidx",
+      "name": "AndroidX libraries (androidx.core 1.17.0 and its dependencies)",
+      "paths": [
+        "android/package/build.gradle",
+        "packaging/android/AndroidX-NOTICES.txt",
+        "LICENSES/Apache-2.0.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "notices": [
+        "LICENSES/Apache-2.0.txt",
+        "packaging/android/AndroidX-NOTICES.txt"
+      ],
+      "assessment": "The Java libraries android/package/build.gradle's androidx.core:core:1.17.0 brings into classes.dex, which R8 shrinks and merges with the app's code: androidx core 1.17.0, core-viewtree 1.0.0, annotation-jvm 1.8.1, annotation-experimental 1.4.1, arch.core core-common and core-runtime 2.2.0, collection-jvm 1.4.2, concurrent-futures 1.1.0, interpolator 1.0.0, lifecycle-common and lifecycle-runtime 2.6.2, profileinstaller 1.3.0, startup-runtime 1.1.1, tracing 1.2.0 and versionedparcelable 1.1.1 (The Android Open Source Project), Guava's listenablefuture 1.0 (The Guava Authors) and JSpecify 1.0.0 (The JSpecify Authors), at the versions AGP 9.0.0 resolves from Google Maven and Maven Central (the POMs, the androidx.core Gradle module and the APK's META-INF version files agree). Each POM and every source file header grants the Apache License 2.0; none of the projects has a NOTICE file. AGP drops the licence file the AARs carry, so the APK carries the Apache-2.0 text and packaging/android/AndroidX-NOTICES.txt, which lists the artifacts, versions, holders and sources.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "packaging/android/AndroidX-NOTICES.txt": "84c7c39d5e39862218a9122748e909b3d5324bdc5ccde73dc774e08b939cf326"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
+          "licenses/AndroidX-NOTICES.txt": "repo:packaging/android/AndroidX-NOTICES.txt"
+        }
+      }
+    },
+    {
+      "id": "kotlin",
+      "name": "Kotlin standard library 2.2.10 and kotlinx.coroutines 1.8.1",
+      "paths": [
+        "android/package/build.gradle",
+        "android/package/src/",
+        "packaging/android/Kotlin-NOTICES.txt",
+        "LICENSES/Apache-2.0.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "android"
+      ],
+      "license_declared": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0",
+      "license_concluded": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0",
+      "notices": [
+        "LICENSES/Apache-2.0.txt",
+        "packaging/android/Kotlin-NOTICES.txt"
+      ],
+      "assessment": "The Kotlin runtime in classes.dex, shrunk by R8: kotlin-stdlib 2.2.10 (the Kotlin version AGP 9.0.0's built-in Kotlin compiles the app's Kotlin sources with), kotlinx-coroutines-core-jvm and kotlinx-coroutines-android 1.8.1 (required by androidx.core 1.17.0 and lifecycle 2.6.2) and org.jetbrains:annotations 23.0.0, all from Maven Central under the Apache License 2.0 (JetBrains s.r.o. and contributors). Kotlin's license/README.md at v2.2.10 names third-party code in the JVM standard library: GWT-derived collections and Guava-derived unsigned arithmetic (Apache-2.0), ThreeTenBp-derived kotlin.time.Instant (BSD-3-Clause) and Boost-derived inverse hyperbolic functions (BSL-1.0). packaging/android/Kotlin-NOTICES.txt reproduces kotlinx.coroutines' NOTICE (Apache-2.0 section 4(d)), Kotlin's NOTICE, the ThreeTenBp licence and the other origins; the APK also carries the Apache-2.0 text.",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "packaging/android/Kotlin-NOTICES.txt": "e9ddbf1f11efb259f041f8ba75ff714e43a8909938eaa6979398794da7208022"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
+          "licenses/Kotlin-NOTICES.txt": "repo:packaging/android/Kotlin-NOTICES.txt"
         }
       }
     },

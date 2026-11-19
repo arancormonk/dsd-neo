@@ -316,6 +316,33 @@ sources both builds compile, the arm64 files of OpenSSL and Opus included.
   `licenses/LicenseRef-Microsoft-Visual-CPP-Runtime.txt`. `legal/msvc-runtime.md` quotes Microsoft's terms and records
   how the release meets them and the GPL question it accepts as a risk.
 
+## Android App Runtime
+
+- **Qt 6.11.3** (The Qt Company Ltd. and other contributors; https://www.qt.io, sources
+  https://download.qt.io/official_releases/qt/6.11/6.11.3/submodules/) - the Android app ships Qt's Core, Gui, Network,
+  OpenGL, Qml, Quick, Quick Controls, Quick Dialogs, Quick Effects, Quick Layouts, Quick Shapes, Svg and Labs
+  FolderListModel libraries, their plugins and QML plugins, and Qt's Android Java code, unmodified from the Qt 6.11.3
+  android_arm64_v8a kit. Used under the GNU LGPL version 3 (`licenses/LGPL-3.0-only.txt`; the GPL text is `LICENSE`).
+  Qt contains third-party code (PCRE2, FreeType, HarfBuzz, libpng, libjpeg-turbo, the Public Suffix List (MPL-2.0),
+  Unicode data and others) whose notices are in `licenses/Qt-NOTICES.txt` (`packaging/android/Qt-NOTICES.txt`). Since
+  dsd-neo's source and build scripts are public, the app can be rebuilt against a modified Qt; Qt's own source is not
+  yet offered with the APK (`legal/status.md`). Portions of this software are copyright © 2026 The FreeType Project
+  (https://freetype.org). All rights reserved. This software is based in part on the work of the Independent JPEG
+  Group.
+- **LLVM libc++ (Android NDK r28c)** - `libc++_shared.so`, with libc++abi, libunwind and compiler-rt builtins;
+  Apache-2.0 with LLVM exceptions (`licenses/Apache-2.0.txt`, `licenses/LLVM-exception.txt`), plus the legacy LLVM
+  notices (`licenses/NDK-runtime-NOTICES.txt`, which also holds the notice of Android's bionic startup code linked into
+  each native library).
+- **AndroidX** (The Android Open Source Project; androidx.core 1.17.0 and its dependencies), Guava's listenablefuture
+  1.0 and JSpecify 1.0.0 - Apache-2.0; list in `licenses/AndroidX-NOTICES.txt`.
+- **Kotlin standard library 2.2.10, kotlinx.coroutines 1.8.1, JetBrains annotations 23.0.0** (JetBrains s.r.o. and
+  contributors) - Apache-2.0, with ThreeTenBp-derived code (BSD-3-Clause) and Boost-derived code (BSL-1.0);
+  `licenses/Kotlin-NOTICES.txt`.
+
+The four records (`qt`, `ndk-runtime`, `androidx`, `kotlin`) are in `legal/components.json`; their `android_release`
+maps name the files the APK carries. One Apache-2.0 text, `LICENSES/Apache-2.0.txt` (the apache.org file), serves
+these records and the OpenSSL record.
+
 ## vcpkg Port Recipes
 
 - **vcpkg** (Copyright (c) Microsoft Corporation, https://github.com/microsoft/vcpkg) - MIT. The `soapysdr` and `rtlsdr`

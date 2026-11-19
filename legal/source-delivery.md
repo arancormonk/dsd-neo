@@ -15,8 +15,10 @@ For each release asset, preserve the following together:
    that archive covers mbelib, not the whole DSD application.
 3. The sources, modifications, notices and build options for libraries actually
    bundled in the asset. Android's USB/RTL/Airspy snapshots and patch are in
-   the tracked tree, while its Qt kit and other installed dependencies need
-   separate records. Windows uses the selected vcpkg baseline/ports; macOS
+   the tracked tree; its Qt kit (the qtbase, qtdeclarative and qtsvg 6.11.3
+   archives, with their SHA-256 in the `qt` record), its NDK C++ runtime and
+   its Maven libraries are recorded in the component inventory. The Qt
+   archives must be offered with the APK, which is not done yet. Windows uses the selected vcpkg baseline/ports; macOS
    packages Homebrew libraries; AppImage copies its built runtime closure.
 4. The actual binary dependency/SBOM inventory, with any claimed system-library
    exclusions justified per platform. Do not assume every shared library is
@@ -26,6 +28,12 @@ For each release asset, preserve the following together:
    installation-information requirements, determine and supply the necessary
    information. Android signing and store distribution require their own
    assessment; retaining private signing keys is not a substitute for it.
+   For the APK, Installation Information (GPLv3 section 6, LGPL 3 section
+   4(e)) is read as not required: it applies to object code conveyed in, with
+   or for a User Product as part of a transaction transferring the device,
+   and an app download transfers no device. Android also installs
+   user-signed APKs, so an app rebuilt against a modified Qt can be installed
+   (after the official one is uninstalled).
 
 GPLv3's `Corresponding Source` definition and section 6 are in the repository
 `LICENSE`. Applicable LGPL, Qt and other component obligations also need to be

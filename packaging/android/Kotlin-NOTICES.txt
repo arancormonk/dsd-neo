@@ -1,0 +1,85 @@
+Kotlin libraries in the dsd-neo APK: notices
+
+classes.dex contains, shrunk and optimised by R8, org.jetbrains.kotlin:kotlin-stdlib:2.2.10 (the Kotlin
+version the Android Gradle plugin 9.0.0 builds with), org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm and
+kotlinx-coroutines-android 1.8.1, and org.jetbrains:annotations:23.0.0, all under the Apache License 2.0
+(licenses/Apache-2.0.txt).
+
+  Kotlin standard library: Copyright 2010-2025 JetBrains s.r.o. and Kotlin Programming Language contributors.
+      Source: https://github.com/JetBrains/kotlin (tag v2.2.10)
+  kotlinx.coroutines: Copyright 2016-2024 JetBrains s.r.o and contributors.
+      Source: https://github.com/Kotlin/kotlinx.coroutines (tag 1.8.1)
+  JetBrains Java annotations: Copyright 2000-2021 JetBrains s.r.o.
+      Source: https://github.com/JetBrains/java-annotations (tag 23.0.0)
+
+==============================================================================
+1. kotlinx.coroutines NOTICE
+Kotlin/kotlinx.coroutines 1.8.1 license/NOTICE.txt.
+------------------------------------------------------------------------------
+
+=========================================================================
+==  NOTICE file corresponding to the section 4 d of                    ==
+==  the Apache License, Version 2.0,                                   ==
+==  in this case for the kotlinx.coroutines library.                   ==
+=========================================================================
+
+kotlinx.coroutines library.
+Copyright 2016-2024 JetBrains s.r.o and contributors
+
+==============================================================================
+2. Kotlin NOTICE
+JetBrains/kotlin v2.2.10 license/NOTICE.txt.
+------------------------------------------------------------------------------
+
+   =========================================================================
+   ==  NOTICE file corresponding to the section 4 d of                    ==
+   ==  the Apache License, Version 2.0,                                   ==
+   ==  in this case for the Kotlin Compiler distribution.                 ==
+   =========================================================================
+
+   Kotlin Compiler
+   Copyright 2010-2024 JetBrains s.r.o and respective authors and developers
+
+==============================================================================
+3. Third-party code in the Kotlin standard library
+JetBrains/kotlin v2.2.10 license/README.md names these parts of the JVM standard library; the
+ThreeTenBp text is license/third_party/threetenbp_license.txt.
+------------------------------------------------------------------------------
+
+kotlin.collections (AbstractList, AbstractMap and others): derived from GWT, (C) 2007-08 Google Inc.
+    (Apache-2.0)
+kotlin.UnsignedKt (UnsignedJVM.kt): division and remainder based on Guava's UnsignedLongs,
+    Copyright 2011 The Guava Authors (Apache-2.0)
+kotlin.math (MathJVM.kt): inverse hyperbolic functions derived from boost special math functions,
+    Copyright Eric Ford & Hubert Holin 2001 (BSL-1.0)
+kotlin.time.Instant: based on the ThreeTenBp project (BSD-3-Clause):
+
+Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of JSR-310 nor the names of its contributors
+  may be used to endorse or promote products derived from this software
+  without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -102,7 +102,12 @@ resource bundle, so they travel with the binary rather than as a separate file.
         `libsndfile-ALAC-Apache-2.0.txt`, `LicenseRef-Sun-G72x.txt`,
         `libsndfile-NOTICES.txt`, `libvorbis-lpc-NOTICE.txt`, `opus-NOTICES.txt`,
         `mp3lame-LGPL-2.1.txt`, `mp3lame-README.txt`, `mp3lame-LICENSE.txt`,
-        `mp3lame-NOTICES.txt`, `mpg123-AUTHORS.txt` and `mpg123-NOTICES.txt`
+        `mp3lame-NOTICES.txt`, `mpg123-AUTHORS.txt` and `mpg123-NOTICES.txt`; for
+        Qt, the NDK C++ runtime and the AndroidX and Kotlin libraries,
+        `LGPL-3.0-only.txt`, `Qt-NOTICES.txt`, `Apache-2.0.txt`, `MPL-2.0.txt`,
+        `Unicode-3.0.txt`, `LicenseRef-SHA1-Public-Domain.txt`,
+        `LicenseRef-ICC-License.txt`, `LLVM-exception.txt`,
+        `NDK-runtime-NOTICES.txt`, `AndroidX-NOTICES.txt` and `Kotlin-NOTICES.txt`
         (each record's `android_release` map in `legal/components.json` names the
         notices the APK carries for it and where each comes from;
         `cmake/stage_android_package.cmake` stages them through

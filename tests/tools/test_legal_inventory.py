@@ -3,6 +3,7 @@
 """Regressions for truthful component metadata and installed dependency notices."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -414,6 +415,63 @@ class InventoryTests(unittest.TestCase):
                                                                        ["notices"]})
                 self.assertEqual(components[port]["android_release"]["notices"][f"licenses/{port}-copyright.txt"],
                                  "vcpkg:" + port)
+
+    def test_android_runtime_records_cover_qt_the_ndk_runtime_and_the_java_libraries(self):
+        # The APK's Qt libraries and Java code, the NDK's libc++_shared.so and the AndroidX and Kotlin libraries R8
+        # merges into classes.dex each have a record: Qt is used under the LGPL 3 (never GPL-2.0-only, which dsd-neo's
+        # GPL 3 cannot take), and the APK carries every licence text and notice the records name.
+        expected = {
+            "qt": "LGPL-3.0-only AND ",
+            "ndk-runtime": "Apache-2.0 WITH LLVM-exception AND (NCSA OR MIT) AND BSL-1.0 AND BSD-2-Clause",
+            "androidx": "Apache-2.0",
+            "kotlin": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0",
+        }
+        self.assertTrue(set(expected) <= legal.REQUIRED)
+        document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+        legal.add_spdx(document, self.inventory, self.pins, "android")
+        legal.extracted_licenses(document, self.inventory, ROOT)
+        packages = {p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-"): p for p in document["packages"]}
+        components = {c["id"]: c for c in self.inventory["components"]}
+        for ident, expression in expected.items():
+            component = components[ident]
+            with self.subTest(component=ident):
+                self.assertEqual(component["platforms"], ["android"])
+                self.assertTrue(packages[ident]["licenseConcluded"].startswith(expression), packages[ident])
+                self.assertNotIn("GPL-2.0-only", component["license_concluded"])
+                self.assertNotIn("finding", component)
+                shipped = component["android_release"]["notices"]
+                self.assertEqual(shipped["licenses/Apache-2.0.txt"], "repo:LICENSES/Apache-2.0.txt")
+                self.assertEqual({source.removeprefix("repo:") for source in shipped.values()}, set(component["notices"]))
+        for platform in ("windows", "linux", "macos"):
+            document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+            legal.add_spdx(document, self.inventory, self.pins, platform)
+            self.assertFalse({"qt", "ndk-runtime", "androidx", "kotlin"} & {
+                p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-") for p in document["packages"]})
+        # Qt's two custom texts reach the APK's SBOM from their retained files.
+        document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+        legal.add_spdx(document, self.inventory, self.pins, "android")
+        legal.extracted_licenses(document, self.inventory, ROOT)
+        extracted = {n["licenseId"]: n["extractedText"] for n in document["hasExtractedLicensingInfos"]}
+        for custom in ("LicenseRef-SHA1-Public-Domain", "LicenseRef-ICC-License"):
+            self.assertEqual(extracted[custom], (ROOT / "LICENSES" / (custom + ".txt")).read_text(encoding="utf-8"))
+        # One Apache-2.0 text for every record that names it: the apache.org file.
+        self.assertEqual(hashlib.sha256((ROOT / "LICENSES/Apache-2.0.txt").read_bytes()).hexdigest(),
+                         "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30")
+        self.assertIn("LICENSES/Apache-2.0.txt", components["openssl"]["notices"])
+        qt = (ROOT / "packaging/android/Qt-NOTICES.txt").read_text(encoding="utf-8")
+        for words in ("This software is based in part on the work of the Independent JPEG Group.",
+                      "This software is based in part on the work of the FreeType Team.",
+                      "46de0710b594945a5d446ae44354daa386141c6903c53781b2ca547bc62f8f8f",
+                      "https://publicsuffix.org/list/public_suffix_list.dat"):
+            self.assertIn(words, qt)
+        self.assertIn("kotlinx.coroutines library.", (ROOT / "packaging/android/Kotlin-NOTICES.txt").read_text(
+            encoding="utf-8"))
+        # What the records do not settle stays visible in the findings.
+        status = (ROOT / "legal/status.md").read_text(encoding="utf-8")
+        for words in ("Qt's source is not yet offered with the APK",
+                      "licences screen reads a fixed list that leaves out Qt, codec2 and the vcpkg libraries",
+                      "Nothing guards these records against a Qt, Gradle or NDK update"):
+            self.assertIn(words, status)
 
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
