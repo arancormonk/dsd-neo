@@ -77,6 +77,17 @@ too_large_is_miss(const dsd_tile_fetch_response& resp) {
     return s == 200 || s == 204 || s == 404 || s == 410;
 }
 
+/* Any other failure: a miss for this tile only (a hole, an oversized tile), or a failure the whole source backs off
+ * from. Over the body or header cap, an oversized tile is a miss; an oversized 429 or 5xx page is still an outage
+ * (backoff, Retry-After, the cached copy kept). */
+Outcome
+failure_outcome(const dsd_tile_fetch_response& resp) {
+    if (resp.status == DSD_TILE_FETCH_ERR_TOO_LARGE) {
+        return too_large_is_miss(resp) ? Outcome::Miss : Outcome::Failure;
+    }
+    return tile_missing(resp) ? Outcome::Miss : Outcome::Failure;
+}
+
 MapTileCache::Storage
 storage_for(bool memoryOnly) {
     return memoryOnly ? MapTileCache::Storage::MemoryOnly : MapTileCache::Storage::DiskAndMemory;
@@ -203,25 +214,35 @@ valid_port(const QString& port) {
     return value >= 1 && value <= 65535;
 }
 
-/* A registered name: dot-separated labels of letters, digits, '-' and '_', none empty, none starting or ending with
- * '-'. A bracketed IPv6 literal holds hex digits, ':' and '.' only. */
+/* A bracketed IPv6 literal's inside: hex digits, ':' and '.' only, with at least one ':'. */
+bool
+valid_ipv6_inner(const QString& inner) {
+    return inner.contains(QLatin1Char(':')) && std::all_of(inner.cbegin(), inner.cend(), [](QChar c) {
+               const QChar l = c.toLower();
+               return c.isDigit() || (l >= QLatin1Char('a') && l <= QLatin1Char('f')) || c == QLatin1Char(':')
+                      || c == QLatin1Char('.');
+           });
+}
+
+/* One label of a registered name: letters, digits, '-' and '_', not empty, not starting or ending with '-'. */
+bool
+valid_label(const QString& label) {
+    if (label.isEmpty() || label.startsWith(QLatin1Char('-')) || label.endsWith(QLatin1Char('-'))) {
+        return false;
+    }
+    return std::all_of(label.cbegin(), label.cend(), [](QChar c) {
+        return (c.unicode() < 0x80U && c.isLetterOrNumber()) || c == QLatin1Char('-') || c == QLatin1Char('_');
+    });
+}
+
+/* A registered name (dot-separated valid labels) or a bracketed IPv6 literal. */
 bool
 valid_host(const QString& host) {
     if (host.size() >= 2 && host.startsWith(QLatin1Char('[')) && host.endsWith(QLatin1Char(']'))) {
-        const QString inner = host.mid(1, host.size() - 2);
-        return inner.contains(QLatin1Char(':')) && std::all_of(inner.cbegin(), inner.cend(), [](QChar c) {
-                   return c.isDigit() || (c.toLower() >= QLatin1Char('a') && c.toLower() <= QLatin1Char('f'))
-                          || c == QLatin1Char(':') || c == QLatin1Char('.');
-               });
+        return valid_ipv6_inner(host.mid(1, host.size() - 2));
     }
     const QStringList labels = host.split(QLatin1Char('.'));
-    return !host.isEmpty() && std::all_of(labels.cbegin(), labels.cend(), [](const QString& label) {
-        return !label.isEmpty() && !label.startsWith(QLatin1Char('-')) && !label.endsWith(QLatin1Char('-'))
-               && std::all_of(label.cbegin(), label.cend(), [](QChar c) {
-                      return (c.unicode() < 0x80U && c.isLetterOrNumber()) || c == QLatin1Char('-')
-                             || c == QLatin1Char('_');
-                  });
-    });
+    return !host.isEmpty() && std::all_of(labels.cbegin(), labels.cend(), valid_label);
 }
 
 /* @p authority is a valid host with an optional valid port. */
@@ -589,18 +610,7 @@ MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& ti
         case DSD_TILE_FETCH_ERR_CANCELLED: result.outcome = Outcome::Cancelled; return result;
         case DSD_TILE_FETCH_ERR_INVALID: result.outcome = Outcome::Invalid; return result;
         case DSD_TILE_FETCH_ERR_UNSUPPORTED: result.outcome = Outcome::Unsupported; return result;
-        /* Over the body or header cap: an oversized tile is a miss for this tile, not a wait for all; an oversized
-         * 429 or 5xx page is still an outage (backoff, Retry-After, the cached copy kept). */
-        case DSD_TILE_FETCH_ERR_TOO_LARGE:
-            if (too_large_is_miss(*resp)) {
-                result.outcome = Outcome::Miss;
-            }
-            break;
-        default:
-            if (tile_missing(*resp)) {
-                result.outcome = Outcome::Miss;
-            }
-            break;
+        default: result.outcome = failure_outcome(*resp); break;
     }
     if (result.outcome == Outcome::Miss) {
         /* The server has no usable tile there now: a stale copy must not come back from the cache. */

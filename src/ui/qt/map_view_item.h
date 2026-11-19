@@ -507,6 +507,9 @@ class MapViewItem : public QQuickItem {
     bool tilesFromDevice() const;
     void releaseTiles();
     void keepStandIns(const QSet<MapTileKey>& inView, bool complete);
+    /** @brief Whether every key in view is held or answered missing (drops misses out of view or of another source). */
+    bool tilesSettled(const QSet<MapTileKey>& inView);
+    void dropUnreusableTiles(const QSet<MapTileKey>& inView);
     map_math::Viewport cameraBase() const;
     void retoneTiles();
     QImage toneTile(const QImage& image) const;

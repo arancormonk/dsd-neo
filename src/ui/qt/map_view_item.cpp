@@ -1178,30 +1178,8 @@ MapViewItem::keepStandIns(const QSet<MapTileKey>& inView, bool complete) {
         double distance = 0.0;
     };
 
-    /* A key the server answered "no tile" for counts as settled: it stays blank (a parent stand-in must not cover it
-     * for good). Misses are kept only for keys still in view, and only for the source that gave them. */
-    const QString source = m_tiles ? m_tiles->urlTemplate() : QString();
-    if (source != m_tileMissingSource) {
-        m_tileMissing.clear();
-        m_tileMissingSource = source;
-    }
-    for (auto it = m_tileMissing.begin(); it != m_tileMissing.end();) {
-        it = inView.contains(*it) ? std::next(it) : m_tileMissing.erase(it);
-    }
-    bool settled = true;
-    for (const MapTileKey& key : inView) {
-        settled = settled && (m_tileImages.contains(key) || m_tileMissing.contains(key));
-    }
-    complete = complete || settled;
-    /* An image the cache rules do not let us show again (no-store, no-cache, must-revalidate) ends with its
-     * presentation: once out of the view's tiles it is dropped, so it never stands in or comes back. */
-    for (auto it = m_tileImages.begin(); it != m_tileImages.end();) {
-        if (!it.value().reusable && !inView.contains(it.key())) {
-            it = m_tileImages.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    complete = complete || tilesSettled(inView);
+    dropUnreusableTiles(inView);
     std::vector<Candidate> candidates;
     const int tz = mm::tile_zoom(m_vp.zoom);
     for (auto it = m_tileImages.begin(); it != m_tileImages.end(); ++it) {
@@ -1228,6 +1206,36 @@ MapViewItem::keepStandIns(const QSet<MapTileKey>& inView, bool complete) {
             ++it;
         } else {
             it = m_tileImages.erase(it);
+        }
+    }
+}
+
+bool
+MapViewItem::tilesSettled(const QSet<MapTileKey>& inView) {
+    /* A key the server answered "no tile" for counts as settled: it stays blank (a parent stand-in must not cover it
+     * for good). Misses are kept only for keys still in view, and only for the source that gave them. */
+    const QString source = m_tiles ? m_tiles->urlTemplate() : QString();
+    if (source != m_tileMissingSource) {
+        m_tileMissing.clear();
+        m_tileMissingSource = source;
+    }
+    for (auto it = m_tileMissing.begin(); it != m_tileMissing.end();) {
+        it = inView.contains(*it) ? std::next(it) : m_tileMissing.erase(it);
+    }
+    return std::all_of(inView.cbegin(), inView.cend(), [this](const MapTileKey& key) {
+        return m_tileImages.contains(key) || m_tileMissing.contains(key);
+    });
+}
+
+void
+MapViewItem::dropUnreusableTiles(const QSet<MapTileKey>& inView) {
+    /* An image the cache rules do not let us show again (no-store, no-cache, must-revalidate) ends with its
+     * presentation: once out of the view's tiles it is dropped, so it never stands in or comes back. */
+    for (auto it = m_tileImages.begin(); it != m_tileImages.end();) {
+        if (!it.value().reusable && !inView.contains(it.key())) {
+            it = m_tileImages.erase(it);
+        } else {
+            ++it;
         }
     }
 }
