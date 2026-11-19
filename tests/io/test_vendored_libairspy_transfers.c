@@ -21,6 +21,7 @@
 #include <assert.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/timing.h>
+#include <errno.h>
 #include <libusb.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -171,11 +172,50 @@ test_free(void* p) {
     free(p);
 }
 
-/* The library source, with its heap calls routed through the accounting above. It keeps upstream style, so only the
- * warnings it raises under the project's flags are silenced, and only for it. */
-#define malloc test_malloc
-#define calloc test_calloc
-#define free   test_free
+/* Thread starts and thread attributes. The start numbered g_fail_thread_at (0-based, per case) fails with EAGAIN, as
+ * one does when the system is out of threads; -1: none. PThreads4W allocates an attribute object in
+ * pthread_attr_init(), so every init needs its destroy, on the error paths too. */
+static int g_fail_thread_at = -1;
+static int g_thread_starts;
+static int g_attr_inits;
+static int g_attr_destroys;
+
+static int
+test_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (*start)(void*), void* arg) {
+    pthread_mutex_lock(&g_mu);
+    const int fail = g_thread_starts == g_fail_thread_at;
+    g_thread_starts++;
+    pthread_mutex_unlock(&g_mu);
+    return fail ? EAGAIN : pthread_create(thread, attr, start, arg);
+}
+
+static int
+test_pthread_attr_init(pthread_attr_t* attr) {
+    const int rc = pthread_attr_init(attr);
+    if (rc == 0) {
+        pthread_mutex_lock(&g_mu);
+        g_attr_inits++;
+        pthread_mutex_unlock(&g_mu);
+    }
+    return rc;
+}
+
+static int
+test_pthread_attr_destroy(pthread_attr_t* attr) {
+    pthread_mutex_lock(&g_mu);
+    g_attr_destroys++;
+    pthread_mutex_unlock(&g_mu);
+    return pthread_attr_destroy(attr);
+}
+
+/* The library source, with its heap calls and thread starts routed through the accounting above. It keeps upstream
+ * style, so only the warnings it raises under the project's flags are silenced, and only for it. */
+#define malloc               test_malloc
+#define calloc               test_calloc
+#define free                 test_free
+#define pthread_create       test_pthread_create
+#define pthread_attr_init    test_pthread_attr_init
+#define pthread_attr_destroy test_pthread_attr_destroy
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -198,6 +238,9 @@ test_free(void* p) {
 #undef malloc
 #undef calloc
 #undef free
+#undef pthread_create
+#undef pthread_attr_init
+#undef pthread_attr_destroy
 
 /* ---- the case running now (all under g_mu) ---- */
 
@@ -656,6 +699,10 @@ open_case(const char* name) {
     g_late_resubmits = 0;
     g_idle_polls = 0;
     g_receiver_mode = -1;
+    g_fail_thread_at = -1;
+    g_thread_starts = 0;
+    g_attr_inits = 0;
+    g_attr_destroys = 0;
     g_case_name = name;
     pthread_mutex_unlock(&g_mu);
 
@@ -846,6 +893,32 @@ partial_start_submit(int stop_first) {
     close_case(name, dev);
 }
 
+/* A start whose consumer thread (the first) or transfer thread (the second) cannot start, as when the system is out of
+ * threads. The failed start must leave the device idle, so a start can follow at once, and destroy the thread
+ * attributes it initialised: a caller that keeps retrying on the same device would otherwise leak them every time. */
+static void
+thread_start_failure(int fail_at) {
+    const char* name =
+        fail_at == 0 ? "thread_start_failure (consumer thread)" : "thread_start_failure (transfer thread)";
+    airspy_device_t* dev = open_case(name);
+    pthread_mutex_lock(&g_mu);
+    g_fail_thread_at = fail_at;
+    pthread_mutex_unlock(&g_mu);
+    const int rc = airspy_start_rx(dev, on_samples, NULL);
+    expect(name, rc == AIRSPY_ERROR_THREAD, "the start fails");
+    expect(name, read_counter(&g_thread_starts) == fail_at + 1, "the start stopped at the thread that failed");
+    expect(name, read_counter(&g_attr_inits) == 1, "the start initialised the thread attributes once");
+    expect(name, read_counter(&g_attr_destroys) == 1, "the failed start destroyed the thread attributes");
+    expect(name, read_counter(&g_queued) == 0, "no transfer in flight when the failed start returned");
+    expect(name, !airspy_is_streaming(dev), "not streaming after the failed start");
+    stream_run(name, dev, "start after the failed start");
+    expect(name, read_counter(&g_attr_destroys) == read_counter(&g_attr_inits),
+           "every thread attribute object destroyed after the start");
+    hold_stream();
+    (void)airspy_stop_rx(dev);
+    close_case(name, dev);
+}
+
 /* A packing change reallocates the transfers. After a stream that ended by itself, with transfers still out, it must
  * wait for them before freeing any. */
 static void
@@ -955,6 +1028,8 @@ main(void) {
     restart_reuses_only_returned_transfers(0);
     partial_start_submit(0);
     partial_start_submit(1);
+    thread_start_failure(0);
+    thread_start_failure(1);
     packing_change_waits_for_ended_stream();
     failed_resubmit_returns_its_slot();
     drain_cancels_a_late_resubmit(0);

@@ -9,7 +9,7 @@ vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 # only runs when the cache misses, since a hit reuses the old build.
 set(DSD_NEO_PATCH_SERIES 0001-libairspy-wait-for-cancelled-transfers.patch)
 set(DSD_NEO_PATCH_SERIES_SHA256
-    57aaef75e98664207ef842de0a461f9050b633aafba3782c3bcfdc025c1ba3ff
+    cf295e541ddd5d8f42192658cbeaa3e1e94b47394704cdb87e0d247b774db63d
 )
 set(dsd_neo_patches "")
 set(dsd_neo_series_text "")

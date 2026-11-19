@@ -674,6 +674,7 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 		result = pthread_create(&device->consumer_thread, &attr, consumer_threadproc, device);
 		if (result != 0)
 		{
+			pthread_attr_destroy(&attr);
 			reap_ended_stream(device);
 			return AIRSPY_ERROR_THREAD;
 		}
@@ -682,6 +683,7 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 		result = pthread_create(&device->transfer_thread, &attr, transfer_threadproc, device);
 		if (result != 0)
 		{
+			pthread_attr_destroy(&attr);
 			reap_ended_stream(device);
 			return AIRSPY_ERROR_THREAD;
 		}
