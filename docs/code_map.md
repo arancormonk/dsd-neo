@@ -742,7 +742,8 @@ Generated (do not edit/commit):
       `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
       a tone check rejected, or a frame a decoder of a protocol with no content check took, which `processFrame()`
       moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA voice frame (a data burst carries nothing checked and is no call),
-      a ProVoice frame once a second sync confirmed the transmission, a TETRA burst whose CRC passed, never one sync,
+      a ProVoice frame once a second sync confirmed the transmission, never one sync, nor a TETRA burst whose CRC passed
+      (an idle control channel's signalling passes it too; a TETRA call moves it as the call store begins it),
       against the value the landing recorded, `dsd_engine_scan_landing::y_call_seq`), since under the
       legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start
       frequency before the first step, a step that forgot the landing and then failed, an input switch) against the
