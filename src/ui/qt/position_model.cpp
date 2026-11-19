@@ -76,20 +76,43 @@ track_key(const dsd_position_fix& fix) {
     return key;
 }
 
-/* Seconds since @p at on the clock @p fix was received on, or -1 when that clock cannot be read now. A SYSTEM fix
- * ages on the real wall clock; a REPLAY fix only while the sample names its run on the replay clock, running. */
+/* Now on the clock @p fix was received on, into @p now; false when that clock cannot be read now. A SYSTEM fix ages
+ * on the real wall clock; a REPLAY fix only while the sample names its run on the replay clock, running. */
+bool
+clock_now(const dsd_position_fix& fix, const dsd_app_position_sample& sample, qint64 wall_now, qint64* now) {
+    if (fix.rx_clock == DSD_DECODE_CLOCK_SYSTEM) {
+        *now = wall_now;
+        return true;
+    }
+    if (fix.rx_clock == DSD_DECODE_CLOCK_REPLAY && sample.clock_source == DSD_DECODE_CLOCK_REPLAY
+        && sample.running != 0U && sample.stream_id == fix.stream_id) {
+        *now = sample.decode_now_s;
+        return true;
+    }
+    return false;
+}
+
+/* Seconds since @p at (a receive stamp) on the clock @p fix was received on, or -1 when that clock cannot be read
+ * now. */
 qint64
 age_since(const dsd_position_fix& fix, qint64 at, const dsd_app_position_sample& sample, qint64 wall_now) {
     qint64 now = 0;
-    if (fix.rx_clock == DSD_DECODE_CLOCK_SYSTEM) {
-        now = wall_now;
-    } else if (fix.rx_clock == DSD_DECODE_CLOCK_REPLAY && sample.clock_source == DSD_DECODE_CLOCK_REPLAY
-               && sample.running != 0U && sample.stream_id == fix.stream_id) {
-        now = sample.decode_now_s;
-    } else {
+    if (!clock_now(fix, sample, wall_now, &now)) {
         return -1;
     }
     return now > at ? now - at : 0;
+}
+
+/* Seconds since the report's own measurement time (fix_time_s, the radio's UTC), or -1. Unlike a receive stamp it
+ * comes from another clock: one ahead of the receive clock (a radio clock ahead, a replay whose clock has no UTC
+ * anchor and starts in 2000) cannot be compared, and is never "just now": no age, so the time itself is shown. */
+qint64
+measured_age(const dsd_position_fix& fix, const dsd_app_position_sample& sample, qint64 wall_now) {
+    qint64 now = 0;
+    if (fix.fix_time_s == 0 || !clock_now(fix, sample, wall_now, &now) || now < fix.fix_time_s) {
+        return -1;
+    }
+    return now - fix.fix_time_s;
 }
 
 QVariant
@@ -455,7 +478,7 @@ PositionModel::updateAges(Row& row, qint64 wallNow) const {
     const qint64 age = row.hasCurrent ? age_since(row.current, row.current.rx_time_s, sample, wallNow) : -1;
     const qint64 unknownAge = row.hasUnknown ? age_since(row.unknown, row.unknown.rx_time_s, sample, wallNow) : -1;
     const dsd_position_fix& latest = row.latest();
-    const qint64 reportAge = latest.fix_time_s != 0 ? age_since(latest, latest.fix_time_s, sample, wallNow) : -1;
+    const qint64 reportAge = measured_age(latest, sample, wallNow);
     const auto shows = [this](bool held, qint64 a) {
         return held && (m_ageFilterS == 0 || (a >= 0 && a <= m_ageFilterS));
     };

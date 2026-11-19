@@ -42,13 +42,18 @@ label_rank(const MapViewItem::TrackDraw& t) {
     return t.emergency ? 1 : 0;
 }
 
-/** @brief Whether @p a was heard more recently than @p b (a fix of no known age is the oldest). */
+/** @brief Whether age @p a (seconds) is more recent than @p b (an age of -1, not known, is the oldest). */
+inline bool
+heard_sooner(qint64 a, qint64 b) {
+    if (a < 0 || b < 0) {
+        return a >= 0 && b < 0;
+    }
+    return a < b;
+}
+
 inline bool
 heard_sooner(const MapViewItem::TrackDraw& a, const MapViewItem::TrackDraw& b) {
-    if (a.ageS < 0 || b.ageS < 0) {
-        return a.ageS >= 0 && b.ageS < 0;
-    }
-    return a.ageS < b.ageS;
+    return heard_sooner(a.ageS, b.ageS);
 }
 
 } // namespace map_view_detail

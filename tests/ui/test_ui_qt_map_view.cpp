@@ -40,6 +40,7 @@
 #include <QSizeF>
 #include <QThread>
 #include <Qt>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -57,6 +58,7 @@
 #include "qml_map_stub.h"
 
 namespace stub = dsd_neo_qml_stub;
+namespace mm = dsd_qt::map_math;
 using dsd_qt::MapTileKey;
 using dsd_qt::MapViewItem;
 using dsd_qt::PositionModel;
@@ -858,6 +860,122 @@ test_overlay_follows_a_wrapping_camera() {
     delete root;
 }
 
+/* PR2 review 2: the camera tracks the followed track's drawn mark, whatever changes it. The age filter hides the
+ * current position and leaves the newer ring: the camera moves to the ring. */
+void
+test_follow_moves_when_the_filter_hides_the_marker() {
+    Fixture f;
+    push(4001U, 10.0, 21.0, 0U, 0U, 2400);                           /* 40 minutes old, far east */
+    push(4001U, 10.0, 20.0, 0U, DSD_POS_FLAG_VALIDITY_UNKNOWN, 300); /* the ring, 5 minutes old */
+    f.model.poll();
+    const QVector<PositionModel::Row>& rows = f.model.rows();
+    const auto track = std::find_if(rows.cbegin(), rows.cend(), [](const PositionModel::Row& r) { return !r.gap; });
+    assert(track != rows.cend());
+    const qulonglong id = track->id;
+    f.map->setFollowTrackId(id);
+    QPointF at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6); /* the current position */
+    f.model.setAgeFilterSeconds(900);                                                 /* hides it */
+    at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6); /* now the ring, centred */
+    assert(f.map->followTrackId() == id);
+    f.model.setAgeFilterSeconds(0);
+}
+
+/* PR2 review 2: the chips above the canvas change after a follow started (the Following chip lays out): the
+ * followed mark moves to where centring now puts it, which is also where the zoom buttons zoom about. */
+void
+test_follow_moves_when_the_inset_changes() {
+    Fixture f;
+    push(4002U, 10.0, 20.0);
+    f.model.poll();
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    f.map->setFollowTrackId(id);
+    f.map->setTopInset(52.0);
+    QPointF at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.y() - 176.0) < 1.0e-6);
+    for (int i = 0; i < 5; i++) {
+        f.map->zoomIn();
+    }
+    at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 176.0) < 1.0e-6);
+}
+
+/* PR2 review 2: centring a point the current zoom cannot put in the middle (at the world's zoom the whole world is
+ * shorter than the canvas, so the centre is pinned to the equator) raises the zoom just enough; a zoom that can is
+ * kept. */
+void
+test_centring_raises_a_zoom_that_cannot() {
+    Fixture f;
+    f.map->setZoom(0.0);
+    f.map->setDeviceLatitude(51.5);
+    f.map->setDeviceLongitude(20.0);
+    f.map->setDeviceValid(true);
+    const bool centred = f.map->centerOnDevice();
+    assert(centred);
+    const mm::Viewport vp = mm::clamp_viewport(mm::Viewport{
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).x,
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 300.0});
+    const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
+    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 150.0) < 1.0e-6);
+    assert(f.map->zoom() > 0.7 && f.map->zoom() < 4.0); /* raised, but only as far as needed */
+    f.map->setZoom(12.0);
+    const bool kept = f.map->centerOnDevice();
+    assert(kept && std::fabs(f.map->zoom() - 12.0) < 1.0e-9);
+}
+
+/* PR2 review 2: a fit while following the live position takes in the device dot that will be drawn after the follow
+ * ends (the screen gives it back its saved fix), not the live one. */
+void
+test_fit_takes_the_dot_left_after_follow() {
+    Fixture f;
+    f.map->setDeviceLatitude(10.0);
+    f.map->setDeviceLongitude(20.0);
+    f.map->setDeviceValid(true);
+    f.map->setFollowDevice(true);
+    /* What MapScreen does: live follow ending releases the live position; the dot goes back to the saved fix. */
+    QObject::connect(f.map, &MapViewItem::followChanged, f.map, [&f] {
+        if (!f.map->followDevice()) {
+            f.map->setDeviceLatitude(12.0);
+            f.map->setDeviceLongitude(23.0);
+        }
+    });
+    push(4003U, 10.001, 20.001);
+    f.model.poll();
+    const bool fitted = f.map->fitAll();
+    assert(fitted && !f.map->followDevice());
+    const mm::Viewport vp = mm::clamp_viewport(mm::Viewport{
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).x,
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 300.0});
+    const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(12.0, 23.0));
+    assert(dot.x >= 0.0 && dot.x <= 400.0 && dot.y >= 0.0 && dot.y <= 300.0);
+}
+
+/* PR2 review 2: a label standing by a track's ring ranks by the ring's own age, not by the far-off current position's:
+ * the radio heard five seconds ago (at its ring) keeps the side ahead of one heard five minutes ago. */
+void
+test_ring_label_ranks_by_its_own_age() {
+    Fixture f;
+    const double cx = f.map->width() / 2.0;
+    push(7U, 10.0, 25.0, 0U, 0U, 600);                          /* its current position: far off, 10 minutes */
+    push(7U, 10.0, 20.0, 0U, DSD_POS_FLAG_VALIDITY_UNKNOWN, 5); /* its ring: here, 5 seconds */
+    push(1234567890U, 10.0, 20.0, 0U, 0U, 300);                 /* another radio here, 5 minutes */
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    const double right = right_label_width(root, cx);
+    double widest = 0.0;
+    {
+        const Layers now = layers(root);
+        assert(now.labels->childCount() == 2);
+        for (QSGNode* n = now.labels->firstChild(); n != nullptr; n = n->nextSibling()) {
+            widest = std::max(widest, static_cast<QSGImageNode*>(n)->rect().width());
+        }
+    }
+    /* The short label ("7") holds the right; the long one went to another side. */
+    assert(right > 0.0 && right < widest);
+    delete root;
+}
+
 } // namespace
 
 int
@@ -880,6 +998,11 @@ main(int argc, char** argv) {
     test_lower_bound_error_has_no_disc();
     test_label_by_the_visible_ring();
     test_overlay_follows_a_wrapping_camera();
+    test_follow_moves_when_the_filter_hides_the_marker();
+    test_follow_moves_when_the_inset_changes();
+    test_centring_raises_a_zoom_that_cannot();
+    test_fit_takes_the_dot_left_after_follow();
+    test_ring_label_ranks_by_its_own_age();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

@@ -434,7 +434,8 @@ class MapViewItem : public QQuickItem {
         int labelRole = 0; /**< 0 labelColor, 1 selectedColor, 2 alertColor (an emergency outranks the selection) */
         bool emergency = false;
         bool selected = false;
-        qint64 ageS = -1; /**< of the fix the label stands by (current, else the ring); -1 unknown */
+        qint64 ageS = -1;     /**< of the current position when drawn, else of the ring; -1 unknown */
+        qint64 ringAgeS = -1; /**< of the open ring; -1 unknown */
     };
 
     /** @brief A marker in draw order, for hit testing and the sprite pass. */
@@ -520,6 +521,8 @@ class MapViewItem : public QQuickItem {
     bool fitPoints(std::vector<map_math::WorldPoint> points);
     /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
     map_math::Viewport belowTopInset(map_math::Viewport vp) const;
+    map_math::Viewport centredOn(map_math::Viewport vp, map_math::WorldPoint at) const;
+    bool followTarget(map_math::WorldPoint* at);
     /** @brief Where belowTopInset() puts a centred point on screen: the zoom buttons' and a followed zoom's anchor. */
     QPointF focusPoint() const;
     const TrackDraw* findTrack(qulonglong trackId) const;
@@ -531,7 +534,16 @@ class MapViewItem : public QQuickItem {
     void forEachTrail(Visit&& visit);
     void buildAtlas(double ratio);
     void buildLabels(double ratio);
-    map_math::ScreenPoint labelAnchor(const TrackDraw& t) const;
+
+    /** @brief Where a track's label stands, and the age of the mark it stands by (its priority among equals). */
+    struct LabelSlot {
+        int scene = 0;
+        map_math::ScreenPoint at;
+        qint64 ageS = -1;
+        int rank = 0;
+    };
+
+    LabelSlot labelAnchor(const TrackDraw& t) const;
     void prepareLabels();
     void ensureLabelCache(double ratio);
     const QImage& labelImage(const TrackDraw& t, double ratio);
@@ -554,6 +566,10 @@ class MapViewItem : public QQuickItem {
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;
+    /* What followNow() last centred, and with which topInset: it moves the camera only when one changes. */
+    bool m_followedSet = false;
+    map_math::WorldPoint m_followedAt;
+    double m_followedInset = 0.0;
     bool m_deviceValid = false;
     double m_deviceLat = 0.0;
     double m_deviceLon = 0.0;
@@ -634,6 +650,7 @@ class MapViewItem : public QQuickItem {
     int m_atlasCellPx = 0;
     std::vector<LabelDraw> m_labels;
     std::vector<int> m_labelOrder; /* scene indices of the labelled tracks, highest priority first */
+    std::vector<LabelSlot> m_labelSlots;
     std::vector<map_scene::LabelRequest> m_labelRequests;
     std::vector<map_scene::LabelBox> m_labelBoxes;
     map_scene::LabelSpace m_labelSpace;

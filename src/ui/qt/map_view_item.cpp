@@ -291,6 +291,7 @@ MapViewItem::onAgesChanged() {
     if (before != after) {
         m_sceneSerial++;
     }
+    followNow(); /* the age filter may have hidden the followed mark, or shown its other one */
     update();
 }
 
@@ -328,6 +329,7 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
         t.ringStyle.dashed_outline = row.anonymous;
         t.ringStyle.double_outline = (row.unknown.flags & DSD_POS_FLAG_FORMAT_PROVISIONAL) != 0U;
         t.ringStyle.alert = t.emergency;
+        t.ringAgeS = row.unknownAgeS;
         if (!t.hasMarker) {
             t.ageS = row.unknownAgeS;
         }
@@ -626,6 +628,9 @@ MapViewItem::fitAllWith(double lat, double lon) {
 
 bool
 MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
+    /* A fit ends any follow first: ending live follow gives the device dot back its saved fix (the screen releases the
+     * live position), and the fit must take in the dot that will be drawn, not the one that was. */
+    stopFollowing();
     mm::WorldPoint device{};
     const bool withDevice = deviceWorld(&device);
     if (withDevice) {
@@ -641,7 +646,6 @@ MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
     }
     out.height = clear.height + inset;
     out.center_y -= (inset / 2.0) / mm::world_size_px(out.zoom);
-    stopFollowing();
     if (withDevice) {
         markUsedDevice();
     }
@@ -656,11 +660,7 @@ MapViewItem::centerOnTrack(qulonglong trackId) {
     if (t == nullptr) {
         return false;
     }
-    mm::Viewport vp = cameraBase();
-    const mm::WorldPoint at = t->hasMarker ? t->marker : t->ring;
-    vp.center_x = at.x;
-    vp.center_y = at.y;
-    moveCamera(belowTopInset(vp));
+    moveCamera(centredOn(cameraBase(), t->hasMarker ? t->marker : t->ring));
     return true;
 }
 
@@ -671,10 +671,7 @@ MapViewItem::centerOnDevice() {
         return false;
     }
     markUsedDevice();
-    mm::Viewport vp = cameraBase();
-    vp.center_x = at.x;
-    vp.center_y = at.y;
-    moveCamera(belowTopInset(vp));
+    moveCamera(centredOn(cameraBase(), at));
     return true;
 }
 
@@ -685,12 +682,32 @@ MapViewItem::centerOn(double lat, double lon, double level) {
     }
     const mm::WorldPoint at = mm::world_from_lat_lon(lat, lon);
     mm::Viewport vp = cameraBase();
-    vp.center_x = at.x;
-    vp.center_y = at.y;
     if (level >= 0.0 && std::isfinite(level)) {
         vp.zoom = level;
     }
-    moveCamera(belowTopInset(vp));
+    moveCamera(centredOn(vp, at));
+}
+
+mm::Viewport
+MapViewItem::centredOn(mm::Viewport vp, mm::WorldPoint at) const {
+    /* The one way a point is centred (one-shot or followed): at focusPoint(), below the chips. At a zoom too low to
+     * put it there (the whole world shorter than the canvas pins the centre to the equator; near a pole the edge stops
+     * it) the zoom is raised just enough; a zoom that can is kept. */
+    const double h = std::max(0.0, height());
+    const double inset = std::min(m_topInset, h / 2.0);
+    const double north = (inset + h) / 2.0; /* pixels the view reaches above the point */
+    const double south = (h - inset) / 2.0; /* and below it */
+    double world = mm::world_size_px(vp.zoom);
+    if (at.y > 0.0 && north / at.y > world) {
+        world = north / at.y;
+    }
+    if (at.y < 1.0 && south / (1.0 - at.y) > world) {
+        world = south / (1.0 - at.y);
+    }
+    vp.zoom = std::min(mm::kMaxZoom, std::max(vp.zoom, std::log2(world / mm::kTileSize)));
+    vp.center_x = at.x;
+    vp.center_y = at.y;
+    return belowTopInset(vp);
 }
 
 mm::Viewport
@@ -750,6 +767,7 @@ MapViewItem::setFollowTrackId(qulonglong id) {
     if (id != 0U) {
         m_followDevice = false;
     }
+    m_followedSet = false;
     Q_EMIT followChanged();
     followNow();
 }
@@ -763,6 +781,7 @@ MapViewItem::setFollowDevice(bool on) {
     if (on) {
         m_followTrack = 0U;
     }
+    m_followedSet = false;
     Q_EMIT followChanged();
     followNow();
     polish(); /* the tiles' origin may have changed */
@@ -775,24 +794,53 @@ MapViewItem::stopFollowing() {
     }
     m_followTrack = 0U;
     m_followDevice = false;
+    m_followedSet = false;
     Q_EMIT followChanged();
 }
 
-void
-MapViewItem::followNow() {
+bool
+MapViewItem::followTarget(mm::WorldPoint* at) {
     if (m_followDevice) {
-        (void)centerOnDevice();
-        return;
+        return deviceWorld(at);
     }
     if (m_followTrack == 0U) {
-        return;
+        return false;
     }
     /* A track the model no longer holds (cleared, evicted) ends the follow; one the filter hides waits. */
     if (!m_model || m_model->rowForTrack(m_followTrack) < 0) {
         stopFollowing();
+        return false;
+    }
+    ensureScene();
+    const TrackDraw* t = findTrack(m_followTrack);
+    if (t == nullptr) {
+        return false;
+    }
+    /* The mark drawn for it: the current position, else (the filter hid it) the open ring. */
+    *at = t->hasMarker ? t->marker : t->ring;
+    return true;
+}
+
+void
+MapViewItem::followNow() {
+    /* The one place the camera tracks a followed mark, whatever moved it: a new fix, the age filter hiding one of the
+     * track's marks or showing the other, the device's position, or the chips above (topInset) changing where centred
+     * lies. The camera moves only when the target or that place changed, so an age tick or a zoom leaves it be. */
+    mm::WorldPoint at{};
+    if (!followTarget(&at)) {
         return;
     }
-    (void)centerOnTrack(m_followTrack);
+    if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)
+        && !differs(m_topInset, m_followedInset)) {
+        return;
+    }
+    m_followedSet = true;
+    m_followedAt = at;
+    m_followedInset = m_topInset;
+    if (m_followDevice) {
+        markUsedDevice();
+    }
+    moveCamera(centredOn(cameraBase(), at));
 }
 
 bool
@@ -1032,6 +1080,7 @@ void
 MapViewItem::setTopInset(double inset) {
     if (assignSize(m_topInset, inset)) {
         Q_EMIT behaviourChanged();
+        followNow(); /* a followed mark moves to where centring now puts it */
     }
 }
 

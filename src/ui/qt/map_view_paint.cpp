@@ -491,21 +491,28 @@ MapViewItem::prepareLabels() {
     prune_label_images(m_labelImages, m_labelKeys);
 }
 
-mm::ScreenPoint
+MapViewItem::LabelSlot
 MapViewItem::labelAnchor(const TrackDraw& t) const {
     /* The label stands by a mark that is on screen: the current position when it shows, else the open ring when
      * that shows (a track can have one in view and the other far off; an emergency's word must stay with what is
-     * seen). Neither on screen: the current position, whose label place_labels() then leaves out. */
+     * seen). Neither on screen: the current position, whose label place_labels() then leaves out. The label ranks
+     * among equals by that mark's own age. */
     const double half = m_markerSize / 2.0;
     const auto shows = [&](const mm::ScreenPoint& p) {
         return p.x >= -half && p.x <= m_vp.width + half && p.y >= -half && p.y <= m_vp.height + half;
     };
     const mm::ScreenPoint marker = mm::screen_from_world(m_vp, t.marker);
     const mm::ScreenPoint ring = mm::screen_from_world(m_vp, t.ring);
+    LabelSlot slot;
+    slot.rank = map_view_detail::label_rank(t);
     if (t.hasMarker && (shows(marker) || !t.hasRing || !shows(ring))) {
-        return marker;
+        slot.at = marker;
+        slot.ageS = t.ageS;
+    } else {
+        slot.at = ring;
+        slot.ageS = t.ringAgeS;
     }
-    return ring;
+    return slot;
 }
 
 void
@@ -532,14 +539,24 @@ MapViewItem::buildLabels(double ratio) {
     for (const ms::LabelBox& b : m_labelObstacles) {
         m_labelSpace.keep_out.add(b);
     }
+    /* Where each label stands this frame, and so the age it ranks by: the mark it stands by may not be the one the
+     * scene's order was taken from. */
+    m_labelSlots.clear();
+    for (const int i : m_labelOrder) {
+        LabelSlot slot = labelAnchor(m_scene[static_cast<size_t>(i)]);
+        slot.scene = i;
+        m_labelSlots.push_back(slot);
+    }
+    std::stable_sort(m_labelSlots.begin(), m_labelSlots.end(), [](const LabelSlot& a, const LabelSlot& b) {
+        return a.rank != b.rank ? a.rank > b.rank : map_view_detail::heard_sooner(a.ageS, b.ageS);
+    });
     m_labelRequests.clear();
     m_labelKeys.clear();
-    for (const int i : m_labelOrder) {
-        const TrackDraw& t = m_scene[static_cast<size_t>(i)];
+    for (const LabelSlot& slot : m_labelSlots) {
+        const TrackDraw& t = m_scene[static_cast<size_t>(slot.scene)];
         const QSizeF size = labelImage(t, ratio).deviceIndependentSize();
-        const mm::ScreenPoint at = labelAnchor(t);
-        ms::LabelRequest request{static_cast<float>(at.x), static_cast<float>(at.y), static_cast<float>(size.width()),
-                                 static_cast<float>(size.height())};
+        ms::LabelRequest request{static_cast<float>(slot.at.x), static_cast<float>(slot.at.y),
+                                 static_cast<float>(size.width()), static_cast<float>(size.height())};
         request.urgent = t.emergency;
         m_labelRequests.push_back(request);
         m_labelKeys.push_back(t.labelKey);
@@ -556,7 +573,7 @@ MapViewItem::buildLabels(double ratio) {
         if (m_labelKeep[i] != ms::kLabelDropped) {
             const ms::LabelBox& b = m_labelBoxes[i];
             const QString key = (m_labelKeep[i] == ms::kLabelCovering)
-                                    ? plateLabelKey(m_scene[static_cast<size_t>(m_labelOrder[i])], ratio)
+                                    ? plateLabelKey(m_scene[static_cast<size_t>(m_labelSlots[i].scene)], ratio)
                                     : m_labelKeys[i];
             m_labels.push_back(LabelDraw{key, b.left, b.top, b.width, b.height});
         }

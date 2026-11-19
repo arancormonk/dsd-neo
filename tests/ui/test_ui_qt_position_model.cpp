@@ -30,6 +30,7 @@
 #include <cstring>
 #include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <mutex>
@@ -55,7 +56,7 @@ using dsd_qt::PositionTap;
 void
 check_at(bool condition, const char* what, int line) {
     if (!condition) {
-        std::fprintf(stderr, "UI_QT_POSITION_MODEL: line %d: %s\n", line, what);
+        (void)DSD_FPRINTF(stderr, "UI_QT_POSITION_MODEL: line %d: %s\n", line, what);
         std::abort();
     }
 }
@@ -88,7 +89,7 @@ wall_clock() {
 void
 reset_ring() {
     const std::lock_guard<std::mutex> lock(g_mu);
-    std::memset(&g_ring, 0, sizeof g_ring);
+    DSD_MEMSET(&g_ring, 0, sizeof g_ring);
 }
 
 dsd_app_position_sample
@@ -214,7 +215,7 @@ test_tracks_by_typed_source() {
     Fresh f;
     const uint64_t s = 11U;
     std::vector<dsd_position_fix> fixes = run_of(7U, 3, kT0);
-    std::strcpy(fixes[1].label, "Unit Seven");
+    DSD_SNPRINTF(fixes[1].label, sizeof fixes[1].label, "%s", "Unit Seven");
     dsd_position_fix other_scope = fix_of(7U, 9, kT0 + 3);
     other_scope.sender_scope.b = 3U;
     fixes.push_back(other_scope);
@@ -263,7 +264,7 @@ test_anonymous_points() {
     hashed.flags = DSD_POS_FLAG_SOURCE_HASHED;
     dsd_position_fix unverified = fix_of(0U, 1, kT0 + 1);
     unverified.flags = DSD_POS_FLAG_SOURCE_UNVERIFIED;
-    std::strcpy(unverified.label, "never shown");
+    DSD_SNPRINTF(unverified.label, sizeof unverified.label, "%s", "never shown");
     dsd_position_fix none = fix_of(0U, 2, kT0 + 2);
     publish(s, {hashed, hashed, unverified, none}, sample_of(s, DSD_DECODE_CLOCK_SYSTEM, kT0 + 3, true));
     f.model.poll();
@@ -941,6 +942,24 @@ test_tap_without_a_thread() {
 #endif
 }
 
+/* PR2 review 2: a measurement time ahead of the receive clock (a radio clock ahead; a replay whose clock has no UTC
+ * anchor) cannot be compared: no age ("Measured at" its time), never "just now". One in the past ages as before. */
+void
+test_future_measurement_has_no_age() {
+    Fresh f;
+    const uint64_t s = 33U;
+    dsd_position_fix ahead = fix_of(7U, 0, kT0);
+    ahead.fix_time_s = kT0 + 100;
+    dsd_position_fix behind = fix_of(8U, 0, kT0);
+    behind.fix_time_s = kT0 - 40;
+    g_wall = kT0;
+    publish(s, {ahead, behind}, sample_of(s, DSD_DECODE_CLOCK_SYSTEM, kT0, true));
+    f.model.poll();
+    CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 7U)->id), "reportAgeSeconds").toLongLong() == -1);
+    CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 8U)->id), "reportAgeSeconds").toLongLong() == 40);
+    CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 7U)->id), "ageSeconds").toLongLong() == 0);
+}
+
 } // namespace
 
 int
@@ -958,6 +977,7 @@ main(int argc, char** argv) {
     test_clear();
     test_clear_boundary();
     test_age_at_send();
+    test_future_measurement_has_no_age();
     test_tap_without_a_thread();
     test_system_ages_and_filter();
     test_replay_ages();
@@ -966,6 +986,6 @@ main(int argc, char** argv) {
     test_hidden_overflow();
     test_hidden_restart();
     test_hidden_trailing_loss();
-    std::printf("UI_QT_POSITION_MODEL: OK\n");
+    (void)DSD_FPRINTF(stdout, "UI_QT_POSITION_MODEL: OK\n");
     return 0;
 }

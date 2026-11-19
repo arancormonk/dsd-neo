@@ -18177,7 +18177,10 @@ Qt Quick frontend (`src/ui/qt`):
     for a report with no time of its own; the sheet says it in the Measured line, "Measured less than 30 minutes before
     it was sent", and a List row from 5 min up). `clear()` is a boundary at the published head
     (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
-    published after it repopulate the map. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
+    published after it repopulate the map. `reportAgeSeconds` (the measurement's own time, `fixTime`,
+    the radio's UTC) is -1 when that time is ahead of the receive clock (a radio clock ahead, a replay with no UTC
+    anchor): it cannot be compared, so the sheet shows the time, never "just now". `currentShown`/`unknownShown`
+    (age roles, so a filter change or an age tick
     announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and the
     List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report, else
     the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn marker
@@ -18227,7 +18230,8 @@ Qt Quick frontend (`src/ui/qt`):
     label stands by the track's mark that is on screen: its current position, else its open ring. Labels
     (`map_scene.h` `place_labels()`) try each side of their marker (right, left, above, below) and take the first one
     inside the view that covers no marker (the device dot included), no `labelObstacles` keep-out and no label already
-    placed. Order: the selected track, then emergencies, then the most recently heard (`map_view_detail.h`). An
+    placed. Order: the selected track, then emergencies, then the most recently heard, by the age of the mark the label
+    stands by this frame (the ring's own age when it stands by the ring; `map_view_detail.h`). An
     emergency's label is never dropped (spec 4.6, never hue alone): emergencies are placed first, so every other label,
     the selected one included, yields to them; with no clear side it takes the side covering the least, keeping clear
     of keep-outs while any side does, and may cover a plain marker or another emergency's label (both drawn, the
@@ -18257,8 +18261,14 @@ Qt Quick frontend (`src/ui/qt`):
     puts its target in the middle of the part below it (`belowTopInset()`); the zoom buttons, and any zoom while
     following, zoom about that same point (`focusPoint()`), so a followed radio stays put. `fitPadding` is label
     room at the text size
-    (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId`
-    and `followDevice` re-centre on every change; a pan ends either. `cameraUsedDevicePosition` turns true once the
+    (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId` and `followDevice` are
+    tracked in one place (`followNow()`): the target is the followed track's drawn mark (its current position, else
+    its open ring when the age filter hid the position) or the device dot, and the camera moves whenever that target,
+    or `topInset` (where centring puts it), changes: a new fix, an age tick that hides or shows a mark, a new device
+    fix, the Following chip laying out. A pan ends either; a fit ends either before it takes in the device dot, so it
+    fits the dot that remains once live follow lets go. Every centring (one-shot or followed, `centredOn()`) raises a
+    zoom too low to put its point in the middle (the whole world shorter than the canvas) just enough, and keeps one
+    that can. `cameraUsedDevicePosition` turns true once the
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
     saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
     `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks
