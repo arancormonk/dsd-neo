@@ -24,6 +24,10 @@ void udp_input_test_hold_receive(int hold);
    producer that keeps the socket readable faster than it is drained. */
 void udp_input_test_endless_socket(int endless);
 
+/* The next @p count socket reads take one-sample datagrams (1, 2, ...) the test queued, ahead of the socket itself:
+   exactly what was queued, whatever the system's receive buffer would hold. */
+void udp_input_test_queue_datagrams(int count);
+
 /* The next socket read waits @p ms first, as a thread descheduled in the middle of a drain. */
 void udp_input_test_stall_next_read(unsigned int ms);
 

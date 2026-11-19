@@ -176,6 +176,18 @@ udp_input_test_endless_socket(int endless) {
 #endif
 
 #ifdef DSD_NEO_TEST_HOOKS
+/* The one-sample datagrams the test queued that no read took yet, and the ones taken. */
+static atomic_int s_udp_test_queued;
+static atomic_int s_udp_test_queued_taken;
+
+void
+udp_input_test_queue_datagrams(int count) {
+    atomic_store(&s_udp_test_queued_taken, 0);
+    atomic_store(&s_udp_test_queued, count);
+}
+#endif
+
+#ifdef DSD_NEO_TEST_HOOKS
 /* The next socket read waits this long first (milliseconds): a thread descheduled in the middle of a drain. */
 static atomic_int s_udp_test_stall_ms;
 
@@ -196,6 +208,13 @@ udp_input_recv(udp_input_ctx* ctx) {
     if (atomic_load(&s_udp_test_endless_socket)) {
         DSD_MEMSET(ctx->rx_buf, 0, 64U);
         return 64;
+    }
+    if (atomic_load(&s_udp_test_queued) > 0) {
+        atomic_fetch_sub(&s_udp_test_queued, 1);
+        const int value = atomic_fetch_add(&s_udp_test_queued_taken, 1) + 1;
+        ctx->rx_buf[0] = (uint8_t)(value & 0xFF);
+        ctx->rx_buf[1] = (uint8_t)((value >> 8) & 0xFF);
+        return 2;
     }
 #endif
     return dsd_socket_recv(ctx->sockfd, ctx->rx_buf, UDP_INPUT_DATAGRAM_MAX, 0);
