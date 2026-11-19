@@ -63,6 +63,10 @@ resource bundle, so they travel with the binary rather than as a separate file.
         those records name (for the libraries vcpkg builds, `licenses/<port>-copyright.txt`, the copyright file the
         port installs, and the notices of their sources listed below); `tools/windows/verify_release_tree.ps1` refuses
         a file without a record or a missing notice.
+  - [ ] Confirm `share/doc/dsd-neo/notices.sha256` is there. `tools/windows/verify_release_tree.ps1` refuses a notice
+        whose text is not the one it should be: for a notice from the repository, the text its record reviewed
+        (`notice_sha256` in `legal/components.json`, line endings ignored); for one staging took from the build tree,
+        a vcpkg port or the legal component, the text staging recorded in `notices.sha256`.
   - [ ] Confirm `share/doc/dsd-neo/licenses/` holds the notices of the sources the vcpkg-built libraries are compiled
         from that their ports' copyright files lack: `codec2-LGPL-2.1.txt`, `codec2-NOTICES.txt`,
         `LicenseRef-codec2-varicode.txt`, `librtlsdr-NOTICES.txt`,

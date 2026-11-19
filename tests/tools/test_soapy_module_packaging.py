@@ -190,6 +190,35 @@ def windows_records(inventory=None):
     return records
 
 
+# The tree's record of the SHA-256 of each notice no record reviews, under share/doc/dsd-neo.
+NOTICE_MANIFEST = "notices.sha256"
+
+
+def notice_hash(data):
+    """A notice's SHA-256 with CRLF folded to LF, as tools/legal_inventory.py hashes a reviewed notice."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def release_notices(root):
+    """The notices a release tree must carry under share/doc/dsd-neo -> (where staging takes it from, its reviewed
+    hash or None), from the tree's components.json: the notices every tree carries and those of the records of its
+    files in bin/ and lib/."""
+    inventory = json.loads((root / "share/doc/dsd-neo/legal/components.json").read_text(encoding="utf-8"))
+    sources, reviewed = {}, {}
+    for component in inventory["components"]:
+        for notice, source in component.get("windows_release", {}).get("notices", {}).items():
+            sources.setdefault(notice, source)
+            if source.startswith("repo:"):
+                reviewed[notice] = component["notice_sha256"][source[5:]]
+    records = windows_records(inventory)
+    names = set(required_notices())
+    for path in [*(root / "bin").rglob("*"), *(root / "lib").rglob("*")]:
+        if path.is_file() and path != root / "bin/dlls-manifest.txt":
+            for _, notices in records.get(path.name.lower(), []):
+                names.update(notices)
+    return {name: (sources.get(name), reviewed.get(name)) for name in sorted(names)}
+
+
 def job_block(workflow, job):
     """The text of one job in a workflow: from its key at two spaces to the next job's key."""
     lines = read(f".github/workflows/{workflow}").splitlines()
@@ -1168,6 +1197,16 @@ class SoapyReleaseScripts(unittest.TestCase):
         # The Visual C++ runtime the tree carries comes with Microsoft's terms for it.
         self.assertEqual((stage / "share/doc/dsd-neo" / RUNTIME_NOTICE).read_bytes(),
                          (ROOT / RUNTIME_NOTICE_SOURCE).read_bytes())
+        # The tree records the SHA-256 of each notice it carries that no record reviews: those from the build tree,
+        # vcpkg and the legal component, and the notices every tree carries that no record lists.
+        docs = stage / "share/doc/dsd-neo"
+        expected = [f"{notice_hash((docs / name).read_bytes())}  {name}"
+                    for name, (_, reviewed) in release_notices(stage).items() if reviewed is None]
+        self.assertEqual((docs / NOTICE_MANIFEST).read_text(encoding="utf-8").splitlines(), expected)
+        for name in ("licenses/portaudio-copyright.txt", "licenses/pffft-LICENSE.txt", "licenses/mbelib-neo/ISC.txt",
+                     "COPYRIGHT", "legal/components.json"):
+            self.assertTrue(any(line.endswith("  " + name) for line in expected), name)
+        self.assertFalse(any(line.endswith("  licenses/portaudio-NOTICES.txt") for line in expected))
         log = normalized((tools / "cmake.log").read_text(encoding="utf-8"))
         self.assertEqual(log, f"--install {build} --prefix {stage} --component legal\n")
 
@@ -1262,6 +1301,32 @@ class SoapyReleaseScripts(unittest.TestCase):
         shutil.rmtree(self.work / "dist", ignore_errors=True)
         rc, output, _ = self.stage(tools, build, installed, windows, repo=repo)
         self.assertEqual(rc, 0, output)
+
+    def test_stage_release_tree_checks_the_text_of_repository_notices(self):
+        # A notice staging takes from the repository must hold the text its record reviewed (notice_sha256, CRLF
+        # folded to LF): a checkout whose notice changed since the review does not ship. The staging reads the
+        # repository its script is in, so the script runs from a copy whose notice files can change.
+        tools, build, installed, windows = self.fake_tree()
+        repo = self.work / "repo"
+        (repo / "tools").mkdir(parents=True)
+        shutil.copytree(ROOT / "tools/windows", repo / "tools/windows")
+        for name in ("legal", "packaging"):
+            shutil.copytree(ROOT / name, repo / name)
+        for entry in ROOT.iterdir():
+            if entry.name not in ("tools", "legal", "packaging", ".git"):
+                (repo / entry.name).symlink_to(entry)
+        notice = repo / "packaging/windows/portaudio-NOTICES.txt"
+        original = notice.read_bytes()
+        # Windows line endings in the checkout hold the same text.
+        notice.write_bytes(original.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        rc, output, stage = self.stage(tools, build, installed, windows, repo=repo)
+        self.assertEqual(rc, 0, output)
+        shutil.rmtree(self.work / "dist")
+        notice.write_bytes(original + b"A line added after the review.\n")
+        rc, output, stage = self.stage(tools, build, installed, windows, repo=repo)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"{stage / 'share/doc/dsd-neo/licenses/portaudio-NOTICES.txt'}: SHA-256", output)
+        self.assertIn("not the reviewed", output)
 
     def test_stage_release_tree_takes_the_runtime_from_the_toolset(self):
         # The Visual C++ runtime comes from the toolset's redistributable folder, the files Microsoft's terms cover
@@ -1449,25 +1514,39 @@ class SoapyReleaseScripts(unittest.TestCase):
         return tools, root, windows
 
     def write_notices(self, root):
-        # The notices every tree carries and those the component records of its files name, and the legal
-        # component's components.json, which holds those records and the runtime DLLs a tree may carry.
+        # The legal component's components.json, which holds the records of the tree's files and the runtime DLLs a
+        # tree may carry, then the notices every tree carries and those the records of its files name, as staging
+        # leaves them: a notice from the repository is the repository's file, which its record reviewed; the others
+        # (from the build, vcpkg or the legal component) are fixtures whose hashes the tree's manifest records.
         docs = root / "share/doc/dsd-neo"
-        records = windows_records()
-        names = set(required_notices())
-        for path in [*(root / "bin").iterdir(), *(root / "lib").rglob("*")]:
-            for _, notices in records.get(path.name.lower(), []):
-                names.update(notices)
-        for name in names:
-            (docs / name).parent.mkdir(parents=True, exist_ok=True)
-            (docs / name).write_text(name + "\n")
+        (docs / "legal").mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "legal/components.json", docs / "legal/components.json")
+        for name, (source, _) in release_notices(root).items():
+            if name == "legal/components.json":
+                continue
+            (docs / name).parent.mkdir(parents=True, exist_ok=True)
+            if source and source.startswith("repo:"):
+                shutil.copyfile(ROOT / source[5:], docs / name)
+            elif name in ("COPYRIGHT", "THIRD_PARTY.md") or (name.startswith("legal/") and (ROOT / name).is_file()):
+                shutil.copyfile(ROOT / name, docs / name)
+            else:
+                (docs / name).write_text(f"{name} from {source}\n")
+        self.write_manifest(root)
+
+    def write_manifest(self, root):
+        """The notice manifest staging writes: the SHA-256 of each notice the tree carries that no record reviews."""
+        docs = root / "share/doc/dsd-neo"
+        lines = [f"{notice_hash((docs / name).read_bytes())}  {name}\n"
+                 for name, (_, reviewed) in release_notices(root).items() if reviewed is None]
+        (docs / NOTICE_MANIFEST).write_text("".join(lines), encoding="utf-8")
 
     def record_files(self, root, *names):
-        """Lists more files in the tree's components.json, in a record with no notices."""
+        """Lists more files in the tree's components.json, in a record with no notices, as staging would ship it."""
         components = root / "share/doc/dsd-neo/legal/components.json"
         inventory = json.loads(components.read_text(encoding="utf-8"))
         inventory["components"].append({"id": "test-files", "windows_release": {"binaries": list(names), "notices": {}}})
         components.write_text(json.dumps(inventory), encoding="utf-8")
+        self.write_manifest(root)
 
     def write_report(self, tools):
         (tools / "report.json").write_text(json.dumps(self.report), encoding="utf-8")
@@ -1661,6 +1740,45 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertIn("OK: every file in bin\\ and lib\\ has a component record, and the tree carries its notices",
                       output)
 
+    def test_verify_release_tree_checks_the_text_of_every_notice(self):
+        # A file at a notice's path is not the notice: a placeholder, a truncated copy or another component's text
+        # passes every check of presence. A notice from the repository must hold the text its record reviewed
+        # (notice_sha256 in the tree's components.json, CRLF folded to LF); any other the text staging recorded in the
+        # tree's notices.sha256.
+        tools, root, windows = self.release_tree()
+        docs = root / "share/doc/dsd-neo"
+        notices = release_notices(root)
+        reviewed = ("licenses/portaudio-NOTICES.txt", "LICENSE", RUNTIME_NOTICE, "licenses/ISC.txt")
+        staged = ("licenses/portaudio-copyright.txt", "licenses/pffft-LICENSE.txt", "licenses/mbelib-neo/ISC.txt",
+                  "THIRD_PARTY.md", "legal/components.json")
+        for name in reviewed:
+            self.assertIsNotNone(notices[name][1], name)
+        for name in staged:
+            self.assertIsNone(notices[name][1], name)
+        # A reviewed notice with Windows line endings holds the same text.
+        crlf = docs / "licenses/portaudio-NOTICES.txt"
+        crlf.write_bytes(crlf.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        # Every wrong notice is named, so one run shows each kind refused.
+        for name in reviewed:
+            (docs / name).write_text(name + "\n")
+        for name in staged[:-1]:
+            with open(docs / name, "a", encoding="utf-8") as notice:
+                notice.write("one more line\n")
+        self.assert_verify_refuses(tools, root, windows, "Notices whose text is not the one the release must carry",
+                                   *[f"{docs / name}: SHA-256" for name in reviewed + staged[:-1]],
+                                   "not the reviewed", "not the staged")
+        self.write_notices(root)
+        # A notice the manifest does not list, and a tree without the manifest.
+        manifest = docs / NOTICE_MANIFEST
+        manifest.write_text("".join(line + "\n" for line in manifest.read_text().splitlines()
+                                    if not line.endswith("  THIRD_PARTY.md")))
+        self.assert_verify_refuses(tools, root, windows, f"{docs / 'THIRD_PARTY.md'}: no reviewed hash",
+                                   f"no line in {manifest}")
+        manifest.unlink()
+        self.assert_verify_refuses(tools, root, windows, f"No notice manifest at {manifest}")
+
     def test_verify_release_tree_needs_the_runtime_notice_with_the_runtime(self):
         # A tree that carries a Visual C++ runtime DLL carries the notice of Microsoft's terms for it; a tree without
         # the runtime does not need it.
@@ -1738,10 +1856,12 @@ class SoapyReleaseScripts(unittest.TestCase):
         # ships with those DLLs: a tree that lost it fails, like one that lost the end-user notice.
         tools, root, windows = self.release_tree()
         record = root / "share/doc/dsd-neo/legal/msvc-runtime.md"
-        record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text("Visual C++ runtime terms\n")
+        self.assertEqual(record.read_bytes(), (ROOT / "legal/msvc-runtime.md").read_bytes())
         rc, output = self.verify(tools, root, windows)
         self.assertEqual(rc, 0, output)
+        # Another text than the one staged.
+        record.write_text("Visual C++ runtime terms\n")
+        self.assert_verify_refuses(tools, root, windows, f"{record}: SHA-256", f"not the staged")
         record.unlink()
         self.assert_verify_refuses(tools, root, windows, f"MSVCP140.dll (msvc-runtime): {record}",
                                    f"VCRUNTIME140.dll (msvc-runtime): {record}")

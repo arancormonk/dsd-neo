@@ -216,8 +216,10 @@ function Get-RecordedRuntimeFiles {
 # (any case), the records in legal/components.json whose windows_release lists it, each
 # with its id and its notices: the path of each under share\doc\dsd-neo and where
 # staging takes it from (repo:<path>, build:<path>, vcpkg:<port>, or legal-component for
-# a notice the legal CMake component installs). Staging reads the repository's
-# inventory, the release check the one the tree ships.
+# a notice the legal CMake component installs), and for a notice from the repository
+# the reviewed SHA-256 of its text (Reviewed: the record's notice_sha256 of that path,
+# $null when it has none). Staging reads the repository's inventory, the release check
+# the one the tree ships.
 function Get-ReleaseBinaryRecords {
     param(
         [Parameter(Mandatory = $true)]
@@ -234,10 +236,22 @@ function Get-ReleaseBinaryRecords {
             continue
         }
         $notices = [ordered]@{}
+        $reviewed = @{}
+        $hashes = $null
+        if ($component.PSObject.Properties.Name -contains 'notice_sha256') {
+            $hashes = $component.notice_sha256
+        }
         foreach ($notice in @($component.windows_release.notices.PSObject.Properties)) {
             $notices[$notice.Name] = [string]$notice.Value
+            if ($notices[$notice.Name] -match '^repo:(.+)$') {
+                $source = $Matches[1]
+                $reviewed[$notice.Name] = $null
+                if ($null -ne $hashes -and $hashes.PSObject.Properties.Name -contains $source) {
+                    $reviewed[$notice.Name] = [string]$hashes.$source
+                }
+            }
         }
-        $record = [pscustomobject]@{ Component = [string]$component.id; Notices = $notices }
+        $record = [pscustomobject]@{ Component = [string]$component.id; Notices = $notices; Reviewed = $reviewed }
         foreach ($name in @($component.windows_release.binaries)) {
             if (-not $map.ContainsKey($name)) {
                 $map[$name] = New-Object 'System.Collections.Generic.List[object]'
@@ -307,6 +321,156 @@ function Assert-ReleaseBinaryRecords {
     }
     if ($missing.Count -gt 0) {
         throw "Missing or empty notices of the components of the tree's files:`n$(@($missing | Sort-Object -Unique) -join "`n")"
+    }
+}
+
+# Where a release tree records the SHA-256 of each notice staging took from somewhere
+# other than the repository (the build tree, a vcpkg port, the legal CMake component,
+# and the notices every tree carries that no record reviews), relative to
+# share\doc\dsd-neo: one "<sha256>  <notice>" line each, as sha256sum prints them.
+$script:NoticeManifest = 'notices.sha256'
+
+function Get-NoticeManifestName {
+    return $script:NoticeManifest
+}
+
+# The SHA-256 of a notice's text with CRLF line endings folded to LF, as
+# tools/legal_inventory.py hashes a reviewed notice (notice_sha256), in lower-case hex.
+function Get-NoticeHash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $latin1 = [System.Text.Encoding]::Latin1
+    $text = $latin1.GetString([System.IO.File]::ReadAllBytes($Path)).Replace("`r`n", "`n")
+    $hash = [System.Security.Cryptography.SHA256]::HashData($latin1.GetBytes($text))
+    return [System.Convert]::ToHexString($hash).ToLowerInvariant()
+}
+
+# The notices a release tree must carry under share\doc\dsd-neo, each with the reviewed
+# SHA-256 of its text, or $null for a notice no record takes from the repository: the
+# notices every tree carries (Get-ReleaseNotices) and those of the records of every file
+# in bin\ and lib\. A notice from the repository whose record has no reviewed hash, or
+# whose records disagree on it, throws.
+function Get-ReleaseNoticeHashes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TreeRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    $records = Get-ReleaseBinaryRecords -ComponentsPath $ComponentsPath
+    $reviewed = @{}
+    foreach ($list in $records.Values) {
+        foreach ($record in $list) {
+            foreach ($notice in $record.Reviewed.Keys) {
+                $hash = $record.Reviewed[$notice]
+                if ([string]::IsNullOrEmpty($hash) -or $hash -notmatch '^[0-9a-f]{64}$') {
+                    throw "The record $($record.Component) in $ComponentsPath takes $notice from the repository ($($record.Notices[$notice])) without a reviewed notice_sha256 for it"
+                }
+                if ($reviewed.ContainsKey($notice) -and $reviewed[$notice] -ne $hash) {
+                    throw "The records in $ComponentsPath give $notice two reviewed hashes, $($reviewed[$notice]) and $hash"
+                }
+                $reviewed[$notice] = $hash
+            }
+        }
+    }
+    $required = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($notice in $script:ReleaseNotices) {
+        [void]$required.Add($notice)
+    }
+    foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $TreeRoot)) {
+        if ($records.ContainsKey($file.Name)) {
+            foreach ($record in $records[$file.Name]) {
+                foreach ($notice in $record.Notices.Keys) {
+                    [void]$required.Add($notice)
+                }
+            }
+        }
+    }
+    $result = [ordered]@{}
+    foreach ($notice in $required) {
+        $result[$notice] = if ($reviewed.ContainsKey($notice)) { $reviewed[$notice] } else { $null }
+    }
+    return $result
+}
+
+# Writes the tree's notice manifest (Get-NoticeManifestName): the SHA-256 of every notice
+# the tree must carry that no record reviews (Get-ReleaseNoticeHashes), as staged.
+function Write-NoticeManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TreeRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    $docDir = Join-Path $TreeRoot 'share/doc/dsd-neo'
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $notices = Get-ReleaseNoticeHashes -TreeRoot $TreeRoot -ComponentsPath $ComponentsPath
+    foreach ($notice in $notices.Keys) {
+        if ($null -eq $notices[$notice]) {
+            $lines.Add("$(Get-NoticeHash -Path (Join-Path $docDir $notice))  $notice")
+        }
+    }
+    $text = ($lines -join "`n") + "`n"
+    [System.IO.File]::WriteAllText((Join-Path $docDir $script:NoticeManifest), $text, [System.Text.UTF8Encoding]::new($false))
+}
+
+# Throws unless every notice the tree must carry holds the text it should: a notice from
+# the repository the text its record reviewed (notice_sha256 in the tree's
+# components.json, CRLF folded to LF), any other the text staging recorded in the tree's
+# notice manifest. A file that merely exists at a notice's path, such as a placeholder
+# or the notice of another component, does not pass.
+function Assert-ReleaseNoticeContents {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TreeRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentsPath
+    )
+
+    $docDir = Join-Path $TreeRoot 'share/doc/dsd-neo'
+    $manifestPath = Join-Path $docDir $script:NoticeManifest
+    if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "No notice manifest at $manifestPath, so the notices staging took from the build, vcpkg and the legal component cannot be checked"
+    }
+    $recorded = @{}
+    foreach ($line in (ConvertTo-CheckLines ([System.IO.File]::ReadAllText($manifestPath)))) {
+        if ($line -eq '') {
+            continue
+        }
+        if ($line -cnotmatch '^([0-9a-f]{64})  (\S.*)$' -or $recorded.ContainsKey($Matches[2])) {
+            throw "$manifestPath has a line that is not one notice's SHA-256: '$line'"
+        }
+        $recorded[$Matches[2]] = $Matches[1]
+    }
+    $wrong = New-Object 'System.Collections.Generic.List[string]'
+    $notices = Get-ReleaseNoticeHashes -TreeRoot $TreeRoot -ComponentsPath $ComponentsPath
+    foreach ($notice in $notices.Keys) {
+        $path = Join-Path $docDir $notice
+        if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+            $wrong.Add("${path}: missing")
+            continue
+        }
+        $actual = Get-NoticeHash -Path $path
+        if ($null -ne $notices[$notice]) {
+            if ($actual -ne $notices[$notice]) {
+                $wrong.Add("${path}: SHA-256 $actual, not the reviewed $($notices[$notice]) (notice_sha256 in $ComponentsPath)")
+            }
+        } elseif (-not $recorded.ContainsKey($notice)) {
+            $wrong.Add("${path}: no reviewed hash in $ComponentsPath and no line in $manifestPath")
+        } elseif ($actual -ne $recorded[$notice]) {
+            $wrong.Add("${path}: SHA-256 $actual, not the staged $($recorded[$notice]) ($manifestPath)")
+        }
+    }
+    if ($wrong.Count -gt 0) {
+        throw "Notices whose text is not the one the release must carry:`n$($wrong -join "`n")"
     }
 }
 
@@ -821,4 +985,5 @@ Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, Convert
     Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles,
     Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Find-DumpbinDiagnostic, Get-DumpbinMachine,
     Test-DumpbinImageReport, Test-ImportName, Get-DumpbinDependents, Resolve-CanonicalPath, Test-SamePath,
-    Test-PathInside, Get-CMakeCacheValue, Assert-ToolsetRedistributable, Invoke-IsolatedProcess
+    Test-PathInside, Get-CMakeCacheValue, Assert-ToolsetRedistributable, Get-NoticeManifestName, Get-NoticeHash,
+    Get-ReleaseNoticeHashes, Write-NoticeManifest, Assert-ReleaseNoticeContents, Invoke-IsolatedProcess

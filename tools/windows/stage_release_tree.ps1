@@ -6,7 +6,8 @@
 #   share\doc\dsd-neo\            the project's notices and those of the components of
 #                                 every file in bin\ and lib\ (Get-ReleaseBinaryRecords:
 #                                 the windows_release of each record in
-#                                 legal/components.json)
+#                                 legal/components.json), and notices.sha256, the
+#                                 SHA-256 of each of them no record reviews
 # windows-pr's Release build and windows-ci's release package both run it, and
 # verify_release_tree.ps1 checks what it leaves.
 [CmdletBinding()]
@@ -182,9 +183,11 @@ try {
 # their records say: the repository (repo:), the build tree (build:, the downloaded
 # PFFFT's and TETRA_crypto's), the copyright file a vcpkg port installs (vcpkg:<port>,
 # share\<port>\copyright) or the legal component installed above (legal-component:
-# mbelib's notices, LICENSES\ and legal\). A file no record lists stops the staging.
+# mbelib's notices, LICENSES\ and legal\). A file no record lists stops the staging, and
+# so does a notice two records take from different files.
 $componentsPath = Join-Path $repoRoot 'legal/components.json'
 $records = Get-ReleaseBinaryRecords -ComponentsPath $componentsPath
+$stagedFrom = @{}
 foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
     if (-not $records.ContainsKey($file.Name)) {
         throw "No component record in $componentsPath lists $($file.FullName) (windows_release), so its notices are unknown: add the record before a release carries it"
@@ -212,6 +215,11 @@ foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
             if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
                 throw "The notice $notice of $($record.Component) comes from $source, which is not a file"
             }
+            $hash = Get-NoticeHash -Path $source
+            if ($stagedFrom.ContainsKey($notice) -and $stagedFrom[$notice].Hash -ne $hash) {
+                throw "The notice $notice comes from both $($stagedFrom[$notice].Source) and $source, whose texts differ"
+            }
+            $stagedFrom[$notice] = [pscustomobject]@{ Source = $source; Hash = $hash }
             $destination = Join-Path $docDir $notice
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
             Copy-Item -Force -LiteralPath $source -Destination $destination -ErrorAction Stop
@@ -219,6 +227,17 @@ foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
     }
 }
 
+# The checks below read the inventory the tree ships, which must be the one the staging
+# read. Then the tree records the SHA-256 of each notice no record reviews (those from
+# the build tree, vcpkg and the legal component), so verify_release_tree.ps1 can check
+# them in the staged tree and in the unpacked ZIP as it checks the reviewed ones.
+$shippedComponents = Join-Path $docDir 'legal/components.json'
+if (!(Test-Path -LiteralPath $shippedComponents -PathType Leaf) -or
+    (Get-NoticeHash -Path $shippedComponents) -ne (Get-NoticeHash -Path $componentsPath)) {
+    throw "The legal component installed a components.json other than $componentsPath at $shippedComponents"
+}
 Assert-ReleaseNotices -DocDir $docDir
-Assert-ReleaseBinaryRecords -TreeRoot $stage -ComponentsPath (Join-Path $docDir 'legal/components.json')
+Assert-ReleaseBinaryRecords -TreeRoot $stage -ComponentsPath $shippedComponents
+Write-NoticeManifest -TreeRoot $stage -ComponentsPath $shippedComponents
+Assert-ReleaseNoticeContents -TreeRoot $stage -ComponentsPath $shippedComponents
 Write-Host "Staged release tree: $stage"

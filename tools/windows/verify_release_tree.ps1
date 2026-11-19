@@ -15,7 +15,9 @@
 #      or not, and each is an x64 image that passes check_release_hardening.ps1;
 #   3. every file in bin\ and lib\, hidden or not, is one a component record of the tree's
 #      components.json lists (windows_release), and the tree carries the notices of
-#      those records;
+#      those records, each with the right text: a notice from the repository the text
+#      its record reviewed (notice_sha256), any other the text staging recorded in
+#      share\doc\dsd-neo\notices.sha256;
 #   4. dsd-neo.exe -h;
 #   5. SoapySDRUtil --check=<driver> finds each of the two drivers;
 #   6. SoapySDRUtil --info finds exactly the two modules under this root;
@@ -441,6 +443,8 @@ try {
     $images = Test-LoadPath -TreeRoot $treeRoot -RecordedRuntime $recordedRuntime
     Assert-ReleaseBinaryRecords -TreeRoot $treeRoot -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
     Write-Host 'OK: every file in bin\ and lib\ has a component record, and the tree carries its notices'
+    Assert-ReleaseNoticeContents -TreeRoot $treeRoot -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
+    Write-Host 'OK: every notice holds its reviewed or staged text'
     Test-Hardening -Images $images
     Test-Drivers -TreeRoot $treeRoot
     Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
