@@ -6,7 +6,8 @@ Contents
 - lib/*.dylib              : Bundled runtime library dependencies (when available)
 - dsd-neo.sh               : Launcher that sets DYLD paths and runs dsd-neo
 - dylibs-manifest.txt      : Bundled dylib inventory
-- share/terminfo/          : Bundled ncurses terminal descriptions
+- share/terminfo/          : Bundled ncurses terminal descriptions (also falls
+                             back to macOS's /usr/share/terminfo)
 - share/doc/dsd-neo/       : License and third-party notice files
 
 Usage
@@ -19,16 +20,16 @@ Usage
 Notes
 - The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs and
   TERMINFO_DIRS to use bundled ncurses terminal descriptions.
-- CI currently produces an arm64 portable DMG from the dev-release preset.
-- This portable build uses PulseAudio by default. If you do not see audio
-  devices or get silence, install and start PulseAudio via Homebrew:
-    brew install pulseaudio
-    brew services start pulseaudio
-- If you built dsd-neo with the PortAudio backend (`-DDSD_USE_PORTAUDIO=ON`),
-  PulseAudio is not required.
+- CI produces an arm64 portable DMG from the macos-arm64-release preset; every
+  bundled library is built with vcpkg. It needs macOS 26 or later.
+- Audio goes through PortAudio to macOS's own Core Audio, so no extra audio
+  server is needed. Reading audio from a sound card asks for Terminal's (or your
+  terminal app's) microphone permission the first time.
 - The portable CI build requires RTL-SDR and SoapySDR at configure time.
   Runtime radio use still requires appropriate device permissions, drivers,
-  and Soapy modules for your hardware.
+  and Soapy modules for your hardware. The bundled SoapySDR is 0.8.1, which
+  loads modules built for SoapySDR 0.8 only (not Homebrew's 0.9 modules); point
+  SOAPY_SDR_PLUGIN_PATH at the folder that holds them.
 
 - Gatekeeper/Quarantine: macOS may warn about running binaries from the Internet.
   You can right‑click → Open the first time, or remove quarantine attributes:

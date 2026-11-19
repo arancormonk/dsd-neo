@@ -97,6 +97,12 @@ Run the affected vcpkg build or packaging workflow. Use the same process for `ar
 | `soapy-hackrf` | `pothosware/SoapyHackRF` | `SOAPY_HACKRF_SHA`, `SOAPY_HACKRF_TARBALL_SHA512` | the `soapy-hackrf-0.3.6` tag |
 | `hackrf` | `greatscottgadgets/hackrf` | `HACKRF_SHA`, `HACKRF_TARBALL_SHA512` | the `v2026.01.3` release |
 
+The `ncurses` overlay, which the macOS DMG builds, has no GitHub source: it is vcpkg's builtin port at the manifest
+baseline, with the same release archive and SHA512 (`ncurses-6.5.tar.gz` from invisible-island.net), changed to install
+the terminal database in the layout macOS reads. When the baseline moves, diff the builtin port against the overlay,
+carry its changes over (including a new archive and SHA512), and recheck the notices the DMG ships for ncurses and its
+database.
+
 For a tag, pin the commit it points to (`git ls-remote https://github.com/<repo> 'refs/tags/<tag>^{}'`, or the plain
 tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` overlay builds the
 library with its own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update the `LIBRARY_VERSION`
@@ -117,8 +123,9 @@ hit reuses the old package; `tools/check_vcpkg_overlay_pins.sh`, in the guardrai
 catches a stale digest. After changing a patch, run `tools/check_vcpkg_overlay_pins.sh --fix` to record the new digest.
 The check also fails when a portfile stops listing the series or stops passing it to `vcpkg_from_github(... PATCHES)`.
 
-The AppImage and macOS release jobs apply the same series between fetch and configure, record each digest in their
-dependency manifest and cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
+The AppImage and macOS release jobs apply the same series between fetch and configure (the macOS job builds both
+against vcpkg's libusb and for the triplet's deployment target), record each digest in their dependency manifest and
+cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
 libairspy that never imports `usleep()` or a librtlsdr without the reader's "no transfer left" message was built
 without the patches). The Windows ZIP job checks its `rtlsdr.dll` for the same message; a Windows libairspy build has
 no such mark. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when

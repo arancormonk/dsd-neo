@@ -4414,7 +4414,7 @@ each platform a release ships for:
 | `android shape (arm64, headless, forced radio pipeline)` | the Android option set on arm64 | the Android ABI's instruction set (not Bionic) |
 | `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)` | `perf-bench` with `-march=x86-64-v3`, GCC | optimized, fast-math code generation like the shipped builds, with AVX2/FMA |
 | `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` | the same with Clang | the macOS release toolchain's fast-math code generation; with `-Werror`, `-Wnan-infinity-disabled` rejects `isnan()`/`isinf()` builtins and NaN/infinity constants in fast-math code. Clang can silently fold hand-written bit tests; only runtime tests fed NaN or infinity catch those dead guards (see "Fast-math and non-finite values" in `docs/code_map.md`) |
-| `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang | the DMG; libc++, ld64 and BSD libc |
+| `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang, Homebrew libraries | the DMG's toolchain; libc++, ld64 and BSD libc (the DMG's own build, `build-portable-dmg`, uses the `macos-arm64-release` preset and vcpkg) |
 | `Windows • Debug • ctest (MSVC x64)` | `win-msvc-debug` with Ninja | the ZIP; MSVC, the debug CRT and 32-bit `long` |
 
 Tests that need GNU ld `--wrap` seams register only on Linux, and the `TOOLS_*`

@@ -18,9 +18,12 @@ Required dependencies are:
   so configure prefers a wide ncurses when the host has one (including
   Homebrew's keg-only `ncurses`, which is on no default search path) and
   otherwise falls back to the SDK's curses, reporting which it took. Nothing in
-  the ncurses path calls the wide API, so the fallback is a complete build.
+  the ncurses path calls the wide API, so the fallback is a complete build;
+  the SDK's ncurses 5.7 only lacks mouse-wheel support. The macOS DMG builds
+  against vcpkg's ncurses (the `ncurses` overlay, which also installs the
+  terminal database it ships).
 - audio backend: PulseAudio by default on Unix-like systems, PortAudio on
-  Windows
+  Windows and in the macOS DMG
 
 Optional compiled dependencies are:
 
@@ -48,16 +51,17 @@ Optional compiled dependencies are:
   through pkg-config; see `docs/airspy.md`)
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
-- Codec2 for M17 voice. On Windows and Android it comes from the
-  vcpkg manifest, and those presets set `DSD_REQUIRE_CODEC2=ON` (with
-  `DSD_REQUIRE_CURL=ON`) so a missing dependency fails configure instead of
-  silently dropping M17 voice or rdio uploads.
+- Codec2 for M17 voice. On Windows, Android and in the macOS DMG it comes from
+  the vcpkg manifest (the pinned fork, `CODEC2_SHA`), and those presets set
+  `DSD_REQUIRE_CODEC2=ON` (with `DSD_REQUIRE_CURL=ON`) so a missing dependency
+  fails configure instead of silently dropping M17 voice or rdio uploads.
 - libcurl 7.56.0 or newer for rdio-scanner API uploads. Builds older than
   7.85 use the integer protocol-mask option needed by the Ubuntu 20.04
   AppImage toolchain; remove that branch when portable packaging no longer
   supports libcurl below 7.85.
-- expat 2.x for RadioReference trunking-data import. On Windows and Android it
-  comes from the vcpkg manifest, and those presets set `DSD_REQUIRE_EXPAT=ON`.
+- expat 2.x for RadioReference trunking-data import. On Windows, Android and in
+  the macOS DMG it comes from the vcpkg manifest, and those presets set
+  `DSD_REQUIRE_EXPAT=ON`.
 - PortAudio on non-Windows builds when selected
 - help2man for generated man pages
 
@@ -82,14 +86,27 @@ requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
 
 ## Packaging Dependencies
 
-Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
-`vcpkg-triplets/`. The Windows zip's SoapySDR pieces come from overlays too:
+Windows, Android and macOS DMG builds use vcpkg overlays under `vcpkg-ports/`
+and triplets under `vcpkg-triplets/`. The Windows zip's SoapySDR pieces come from overlays too:
 `soapysdr` (the registry port's SoapySDR 0.8.1 with a `tools` feature that
 builds `SoapySDRUtil.exe`, which the registry port leaves out), the device
 library `hackrf` (libhackrf, release 2026.01.3), and the modules
 `soapy-airspy` and `soapy-hackrf`, which build against the overlays' libraries
-(`soapy-airspy` against the held `airspy` overlay below). The macOS DMG bundles
-Homebrew's SoapySDR and no modules. AppImage builds use pinned CI source checkouts for compiled
+(`soapy-airspy` against the held `airspy` overlay below).
+
+The macOS DMG (`macos-arm64-release` preset, `arm64-osx-dynamic-release`
+triplet) takes every library it bundles from the same manifest and baseline:
+OpenSSL, libcurl (on OpenSSL, verifying against the macOS trust store), zlib,
+expat, libsndfile with its codecs, the pinned codec2 fork, PortAudio, libusb,
+ncurses with its terminal database, SoapySDR 0.8.1 without modules, and
+mbelib-neo. Homebrew supplies build tools only. The triplet is shared, not
+static: SoapySDR is shared-only, and the patched librtlsdr and libairspy, which
+the DMG job still builds itself (the `airspy` overlay's build is Windows-only),
+load the same libusb as dsd-neo. The triplet's `VCPKG_OSX_DEPLOYMENT_TARGET`
+is the oldest macOS the DMG runs on; the preset and the patched builds use the
+same value, and `tools/check_macos_portable_deps.sh` checks every staged file
+against it. The bundled SoapySDR 0.8.1 cannot load Homebrew's SoapySDR 0.9
+modules. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
 SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker
 images from `tools/ci-dependency-pins.env` to exercise apt, dnf, zypper, apk,
