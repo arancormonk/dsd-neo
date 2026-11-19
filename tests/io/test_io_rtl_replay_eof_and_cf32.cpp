@@ -3270,6 +3270,22 @@ test_soapy_read_across_a_retune_purge_never_commits(void) {
         rc |= expect_int_eq(purge ? "a read across a retune purge commits nothing" : "a read with no purge commits",
                             (int)count, purge ? 0 : (int)samples.size());
     }
+    /* A purged read the ring grants only part of: the whole read is dropped and counted, and the Fs/4 rotation steps
+       over all of it, so the next read's phase follows the samples that arrived. 32 pairs into a 32-float ring grant
+       15 pairs. */
+    for (int start_phase = 0; start_phase < 4; start_phase++) {
+        rtl_device_test_soapy_cf32_request request{samples.data(), samples.size() / 2U, 32U, 0U, 1, start_phase, 1};
+        std::vector<float> output(samples.size() + 8U);
+        size_t count = output.size();
+        int phase = -1;
+        const int hook_rc = rtl_device_test_soapy_cf32_ingest(&request, output.data(), &count, &phase);
+        if (hook_rc == 1) {
+            return rc;
+        }
+        rc |= expect_int_eq("a partly granted read across a purge commits nothing", (int)count, 0);
+        rc |= expect_int_eq("and the rotation steps over the whole read", phase,
+                            (start_phase + (int)(samples.size() / 2U)) & 3);
+    }
     return rc;
 }
 

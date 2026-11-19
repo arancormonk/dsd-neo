@@ -11,8 +11,10 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <errno.h>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
+#include <thread>
 
 #include "dsd-neo/core/safe_api.h"
 
@@ -63,8 +65,7 @@ test_guard_and_wrap_contracts(void) {
     input_ring_destroy(NULL);
     input_ring_enable_space_notify(NULL, 1);
 
-    struct input_ring_state ring;
-    DSD_MEMSET(&ring, 0, sizeof(ring));
+    struct input_ring_state ring{};
     input_ring_read_commit(NULL, 1U);
     input_ring_read_commit(&ring, 1U);
 
@@ -207,10 +208,29 @@ main(void) {
         p1[3] = 4.0f;
     }
     input_ring_request_discard(&ring);
-    if (input_ring_discard_generation_matches(&ring, discard_generation)) {
-        input_ring_commit(&ring, 4U);
-    }
+    rc |= expect_int("a stale reservation's commit is refused",
+                     input_ring_commit_if_generation(&ring, 4U, discard_generation), 0);
     rc |= expect_size("stale reservation not committed", input_ring_used(&ring), 0U);
+    rc |= expect_int("a current reservation commits",
+                     input_ring_commit_if_generation(&ring, 0U, input_ring_discard_generation(&ring)), 1);
+
+    /* A purge request waits for a commit that holds the generation lock, so it never falls between that commit's
+       check and its publication. */
+    {
+        std::unique_lock<std::mutex> held(ring.generation_m);
+        const uint64_t before = input_ring_discard_generation(&ring);
+        std::atomic<int> requested{0};
+        std::thread purge([&]() {
+            input_ring_request_discard(&ring);
+            requested.store(1);
+        });
+        dsd_sleep_ms(50);
+        rc |= expect_int("a purge request waits for the commit's lock", requested.load(), 0);
+        rc |= expect_int("and has not moved the generation", input_ring_discard_generation(&ring) == before, 1);
+        held.unlock();
+        purge.join();
+        rc |= expect_int("then moves it", input_ring_discard_generation(&ring) == before + 1U, 1);
+    }
 
     float write_a[6] = {10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
     rc |= expect_int("reserve initial six", input_ring_reserve(&ring, 6U, &p1, &n1, &p2, &n2), 6);

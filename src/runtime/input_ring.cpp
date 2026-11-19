@@ -225,6 +225,19 @@ input_ring_reserve(struct input_ring_state* r, size_t min_needed, float** p1, si
     return (int)grant;
 }
 
+int
+input_ring_commit_if_generation(struct input_ring_state* r, size_t produced, uint64_t generation) {
+    if (!r) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(r->generation_m);
+    if (r->discard_generation.load(std::memory_order_acquire) != generation) {
+        return 0;
+    }
+    input_ring_commit(r, produced);
+    return 1;
+}
+
 /**
  * @brief Commit previously reserved writable regions to the input ring.
  *

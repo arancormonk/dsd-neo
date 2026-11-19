@@ -14,6 +14,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
 
 #include <atomic>
+#include <mutex>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -35,6 +36,9 @@ struct input_ring_state {
     std::atomic<uint64_t> producer_drops{0U}; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts{0U};  /* waits for data */
     std::atomic<uint64_t> discard_generation{0U};
+    /* Held to move discard_generation and by a producer's commit that depends on it
+       (input_ring_commit_if_generation()), so a purge request falls wholly before or after such a commit. */
+    std::mutex generation_m;
     /* Stream positions in floats, counted since init: what the producer committed and what the consumer released
        (read, committed or discarded). The consumer is at stream position consumed_total, the sample at tail. */
     std::atomic<uint64_t> produced_total{0U};
@@ -88,6 +92,7 @@ input_ring_request_discard(struct input_ring_state* r) {
     if (!r) {
         return;
     }
+    std::lock_guard<std::mutex> lock(r->generation_m);
     (void)r->discard_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -106,6 +111,16 @@ static inline int
 input_ring_discard_generation_matches(const struct input_ring_state* r, uint64_t generation) {
     return input_ring_discard_generation(r) == generation;
 }
+
+/**
+ * @brief Commit @p produced reserved floats if the producer discard generation is still @p generation.
+ *
+ * The check and the commit hold generation_m, as input_ring_request_discard() does, so a purge requested while a
+ * producer finishes its reservation either drops it (returns 0, nothing committed) or comes after it is committed.
+ *
+ * @return 1 when committed, 0 when the generation moved (the caller accounts for the reservation).
+ */
+int input_ring_commit_if_generation(struct input_ring_state* r, size_t produced, uint64_t generation);
 
 /**
  * @brief Initialize input ring storage and synchronization primitives.
