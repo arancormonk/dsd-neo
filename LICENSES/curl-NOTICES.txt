@@ -2,8 +2,9 @@ libcurl (https://curl.se/, https://github.com/curl/curl) copyright notices for t
 dsd-neo's packages carry: release 8.23.0, tag curl-8_23_0 (archive
 https://github.com/curl/curl/archive/curl-8_23_0.tar.gz, SHA512
 e1003f374675a6ae50463995a6c705208c4247120093f1fcccf030847161235b3dfc0e40927114ccbc5b4530893990ccb96ec15400ffe4bcb275d26a0499f10e),
-as vcpkg's curl port builds it: with Schannel for the Windows ZIP (libcurl.dll), and with OpenSSL,
-linked statically, for the Android app. curl-copyright.txt, the copyright file the port installs,
+as vcpkg's curl port builds it: with Schannel for the Windows ZIP (libcurl.dll), with OpenSSL,
+linked statically, for the Android app, and with OpenSSL as a shared library for the macOS DMG, which
+also compiles the Apple trust-store files of curl-macos-NOTICES.txt. curl-copyright.txt, the copyright file the port installs,
 carries the curl license with Daniel Stenberg's notice and the ISC notice of lib/curlx/inet_ntop.c.
 The sources compiled into the library that name other holders, with each holder line as written; the
 Schannel and SSPI files (lib/vtls/schannel*.c, lib/socks_sspi.c, lib/vauth/*_sspi.c,

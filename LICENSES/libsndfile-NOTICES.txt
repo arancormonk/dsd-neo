@@ -1,5 +1,6 @@
 libsndfile (https://github.com/libsndfile/libsndfile) copyright notices for the libsndfile dsd-neo's
-packages carry, sndfile.dll in the Windows ZIP and the static library in the Android app: release
+packages carry, sndfile.dll in the Windows ZIP, the static library in the Android app and the shared
+library in the macOS DMG: release
 1.2.2 (archive https://github.com/libsndfile/libsndfile/archive/1.2.2.tar.gz, SHA512
 fb8b4d367240a8ac9d55be6f053cb19419890691c56a8552d1600d666257992b6e8e41a413a444c9f2d6c5d71406013222c92a3bfa67228944a26475444240a1),
 as vcpkg's libsndfile port builds it: the sources of the sndfile target in CMakeLists.txt, including

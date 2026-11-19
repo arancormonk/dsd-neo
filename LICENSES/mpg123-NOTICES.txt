@@ -2,7 +2,8 @@ mpg123 (https://www.mpg123.de/) release 1.33.7 (archive
 https://downloads.sourceforge.net/project/mpg123/mpg123/1.33.7/mpg123-1.33.7.tar.bz2, SHA512
 694743802bb7be0f4a39bf62e681ae0bfed769cb87dc6c5b6fb5f9245966631efb5c5b9bd58588f7af55ced5d020f97c8a54993e71b5295bc45ebd152473f40e):
 notices of code compiled into the libmpg123 dsd-neo's packages carry (mpg123.dll in the Windows ZIP,
-and the static library in the Android app, which adds the aarch64 NEON files under the same LGPL 2.1),
+and the static library in the Android app and the shared library in the macOS DMG, which add the
+aarch64 NEON files under the same LGPL 2.1),
 besides the GNU LGPL 2.1 of mpg123-copyright.txt (the upstream COPYING). The contributors COPYING and
 the file headers refer to are in mpg123-AUTHORS.txt (the upstream AUTHORS). Reproduced unmodified from
 the lines named:

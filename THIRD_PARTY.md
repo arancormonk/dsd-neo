@@ -220,7 +220,8 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   `licenses/SoapySDR-COPYRIGHT.txt`, lists every copyright line of the sources the library and SoapySDRUtil are
   compiled from. The Windows ZIP and the AppImage build the 0.8.1 release commit (`SOAPY_SDR_SHA`); the AppImage
   builds the library alone. The ZIP's `SoapySDRUtil.exe` comes from the `soapysdr` overlay's `tools` feature; its MSVC `getopt.h` is mingw-w64's
-  public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
+  public-domain file. The macOS DMG bundles the same overlay's library, built from the same commit without the
+  `tools` feature, and carries the same two notices.
 - **SoapyAirspy** (Charles J. Cliffe, https://github.com/pothosware/SoapyAirspy) - MIT; release 0.2.1, built against
   the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. Notice
   `vcpkg-ports/soapy-airspy/copyright`, shipped as `licenses/SoapyAirspy-MIT.txt`.
@@ -238,7 +239,10 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   attributions in the headers of the sources that DLL is built from (Johannes Erdfelt, Daniel Drake, Nathan Hjelm,
   Peter Stuge, Google LLC, Hans de Goede, Pete Batard, Chris Dickens, Michael Plante, RealVNC Ltd., Red Hat, Inc.,
   Sylvain Fasel and others), and the upstream AUTHORS file, are kept in `packaging/windows/libusb-COPYRIGHT.txt` and
-  shipped as `licenses/libusb-COPYRIGHT.txt`.
+  shipped as `licenses/libusb-COPYRIGHT.txt`. The macOS DMG bundles the same port's `libusb-1.0.0.dylib`, which
+  dsd-neo, librtlsdr and libairspy load, built with the Darwin backend; the headers of the sources it is built from
+  (Nathan Hjelm and Google LLC for the Darwin backend) and the AUTHORS file are kept in
+  `LICENSES/libusb-macos-NOTICES.txt` and shipped as `licenses/libusb-macos-NOTICES.txt`, with the same COPYING.
 - **PThreads4W** (John E. Bossom and the Pthreads4w contributors, https://sourceforge.net/projects/pthreads4w/) -
   Apache-2.0; vcpkg's 3.0.0 port at the manifest baseline, `pthreadVC3.dll`, which the same libraries load. Its
   LICENSE, NOTICE and the CONTRIBUTORS file the NOTICE refers to, from that release's archive, are kept in
@@ -263,6 +267,12 @@ notices as the ZIP under the same names in `assets/doc/dsd-neo/licenses/`, each 
 Android build's vcpkg tree (`cmake/stage_android_package.cmake`). The shared notice files name the holders of the
 sources both builds compile, the arm64 files of OpenSSL and Opus included.
 
+The macOS DMG bundles the same baseline's shared builds of those libraries (OpenSSL's libcrypto and libssl, libcurl
+on OpenSSL, zlib, Expat, libsndfile and its codecs), PortAudio, libusb, SoapySDR, ncurses, codec2 and mbelib-neo, in
+`lib/` (`vcpkg-triplets/arm64-osx-dynamic-release.cmake`). It carries the notices the ZIP carries for each, under the
+same names in `share/doc/dsd-neo/licenses/`, the port's copyright file taken from the DMG build's vcpkg tree, and
+the macOS ones named below. `legal/components.json` lists them in each record's `macos_release` map.
+
 - **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2, the
   commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND
   BSD-2-Clause. The Android app links the same overlay's static library, and the AppImage and the macOS DMG bundle a
@@ -272,9 +282,16 @@ sources both builds compile, the arm64 files of OpenSSL and Opus included.
   grant, unmodified, with a note that dsd-neo reads it as the LGPL 2.1 of codec2's COPYING and README).
 - **PortAudio** (`portaudio.dll`; https://www.portaudio.com, release v19.7.0 through the `portaudio` overlay, pinned
   as `PORTAUDIO_SHA`; built without ASIO) - MIT. `licenses/portaudio-NOTICES.txt` adds the holders of the Windows
-  host API sources.
+  host API sources. The macOS DMG's PortAudio, its audio input and output there, uses the Core Audio host API;
+  `licenses/portaudio-macos-NOTICES.txt` (`LICENSES/portaudio-macos-NOTICES.txt`) adds the holders of the sources
+  that build compiles (also Bjorn Roche) and the authors its Core Audio files name.
 - **PDCurses** (`pdcurses.dll`; https://pdcurses.org/, release 3.9) - public domain,
   `licenses/LicenseRef-PDCurses-Public-Domain.txt` (upstream's statements).
+- **ncurses** (macOS DMG only: `libncursesw` and `libformw`, and the terminal database in `share/terminfo/`;
+  https://invisible-island.net/ncurses/, release 6.5 through the `ncurses` overlay) - X11-distribute-modifications-variant
+  AND LicenseRef-ncurses-terminfo. `licenses/X11-distribute-modifications-variant.txt` (ncurses' COPYING, which names
+  Thomas E. Dickey and the Free Software Foundation) and `licenses/LicenseRef-ncurses-terminfo.txt` (the terms
+  `misc/terminfo.src`, the database's source, states for itself).
 - **OpenSSL** (`libcrypto-3-x64.dll`; https://www.openssl.org, release 3.6.5; no libssl, since libcurl uses
   Schannel) - Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED. `licenses/OpenSSL-AUTHORS.md`,
   `licenses/OpenSSL-NOTICES.txt` and `licenses/LicenseRef-OpenSSL-KISA-SEED.txt`. `LICENSES/OpenSSL-NOTICES.txt`
@@ -282,7 +299,9 @@ sources both builds compile, the arm64 files of OpenSSL and Opus included.
   and HTTP client code and Patrick Powell's `bio_print.c` among them), with their dual-license, CC0 and public-domain
   notes.
 - **libcurl** (`libcurl.dll`; https://curl.se/, release 8.23.0, Schannel) - curl AND ISC.
-  `licenses/curl-NOTICES.txt`.
+  `licenses/curl-NOTICES.txt`. The macOS DMG's libcurl uses OpenSSL and checks certificates against the macOS
+  trust store; `licenses/curl-macos-NOTICES.txt` adds the one holder (Jan Venekamp) of the Apple files only it
+  compiles.
 - **Expat** (`libexpat.dll`; https://github.com/libexpat/libexpat, release 2.9.0) - MIT AND CC0-1.0.
   `licenses/expat-NOTICES.txt`.
 - **zlib** (`z.dll`; https://www.zlib.net/, release 1.3.2) - Zlib.
@@ -348,5 +367,6 @@ these records and the OpenSSL record.
 - **vcpkg** (Copyright (c) Microsoft Corporation, https://github.com/microsoft/vcpkg) - MIT. The `soapysdr` and `rtlsdr`
   overlays in `vcpkg-ports/` are copies of vcpkg's builtin ports at the manifest baseline, and `portaudio` of its
   builtin port at port-version 8, each with the dsd-neo changes its `portfile.cmake` names (GPL-3.0-or-later). vcpkg's
-  license and notice are kept beside them as `vcpkg-ports/LICENSE-vcpkg.txt`. The recipes only drive the Windows
-  build: no vcpkg code is compiled into a release package, so the packages do not carry this notice.
+  license and notice are kept beside them as `vcpkg-ports/LICENSE-vcpkg.txt`. The `ncurses` overlay, which only the
+  macOS DMG builds, is a copy of vcpkg's builtin port at the manifest baseline too. The recipes only drive the
+  builds: no vcpkg code is compiled into a release package, so the packages do not carry this notice.

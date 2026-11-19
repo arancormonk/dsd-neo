@@ -52,6 +52,11 @@
         "notices": {
           "LICENSE": "repo:LICENSE"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE"
+        }
       }
     },
     {
@@ -94,6 +99,11 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
@@ -140,6 +150,12 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
@@ -192,6 +208,12 @@
           "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
       }
     },
     {
@@ -226,6 +248,9 @@
         "notices": {}
       },
       "android_release": {
+        "notices": {}
+      },
+      "macos_release": {
         "notices": {}
       },
       "finding": "GOLAY-PERMISSION"
@@ -280,6 +305,12 @@
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
       },
+      "macos_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
       "finding": "MIXED-PROVENANCE"
     },
     {
@@ -327,6 +358,12 @@
           "LICENSE": "repo:LICENSE",
           "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
+        }
       }
     },
     {
@@ -367,6 +404,11 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
         }
@@ -412,6 +454,12 @@
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
         }
       },
+      "macos_release": {
+        "notices": {
+          "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
+          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+        }
+      },
       "pin": "PFFFT_SHA"
     },
     {
@@ -449,6 +497,11 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
         }
@@ -497,6 +550,21 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/mbelib-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/GPL-2.0-or-later.txt": "legal-component",
+          "licenses/mbelib-neo/ISC.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
+          "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
+          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/legal/components.json": "legal-component",
+          "licenses/mbelib-neo/legal/status.md": "legal-component",
+          "licenses/mbelib-neo/legal/patents.md": "legal-component"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/mbelib-neo/LICENSE": "legal-component",
           "licenses/mbelib-neo/GPL-2.0-or-later.txt": "legal-component",
@@ -635,6 +703,13 @@
           "licenses/librtlsdr-NOTICES.txt": "repo:LICENSES/librtlsdr-NOTICES.txt"
         }
       },
+      "macos_release": {
+        "notices": {
+          "licenses/librtlsdr-GPL-2.0-or-later.txt": "repo:android/third_party/librtlsdr/COPYING",
+          "licenses/librtlsdr-PATCHES.txt": "repo:packaging/librtlsdr-PATCHES.txt",
+          "licenses/librtlsdr-NOTICES.txt": "repo:LICENSES/librtlsdr-NOTICES.txt"
+        }
+      },
       "pin": "RTL_SDR_SHA"
     },
     {
@@ -677,6 +752,11 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
         }
@@ -783,6 +863,12 @@
           "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
         }
       },
+      "macos_release": {
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt",
+          "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
+        }
+      },
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -795,13 +881,15 @@
       "paths": [
         "vcpkg-ports/soapysdr/",
         "LICENSES/BSL-1.0.txt",
-        "LICENSES/SoapySDR-COPYRIGHT.txt"
+        "LICENSES/SoapySDR-COPYRIGHT.txt",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "linux",
+        "macos",
         "windows"
       ],
       "license_declared": "BSL-1.0",
@@ -810,7 +898,7 @@
         "LICENSES/BSL-1.0.txt",
         "LICENSES/SoapySDR-COPYRIGHT.txt"
       ],
-      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR, without SoapySDR's programs) and the Windows ZIP (SoapySDR.dll). The BSL-1.0 text names no holder; SoapySDR-COPYRIGHT.txt lists every holder the compiled library and SoapySDRUtil sources name (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan) and SoapySDRUtil's public-domain MSVC getopt.h from mingw-w64. The macOS DMG bundles Homebrew's build, which this record does not cover.",
+      "assessment": "Pinned 0.8.1 library, built from the same commit for the AppImage (libSoapySDR, without SoapySDR's programs) and the Windows ZIP (SoapySDR.dll). The BSL-1.0 text names no holder; SoapySDR-COPYRIGHT.txt lists every holder the compiled library and SoapySDRUtil sources name (Josh Blum, Bastille Networks, Coburn Wightman, Nicholas Corgan) and SoapySDRUtil's public-domain MSVC getopt.h from mingw-w64. The macOS DMG bundles the same overlay's library (libSoapySDR, without SoapySDRUtil and without device modules), built from the same commit for arm64 (arm64-osx-dynamic-release), and carries the same two notices.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -823,6 +911,12 @@
         "binaries": [
           "soapysdr.dll"
         ],
+        "notices": {
+          "licenses/BSL-1.0.txt": "repo:LICENSES/BSL-1.0.txt",
+          "licenses/SoapySDR-COPYRIGHT.txt": "repo:LICENSES/SoapySDR-COPYRIGHT.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/BSL-1.0.txt": "repo:LICENSES/BSL-1.0.txt",
           "licenses/SoapySDR-COPYRIGHT.txt": "repo:LICENSES/SoapySDR-COPYRIGHT.txt"
@@ -976,32 +1070,37 @@
       "pin": "HACKRF_SHA"
     },
     {
-      "id": "windows-libusb",
-      "name": "libusb Windows build",
+      "id": "libusb",
+      "name": "libusb (vcpkg builds)",
       "paths": [
         "vcpkg.json",
-        "packaging/windows/libusb-COPYRIGHT.txt"
+        "packaging/windows/libusb-COPYRIGHT.txt",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake",
+        "LICENSES/libusb-macos-NOTICES.txt"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
+        "macos",
         "windows"
       ],
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "notices": [
         "android/third_party/libusb/COPYING",
-        "packaging/windows/libusb-COPYRIGHT.txt"
+        "packaging/windows/libusb-COPYRIGHT.txt",
+        "LICENSES/libusb-macos-NOTICES.txt"
       ],
-      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy and libhackrf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin). Its COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt; libusb-COPYRIGHT.txt, shipped as licenses/libusb-COPYRIGHT.txt, carries the holders and attributions of every source the Windows DLL is built from and the upstream AUTHORS file. Corresponding source remains open (CORRESPONDING-SOURCE).",
+      "assessment": "libusb-1.0.dll in the Windows ZIP, which librtlsdr, libairspy and libhackrf load; vcpkg's libusb port at the manifest baseline (1.0.30, no project pin). Its COPYING is the retained one and ships as licenses/libusb-LGPL-2.1-or-later.txt; libusb-COPYRIGHT.txt, shipped as licenses/libusb-COPYRIGHT.txt, carries the holders and attributions of every source the Windows DLL is built from and the upstream AUTHORS file. The macOS DMG bundles the same port's libusb-1.0.0.dylib, which dsd-neo, librtlsdr and libairspy load, built for arm64 (arm64-osx-dynamic-release) with libusb's configure script: the common sources, the POSIX event and thread code and the Darwin backend (libusb/os/darwin_usb.c, Nathan Hjelm and Google LLC). LICENSES/libusb-macos-NOTICES.txt, the headers of those files and the upstream AUTHORS file, ships there as licenses/libusb-macos-NOTICES.txt beside the same COPYING. Corresponding source remains open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-11-17",
+      "review_date": "2026-11-18",
       "notice_sha256": {
         "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
-        "packaging/windows/libusb-COPYRIGHT.txt": "e2fa5c205ba163c0ef0a1252f8476e64eaf112d7d967fdb94d5770d5204f7dde"
+        "packaging/windows/libusb-COPYRIGHT.txt": "e2fa5c205ba163c0ef0a1252f8476e64eaf112d7d967fdb94d5770d5204f7dde",
+        "LICENSES/libusb-macos-NOTICES.txt": "7cd97688eafc8b41ec606e94ee2b8f10d14855b3e423ca2d56c667acb7111863"
       },
       "windows_release": {
         "binaries": [
@@ -1010,6 +1109,12 @@
         "notices": {
           "licenses/libusb-LGPL-2.1-or-later.txt": "repo:android/third_party/libusb/COPYING",
           "licenses/libusb-COPYRIGHT.txt": "repo:packaging/windows/libusb-COPYRIGHT.txt"
+        }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/libusb-LGPL-2.1-or-later.txt": "repo:android/third_party/libusb/COPYING",
+          "licenses/libusb-macos-NOTICES.txt": "repo:LICENSES/libusb-macos-NOTICES.txt"
         }
       }
     },
@@ -1112,6 +1217,14 @@
           "licenses/LicenseRef-codec2-varicode.txt": "repo:LICENSES/LicenseRef-codec2-varicode.txt"
         }
       },
+      "macos_release": {
+        "notices": {
+          "licenses/codec2-copyright.txt": "vcpkg:codec2",
+          "licenses/codec2-LGPL-2.1.txt": "repo:LICENSES/codec2-LGPL-2.1.txt",
+          "licenses/codec2-NOTICES.txt": "repo:LICENSES/codec2-NOTICES.txt",
+          "licenses/LicenseRef-codec2-varicode.txt": "repo:LICENSES/LicenseRef-codec2-varicode.txt"
+        }
+      },
       "pin": "CODEC2_SHA"
     },
     {
@@ -1120,26 +1233,31 @@
       "paths": [
         "vcpkg.json",
         "vcpkg-ports/portaudio/",
-        "packaging/windows/portaudio-NOTICES.txt"
+        "packaging/windows/portaudio-NOTICES.txt",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake",
+        "LICENSES/portaudio-macos-NOTICES.txt"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
+        "macos",
         "windows"
       ],
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "notices": [
-        "packaging/windows/portaudio-NOTICES.txt"
+        "packaging/windows/portaudio-NOTICES.txt",
+        "LICENSES/portaudio-macos-NOTICES.txt"
       ],
-      "assessment": "portaudio.dll in the Windows ZIP, dsd-neo.exe's audio input and output, built by the portaudio overlay (vcpkg's port at port-version 8) from release v19.7.0 (PORTAUDIO_SHA) with MSVC: the common and Windows sources and the DirectSound, MME, WASAPI and WDM-KS host APIs. The overlay passes PA_USE_ASIO=OFF, so the Steinberg ASIO SDK, which has its own license, is never compiled in. Every compiled file is under the PortAudio license, which is the MIT license; the non-binding requests after it are outside the license by its own words. The ZIP carries the copyright file the port installs (share/portaudio/copyright, the upstream LICENSE.txt, which names Ross Bencina and Phil Burk) as licenses/portaudio-copyright.txt, and packaging/windows/portaudio-NOTICES.txt, the holder lines of every compiled file and header (also Andrew Baldwin, Robert Marsanyi, David Viens and Dmitry Kostjuchenko) from the pinned archive, as licenses/portaudio-NOTICES.txt. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "portaudio.dll in the Windows ZIP, dsd-neo.exe's audio input and output, built by the portaudio overlay (vcpkg's port at port-version 8) from release v19.7.0 (PORTAUDIO_SHA) with MSVC: the common and Windows sources and the DirectSound, MME, WASAPI and WDM-KS host APIs. The overlay passes PA_USE_ASIO=OFF, so the Steinberg ASIO SDK, which has its own license, is never compiled in. Every compiled file is under the PortAudio license, which is the MIT license; the non-binding requests after it are outside the license by its own words. The ZIP carries the copyright file the port installs (share/portaudio/copyright, the upstream LICENSE.txt, which names Ross Bencina and Phil Burk) as licenses/portaudio-copyright.txt, and packaging/windows/portaudio-NOTICES.txt, the holder lines of every compiled file and header (also Andrew Baldwin, Robert Marsanyi, David Viens and Dmitry Kostjuchenko) from the pinned archive, as licenses/portaudio-NOTICES.txt. The macOS DMG bundles the same overlay's shared library, dsd-neo's audio input and output there, built for arm64 (arm64-osx-dynamic-release) with the common and Unix sources and the Core Audio host API. Those files are under the same MIT license; LICENSES/portaudio-macos-NOTICES.txt, the holder lines of every file that build compiles or includes (also Bjorn Roche) and the authors the Core Audio files name, from the pinned archive, ships as licenses/portaudio-macos-NOTICES.txt beside the port's copyright file. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
-        "packaging/windows/portaudio-NOTICES.txt": "faf1b8a48c7f9bf3973cccbfc79e9ecb1981974bc750178c287afb6f73f84998"
+        "packaging/windows/portaudio-NOTICES.txt": "faf1b8a48c7f9bf3973cccbfc79e9ecb1981974bc750178c287afb6f73f84998",
+        "LICENSES/portaudio-macos-NOTICES.txt": "2aa5045e3728921dd7d3e86ba5fd5f53d193c6523baeb3c408ba96fb2f755feb"
       },
       "windows_release": {
         "binaries": [
@@ -1148,6 +1266,12 @@
         "notices": {
           "licenses/portaudio-copyright.txt": "vcpkg:portaudio",
           "licenses/portaudio-NOTICES.txt": "repo:packaging/windows/portaudio-NOTICES.txt"
+        }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/portaudio-copyright.txt": "vcpkg:portaudio",
+          "licenses/portaudio-macos-NOTICES.txt": "repo:LICENSES/portaudio-macos-NOTICES.txt"
         }
       },
       "pin": "PORTAUDIO_SHA"
@@ -1188,6 +1312,45 @@
       }
     },
     {
+      "id": "ncurses",
+      "name": "ncurses libraries and terminal database",
+      "paths": [
+        "vcpkg.json",
+        "vcpkg-ports/ncurses/",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake",
+        "LICENSES/X11-distribute-modifications-variant.txt",
+        "LICENSES/LicenseRef-ncurses-terminfo.txt"
+      ],
+      "distribution": [
+        "binary"
+      ],
+      "platforms": [
+        "macos"
+      ],
+      "license_declared": "X11-distribute-modifications-variant AND LicenseRef-ncurses-terminfo",
+      "license_concluded": "X11-distribute-modifications-variant AND LicenseRef-ncurses-terminfo",
+      "notices": [
+        "LICENSES/X11-distribute-modifications-variant.txt",
+        "LICENSES/LicenseRef-ncurses-terminfo.txt"
+      ],
+      "assessment": "The macOS DMG's terminal UI library: libncursesw and libformw, which dsd-neo loads, and the terminal database in share/terminfo, built by the ncurses overlay (vcpkg's builtin port at the manifest baseline, installing the database in macOS's hexadecimal layout) from ncurses 6.5 (archive ncurses-6.5.tar.gz, SHA512 fc5a13409d2a530a1325776dcce3a99127ddc2c03999cfeb0065d0eee2d68456274fb1c7b3cc99c1937bc657d0e7fca97016e147f93c7821b5a4a6837db821e8) for arm64 (arm64-osx-dynamic-release), wide-character, without the termcap fallback. Every compiled file of the two libraries is under the license of the upstream COPYING, which names the only two holders the sources name (Thomas E. Dickey and the Free Software Foundation); it is the SPDX X11-distribute-modifications-variant text. The BSD blocks of ncurses/tinfo/read_termcap.c are compiled only with the termcap fallback, which this build leaves out. The database is compiled by tic from misc/terminfo.src, which carries no copyright notice of its own and states that it \"deliberately has no copyright\", that changes made while maintaining it with ncurses are generally conceded to be under the ncurses license, and that some data derives from xterm under a compatible MIT-style license; LICENSES/LicenseRef-ncurses-terminfo.txt reproduces those statements unmodified. The DMG carries COPYING, unmodified, as licenses/X11-distribute-modifications-variant.txt, the same file the port installs (share/ncurses/copyright) as licenses/ncurses-copyright.txt, and the terminfo statements as licenses/LicenseRef-ncurses-terminfo.txt. No patent statement. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "copyright_permission": "notice-retained",
+      "gpl_compatibility": "reviewed-terms",
+      "patent_status": "not-cleared",
+      "review_date": "2026-11-18",
+      "notice_sha256": {
+        "LICENSES/X11-distribute-modifications-variant.txt": "b2feb54f39529abe226f709a292584fde48a2e5721559fee417d2cdd51cb7cc1",
+        "LICENSES/LicenseRef-ncurses-terminfo.txt": "df43ededbd67994276c1e45573280550c4192fdf7105c28642c61c3fd7770ef1"
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/ncurses-copyright.txt": "vcpkg:ncurses",
+          "licenses/X11-distribute-modifications-variant.txt": "repo:LICENSES/X11-distribute-modifications-variant.txt",
+          "licenses/LicenseRef-ncurses-terminfo.txt": "repo:LICENSES/LicenseRef-ncurses-terminfo.txt"
+        }
+      }
+    },
+    {
       "id": "openssl",
       "name": "OpenSSL",
       "paths": [
@@ -1197,6 +1360,7 @@
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
         "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake",
         "LICENSES/Apache-2.0.txt"
       ],
       "distribution": [
@@ -1204,6 +1368,7 @@
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
@@ -1214,7 +1379,7 @@
         "LICENSES/OpenSSL-NOTICES.txt",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
       ],
-      "assessment": "libcrypto-3-x64.dll in the Windows ZIP; vcpkg's openssl port at the manifest baseline (3.6.5, tag openssl-3.6.5), configured VC-WIN64A, shared, with static engines. dsd-neo links only libcrypto and libcurl uses Windows' Schannel, so the ZIP carries no libssl and no legacy provider module. The library is under the Apache License 2.0; crypto/siphash/siphash.c is dedicated under CC0-1.0, and the SEED sources (crypto/seed/, include/openssl/seed.h) also carry the Korea Information Security Agency's terms, whose conditions cover source redistribution (LicenseRef-OpenSSL-KISA-SEED). Files also offered under other terms (crypto/LPdir_win*.c, crypto/x509/v3_pci*.c, the Camellia and CRYPTOGAMS assembly) are used under the Apache License 2.0. OpenSSL ships no NOTICE file. The ZIP carries the copyright file the port installs (share/openssl/copyright, LICENSE.txt) as licenses/openssl-copyright.txt; LICENSES/OpenSSL-AUTHORS.md, the upstream AUTHORS.md unmodified, as licenses/OpenSSL-AUTHORS.md; LICENSES/OpenSSL-NOTICES.txt, the other holders named in the sources each package's OpenSSL build compiles (among them Nokia's and Siemens AG's CMP, CRMF and HTTP client code and Patrick Powell's bio_print.c) with their dual-license, CC0 and public-domain notes, as licenses/OpenSSL-NOTICES.txt; and LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt, KISA's notice from crypto/seed/seed.c, as licenses/LicenseRef-OpenSSL-KISA-SEED.txt; each from the pinned archive. The Android app links libcrypto and libssl (libcurl's TLS backend) statically into libdsd-neo-app_arm64-v8a.so, with the legacy provider built into libcrypto: the same port and archive, configured android-arm64, no-shared no-module, with enable-ec_nistp_64_gcc_128 and the aarch64 assembly. That build adds the libssl sources (Oracle, Nokia, EdelKey, Network Resonance and RTFM holders), Google's and IBM's NIST curve code (Apache-2.0), Cavium's arm64 assembly, NTT's crypto/camellia/camellia.c and crypto/LPdir_unix.c (also offered under a BSD license, used under the Apache License 2.0); the license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "libcrypto-3-x64.dll in the Windows ZIP; vcpkg's openssl port at the manifest baseline (3.6.5, tag openssl-3.6.5), configured VC-WIN64A, shared, with static engines. dsd-neo links only libcrypto and libcurl uses Windows' Schannel, so the ZIP carries no libssl and no legacy provider module. The library is under the Apache License 2.0; crypto/siphash/siphash.c is dedicated under CC0-1.0, and the SEED sources (crypto/seed/, include/openssl/seed.h) also carry the Korea Information Security Agency's terms, whose conditions cover source redistribution (LicenseRef-OpenSSL-KISA-SEED). Files also offered under other terms (crypto/LPdir_win*.c, crypto/x509/v3_pci*.c, the Camellia and CRYPTOGAMS assembly) are used under the Apache License 2.0. OpenSSL ships no NOTICE file. The ZIP carries the copyright file the port installs (share/openssl/copyright, LICENSE.txt) as licenses/openssl-copyright.txt; LICENSES/OpenSSL-AUTHORS.md, the upstream AUTHORS.md unmodified, as licenses/OpenSSL-AUTHORS.md; LICENSES/OpenSSL-NOTICES.txt, the other holders named in the sources each package's OpenSSL build compiles (among them Nokia's and Siemens AG's CMP, CRMF and HTTP client code and Patrick Powell's bio_print.c) with their dual-license, CC0 and public-domain notes, as licenses/OpenSSL-NOTICES.txt; and LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt, KISA's notice from crypto/seed/seed.c, as licenses/LicenseRef-OpenSSL-KISA-SEED.txt; each from the pinned archive. The Android app links libcrypto and libssl (libcurl's TLS backend) statically into libdsd-neo-app_arm64-v8a.so, with the legacy provider built into libcrypto: the same port and archive, configured android-arm64, no-shared no-module, with enable-ec_nistp_64_gcc_128 and the aarch64 assembly. That build adds the libssl sources (Oracle, Nokia, EdelKey, Network Resonance and RTFM holders), Google's and IBM's NIST curve code (Apache-2.0), Cavium's arm64 assembly, NTT's crypto/camellia/camellia.c and crypto/LPdir_unix.c (also offered under a BSD license, used under the Apache License 2.0); the license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release): libcrypto and libssl (libcurl's TLS backend), configured darwin64-arm64, shared, with the aarch64 assembly, so it compiles the arm64 files the Android build does; the legacy provider module is built but not shipped, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1222,7 +1387,7 @@
       "notice_sha256": {
         "LICENSES/Apache-2.0.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "LICENSES/OpenSSL-AUTHORS.md": "b9f638dfc06b59c2d3b808186c3b30f713805a5db390f5b77b1703ac58acb83e",
-        "LICENSES/OpenSSL-NOTICES.txt": "0f7cc1fc0e7f4c6c5c335096540aa52268eff68b25999c8600a6820a1632c044",
+        "LICENSES/OpenSSL-NOTICES.txt": "893bd668efbce6d7a5241c6a8c4d2dc2ca82e36b190fdd351f134eb429fb517c",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt": "c99ddbef66aee7e2d676e27c81ae748d0922b3d1f831ae952d5a1786b7aaf9ab"
       },
       "windows_release": {
@@ -1245,6 +1410,14 @@
           "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt",
           "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/openssl-copyright.txt": "vcpkg:openssl",
+          "licenses/OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
+          "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
+          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+        }
       }
     },
     {
@@ -1254,27 +1427,32 @@
         "vcpkg.json",
         "LICENSES/curl-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake",
+        "LICENSES/curl-macos-NOTICES.txt"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "curl AND ISC",
       "license_concluded": "curl AND ISC",
       "notices": [
-        "LICENSES/curl-NOTICES.txt"
+        "LICENSES/curl-NOTICES.txt",
+        "LICENSES/curl-macos-NOTICES.txt"
       ],
-      "assessment": "libcurl.dll in the Windows ZIP; vcpkg's curl port at the manifest baseline (8.23.0, tag curl-8_23_0) with its default ssl feature, which on Windows is Schannel: libcurl loads zlib's z.dll and Windows DLLs only, no OpenSSL. The compiled sources are under the curl license, except lib/curlx/inet_ntop.c and inet_pton.c (ISC). The port's vcpkg.json also declares BSD-3-Clause; no file in the pinned archive carries it, and its one BSD-licensed file, tests/server/tftpd.c, is not part of libcurl. The ZIP carries the copyright file the port installs (share/curl/copyright: COPYING and the inet_ntop.c notice) as licenses/curl-copyright.txt, and LICENSES/curl-NOTICES.txt, the holder lines of the compiled sources that name holders other than Daniel Stenberg, from the pinned archive, as licenses/curl-NOTICES.txt. The Android app links libcurl statically into libdsd-neo-app_arm64-v8a.so; there the port's ssl feature selects OpenSSL (CURL_USE_OPENSSL=ON, CURL_CA_FALLBACK=ON), so lib/vtls/openssl.c is compiled and the Schannel and SSPI files are not. NTLM is off in 8.23.0, so no MD4 fallback is compiled. The license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "libcurl.dll in the Windows ZIP; vcpkg's curl port at the manifest baseline (8.23.0, tag curl-8_23_0) with its default ssl feature, which on Windows is Schannel: libcurl loads zlib's z.dll and Windows DLLs only, no OpenSSL. The compiled sources are under the curl license, except lib/curlx/inet_ntop.c and inet_pton.c (ISC). The port's vcpkg.json also declares BSD-3-Clause; no file in the pinned archive carries it, and its one BSD-licensed file, tests/server/tftpd.c, is not part of libcurl. The ZIP carries the copyright file the port installs (share/curl/copyright: COPYING and the inet_ntop.c notice) as licenses/curl-copyright.txt, and LICENSES/curl-NOTICES.txt, the holder lines of the compiled sources that name holders other than Daniel Stenberg, from the pinned archive, as licenses/curl-NOTICES.txt. The Android app links libcurl statically into libdsd-neo-app_arm64-v8a.so; there the port's ssl feature selects OpenSSL (CURL_USE_OPENSSL=ON, CURL_CA_FALLBACK=ON), so lib/vtls/openssl.c is compiled and the Schannel and SSPI files are not. NTLM is off in 8.23.0, so no MD4 fallback is compiled. The license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release): OpenSSL is its TLS backend, as on Android, and USE_APPLE_SECTRUST checks certificates against the macOS trust store, which also compiles lib/vtls/apple.c and lib/macos.c; lib/vtls/apple.h names one holder more (Jan Venekamp), which LICENSES/curl-macos-NOTICES.txt carries, as licenses/curl-macos-NOTICES.txt, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
-        "LICENSES/curl-NOTICES.txt": "ab8343e8757e2fe5422c5afc115912e5c4dd8ba5537d29f0bd44a80128296f59"
+        "LICENSES/curl-NOTICES.txt": "d17d9207c5f00e33063b446feb3ab0a9008e8d3f5221b9164ff2908ff61e3a9d",
+        "LICENSES/curl-macos-NOTICES.txt": "67f5ba8a74e328d6352e601d956254bf0ca12ea152f764bea2a4de8cf87a0790"
       },
       "windows_release": {
         "binaries": [
@@ -1290,6 +1468,13 @@
           "licenses/curl-copyright.txt": "vcpkg:curl",
           "licenses/curl-NOTICES.txt": "repo:LICENSES/curl-NOTICES.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/curl-copyright.txt": "vcpkg:curl",
+          "licenses/curl-NOTICES.txt": "repo:LICENSES/curl-NOTICES.txt",
+          "licenses/curl-macos-NOTICES.txt": "repo:LICENSES/curl-macos-NOTICES.txt"
+        }
       }
     },
     {
@@ -1299,13 +1484,15 @@
         "vcpkg.json",
         "LICENSES/expat-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "MIT AND CC0-1.0",
@@ -1313,13 +1500,13 @@
       "notices": [
         "LICENSES/expat-NOTICES.txt"
       ],
-      "assessment": "libexpat.dll in the Windows ZIP; vcpkg's expat port at the manifest baseline (2.9.0, tag R_2_9_0): expat/lib/xcs.c, xmlparse.c, xmlrole.c, xmltok.c and random_rand_s.c. MIT, with lib/siphash.h under CC0-1.0. The ZIP carries the copyright file the port installs (share/expat/copyright: expat/COPYING and siphash.h) as licenses/expat-copyright.txt, and LICENSES/expat-NOTICES.txt, the holder lines of every compiled file and header from the pinned archive, as licenses/expat-NOTICES.txt. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, with the entropy sources the NDK offers (lib/random_getrandom.c, random_arc4random*.c, random_getentropy.c, random_dev_urandom.c; which of them the build selects is not verified) in place of random_rand_s.c; LICENSES/expat-NOTICES.txt names their holders too. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "libexpat.dll in the Windows ZIP; vcpkg's expat port at the manifest baseline (2.9.0, tag R_2_9_0): expat/lib/xcs.c, xmlparse.c, xmlrole.c, xmltok.c and random_rand_s.c. MIT, with lib/siphash.h under CC0-1.0. The ZIP carries the copyright file the port installs (share/expat/copyright: expat/COPYING and siphash.h) as licenses/expat-copyright.txt, and LICENSES/expat-NOTICES.txt, the holder lines of every compiled file and header from the pinned archive, as licenses/expat-NOTICES.txt. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, with the entropy sources the NDK offers (lib/random_getrandom.c, random_arc4random*.c, random_getentropy.c, random_dev_urandom.c; which of them the build selects is not verified) in place of random_rand_s.c; LICENSES/expat-NOTICES.txt names their holders too. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release); its entropy source is arc4random_buf, as on other non-Windows platforms, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
-        "LICENSES/expat-NOTICES.txt": "2436c77d9b87dbfc26d870b61dc349a7103d6633cfdb0c5d3e654fee88237cc8"
+        "LICENSES/expat-NOTICES.txt": "60a7e0f358f73502f30f378b7f6fd84c42e6d1800dc85bda55caffaf7ff1747f"
       },
       "windows_release": {
         "binaries": [
@@ -1335,6 +1522,12 @@
           "licenses/expat-copyright.txt": "vcpkg:expat",
           "licenses/expat-NOTICES.txt": "repo:LICENSES/expat-NOTICES.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/expat-copyright.txt": "vcpkg:expat",
+          "licenses/expat-NOTICES.txt": "repo:LICENSES/expat-NOTICES.txt"
+        }
       }
     },
     {
@@ -1343,19 +1536,21 @@
       "paths": [
         "vcpkg.json",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "Zlib",
       "license_concluded": "Zlib",
       "notices": [],
-      "assessment": "z.dll in the Windows ZIP, which libcurl loads; vcpkg's zlib port at the manifest baseline (1.3.2, tag v1.3.2), the library sources only (nothing from contrib/ is built). The ZIP carries the copyright file the port installs (share/zlib/copyright, the upstream LICENSE) as licenses/zlib-copyright.txt; it is the whole zlib license and names both holders, Jean-loup Gailly and Mark Adler. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, libcurl's dependency. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "z.dll in the Windows ZIP, which libcurl loads; vcpkg's zlib port at the manifest baseline (1.3.2, tag v1.3.2), the library sources only (nothing from contrib/ is built). The ZIP carries the copyright file the port installs (share/zlib/copyright, the upstream LICENSE) as licenses/zlib-copyright.txt; it is the whole zlib license and names both holders, Jean-loup Gailly and Mark Adler. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, libcurl's dependency. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), which libcurl loads, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1373,6 +1568,11 @@
         "notices": {
           "licenses/zlib-copyright.txt": "vcpkg:zlib"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/zlib-copyright.txt": "vcpkg:zlib"
+        }
       }
     },
     {
@@ -1385,13 +1585,15 @@
         "LICENSES/LicenseRef-Sun-G72x.txt",
         "LICENSES/libsndfile-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "LGPL-2.1-or-later AND LGPL-2.0-or-later AND Apache-2.0 AND BSD-3-Clause AND TU-Berlin-1.0 AND LicenseRef-Sun-G72x",
@@ -1402,7 +1604,7 @@
         "LICENSES/LicenseRef-Sun-G72x.txt",
         "LICENSES/libsndfile-NOTICES.txt"
       ],
-      "assessment": "sndfile.dll in the Windows ZIP, dsd-neo.exe's audio file reader and writer; vcpkg's libsndfile port at the manifest baseline (1.2.2, libsndfile/libsndfile tag 1.2.2) with its default external-libs and mpeg features. The DLL compiles libsndfile's own sources (LGPL-2.1-or-later; src/ima_oki_adpcm.c and .h LGPL-2.0-or-later) and three bundled codecs: GSM 06.10 (src/GSM610, the Technische Universitaet Berlin notice, TU-Berlin-1.0), G.72x (src/G72x, Sun Microsystems' unrestricted-use notice, LicenseRef-Sun-G72x) and ALAC (src/ALAC, Apple, Apache-2.0; the archive has no NOTICE file for it). src/ogg.c, ogg_opus.c and ogg_vorbis.c reproduce Xiph.Org BSD-3-Clause notices. The ZIP carries the copyright file the port installs (share/libsndfile/copyright, the LGPL 2.1 COPYING) as licenses/libsndfile-copyright.txt; src/GSM610/COPYRIGHT and src/ALAC/LICENSE, unmodified, as licenses/libsndfile-GSM610-COPYRIGHT.txt and licenses/libsndfile-ALAC-Apache-2.0.txt; Sun's notice from src/G72x/g72x.c as licenses/LicenseRef-Sun-G72x.txt; and LICENSES/libsndfile-NOTICES.txt, the holder lines of every compiled file and the Xiph notices, as licenses/libsndfile-NOTICES.txt; each from the pinned archive. The Android app links the same port's static library, with the same features, into libdsd-neo-app_arm64-v8a.so; it compiles no architecture-specific source. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "sndfile.dll in the Windows ZIP, dsd-neo.exe's audio file reader and writer; vcpkg's libsndfile port at the manifest baseline (1.2.2, libsndfile/libsndfile tag 1.2.2) with its default external-libs and mpeg features. The DLL compiles libsndfile's own sources (LGPL-2.1-or-later; src/ima_oki_adpcm.c and .h LGPL-2.0-or-later) and three bundled codecs: GSM 06.10 (src/GSM610, the Technische Universitaet Berlin notice, TU-Berlin-1.0), G.72x (src/G72x, Sun Microsystems' unrestricted-use notice, LicenseRef-Sun-G72x) and ALAC (src/ALAC, Apple, Apache-2.0; the archive has no NOTICE file for it). src/ogg.c, ogg_opus.c and ogg_vorbis.c reproduce Xiph.Org BSD-3-Clause notices. The ZIP carries the copyright file the port installs (share/libsndfile/copyright, the LGPL 2.1 COPYING) as licenses/libsndfile-copyright.txt; src/GSM610/COPYRIGHT and src/ALAC/LICENSE, unmodified, as licenses/libsndfile-GSM610-COPYRIGHT.txt and licenses/libsndfile-ALAC-Apache-2.0.txt; Sun's notice from src/G72x/g72x.c as licenses/LicenseRef-Sun-G72x.txt; and LICENSES/libsndfile-NOTICES.txt, the holder lines of every compiled file and the Xiph notices, as licenses/libsndfile-NOTICES.txt; each from the pinned archive. The Android app links the same port's static library, with the same features, into libdsd-neo-app_arm64-v8a.so; it compiles no architecture-specific source. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), with the same codec libraries, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1411,7 +1613,7 @@
         "LICENSES/libsndfile-GSM610-COPYRIGHT.txt": "1bbe7119b1bcd1489e0f36cb95b8902f7f0ceec9a2f3a67394bc9f4709a4e0a7",
         "LICENSES/libsndfile-ALAC-Apache-2.0.txt": "232efbd83786e157286b0b96c68ebb673541b69b33036287bf1e5ec5067a49d9",
         "LICENSES/LicenseRef-Sun-G72x.txt": "504d76f87edc1aabe32ce29b5e68dbcf11495157ebd5e5c1fe0d672315ab03e4",
-        "LICENSES/libsndfile-NOTICES.txt": "92112a1aec71d137ba2d0814189a2c84c920f53bcb4b1dfa5bfc0444e5b81bc9"
+        "LICENSES/libsndfile-NOTICES.txt": "b35d0ed714508792686465f6e6a2eefecb59d24f85067f61341dce9b5c82e433"
       },
       "windows_release": {
         "binaries": [
@@ -1433,6 +1635,15 @@
           "licenses/LicenseRef-Sun-G72x.txt": "repo:LICENSES/LicenseRef-Sun-G72x.txt",
           "licenses/libsndfile-NOTICES.txt": "repo:LICENSES/libsndfile-NOTICES.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/libsndfile-copyright.txt": "vcpkg:libsndfile",
+          "licenses/libsndfile-GSM610-COPYRIGHT.txt": "repo:LICENSES/libsndfile-GSM610-COPYRIGHT.txt",
+          "licenses/libsndfile-ALAC-Apache-2.0.txt": "repo:LICENSES/libsndfile-ALAC-Apache-2.0.txt",
+          "licenses/LicenseRef-Sun-G72x.txt": "repo:LICENSES/LicenseRef-Sun-G72x.txt",
+          "licenses/libsndfile-NOTICES.txt": "repo:LICENSES/libsndfile-NOTICES.txt"
+        }
       }
     },
     {
@@ -1441,19 +1652,21 @@
       "paths": [
         "vcpkg.json",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "notices": [],
-      "assessment": "FLAC.dll in the Windows ZIP, which libsndfile loads; vcpkg's libflac port at the manifest baseline (1.5.0, xiph/flac tag 1.5.0): libFLAC only, without assembly, under BSD-3-Clause; its MD5 code is public domain. The ZIP carries the copyright file the port installs (share/libflac/copyright, the upstream COPYING.Xiph, which names both holders, Josh Coalson and the Xiph.Org Foundation) as licenses/libflac-copyright.txt. FLAC++.dll is built but nothing loads it, so the ZIP does not carry it. The Android app links the same port's static libFLAC into libdsd-neo-app_arm64-v8a.so; on arm64 it also compiles src/libFLAC/lpc_intrin_neon.c, whose holders (Josh Coalson, Xiph.Org Foundation) and BSD license are those of COPYING.Xiph. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "FLAC.dll in the Windows ZIP, which libsndfile loads; vcpkg's libflac port at the manifest baseline (1.5.0, xiph/flac tag 1.5.0): libFLAC only, without assembly, under BSD-3-Clause; its MD5 code is public domain. The ZIP carries the copyright file the port installs (share/libflac/copyright, the upstream COPYING.Xiph, which names both holders, Josh Coalson and the Xiph.Org Foundation) as licenses/libflac-copyright.txt. FLAC++.dll is built but nothing loads it, so the ZIP does not carry it. The Android app links the same port's static libFLAC into libdsd-neo-app_arm64-v8a.so; on arm64 it also compiles src/libFLAC/lpc_intrin_neon.c, whose holders (Josh Coalson, Xiph.Org Foundation) and BSD license are those of COPYING.Xiph. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), with src/libFLAC/lpc_intrin_neon.c on arm64 as on Android, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1471,6 +1684,11 @@
         "notices": {
           "licenses/libflac-copyright.txt": "vcpkg:libflac"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/libflac-copyright.txt": "vcpkg:libflac"
+        }
       }
     },
     {
@@ -1479,19 +1697,21 @@
       "paths": [
         "vcpkg.json",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "notices": [],
-      "assessment": "ogg.dll in the Windows ZIP, which libsndfile and its codecs load; vcpkg's libogg port at the manifest baseline (1.3.6, xiph/ogg tag v1.3.6): src/bitwise.c and src/framing.c, under BSD-3-Clause (Xiph.Org Foundation; framing.c's CRC code derives from Ross Williams' public-domain code). The ZIP carries the copyright file the port installs (share/libogg/copyright, the upstream COPYING, which names the Xiph.org Foundation) as licenses/libogg-copyright.txt. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "ogg.dll in the Windows ZIP, which libsndfile and its codecs load; vcpkg's libogg port at the manifest baseline (1.3.6, xiph/ogg tag v1.3.6): src/bitwise.c and src/framing.c, under BSD-3-Clause (Xiph.Org Foundation; framing.c's CRC code derives from Ross Williams' public-domain code). The ZIP carries the copyright file the port installs (share/libogg/copyright, the upstream COPYING, which names the Xiph.org Foundation) as licenses/libogg-copyright.txt. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1509,6 +1729,11 @@
         "notices": {
           "licenses/libogg-copyright.txt": "vcpkg:libogg"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/libogg-copyright.txt": "vcpkg:libogg"
+        }
       }
     },
     {
@@ -1518,13 +1743,15 @@
         "vcpkg.json",
         "LICENSES/libvorbis-lpc-NOTICE.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "BSD-3-Clause AND TU-Berlin-1.0",
@@ -1532,13 +1759,13 @@
       "notices": [
         "LICENSES/libvorbis-lpc-NOTICE.txt"
       ],
-      "assessment": "vorbis.dll and vorbisenc.dll in the Windows ZIP, which libsndfile loads; vcpkg's libvorbis port at the manifest baseline (1.3.7, xiph/vorbis tag v1.3.7). vorbisfile.dll is built but nothing loads it, so the ZIP does not carry it. BSD-3-Clause (Xiph.Org Foundation); lib/lpc.c, in vorbis.dll, also preserves Jutta Degener and Carsten Bormann's Technische Universitaet Berlin notice and asks that it be kept unmodified (TU-Berlin-1.0). The ZIP carries the copyright file the port installs (share/libvorbis/copyright, the upstream COPYING) as licenses/libvorbis-copyright.txt, and LICENSES/libvorbis-lpc-NOTICE.txt, lib/lpc.c lines 17-43 from the pinned archive, unmodified, as licenses/libvorbis-lpc-NOTICE.txt. The Android app links the same port's static libvorbis and libvorbisenc into libdsd-neo-app_arm64-v8a.so, lib/lpc.c included. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "vorbis.dll and vorbisenc.dll in the Windows ZIP, which libsndfile loads; vcpkg's libvorbis port at the manifest baseline (1.3.7, xiph/vorbis tag v1.3.7). vorbisfile.dll is built but nothing loads it, so the ZIP does not carry it. BSD-3-Clause (Xiph.Org Foundation); lib/lpc.c, in vorbis.dll, also preserves Jutta Degener and Carsten Bormann's Technische Universitaet Berlin notice and asks that it be kept unmodified (TU-Berlin-1.0). The ZIP carries the copyright file the port installs (share/libvorbis/copyright, the upstream COPYING) as licenses/libvorbis-copyright.txt, and LICENSES/libvorbis-lpc-NOTICE.txt, lib/lpc.c lines 17-43 from the pinned archive, unmodified, as licenses/libvorbis-lpc-NOTICE.txt. The Android app links the same port's static libvorbis and libvorbisenc into libdsd-neo-app_arm64-v8a.so, lib/lpc.c included. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release) (libvorbis and libvorbisenc), and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
-        "LICENSES/libvorbis-lpc-NOTICE.txt": "5d8088265500c7bfaf990ca6062c320d95bd53d80ca77a432b27c0a7540a7d22"
+        "LICENSES/libvorbis-lpc-NOTICE.txt": "563cf0f7ac83c432787f4e51b68d221b1901e972319e1c2b7b8eddf82e9f466f"
       },
       "windows_release": {
         "binaries": [
@@ -1555,6 +1782,12 @@
           "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis",
           "licenses/libvorbis-lpc-NOTICE.txt": "repo:LICENSES/libvorbis-lpc-NOTICE.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis",
+          "licenses/libvorbis-lpc-NOTICE.txt": "repo:LICENSES/libvorbis-lpc-NOTICE.txt"
+        }
       }
     },
     {
@@ -1564,13 +1797,15 @@
         "vcpkg.json",
         "LICENSES/opus-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "BSD-3-Clause AND BSD-2-Clause",
@@ -1578,13 +1813,13 @@
       "notices": [
         "LICENSES/opus-NOTICES.txt"
       ],
-      "assessment": "opus.dll in the Windows ZIP, which libsndfile loads; vcpkg's opus port at the manifest baseline (1.6.1, xiph/opus tag v1.6.1), floating point for x64, with no deep-learning (DNN, DRED, OSCE) code. The compiled files carry the BSD-3-Clause license of Opus's COPYING or its two-clause form (BSD-2-Clause). The ZIP carries the copyright file the port installs (share/opus/copyright, COPYING) as licenses/opus-copyright.txt, and LICENSES/opus-NOTICES.txt, the headers of the compiled files that name holders COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo, Parrot, John Ridges) and the two-clause text, from the pinned archive, as licenses/opus-NOTICES.txt. COPYING points to royalty-free patent licenses from Xiph.Org, Microsoft and Broadcom, which have conditions; they are not reviewed here. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, built for arm64 with the celt/arm and silk/arm NEON and run-time CPU detection sources in place of the x86 ones; LICENSES/opus-NOTICES.txt reproduces their headers too (Google, Vidyo, Parrot, Arm Limited). The license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "opus.dll in the Windows ZIP, which libsndfile loads; vcpkg's opus port at the manifest baseline (1.6.1, xiph/opus tag v1.6.1), floating point for x64, with no deep-learning (DNN, DRED, OSCE) code. The compiled files carry the BSD-3-Clause license of Opus's COPYING or its two-clause form (BSD-2-Clause). The ZIP carries the copyright file the port installs (share/opus/copyright, COPYING) as licenses/opus-copyright.txt, and LICENSES/opus-NOTICES.txt, the headers of the compiled files that name holders COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo, Parrot, John Ridges) and the two-clause text, from the pinned archive, as licenses/opus-NOTICES.txt. COPYING points to royalty-free patent licenses from Xiph.Org, Microsoft and Broadcom, which have conditions; they are not reviewed here. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, built for arm64 with the celt/arm and silk/arm NEON and run-time CPU detection sources in place of the x86 ones; LICENSES/opus-NOTICES.txt reproduces their headers too (Google, Vidyo, Parrot, Arm Limited). The license expression is unchanged. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), with the celt/arm and silk/arm files as on Android, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
-        "LICENSES/opus-NOTICES.txt": "38119b683713e8e6c64ab0f0d7136f7b151e1fee950f67d9698689fd5409cfea"
+        "LICENSES/opus-NOTICES.txt": "2676be39f3dfca8ad0c2ba9ef5142736f08539d202a77121b4993b4a87f22bc7"
       },
       "windows_release": {
         "binaries": [
@@ -1596,6 +1831,12 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/opus-copyright.txt": "vcpkg:opus",
+          "licenses/opus-NOTICES.txt": "repo:LICENSES/opus-NOTICES.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/opus-copyright.txt": "vcpkg:opus",
           "licenses/opus-NOTICES.txt": "repo:LICENSES/opus-NOTICES.txt"
@@ -1612,13 +1853,15 @@
         "LICENSES/mp3lame-LICENSE.txt",
         "LICENSES/mp3lame-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "LGPL-2.0-or-later AND LGPL-2.1-or-later",
@@ -1629,7 +1872,7 @@
         "LICENSES/mp3lame-LICENSE.txt",
         "LICENSES/mp3lame-NOTICES.txt"
       ],
-      "assessment": "libmp3lame.DLL in the Windows ZIP, which libsndfile loads; vcpkg's mp3lame port at the manifest baseline (LAME 3.100), built with MSVC from vc_solution/vc11_libmp3lame_dll.vcxproj: libmp3lame and, by its build files, the mpglib decoder. The file headers grant the GNU Library General Public License version 2 or any later version, and libmp3lame/gain_analysis.c and .h the GNU Lesser General Public License 2.1 or any later version. The port's vcpkg.json (LGPL-2.0-only) and the upstream README (\"version 2\"; \"MPGLIB is released under the GPL\") say otherwise; the file headers are followed. libmp3lame/fft.c names no license of its own and is taken as covered by the package's LGPL. The ZIP carries the copyright file the port installs (share/mp3lame/copyright, the LGPL 2.0 COPYING) as licenses/mp3lame-copyright.txt; the LGPL 2.1 text (android/third_party/libusb/COPYING) as licenses/mp3lame-LGPL-2.1.txt; the upstream README and LICENSE, unmodified, as licenses/mp3lame-README.txt and licenses/mp3lame-LICENSE.txt; and LICENSES/mp3lame-NOTICES.txt, the holder lines of the compiled files with mpglib/README and the header of libmp3lame/fft.c, as licenses/mp3lame-NOTICES.txt; each from the pinned archive. The README, mpglib/README and fft.c note possible patent claims; they are not reviewed here. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, built with LAME's configure script (--disable-frontend), which also builds the mpglib decoder; no SSE file is compiled on arm64. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "libmp3lame.DLL in the Windows ZIP, which libsndfile loads; vcpkg's mp3lame port at the manifest baseline (LAME 3.100), built with MSVC from vc_solution/vc11_libmp3lame_dll.vcxproj: libmp3lame and, by its build files, the mpglib decoder. The file headers grant the GNU Library General Public License version 2 or any later version, and libmp3lame/gain_analysis.c and .h the GNU Lesser General Public License 2.1 or any later version. The port's vcpkg.json (LGPL-2.0-only) and the upstream README (\"version 2\"; \"MPGLIB is released under the GPL\") say otherwise; the file headers are followed. libmp3lame/fft.c names no license of its own and is taken as covered by the package's LGPL. The ZIP carries the copyright file the port installs (share/mp3lame/copyright, the LGPL 2.0 COPYING) as licenses/mp3lame-copyright.txt; the LGPL 2.1 text (android/third_party/libusb/COPYING) as licenses/mp3lame-LGPL-2.1.txt; the upstream README and LICENSE, unmodified, as licenses/mp3lame-README.txt and licenses/mp3lame-LICENSE.txt; and LICENSES/mp3lame-NOTICES.txt, the holder lines of the compiled files with mpglib/README and the header of libmp3lame/fft.c, as licenses/mp3lame-NOTICES.txt; each from the pinned archive. The README, mpglib/README and fft.c note possible patent claims; they are not reviewed here. The Android app links the same port's static library into libdsd-neo-app_arm64-v8a.so, built with LAME's configure script (--disable-frontend), which also builds the mpglib decoder; no SSE file is compiled on arm64. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), built with LAME's configure script as on Android, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -1638,7 +1881,7 @@
         "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
         "LICENSES/mp3lame-README.txt": "687ad59451fddafba33340222a5c5820a99b62249d69b25a3667b396bd623d10",
         "LICENSES/mp3lame-LICENSE.txt": "7a40cbd8818c57e5285e83c772a459a996d1662c824a879836b97b473c07cae4",
-        "LICENSES/mp3lame-NOTICES.txt": "c6d73a351b8de0b96655cfa0ebd57f518282826c3a4c39b88f0bd78fb758fd5c"
+        "LICENSES/mp3lame-NOTICES.txt": "23ab01e1dd81112fbf45d8e98c9982e0edf9741be6372e0708fc16be7d1690f8"
       },
       "windows_release": {
         "binaries": [
@@ -1660,6 +1903,15 @@
           "licenses/mp3lame-LICENSE.txt": "repo:LICENSES/mp3lame-LICENSE.txt",
           "licenses/mp3lame-NOTICES.txt": "repo:LICENSES/mp3lame-NOTICES.txt"
         }
+      },
+      "macos_release": {
+        "notices": {
+          "licenses/mp3lame-copyright.txt": "vcpkg:mp3lame",
+          "licenses/mp3lame-LGPL-2.1.txt": "repo:android/third_party/libusb/COPYING",
+          "licenses/mp3lame-README.txt": "repo:LICENSES/mp3lame-README.txt",
+          "licenses/mp3lame-LICENSE.txt": "repo:LICENSES/mp3lame-LICENSE.txt",
+          "licenses/mp3lame-NOTICES.txt": "repo:LICENSES/mp3lame-NOTICES.txt"
+        }
       }
     },
     {
@@ -1670,13 +1922,15 @@
         "LICENSES/mpg123-AUTHORS.txt",
         "LICENSES/mpg123-NOTICES.txt",
         "vcpkg-triplets/arm64-android-static.cmake",
-        "cmake/stage_android_package.cmake"
+        "cmake/stage_android_package.cmake",
+        "vcpkg-triplets/arm64-osx-dynamic-release.cmake"
       ],
       "distribution": [
         "binary"
       ],
       "platforms": [
         "android",
+        "macos",
         "windows"
       ],
       "license_declared": "LGPL-2.1-only AND MirOS",
@@ -1685,14 +1939,14 @@
         "LICENSES/mpg123-AUTHORS.txt",
         "LICENSES/mpg123-NOTICES.txt"
       ],
-      "assessment": "mpg123.dll in the Windows ZIP, which libsndfile loads; vcpkg's mpg123 port at the manifest baseline (1.33.7), libmpg123 only (libout123 and libsyn123 are built but nothing loads them, so the ZIP does not carry them). COPYING and every compiled file grant the LGPL 2.1 without \"or later\" (the port's vcpkg.json says LGPL-2.1-or-later); src/libmpg123/icy2utf8.c is under the MirOS license, which asks for its notice in an accompanying document, and src/libmpg123/layer3.c holds a short piece Mikko Tommila made freely usable. The ZIP carries the copyright file the port installs (share/mpg123/copyright, COPYING with the LGPL 2.1 and GPL 2 texts) as licenses/mpg123-copyright.txt; the upstream AUTHORS, unmodified, as licenses/mpg123-AUTHORS.txt; and LICENSES/mpg123-NOTICES.txt, the icy2utf8.c and layer3.c notices, as licenses/mpg123-NOTICES.txt; each from the pinned archive. The Android app links the same port's static libmpg123 into libdsd-neo-app_arm64-v8a.so, with the aarch64 NEON sources (src/libmpg123/*_neon64*.S, check_neon.S, getcpuflags_arm.c), which carry the same LGPL 2.1 grant of the mpg123 project. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "mpg123.dll in the Windows ZIP, which libsndfile loads; vcpkg's mpg123 port at the manifest baseline (1.33.7), libmpg123 only (libout123 and libsyn123 are built but nothing loads them, so the ZIP does not carry them). COPYING and every compiled file grant the LGPL 2.1 without \"or later\" (the port's vcpkg.json says LGPL-2.1-or-later); src/libmpg123/icy2utf8.c is under the MirOS license, which asks for its notice in an accompanying document, and src/libmpg123/layer3.c holds a short piece Mikko Tommila made freely usable. The ZIP carries the copyright file the port installs (share/mpg123/copyright, COPYING with the LGPL 2.1 and GPL 2 texts) as licenses/mpg123-copyright.txt; the upstream AUTHORS, unmodified, as licenses/mpg123-AUTHORS.txt; and LICENSES/mpg123-NOTICES.txt, the icy2utf8.c and layer3.c notices, as licenses/mpg123-NOTICES.txt; each from the pinned archive. The Android app links the same port's static libmpg123 into libdsd-neo-app_arm64-v8a.so, with the aarch64 NEON sources (src/libmpg123/*_neon64*.S, check_neon.S, getcpuflags_arm.c), which carry the same LGPL 2.1 grant of the mpg123 project. The APK carries the same notices as the ZIP, under the same names in assets/doc/dsd-neo/licenses/, the port's copyright file taken from the Android build's vcpkg tree. The macOS DMG bundles the same port's shared library, built for arm64 by vcpkg at the same baseline (arm64-osx-dynamic-release), with the aarch64 NEON files as on Android, and carries the same notices under the same names in share/doc/dsd-neo/licenses/, the port's copyright file taken from the DMG build's vcpkg tree. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
         "LICENSES/mpg123-AUTHORS.txt": "fb18c9abae864a20f691e949e4c7871c79f5f0861b3a3dcaf5881c3c02cf5cc2",
-        "LICENSES/mpg123-NOTICES.txt": "c0346e81f578ae0816c016d9f243fdc4346c50d57a2431f4a3a2f4e849a5e43e"
+        "LICENSES/mpg123-NOTICES.txt": "bd5e4a704408457e36e73e4650d17b767272d1031480494ad293c756c66f3d93"
       },
       "windows_release": {
         "binaries": [
@@ -1705,6 +1959,13 @@
         }
       },
       "android_release": {
+        "notices": {
+          "licenses/mpg123-copyright.txt": "vcpkg:mpg123",
+          "licenses/mpg123-AUTHORS.txt": "repo:LICENSES/mpg123-AUTHORS.txt",
+          "licenses/mpg123-NOTICES.txt": "repo:LICENSES/mpg123-NOTICES.txt"
+        }
+      },
+      "macos_release": {
         "notices": {
           "licenses/mpg123-copyright.txt": "vcpkg:mpg123",
           "licenses/mpg123-AUTHORS.txt": "repo:LICENSES/mpg123-AUTHORS.txt",

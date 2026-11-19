@@ -307,16 +307,18 @@ class SoapyModulePackaging(unittest.TestCase):
     def test_legal_records(self):
         inventory = {c["id"]: c for c in json.loads(read("legal/components.json"))["components"]}
         expected = {
-            "soapysdr": (["linux", "windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt",
-                                                                            "LICENSES/SoapySDR-COPYRIGHT.txt"]),
+            "soapysdr": (["linux", "macos", "windows"], "BSL-1.0", "SOAPY_SDR_SHA",
+                         ["LICENSES/BSL-1.0.txt", "LICENSES/SoapySDR-COPYRIGHT.txt"]),
             # SoapySDR's program, which only the Windows ZIP carries (the AppImage builds no programs).
             "soapysdr-util": (["windows"], "BSL-1.0", "SOAPY_SDR_SHA", ["LICENSES/BSL-1.0.txt",
                                                                        "LICENSES/SoapySDR-COPYRIGHT.txt"]),
             "soapy-airspy": (["windows"], "MIT", "SOAPY_AIRSPY_SHA", ["vcpkg-ports/soapy-airspy/copyright"]),
             "soapy-hackrf": (["windows"], "MIT", "SOAPY_HACKRF_SHA", ["vcpkg-ports/soapy-hackrf/copyright"]),
             "libhackrf": (["windows"], "BSD-3-Clause", "HACKRF_SHA", ["vcpkg-ports/hackrf/copyright"]),
-            "windows-libusb": (["windows"], "LGPL-2.1-or-later", None, ["android/third_party/libusb/COPYING",
-                                                                         "packaging/windows/libusb-COPYRIGHT.txt"]),
+            # The vcpkg port's libusb, in the Windows ZIP and the macOS DMG.
+            "libusb": (["macos", "windows"], "LGPL-2.1-or-later", None, ["android/third_party/libusb/COPYING",
+                                                                       "packaging/windows/libusb-COPYRIGHT.txt",
+                                                                       "LICENSES/libusb-macos-NOTICES.txt"]),
             "pthreads4w": (["windows"], "Apache-2.0", None, ["packaging/windows/PThreads4W-LICENSE.txt",
                                                              "packaging/windows/PThreads4W-NOTICE.txt",
                                                              "packaging/windows/PThreads4W-CONTRIBUTORS.txt"]),
@@ -325,7 +327,6 @@ class SoapyModulePackaging(unittest.TestCase):
         for ident, (platforms, license_id, pin, notices) in expected.items():
             with self.subTest(component=ident):
                 component = inventory[ident]
-                # The DMG bundles Homebrew's SoapySDR, which no record claims.
                 self.assertEqual(sorted(component["platforms"]), platforms)
                 self.assertEqual(component["distribution"], ["binary"])
                 self.assertEqual((component["license_declared"], component["license_concluded"]),

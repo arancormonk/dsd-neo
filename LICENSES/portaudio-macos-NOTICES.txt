@@ -1,0 +1,120 @@
+PortAudio (https://github.com/PortAudio/portaudio) copyright notices for the macOS DMG's
+libportaudio.dylib: release v19.7.0, commit 147dd722548358763a8b649b3e4b41dfffbcfbb6 (archive
+https://github.com/PortAudio/portaudio/archive/147dd722548358763a8b649b3e4b41dfffbcfbb6.tar.gz,
+SHA512
+0f56e5f5b004f51915f29771b8fc1fe886f1fef5d65ab5ea1db43f43c49917476b9eec14b36aa54d3e9fb4d8bdf61e68c79624d00b7e548d4c493395a758233a),
+as the project's portaudio overlay builds it for macOS: the common sources, the Unix sources and
+the Core Audio host API, and the headers they include. Each file is under the PortAudio license,
+the MIT license of portaudio-copyright.txt (the upstream LICENSE.txt); its holder lines follow.
+The Core Audio files also name their authors: src/hostapi/coreaudio/pa_mac_core.c was "Written by
+Bjorn Roche of XO Audio LLC, from PA skeleton code", with "Portions copied from code by Dominic
+Mazzoni (who wrote a HAL implementation)", whose code "was based on code by Phil Burk, Darren Gibbs,
+Gord Peters, Stephane Letz, and Greg Pfiel".
+
+include/pa_mac_core.h
+    Copyright (c) 2005-2006 Bjorn Roche
+
+include/portaudio.h
+    Copyright (c) 1999-2002 Ross Bencina and Phil Burk
+
+src/common/pa_allocation.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/common/pa_allocation.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_converters.c
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_converters.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_cpuload.c
+    Copyright (c) 2002 Ross Bencina
+
+src/common/pa_cpuload.h
+    Copyright (c) 2002 Ross Bencina
+
+src/common/pa_debugprint.c
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_debugprint.h
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_dither.c
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_dither.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_endianness.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_front.c
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_hostapi.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_memorybarrier.h
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_process.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/common/pa_process.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_ringbuffer.c
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_ringbuffer.h
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_stream.c
+    Copyright (c) 2008 Ross Bencina
+
+src/common/pa_stream.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_trace.c
+    Copyright (c) 1999-2000 Phil Burk
+
+src/common/pa_trace.h
+    Copyright (c) 1999-2000 Phil Burk
+
+src/common/pa_types.h
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_util.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core_blocking.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core_blocking.h
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core_internal.h
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core_utilities.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/coreaudio/pa_mac_core_utilities.h
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/skeleton/pa_hostapi_skeleton.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/os/unix/pa_unix_hostapis.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/os/unix/pa_unix_util.c
+    Copyright (c) 1999-2000 Ross Bencina
+
+src/os/unix/pa_unix_util.h
+    Copyright (c) 1999-2000 Ross Bencina

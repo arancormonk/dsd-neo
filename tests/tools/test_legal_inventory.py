@@ -157,18 +157,16 @@ class InventoryTests(unittest.TestCase):
             "binaries in a map that has none": edit(
                 "opus", lambda c: c["android_release"].update(binaries=["libopus.so"])),
             "a macOS map for a component the DMG does not carry": edit(
-                "opus", lambda c: c.update(macos_release={"notices": {"licenses/opus-copyright.txt": "vcpkg:opus"}})),
+                "pdcurses", lambda c: c.update(macos_release={"notices": {"licenses/p.txt": "vcpkg:pdcurses"}})),
             "an empty macOS map": edit("airspy", lambda c: c.update(macos_release={"notices": {}})),
+            "a macOS component without a map": edit("ncurses", lambda c: c.pop("macos_release")),
         }
         for label, inventory in cases.items():
             with self.subTest(case=label), self.assertRaises(ValueError):
                 legal.validate(inventory, ROOT)
-        # The macOS map has the shape of the others; the DMG requires a map of every component once its staging
-        # reads them (COMPLETE_RELEASE_MAPS).
-        inventory = edit("airspy", lambda c: c.update(macos_release={"notices": {
-            "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"}}))
-        legal.validate(inventory, ROOT)
-        self.assertEqual(legal.COMPLETE_RELEASE_MAPS, {"windows", "android"})
+        # The macOS map has the shape of the others; the DMG's staging and its check read them, so every component the
+        # DMG carries has one (COMPLETE_RELEASE_MAPS).
+        self.assertEqual(legal.COMPLETE_RELEASE_MAPS, {"windows", "android", "macos"})
 
     def test_release_notice_listing_follows_the_maps(self):
         # The package checks read the notices each package must carry from the records.
@@ -220,6 +218,8 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(packages["mbelib"]["versionInfo"], self.pins["MBELIB_NEO_SHA"])
             self.assertNotIn("recordings", packages)
             self.assertEqual("android-libusb" in packages, platform == "android")
+            self.assertEqual("ncurses" in packages, platform == "macos")
+            self.assertEqual("libusb" in packages, platform in ("macos", "windows"))
             self.assertEqual("ibm-plex" in packages, platform == "android")
             notices = {n["licenseId"]: n["extractedText"] for n in document["hasExtractedLicensingInfos"]}
             self.assertIn("free for non-commercial purposes", notices["LicenseRef-BCH3-Noncommercial"])
@@ -233,11 +233,12 @@ class InventoryTests(unittest.TestCase):
                 self.assertNotIn("licenseComments", packages["msvc-runtime"])
                 self.assertIn("Do not modify them.", notices[runtime])
             # The custom texts of the vcpkg libraries come from their retained files: PDCurses ships in the ZIP only,
-            # OpenSSL and libsndfile in the ZIP and the APK. codec2's varicode grant is read as the LGPL 2.1: its note
+            # OpenSSL and libsndfile in the ZIP, the APK and the DMG, the ncurses terminal database in the DMG only. codec2's varicode grant is read as the LGPL 2.1: its note
             # file (LICENSES/LicenseRef-codec2-varicode.txt) records that reading and adds no license to any SBOM.
             for custom, platforms in (("LicenseRef-PDCurses-Public-Domain", ("windows",)),
-                                      ("LicenseRef-OpenSSL-KISA-SEED", ("windows", "android")),
-                                      ("LicenseRef-Sun-G72x", ("windows", "android"))):
+                                      ("LicenseRef-OpenSSL-KISA-SEED", ("windows", "android", "macos")),
+                                      ("LicenseRef-Sun-G72x", ("windows", "android", "macos")),
+                                      ("LicenseRef-ncurses-terminfo", ("macos",))):
                 self.assertEqual(custom in notices, platform in platforms)
                 if platform in platforms:
                     self.assertEqual(notices[custom], (ROOT / "LICENSES" / (custom + ".txt")).read_text(encoding="utf-8"))
@@ -295,8 +296,9 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(component["patent_status"], "not-cleared")
                 self.assertNotIn("finding", component)
                 self.assertNotIn("RUNTIME-NOTICES", component["assessment"])
-                shipped = {source.removeprefix("repo:") for source in component["windows_release"]["notices"].values()
-                           if source.startswith("repo:")}
+                # The DMG adds the notices of the files only its builds compile (curl's and PortAudio's macOS files).
+                shipped = {source.removeprefix("repo:") for key in ("windows_release", "macos_release")
+                           for source in component.get(key, {}).get("notices", {}).values() if source.startswith("repo:")}
                 self.assertEqual(shipped, set(component["notices"]))
         self.assertEqual(json.loads((ROOT / "vcpkg-ports/codec2/vcpkg.json").read_text())["license"],
                          expected["codec2"])
@@ -474,8 +476,8 @@ class InventoryTests(unittest.TestCase):
             self.assertIn(words, status)
 
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
-        # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
-        # SoapySDRUtil.exe, so only its SBOM names it.
+        # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF) and the DMG without the overlay's tools
+        # feature; only the Windows ZIP carries SoapySDRUtil.exe, so only its SBOM names it.
         appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8")
         self.assertIn("-DENABLE_APPS=OFF", appimage)
         for platform in legal.PLATFORMS:
@@ -483,7 +485,7 @@ class InventoryTests(unittest.TestCase):
             legal.add_spdx(document, self.inventory, self.pins, platform)
             names = [p["name"] for p in document["packages"]]
             with self.subTest(platform=platform):
-                self.assertEqual("SoapySDR" in names, platform in ("linux", "windows"), names)
+                self.assertEqual("SoapySDR" in names, platform in ("linux", "macos", "windows"), names)
                 self.assertEqual([n for n in names if "SoapySDRUtil" in n],
                                  ["SoapySDRUtil"] if platform == "windows" else [])
 

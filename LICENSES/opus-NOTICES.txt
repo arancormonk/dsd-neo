@@ -4,7 +4,7 @@ https://github.com/xiph/opus/archive/v1.6.1.tar.gz, SHA512
 b9a504f8576c977df57caee808412ab95e7424e9a64e3dd4045f05616c3ed58706bc3549195b61e25721e299547509d15206d246d96f1a307b82562b703b412c),
 as vcpkg's opus port builds it, floating point and with no deep-learning code: opus.dll in the
 Windows ZIP, built for x64 (the celt/x86 and silk/x86 files), and the static library in the Android
-app, built for arm64 (the celt/arm and silk/arm files). opus-copyright.txt, Opus's COPYING, carries
+app and the shared library in the macOS DMG, both built for arm64 (the celt/arm and silk/arm files). opus-copyright.txt, Opus's COPYING, carries
 the BSD-3-Clause license and its holders. These sources compiled into the library also name holders
 COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo, Parrot and John Ridges); each
 file's header is reproduced up to its license text. Of these, silk/LPC_fit.c, silk/NSQ.h,

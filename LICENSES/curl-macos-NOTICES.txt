@@ -1,0 +1,10 @@
+libcurl (https://curl.se/, https://github.com/curl/curl) release 8.23.0, tag curl-8_23_0 (archive
+https://github.com/curl/curl/archive/curl-8_23_0.tar.gz, SHA512
+e1003f374675a6ae50463995a6c705208c4247120093f1fcccf030847161235b3dfc0e40927114ccbc5b4530893990ccb96ec15400ffe4bcb275d26a0499f10e):
+the libcurl of the macOS DMG, which vcpkg's curl port builds with OpenSSL and with USE_APPLE_SECTRUST
+(certificates checked against the macOS trust store), also compiles lib/vtls/apple.c and
+lib/macos.c, and the header lib/vtls/apple.h, which names one holder curl-NOTICES.txt does not.
+Its holder line, as written; the file is under the curl license of curl-copyright.txt:
+
+lib/vtls/apple.h
+    Copyright (C) Jan Venekamp, <jan@venekamp.net>

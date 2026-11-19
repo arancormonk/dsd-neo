@@ -18,8 +18,8 @@ PLATFORMS = ("linux", "macos", "windows", "android")
 REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
-            "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "windows-libusb",
-            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util", "codec2", "portaudio", "pdcurses",
+            "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "libusb",
+            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util", "codec2", "portaudio", "pdcurses", "ncurses",
             "openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis", "opus", "mp3lame",
             "mpg123", "qt", "ndk-runtime", "androidx", "kotlin"}
 # The notices each package carries for a component, under its documentation folder, and where its staging takes
@@ -30,7 +30,7 @@ REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
 RELEASE_MAPS = {"windows": "windows_release", "android": "android_release", "macos": "macos_release"}
 # The packages whose staging reads their maps, so every component they carry has one. A platform joins once its
 # staging and its package check read the map (cmake/stage_release_notices.cmake, --release-notices).
-COMPLETE_RELEASE_MAPS = {"windows", "android"}
+COMPLETE_RELEASE_MAPS = {"windows", "android", "macos"}
 NOTICE_PATH = re.compile(r"[\w.+/-]+")
 VCPKG_PORT = re.compile(r"[a-z0-9-]+")
 # A file name Windows can load, as tools/windows/release_tree_checks.psm1 (Test-ImportName) accepts an import: no

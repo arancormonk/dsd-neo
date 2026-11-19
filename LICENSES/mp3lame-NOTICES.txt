@@ -3,7 +3,7 @@ release 3.100 (archive https://downloads.sourceforge.net/project/lame/lame/3.100
 SHA512
 0844b9eadb4aacf8000444621451277de365041cc1d97b7f7a589da0b7a23899310afd4e4d81114b9912aa97832621d20588034715573d417b2923948c08634b),
 as vcpkg's mp3lame port builds it: with MSVC for the Windows ZIP (libmp3lame.dll), and with LAME's
-configure script, linked statically, for the Android app. Each build compiles libmp3lame and the
+configure script for the Android app (linked statically) and the macOS DMG (a shared library). Each build compiles libmp3lame and the
 mpglib decoder it links, and the headers they include; the SSE file
 libmp3lame/vector/xmm_quantize_sub.c is compiled for Windows only. Most files are under the GNU
 Library General Public License version 2 or later (mp3lame-copyright.txt, the upstream COPYING); libmp3lame/gain_analysis.c

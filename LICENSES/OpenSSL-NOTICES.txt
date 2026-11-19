@@ -5,9 +5,11 @@ SHA512
 as vcpkg's openssl port builds it at dsd-neo's manifest baseline: libcrypto for the Windows ZIP
 (libcrypto-3-x64.dll; VC-WIN64A, shared, static engines) and libcrypto with the built-in legacy
 provider and libssl, linked statically into the Android app (android-arm64, no-shared no-module,
-enable-ec_nistp_64_gcc_128). The holder list below is the union of the sources these builds compile;
-a file one build does not compile (the x86_64 assembly on Android, libssl and the arm64 files on
-Windows) stays listed. OpenSSL is under the Apache License 2.0, openssl-copyright.txt (the
+enable-ec_nistp_64_gcc_128), and libcrypto and libssl as shared libraries for the macOS DMG
+(darwin64-arm64, shared, static engines; the legacy provider module is built but not shipped). The
+holder list below is the union of the sources these builds compile; a file one build does not
+compile (the x86_64 assembly on Android and macOS, libssl and the arm64 files on Windows) stays
+listed. OpenSSL is under the Apache License 2.0, openssl-copyright.txt (the
 copyright file vcpkg's port installs, LICENSE.txt); OpenSSL-AUTHORS.md lists The OpenSSL Project
 Authors. README.md names the project's holders:
 
