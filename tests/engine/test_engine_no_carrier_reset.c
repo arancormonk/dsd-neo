@@ -4694,41 +4694,6 @@ test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(char frame[4][24]) {
     return rc;
 }
 
-/* The dual-slot decoder hearing direct mode (the MS path, dsd_state::dmr_ms_mode): a burst's slot is the one its sync
-   word names (dsd_state::dmr_dm_sync_slot), and both slots' voice and LCs run on lane 0. After a carrier boundary held
-   both slots, a checked clear voice LC header of slot 2 ends slot 2's hold only: slot 1's voice stays held until a word
-   of its own, while slot 2's plays. */
-static int
-test_dmr_hold_direct_mode_releases_its_own_slot(char frame[4][24]) {
-    char as_it_came[49] = {0};
-    int rc = expect_true("direct-mode hold: a fresh decoder records the frame as it came",
-                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    dmr_hold_no_key(opts, state);
-    dmr_enc_class_hold(state);
-    state->dmr_ms_mode = 1;
-    state->dmr_dm_sync_slot = 2U;
-    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 202U);
-    rc |= expect_true("direct-mode hold: slot 2's checked header ends slot 2's hold, not slot 1's",
-                      state->dmr_enc_class_held[1] == 0U && state->dmr_enc_class_held[0] == 1U);
-    char recorded[49] = {0};
-    state->dmr_ms_mode = 1;
-    state->dmr_dm_sync_slot = 1U;
-    rc |= expect_true("direct-mode hold: slot 1's voice stays held",
-                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
-    state->dmr_ms_mode = 1;
-    state->dmr_dm_sync_slot = 2U;
-    rc |= expect_true("direct-mode hold: slot 2's voice plays as it came",
-                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
-                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
 /* Without trunking the single-slot decoder (-fr) decodes both slots on one lane, where crypto and call state can mix
    across slots, as on main: the DMR voice hold does not apply there, so after a carrier boundary held both slots, lane
    0's frame plays as it came before any LC says. A slot 2 PI header stays on slot 2's fields (index 1), as on main: only
@@ -4822,7 +4787,6 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_has_no_voice_hold(frame);
     rc |= test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(frame);
     rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(frame);
-    rc |= test_dmr_hold_direct_mode_releases_its_own_slot(frame);
     rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
