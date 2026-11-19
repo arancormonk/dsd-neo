@@ -10,7 +10,6 @@
 
 #ifndef __cplusplus
 #include <stdbool.h>
-#include <stdint.h>
 #endif
 
 #ifdef __cplusplus
@@ -51,14 +50,6 @@ dsd_socket_t ConnectBounded(const char* hostname, int portno, int resolve, dsd_s
 void ConnectKeepTcpAudioAddress(const char* hostname, int portno);
 long int GetCurrentFreq(dsd_socket_t sockfd);
 bool SetFreq(dsd_socket_t sockfd, long int freq);
-/**
- * @brief Where the peer on @p sockfd is before a frequency request, for a caller that decides by it whether the request
- * moves the radio (a retune's input drop, issue #834): @p sent_hz, the frequency it last confirmed on the connection,
- * unless a frequency request since got a reply the client could not read (lost or garbled: the peer may have moved),
- * in which case the peer is asked ("f") and its answer returned; 0 when it does not answer (not known). An RPRT refusal
- * leaves @p sent_hz standing. Call it before the request; the next request answered, or a reading, makes it known again.
- */
-uint32_t RigctlFreqBeforeTune(dsd_socket_t sockfd, uint32_t sent_hz);
 bool SetModulation(dsd_socket_t sockfd, int bandwidth);
 /**
  * @brief Ask the rigctl peer to demodulate @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or DSD_ANALOG_DEMOD_AM) at

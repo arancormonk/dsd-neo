@@ -467,13 +467,6 @@ dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
     return g_trunk_scan_active_p25_class || g_trunk_scan_active_p25_target;
 }
 
-/* Every stand-in reply is read, so the peer's frequency is always the one last confirmed. */
-uint32_t
-RigctlFreqBeforeTune(dsd_socket_t sockfd, uint32_t sent_hz) {
-    (void)sockfd;
-    return sent_hz;
-}
-
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;

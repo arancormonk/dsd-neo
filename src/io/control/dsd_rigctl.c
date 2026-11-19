@@ -335,10 +335,6 @@ rigctl_response_ok(const char* response) {
    no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
 static uint32_t s_last_freq = 0U;
-/* The socket whose peer's frequency is not known after a frequency request it answered with nothing the client could
-   read (a lost or garbled reply: the peer may have moved), until a request is answered or the frequency read back
-   (RigctlFreqBeforeTune()). DSD_INVALID_SOCKET for none. */
-static dsd_socket_t s_freq_unknown_sockfd = DSD_INVALID_SOCKET;
 
 /* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last accepted on this socket. The request is
  * formatted from the uint32_t the tuner path carries, so a frequency past 2147.483647 MHz goes out as it is where long
@@ -351,38 +347,13 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
-    if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
-        /* No reply the client could read: the peer may have moved. */
-        s_freq_unknown_sockfd = sockfd;
-        return false;
-    }
-    if (!rigctl_response_ok(buf)) {
-        /* An RPRT refusal leaves the peer where it was; any other reply says nothing of where it is. */
-        if (strncmp(buf, "RPRT ", 5) != 0) {
-            s_freq_unknown_sockfd = sockfd;
-        }
+    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
         return false;
     }
 
     s_last_sockfd = sockfd;
     s_last_freq = freq_hz;
-    if (s_freq_unknown_sockfd == sockfd) {
-        s_freq_unknown_sockfd = DSD_INVALID_SOCKET;
-    }
     return true;
-}
-
-uint32_t
-RigctlFreqBeforeTune(dsd_socket_t sockfd, uint32_t sent_hz) {
-    if (sockfd == DSD_INVALID_SOCKET || sockfd != s_freq_unknown_sockfd) {
-        return sent_hz;
-    }
-    const long int now_hz = GetCurrentFreq(sockfd);
-    if (now_hz <= 0 || (unsigned long)now_hz > UINT32_MAX) {
-        return 0U; /* still not known */
-    }
-    s_freq_unknown_sockfd = DSD_INVALID_SOCKET;
-    return (uint32_t)now_hz;
 }
 
 /**
@@ -550,7 +521,6 @@ RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
      * connection that gets its number back would otherwise be taken for one on that frequency. */
     s_last_sockfd = DSD_INVALID_SOCKET;
     s_last_freq = 0U;
-    s_freq_unknown_sockfd = DSD_INVALID_SOCKET;
     /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Only a record of a
      * request that may have changed the old socket's peer is worth handing over. */
     if (old_fd != DSD_INVALID_SOCKET && s_peer.sockfd == old_fd && s_peer.touched) {
