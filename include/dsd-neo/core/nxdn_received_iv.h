@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

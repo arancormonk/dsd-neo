@@ -24,6 +24,7 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
+#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -3677,6 +3678,20 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
  * verified, never a previous call's. */
+/* Whether an SCCH naming @p target_id (0: none) and class @p kind (DSD_CALL_KIND_UNKNOWN: none), giving the live call
+ * @p call the class @p named_kind, speaks of that same call: its own target, and a class it does not contradict. Its
+ * received IV, the call's MI, follows the call into the epoch the canonical layer may open (a source change); a message
+ * naming another target or class describes another call, which takes no IV of this one. */
+static int
+nxdn_scch_names_the_same_call(const dsd_call_snapshot* call, uint32_t target_id, dsd_call_kind kind,
+                              dsd_call_kind named_kind) {
+    if (target_id != 0U && target_id != call->policy_target_id) {
+        return 0;
+    }
+    const int unclassified = call->kind == DSD_CALL_KIND_UNKNOWN || call->kind == DSD_CALL_KIND_VOICE;
+    return kind == DSD_CALL_KIND_UNKNOWN || unclassified || named_kind == call->kind;
+}
+
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id, dsd_call_kind kind) {
     dsd_call_snapshot call;
@@ -3707,12 +3722,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
 
-    /* The same call: a message naming the call's own target (or none) and not contradicting its class. Its received
-       IV, the call's MI, follows it into the epoch the canonical layer may open (a source change); a message naming
-       another target or class describes another call, which takes no IV of this one. */
-    const int unclassified = call.kind == DSD_CALL_KIND_UNKNOWN || call.kind == DSD_CALL_KIND_VOICE;
-    const int same_call = (target_id == 0U || target_id == call.policy_target_id)
-                          && (kind == DSD_CALL_KIND_UNKNOWN || unclassified || observation.kind == call.kind);
+    const int same_call = nxdn_scch_names_the_same_call(&call, target_id, kind, observation.kind);
     const uint64_t before = dsd_call_snapshot_transmission(&call);
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
         if (same_call) {
