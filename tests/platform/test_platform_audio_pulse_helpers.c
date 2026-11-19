@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <stdlib.h>
 #include "../../src/platform/audio_pulse.c"
 #include "../../src/platform/audio_pulse_record.c"

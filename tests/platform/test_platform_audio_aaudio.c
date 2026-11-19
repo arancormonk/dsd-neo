@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 /* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the

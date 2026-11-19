@@ -29,6 +29,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/env.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>

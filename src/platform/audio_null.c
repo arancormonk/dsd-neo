@@ -19,6 +19,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>
 #include <stdio.h>
