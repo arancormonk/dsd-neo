@@ -805,6 +805,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     m17_format_address(res->src, 1, callsign);
     DSD_SNPRINTF(fix.source_text, sizeof(fix.source_text), "%s", callsign);
     dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
     const int active = carrier->call_observed != 0U && m17_active_call(state, &call);
     /* One report per transmission and META content: an RF stream's call (the one m17_publish_lsf() just observed for
        this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended

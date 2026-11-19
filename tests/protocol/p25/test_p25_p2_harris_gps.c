@@ -860,15 +860,29 @@ test_fdma_repeat_replaces_kind(void) {
         f.st->p25_iden_fdma[2].trust = 2;
         f.st->p25_iden_fdma[2].populated = 1;
         f.st->p25_chan_tdma_explicit[2] = 1;
-        const uint8_t group[] = {
-            0x40, 0x00, 0x20, 0x0A, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_A >> 16), (uint8_t)(SRC_A >> 8), (uint8_t)SRC_A};
+        const uint8_t group[] = {0x40,
+                                 0x00,
+                                 0x20,
+                                 0x0A,
+                                 0x00,
+                                 (uint8_t)TG_A,
+                                 (uint8_t)(SRC_A >> 16),
+                                 (uint8_t)(SRC_A >> 8),
+                                 (uint8_t)(SRC_A & 0xFFU)};
         send_mac(&f, 0, group, sizeof group, 1);
         const p25_sm_ctx_t* sm = p25_sm_get_ctx();
         expect_true("fdma group grant followed", sm->state == P25_SM_TUNED && sm->vc_is_tdma == 0
                                                      && sm->slots[0].is_group == 1
                                                      && sm->slots[0].identity_checked == P25_SM_IDENTITY_CHECKED_ALL);
-        const uint8_t unit[] = {
-            0x44, 0x20, 0x0A, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_B >> 16), (uint8_t)(SRC_B >> 8), (uint8_t)SRC_B};
+        const uint8_t unit[] = {0x44,
+                                0x20,
+                                0x0A,
+                                0x00,
+                                0x00,
+                                (uint8_t)TG_A,
+                                (uint8_t)(SRC_B >> 16),
+                                (uint8_t)(SRC_B >> 8),
+                                (uint8_t)(SRC_B & 0xFFU)};
         send_mac(&f, 0, unit, sizeof unit, crc_ok);
         const p25_sm_slot_ctx_t* slot = &sm->slots[0];
         char label[160];
@@ -1158,7 +1172,7 @@ extended_private_grant(fixture* f, uint32_t wacn, uint16_t sys, uint32_t src) {
     put_suid(&grant[5], wacn, sys, src);
     grant[12] = (uint8_t)(UNIT_B >> 16);
     grant[13] = (uint8_t)(UNIT_B >> 8);
-    grant[14] = (uint8_t)UNIT_B;
+    grant[14] = (uint8_t)(UNIT_B & 0xFFU);
     send_mac(f, 0, grant, sizeof grant, 1);
 }
 
@@ -1186,7 +1200,7 @@ extended_private_voice_user(fixture* f, uint32_t wacn, uint16_t sys, uint32_t sr
                        0x00,
                        (uint8_t)(UNIT_B >> 16),
                        (uint8_t)(UNIT_B >> 8),
-                       (uint8_t)UNIT_B,
+                       (uint8_t)(UNIT_B & 0xFFU),
                        (uint8_t)(src >> 16),
                        (uint8_t)(src >> 8),
                        (uint8_t)src};

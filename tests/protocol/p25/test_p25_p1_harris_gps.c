@@ -836,7 +836,7 @@ test_uncorrectable_verdict(void) {
     fixture f;
     fixture_open(&f);
     const uint8_t user[PART_OCTETS] = {
-        0x00, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_A >> 16), (uint8_t)(SRC_A >> 8), (uint8_t)SRC_A};
+        0x00, 0x00, 0x00, (uint8_t)TG_A, (uint8_t)(SRC_A >> 16), (uint8_t)(SRC_A >> 8), (uint8_t)(SRC_A & 0xFFU)};
     send_lc_verdict(&f, 0x00, 0x00, user, 1U, 0);
     body_fields b = fields_default();
     uint8_t body[BODY_OCTETS];

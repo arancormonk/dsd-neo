@@ -1207,7 +1207,7 @@ watchdog_event_row_reception(const dsd_event_rx_scope* rx, int systype, dsd_posi
     }
     out->rx_gen = rx->rx_gen;
     out->epoch_known = rx->epoch_known;
-    out->protocol_class = systype >= 0 && systype != DSD_SYNC_NONE ? dsd_position_attribution_class(systype) : 0;
+    out->protocol_class = systype >= 0 ? dsd_position_attribution_class(systype) : 0; /* DSD_SYNC_NONE is -1 */
 }
 
 /* Whether the segment's GPS (its position, or GPS text without one) may land on the row it merges into (issue #800,

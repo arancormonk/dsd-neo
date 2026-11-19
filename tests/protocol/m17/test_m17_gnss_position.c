@@ -1092,8 +1092,8 @@ test_ip_late_copy_is_a_repeat(void) {
     }
     expect_int("the 32 s stream admitted once", admitted, 1);
     expect_int("a copy of the frame before the latest is a repeat",
-               send_ip_stream_frame(&r, bits, 802U, (uint8_t)802U, 0), 0);
-    expect_int("the stream goes on after it", send_ip_stream_frame(&r, bits, 804U, (uint8_t)804U, 0), 0);
+               send_ip_stream_frame(&r, bits, 802U, (uint8_t)(802U & 0xFFU), 0), 0);
+    expect_int("the stream goes on after it", send_ip_stream_frame(&r, bits, 804U, (uint8_t)(804U & 0xFFU), 0), 0);
     dsd_position_fix f[4];
     expect_int("one feed record", feed_records(&r, f, 4U), 1);
     rig_close(&r);
