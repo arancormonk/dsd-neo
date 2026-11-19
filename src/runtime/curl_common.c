@@ -29,6 +29,8 @@
  * otherwise both observe "uninitialized" and both call curl_global_init().
  */
 static atomic_int g_curl_global_state = 0; /* 0=uninit 1=initializing 2=ready 3=failed */
+/* Written once by the initializing thread before the state becomes 2; read only after seeing 2. */
+static const curl_version_info_data* g_curl_version_info = NULL;
 
 int
 dsd_curl_global_ready(void) {
@@ -48,6 +50,7 @@ dsd_curl_global_ready(void) {
             atomic_store(&g_curl_global_state, 3);
             return -1;
         }
+        g_curl_version_info = curl_version_info(CURLVERSION_NOW);
         atomic_store(&g_curl_global_state, 2);
         return 0;
     }
@@ -62,6 +65,11 @@ dsd_curl_global_ready(void) {
         }
         dsd_sleep_ms(1U);
     }
+}
+
+const curl_version_info_data*
+dsd_curl_version_info(void) {
+    return (dsd_curl_global_ready() == 0) ? g_curl_version_info : NULL;
 }
 
 #ifdef __ANDROID__
@@ -450,7 +458,7 @@ dsd_curl_multi_setopt_long(CURLM* multi, CURLMoption option, long value) {
 
 static unsigned int
 dsd_curl_runtime_version_num(void) {
-    const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
+    const curl_version_info_data* info = dsd_curl_version_info();
     return (info != NULL) ? info->version_num : 0U;
 }
 #endif

@@ -79,6 +79,19 @@ void dsd_curl_body_buf_free(dsd_curl_body_buf* buf);
 
 #ifdef USE_CURL
 /**
+ * @brief The loaded libcurl's curl_version_info(CURLVERSION_NOW), read once.
+ *
+ * curl_version_info() is not thread-safe: before curl_global_init() it may set
+ * up static data, and every call rewrites static buffers (seen under TSan with
+ * two threads probing at once). The one call runs inside dsd_curl_global_ready()'s
+ * initialization, on the thread that initializes, and every reader gets that
+ * result; nothing else in dsd-neo may call curl_version_info().
+ *
+ * @return The data, or NULL when libcurl could not be initialized.
+ */
+const curl_version_info_data* dsd_curl_version_info(void);
+
+/**
  * @brief Apply the transport-neutral hardening every dsd-neo request shares.
  *
  * Sets connect/total timeouts, disables signals and redirects, restricts the

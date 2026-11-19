@@ -4846,10 +4846,12 @@ suite runs under this compiler.
     every entry point unconditionally: `dsd_tile_fetch_available()` is the runtime answer, true only with libcurl that
     lists `https` **and** has an asynchronous resolver (`CURL_VERSION_ASYNCHDNS`), since with `NOSIGNAL` a synchronous
     lookup ignores every timeout; without them, the built-in transport returns `DSD_TILE_FETCH_ERR_UNSUPPORTED` ("online
-    map tiles are not available in this build"). The probe runs behind `dsd_curl_global_ready()` (the shared init
-    guard), since `curl_version_info()` is not thread-safe before `curl_global_init()` and the map's probe can race an
-    rdio upload's or a RadioReference request's first init; an init failure reads as unavailable (and a fetch is
-    `ERR_SETUP`). Rules:
+    map tiles are not available in this build"). The probe reads `dsd_curl_version_info()` (`curl_common.h`): the one
+    `curl_version_info()` call, made inside `dsd_curl_global_ready()`'s initialization, since that call is not
+    thread-safe (before `curl_global_init()` it sets up static data, and every call rewrites static buffers; TSan saw
+    two first-use probes race) and the map's probe can race an rdio upload's or a RadioReference request's first init.
+    Nothing else may call `curl_version_info()`. An init failure reads as unavailable (and a fetch is `ERR_SETUP`).
+    Rules:
     - https only, twice: the request URL is checked (`https://` + host, visible ASCII, at most 2048 B; else
       `ERR_INVALID`, nothing sent), and after `dsd_curl_apply_hardening()` (which allows http for rdio) the helper
       restricts the protocol itself, `CURLOPT_PROTOCOLS_STR "https"` from libcurl 7.85 and `CURLPROTO_HTTPS` below,

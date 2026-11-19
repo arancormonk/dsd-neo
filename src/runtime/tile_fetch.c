@@ -230,11 +230,6 @@ tf_response_code(CURL* curl, long* out) {
     return curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out);
 }
 
-static const curl_version_info_data*
-tf_curl_info(void) {
-    return curl_version_info(CURLVERSION_NOW);
-}
-
 /** Cancel predicate for dsd_curl_perform_cancellable(). */
 static int
 tf_cancel_requested(const void* ctx) {
@@ -247,7 +242,7 @@ tf_cancel_requested(const void* ctx) {
 #define TF_SETOPT_DATA_CB        tf_setopt_data_cb
 #define TF_SETOPT_XFERINFO_CB    tf_setopt_xferinfo_cb
 #define TF_RESPONSE_CODE         tf_response_code
-#define TF_CURL_INFO             tf_curl_info
+#define TF_CURL_INFO             dsd_curl_version_info
 #define TF_GLOBAL_READY          dsd_curl_global_ready
 #endif
 
@@ -268,8 +263,8 @@ tf_lists_https(const char* const* protocols) {
 
 int
 dsd_tile_fetch_available(void) {
-    /* curl_version_info() may change static data and is not thread-safe before curl_global_init() (an rdio upload
-     * or a RadioReference request may be doing the first init on another thread): probe behind the shared guard. */
+    /* curl_version_info() is not thread-safe (before curl_global_init() it sets up static data, and each call rewrites
+     * static buffers): read the one result taken inside the shared init guard (dsd_curl_version_info()). */
     if (TF_GLOBAL_READY() != 0) {
         return 0;
     }
@@ -657,6 +652,22 @@ tf_store_list(tf_parse* p, const tf_field* f, const char* value, size_t len, con
 }
 
 /**
+ * @brief Whether @p value can be carried for the single-valued field @p bit.
+ *
+ * A validator goes back in If-None-Match / If-Modified-Since, which refuse a tab
+ * (tf_request_value_ok()): one that could not be sent is dropped on receipt, so
+ * the next request goes out unconditionally instead of failing as invalid.
+ */
+static int
+tf_single_value_ok(unsigned int bit, const char* value, size_t len) {
+    const int validator = (bit & (DSD_TILE_FETCH_HDR_ETAG | DSD_TILE_FETCH_HDR_LAST_MODIFIED)) != 0U;
+    if (validator && len > 0U && memchr(value, '\t', len) != NULL) {
+        return 0;
+    }
+    return tf_value_bytes_ok(value, len);
+}
+
+/**
  * @brief Store the value of a single-valued field; a repeat, an empty value or one
  *        that cannot be carried marks the field invalid instead.
  *
@@ -677,11 +688,7 @@ tf_store_single(tf_parse* p, const tf_field* f, const char* value, size_t len, i
     resp->header_present |= f->bit;
     const size_t used = continuation ? strlen(dst) : 0U;
     const size_t sep_len = (continuation && used > 0U && len > 0U) ? 1U : 0U;
-    /* A validator goes back in If-None-Match / If-Modified-Since, which refuse a tab (tf_request_value_ok): one that
-     * could not be sent is dropped here, so the next request goes out unconditionally instead of failing. */
-    const int validator = (f->bit & (DSD_TILE_FETCH_HDR_ETAG | DSD_TILE_FETCH_HDR_LAST_MODIFIED)) != 0U;
-    const int unsendable = validator && len > 0U && memchr(value, '\t', len) != NULL;
-    if (repeat || (!continuation && len == 0U) || unsendable || !tf_value_bytes_ok(value, len)
+    if (repeat || (!continuation && len == 0U) || !tf_single_value_ok(f->bit, value, len)
         || used + sep_len + len >= f->cap) {
         resp->header_invalid |= f->bit;
         dst[0] = '\0';
