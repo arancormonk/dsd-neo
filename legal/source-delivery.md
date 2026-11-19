@@ -32,8 +32,15 @@ For each release asset, preserve the following together:
    availability depends on Qt's and the Public Suffix List's servers; section
    6(d) leaves the obligation to keep it available with dsd-neo as the
    distributor of the APK, and if those archives went away dsd-neo would have
-   to provide the source itself. Windows uses the selected vcpkg baseline/ports; macOS
-   packages Homebrew libraries; AppImage copies its built runtime closure.
+   to provide the source itself. Windows uses the selected vcpkg baseline/ports.
+   The macOS DMG uses Homebrew for build tools only: its libraries come from
+   vcpkg at the shared `builtin-baseline` in `vcpkg.json`, built with the
+   `arm64-osx-dynamic-release` triplet (`vcpkg-triplets/`) and the overlay
+   ports in `vcpkg-ports/`, except librtlsdr and libairspy. Those two are
+   built from pinned upstream commits (`RTL_SDR_SHA` and `AIRSPY_SHA` in
+   `tools/ci-dependency-pins.env`) with dsd-neo's patch series applied
+   (`tools/usb_dependency_patches.sh series librtlsdr|libairspy`, patch files
+   in `android/third_party/patches/`). AppImage copies its built runtime closure.
 4. The actual binary dependency/SBOM inventory, with any claimed system-library
    exclusions justified per platform. Do not assume every shared library is
    excluded merely because it was installed by a package manager.
