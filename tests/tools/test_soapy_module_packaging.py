@@ -288,13 +288,19 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertRegex(portfile, r"FEATURES\n\s+tools\s+ENABLE_APPS\n")
         self.assertRegex(portfile, r"OPTIONS_DEBUG\n\s+-DENABLE_APPS=OFF\n")
         self.assertIn("vcpkg_copy_tools(TOOL_NAMES SoapySDRUtil AUTO_CLEAN)", portfile)
+        # SoapySDR installs its CMake package under cmake/ on Windows and under
+        # share/cmake/SoapySDR/ elsewhere; the fixup must read the one the build wrote.
+        self.assertRegex(portfile, r"if\(VCPKG_TARGET_IS_WINDOWS\)\n\s+vcpkg_cmake_config_fixup\(CONFIG_PATH cmake\)\n"
+                                   r"else\(\)\n\s+vcpkg_cmake_config_fixup\(CONFIG_PATH share/cmake/SoapySDR\)\nendif\(\)\n")
         # The AppImage builds SoapySDR from the same pin.
         self.assertIn('soapy_sdr_sha="$SOAPY_SDR_SHA"', read(".github/workflows/linux-appimage.yaml"))
 
     def test_manifest_takes_the_modules_and_the_tool_on_windows_only(self):
         entries = {e["name"]: e for e in json.loads(read("vcpkg.json"))["dependencies"] if isinstance(e, dict)}
-        # The macOS DMG bundles the library too, but not SoapySDRUtil.
-        self.assertEqual(entries["soapysdr"], {"name": "soapysdr", "platform": "windows | osx",
+        # The macOS DMG bundles the library too, but not SoapySDRUtil. The port is
+        # shared-only, so a static osx triplet (arm64-osx, vcpkg's default) leaves it out
+        # rather than refusing the whole manifest.
+        self.assertEqual(entries["soapysdr"], {"name": "soapysdr", "platform": "windows | (osx & !static)",
                                                "features": [{"name": "tools", "platform": "windows"}]})
         for name in MODULES:
             self.assertEqual(entries[name], {"name": name, "platform": "windows"})

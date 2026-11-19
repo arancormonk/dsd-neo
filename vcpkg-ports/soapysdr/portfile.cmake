@@ -3,7 +3,8 @@
 # ports/soapysdr at the manifest baseline, vcpkg commit
 # 9eec002df1cd109f8f104cd966a763daf9751489; Copyright (c) Microsoft Corporation,
 # MIT license in vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (the tools
-# feature, the pin and these comments) are GPL-3.0-or-later.
+# feature, the pin, the CMake package path off Windows and these comments) are
+# GPL-3.0-or-later.
 # Overlay of vcpkg's builtin soapysdr port (0.8.1 at the manifest baseline),
 # which never builds SoapySDR's apps. The tools feature adds SoapySDRUtil: the
 # Windows ZIP ships it next to SoapySDR.dll, so a user can list the modules that
@@ -41,7 +42,13 @@ vcpkg_cmake_install()
 
 vcpkg_fixup_pkgconfig()
 
-vcpkg_cmake_config_fixup(CONFIG_PATH cmake)
+# SoapySDR installs its CMake package under cmake/ on Windows and under
+# share/cmake/SoapySDR/ elsewhere (its CMAKE_LIB_DEST).
+if(VCPKG_TARGET_IS_WINDOWS)
+    vcpkg_cmake_config_fixup(CONFIG_PATH cmake)
+else()
+    vcpkg_cmake_config_fixup(CONFIG_PATH share/cmake/SoapySDR)
+endif()
 
 if("tools" IN_LIST FEATURES)
     vcpkg_copy_tools(TOOL_NAMES SoapySDRUtil AUTO_CLEAN)
