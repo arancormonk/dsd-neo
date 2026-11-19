@@ -109,8 +109,8 @@ read_file(const char* path, char* buf, size_t cap) {
     if (cap == 0U) {
         return 0U;
     }
-    DSD_MEMSET(buf, 0, cap); /* terminated wherever the read stops: at most cap - 1 bytes are read */
-    FILE* f = fopen(path, "rb");
+    DSD_MEMSET(buf, 0, cap);    /* terminated wherever the read stops: at most cap - 1 bytes are read */
+    FILE* f = fopen(path, "r"); /* text mode: the -L file is written in text mode (CRLF on Windows) */
     if (f == NULL) {
         return 0U;
     }

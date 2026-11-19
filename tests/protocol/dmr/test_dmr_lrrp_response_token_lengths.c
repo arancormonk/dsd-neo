@@ -334,7 +334,7 @@ check_record(const encoding_case* c, const dsd_position_fix* fix) {
 static int
 check_row(const char* path, const encoding_case* c) {
     char file[256] = "";
-    FILE* f = fopen(path, "rb");
+    FILE* f = fopen(path, "r"); /* text mode: the -L file is written in text mode (CRLF on Windows) */
     if (f != NULL) {
         const size_t n = fread(file, 1, sizeof file - 1U, f);
         file[n] = '\0';
