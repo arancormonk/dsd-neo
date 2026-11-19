@@ -8966,7 +8966,8 @@ Key public headers:
     (`capture_provisional_rate()`, `rtl_device_rate_written_within()`: the advertised rate nearest the request among
     those at or below the limit in whole hertz, as `llround()` programs and reads a rate back, listed rates and range
     points compared with one another (`soapy_nearest_sample_rate_within()`), without the preference; the capture is placed for it and moved again for the rate the
-    device delivers). `rtl_device_rate_written_for()` is the same query with no limit; for a native Airspy it answers
+    device delivers). `rtl_device_rate_written_for()`, with no limit, answers with the setter's own choice
+    (`soapy_nearest_sample_rate()`, which prefers a listed rate when neither the list nor a range holds the request); for a native Airspy it answers
     with the rate asked for, as the setter writes it, while the planning query answers with the rate the Airspy runs. A final plan refused on the rate written is made again on a SoapySDR
     read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
     3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and

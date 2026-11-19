@@ -10634,6 +10634,21 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
  * cache because driver settings (for example the SDDC ADC clock) can move the grid.
  */
 #ifdef USE_SOAPYSDR
+/* The rate a write programs for @p requested among the advertised @p listed rates and @p ranges: with no limit
+ * (@p max_hz UINT32_MAX) the setter's own choice (soapy_nearest_sample_rate(), as rtl_device_set_sample_rate() writes),
+ * else the nearest advertised point within the limit (soapy_nearest_sample_rate_within(), a point the setter keeps).
+ * @p out_found false when nothing advertised is within it. */
+static double
+soapy_rate_written(uint32_t requested, uint32_t max_hz, const std::vector<double>& listed,
+                   const std::vector<dsdneo::SoapyRange>& ranges, bool* out_found) {
+    if (max_hz == UINT32_MAX) {
+        bool adjusted = false;
+        *out_found = true;
+        return dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+    }
+    return dsdneo::soapy_nearest_sample_rate_within((double)requested, (double)max_hz, listed, ranges, out_found);
+}
+
 /* The SoapySDR half of rtl_device_supported_rate(): the advertised rate for @p requested, with the profile's
  * preference (cached per request while the device stays configured) or without it, the rate a write programs, among
  * the advertised rates not above @p max_hz. */
@@ -10653,13 +10668,11 @@ soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_prefe
         std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
         std::vector<dsdneo::SoapyRange> ranges =
             soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-        /* Without the preference: the advertised rate nearest the request, as rtl_device_set_sample_rate() writes. */
         bool found = true;
-        double applied =
-            with_preference
-                ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested, listed, ranges,
-                                                    &adjusted)
-                : dsdneo::soapy_nearest_sample_rate_within((double)requested, (double)max_hz, listed, ranges, &found);
+        double applied = with_preference
+                             ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested,
+                                                                 listed, ranges, &adjusted)
+                             : soapy_rate_written(requested, max_hz, listed, ranges, &found);
         if (!found || !(applied > 0.0) || applied > (double)UINT32_MAX) {
             return -1;
         }

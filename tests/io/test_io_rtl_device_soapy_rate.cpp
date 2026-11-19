@@ -988,6 +988,44 @@ test_bounded_fallback_in_whole_hertz_and_over_ranges(void) {
     expect_eq("it runs 1.5 MS/s", got.capture_rate_hz, 1500000.0);
 }
 
+/* The write query answers with the rate the setter programs, whatever the device advertises: a listed rate is preferred
+ * when neither the list nor a range holds the request, so a 2.8 MS/s request on a device listing 2 MS/s beside a
+ * continuous 3 to 9 MS/s range is written, and predicted, as 2 MS/s; and 1,536,000 Hz on one listing 3,072,025 Hz
+ * beside a 1 to 2 MS/s range in 500 kHz steps as 3,072,025 Hz. */
+void
+test_write_query_follows_the_setter(void) {
+    static const double two[] = {2e6};
+    static const rtl_device_test_soapy_range wide[] = {{3e6, 9e6, 0.0}};
+    static const double far_listed[] = {3072025.0};
+    static const rtl_device_test_soapy_range halves[] = {{1000000.0, 2000000.0, 500000.0}};
+
+    struct {
+        const double* listed;
+        const rtl_device_test_soapy_range* ranges;
+        uint32_t request_hz;
+        double want_hz;
+    } const cases[] = {{two, wide, 2800000U, 2e6}, {far_listed, halves, 1536000U, 3072025.0}};
+
+    for (const auto& c : cases) {
+        rtl_device_test_soapy_gain_fake fake = {};
+        fake.driver_key = "generic";
+        fake.listed_rates = c.listed;
+        fake.listed_rate_count = 1U;
+        fake.rate_ranges = c.ranges;
+        fake.rate_range_count = 1U;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        if (!dev) {
+            continue;
+        }
+        uint32_t predicted_hz = 0U;
+        expect_true("the write query answers", rtl_device_rate_written_for(dev, c.request_hz, &predicted_hz) == 0);
+        expect_true("the write takes", rtl_device_set_sample_rate(dev, c.request_hz) == 0);
+        expect_eq("the setter programs the rate", fake.rate_hz, c.want_hz);
+        expect_eq("the query predicted it", (double)predicted_hz, c.want_hz);
+        rtl_device_test_soapy_gain_device_free(dev);
+    }
+}
+
 /* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
  * and asked on the rollback for the 1,536,000 Hz it delivered, which it now lists and takes as written: request, write
  * and read-back agree, so the restored plan is made again and no longer counts the rate as forced. */
@@ -1339,6 +1377,7 @@ main(int argc, char** argv) {
         {"bounded_fallback_in_whole_hertz_and_over_ranges", test_bounded_fallback_in_whole_hertz_and_over_ranges},
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
+        {"write_query_follows_the_setter", test_write_query_follows_the_setter},
         {"listening_waits_for_input_past_the_retune_mute", test_listening_waits_for_input_past_the_retune_mute},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
