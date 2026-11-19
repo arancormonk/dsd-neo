@@ -3,8 +3,11 @@
 """tools/check_macos_portable_deps.sh on a fabricated portable tree.
 
 A fake otool on PATH reads each "Mach-O" file as text: "dep <install name>",
-"rpath <path>" and "minos <version>" lines stand for its load commands. Off
-macOS the checker skips codesign, so the tree needs no real binaries.
+"rpath <path>" and "minos <version>" lines stand for its load commands. A fake
+uname reports Darwin, so every host runs the checker's macOS path, and a fake
+codesign accepts every file but one with a "bad-signature" line, so the tree
+needs no real binaries. The fakes are written with LF line ends, which their
+shebang lines need.
 """
 
 import os
@@ -24,7 +27,11 @@ file=$2
 case "$mode" in
   -L)
     echo "$file:"
-    sed -n 's/^dep \(.*\)$/\t\1 (compatibility version 1.0.0, current version 1.0.0)/p' "$file"
+    while read -r kind value; do
+      if [[ "$kind" == dep ]]; then
+        printf '\t%s (compatibility version 1.0.0, current version 1.0.0)\n' "$value"
+      fi
+    done < "$file"
     ;;
   -l)
     n=0
@@ -49,6 +56,20 @@ case "$mode" in
 esac
 """
 
+# codesign --verify --strict --verbose=2 <file>, as the checker calls it.
+FAKE_CODESIGN = r"""#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 4 && "$1" == --verify && "$2" == --strict && "$3" == --verbose=2 ]] || exit 2
+if grep -qx bad-signature "$4"; then
+  echo "$4: invalid signature (code or signature have been modified)" >&2
+  exit 1
+fi
+"""
+
+FAKE_UNAME = """#!/bin/sh
+echo Darwin
+"""
+
 
 class CheckMacosPortableDeps(unittest.TestCase):
     def setUp(self):
@@ -56,28 +77,29 @@ class CheckMacosPortableDeps(unittest.TestCase):
         self.work = Path(self.tmp.name)
         tools = self.work / "tools"
         tools.mkdir()
-        otool = tools / "otool"
-        otool.write_text(FAKE_OTOOL, encoding="utf-8")
-        otool.chmod(otool.stat().st_mode | stat.S_IXUSR)
+        for name, script in (("otool", FAKE_OTOOL), ("codesign", FAKE_CODESIGN), ("uname", FAKE_UNAME)):
+            tool = tools / name
+            tool.write_bytes(script.encode("utf-8"))
+            tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}")
         self.stage = self.work / "dsd-neo-macos"
         (self.stage / "bin").mkdir(parents=True)
         (self.stage / "lib").mkdir()
         terminfo = self.stage / "share/terminfo/78"
         terminfo.mkdir(parents=True)
-        (terminfo / "xterm-256color").write_text("entry\n", encoding="utf-8")
-        (self.stage / "dsd-neo.sh").write_text(
-            'export TERMINFO_DIRS="$DIR/share/terminfo:/usr/share/terminfo"\n', encoding="utf-8")
+        (terminfo / "xterm-256color").write_bytes(b"entry\n")
+        (self.stage / "dsd-neo.sh").write_bytes(
+            b'export TERMINFO_DIRS="$DIR/share/terminfo:/usr/share/terminfo"\n')
         self.write("bin/dsd-neo", "dep @rpath/libusb-1.0.0.dylib", "dep /usr/lib/libSystem.B.dylib",
                    "rpath @executable_path/../lib", "minos 26.0")
         self.write("lib/libusb-1.0.0.dylib", "dep @rpath/libusb-1.0.0.dylib", "rpath @loader_path", "minos 26.0")
-        (self.stage / "dylibs-manifest.txt").write_text("libusb-1.0.0.dylib\n", encoding="utf-8")
+        (self.stage / "dylibs-manifest.txt").write_bytes(b"libusb-1.0.0.dylib\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def write(self, rel, *lines):
-        (self.stage / rel).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.stage / rel).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
     def run_check(self, *args):
         return subprocess.run(["bash", str(CHECK), str(self.stage), *args], env=self.env,
@@ -108,6 +130,13 @@ class CheckMacosPortableDeps(unittest.TestCase):
         result = self.run_check("26.0")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("is built for macOS <unknown>", result.stderr)
+
+    def test_invalid_signature_fails(self):
+        self.write("lib/libusb-1.0.0.dylib", "dep @rpath/libusb-1.0.0.dylib", "rpath @loader_path", "minos 26.0",
+                   "bad-signature")
+        result = self.run_check("26.0")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("lib/libusb-1.0.0.dylib has an invalid code signature", result.stderr)
 
     def test_missing_dependency_still_fails(self):
         self.write("bin/dsd-neo", "dep @rpath/libssl.3.dylib", "rpath @executable_path/../lib", "minos 26.0")
