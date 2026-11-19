@@ -569,7 +569,8 @@ udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
  * One timed wait on an empty ring, so a caller can do something else while the input is silent (the decoder applies
  * queued commands; issue #634). A spurious wakeup can end the wait early, as a timeout.
  *
- * @param opts Decoder options containing UDP context; their packet, byte and drop counts are brought up to date.
+ * @param opts Decoder options containing UDP context; their packet, byte and drop counts are brought up to date once per
+ *             block: when a read empties the ring, or finds none in time.
  * @param out [out] Receives one PCM16 sample.
  * @param timeout_ms Longest wait for a sample.
  * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when none arrived in time.
@@ -580,26 +581,32 @@ udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms
         return 0;
     }
     udp_input_ctx* ctx = (udp_input_ctx*)opts->udp_in_ctx;
-    /* Each read brings the counts the UI shows up to date, on the decoder's thread. */
-    udp_input_mirror_counters(opts, ctx);
     if (!atomic_load(&ctx->running)) {
+        udp_input_mirror_counters(opts, ctx);
         return 0;
     }
     dsd_mutex_lock(&ctx->ring.m);
     if (ring_used(&ctx->ring) == 0) {
         if (dsd_exitflag_load() || !atomic_load(&ctx->running)) {
             dsd_mutex_unlock(&ctx->ring.m);
+            udp_input_mirror_counters(opts, ctx);
             return 0;
         }
         (void)dsd_cond_timedwait(&ctx->ring.cv, &ctx->ring.m, timeout_ms);
         if (ring_used(&ctx->ring) == 0) {
             const int stopped = dsd_exitflag_load() || !atomic_load(&ctx->running);
             dsd_mutex_unlock(&ctx->ring.m);
+            udp_input_mirror_counters(opts, ctx);
             return stopped ? 0 : -1;
         }
     }
     *out = ctx->ring.buf[ctx->ring.tail];
     ctx->ring.tail = (ctx->ring.tail + 1) % ctx->ring.cap;
+    const int drained = ring_used(&ctx->ring) == 0;
     dsd_mutex_unlock(&ctx->ring.m);
+    /* The counts the UI shows, on the decoder's thread, once per block the reader drains rather than per sample. */
+    if (drained) {
+        udp_input_mirror_counters(opts, ctx);
+    }
     return 1;
 }
