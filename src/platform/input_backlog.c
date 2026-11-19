@@ -8,6 +8,7 @@
  * @brief The attached input queue and the held off-thread retune (issue #834; <dsd-neo/platform/input_backlog.h>).
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/input_backlog_opening.h>
@@ -59,20 +60,28 @@ static uint64_t s_undo_continued_to;
 static int s_undo_post_held;
 static dsd_input_cut s_undo_post;
 
-static void
+/* Take the backlog's lock, made on first use. 0 when it could not be made (the next call tries again): the caller
+   declines what it was asked to do, as with no input attached, and touches nothing the lock guards. */
+static int
 backlog_lock(void) {
-    if (atomic_load(&s_mu_state) != 2) {
-        int expected = 0;
-        if (atomic_compare_exchange_strong(&s_mu_state, &expected, 1)) {
-            (void)dsd_mutex_init(&s_mu);
-            atomic_store(&s_mu_state, 2);
-        } else {
-            while (atomic_load(&s_mu_state) != 2) {
-                dsd_thread_yield();
-            }
+    for (;;) {
+        const int state = atomic_load(&s_mu_state);
+        if (state == 2) {
+            break;
         }
+        int expected = 0;
+        if (state == 0 && atomic_compare_exchange_strong(&s_mu_state, &expected, 1)) {
+            if (dsd_mutex_init(&s_mu) != 0) {
+                atomic_store(&s_mu_state, 0);
+                return 0;
+            }
+            atomic_store(&s_mu_state, 2);
+            break;
+        }
+        dsd_thread_yield();
     }
     dsd_mutex_lock(&s_mu);
+    return 1;
 }
 
 static void
@@ -113,7 +122,9 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
     if (queue == NULL || arrived == NULL) {
         return;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     const uint64_t opened = s_seq;
     const int continues = s_opening;
     /* The registration this attach replaces, for an input that fails to start after it (not one that was opening, whose
@@ -153,7 +164,9 @@ dsd_input_backlog_detach(const void* queue) {
     if (queue == NULL) {
         return;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     if (s_queue == queue) {
         s_queue = NULL;
         s_arrived = NULL;
@@ -167,7 +180,9 @@ dsd_input_backlog_attach_failed(const void* queue) {
     if (queue == NULL) {
         return;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     if (s_queue == queue) {
         if (s_undo_held && s_seq == s_undo_seq) {
             /* Nothing attached, detached or opened since this queue attached, and nothing read the queue it replaced
@@ -202,7 +217,10 @@ dsd_input_backlog_mark(dsd_input_cut* out) {
     if (out == NULL) {
         return;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        DSD_MEMSET(out, 0, sizeof(*out)); /* measures nothing */
+        return;
+    }
     backlog_mark_locked(out);
     backlog_unlock();
 }
@@ -212,7 +230,9 @@ dsd_input_backlog_cut_applies(const dsd_input_cut* cut, const void* queue) {
     if (cut == NULL || queue == NULL || !cut->measured) {
         return 0;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        return 0;
+    }
     const int applies = s_queue == queue && cut->seq == s_seq;
     backlog_unlock();
     return applies;
@@ -229,7 +249,9 @@ backlog_end_opening_locked(void) {
 
 void
 dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived) {
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     /* Posted while no input was attached, before this connection existed: nothing it holds was queued before the post,
        as at an attach. */
     if (s_post_held && !s_post.measured) {
@@ -252,7 +274,9 @@ dsd_input_backlog_post(const dsd_input_cut* cut) {
     if (cut == NULL) {
         return;
     }
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     dsd_input_cut held = *cut;
     /* Marked on a connection that was opening, whose queue has attached since and goes on from its count. */
     if (held.measured && s_continued_to != 0U && held.seq == s_continued_from && s_seq == s_continued_to) {
@@ -281,7 +305,9 @@ dsd_input_backlog_post(const dsd_input_cut* cut) {
 
 int
 dsd_input_backlog_take(dsd_input_cut* out) {
-    backlog_lock();
+    if (!backlog_lock()) {
+        return 0;
+    }
     const int held = s_post_held;
     if (held && out != NULL) {
         *out = s_post;
@@ -293,7 +319,9 @@ dsd_input_backlog_take(dsd_input_cut* out) {
 
 void
 dsd_input_backlog_forget(void) {
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     /* A connection still opening has no queue: a post measured on it is no input's drop. */
     if (s_post_held && !(s_post.measured && s_queue != NULL && s_post.seq == s_seq && !s_opening)) {
         s_post_held = 0;
@@ -310,7 +338,9 @@ dsd_input_backlog_forget(void) {
 
 void
 dsd_input_backlog_retire(void) {
-    backlog_lock();
+    if (!backlog_lock()) {
+        return;
+    }
     s_post_held = 0;
     s_undo_post_held = 0;
     backlog_end_opening_locked();

@@ -48,6 +48,47 @@ mark_time_monotonic_ms(void) {
     return mark_real_time_monotonic_ms() + g_clock_offset_ms;
 }
 
+/* Issue #834: a mutex initialization made to fail (once, while set), the mutex it failed on, and whether anything locked
+   that mutex before an initialization of it succeeded. */
+static atomic_int g_mutex_init_fails;
+static dsd_mutex_t* g_failed_mutex;
+static atomic_int g_locked_failed_mutex;
+
+int
+mark_mutex_init(dsd_mutex_t* mutex) {
+    if (atomic_exchange(&g_mutex_init_fails, 0)) {
+        g_failed_mutex = mutex;
+        return -1;
+    }
+    if (mutex == g_failed_mutex) {
+        g_failed_mutex = NULL;
+    }
+    return mark_real_mutex_init(mutex);
+}
+
+int
+mark_mutex_lock(dsd_mutex_t* mutex) {
+    if (mutex != NULL && mutex == g_failed_mutex) {
+        atomic_store(&g_locked_failed_mutex, 1);
+    }
+    return mark_real_mutex_lock(mutex);
+}
+
+/* Issue #834: the backlog's lock, made on first use, fails to initialize: the call declines (a mark measures nothing)
+   without locking it, and the next call makes it again. Run first, before anything else uses the backlog. */
+static void
+test_backlog_lock_that_fails_to_initialize(void) {
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0xFF, sizeof cut);
+    atomic_store(&g_mutex_init_fails, 1);
+    dsd_input_backlog_mark(&cut);
+    check(atomic_load(&g_mutex_init_fails) == 0, "the backlog makes its lock on first use");
+    check(!atomic_load(&g_locked_failed_mutex), "a lock that failed to initialize is never locked");
+    check(cut.measured == 0U, "a mark with no lock measures nothing");
+    dsd_input_backlog_mark(&cut);
+    check(g_failed_mutex == NULL, "the next call makes the lock again");
+}
+
 /* The decoder thread's refill, started from inside the mark's readiness query. */
 static dsd_pcm_stream* g_reader;
 static atomic_int g_armed;   /* the next readiness query starts the refill */
@@ -306,6 +347,7 @@ test_mark_never_waits_on_a_console_read(void) {
 
 int
 main(void) {
+    test_backlog_lock_that_fails_to_initialize();
     test_mark_never_waits_on_a_console_read();
     test_pipe_mark_during_refill();
     test_socket_mark_during_refill();
