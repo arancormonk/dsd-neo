@@ -3508,6 +3508,14 @@ row_parts_from_json(const CallHistoryModel::Row& row, const QJsonObject& obj) {
     return parts;
 }
 
+/** @brief A call kind (Row::gi) into @p obj as `gi`, only when known: an unknown one is left out (it reads -1). */
+void
+put_gi(QJsonObject& obj, qint8 gi) {
+    if (gi >= 0) {
+        obj.insert(QLatin1String("gi"), static_cast<int>(gi));
+    }
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -3638,9 +3646,7 @@ row_parts_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         row_site_to_json(fields, entry);
         row_payload_to_json(fields, entry);
         entry.insert(QLatin1String("tg"), static_cast<qint64>(fields.tg));
-        if (fields.gi >= 0) {
-            entry.insert(QLatin1String("gi"), static_cast<int>(fields.gi));
-        }
+        put_gi(entry, fields.gi);
         if (fields.src != 0U) {
             entry.insert(QLatin1String("src"), static_cast<qint64>(fields.src));
         }
@@ -3664,9 +3670,7 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("when"), row.when);
     obj.insert(QLatin1String("name"), row.name);
     obj.insert(QLatin1String("tg"), static_cast<qint64>(row.tg));
-    if (row.gi >= 0) {
-        obj.insert(QLatin1String("gi"), static_cast<int>(row.gi));
-    }
+    put_gi(obj, row.gi);
     obj.insert(QLatin1String("src"), static_cast<qint64>(row.src));
     obj.insert(QLatin1String("srcName"), row.sourceName);
     obj.insert(QLatin1String("srcNameWhen"), row.sourceNameWhen);
