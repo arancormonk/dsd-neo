@@ -3427,12 +3427,9 @@ suite runs under this compiler.
   of the other slot (its receive slot known and not the burst's, `dmr_mono_lane_call_is_other_slot()`; on the MS path
   a burst's slot is known only where its direct-mode sync word named it, `dsd_state::dmr_dm_sync_slot`), either way
   round, a standalone burst does not act on it: its PI header and terminator act on index 1 (`dmr_pi()`,
-  `dmr_flco_ctx_init()`), as the other slot's do on the dual-slot decoder, so the lane's call is neither ended nor
-  re-keyed. A data packet stays on its over-the-air slot's index from header to last block (the block assembler keys
-  on it; a slot 2 one is on index 1): a slot 1 one runs on index 0 with its own live crypto swapped in while lane 0
-  carries a slot 2 call or the packet is in progress, and the call's is put back after each burst
-  (`dsd_state::dmr_mono_slot1_data_crypto`, `dmr_data_swap_in_slot1_data_crypto()`), so a data header neither resets
-  nor replaces the lane call's crypto. A voice LC header still opens the call the lane carries next:
+  `dmr_flco_ctx_init()`), as the other slot's do on the dual-slot decoder, and a slot 1 data header or data block is
+  dispatched on index 1 (`dmr_data_route_off_lane()`; a slot 2 one is there already), so the lane's call is neither
+  ended nor re-keyed and its live crypto is not reset. A voice LC header still opens the call the lane carries next:
   it names its own call, and the lane's voice follows it. Under trunking nothing is folded.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
