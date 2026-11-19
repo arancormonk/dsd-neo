@@ -54,9 +54,8 @@ audio_input_keep_since(uint64_t marked_ns, uint64_t now_ns, int rate, uint64_t l
 }
 
 /* The frames an input discard kept (dsd_audio_discard_input()), interleaved, which dsd_audio_read() returns before the
-   device's, and the next one it returns. PulseAudio keeps the newest frames it read there (it reads all the client
-   holds, and only the time since the mark says how much of it came after); PortAudio and AAudio the chunk a device
-   overrun made them stop at, since it may hold audio captured after the mark. */
+   device's, and the next one it returns: on PortAudio and AAudio the chunk a device overrun made them stop at, since
+   it may hold audio captured after the mark. PulseAudio keeps none: its drop takes exactly what the mark counted. */
 struct audio_input_carry {
     int16_t* frames;
     size_t len;
@@ -131,7 +130,7 @@ struct dsd_audio_stream {
     int route_registered;
     int channels;
     int sample_rate;
-    /* Input streams of PulseAudio, PortAudio and AAudio (NULL elsewhere): the frames an input discard kept because
+    /* Input streams of PortAudio and AAudio (NULL elsewhere): the frames an input discard kept because
        they may have been captured after its mark (dsd_audio_discard_input()), which dsd_audio_read() returns before
        the device's. Allocated with the stream. In the part every backend's layout shares, so a stream sized without
        the backend's own fields still holds it. */

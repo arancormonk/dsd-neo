@@ -213,8 +213,8 @@ dsd_audio_close(dsd_audio_stream* stream) {
 }
 
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
-    (void)marked_ns;
+dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut) {
+    (void)cut;
     if (!stream || !stream->is_input) {
         set_error("Invalid arguments");
         return -1;

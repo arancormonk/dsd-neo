@@ -10908,28 +10908,27 @@ Notes:
     has no gain to adjust, so its real-time windows log nothing there (`stream_open_enable_default_autogain()`,
     `demod_autogain_update()`; `IO_RTL_REPLAY_EOF_AND_CF32`).
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
-  `dsd_audio_discard_input()` (a `const` stream: it changes what the device holds, and on PulseAudio the carry the
-  stream points to) drops what an input stream holds unread (issue #834, at the decoder's next read after a rigctl
-  retune), but for the newest audio, as much as the time since the retune's mark (`marked_ns`): a device captures in
-  real time, so that is the audio captured since (`audio_input_keep_since()` in `audio_stream_internal.h`, rounded up).
-  Every backend reads that time after it counts what the stream holds (PulseAudio after its reads), so audio
-  captured while the decoder waited between the mark and the count is kept: PulseAudio, PortAudio and AAudio keep by
-  the same rule. No drop waits for audio: a source that stops delivering (suspended during the retune) ends it at
+  `dsd_audio_discard_input()` (a `const` stream: it changes what the device holds) drops what an input stream held at
+  a rigctl retune's mark (issue #834, at the decoder's next read after the retune), given the mark itself
+  (`dsd_input_cut`). No drop waits for audio: a source that stops delivering (suspended during the retune) ends it at
   once, and every read in it takes only what is already held. PulseAudio (Linux, macOS) records input through its own
   record stream on the threaded-mainloop API (`src/platform/audio_pulse_record.c`: `pa_simple`'s context, latency
   flag, blocking read, liveness check and hole skip, with the stream in reach; output stays on `pa_simple`), because
-  `pa_simple` hides what its client holds and its read waits for the source with no bound. The drop reads what the
-  client holds now (`pulse_record_read_held()`: `pa_stream_peek()` until it hands over nothing, never a wait), at most
-  2 s of frames at the stream's rate (exact to one read: the cap is checked before each 32-frame read, so up to 31
-  frames past it) with no read begun after 250 ms on the monotonic clock, and keeps the newest of it in the stream's
-  carry (`struct audio_input_carry` in `audio_stream_internal.h`, allocated with the input stream; the keep ring's
-  buffer becomes the carry's, its kept frames brought to its front without touching the room past the frames read,
-  `test_pulse_keep_moves_only_frames_read()`), which
-  `dsd_audio_read()` returns before the device's: as much as was captured from the mark to the end of its reads, the
-  time before it began included. What the server has not sent the client yet stays in the server and is read after the
-  drop (it was captured last). The decoder's own reads (`pulse_record_read()`) wait for the source as `pa_simple_read()`
-  did. PortAudio and AAudio read only the snapshot they counted, with no wait, so audio captured while they read is
-  left in the stream. PortAudio
+  `pa_simple` hides what its client holds and its read waits for the source with no bound. The PulseAudio input is
+  the queue a mark counts (`dsd_input_backlog_attach()` at open, detached at close): its count is every byte the reads
+  took from the client plus what the client holds (`pulse_record_arrived()`: `pa_stream_readable_size()`, less what
+  the reads took of the fragment handed over, under the mainloop lock, from any thread), so its drop takes exactly
+  what the reads had not taken of the mark's count, from what the client holds (`pulse_record_read_held()`, never a
+  wait), and keeps every frame after it: audio held at the mark goes even when nothing came since (a stopped source),
+  a mark the reads already passed or one measured on another input drops nothing (`PLATFORM_AUDIO_PULSE_HELPERS`
+  `test_pulse_input_discard_drops_what_was_held_at_the_mark()`, `test_pulse_input_discard_of_a_stopped_source()`).
+  What the server had not sent the client at the mark is not in the count, and is read after the drop. The decoder's
+  own reads (`pulse_record_read()`) wait for the source as `pa_simple_read()` did. PortAudio and AAudio attach no
+  queue: they drop what the stream holds but for the newest audio, as much as the time since the mark (`marked_ns`):
+  a device captures in real time, so that is the audio captured since (`audio_input_keep_since()` in
+  `audio_stream_internal.h`, rounded up). Each reads that time after it counts what the stream holds, so audio
+  captured while the decoder waited between the mark and the count is kept, and reads only the snapshot it counted,
+  with no wait, so audio captured while it reads is left in the stream. PortAudio
   (Windows) reads one snapshot of what `Pa_GetStreamReadAvailable()` reports (an error count is an error), less the
   frames kept, at most 2 s of frames at the stream's rate and no read begun 250 ms or more after its first
   (`test_input_discard_is_bounded()`), each read asking for no more than the stream reports
@@ -10943,14 +10942,12 @@ Notes:
   AAudio's `AAudioStream_getXRunCount()` moved since before the counts), or after which AAudio's frame positions say
   the chunk may have been overwritten (the device wrote more than its buffer capacity past the chunk's position, which
   some input devices never report as an overrun: `aaudio_discard_chunk_may_be_new()`), ends the drop, and its chunk
-  goes to the stream's carry (the same `struct audio_input_carry` PulseAudio uses, allocated with every input stream),
+  goes to the stream's carry (`struct audio_input_carry`, allocated with their input streams),
   which `dsd_audio_read()` returns first; an earlier drop's carry no read took counts as the oldest audio held. The
   memory a drop keeps audio in is taken before it reads (`audio_input_chunk_reserve()`, adopted by the carry with
-  `audio_input_carry_adopt()`; PulseAudio's ring of the newest frames becomes the carry itself), and a drop that cannot
+  `audio_input_carry_adopt()`), and a drop that cannot
   get it reads nothing, so running out of memory never loses audio captured after the mark (the `without_memory`
-  cases of `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`, `PLATFORM_AUDIO_AAUDIO`). PulseAudio
-  takes no budget first: it reads what its client holds and keeps the newest frames by time, so a server overrun
-  loses only old audio. The UDP ring never overwrites (samples that do not fit are dropped as they arrive, never
+  cases of `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`, `PLATFORM_AUDIO_AAUDIO`). The UDP ring never overwrites (samples that do not fit are dropped as they arrive, never
   written or counted) and drops under its lock; the TCP and stdin readers drop by byte count from a stream that loses
   nothing (a socket or pipe pushes back), stopping at an error, the end or a cap and keeping the rest. Tests:
   `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`, `PLATFORM_AUDIO_AAUDIO`, `PLATFORM_AUDIO_PULSE_HELPERS`, `IO_UDP_INPUT`.

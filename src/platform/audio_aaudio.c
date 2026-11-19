@@ -1604,8 +1604,9 @@ aaudio_discard_reads(const dsd_audio_stream* stream, uint64_t owed, int64_t pos,
 }
 
 /* The frames dropped are not counted in device_frames: the decoder never had them. */
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+/* The drop from @p marked_ns, the mark's time (dsd_audio_discard_input()). */
+static int
+aaudio_discard_input_since(const dsd_audio_stream* stream, uint64_t marked_ns) {
     if (!stream || !stream->is_input || !stream->input_carry || stream->channels <= 0
         || stream->channels > DSD_AAUDIO_DISCARD_MAX_CHANNELS) {
         set_error("Invalid arguments");
@@ -1624,6 +1625,15 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
     const size_t from_carry = audio_input_carry_drop(stream->input_carry, (size_t)owed);
     const int dropped = aaudio_discard_reads(stream, owed - (uint64_t)from_carry, pos, xruns);
     return dropped < 0 ? -1 : dropped + (int)from_carry;
+}
+
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut) {
+    if (!cut) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    return aaudio_discard_input_since(stream, cut->marked_ns);
 }
 
 int

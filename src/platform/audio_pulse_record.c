@@ -33,6 +33,9 @@ struct pulse_record {
     const uint8_t* data;
     size_t len;
     size_t index;
+    /* Every byte the reads took from the client so far (issue #834): with what the client holds, the stream's count of
+       its input (pulse_record_arrived()). Written under the mainloop lock. */
+    uint64_t taken;
 };
 
 /* Every state change and every arrival of audio wakes a thread waiting on the mainloop. */
@@ -105,6 +108,7 @@ pulse_record_take_locked(struct pulse_record* rec, uint8_t* out, size_t bytes, i
     DSD_MEMCPY(out, rec->data + rec->index, n);
     rec->index += n;
     rec->len -= n;
+    rec->taken += n;
     if (rec->len == 0U) {
         rec->data = NULL;
         rec->index = 0U;
@@ -264,6 +268,23 @@ pulse_record_read_held(struct pulse_record* rec, void* data, size_t bytes, int* 
     }
     pa_threaded_mainloop_unlock(rec->mainloop);
     return total;
+}
+
+uint64_t
+pulse_record_arrived(struct pulse_record* rec) {
+    pa_threaded_mainloop_lock(rec->mainloop);
+    /* The client's queue still holds the fragment handed over, the part of it the reads took included. */
+    const size_t readable = pa_stream_readable_size(rec->stream);
+    const uint64_t queued = readable != (size_t)-1 ? (uint64_t)readable : 0U;
+    const uint64_t taken_of_fragment = rec->data != NULL ? (uint64_t)rec->index : 0U;
+    const uint64_t arrived = rec->taken + (queued > taken_of_fragment ? queued - taken_of_fragment : 0U);
+    pa_threaded_mainloop_unlock(rec->mainloop);
+    return arrived;
+}
+
+uint64_t
+pulse_record_taken(const struct pulse_record* rec) {
+    return rec->taken;
 }
 
 void

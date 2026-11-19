@@ -3751,14 +3751,15 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
     if (state->input_drop_generation != opts->pcm_input_generation) {
         return;
     }
-    /* What the input held at the mark goes; what arrived after it is the new channel's. A device keeps the audio it
-       captured since the mark; a stream or ring drops up to the count marked on it. */
+    /* What the input held at the mark goes; what arrived after it is the new channel's. A stream, a ring or the
+       PulseAudio input drops up to the count marked on it; a PortAudio or AAudio device keeps the audio it captured
+       since the mark's time. */
     const dsd_input_cut* cut = &state->input_drop_cut;
     long dropped = DSD_INPUT_DISCARD_NOT_APPLICABLE;
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE:
             if (opts->audio_in_stream) {
-                (void)dsd_audio_discard_input(opts->audio_in_stream, cut->marked_ns);
+                (void)dsd_audio_discard_input(opts->audio_in_stream, cut);
             }
             break;
         case AUDIO_IN_UDP: dropped = dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;

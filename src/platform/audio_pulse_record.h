@@ -20,6 +20,7 @@
 #include <pulse/def.h>
 #include <pulse/sample.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct pulse_record;
 
@@ -37,6 +38,13 @@ int pulse_record_read(struct pulse_record* rec, void* data, size_t bytes, int* e
  * with the PulseAudio error code in @p err. @p bytes and what it returns are whole frames: the stream hands its audio
  * over in whole frames. */
 long pulse_record_read_held(struct pulse_record* rec, void* data, size_t bytes, int* err);
+
+/** How much input the stream has taken in so far, in bytes (issue #834): what the reads took from the client and what
+ * the client holds now. Takes the mainloop lock: any thread but the mainloop's own. */
+uint64_t pulse_record_arrived(struct pulse_record* rec);
+
+/** What the reads took from the client so far, in bytes. The reading thread. */
+uint64_t pulse_record_taken(const struct pulse_record* rec);
 
 /** Close the stream and free it (NULL is a no-op). */
 void pulse_record_free(struct pulse_record* rec);
