@@ -699,7 +699,9 @@ Generated (do not edit/commit):
       reaches it with no hook and no allocation: the content-evidence wrapper (`dsd_frame_sync_hook_content_evidence()`)
       moves `dsd_state::scan_y_content_seq` for every PROVEN note, and `scan_y_partial_seq` with the longest
       `scan_y_partial_hold_ms` for every PARTIAL one, before its setting test; the boundary
-      (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end. A landing
+      (`live_scanner_y_note_frame_content()`) turns a move into the decode time or the hold's end, read once for the note
+      and the judgement, so with `-t 0` the frame that just proved a call holds the row
+      (`test_y_zero_hangtime_keeps_a_proven_call()`). A landing
       (`dsd_engine_scan_landing_note_row()`, `dsd_engine_scan_landing_forget_y_notes()`) forgets the notes no boundary
       read yet (checked content, an open verdict, an unchecked frame) and the hold's end, so the row left neither
       counts for the next row nor delays its step. A real dPMR,

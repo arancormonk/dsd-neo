@@ -15627,6 +15627,35 @@ test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
     return rc;
 }
 
+/* Issue #834: with -t 0 a row's call holds it frame after frame: a frame whose content passed its check is judged at
+   the time it was noted, so the clock moving on between the note and the judgement never makes the frame that just
+   proved the call too old to hold the row. On a clock that moves (the system's). */
+static int
+test_y_zero_hangtime_keeps_a_proven_call(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 519012500L) == 0);
+    opts->trunk_hangtime = 0;
+    dsd_decode_clock_use_system();
+    state->last_cc_sync_time = dsd_decode_time() - 2; /* landed 2 s ago */
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 2.0;
+    run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "-t 0, every frame proven: all 6 frames run, no step (frames %d, tunes %d)",
+                 g_frame_count, g_rtl_tune_calls);
+    rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == 0);
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y zero hangtime\n");
+    }
+    return rc;
+}
+
 /* Issue #834: the -Y hangtime countdown is the one the step keeps: checked content inside -t holds the row past the
    hangtime anchor's -t, and an open verdict's hold until its end, so the published deadline runs to the later of them,
    on the decode clock the step reads. */
@@ -16822,6 +16851,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
     rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
+    rc |= test_y_zero_hangtime_keeps_a_proven_call();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);

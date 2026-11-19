@@ -4466,12 +4466,11 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
    @p out_mark_ms. Pure: it reads, and decides nothing itself.
    Off -Y, one compare. */
 static int
-live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, uint64_t* out_epoch,
+live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, double now_m, uint64_t* out_epoch,
                                     int64_t* out_mark_ms) {
     if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
-    const double now_m = dsd_decode_now_mono_s();
     if (now_m - state->last_cc_sync_time_m <= (double)opts->trunk_hangtime
         || live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
@@ -4497,13 +4496,12 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
    become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
    SCAN_QUIET_PENDING_MAX_MS. */
 static void
-live_scanner_y_note_frame_content(dsd_state* state) {
+live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
     if (state->scan_y_content_seq == state->scan_y_content_seen
         && state->scan_y_partial_seq == state->scan_y_partial_seen
         && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen) {
         return;
     }
-    const double now_m = dsd_decode_now_mono_s();
     if (state->scan_y_unchecked_seq != state->scan_y_unchecked_seen) {
         state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
         state->scan_y_unchecked_m = now_m;
@@ -4532,10 +4530,13 @@ live_scanner_y_content_frame_yield(const dsd_opts* opts, dsd_state* state) {
     if (opts->scanner_mode != 1) {
         return 0; /* off -Y, the one compare */
     }
-    live_scanner_y_note_frame_content(state);
+    /* One reading of the clock for the note and the judgement: the frame that just proved the call is no older than
+       itself, so -t 0 keeps a call frame after frame. */
+    const double now_m = dsd_decode_now_mono_s();
+    live_scanner_y_note_frame_content(state, now_m);
     uint64_t epoch = 0U;
     int64_t mark_ms = 0;
-    if (!live_scanner_y_frames_carry_nothing(opts, state, &epoch, &mark_ms)) {
+    if (!live_scanner_y_frames_carry_nothing(opts, state, now_m, &epoch, &mark_ms)) {
         return 0;
     }
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
