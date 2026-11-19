@@ -594,6 +594,20 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             legal.extracted_licenses(document, self.inventory, ROOT)
 
+    def test_ncurses_overlay_declares_and_installs_the_reviewed_terms(self):
+        # The library is under the upstream COPYING (X11-distribute-modifications-variant) and the terminal database
+        # under the statements of misc/terminfo.src: the overlay's manifest names both, and the copyright file the
+        # port installs carries both texts, as the record has them reviewed.
+        record = next(c for c in self.inventory["components"] if c["id"] == "ncurses")
+        manifest = json.loads((ROOT / "vcpkg-ports/ncurses/vcpkg.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["license"], record["license_concluded"])
+        notice = "LicenseRef-ncurses-terminfo.txt"
+        self.assertIn("LICENSES/" + notice, record["notices"])
+        self.assertEqual((ROOT / "vcpkg-ports/ncurses" / notice).read_bytes(), (ROOT / "LICENSES" / notice).read_bytes())
+        portfile = (ROOT / "vcpkg-ports/ncurses/portfile.cmake").read_text(encoding="utf-8")
+        self.assertIn('vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING" "${CMAKE_CURRENT_LIST_DIR}/'
+                      + notice + '")', portfile)
+
     def test_version_and_mbelib_overlay_identity(self):
         manifest = json.loads((ROOT / "vcpkg.json").read_text())
         self.assertEqual(manifest["version-string"], self.inventory["release"])

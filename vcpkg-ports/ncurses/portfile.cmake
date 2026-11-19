@@ -3,8 +3,8 @@
 # ports/ncurses at the manifest baseline, vcpkg commit
 # 9eec002df1cd109f8f104cd966a763daf9751489; Copyright (c) Microsoft Corporation,
 # MIT license in vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (the terminal
-# database, the macOS file-name layout, the port-version, the formatting and
-# these comments) are GPL-3.0-or-later.
+# database and its notice, the license field, the macOS file-name layout, the
+# port-version, the formatting and these comments) are GPL-3.0-or-later.
 # Overlay of vcpkg's builtin ncurses port, which the macOS DMG bundles. The
 # builtin port installs no terminal database (--disable-db-install,
 # --without-progs) and passes --enable-mixed-case, so the library looks for an
@@ -109,4 +109,8 @@ file(
     INSTALL "${CMAKE_CURRENT_LIST_DIR}/usage"
     DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}"
 )
-vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING")
+# The libraries are under COPYING; the terminal database, compiled from
+# misc/terminfo.src, under that file's own statements, which
+# LicenseRef-ncurses-terminfo.txt (a copy of LICENSES/ in the dsd-neo tree)
+# reproduces.
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING" "${CMAKE_CURRENT_LIST_DIR}/LicenseRef-ncurses-terminfo.txt")
