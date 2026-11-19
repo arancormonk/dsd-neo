@@ -3247,6 +3247,12 @@ test_type_d_site_id_message(void) {
     write_scch_site_id(message, 0U, 0U, 1U, 0U);
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("site-id-reserved-0", state->nxdn_idas_site_code, 200);
+    /* Nor does the reserved Site Type 00 (§6.6.4 Table 6.6-2), whatever its code: the received identity refuses the
+       pair, and the site code kept refuses it too. */
+    write_scch_site_id(message, 0U, 0U, 0U, 55U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("site-id-reserved-type", state->nxdn_idas_site_code, 200);
+    rc |= expect_int("site-id-reserved-type-identity", state->rx_id.nxdn_idas_site_code, 200);
 
     /* One SCCH's 7-bit CRC has not confirmed the run: decoded, not kept. */
     state->nxdn_confirm_scch_streak = 1U;
@@ -3908,6 +3914,29 @@ type_d_call_on_repeater_5_free(dsd_opts* opts, dsd_state* state) {
     type_d_scch_free(opts, state);
 }
 
+/* An INFO3's sender is one unit (TS 1-E §6.6.7.2): one naming the Idle Repeater code (2046) or a reserved ID (2001-2040,
+   Table 6.6-5) names no talker, so the live call's source stands. */
+static int
+test_type_d_info3_sender_must_be_a_unit(void) {
+    static const uint16_t k_ids[] = {2046U, 2001U, 2047U};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_ids) / sizeof(k_ids[0]); i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (type_d_scch_live_call(&opts, &state) != 0) {
+            return 1;
+        }
+        uint8_t message[32];
+        dsd_call_snapshot call;
+        write_scch_identity(message, 1U, 2U, 3U, k_ids[i], 0U);
+        NXDN_decode_scch(opts, state, message, 1U);
+        rc |= expect_int("info3-sender-call", dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_u64("info3-sender-not-a-unit-keeps-the-source", call.ota_source_id, 0x0123U);
+        type_d_scch_free(opts, state);
+    }
+    return rc;
+}
+
 /*
  * ID 0 is the Null ID (NXDN TS 1-E Tables 6.6-5, 6.6-6): an INFO2 or a busy INFO4 naming it on the receiver's repeater
  * names no destination, so its G/U bit classifies nothing -- the live group call keeps its target and class.
@@ -4123,6 +4152,7 @@ main(void) {
     rc |= test_type_d_scch_reserved_cipher_mi_is_received();
     rc |= test_type_d_scch_spare_info1_keeps_no_state();
     rc |= test_type_d_null_id_names_no_destination();
+    rc |= test_type_d_info3_sender_must_be_a_unit();
     rc |= test_type_d_info2_eot_ends_the_call();
     rc |= test_type_d_inbound_info1_needs_its_pass_character();
     rc |= test_type_d_scch_info1_fields_print();

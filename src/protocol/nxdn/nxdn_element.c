@@ -501,13 +501,12 @@ nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const uint8_t* eleme
     NXDN_decode_VCALL(opts, state, elements);
 }
 
+/* The end of a sending, a DISC's or an SCCH end of transmission's (nxdn_scch_end_of_transmission()): the alias it
+   carried goes, and a receiver following a voice channel returns to the control channel (state->p25_cc_freq), clearing
+   what it followed there: the follow, the voice channel frequency, the SACCH superframe, the recent activity, an
+   over-the-air cipher and the working register with the IV the departed call received. */
 static void
-nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    if (!nxdn_element_has_bits("DISC", elements_bits, NXDN_VCALL_MIN_BITS)) {
-        return;
-    }
-    nxdn_reset_data_call_state(state);
-    NXDN_decode_VCALL(opts, state, elements);
+nxdn_release_and_return_to_cc(dsd_opts* opts, dsd_state* state) {
     nxdn_alias_reset(state);
 
     if ((opts->trunk_enable == 1) && state->p25_cc_freq != 0 && (opts->trunk_is_tuned == 1)) {
@@ -517,6 +516,10 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
         }
         opts->trunk_is_tuned = 0;
         nxdn_follow_release(state);
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U;
 
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
@@ -526,6 +529,16 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
             nxdn_cipher_class_reset(state);
         }
     }
+}
+
+static void
+nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    if (!nxdn_element_has_bits("DISC", elements_bits, NXDN_VCALL_MIN_BITS)) {
+        return;
+    }
+    nxdn_reset_data_call_state(state);
+    NXDN_decode_VCALL(opts, state, elements);
+    nxdn_release_and_return_to_cc(opts, state);
 }
 
 static void
@@ -3478,12 +3491,12 @@ nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Site ID Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
     nxdn_scch_print_site_type(info->site_type);
-    if (!nxdn_idas_site_code_valid(info->site_code)) {
+    if (!nxdn_scch_site_valid(info->site_type, info->site_code)) {
         DSD_FPRINTF(stderr, "Site Code: %d (Reserved); ", info->site_code);
         return;
     }
     DSD_FPRINTF(stderr, "Site Code: %d; ", info->site_code);
-    if (nxdn_confirm_scch_confirmed(state)) {
+    if (!info->diagnostic_only && nxdn_confirm_scch_confirmed(state)) {
         state->nxdn_idas_site_code = info->site_code;
         dsd_rxid_note_nxdn_idas_site(state, info->site_type, info->site_code);
     }
@@ -3559,24 +3572,6 @@ nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long i
     }
 }
 
-/* An admitted termination (Repeater in Use / Go to Repeater 31, in an INFO4 or an INFO2) returns the tuner to the
- * control channel at @p freq the way a DISC does (nxdn_element_handle_disc()): through the control-channel tune, after
- * which the receiver follows no voice channel (trunk_is_tuned clear, the follow released), so the next busy message is
- * judged as one heard on the control channel. Only a receiver tuned away from it returns. */
-static void
-nxdn_scch_return_to_cc(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info, long int freq,
-                       const dsd_tg_policy_decision* decision) {
-    if (opts->trunk_is_tuned != 1) {
-        return;
-    }
-    const dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, NULL);
-    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        return;
-    }
-    opts->trunk_is_tuned = 0;
-    nxdn_scch_busy_tuned(state, info, freq, 0, decision, NXDN_FOLLOW_NEW);
-}
-
 /* Tune to the admitted busy message's go-to repeater at @p freq (@p preempted: a preemption). A message repeated past
  * the voice window for the call the receiver still holds follows that same call in place; a follow to another carrier
  * ends the call left there (nxdn_end_left_call()). */
@@ -3584,12 +3579,8 @@ static void
 nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info, long int freq,
                       const dsd_tg_policy_decision* decision, int preempted) {
     const int is_private_call = (info->gu == 1U) ? 1 : 0;
-    if (info->rep1 == 31U) {
-        nxdn_scch_return_to_cc(opts, state, info, freq, decision);
-        return;
-    }
     const int held = nxdn_follow_holds_call(opts, state, info->id, is_private_call, freq);
-    const int leaves = nxdn_tune_leaves_carrier(opts, state, freq);
+    const int leaves = info->rep1 != 31U && nxdn_tune_leaves_carrier(opts, state, freq);
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
@@ -3601,6 +3592,21 @@ nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_busy_tuned(state, info, freq, is_private_call, decision, how);
 }
 
+/* An End of Transmission (Repeater in Use / Go to Repeater 31, TS 1-E §6.6.11 Table 6.6-9), in an INFO4 or an INFO2
+ * (TS 2-E Table 5.1-5): the sending ended, as a DISC ends one, and it takes the DISC's path
+ * (nxdn_release_and_return_to_cc()). The data call it carried is over; with no voice heard for a second, a receiver
+ * following a voice channel returns to the control channel it knows, its map's row 31 or not. */
+static void
+nxdn_scch_end_of_transmission(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+    if (!info->acts) {
+        return;
+    }
+    nxdn_reset_data_call_state(state);
+    if ((info->now - state->last_vc_sync_time) > 1) {
+        nxdn_release_and_return_to_cc(opts, state);
+    }
+}
+
 /* A busy repeater message names a call on go-to repeater rep1 (31: the call there ended, back to the control channel).
  * With no voice on the receiver's repeater for a second it is followed as before. While voice is live there, only a
  * call on another repeater (nxdn_idas_assoc()) may take the receiver: one of the held talkgroup over a call that is not
@@ -3608,8 +3614,12 @@ nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
  * whose repeater cannot be placed, never moves it. */
 static void
 nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    /* A termination (31) ends the sending whatever its ID; any other message with the Null ID names no call to follow. */
-    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U || (info->rep1 != 31U && info->id == 0U)) {
+    if (info->rep1 == 31U) {
+        nxdn_scch_end_of_transmission(opts, state, info);
+        return;
+    }
+    /* A message with the Null ID names no call to follow. */
+    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U || info->id == 0U) {
         return;
     }
 
@@ -3776,7 +3786,7 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
-        if (info->acts) {
+        if (info->acts && !info->diagnostic_only) {
             (void)dsd_recent_activity_clear(state, info->rep1);
             (void)dsd_recent_activity_clear(state, info->rep2);
         }
@@ -3808,8 +3818,9 @@ nxdn_scch_reserved_prefix(const dsd_opts* opts, const struct nxdn_scch_info* inf
         return 0;
     }
     if (!info->reserved_prefix) {
-        /* An inbound INFO4 or INFO2 naming a status ID (nxdn_scch_content_valid()): no destination, no status. */
-        DSD_FPRINTF(stderr, "\n%s  Inbound Status ID %d (not valid) ", KYEL, info->id);
+        /* An ID the message cannot carry (nxdn_scch_content_valid()): a reserved ID, a status code inbound or as a
+           sender, All Units as a sender; or a reserved Free Repeater. */
+        DSD_FPRINTF(stderr, "\n%s  ID %d (not valid in this message) ", KYEL, info->id);
         return 1;
     }
     char text[8];

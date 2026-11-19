@@ -85,6 +85,7 @@ static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_tune_count = 0;
 static long g_last_tune_freq = 0;
 static int g_tune_cc_count = 0;
+static long g_last_tune_cc_freq = 0;
 static long g_rigctl_freq = 0;
 static int g_rigctl_queries = 0;
 
@@ -283,10 +284,10 @@ static dsd_trunk_tune_result
 nxdn_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
-    (void)freq;
     (void)ted_sps;
     (void)request_id;
     g_tune_cc_count++;
+    g_last_tune_cc_freq = freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -388,6 +389,7 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
     g_tune_count = 0;
     g_last_tune_freq = 0;
     g_tune_cc_count = 0;
+    g_last_tune_cc_freq = 0;
     g_rigctl_freq = 0;
     g_rigctl_queries = 0;
 }
@@ -638,24 +640,36 @@ nxdn_run_scch_termination_case(void) {
 }
 
 /* Repeater in Use / Go to Repeater 31 ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4
- * (EOT)": structure 00b or 10b). Once the voice window has run out, a receiver following a call returns to the control
- * channel repeater 31 maps to through the control-channel tune, as a DISC does: it is then following no voice channel
- * (trunk_is_tuned clear, the follow released), so the next busy message is judged as one heard on the control channel.
- * An INFO2 EOT, which may be the only one received, does exactly what an INFO4 EOT does. */
+ * (EOT)": structure 00b or 10b), and takes the DISC's path (nxdn_release_and_return_to_cc()): once the voice window has
+ * run out, a receiver following a call returns to the control channel it knows through the control-channel tune, then
+ * follows no voice channel (trunk_is_tuned clear, the follow released, no voice channel frequency) and keeps nothing of
+ * the departed call (its data call assembly, its IV). The home frequency stands even when the map has no row 31 and
+ * the destination prefix indexes a traffic channel. An INFO2 EOT does exactly what an INFO4 EOT does. */
 static int
 nxdn_run_scch_info2_termination_returns_case(void) {
     const nxdn_case termination = {
         "type-d-scch-info2-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
     };
     int rc = 0;
-    for (int info2 = 0; info2 < 2; info2++) {
-        const char* const name = info2 ? "info2" : "info4";
+    for (int variant = 0; variant < 4; variant++) {
+        const int info2 = variant & 1;
+        const int unmapped = (variant & 2) != 0;
+        const char* const name =
+            info2 ? (unmapped ? "info2-no-row-31" : "info2") : (unmapped ? "info4-no-row-31" : "info4");
         g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
         nxdn_setup_fixture(&termination);
         nxdn_install_hooks();
+        if (unmapped) {
+            g_state.trunk_chan_map[31] = 0;
+            g_state.trunk_chan_map[termination.scch_rep2] = 936512500L; /* a traffic channel */
+        }
         g_opts.trunk_is_tuned = 1;
+        g_state.p25_vc_freq[0] = g_state.trunk_vc_freq[0] = 936012500L;
         g_state.nxdn_call.valid = 1U;
         g_state.nxdn_call.target = termination.scch_id;
+        g_state.data_header_valid[0] = 1; /* a data call's header, its blocks still coming */
+        g_state.nxdn_payload_mi = 0x1122334455667788ULL;
+        g_state.nxdn_iv_on_air = 1U;
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
@@ -670,10 +684,16 @@ nxdn_run_scch_info2_termination_returns_case(void) {
         dsd_call_snapshot call;
         rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED,
                           termination.name, name, "the call ended");
-        rc |= nxdn_expect(g_tune_cc_count == 1 && g_tune_count == 0, termination.name, name,
-                          "returned through the control-channel tune, not a voice-channel tune");
-        rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, termination.name, name, "no voice channel followed after");
+        rc |= nxdn_expect(g_tune_cc_count == 1 && g_tune_count == 0 && g_last_tune_cc_freq == 935000000L,
+                          termination.name, name, "returned to the home frequency through the control-channel tune");
+        rc |= nxdn_expect(g_state.p25_cc_freq == 935000000L && g_state.trunk_cc_freq == 935000000L, termination.name,
+                          name, "the home frequency stands");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 0 && g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0,
+                          termination.name, name, "no voice channel followed after");
         rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, termination.name, name, "the follow released");
+        rc |= nxdn_expect(g_state.data_header_valid[0] == 0, termination.name, name, "the data call assembly dropped");
+        rc |= nxdn_expect(g_state.nxdn_payload_mi == 0ULL && g_state.nxdn_iv_on_air == 0U, termination.name, name,
+                          "the departed call's IV dropped");
     }
 
     /* A receiver already on the control channel has nowhere to return to. */

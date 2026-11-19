@@ -55,49 +55,90 @@ nxdn_published_mi(const dsd_state* state) {
     return state->nxdn_iv_on_air != 0U ? state->nxdn_payload_mi : 0ULL;
 }
 
-/* Whether a site ID message's Site Code (SCCH bits 5-12, NXDN TS 1-E Fig 6.5-8) names a site: 1-250; 0 and 251-255 are
-   reserved (§6.6.5, Table 6.6-3). */
-static inline int
-nxdn_scch_site_code_valid(const uint8_t* bits) {
-    unsigned site_code = 0U;
-    for (size_t i = 5U; i < 13U; i++) {
-        site_code = (site_code << 1) | bits[i];
+/* The value of SCCH bits [@p start, @p start + @p len), most significant first. */
+static inline unsigned
+nxdn_scch_field(const uint8_t* bits, size_t start, size_t len) {
+    unsigned value = 0U;
+    for (size_t i = start; i < start + len; i++) {
+        value = (value << 1) | bits[i];
     }
-    return site_code != 0U && site_code <= 250U;
+    return value;
 }
 
-/* Whether an SCCH's 25 bits carry content NXDN TS 1-E defines (§6.5; Table 9.1-1). Not: an INFO2, INFO3 or busy INFO4
-   with the reserved prefix 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2: the one Spare bit taken into account;
-   every other Spare bit is ignored on reception, Table 9.1-1); an inbound INFO1 whose Pass Character is not 31 (Fig
-   6.5-3; TS 2-E Table 5.1-12); an inbound INFO4 or INFO2 naming a status ID (2041, 2044-2046: site ID, free, halt, idle
-   repeater), which only the outbound layouts carry (Figs 6.5-5..6.5-8) and which name no destination (Tables 6.6-5,
-   6.6-6); a site ID message whose Site Code (bits 5-12, Fig 6.5-8) is reserved (0, 251-255: §6.6.5, Table 6.6-3). Such
-   an SCCH is printed but is no evidence of a transmission and changes nothing past its frame. The outbound status
-   messages have no prefix at bits 8-12. */
+/* A Type-D site: Site Type 01-11 (00 is reserved, NXDN TS 1-E §6.6.4 Table 6.6-2) and Site Code 1-250 (0 and 251-255 are
+   reserved, §6.6.5 Table 6.6-3). The site ID message's evidence and its writes read the same pair. */
+static inline int
+nxdn_scch_site_valid(unsigned site_type, unsigned site_code) {
+    return site_type != 0U && site_code != 0U && site_code <= 250U;
+}
+
+/* The fixed codes of the outbound status messages (TS 1-E Figs 6.5-5..6.5-8, Tables 6.6-5/6.6-6): site ID (2041), free
+   (2044), halt (2045) and idle (2046) repeater. */
+static inline int
+nxdn_scch_status_id(unsigned id) {
+    return id == 2041U || (id >= 2044U && id <= 2046U);
+}
+
+/* An outbound status message's own fields: the site ID message's Site Type (bits 3-4) and Site Code (bits 5-12, Fig
+   6.5-8); the free repeater message's Free Repeater 1 and 2 (bits 3-7, 8-12, Fig 6.5-6), 31 being reserved (§6.6.10
+   Table 6.6-8). */
+static inline int
+nxdn_scch_status_fields_valid(const uint8_t* bits, unsigned id) {
+    if (id == 2041U) {
+        return nxdn_scch_site_valid(nxdn_scch_field(bits, 3U, 2U), nxdn_scch_field(bits, 5U, 8U));
+    }
+    if (id == 2044U) {
+        return nxdn_scch_field(bits, 3U, 5U) != 31U && nxdn_scch_field(bits, 8U, 5U) != 31U;
+    }
+    return 1;
+}
+
+/* An INFO1 (Figs 6.5-3, 6.5-10): its Spare bit clear (D2: the one Spare bit taken into account; every other Spare bit
+   is ignored on reception, Table 9.1-1); inbound, Pass Character 31 at bits 8-12 (TS 2-E Table 5.1-12); outbound, Free
+   Repeater 1 and 2 at bits 3-7 and 8-12, neither the reserved 31 (Table 6.6-8). */
+static inline int
+nxdn_scch_info1_valid(const uint8_t* bits, uint8_t direction) {
+    if (bits[24] != 0U) {
+        return 0;
+    }
+    if (direction != 1U) {
+        return nxdn_scch_field(bits, 8U, 5U) == 31U;
+    }
+    return nxdn_scch_field(bits, 3U, 5U) != 31U && nxdn_scch_field(bits, 8U, 5U) != 31U;
+}
+
+/*
+ * Whether an SCCH's 25 bits carry content NXDN TS 1-E defines (§6.5; Table 9.1-1, a reserved value is not valid).
+ * Not:
+ * - an INFO1 that nxdn_scch_info1_valid() refuses;
+ * - an ID the Unit and Group ID tables reserve, 2001-2040 (Tables 6.6-5, 6.6-6), in an INFO2, INFO3 or INFO4;
+ * - an INFO3 source naming a status code (2041, 2044-2046) or All Units (2047): a sender is one unit (§6.6.7.2), and
+ *   the status codes belong to the outbound status messages only; nor an outbound INFO3's reserved Free Repeater 1 (31,
+ *   bits 3-7, Fig 6.5-9);
+ * - an INFO4 or INFO2 naming a status code inbound (only the outbound layouts carry those messages, Figs 6.5-5..6.5-8),
+ *   or an outbound status message whose own fields are reserved (nxdn_scch_status_fields_valid());
+ * - an INFO2, INFO3 or busy INFO4 with the reserved Home Repeater / Prefix 31 (Table 6.6-4; the status messages have no
+ *   prefix at bits 8-12).
+ * Such an SCCH is printed but is no evidence of a transmission and changes nothing past its frame.
+ */
 static inline int
 nxdn_scch_content_valid(const uint8_t* bits, uint8_t direction) {
-    const unsigned sf = ((unsigned)bits[0] << 1) | bits[1];
-    unsigned prefix = 0U;
-    unsigned id = 0U;
-    for (size_t i = 8U; i < 13U; i++) {
-        prefix = (prefix << 1) | bits[i];
-    }
-    for (size_t i = 13U; i < 24U; i++) {
-        id = (id << 1) | bits[i];
-    }
+    const unsigned sf = nxdn_scch_field(bits, 0U, 2U);
+    const unsigned id = nxdn_scch_field(bits, 13U, 11U);
     if (sf == 3U) {
-        return bits[24] == 0U && (direction == 1U || prefix == 31U);
+        return nxdn_scch_info1_valid(bits, direction);
     }
-    const int status_id = id == 2041U || id == 2044U || id == 2045U || id == 2046U;
-    if (sf == 0U || sf == 2U) {
-        if (status_id && direction == 1U && id == 2041U) {
-            return nxdn_scch_site_code_valid(bits);
-        }
-        if (status_id) {
-            return direction == 1U;
-        }
+    if (id >= 2001U && id <= 2040U) {
+        return 0;
     }
-    return prefix != 31U;
+    if (sf == 1U) {
+        if (nxdn_scch_status_id(id) || id == 2047U || (direction == 1U && nxdn_scch_field(bits, 3U, 5U) == 31U)) {
+            return 0;
+        }
+    } else if (nxdn_scch_status_id(id)) {
+        return direction == 1U && nxdn_scch_status_fields_valid(bits, id);
+    }
+    return nxdn_scch_field(bits, 8U, 5U) != 31U;
 }
 
 /* End the canonical call on slot 0 for NXDN end signalling, an NXDN call only, and sync its event row; returns whether

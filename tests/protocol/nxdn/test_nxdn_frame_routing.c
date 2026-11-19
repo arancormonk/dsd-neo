@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/state_ext.h"
 #include "nxdn_confirm.h"
 #include "nxdn_internal.h"
 
@@ -121,6 +122,8 @@ static int g_stub_sacch_selects_scramble;
 static int g_stub_facch_notes_type_c;
 /* The DCR SACCH2 is a first block, which resets the scrambler register (nxdn_update_sacch2_identity_state()). */
 static int g_stub_sacch2_resets_register;
+/* The superframe position + 1 the SCCH stub's verified SCCH gives (1: the first frame). */
+static uint8_t g_stub_scch_part;
 /* The location category the FACCH1 decoder read. */
 static char g_facch_category[32];
 
@@ -143,6 +146,7 @@ nxdn_stub_note_crc(dsd_state* state, int crc_ok, nxdn_evidence evidence) {
 
 static void
 reset_state(void) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     g_lfsr_calls = 0;
@@ -175,6 +179,7 @@ reset_state(void) {
     g_stub_sacch_selects_scramble = 0;
     g_stub_facch_notes_type_c = 0;
     g_stub_sacch2_resets_register = 0;
+    g_stub_scch_part = 1U;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
@@ -296,7 +301,7 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 nxdn_channel_result
 nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     (void)opts;
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0U, 0U, 0U};
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
         /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) places the register and gives its position to the
@@ -319,17 +324,20 @@ nxdn_channel_result
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
     (void)bits;
     (void)reliab;
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0U, 0U, 0U};
     nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
     if (g_stub_scch_ok && g_stub_scch_names_type_d) {
         DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
         if (g_stub_scch_invalid) {
             result.scch_invalid = 1U;
+        } else {
+            result.scch_valid = 1U;
         }
     }
     if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
-        result.seed_part = 1U; /* a verified SCCH at the superframe's first frame */
+        result.seed_part =
+            g_stub_scch_part; /* a verified SCCH: the superframe's first frame unless the test names one */
     }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
@@ -340,13 +348,14 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     return result;
 }
 
-/* The positioning a verified SCCH's frame position asks for (nxdn_deperm.c): here the register value the test names,
-   recorded with the frame position and the cipher the frame chose by then. */
+/* The positioning a verified SCCH's frame position asks for (nxdn_deperm.c): here the register value the test names
+   plus the four slots of each frame before (as the LFSRN stub counts one a slot), recorded with the frame position and
+   the cipher the frame chose by then. */
 void
 nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame) {
     g_positioned_part = part_of_frame;
     g_positioned_cipher = state->nxdn_cipher_type;
-    state->nxdn_payload_mi = g_stub_scch_places_register;
+    state->nxdn_payload_mi = g_stub_scch_places_register + (unsigned long long)(4 * part_of_frame);
 }
 
 void
@@ -1236,7 +1245,7 @@ test_type_c_scramble_placed_after_its_vcall(void) {
     int rc = 0;
     rc |= expect_int("type-c late scramble: placed at the completing segment", g_positioned_part, 3);
     rc |= expect_int("type-c late scramble: placed with the vcall's cipher", (int)g_positioned_cipher, 1);
-    rc |= expect_u64("type-c late scramble: stolen slots after the placement", g_state.nxdn_payload_mi, 1002ULL);
+    rc |= expect_u64("type-c late scramble: stolen slots after the placement", g_state.nxdn_payload_mi, 1014ULL);
     return rc;
 }
 
@@ -1300,6 +1309,67 @@ test_dcr_header_keeps_its_scrambler_reset(void) {
     g_stub_sacch2_resets_register = 1;
     (void)route_frame(0x08U);
     return expect_u64("dcr header: reset kept", g_state.nxdn_payload_mi, 0ULL);
+}
+
+/* A Type-D single-SCCH frame (LICH 0x62, the non-superframe structure, USC 00: NXDN TS 1-E Table 5.2-1) is no voice
+   superframe frame: its structure 00 means a single SCCH, not 4/4 (Table 6.3-1). Under a forced scrambler with a key,
+   it places nothing at the fourth frame and steps no PN slot. */
+static int
+test_single_scch_places_nothing(void) {
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 1;
+    g_state.nxdn_payload_mi = 777ULL;
+    g_stub_scch_ok = 1;
+    g_stub_scch_part = 4U; /* structure 00 */
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x62U);
+    int rc = 0;
+    rc |= expect_int("single scch: nothing placed", g_positioned_part, -1);
+    rc |= expect_int("single scch: no PN slot stepped", g_lfsr_calls, 0);
+    rc |= expect_u64("single scch: the register kept", g_state.nxdn_payload_mi, 777ULL);
+    return rc;
+}
+
+/* A scrambled Type-D call running superframe after superframe: a verified fourth frame (4/4) says the next frame starts
+   the next superframe. When that next frame's SCCH fails its CRC, the register still reloads there (placed at the first
+   frame), rather than running on past the superframe's sixteen slots. */
+static int
+test_superframe_boundary_reloads_after_a_failed_scch(void) {
+    reset_state();
+    g_state.nxdn_cipher_type = 1;
+    g_state.R = 0x5A5AULL;
+    g_stub_facch_ok = 1;
+    g_stub_scch_ok = 1;
+    g_stub_scch_part = 4U;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_nxdn48_frame_at(0x76U, 10000U); /* the fourth frame, full voice */
+    int rc = expect_int("fourth frame: placed at 4/4", g_positioned_part, 3);
+    g_stub_scch_ok = 0;
+    g_positioned_part = -1;
+    (void)route_nxdn48_frame_at(0x76U, 10192U); /* the next frame, its SCCH failed */
+    rc |= expect_int("next frame: placed at the next superframe's start", g_positioned_part, 0);
+    /* Not after a gap: a frame that does not follow the last one directly is placed by nothing it did not carry. */
+    g_positioned_part = -1;
+    (void)route_nxdn48_frame_at(0x76U, 10576U);
+    rc |= expect_int("after a gap: nothing placed", g_positioned_part, -1);
+    return rc;
+}
+
+/* An RTCH2 frame's LICH names the Type-D layout (11-bit IDs) for its own FACCH1 even when its SCCH fails its CRC; the
+   layout is the frame's only, and the category it held before comes back after the frame. */
+static int
+test_failed_scch_frame_reads_its_lich_layout(void) {
+    reset_state();
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
+    g_stub_scch_ok = 0;
+    g_stub_facch_ok = 1;
+    (void)route_frame(0x72U);
+    int rc = 0;
+    rc |= expect_string("failed scch: FACCH1 read the Type-D layout", g_facch_category, "Type-D");
+    rc |= expect_string("failed scch: the layout is the frame's only", g_state.nxdn_location_category, " ");
+    return rc;
 }
 
 /* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a
@@ -1380,7 +1450,11 @@ main(void) {
     rc |= test_withheld_voice_steps_the_scrambler();
     rc |= test_dcr_header_keeps_its_scrambler_reset();
     rc |= test_unconfirmed_frame_keeps_the_shared_register();
+    rc |= test_single_scch_places_nothing();
+    rc |= test_superframe_boundary_reloads_after_a_failed_scch();
+    rc |= test_failed_scch_frame_reads_its_lich_layout();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
+    dsd_state_ext_free_all(&g_state);
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

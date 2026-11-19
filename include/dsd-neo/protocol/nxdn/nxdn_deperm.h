@@ -33,6 +33,8 @@ typedef struct nxdn_channel_result {
     /** A CRC-passing SCCH whose content NXDN TS 1-E does not define (nxdn_scch_content_valid()): the Type-D layout it
         names stays with this frame. */
     uint8_t scch_invalid;
+    /** A CRC-passing SCCH with valid content: the Type-D layout it names may outlive the frame. */
+    uint8_t scch_valid;
 } nxdn_channel_result;
 
 void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);

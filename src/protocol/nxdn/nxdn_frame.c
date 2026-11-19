@@ -47,9 +47,11 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "nxdn_confirm.h"
 #include "nxdn_internal.h"
@@ -119,6 +121,8 @@ typedef struct {
 
     /* What the frame's SCCH or superframe SACCH told the rest of the frame (nxdn_frame()'s own, frame-local). */
     nxdn_channel_result* result;
+    /* dsd_state::symbolcnt where the frame began (nxdn_confirm_note_frame_start()'s). */
+    uint32_t frame_symbol;
 } nxdn_frame_ctx;
 
 typedef struct {
@@ -525,13 +529,79 @@ nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     }
 }
 
-/* Whether the frame can carry its own superframe position, an SCCH or a superframe SACCH: its cipher slots are stepped
-   after its signalling, which may place the register (nxdn_step_cipher_after_signalling()). Every other frame (a DCR
-   SB0/PICH header, a non-superframe SACCH's, a control channel's) steps them before, as it always did, so a reset its
-   signalling makes (the DCR SACCH2's first block, nxdn_reset_payload_seed_if_forced()) stands for the voice after it. */
-static int
-nxdn_frame_steps_after_signalling(const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    return ctx->scch || (ctx->sacch && state->nxdn_sacch_non_superframe == 0);
+/* How a frame's cipher slots are stepped:
+   - after its signalling, a frame that can carry its own superframe position (a superframe SACCH, or an SCCH on an RTCH2
+     whose LICH names the superframe structure, USC 1x: NXDN TS 1-E Table 5.2-1), which may place the register
+     (nxdn_step_cipher_after_signalling());
+   - not at all, a Type-D single-SCCH frame (USC 0x, the non-superframe structure: link establishment, FACCH1, UDCH2,
+     FACCH3), which is no frame of a voice superframe: its structure 00 means a single SCCH, not 4/4 (Table 6.3-1), so it
+     places nothing and takes no PN slots (TS 1-F Fig 16.4-1 runs the sequence over the superframe's frames);
+   - before its signalling, as it always was, every other frame (a DCR SB0/PICH header, a non-superframe SACCH's, a
+     control channel's), so a reset its signalling makes (the DCR SACCH2's first block,
+     nxdn_reset_payload_seed_if_forced()) stands for the voice after it. */
+typedef enum {
+    NXDN_CIPHER_STEPS_BEFORE = 0,
+    NXDN_CIPHER_STEPS_AFTER,
+    NXDN_CIPHER_NO_SLOTS,
+} nxdn_cipher_steps;
+
+static nxdn_cipher_steps
+nxdn_frame_cipher_steps(const dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (ctx->scch) {
+        return (ctx->lich & 0x10U) != 0U ? NXDN_CIPHER_STEPS_AFTER : NXDN_CIPHER_NO_SLOTS;
+    }
+    if (ctx->sacch && state->nxdn_sacch_non_superframe == 0) {
+        return NXDN_CIPHER_STEPS_AFTER;
+    }
+    return NXDN_CIPHER_STEPS_BEFORE;
+}
+
+/* The Type-D scrambler position kept across frames (DSD_STATE_EXT_PROTO_NXDN_SCRAMBLER): the superframe position + 1 the
+   next contiguous superframe frame is expected at (0: none known). */
+typedef struct {
+    uint8_t next_part;
+    uint32_t last_frame_symbol; /* where the frame that set next_part began */
+} nxdn_scrambler_position;
+
+static nxdn_scrambler_position*
+nxdn_scrambler_position_get(dsd_state* state) {
+    nxdn_scrambler_position* pos =
+        DSD_STATE_EXT_GET_AS(nxdn_scrambler_position, state, DSD_STATE_EXT_PROTO_NXDN_SCRAMBLER);
+    if (pos != NULL) {
+        return pos;
+    }
+    pos = (nxdn_scrambler_position*)calloc(1U, sizeof(*pos));
+    if (pos == NULL || dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_NXDN_SCRAMBLER, pos, free) != 0) {
+        free(pos);
+        return NULL;
+    }
+    return pos;
+}
+
+/* The frame's superframe position + 1 (0: none): the one a checked, valid SCCH or a checked superframe SACCH segment
+   gave; else, on a Type-D superframe frame read exactly one frame after the last positioned one
+   (NXDN_CONFIRM_FRAME_SYMBOLS, within the slip: no frame missed between), the one that frame implies, so a verified
+   fourth frame still reloads the register at the next superframe's start when that frame's own SCCH fails. The
+   position is then kept for the next frame. */
+static uint8_t
+nxdn_frame_seed_part(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    uint8_t part = ctx->result->seed_part;
+    if (!ctx->scch) {
+        return part;
+    }
+    nxdn_scrambler_position* pos = nxdn_scrambler_position_get(state);
+    if (pos == NULL) {
+        return part;
+    }
+    const uint32_t since = ctx->frame_symbol - pos->last_frame_symbol;
+    const int next_frame = since + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP >= NXDN_CONFIRM_FRAME_SYMBOLS
+                           && since <= NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
+    if (part == 0U && next_frame) {
+        part = pos->next_part;
+    }
+    pos->next_part = part != 0U ? (uint8_t)((part % 4U) + 1U) : 0U;
+    pos->last_frame_symbol = ctx->frame_symbol;
+    return part;
 }
 
 /* The cipher slots the frame's leading non-voice part takes (NXDN TS 1-D Fig 5.4-2, TS 1-F Fig 16.4-1: the PN sequence
@@ -564,13 +634,13 @@ nxdn_print_voice_or_data_and_sync_lfsr(dsd_state* state, const nxdn_frame_ctx* c
     if (ctx->voice && ctx->facch == 1 && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
-    if (!nxdn_frame_steps_after_signalling(state, ctx)) {
+    if (nxdn_frame_cipher_steps(state, ctx) == NXDN_CIPHER_STEPS_BEFORE) {
         nxdn_step_stolen_slots(state, ctx);
     }
 }
 
 /* The scrambler position and the cipher slots of a frame that can carry its own position
-   (nxdn_frame_steps_after_signalling()), once its signalling decoded on this carrier (never after it retuned the
+   (nxdn_frame_cipher_steps()), once its signalling decoded on this carrier (never after it retuned the
    receiver, never on another channel's frame): a forced scrambler (-4) is selected first, on a voice frame or a frame
    so placed (all four slots stolen included); a position (nxdn_channel_result::seed_part: a checked, valid SCCH's, or a
    checked superframe SACCH segment's, whose own placement came before the VCALL it completed chose Scramble or its key)
@@ -578,10 +648,14 @@ nxdn_print_voice_or_data_and_sync_lfsr(dsd_state* state, const nxdn_frame_ctx* c
    and the stolen slots step it after that, so the voice after a leading FACCH1 starts two slots in. */
 static void
 nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (!nxdn_frame_steps_after_signalling(state, ctx)) {
+    if (nxdn_frame_cipher_steps(state, ctx) != NXDN_CIPHER_STEPS_AFTER) {
+        nxdn_scrambler_position* pos = ctx->scch ? nxdn_scrambler_position_get(state) : NULL;
+        if (pos != NULL) {
+            pos->next_part = 0U; /* a single-SCCH frame is no superframe frame */
+        }
         return;
     }
-    const uint8_t part = ctx->result->seed_part;
+    const uint8_t part = nxdn_frame_seed_part(state, ctx);
     if ((ctx->voice || part != 0U) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
@@ -725,12 +799,22 @@ nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx
     char category[sizeof(state->nxdn_location_category)];
     DSD_MEMCPY(category, state->nxdn_location_category, sizeof(category));
     const uint8_t type_c_before = state->nxdn_site.type_c;
+    /* An RTCH2 frame's LICH names the Type-D layout itself (state->nxdn_frame_channel): its FACCH1 and the rest read it
+       even when the frame's SCCH failed its CRC, for this frame only. */
+    const int type_d_frame = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+    if (type_d_frame) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    }
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
     /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
-       channels only: it never outlives the frame, whatever confirmed the transmission. The rollback undoes only the
-       SCCH's provisional layout: a Type-C site a later channel of the frame verified (dsd_nxdn_note_type_c()) never
-       reads "Type-D" again. */
-    if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U) {
+       channels only: it never outlives the frame, whatever confirmed the transmission; nor does the layout the LICH named
+       for a frame whose SCCH failed. Only a valid SCCH of a confirmed transmission keeps it. The rollback undoes only the
+       provisional layout: a Type-C site a later channel of the frame verified (dsd_nxdn_note_type_c()) never reads
+       "Type-D" again. */
+    const int keep =
+        nxdn_confirm_is_confirmed(state) && ctx->result->scch_invalid == 0U
+        && (!type_d_frame || ctx->result->scch_valid != 0U || strcmp(state->nxdn_location_category, "Type-D") != 0);
+    if (!keep) {
         DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
         if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
@@ -887,11 +971,12 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     int frame_proved = 0;
     int frame_read = 0; // the body reached the confirmation gate
 
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0U, 0U, 0U};
 
     nxdn_note_fsw_anchor(state);
     nxdn_frame_ctx_init(&ctx);
     ctx.result = &result;
+    ctx.frame_symbol = (uint32_t)state->symbolcnt;
     const uint32_t carrier_seq = state->carrier_seq;
     const uint32_t frame_symbol = (uint32_t)state->symbolcnt;
     nxdn_collect_lich(opts, state, &ctx);

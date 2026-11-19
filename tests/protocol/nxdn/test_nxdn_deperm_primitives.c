@@ -1364,48 +1364,66 @@ test_scch_crc_gates_scrambler_reload(void) {
     return rc;
 }
 
-/* The SCCH test_scch_undefined_content_confirms_nothing() drives as @p kind (see its cases). */
+/* One SCCH of test_scch_undefined_content_confirms_nothing(): its fields (NXDN TS 1-E §6.5) and whether TS 1-E defines
+   that content. */
+typedef struct {
+    const char* tag;
+    uint8_t structure; /* INFO4 0, INFO3 1, INFO2 2, INFO1 3 */
+    uint8_t bits_3_7;  /* Repeater in Use / Go to / Free Repeater 1; Site Type in bits 3-4 */
+    uint8_t bits_8_12; /* Home Repeater / Prefix, Free Repeater 2 or Pass Character; Site Code low bits */
+    uint16_t id;       /* bits 13-23 */
+    uint8_t bit_24;    /* G/U or Spare */
+    uint16_t site;     /* a site ID message: Site Type (2) and Site Code (8) over bits 3-12, else 0xFFFF */
+    int valid;
+} scch_content_case;
+
+static const scch_content_case k_scch_content_cases[] = {
+    {"scch-reserved-prefix-confirms-nothing", 1U, 2U, 31U, 1234U, 0U, 0xFFFFU, 0},
+    {"scch-valid-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1},
+    {"scch-spare-info1-confirms-nothing", 3U, 0U, 0U, 0U, 1U, 0xFFFFU, 0},
+    {"scch-spare-info3-confirms", 1U, 2U, 3U, 1234U, 1U, 0xFFFFU, 1},
+    {"scch-site-code-0-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 0U, 0},
+    {"scch-site-code-251-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 251U, 0},
+    {"scch-site-type-00-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (0U << 8) | 17U, 0},
+    {"scch-site-id-confirms", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 17U, 1},
+    {"scch-info1-free-repeater-1-31-confirms-nothing", 3U, 31U, 3U, 0U, 0U, 0xFFFFU, 0},
+    {"scch-info1-free-repeater-2-31-confirms-nothing", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 0},
+    {"scch-info1-confirms", 3U, 2U, 3U, 0U, 0U, 0xFFFFU, 1},
+    {"scch-free-repeater-31-confirms-nothing", 0U, 31U, 3U, 2044U, 0U, 0xFFFFU, 0},
+    {"scch-info3-free-repeater-31-confirms-nothing", 1U, 31U, 3U, 1234U, 0U, 0xFFFFU, 0},
+    {"scch-info3-idle-code-confirms-nothing", 1U, 2U, 3U, 2046U, 0U, 0xFFFFU, 0},
+    {"scch-info3-all-units-confirms-nothing", 1U, 2U, 3U, 2047U, 0U, 0xFFFFU, 0},
+    {"scch-info2-reserved-id-confirms-nothing", 2U, 5U, 3U, 2001U, 0U, 0xFFFFU, 0},
+    {"scch-info4-reserved-id-confirms-nothing", 0U, 5U, 3U, 2040U, 1U, 0xFFFFU, 0},
+    {"scch-info2-id-31-confirms", 2U, 5U, 3U, 31U, 0U, 0xFFFFU, 1},
+    {"scch-info4-all-group-confirms", 0U, 5U, 3U, 2047U, 0U, 0xFFFFU, 1},
+};
+
 static void
-make_scch_content_case(uint8_t payload[25], int kind) {
+make_scch_content_case(uint8_t payload[25], const scch_content_case* c) {
     DSD_MEMSET(payload, 0, 25U);
-    if (kind == 2) {
-        write_bits_msb(payload, 0U, 2U, 3U); /* INFO1 */
-        payload[24] = 1U;                    /* Spare */
-    } else if (kind >= 4) {
-        write_bits_msb(payload, 0U, 2U, 0U);                    /* outbound INFO4: the site ID message */
-        write_bits_msb(payload, 3U, 2U, 1U);                    /* Site Type */
-        write_bits_msb(payload, 5U, 8U, kind == 4 ? 0U : 251U); /* reserved Site Codes */
-        if (kind == 6) {
-            write_bits_msb(payload, 5U, 8U, 17U); /* a site */
-        }
-        write_bits_msb(payload, 13U, 11U, 2041U);
+    write_bits_msb(payload, 0U, 2U, c->structure);
+    if (c->site != 0xFFFFU) {
+        write_bits_msb(payload, 3U, 2U, (uint32_t)(c->site >> 8));
+        write_bits_msb(payload, 5U, 8U, (uint32_t)(c->site & 0xFFU));
     } else {
-        write_bits_msb(payload, 0U, 2U, 1U); /* INFO3 */
-        write_bits_msb(payload, 3U, 5U, 2U);
-        write_bits_msb(payload, 8U, 5U, kind == 0 ? 31U : 3U);
-        write_bits_msb(payload, 13U, 11U, 1234U);
-        payload[24] = kind == 3 ? 1U : 0U; /* Spare */
+        write_bits_msb(payload, 3U, 5U, c->bits_3_7);
+        write_bits_msb(payload, 8U, 5U, c->bits_8_12);
     }
+    write_bits_msb(payload, 13U, 11U, c->id);
+    payload[24] = c->bit_24;
 }
 
 /*
- * An SCCH whose content NXDN TS 1-E does not define passes its CRC-7 but is no evidence of a transmission (Table
- * 9.1-1): frames of them alone never confirm one. Cases: 0, an INFO3 with the reserved prefix 31 (Table 6.6-4); 2, an
- * INFO1 with its Spare bit set (D2); 4 and 5, a site ID message with a reserved Site Code, 0 or 251 (§6.6.5, Table
- * 6.6-3). Valid SCCHs confirm: 1, an INFO3; 3, an INFO3 with its Spare bit set, which a receiver ignores (Table 9.1-1);
- * 6, a site ID message naming site 17.
+ * An outbound SCCH whose content NXDN TS 1-E does not define passes its CRC-7 but is no evidence of a transmission
+ * (Table 9.1-1: a reserved value is not valid): frames of them alone never confirm one. The cases: the reserved prefix
+ * 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2); a site ID message's reserved Site Type 00 or Site Code 0, 251
+ * (§6.6.4, §6.6.5); a reserved Free Repeater 31 (Table 6.6-8) in an INFO1, an INFO3 or the free repeater message; an
+ * INFO3 sender naming a status code or All Units; a reserved ID 2001-2040 (Tables 6.6-5, 6.6-6). Valid SCCHs confirm,
+ * among them an INFO3 with its Spare bit set, which a receiver ignores, and the standard ID 31.
  */
 static int
 test_scch_undefined_content_confirms_nothing(void) {
-    static const char* const k_tags[] = {
-        "scch-reserved-prefix-confirms-nothing",
-        "scch-valid-confirms",
-        "scch-spare-info1-confirms-nothing",
-        "scch-spare-info3-confirms",
-        "scch-site-code-0-confirms-nothing",
-        "scch-site-code-251-confirms-nothing",
-        "scch-site-id-confirms",
-    };
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     uint8_t payload[25];
@@ -1413,8 +1431,9 @@ test_scch_undefined_content_confirms_nothing(void) {
     uint8_t reliab[60];
     int rc = 0;
     DSD_MEMSET(reliab, 255, sizeof(reliab));
-    for (int kind = 0; kind < 7; kind++) {
-        make_scch_content_case(payload, kind);
+    for (size_t k = 0; k < sizeof(k_scch_content_cases) / sizeof(k_scch_content_cases[0]); k++) {
+        const scch_content_case* c = &k_scch_content_cases[k];
+        make_scch_content_case(payload, c);
         if (alloc_fixture(&opts, &state) != 0) {
             return 1;
         }
@@ -1427,8 +1446,7 @@ test_scch_undefined_content_confirms_nothing(void) {
             (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
             nxdn_confirm_end_frame(state);
         }
-        const int valid = kind == 1 || kind == 3 || kind == 6;
-        rc |= expect_int(k_tags[kind], nxdn_confirm_is_confirmed(state), valid);
+        rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), c->valid);
         free_fixture(opts, state);
     }
     return rc;
