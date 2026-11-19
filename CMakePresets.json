@@ -219,7 +219,7 @@
       "name": "macos-arm64-release",
       "inherits": "warnings-as-errors",
       "displayName": "macOS arm64 Release (portable DMG)",
-      "description": "Apple silicon Release build of the portable DMG, every third-party library from vcpkg; needs VCPKG_ROOT",
+      "description": "Apple silicon Release build of the portable DMG; needs VCPKG_ROOT. Every third-party library comes from vcpkg except librtlsdr and libairspy: build the patched ones (tools/usb_dependency_patches.sh fetch) into a prefix and put it on CMAKE_PREFIX_PATH and PKG_CONFIG_PATH, as the DMG job does with .deps",
       "binaryDir": "${sourceDir}/build/macos-arm64-release",
       "condition": {
         "type": "equals",

@@ -20,12 +20,18 @@ Usage
 Notes
 - The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs and
   TERMINFO_DIRS to use bundled ncurses terminal descriptions.
-- CI produces an arm64 portable DMG from the macos-arm64-release preset; every
-  bundled library is built with vcpkg. It needs macOS 26 or later.
+- CI produces an arm64 portable DMG from the macos-arm64-release preset. It
+  needs macOS 26 or later. Every bundled library is built with vcpkg except
+  librtlsdr and libairspy, which vcpkg builds only for Windows: CI builds them
+  from their pinned sources with dsd-neo's patches (tools/usb_dependency_patches.sh
+  fetch), against vcpkg's libusb and for the same macOS version, into a prefix
+  of its own (.deps). To reproduce the build, install them the same way and put
+  that prefix on CMAKE_PREFIX_PATH, and its lib/pkgconfig on PKG_CONFIG_PATH,
+  before configuring with the preset.
 - Audio goes through PortAudio to macOS's own Core Audio, so no extra audio
   server is needed. Reading audio from a sound card asks for Terminal's (or your
   terminal app's) microphone permission the first time.
-- The portable CI build requires RTL-SDR and SoapySDR at configure time.
+- The portable CI build requires RTL-SDR, Airspy and SoapySDR at configure time.
   Runtime radio use still requires appropriate device permissions, drivers,
   and Soapy modules for your hardware. The bundled SoapySDR is 0.8.1, which
   loads modules built for SoapySDR 0.8 only (not Homebrew's 0.9 modules); point
