@@ -6452,9 +6452,12 @@ if(DSD_ENABLE_QT_UI)
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
         )
         # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
-        # an index naming it, as the APK staging writes one.
+        # an index naming it and a file the folder lacks, as the APK staging writes one.
         set(_dsd_test_notice_dir "${CMAKE_CURRENT_BINARY_DIR}/qml-notices")
-        file(WRITE "${_dsd_test_notice_dir}/notice-index.txt" "LICENSE\n")
+        file(
+            WRITE "${_dsd_test_notice_dir}/notice-index.txt"
+            "LICENSE\nlicenses/gone.txt\n"
+        )
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
             PREFIX "/dsdneo/test-notices"

@@ -1,6 +1,6 @@
 {
   "SPDX-License-Identifier": "GPL-3.0-or-later",
-  "about": "What the qt, ndk-runtime, androidx, kotlin and project records in legal/components.json describe for the release APK: the Qt kit (version and The Qt Company's build SBOMs), the NDK, the Gradle release runtime classpath and the native libraries in lib/arm64-v8a/. tools/check_android_runtime_lock.py fails a build that differs; update this file only together with a review of those records.",
+  "about": "What the qt, ndk-runtime, androidx, kotlin and project records in legal/components.json describe for the release APK: the Qt kit (version and The Qt Company's build SBOMs), the NDK, the Gradle release runtime classpath and the native libraries in lib/arm64-v8a/. tools/check_android_runtime_lock.py fails a build that differs; update this file only together with a review of those records. Gradle's report also names androidx.annotation:annotation, androidx.collection:collection, kotlinx-coroutines-core and kotlinx-coroutines-bom: metadata-only modules of the same projects (Gradle module metadata that points at the -jvm artifacts, and the coroutines version platform), which ship no code of their own.",
   "abi": "arm64-v8a",
   "records": {
     "project": {

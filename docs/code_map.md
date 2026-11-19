@@ -13782,12 +13782,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
   (option `DSD_ENABLE_QT_UI`, default OFF)
-- Legal resources: `DecoderHost::licenseNotices()` (the licences screen) first names where
-  the source code of the Qt version the app is built with is (Qt's archive URLs for qtbase,
-  qtdeclarative and qtsvg, from `QT_VERSION_*`), then shows every file that the package's
-  notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo` in the APK, none in the base
-  host) lists in its `notice-index.txt`, in that order; a listed file the package lacks
-  shows as missing. `cmake/stage_android_package.cmake` writes the index from the folder as
+- Legal resources: the licences screen (`LicensesScreen.qml`) first shows where the source
+  code of the Qt version the app is built with is (`DecoderHost::qtSourceNotice()`: Qt's
+  archive URLs for qtbase, qtdeclarative and qtsvg, from `QT_VERSION_*`), then lists by name
+  every file that the package's notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo`
+  in the APK, none in the base host) names in its `notice-index.txt`, in that order
+  (`licenseFiles()`). A file's text is read and laid out only when it is opened, one at a
+  time (`licenseFileText()`; Back returns to the list): together they are near a megabyte.
+  A name the index does not give, a path out of the folder or a file the package lacks
+  reads as missing. `cmake/stage_android_package.cmake` writes the index from the folder as
   staged (LICENSE, COPYRIGHT and THIRD_PARTY.md first, then the rest sorted), so a notice an
   `android_release` map adds reaches the screen with no app change. The UI library compiles
   in no notices. `cmake/MbelibNotices.cmake` requires the selected mbelib installation's

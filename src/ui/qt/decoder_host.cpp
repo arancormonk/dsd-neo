@@ -70,11 +70,12 @@ qt_source_notice() {
     QStringList lines{
         QStringLiteral("Qt source code"),
         QString(),
-        QStringLiteral("This app includes Qt %1 (The Qt Company Ltd. and other contributors) under the GNU Lesser "
-                       "General Public License version 3, whose text is licenses/LGPL-3.0-only.txt below. That licence "
-                       "adds permissions to the GNU General Public License version 3, whose text is LICENSE. dsd-neo "
-                       "applies no patches to Qt: the app carries Qt's libraries, plugins and Android code as Qt %1 "
-                       "publishes them.")
+        QStringLiteral(
+            "This app includes Qt %1 (The Qt Company Ltd. and other contributors) under the GNU Lesser "
+            "General Public License version 3, whose text is licenses/LGPL-3.0-only.txt in the list below. That "
+            "license adds permissions to the GNU General Public License version 3, whose text is LICENSE. dsd-neo "
+            "applies no patches to Qt: the app carries Qt's libraries, plugins and Android code as Qt %1 "
+            "publishes them.")
             .arg(version),
         QString(),
         QStringLiteral("The complete source code of Qt %1 is in Qt's official archive:").arg(version),
@@ -181,28 +182,34 @@ DecoderHost::copyText(const QString& text) const {
 }
 
 QString
-DecoderHost::licenseNotices() const {
-    QStringList notices{qt_source_notice()};
+DecoderHost::qtSourceNotice() const {
+    return qt_source_notice();
+}
+
+QStringList
+DecoderHost::licenseFiles() const {
     const QString directory = noticeDirectory();
     QFile index(directory + QStringLiteral("/notice-index.txt"));
     if (directory.isEmpty() || !index.open(QIODevice::ReadOnly)) {
-        notices.append(QStringLiteral("The licence and notice files are missing from this package."));
-        return notices.join(QStringLiteral("\n\n"));
+        return {};
     }
-    const QStringList names = QString::fromUtf8(index.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (const QString& line : names) {
+    QStringList names;
+    for (const QString& line : QString::fromUtf8(index.readAll()).split(QLatin1Char('\n'))) {
         const QString name = line.trimmed();
-        if (name.isEmpty()) {
-            continue;
-        }
-        QFile file(directory + QLatin1Char('/') + name);
-        if (notice_path_ok(name) && file.open(QIODevice::ReadOnly)) {
-            notices.append(name + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));
-        } else {
-            notices.append(name + QStringLiteral("\n\nThis file is missing from the package."));
+        if (!name.isEmpty()) {
+            names.append(name);
         }
     }
-    return notices.join(QStringLiteral("\n\n"));
+    return names;
+}
+
+QString
+DecoderHost::licenseFileText(const QString& name) const {
+    QFile file(noticeDirectory() + QLatin1Char('/') + name);
+    if (notice_path_ok(name) && licenseFiles().contains(name) && file.open(QIODevice::ReadOnly)) {
+        return QString::fromUtf8(file.readAll());
+    }
+    return QStringLiteral("This file is missing from the package.");
 }
 
 QStringList

@@ -3,9 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Unit tests: the licences screen's text. It names where the source code of the Qt version the app is built with is,
- * from Qt's own version macros, and then shows every file the package's notice index names, in the index's order, so a
- * notice the packaging adds reaches the screen with no change to the app. */
+/* Unit tests: what the licences screen shows. Where the source code of the Qt version the app is built with is, from
+ * Qt's own version macros; then the list of every file the package's notice index names, in the index's order, so a
+ * notice the packaging adds reaches the screen with no change to the app; and one listed file's text at a time. */
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -87,46 +87,54 @@ archive_url(const QString& module) {
 }
 
 void
-test_qt_source_comes_first() {
+test_qt_source_section() {
     NoticeHost host;
-    const QString text = host.licenseNotices();
-    CHECK(text.startsWith(QStringLiteral("Qt source code\n")), "the screen opens with where Qt's source code is");
+    const QString text = host.qtSourceNotice();
+    CHECK(text.startsWith(QStringLiteral("Qt source code\n")), "the section is headed as where Qt's source code is");
     CHECK(text.contains(QStringLiteral("This app includes Qt %1 ").arg(qt_version())),
           "it names the Qt version built with");
     CHECK(text.contains(QStringLiteral("GNU Lesser General Public License version 3")),
-          "and the licence Qt is used under");
-    CHECK(text.contains(QStringLiteral("licenses/LGPL-3.0-only.txt")), "and where that licence's text is");
+          "and the license Qt is used under");
+    CHECK(text.contains(QStringLiteral("licenses/LGPL-3.0-only.txt")), "and where that license's text is");
     CHECK(text.contains(QStringLiteral("no patches")), "and that the app patches nothing in Qt");
     for (const QString& module : {QStringLiteral("qtbase"), QStringLiteral("qtdeclarative"), QStringLiteral("qtsvg")}) {
         CHECK(text.contains(archive_url(module)), "each Qt module's source archive is named at that version");
     }
+    CHECK(text.size() < 2000, "the section is short: no notice file's text is part of it");
 }
 
 void
-test_every_indexed_file_in_index_order() {
+test_files_listed_and_read_one_at_a_time() {
     QTemporaryDir dir;
     NoticeHost host;
     host.folder = dir.path() + QStringLiteral("/doc");
     CHECK(write_file(host.folder + QStringLiteral("/LICENSE"), "GNU GENERAL PUBLIC LICENSE fixture\n"), "fixture");
     CHECK(write_file(host.folder + QStringLiteral("/licenses/Qt-NOTICES.txt"), "Qt notice fixture\n"), "fixture");
     CHECK(write_file(host.folder + QStringLiteral("/licenses/Added-NOTICES.txt"), "Added notice fixture\n"), "fixture");
+    CHECK(write_file(host.folder + QStringLiteral("/licenses/unlisted.txt"), "Unlisted fixture\n"), "fixture");
     CHECK(write_file(dir.path() + QStringLiteral("/outside.txt"), "Outside fixture\n"), "fixture");
-    CHECK(
-        write_file(host.folder + QStringLiteral("/notice-index.txt"),
-                   "LICENSE\nlicenses/Qt-NOTICES.txt\nlicenses/gone.txt\n../outside.txt\nlicenses/Added-NOTICES.txt\n"),
-        "fixture");
+    CHECK(write_file(host.folder + QStringLiteral("/notice-index.txt"),
+                     "LICENSE\nlicenses/Qt-NOTICES.txt\n\nlicenses/gone.txt\n../outside.txt\n"
+                     "licenses/Added-NOTICES.txt\n"),
+          "fixture");
 
-    const QString text = host.licenseNotices();
-    const auto at = [&text](const char* needle) { return text.indexOf(QLatin1String(needle)); };
-    CHECK(at("LICENSE\n\nGNU GENERAL PUBLIC LICENSE fixture") > at("Qt source code"), "the project's licence follows");
-    CHECK(at("licenses/Qt-NOTICES.txt\n\nQt notice fixture") > at("GNU GENERAL PUBLIC LICENSE fixture"),
-          "Qt's notices follow in the index's order");
-    CHECK(at("licenses/gone.txt\n\nThis file is missing from the package.") > at("Qt notice fixture"),
-          "a file the index names but the package lacks is shown as missing, not skipped");
-    CHECK(at("Outside fixture") < 0, "a path out of the folder is never read");
-    CHECK(at("../outside.txt\n\nThis file is missing from the package.") > 0, "it is shown as missing");
-    CHECK(at("licenses/Added-NOTICES.txt\n\nAdded notice fixture") > at("licenses/gone.txt"),
-          "a notice the index adds is shown with no change to the app");
+    CHECK(host.licenseFiles()
+              == QStringList({QStringLiteral("LICENSE"), QStringLiteral("licenses/Qt-NOTICES.txt"),
+                              QStringLiteral("licenses/gone.txt"), QStringLiteral("../outside.txt"),
+                              QStringLiteral("licenses/Added-NOTICES.txt")}),
+          "the list is every name the index gives, in its order, blank lines left out");
+    CHECK(host.licenseFileText(QStringLiteral("LICENSE")) == QStringLiteral("GNU GENERAL PUBLIC LICENSE fixture\n"),
+          "a listed file reads as its text");
+    CHECK(host.licenseFileText(QStringLiteral("licenses/Added-NOTICES.txt"))
+              == QStringLiteral("Added notice fixture\n"),
+          "a notice the index adds is read with no change to the app");
+    const QString missing = QStringLiteral("This file is missing from the package.");
+    CHECK(host.licenseFileText(QStringLiteral("licenses/gone.txt")) == missing,
+          "a file the index names but the package lacks reads as missing");
+    CHECK(host.licenseFileText(QStringLiteral("../outside.txt")) == missing, "a path out of the folder is never read");
+    CHECK(host.licenseFileText(QStringLiteral("licenses/unlisted.txt")) == missing,
+          "only a file the index names is read");
+    CHECK(host.licenseFileText(QString()) == missing, "nor is an empty name");
 }
 
 void
@@ -134,13 +142,13 @@ test_no_index() {
     QTemporaryDir dir;
     NoticeHost host;
     host.folder = dir.path();
-    const QString text = host.licenseNotices();
-    CHECK(text.startsWith(QStringLiteral("Qt source code\n")), "Qt's source is named even without the files");
-    CHECK(text.endsWith(QStringLiteral("The licence and notice files are missing from this package.")),
-          "a package without its notice index says the files are missing");
+    CHECK(write_file(host.folder + QStringLiteral("/LICENSE"), "GNU GENERAL PUBLIC LICENSE fixture\n"), "fixture");
+    CHECK(host.licenseFiles().isEmpty(), "a package without its notice index lists no file");
+    CHECK(host.licenseFileText(QStringLiteral("LICENSE")) == QStringLiteral("This file is missing from the package."),
+          "and reads none");
     host.folder.clear();
-    CHECK(host.licenseNotices().endsWith(QStringLiteral("The licence and notice files are missing from this package.")),
-          "so does a host whose package carries no notice folder");
+    CHECK(host.licenseFiles().isEmpty(), "nor does a host whose package carries no notice folder");
+    CHECK(host.qtSourceNotice().startsWith(QStringLiteral("Qt source code\n")), "Qt's source is named either way");
 }
 
 } // namespace
@@ -148,8 +156,8 @@ test_no_index() {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
-    test_qt_source_comes_first();
-    test_every_indexed_file_in_index_order();
+    test_qt_source_section();
+    test_files_listed_and_read_one_at_a_time();
     test_no_index();
     return failures ? 1 : 0;
 }

@@ -932,8 +932,8 @@ notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 `android/package/` reach the APK without re-running CMake. Add new package files
 to `android/package/` as usual — never to the staged copy, which is overwritten.
 The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
-file in that folder; the app's "Open source licenses" screen shows the files it
-names, after the location of the Qt source code.
+file in that folder; the app's "Open source licenses" screen lists the files it
+names, after the location of the Qt source code, and opens one at a time.
 
 Release builds (`Release`, `RelWithDebInfo`, `MinSizeRel`) leave Qt's QML debugger
 and profiler plugins (`qmltooling`) out of the APK; a `Debug` build keeps them for

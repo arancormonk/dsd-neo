@@ -260,14 +260,20 @@ class DecoderHost : public QObject {
         return false;
     }
 
+    /** @brief The licences screen's first section: where the source code of the Qt version built with is. */
+    Q_INVOKABLE QString qtSourceNotice() const;
     /**
-     * @brief The licences screen's text: where Qt's source code is, then every file noticeDirectory()'s index names.
+     * @brief The license and notice files the package carries, as the names noticeDirectory()'s index gives them
+     * (notice-index.txt, one path under the folder per line), in its order; none without a folder or an index.
      *
-     * The packaging writes the index (notice-index.txt, one path under the folder per line) from the files it staged,
-     * so the screen lists what the package carries. A file the index names but the package lacks is shown as missing;
-     * with no folder or no index the text says the files are missing.
+     * The packaging writes the index from the files it staged, so the list is what the package carries.
      */
-    Q_INVOKABLE QString licenseNotices() const;
+    Q_INVOKABLE QStringList licenseFiles() const;
+    /**
+     * @brief The text of @p name, one of licenseFiles(), read when asked. A name the index does not give, a path out
+     * of the folder or a file the package lacks reads as a line saying the file is missing.
+     */
+    Q_INVOKABLE QString licenseFileText(const QString& name) const;
     Q_INVOKABLE bool copyText(const QString& text) const;
 
     virtual int
@@ -1157,7 +1163,7 @@ class DecoderHost : public QObject {
 
   protected:
     /**
-     * @brief The folder that holds the package's licence and notice files and their index (licenseNotices()); empty
+     * @brief The folder that holds the package's licence and notice files and their index (licenseFiles()); empty
      * when the package carries none. The base host: none.
      */
     virtual QString
