@@ -5335,9 +5335,13 @@ test_position_role_feeds_the_map_pin(void) {
                                             | DSD_POS_FLAG_ERR_LOWER_BOUND | DSD_POS_FLAG_EMERGENCY);
     call->pos.rx_time_s = when + 2;
     ring.commit(0, 80052U, 8052U, when + 20, when + 25);
+    Event_History* group = ring.commit(0, 80053U, 8053U, when + 30, when + 35);
+    with_gps(group, "GPS: 22.60000 45.10000", 226000000, -451000000, 3U);
+    group->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_TARGET_GROUP);
     model.refresh(ring.state);
     const int withFix = row_with_tg(model, 80051U);
     const int without = row_with_tg(model, 80052U);
+    const int toGroup = row_with_tg(model, 80053U);
     expect("P7: both rows land", withFix >= 0 && without >= 0);
     const QVariantMap pos = model.data(model.index(withFix), CallHistoryModel::PositionRole).toMap();
     expect("P7: the role is named for QML", model.roleNames().value(CallHistoryModel::PositionRole) == "position");
@@ -5353,6 +5357,16 @@ test_position_role_feeds_the_map_pin(void) {
     expect("P7: the format in words",
            pos.value(QStringLiteral("kindText")).toString() == QStringLiteral("DMR embedded GPS"));
     expect("P7: when it was received", pos.value(QStringLiteral("receivedTime")).toLongLong() == when + 2);
+    // Review r2: the row's target is its call's, a talkgroup or a radio; the pin says "Talkgroup" only on the report's
+    // own word.
+    expect("r2: a report that names no talkgroup is not one",
+           pos.contains(QStringLiteral("targetGroup")) && !pos.value(QStringLiteral("targetGroup")).toBool());
+    expect("r2: a report to a talkgroup says so",
+           toGroup >= 0
+               && model.data(model.index(toGroup), CallHistoryModel::PositionRole)
+                      .toMap()
+                      .value(QStringLiteral("targetGroup"))
+                      .toBool());
     expect("P7: a row without a fix has none",
            model.data(model.index(without), CallHistoryModel::PositionRole).toMap().isEmpty());
     const QString uid = model.data(model.index(withFix), CallHistoryModel::UidRole).toString();

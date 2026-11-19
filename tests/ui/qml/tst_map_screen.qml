@@ -977,5 +977,208 @@ Item {
             var at = c.mapFromItem(layer, 0, 0);
             verify(at.x === 0 && at.y === 0 && layer.width === c.width && layer.height === c.height, "to the canvas");
         }
+
+        // ---- PR2 review round 2 ----
+
+        function resize(w, h) {
+            root.width = w;
+            root.height = h;
+            waitForRendering(screen);
+        }
+        function overlaps(a, b) {
+            return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+        }
+
+        // A short landscape canvas under the tiles prompt: the controls lie in a row (then a flat pair) inside the
+        // canvas, never over the prompt, at every text size; a tap on "Not now" is "Not now".
+        function test_18a_controls_stay_in_the_canvas() {
+            for (var scale of [1.0, 1.3, 1.6]) {
+                Ui.Theme.fontScale = scale;
+                resize(640, 320);
+                verify(item("mapTilesPrompt").visible);
+                var controls = item("mapControls");
+                var c = canvas();
+                var at = c.mapFromItem(controls, 0, 0);
+                verify(at.y >= 0, "the controls reach above the canvas at " + scale + "x: " + at.y);
+                var prompt = item("mapTilesPrompt");
+                var p = screen.mapFromItem(prompt, 0, 0), q = screen.mapFromItem(controls, 0, 0);
+                verify(!overlaps(Qt.rect(p.x, p.y, prompt.width, prompt.height), Qt.rect(q.x, q.y, controls.width, controls.height)),
+                       "the controls overlap the prompt at " + scale + "x");
+                var notNow = item("mapTilesNotNow");
+                var n = screen.mapFromItem(notNow, notNow.width / 2, notNow.height / 2);
+                var zoom = c.zoom;
+                mouseClick(screen, n.x, n.y);
+                verify(screen.tilesPromptDismissed, "Not now at " + scale + "x");
+                verify(Math.abs(c.zoom - zoom) < 1e-9, "no zoom from the prompt's tap");
+                screen.tilesPromptDismissed = false;
+            }
+            Ui.Theme.resetFontScale();
+            resize(360, 780);
+            compare(item("mapControls").arrangement, 0, "a column on a phone in portrait");
+        }
+
+        // On a short canvas the chips at the top keep clear of the controls in a row along the bottom, however many
+        // there are and at a large text size.
+        function test_18a2_chips_keep_clear_of_the_controls() {
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            screen.tilesPromptDismissed = true;
+            screen.tilesEnabled = true;
+            testContext.setMapTilesFailing(true);
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
+            screen.follow(trackNamed("Engine 7"));
+            Ui.Theme.fontScale = 1.6;
+            resize(640, 320);
+            tryVerify(function () { return item("mapTilesState").visible; }, 5000);
+            var status = item("mapStatus"), controls = item("mapControls"), c = canvas();
+            var a = c.mapFromItem(status, 0, 0), b = c.mapFromItem(controls, 0, 0);
+            verify(controls.arrangement > 0);
+            verify(!overlaps(Qt.rect(a.x, a.y, status.width, status.height), Qt.rect(b.x, b.y, controls.width, controls.height)),
+                   "chips " + a + " " + status.width + "x" + status.height + " over controls " + b + " " + controls.width + "x" + controls.height);
+            Ui.Theme.resetFontScale();
+            resize(360, 780);
+            testContext.setMapTilesFailing(false);
+            screen.tilesEnabled = false;
+        }
+
+        // Following a radio takes the view off the found dot: the next press locates again.
+        function test_18b_follow_resets_locate() {
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            item("mapLocate").activate();
+            var id = item("mapLocator").requestId;
+            decoderHost.locationResult(id, true, 10.5, 20.5, 12, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return !locationRequests.busy; });
+            compare(item("mapLocate").Accessible.name, "Follow my position");
+            screen.follow(trackNamed("Engine 7"));
+            compare(item("mapLocate").Accessible.name, "Locate me");
+        }
+
+        // The pin's and the device's rows scroll with the radios: a short landscape List at a large text size still
+        // reaches every radio.
+        function test_18c_the_leading_rows_scroll_with_the_list() {
+            prefs.setLocationFix(10.5, 20.5, savedSystems.realtimeNowMs(), 30);
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP", validityUnknown: true}});
+            Ui.Theme.fontScale = 1.6;
+            resize(640, 320);
+            screen.mapShown = false;
+            var list = item("mapList");
+            verify(list.height > 0, "the List has room: " + list.height);
+            var row = positionView.rowForTrack(trackNamed("Engine 7"));
+            list.positionViewAtIndex(row, ListView.Contain);
+            var radio = list.itemAtIndex(row);
+            verify(radio !== null);
+            var at = list.mapFromItem(radio, 0, 0);
+            verify(at.y >= 0 && at.y + radio.height <= list.height + 1, "the radio scrolls into view: " + at.y + " in " + list.height);
+            list.positionViewAtBeginning();
+            verify(item("mapPinRow").visible && item("mapDeviceRow").visible);
+            Ui.Theme.resetFontScale();
+            resize(360, 780);
+        }
+
+        // OpenStreetMap's server is known by its host name however the address writes it: a port, a lettered name,
+        // upper case. Its credit is owed and links to its copyright page.
+        function test_18d_osm_by_host_name() {
+            var settings = item("mapSettingsSheet");
+            settings.openEditor();
+            item("mapSettingsUrl").text = "https://tile.openstreetmap.org:443/{z}/{x}/{y}.png";
+            item("mapSettingsAttribution").text = "My own credit";
+            verify(!item("mapSettingsSave").inputValid, "an explicit :443 is the same server");
+            settings.closeEditor();
+            for (var url of ["https://tile.openstreetmap.org:443/{z}/{x}/{y}.png", "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                             "https://TILE.OpenStreetMap.org/{z}/{x}/{y}.png"]) {
+                screen.tileUrl = url;
+                screen.tileAttribution = "My own credit";
+                verify(item("mapAttributionText").text.indexOf("© OpenStreetMap contributors") >= 0, url + ": " + item("mapAttributionText").text);
+                verify(screen.attributionLinked, url + " links to the copyright page");
+            }
+            screen.tileUrl = "https://tiles.example/{z}/{x}/{y}.png";
+            verify(!screen.attributionLinked);
+        }
+
+        // An anonymous report is a single point: Show on map, never Follow.
+        function test_18e_an_anonymous_point_is_not_followed() {
+            push({anonymous: true, lat: 10.0, lon: 20.0});
+            var id = trackNamed("");
+            verify(id > 0);
+            screen.openTrack(id, true);
+            verify(!item("mapPositionFollow").visible, "no Follow for a single point");
+            verify(item("mapPositionShowOnMap").visible);
+            sheet().visible = false;
+            screen.follow(id);
+            compare(canvas().followTrackId, 0, "nothing follows a single point");
+        }
+
+        // An anonymous report keeps the recipient its checked provenance named.
+        function test_18f_an_anonymous_report_keeps_its_recipient() {
+            push({anonymous: true, lat: 10.0, lon: 20.0, targetId: 9, group: true});
+            screen.openTrack(trackNamed(""), false);
+            var identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
+            verify(identity.indexOf("Talkgroup 9") >= 0, JSON.stringify(identity));
+            verify(identity[0].indexOf("could not be confirmed") >= 0, "still not confirmed");
+        }
+
+        // A History row's target is its call's: a talkgroup only on the saved report's word.
+        function test_18g_a_pin_says_talkgroup_only_when_it_is_one() {
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 42, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LRRP", targetGroup: false}});
+            screen.openPinDetails();
+            var identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
+            verify(identity.indexOf("Sent to 42") >= 0 && identity.indexOf("Talkgroup 42") < 0, JSON.stringify(identity));
+            sheet().visible = false;
+            screen.showPin({uid: 42, name: "CALL 042", when: 1700000000, tg: 42, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LRRP", targetGroup: true}});
+            screen.openPinDetails();
+            identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
+            verify(identity.indexOf("Talkgroup 42") >= 0, JSON.stringify(identity));
+        }
+
+        // Zero satellites is a reported count, said as such; none reported says nothing.
+        function test_18h_zero_satellites_is_a_count() {
+            sheet().pin = null;
+            sheet().trackId = 0;
+            for (var c of [[0, "0 satellites"], [1, "1 satellite"], [7, "7 satellites"]]) {
+                sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: 5,
+                              currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, sats: c[0]}});
+                sheet().visible = true;
+                verify(sheetWords().indexOf(c[1]) >= 0, c[1] + ":\n" + sheetWords());
+                sheet().visible = false;
+            }
+            sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: 5,
+                          currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true}});
+            sheet().visible = true;
+            verify(sheetWords().indexOf("satellite") < 0, sheetWords());
+            sheet().visible = false;
+        }
+
+        // A sheet left open while the age filter hides its radio: Show on map waits (the camera would find nothing)
+        // and the sheet says why.
+        function test_18i_show_on_map_waits_for_a_mark() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", ageSeconds: 600});
+            positions.ageFilterSeconds = 900;
+            screen.mapShown = false;
+            screen.openTrack(trackNamed("Engine 7"), true);
+            verify(item("mapPositionShowOnMap").enabled);
+            verify(!item("mapPositionFiltered").visible);
+            testContext.setPositionWallSeconds(testContext.positionWallStart() + 400);
+            testContext.refreshPositionAges();
+            tryVerify(function () { return !item("mapPositionShowOnMap").enabled; }, 3000, "no mark to show");
+            verify(item("mapPositionFiltered").visible);
+            sheet().visible = false;
+            positions.ageFilterSeconds = 0;
+        }
+
+        // A sheet whose radio is evicted keeps its last details, its times said as times, not frozen ages.
+        function test_18j_a_gone_track_says_times() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", ageSeconds: 5});
+            screen.openTrack(trackNamed("Engine 7"), false);
+            var received = item("mapShownFixReceived");
+            verify(received.text.indexOf("Received 5 s ago") === 0, received.text);
+            positions.clear();
+            tryVerify(function () { return sheet().trackGone; }, 2000);
+            tryVerify(function () { return received.text.indexOf("Received at ") === 0; }, 2000, received.text);
+            sheet().visible = false;
+        }
     }
 }

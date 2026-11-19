@@ -185,10 +185,33 @@ function distanceMetres(lat1, lon1, lat2, lon2) {
     return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-// Whether @p host is OpenStreetMap's own tile server (tile.openstreetmap.org,
-// or one of its lettered names), whose tiles may be shown only with its credit.
+// The host name in a URL authority ("user@Host.example.:443" -> "host.example"):
+// no user part, no port, no trailing dot, lower case. An IPv6 literal keeps
+// its brackets. The tile source names a template's server by its authority,
+// so the same server reads the same however its address is written.
+function hostName(authority) {
+    var h = String(authority || "").trim()
+    var at = h.lastIndexOf("@")
+    if (at >= 0)
+        h = h.substring(at + 1)
+    if (h.charAt(0) === "[") {
+        var end = h.indexOf("]")
+        return end > 0 ? h.substring(0, end + 1).toLowerCase() : ""
+    }
+    var colon = h.indexOf(":")
+    if (colon >= 0)
+        h = h.substring(0, colon)
+    while (h.length > 0 && h.charAt(h.length - 1) === ".")
+        h = h.substring(0, h.length - 1)
+    return h.toLowerCase()
+}
+
+// Whether @p host (an authority, see hostName()) is OpenStreetMap's own tile
+// server (tile.openstreetmap.org, or one of its lettered names), whose tiles
+// may be shown only with its credit, and whose credit links to its copyright
+// page.
 function isOsmTileHost(host) {
-    var h = String(host || "").toLowerCase()
+    var h = hostName(host)
     return h === "tile.openstreetmap.org" || /\.tile\.openstreetmap\.org$/.test(h)
 }
 

@@ -18287,13 +18287,19 @@ Qt Quick frontend (`src/ui/qt`):
     dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
   - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
     tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
-    what is followed, tile trouble, location notices) that `topInset` follows, the control column of 48 px buttons,
+    what is followed, tile trouble, location notices) that `topInset` follows, the controls of 48 px buttons (a
+    column at the bottom right while the canvas holds it, else a row, else a row with the zoom pair flat:
+    `controls.arrangement`, so none reaches above a short landscape canvas over the tiles prompt),
     the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
     `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it,
     else in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own
-    row, the saved fix in words, which also shows the List with no radio heard; the List holds no live lease),
-    `MapPositionSheet.qml`
-    (a marker's, row's or pin's detail sheet), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
+    row, the saved fix in words, which also shows the List with no radio heard, both in the ListView's header so
+    every row scrolls on one surface; the List holds no live lease), `MapPositionSheet.qml` (a marker's, row's or
+    pin's detail sheet: Follow only for a confirmed radio, since an anonymous report is a single point no later
+    report moves; Show on map only while the map draws a mark for the track, with a line saying the age filter
+    hides it; a satellite count of 0 is said, unlike none; an evicted track's last details say their times, the
+    frozen ages dropped; a History pin's target is "Talkgroup N" only when its saved position says
+    `targetGroup`, else "Sent to N"), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
     and Follow my position), `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and
     `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has
     `mapPaper`, `mapTileInk`, `mapGrid`, `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable
@@ -18304,9 +18310,11 @@ Qt Quick frontend (`src/ui/qt`):
     aside for the app's run (`tilesPromptDismissed`, in memory, not a pref: the screen is kept between visits). The
     attribution ("© OpenStreetMap contributors") is always
     visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`).
-    OpenStreetMap's own server (`MapText.isOsmTileHost()`: tile.openstreetmap.org and its lettered names) needs that
+    OpenStreetMap's own server (`MapText.isOsmTileHost()`: tile.openstreetmap.org and its lettered names, by host
+    name, `MapText.hostName()`: no user part, port or trailing dot, any case) needs that
     credit in the attribution: the settings form does not save it without, and the map shows it in front of a saved
-    credit that leaves it out (`MapText.shownCredit()`); another server takes any credit. Tile trouble is a quiet
+    credit that leaves it out (`MapText.shownCredit()`), and its credit links to its copyright page however its
+    address is written; another server takes any credit. Tile trouble is a quiet
     chip, never a modal. The canvas's drag, pinch and wheel handlers stand down while anything covers the map
     (`Navigation.allows(map)`, as Spectrum's do); taps go through `GatedTapHandler`. The History pin is hit-tested
     before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
@@ -18342,7 +18350,8 @@ Qt Quick frontend (`src/ui/qt`):
     close the app makes (an incoming document) reopens nothing.
     Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
-    errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
+    errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText,
+    receivedTime?}`, `{}`
     without one); `position_kind_text.h` names a report format in the same words on the map and on the pin.
   - Prefs (spec 4.8; `AppPrefs`, all device-local, so never in a backup and untouched by a restore): `map/tilesEnabled`
     (on only for a stored `true`/`1`; any other text, "off" included, reads as off, as every stored switch reads junk

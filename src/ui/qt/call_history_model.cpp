@@ -454,8 +454,9 @@ row_site_text(const CallHistoryModel::Row& row) {
 
 /**
  * @brief A row's saved fix as the map's "Show on map" pin reads it (issue #800): {latitude, longitude, errorM,
- * errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime}, or an empty
- * map when the row has none. errorM and receivedTime are left out when not known (0). Degrees are for display only.
+ * errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText, receivedTime},
+ * or an empty map when the row has none. targetGroup: the report named a talkgroup as its target (the row's target can
+ * be a radio, a private call's). errorM and receivedTime are left out when not known (0). Degrees are for display only.
  */
 QVariantMap
 position_record(const CallHistoryModel::Position& pos) {
@@ -476,6 +477,7 @@ position_record(const CallHistoryModel::Position& pos) {
     out.insert(QStringLiteral("anonymous"),
                pos.anonymous || flag(DSD_POS_FLAG_SOURCE_HASHED) || flag(DSD_POS_FLAG_SOURCE_UNVERIFIED));
     out.insert(QStringLiteral("emergency"), flag(DSD_POS_FLAG_EMERGENCY));
+    out.insert(QStringLiteral("targetGroup"), flag(DSD_POS_FLAG_TARGET_GROUP));
     out.insert(QStringLiteral("kindText"), position_kind_text(pos.kind));
     if (pos.rxTimeS > 0) {
         out.insert(QStringLiteral("receivedTime"), static_cast<double>(pos.rxTimeS));

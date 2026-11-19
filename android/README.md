@@ -711,7 +711,8 @@ Each radio is a marker with a trail of its last positions. What a marker looks l
 detail sheet and the List say the same in words:
 
 - A faded marker is an older position. The pills at the top show only the last 15 minutes, the last hour, or all.
-- A dashed outline is a radio that is not confirmed (its ID was hidden or not checked). It gets no trail and no name.
+- A dashed outline is a radio that is not confirmed (its ID was hidden or not checked). It gets no trail and no name,
+  and each of its reports is a point of its own, so it can be shown on the map but not followed.
 - An empty ring is a position that may be old or invalid: the radio reported that it may have no current fix.
 - A double outline and a dashed trail mean the report's format is not confirmed by a published specification.
 - An emergency is in the alert colour with the word **Emergency** in its label. The radio you picked is in cyan.

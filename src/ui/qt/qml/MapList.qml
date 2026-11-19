@@ -43,238 +43,16 @@ Item {
     readonly property bool metric: typeof prefs !== "undefined" && prefs ? prefs.metricUnits !== false : true
     readonly property alias view: rows
     readonly property int count: rows.count
-    // The height its rows take from the top: the pin's and the device's rows,
-    // then the radios'.
-    readonly property real usedHeight: deviceRow.y + deviceRow.height + rows.contentHeight
+    // The height its rows take from the top: the pin's and the device's rows
+    // (the list's header), then the radios'.
+    readonly property real usedHeight: rows.contentHeight
 
-    // The pin's row: what it is, whose, and its states, in the rows' grammar.
-    Item {
-        id: pinRow
-        objectName: "mapPinRow"
-
-        readonly property var position: list.pin && list.pin.position ? list.pin.position : ({})
-        readonly property string name: list.pin ? (list.pin.name || list.pin.sourceName || qsTr("Saved position")) : ""
-        // With its date, as the pin's sheet says it: a History row can be
-        // from any day, unlike the live rows below.
-        readonly property double whenS: !list.pin ? 0 : pinRow.position.receivedTime > 0 ? pinRow.position.receivedTime : (list.pin.when || 0)
-        readonly property string when: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm") : ""
-        readonly property string whenFull: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm:ss") : ""
-        readonly property string states: MapText.stateWords(pinRow.position).join(" · ")
-
-        visible: list.pin !== null
-        x: rows.anchors.leftMargin
-        width: rows.width
-        height: visible ? Math.max(Theme.rowHeight, pinLabels.implicitHeight + 24) : 0
-
-        activeFocusOnTab: (navigationAllowed && visible) || activeFocus
-        Accessible.role: Accessible.Button
-        Accessible.name: navigationAllowed && visible ? qsTr("Saved position from History: %1").arg(name) : ""
-        Accessible.description: navigationAllowed && visible ? [whenFull.length > 0 ? qsTr("received %1").arg(whenFull) : "", pinRow.position.kindText || "", states].filter(function (part) {
-            return part.length > 0;
-        }).join(", ") : ""
-        readonly property bool navigationAllowed: Navigation.allows(pinRow)
-        Accessible.focusable: navigationAllowed && visible
-        Accessible.ignored: !navigationAllowed || !visible
-        Accessible.onPressAction: activate()
-        function activate() {
-            if (visible && Navigation.allows(pinRow))
-                list.pinActivated();
-        }
-        Keys.onPressed: function (event) {
-            if (Navigation.activationPress(event, Window.activeFocusItem))
-                activate();
-        }
-        Keys.onReleased: function (event) {
-            Navigation.activationRelease(event);
-        }
-        FocusFrame {}
-        GatedTapHandler {
-            onAllowedTap: pinRow.activate()
-        }
-
-        Column {
-            id: pinLabels
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 18
-            anchors.rightMargin: 18
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Item {
-                width: parent.width
-                height: Math.max(pinName.implicitHeight, pinWhen.implicitHeight)
-                Text {
-                    id: pinName
-                    anchors.left: parent.left
-                    anchors.right: pinWhen.left
-                    anchors.rightMargin: 12
-                    text: Util.oneLine(pinRow.name)
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(16)
-                    font.weight: Font.DemiBold
-                    color: pinRow.position.emergency ? Theme.alert : Theme.textPrimary
-                }
-                Text {
-                    id: pinWhen
-                    anchors.right: parent.right
-                    anchors.baseline: pinName.baseline
-                    text: pinRow.when
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(12)
-                    color: Theme.textSubdued
-                }
-            }
-            Text {
-                width: parent.width
-                text: [qsTr("Saved position from History"), pinRow.position.kindText || ""].filter(function (part) {
-                    return part.length > 0;
-                }).join(" · ")
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                color: Theme.textSecondary
-            }
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: pinRow.states
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(13)
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 18
-            height: 1
-            color: Theme.divider
-        }
-    }
-
-    // The device's dot: the canvas draws it with its accuracy ring and keeps
-    // it out of the accessibility tree, so here it is in words (review r1).
-    Item {
-        id: deviceRow
-        objectName: "mapDeviceRow"
-
-        readonly property string name: list.deviceLive ? qsTr("Your position") : qsTr("Your saved location")
-        readonly property string saved: !list.deviceLive && list.deviceSavedAtMs > 0 ? Qt.formatDateTime(new Date(list.deviceSavedAtMs), "hh:mm") : ""
-        readonly property string position: qsTr("Position %1").arg(MapText.coordinateText(list.deviceLatitude, list.deviceLongitude))
-        readonly property string accuracy: MapText.accuracyText(list.deviceAccuracyM, false, list.metric)
-
-        visible: list.deviceKnown
-        y: pinRow.height
-        x: rows.anchors.leftMargin
-        width: rows.width
-        height: visible ? Math.max(Theme.rowHeight, deviceLabels.implicitHeight + 24) : 0
-
-        activeFocusOnTab: (navigationAllowed && visible) || activeFocus
-        Accessible.role: Accessible.Button
-        Accessible.name: navigationAllowed && visible ? name : ""
-        Accessible.description: navigationAllowed && visible ? [saved.length > 0 ? qsTr("saved at %1").arg(saved) : "", position, accuracy].filter(function (part) {
-            return part.length > 0;
-        }).join(", ") : ""
-        readonly property bool navigationAllowed: Navigation.allows(deviceRow)
-        Accessible.focusable: navigationAllowed && visible
-        Accessible.ignored: !navigationAllowed || !visible
-        Accessible.onPressAction: activate()
-        function activate() {
-            if (visible && Navigation.allows(deviceRow))
-                list.deviceActivated();
-        }
-        Keys.onPressed: function (event) {
-            if (Navigation.activationPress(event, Window.activeFocusItem))
-                activate();
-        }
-        Keys.onReleased: function (event) {
-            Navigation.activationRelease(event);
-        }
-        FocusFrame {}
-        GatedTapHandler {
-            onAllowedTap: deviceRow.activate()
-        }
-
-        Column {
-            id: deviceLabels
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 18
-            anchors.rightMargin: 18
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Item {
-                width: parent.width
-                height: Math.max(deviceName.implicitHeight, deviceSaved.implicitHeight)
-                Text {
-                    id: deviceName
-                    anchors.left: parent.left
-                    anchors.right: deviceSaved.left
-                    anchors.rightMargin: 12
-                    text: deviceRow.name
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(16)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                }
-                Text {
-                    id: deviceSaved
-                    anchors.right: parent.right
-                    anchors.baseline: deviceName.baseline
-                    text: deviceRow.saved
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(12)
-                    color: Theme.textSubdued
-                }
-            }
-            Text {
-                width: parent.width
-                text: deviceRow.position
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                color: Theme.textSecondary
-            }
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: deviceRow.accuracy
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                color: Theme.textSecondary
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 18
-            height: 1
-            color: Theme.divider
-        }
-    }
 
     ListView {
         id: rows
         objectName: "mapList"
 
-        anchors.top: deviceRow.bottom
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -285,6 +63,234 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         // Set by place below, only while the list is visible (issue #782).
         model: null
+
+        // The History pin's row and the device's own row lead the list and
+        // scroll with it: one scroll surface for every row, so a short
+        // landscape List at a large text size still reaches every radio
+        // (review r2).
+        header: Column {
+            width: rows.width
+
+            // The pin's row: what it is, whose, and its states, in the rows' grammar.
+            Item {
+                id: pinRow
+                objectName: "mapPinRow"
+
+                readonly property var position: list.pin && list.pin.position ? list.pin.position : ({})
+                readonly property string name: list.pin ? (list.pin.name || list.pin.sourceName || qsTr("Saved position")) : ""
+                // With its date, as the pin's sheet says it: a History row can be
+                // from any day, unlike the live rows below.
+                readonly property double whenS: !list.pin ? 0 : pinRow.position.receivedTime > 0 ? pinRow.position.receivedTime : (list.pin.when || 0)
+                readonly property string when: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm") : ""
+                readonly property string whenFull: whenS > 0 ? Qt.formatDateTime(new Date(whenS * 1000), "yyyy-MM-dd hh:mm:ss") : ""
+                readonly property string states: MapText.stateWords(pinRow.position).join(" · ")
+
+                visible: list.pin !== null
+                width: parent.width
+                height: visible ? Math.max(Theme.rowHeight, pinLabels.implicitHeight + 24) : 0
+
+                activeFocusOnTab: (navigationAllowed && visible) || activeFocus
+                Accessible.role: Accessible.Button
+                Accessible.name: navigationAllowed && visible ? qsTr("Saved position from History: %1").arg(name) : ""
+                Accessible.description: navigationAllowed && visible ? [whenFull.length > 0 ? qsTr("received %1").arg(whenFull) : "", pinRow.position.kindText || "", states].filter(function (part) {
+                    return part.length > 0;
+                }).join(", ") : ""
+                readonly property bool navigationAllowed: Navigation.allows(pinRow)
+                Accessible.focusable: navigationAllowed && visible
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(pinRow))
+                        list.pinActivated();
+                }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
+                GatedTapHandler {
+                    onAllowedTap: pinRow.activate()
+                }
+
+                Column {
+                    id: pinLabels
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 18
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+
+                    Item {
+                        width: parent.width
+                        height: Math.max(pinName.implicitHeight, pinWhen.implicitHeight)
+                        Text {
+                            id: pinName
+                            anchors.left: parent.left
+                            anchors.right: pinWhen.left
+                            anchors.rightMargin: 12
+                            text: Util.oneLine(pinRow.name)
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(16)
+                            font.weight: Font.DemiBold
+                            color: pinRow.position.emergency ? Theme.alert : Theme.textPrimary
+                        }
+                        Text {
+                            id: pinWhen
+                            anchors.right: parent.right
+                            anchors.baseline: pinName.baseline
+                            text: pinRow.when
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(12)
+                            color: Theme.textSubdued
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        text: [qsTr("Saved position from History"), pinRow.position.kindText || ""].filter(function (part) {
+                            return part.length > 0;
+                        }).join(" · ")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textSecondary
+                    }
+                    Text {
+                        width: parent.width
+                        visible: text.length > 0
+                        text: pinRow.states
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                    }
+                }
+
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    height: 1
+                    color: Theme.divider
+                }
+            }
+
+            // The device's dot: the canvas draws it with its accuracy ring and keeps
+            // it out of the accessibility tree, so here it is in words (review r1).
+            Item {
+                id: deviceRow
+                objectName: "mapDeviceRow"
+
+                readonly property string name: list.deviceLive ? qsTr("Your position") : qsTr("Your saved location")
+                readonly property string saved: !list.deviceLive && list.deviceSavedAtMs > 0 ? Qt.formatDateTime(new Date(list.deviceSavedAtMs), "hh:mm") : ""
+                readonly property string position: qsTr("Position %1").arg(MapText.coordinateText(list.deviceLatitude, list.deviceLongitude))
+                readonly property string accuracy: MapText.accuracyText(list.deviceAccuracyM, false, list.metric)
+
+                visible: list.deviceKnown
+                width: parent.width
+                height: visible ? Math.max(Theme.rowHeight, deviceLabels.implicitHeight + 24) : 0
+
+                activeFocusOnTab: (navigationAllowed && visible) || activeFocus
+                Accessible.role: Accessible.Button
+                Accessible.name: navigationAllowed && visible ? name : ""
+                Accessible.description: navigationAllowed && visible ? [saved.length > 0 ? qsTr("saved at %1").arg(saved) : "", position, accuracy].filter(function (part) {
+                    return part.length > 0;
+                }).join(", ") : ""
+                readonly property bool navigationAllowed: Navigation.allows(deviceRow)
+                Accessible.focusable: navigationAllowed && visible
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(deviceRow))
+                        list.deviceActivated();
+                }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
+                GatedTapHandler {
+                    onAllowedTap: deviceRow.activate()
+                }
+
+                Column {
+                    id: deviceLabels
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 18
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+
+                    Item {
+                        width: parent.width
+                        height: Math.max(deviceName.implicitHeight, deviceSaved.implicitHeight)
+                        Text {
+                            id: deviceName
+                            anchors.left: parent.left
+                            anchors.right: deviceSaved.left
+                            anchors.rightMargin: 12
+                            text: deviceRow.name
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(16)
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                        }
+                        Text {
+                            id: deviceSaved
+                            anchors.right: parent.right
+                            anchors.baseline: deviceName.baseline
+                            text: deviceRow.saved
+                            font.family: Theme.mono
+                            font.pixelSize: Theme.fontSize(12)
+                            color: Theme.textSubdued
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        text: deviceRow.position
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textSecondary
+                    }
+                    Text {
+                        width: parent.width
+                        visible: text.length > 0
+                        text: deviceRow.accuracy
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textSecondary
+                    }
+                }
+
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 18
+                    height: 1
+                    color: Theme.divider
+                }
+            }
+        }
 
         delegate: Item {
             id: row

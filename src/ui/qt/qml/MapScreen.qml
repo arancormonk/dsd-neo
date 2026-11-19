@@ -79,7 +79,9 @@ Item {
     readonly property bool emptyFilter: !emptyLog && positionView.trackCount === 0 && !pin
     readonly property bool tilesAvailable: tiles.available
     readonly property string tilesHost: tiles.templateHost(tileUrl)
-    readonly property bool attributionLinked: tileUrl === defaultTileUrl
+    // OpenStreetMap's own server, however its address is written (a port, a
+    // lettered name, upper case): its credit links to its copyright page.
+    readonly property bool attributionLinked: MapText.isOsmTileHost(tilesHost)
     // The credit shown: OpenStreetMap's own tiles always with theirs, even
     // under a saved attribution that leaves it out (review: the default
     // source's credit is owed, whatever the field says).
@@ -160,7 +162,14 @@ Item {
         positionSheet.open(id);
     }
     function follow(id) {
+        // An anonymous report is a single point that nothing moves: shown,
+        // never followed (review r2).
+        if (positions.trackFor(id).anonymous === true)
+            return;
         locator.stopFollow();
+        // The camera goes to the radio, off the found dot: the next press
+        // locates again (review r2).
+        locator.cameraMoved();
         mapShown = true;
         map.selectedTrackId = id;
         map.followTrackId = id;
@@ -561,8 +570,12 @@ Item {
             visible: screen.mapShown
             anchors.top: parent.top
             anchors.topMargin: 12
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: Math.min(parent.width >= 640 ? 600 : 420, parent.width - 2 * 12)
+            // Centred over the canvas; on a short one, where the controls lie
+            // in a row along the bottom, the chips keep to the room left of
+            // them, so a stack of chips never runs into a control (review r2).
+            readonly property real room: controls.arrangement === 0 ? parent.width - 2 * 12 : parent.width - controls.width - 3 * 12
+            x: controls.arrangement === 0 ? (parent.width - width) / 2 : 12
+            width: Math.max(0, Math.min(parent.width >= 640 ? 600 : 420, room))
             spacing: 8
 
             MapChip {
@@ -610,19 +623,33 @@ Item {
         }
 
         // ---- Controls ----
-        Column {
+        // A column at the bottom right while the canvas holds it; on a short
+        // canvas (landscape, the tiles prompt above, a large text size) a row,
+        // and on a shorter one the zoom pair lies flat too, so no control ever
+        // reaches above the canvas over the prompt or the chips (review r2).
+        Grid {
             id: controls
             objectName: "mapControls"
             visible: screen.mapShown
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 12
-            spacing: 10
+            rowSpacing: 10
+            columnSpacing: 10
+            verticalItemAlignment: Grid.AlignBottom
+            // 0: a column; 1: a row; 2: a row with the zoom pair flat.
+            readonly property int arrangement: {
+                var t = Theme.minimumTouchSize, room = parent.height - 2 * anchors.margins;
+                var column = 2 * t + 1 + 10 + t + (locator.supported ? 10 + t : 0);
+                return column <= room ? 0 : 2 * t + 1 <= room ? 1 : 2;
+            }
+            columns: arrangement === 0 ? 1 : 3
 
             Rectangle {
                 id: zoomPair
-                width: Theme.minimumTouchSize
-                height: 2 * Theme.minimumTouchSize + 1
+                readonly property bool flat: controls.arrangement === 2
+                width: flat ? 2 * Theme.minimumTouchSize + 1 : Theme.minimumTouchSize
+                height: flat ? Theme.minimumTouchSize : 2 * Theme.minimumTouchSize + 1
                 radius: Theme.radiusButton
                 color: Theme.mapOverlay
                 border.width: 1
@@ -640,15 +667,16 @@ Item {
                     }
                 }
                 Rectangle {
-                    x: 8
-                    y: Theme.minimumTouchSize
-                    width: parent.width - 16
-                    height: 1
+                    x: zoomPair.flat ? Theme.minimumTouchSize : 8
+                    y: zoomPair.flat ? 8 : Theme.minimumTouchSize
+                    width: zoomPair.flat ? 1 : parent.width - 16
+                    height: zoomPair.flat ? parent.height - 16 : 1
                     color: Theme.controlBorder
                 }
                 MapControlButton {
                     objectName: "mapZoomOut"
-                    y: Theme.minimumTouchSize + 1
+                    x: zoomPair.flat ? Theme.minimumTouchSize + 1 : 0
+                    y: zoomPair.flat ? 0 : Theme.minimumTouchSize + 1
                     framed: false
                     shape: "minus"
                     accessibleName: qsTr("Zoom out")

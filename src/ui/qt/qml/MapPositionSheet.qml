@@ -80,7 +80,11 @@ ModalSheet {
             return;
         var fresh = positions.trackFor(trackId);
         if (fresh.trackId === undefined) {
+            // Gone (evicted, cleared): its last fixes stay, but ages read on
+            // the model's clock stop with it, so the times are said as times
+            // ("Received at 12:04:33"), never as a frozen "just now".
             trackGone = true;
+            ages = ({});
             return;
         }
         take(fresh);
@@ -127,6 +131,8 @@ ModalSheet {
     // sheet is open) keeps describing the fixes it has.
     readonly property bool hasCurrent: currentDrawn || (!ringDrawn && current.latitude !== undefined)
     readonly property bool hasRing: ringDrawn || (!currentDrawn && ring.latitude !== undefined)
+    // Whether the map draws any mark for the track now.
+    readonly property bool drawnNow: currentDrawn || ringDrawn
     readonly property var shownFix: pin ? pinPosition : hasCurrent ? current : ring
     readonly property double shownAge: pin ? -1 : hasCurrent ? (Number(ages.ageSeconds) >= 0 ? ages.ageSeconds : -1) : (Number(ages.unknownAgeSeconds) >= 0 ? ages.unknownAgeSeconds : -1)
     // The track's own states, which belong to no one report: an emergency (the
@@ -138,7 +144,8 @@ ModalSheet {
     }
 
     // Who a report was sent to: each report names its own (review r1), so
-    // the one said is the shown report's, never the track's newest.
+    // the one said is the shown report's, never the track's newest. An
+    // anonymous report keeps a recipient its checked provenance named.
     function recipientOf(fix) {
         if (!fix || !(fix.targetId > 0))
             return "";
@@ -147,12 +154,14 @@ ModalSheet {
     // Who sent it, in fixed slots, "" for one not known: label or the row's
     // name, callsign, radio ID, and who the shown report was sent to.
     function identitySlots() {
+        // A History row's target is its call's, a talkgroup or a radio: it is
+        // called a talkgroup only when the saved position says so.
         if (pin)
             return [pin.sourceName && pin.sourceName !== title ? pin.sourceName : "", "",
                     pin.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(pin.src)) : "",
-                    pin.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(pin.tg)) : ""];
+                    !(pin.tg > 0) ? "" : pinPosition.targetGroup === true ? qsTr("Talkgroup %1").arg(Util.idText(pin.tg)) : qsTr("Sent to %1").arg(Util.idText(pin.tg))];
         if (track.anonymous)
-            return [qsTr("The radio that sent this could not be confirmed, so it has no name or trail."), "", "", ""];
+            return [qsTr("The radio that sent this could not be confirmed, so it has no name or trail."), "", "", recipientOf(shownFix)];
         return [track.label && track.label.length > 0 && track.label !== title ? qsTr("Label %1").arg(track.label) : "",
                 track.sourceText && track.sourceText.length > 0 && track.sourceText !== title ? qsTr("Callsign %1").arg(track.sourceText) : "",
                 track.sourceId > 0 ? qsTr("Radio ID %1").arg(Util.idText(track.sourceId)) : "",
@@ -259,7 +268,8 @@ ModalSheet {
             MapText.speedText(fix.speedDkmh, fix.speedLowerBound, sheet.metric),
             MapText.headingText(fix.headingDdeg, fix.headingAmbiguous),
             MapText.altitudeText(fix.altitudeDm, sheet.metric),
-            fix.sats > 0 ? qsTr("%1 satellites").arg(fix.sats) : "",
+            // Zero is a reported count (no satellites in view), unlike none.
+            fix.sats === undefined ? "" : fix.sats === 1 ? qsTr("1 satellite") : qsTr("%1 satellites").arg(fix.sats),
             fix.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(fix.freqHz)) : ""]
 
         visible: hasFix
@@ -355,11 +365,23 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: Theme.textSubdued
     }
+    ReadableText {
+        objectName: "mapPositionFiltered"
+        width: parent.width
+        visible: !sheet.pin && !sheet.trackGone && !sheet.drawnNow
+        text: qsTr("The age filter hides this radio on the map now. Choose All to see it there.")
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSubdued
+    }
 
+    // An anonymous report is a single point: every report gets its own row,
+    // so there is nothing that would move it. It can be shown, not followed.
     OutlineButton {
         objectName: "mapPositionFollow"
         width: parent.width
-        visible: !sheet.pin
+        visible: !sheet.pin && !sheet.track.anonymous
         enabled: !sheet.trackGone
         checkable: true
         checked: sheet.following
@@ -377,7 +399,9 @@ ModalSheet {
         objectName: "mapPositionShowOnMap"
         width: parent.width
         visible: !sheet.pin && sheet.fromList
-        enabled: !sheet.trackGone
+        // Only while the map draws a mark for it: the age filter can hide
+        // both while the sheet stays open, and the camera would find nothing.
+        enabled: !sheet.trackGone && sheet.drawnNow
         text: qsTr("Show on map")
         onClicked: {
             sheet.showOnMapRequested(sheet.trackId);
