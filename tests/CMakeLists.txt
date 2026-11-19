@@ -18316,6 +18316,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             -Wl,--wrap=dsd_socket_readable_bytes
             -Wl,--wrap=dsd_time_monotonic_ms
             -Wl,--wrap=dsd_read
+            -Wl,--wrap=dsd_fd_wait_readable
             -Wl,--wrap=dsd_mutex_init
             -Wl,--wrap=dsd_mutex_lock
     )

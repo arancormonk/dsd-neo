@@ -48,6 +48,18 @@ mark_time_monotonic_ms(void) {
     return mark_real_time_monotonic_ms() + g_clock_offset_ms;
 }
 
+/* The descriptor whose readiness waits are recorded, and the longest wait asked on it. */
+static atomic_int g_wait_fd = -1;
+static atomic_int g_wait_longest_ms;
+
+int
+mark_fd_wait_readable(int fd, unsigned int timeout_ms) {
+    if (fd == atomic_load(&g_wait_fd) && (int)timeout_ms > atomic_load(&g_wait_longest_ms)) {
+        atomic_store(&g_wait_longest_ms, (int)timeout_ms);
+    }
+    return mark_real_fd_wait_readable(fd, timeout_ms);
+}
+
 /* Issue #834: a mutex initialization made to fail (once, while set), the mutex it failed on, and whether anything locked
    that mutex before an initialization of it succeeded. */
 static atomic_int g_mutex_init_fails;
@@ -345,6 +357,44 @@ test_mark_never_waits_on_a_console_read(void) {
     (void)remove(path);
 }
 
+/* Issue #834: a drop whose bytes are owed but not ready yet: a read waits for input for the time it was given, as a
+   read with nothing owed does, rather than returning at once (a decoder loop would spin on an empty input). The bytes
+   then come, and go before the new sample. */
+static void
+test_owed_drop_waits_for_input(void) {
+    int fds[2] = {-1, -1};
+    if (pipe(fds) != 0) {
+        check(0, "pipe for the owed drop");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the owed drop");
+    const int16_t old_samples[2] = {1, 2};
+    check(dsd_write(fds[1], old_samples, sizeof old_samples) == (ssize_t)sizeof old_samples, "the old samples");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    int16_t hidden[2];
+    check(mark_real_read(fds[0], hidden, sizeof hidden) == (ssize_t)sizeof hidden, "the counted bytes not ready yet");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing ready to drop yet");
+    atomic_store(&g_wait_longest_ms, 0);
+    atomic_store(&g_wait_fd, fds[0]);
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 40U) == DSD_PCM_STREAM_TIMEOUT, "an empty input times out");
+    check(atomic_load(&g_wait_longest_ms) == 40, "and the read waited the time it was given");
+    atomic_store(&g_wait_fd, -1);
+    check(dsd_write(fds[1], old_samples, sizeof old_samples) == (ssize_t)sizeof old_samples, "the owed bytes come");
+    const int16_t new_sample = 9;
+    check(dsd_write(fds[1], &new_sample, sizeof new_sample) == (ssize_t)sizeof new_sample, "the new sample");
+    int got = DSD_PCM_STREAM_TIMEOUT;
+    for (int i = 0; i < 8 && got == DSD_PCM_STREAM_TIMEOUT; i++) {
+        got = dsd_pcm_stream_read_wait(stream, &s, 100U);
+    }
+    check(got == DSD_PCM_STREAM_SAMPLE && s == 9, "the owed bytes go; the first sample is the new one");
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+}
+
 int
 main(void) {
     test_backlog_lock_that_fails_to_initialize();
@@ -352,5 +402,6 @@ main(void) {
     test_pipe_mark_during_refill();
     test_socket_mark_during_refill();
     test_pause_before_the_first_refill();
+    test_owed_drop_waits_for_input();
     return g_failures == 0 ? 0 : 1;
 }
