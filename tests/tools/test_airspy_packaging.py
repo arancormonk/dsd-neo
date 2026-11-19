@@ -287,6 +287,9 @@ class AirspyPackaging(unittest.TestCase):
         tea_notices = build / "tetra_crypto-licenses"
         tea_notices.mkdir()
         (tea_notices / "tetra_crypto-LICENSE.txt").write_text("TEA notice fixture\n")
+        # The directions to Qt's source the Android configure writes from its kit (tools/android_source_directions.py).
+        (build / "qt-source").mkdir()
+        (build / "qt-source" / "qt-source.txt").write_text("Qt source directions fixture\n")
         share = self.work / "vcpkg-share"
         for port in ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus",
                      "mp3lame", "mpg123"):
