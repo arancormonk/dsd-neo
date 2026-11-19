@@ -27,7 +27,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <initializer_list>
 #include <limits>
 #include <numeric>
 #include <vector>

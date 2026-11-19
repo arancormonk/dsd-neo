@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stddef.h>
 #include <vector>
 
 #include "map_math.h"
