@@ -115,15 +115,19 @@ cc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_i
     return g_result;
 }
 
+/* What a voice-channel tune returns (g_vc_result, OK unless a case sets it), and the request it was handed. */
+static dsd_trunk_tune_result g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_vc_request;
+
 static dsd_trunk_tune_result
 vc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
     (void)sps;
-    (void)request_id;
+    g_vc_request = request_id;
     g_frequency = freq;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     opts->trunk_is_tuned = 1;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    return g_vc_result;
 }
 
 static dsd_trunk_tune_result
@@ -465,6 +469,41 @@ dmr_probe_judges_its_carrier_once_landed(void) {
     rc |= expect(call_crypto_kept(&g_state), "the landed probe is judged once");
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
     cleanup();
+    return rc;
+}
+
+/* Issue #834: a grant's follow whose tune is still pending (an RTL tune past the controller's wait) has not left the
+   carrier yet, and one that then fails never does: the calls there keep their ALG, key ID, MI and privacy, and their
+   voice is not held, until the tune lands. One that lands is judged then, before anything the carrier it reached sends
+   is read. */
+static int
+dmr_grant_follow_judges_its_carrier_once_landed(void) {
+    int rc = 0;
+    for (int lands = 0; lands <= 1; lands++) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        aloha(1);
+        dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+        seed_call_crypto(&g_state);
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        g_vc_request = 0U;
+        dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
+        const uint64_t request = g_vc_request;
+        rc |= expect(request != 0U && g_opts.trunk_is_tuned, "a grant's follow is pending, under its own request");
+        rc |= expect(call_crypto_kept(&g_state), "a pending follow leaves the calls' decryption alone");
+        dsd_trunk_tuning_request_publish(request, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+        dmr_sm_resolve_tracked_tune(&g_opts, &g_state); /* the DMR dispatcher, before the frame is read */
+        if (lands) {
+            rc |= expect(call_crypto_left(&g_state), "the landed follow forgets the calls' decryption and holds");
+        } else {
+            rc |= expect(call_crypto_kept(&g_state), "a follow that failed keeps the calls' decryption");
+        }
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        cleanup();
+    }
     return rc;
 }
 
@@ -2671,6 +2710,7 @@ main(void) {
     rc |= hunt_and_reacquire();
     rc |= pending_and_failed_probes();
     rc |= dmr_probe_judges_its_carrier_once_landed();
+    rc |= dmr_grant_follow_judges_its_carrier_once_landed();
     rc |= dmr_rigctl_probe_judged_from_the_confirmed_frequency();
     rc |= dmr_deferred_mapped_probe_is_retried();
     rc |= dmr_probe_drops_the_back_retry();

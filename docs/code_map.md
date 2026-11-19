@@ -12770,7 +12770,11 @@ Private per-protocol modules worth knowing about:
     receiver never left keep their ALG, key ID, MI and privacy; a request the machine gives up on unresolved (its
     deadline, a follow or park that replaces it) is judged as landed, the safe side (`ENGINE_DMR_CC_RECOVERY`
     `dmr_probe_judges_its_carrier_once_landed()`, `dmr_rigctl_probe_judged_from_the_confirmed_frequency()`,
-    `dmr_settle_tune_deadline()`). The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
+    `dmr_settle_tune_deadline()`). A grant's follow and a C_MOVE's follow are tracked the same way when their tune is
+    still in flight (`dmr_sm_follow_grant()`, `dmr_sm_follow_move()` take its request): the left calls end at once, as
+    the machine moves on, and their decryption is judged once the request lands
+    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY` `dmr_grant_follow_judges_its_carrier_once_landed()`,
+    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
     reading of the tuner (`dsd_engine_receiver_hz()`): the machine's own tunes go through `dmr_sm_tune_to_freq()` and
     `dmr_sm_tune_to_cc()`, which mark them as judged by their caller for the engine's hook
     (`dsd_trunk_tuning_caller_judges()`, the marker a trunk-scan park, a return to the control channel and an operator's

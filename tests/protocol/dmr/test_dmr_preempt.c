@@ -134,10 +134,20 @@ clock_at(double seconds) {
     dsd_decode_clock_test_set_ns(k_t0_ns + (uint64_t)(seconds * 1e9));
 }
 
+/* The request the last tune was handed (issue #834). */
+static uint64_t g_tune_request;
+
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
-    (void)request_id;
+    g_tune_request = request_id;
+    if (g_tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        /* In flight: the tuner is told where to go, and the request resolves later. */
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+        opts->trunk_is_tuned = 1;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+        return g_tune_result;
+    }
     if (g_tune_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_tune_result;
     }
@@ -918,6 +928,46 @@ test_move_matches_slot_identity(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Issue #834: a C_MOVE's follow whose tune is still in flight has not left the carrier yet, and one that then fails
+   never does: the call's ALG, key ID and MI there stay, and its voice is not held, until the tune lands; one that lands
+   is judged then, before anything the carrier it reached sends is read. */
+static int
+test_move_judges_its_carrier_once_landed(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int lands = 0; lands <= 1; lands++) {
+        init_env(opts, st, 2.0);
+        seed_row(st, 202, "A", 10, 0);
+        tv_grant(opts, st, LPCN_A, 0, 202, 1);
+        clock_at(0.5);
+        voice(opts, st, 0);
+        st->payload_algid = 0x21;
+        st->payload_keyid = 5;
+        st->payload_mi = 0x1234U;
+        st->dmr_enc_class_held[0] = st->dmr_enc_class_held[1] = 0U;
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        g_tune_request = 0U;
+        rc |= expect_true("the move is followed, its tune in flight",
+                          submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_FOLLOWED
+                              && g_tune_request != 0U);
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        rc |= expect_true("a move in flight keeps the call's decryption",
+                          st->payload_algid == 0x21 && st->payload_keyid == 5 && st->payload_mi == 0x1234U
+                              && st->dmr_enc_class_held[0] == 0U);
+        dsd_trunk_tuning_request_publish(g_tune_request,
+                                         lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+        dmr_sm_resolve_tracked_tune(opts, st);
+        if (lands) {
+            rc |= expect_true("the landed move forgets the call's decryption and holds",
+                              st->payload_algid == 0 && st->payload_mi == 0U && st->dmr_enc_class_held[0] == 1U);
+        } else {
+            rc |=
+                expect_true("a move that failed keeps the call's decryption",
+                            st->payload_algid == 0x21 && st->payload_mi == 0x1234U && st->dmr_enc_class_held[0] == 0U);
+        }
+    }
+    return rc;
+}
+
 /* A call on @p slot as the canonical layer opens it: a voice LC naming group @p tg (0: anonymous late-entry voice). */
 static void
 canonical_call_begins(dsd_state* st, int slot, uint32_t tg, uint32_t src) {
@@ -1276,6 +1326,7 @@ main(void) {
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_slot_move_republishes(opts, st);
     rc |= test_move_matches_slot_identity(opts, st);
+    rc |= test_move_judges_its_carrier_once_landed(opts, st);
     rc |= test_deferred_move_keeps_identity(opts, st);
     rc |= test_move_republishes_renamed_call(opts, st);
     rc |= test_move_to_carrier_binds_moved_call(opts, st);

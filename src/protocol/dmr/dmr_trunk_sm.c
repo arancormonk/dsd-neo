@@ -1090,6 +1090,23 @@ dmr_sm_leave_carrier(dsd_opts* opts, dsd_state* state) {
     dmr_enc_class_hold(state);
 }
 
+/* A follow's tune still in flight (an RTL tune past the controller's wait, issue #834) has not left the carrier yet, and
+   may never: the left calls end now, as the machine moves on, but what they say of their encryption is judged once
+   @p request_id resolves (dmr_sm_resolve_tracked_tune(), dmr_sm_leave_judgement_settle()), and a tune that fails takes
+   nothing from them. Called after the follow's own bookkeeping, which settles any earlier judgement. */
+static void
+dmr_sm_leave_carrier_once_landed(dmr_sm_ctx_t* ctx, uint64_t request_id, long receiver_hz, long freq_hz) {
+    ctx->cc_leave_request_id = request_id;
+    ctx->cc_leave_from_hz = receiver_hz;
+    ctx->cc_leave_to_hz = freq_hz;
+}
+
+/* Whether a follow's tune that @p result answered, under @p request_id, waits to land before its carrier is judged. */
+static int
+dmr_sm_follow_tune_in_flight(dsd_trunk_tune_result result, uint64_t request_id) {
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING && request_id != 0U;
+}
+
 void
 dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz) {
     if (state && dmr_sm_follow_leaves(receiver_hz, freq_hz)) {
@@ -2348,9 +2365,11 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
         dmr_cc_note_activity_ctx(ctx, opts, state, ctx->cc_probe_freq_hz);
     }
     double now_m = dsd_decode_now_mono_s();
-    const int leaves = dmr_sm_follow_leaves(dmr_sm_ctx_receiver_frequency(ctx, opts), freq);
+    const long receiver_hz = dmr_sm_ctx_receiver_frequency(ctx, opts);
+    const int leaves = dmr_sm_follow_leaves(receiver_hz, freq);
 
-    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, NULL); // DMR: no TED SPS override
+    uint64_t request_id = 0U;
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id); // no TED SPS override
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "grant-tune-deferred");
         return DMR_SM_GRANT_DEFERRED;
@@ -2358,11 +2377,18 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
 
     /* The calls of the carrier left behind (a held call a takeover displaced, a resident call) are over here: none of
        them may stay active beside the call followed now. A grant for the carrier the receiver is on (a composite
-       control channel's own payload) leaves nothing: its calls, the granted one included, go on as they were. */
-    if (leaves) {
+       control channel's own payload) leaves nothing: its calls, the granted one included, go on as they were. A tune
+       still in flight ends them now and leaves the rest of the judgement to its landing. */
+    const int in_flight = leaves && dmr_sm_follow_tune_in_flight(tune_result, request_id);
+    if (in_flight) {
+        dmr_sm_end_left_calls(opts, state);
+    } else if (leaves) {
         dmr_sm_leave_carrier(opts, state);
     }
     dmr_sm_take_grant(ctx, state, ev, freq, leaves, now_m);
+    if (in_flight) {
+        dmr_sm_leave_carrier_once_landed(ctx, request_id, receiver_hz, freq);
+    }
     dmr_sm_slots_take_carrier(ctx, freq, leaves);
     dmr_sm_grant_note_identity(ctx, state, ev, dmr_sm_event_kind(ev), dmr_sm_event_identity_known(ev), freq, displace,
                                now_m);
@@ -2533,15 +2559,23 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
         return DMR_SM_GRANT_IN_PLACE;
     }
 
-    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, NULL);
+    const long receiver_hz = dmr_sm_ctx_receiver_frequency(ctx, opts);
+    uint64_t request_id = 0U;
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "move-tune-deferred");
         return DMR_SM_GRANT_DEFERRED; // nothing changed: a repeat of the followed grant still names its call
     }
     /* The carrier left behind keeps no active call, as for any follow (dmr_sm_follow_grant()): the moved call's epoch
        there ends, and its first voice on the new carrier publishes it again in an epoch of its own, which the moved
-       identity binds to (one awaiting a call after the ended epoch), as a same-carrier move does on its new slot. */
-    dmr_sm_leave_carrier(opts, state);
+       identity binds to (one awaiting a call after the ended epoch), as a same-carrier move does on its new slot. A
+       tune still in flight leaves the rest of the judgement to its landing. */
+    const int in_flight = dmr_sm_follow_tune_in_flight(tune_result, request_id);
+    if (in_flight) {
+        dmr_sm_end_left_calls(opts, state);
+    } else {
+        dmr_sm_leave_carrier(opts, state);
+    }
     dmr_sm_vc_identity_from_slot(ctx, &moved);
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
@@ -2556,6 +2590,9 @@ dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dm
     dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_superseded = 0;
+    if (in_flight) {
+        dmr_sm_leave_carrier_once_landed(ctx, request_id, receiver_hz, freq);
+    }
     state->dmr_mono_slot = new_slot;
     dmr_sm_slots_reset(ctx);
     if (new_slot >= 0) {
