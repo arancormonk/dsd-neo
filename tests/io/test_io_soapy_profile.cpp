@@ -205,9 +205,13 @@ test_nearest_rate_within_limit(void) {
     rc |= expect_true("found under the limit", found);
     const std::vector<double> ends = {1500000.0, 10e6};
     const std::vector<dsdneo::SoapyRange> between = {{1500000.0, 10e6, 0.0}};
+    /* The range reaches past the limit: its point at the limit's whole hertz is nearer the request than the listed
+       1.5 MS/s, and the two are compared. */
     rc |=
-        expect_double("a request the range holds past the limit gives the listed rate under it",
-                      dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, ends, between, &found), 1500000.0);
+        expect_double("a request the range holds past the limit gives the range's point at the limit",
+                      dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, ends, between, &found), 1520003.0);
+    rc |= expect_double("with no range, the listed rate under the limit",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, ends, {}, &found), 1500000.0);
     const std::vector<dsdneo::SoapyRange> stepped = {{1e6, 10e6, 250000.0}};
     rc |= expect_double("a stepped range is cut to its last step under the limit",
                         dsdneo::soapy_nearest_sample_rate_within(3000000.0, 2600000.0, {}, stepped, &found), 2500000.0);
@@ -219,6 +223,22 @@ test_nearest_rate_within_limit(void) {
     rc |= expect_true("found for a device that advertises nothing", found);
     (void)dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1000000.0, {}, {}, &found);
     rc |= expect_true("nor above the limit", !found);
+    /* In whole hertz, as a rate is programmed and read back: 1,520,003.2 Hz rounds to the 1,520,003 Hz limit. */
+    rc |= expect_double("a rate that rounds to the limit is within it",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {1520003.2, 10e6}, {}, &found),
+                        1520003.2);
+    rc |= expect_true("found once rounded", found);
+    (void)dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {1520003.5, 10e6}, {}, &found);
+    rc |= expect_true("one that rounds above it is not", !found);
+    /* A range's point nearer the request beats a listed rate further away. */
+    const std::vector<double> far_listed = {3072025.0, 10e6};
+    const std::vector<dsdneo::SoapyRange> halves = {{1000000.0, 2000000.0, 500000.0}};
+    rc |= expect_double("the nearer range point wins over a listed rate",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 4000003.0, far_listed, halves, &found),
+                        1500000.0);
+    rc |= expect_double("a listed rate nearer than every range point wins",
+                        dsdneo::soapy_nearest_sample_rate_within(2900000.0, 4000003.0, far_listed, halves, &found),
+                        3072025.0);
     return rc;
 }
 

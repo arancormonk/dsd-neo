@@ -939,6 +939,55 @@ test_offset_judged_on_the_readback_near_the_top(void) {
     expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 375000.0);
 }
 
+/* Two HackRF opens near the top of the tuning range where the preferred 10 MS/s does not fit: one whose only lower rate
+ * is listed as 1,520,003.2 Hz, which the stream programs and reads back as 1,520,003 Hz, and whose quarter-rate offset
+ * then fits exactly; and one that lists 3,072,025 Hz, which the 48 kHz chain cannot use, beside a stepped range holding
+ * 1.5 MS/s nearer the request. Each opens on the rate that fits. */
+void
+test_bounded_fallback_in_whole_hertz_and_over_ranges(void) {
+    static const double rounded[] = {1520003.2, 10e6};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = rounded;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = nullptr;
+    fake.rate_range_count = 0U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    const uint32_t top_hz = UINT32_MAX - 380000U;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, top_hz, &got) == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("a rate that rounds to the limit opens", got.rc == 0);
+    expect_eq("it runs 1,520,003 Hz", got.capture_rate_hz, 1520003.0);
+
+    static const double far_listed[] = {3072025.0, 10e6};
+    static const rtl_device_test_soapy_range halves[] = {{1000000.0, 2000000.0, 500000.0}};
+    rtl_device_test_soapy_gain_fake mixed = hackrf_fake();
+    mixed.listed_rates = far_listed;
+    mixed.listed_rate_count = 2U;
+    mixed.rate_ranges = halves;
+    mixed.rate_range_count = 1U;
+    dev = rtl_device_test_soapy_gain_device(&mixed, 0);
+    opts = make_soapy_opts(mixed.bandwidth_request_hz);
+    got = {};
+    got.rc = -100;
+    const uint32_t near_top_hz = UINT32_MAX - 1000000U;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, near_top_hz, &got)
+                        == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("the range's 1.5 MS/s opens", got.rc == 0);
+    expect_eq("it runs 1.5 MS/s", got.capture_rate_hz, 1500000.0);
+}
+
 /* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
  * and asked on the rollback for the 1,536,000 Hz it delivered, which it now lists and takes as written: request, write
  * and read-back agree, so the restored plan is made again and no longer counts the rate as forced. */
@@ -1272,6 +1321,7 @@ main(int argc, char** argv) {
         {"oversized_rate_written_refused", test_oversized_rate_written_refused},
         {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
         {"offset_judged_on_the_readback_near_the_top", test_offset_judged_on_the_readback_near_the_top},
+        {"bounded_fallback_in_whole_hertz_and_over_ranges", test_bounded_fallback_in_whole_hertz_and_over_ranges},
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
         {"listening_waits_for_input_past_the_retune_mute", test_listening_waits_for_input_past_the_retune_mute},

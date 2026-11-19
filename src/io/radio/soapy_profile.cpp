@@ -605,23 +605,37 @@ soapy_nearest_sample_rate_within(double requested, double max_rate, const std::v
         *out_found = requested <= max_rate;
         return *out_found ? requested : 0.0;
     }
-    std::vector<double> listed;
-    std::copy_if(listed_rates.begin(), listed_rates.end(), std::back_inserter(listed),
-                 [max_rate](double rate) { return rate <= max_rate; });
-    std::vector<SoapyRange> within;
+    /* A rate is programmed and read back in whole hertz (llround()), so one that rounds to max_rate is within it. */
+    const double below = max_rate + 0.5;
+    double best = 0.0;
+    double best_error = 0.0;
+    const auto consider = [&](double rate) {
+        const double error = std::fabs(rate - requested);
+        if (std::isfinite(rate) && rate > 0.0 && rate < below && (!*out_found || error < best_error)) {
+            best = rate;
+            best_error = error;
+            *out_found = true;
+        }
+    };
+    std::for_each(listed_rates.begin(), listed_rates.end(), consider);
+    /* A range's nearest point within the limit competes with the listed rates, whether or not one of them is the
+       request itself. */
     for (const SoapyRange& range : ranges) {
-        if (range.maximum < range.minimum || range.minimum > max_rate) {
+        if (range.maximum < range.minimum || !(range.minimum < below)) {
             continue;
         }
-        SoapyRange cut{range.minimum, std::min(range.maximum, max_rate), range.step};
+        /* A stepped range's points are where they are, and one under the half-hertz above the limit rounds within it;
+           a continuous range is cut at the limit's whole hertz itself. */
+        const double top = range.step > 0.0 ? std::nextafter(below, 0.0) : max_rate;
+        SoapyRange cut{range.minimum, std::min(range.maximum, top), range.step};
         cut.maximum = range_last_point(cut);
-        within.push_back(cut);
+        bool supported = false;
+        const double point = soapy_nearest_in_ranges(requested, {cut}, &supported);
+        if (supported) {
+            consider(point);
+        }
     }
-    if (listed.empty() && within.empty()) {
-        return 0.0;
-    }
-    *out_found = true;
-    return soapy_nearest_sample_rate(requested, listed, within, nullptr);
+    return *out_found ? best : 0.0;
 }
 
 bool
