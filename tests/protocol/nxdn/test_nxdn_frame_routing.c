@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "nxdn_confirm.h"
+#include "nxdn_internal.h"
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -318,8 +319,6 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     }
     g_facch_part_mask |= (int)direction << 8;
 }
-
-void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 /* The positioning a verified SCCH's frame position asks for (nxdn_deperm.c): here the register value the test names,
    recorded with the frame position and the cipher the frame chose by then. */
