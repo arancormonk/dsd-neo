@@ -773,6 +773,64 @@ class NoticeStagingTests(unittest.TestCase):
         after = {path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}
         self.assertEqual(after, before)
 
+    def test_android_staging_owns_only_its_output(self):
+        # A folder beside the stage is not the staging's: it is left as it was, and no scratch folder stays behind,
+        # also when the staging fails.
+        build, share, docs, args = self.android_fixture()
+        stage = docs.parents[2]
+        beside = self.work / "stage-doc"
+        (beside / "keep").mkdir(parents=True)
+        (beside / "keep/mine.txt").write_text("not the staging's\n", encoding="utf-8")
+        before = sorted(path.name for path in self.work.iterdir())
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((beside / "keep/mine.txt").read_text(encoding="utf-8"), "not the staging's\n")
+        self.assertEqual(sorted(path.name for path in self.work.iterdir()), sorted(before + [stage.name]))
+        (share / "mpg123/copyright").unlink()
+        self.assertNotEqual(self.run_cmake(*args).returncode, 0)
+        self.assertEqual(sorted(path.name for path in self.work.iterdir()), sorted(before + [stage.name]))
+        self.assertTrue((beside / "keep/mine.txt").is_file())
+
+    def test_android_staging_keeps_the_package_source_documentation(self):
+        # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
+        # in an incremental one, and a generated notice of the same name takes its place.
+        build, share, docs, args = self.android_fixture()
+        source = self.work / "package/assets/doc/dsd-neo"
+        (source / "extra").mkdir(parents=True)
+        (source / "extra/README.txt").write_text("from the package source\n", encoding="utf-8")
+        (source / "LICENSE").write_text("an outdated copy\n", encoding="utf-8")
+        for _ in range(2):
+            result = self.run_cmake(*args)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((docs / "extra/README.txt").read_text(encoding="utf-8"), "from the package source\n")
+            self.assertEqual((docs / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes())
+            index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+            self.assertIn("extra/README.txt", index)
+            self.assertEqual(index.count("LICENSE"), 1)
+        before = {path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual({path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}, before)
+
+    def test_android_staging_replaces_a_notice_folder_with_a_notice_file(self):
+        # A notice that was a folder's file and becomes a file of the folder's name, and back again.
+        build, share, docs, args = self.android_fixture()
+        inventory = legal.read_inventory(ROOT)
+        qt = next(c for c in inventory["components"] if c["id"] == "qt")
+        components = self.work / "components.json"
+        for notice in ("licenses/acme/NOTICE", "licenses/acme", "licenses/acme/NOTICE"):
+            with self.subTest(notice=notice):
+                notices = {name: source for name, source in qt["android_release"]["notices"].items()
+                           if not name.startswith("licenses/acme")}
+                qt["android_release"]["notices"] = {**notices, notice: "repo:LICENSES/ISC.txt"}
+                components.write_text(json.dumps(inventory), encoding="utf-8")
+                result = self.run_cmake(f"-DCOMPONENTS={components}", *args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue((docs / notice).is_file())
+                self.assertEqual((docs / notice).read_bytes(), (ROOT / "LICENSES/ISC.txt").read_bytes())
+                index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+                self.assertEqual([name for name in index if name.startswith("licenses/acme")], [notice])
+
     def test_release_notice_staging_follows_any_platform_map(self):
         # The staging the APK uses takes any platform's map, so the DMG can use it as well; it refuses a source it does
         # not know, a path outside its root and a legal-component notice the package lacks.

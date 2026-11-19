@@ -17,7 +17,7 @@
 #         -DDOC_DIR=<package>/share/doc/dsd-neo [-DVCPKG_SHARE_DIR=<installed>/<triplet>/share] \
 #         [-DCOMPONENTS=<components.json>] -P cmake/stage_release_notices.cmake
 #
-# Also included by cmake/stage_android_package.cmake with the same variables set.
+# Also run by cmake/stage_android_package.cmake, with DOC_DIR its fresh documentation folder.
 
 # Script mode leaves policies unset: ask for the project's minimum, as its CMakeLists.txt does,
 # so the if() rules do not depend on the host CMake (string(JSON) needs 3.19).
