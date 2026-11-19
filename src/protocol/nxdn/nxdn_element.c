@@ -3862,7 +3862,7 @@ nxdn_scch_handle_info3(const dsd_opts* opts, dsd_state* state, const struct nxdn
 }
 
 static void
-nxdn_scch_handle_info2(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
      * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
      * destination, and name no unit, so they never become the call's target. */

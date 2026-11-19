@@ -1368,44 +1368,44 @@ test_scch_crc_gates_scrambler_reload(void) {
    that content. */
 typedef struct {
     const char* tag;
+    uint16_t id;       /* bits 13-23 */
+    uint16_t site;     /* a site ID message: Site Type (2) and Site Code (8) over bits 3-12, else 0xFFFF */
     uint8_t structure; /* INFO4 0, INFO3 1, INFO2 2, INFO1 3 */
     uint8_t bits_3_7;  /* Repeater in Use / Go to / Free Repeater 1; Site Type in bits 3-4 */
     uint8_t bits_8_12; /* Home Repeater / Prefix, Free Repeater 2 or Pass Character; Site Code low bits */
-    uint16_t id;       /* bits 13-23 */
     uint8_t bit_24;    /* G/U or Spare */
-    uint16_t site;     /* a site ID message: Site Type (2) and Site Code (8) over bits 3-12, else 0xFFFF */
-    int valid;
-    int inbound; /* decoded as an inbound SCCH (the rest outbound) */
+    uint8_t valid;
+    uint8_t inbound; /* decoded as an inbound SCCH (the rest outbound) */
 } scch_content_case;
 
 static const scch_content_case k_scch_content_cases[] = {
-    {"scch-reserved-prefix-confirms-nothing", 1U, 2U, 31U, 1234U, 0U, 0xFFFFU, 0, 0},
-    {"scch-valid-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1, 0},
-    {"scch-spare-info1-confirms", 3U, 0U, 0U, 0U, 1U, 0xFFFFU, 1, 0},
-    {"scch-spare-info3-confirms", 1U, 2U, 3U, 1234U, 1U, 0xFFFFU, 1, 0},
-    {"scch-site-code-0-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 0U, 0, 0},
-    {"scch-site-code-251-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 251U, 0, 0},
-    {"scch-site-type-00-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (0U << 8) | 17U, 0, 0},
-    {"scch-site-id-confirms", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 17U, 1, 0},
-    {"scch-info1-free-repeater-1-31-confirms-nothing", 3U, 31U, 3U, 0U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info1-free-repeater-2-31-confirms-nothing", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info1-confirms", 3U, 2U, 3U, 0U, 0U, 0xFFFFU, 1, 0},
-    {"scch-free-repeater-31-confirms-nothing", 0U, 31U, 3U, 2044U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info3-free-repeater-31-confirms-nothing", 1U, 31U, 3U, 1234U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info3-idle-code-confirms-nothing", 1U, 2U, 3U, 2046U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info3-all-units-confirms-nothing", 1U, 2U, 3U, 2047U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info2-reserved-id-confirms-nothing", 2U, 5U, 3U, 2001U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info4-reserved-id-confirms-nothing", 0U, 5U, 3U, 2040U, 1U, 0xFFFFU, 0, 0},
-    {"scch-info2-id-31-confirms", 2U, 5U, 3U, 31U, 0U, 0xFFFFU, 1, 0},
-    {"scch-info4-all-group-confirms", 0U, 5U, 3U, 2047U, 0U, 0xFFFFU, 1, 0},
-    {"scch-info2-special-id-nonzero-prefix-confirms-nothing", 2U, 5U, 6U, 2043U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info4-special-id-nonzero-prefix-confirms-nothing", 0U, 5U, 6U, 2042U, 0U, 0xFFFFU, 0, 0},
-    {"scch-info4-special-id-prefix-0-confirms", 0U, 5U, 0U, 2043U, 0U, 0xFFFFU, 1, 0},
-    {"scch-inbound-info1-repeater-in-use-0-confirms-nothing", 3U, 0U, 31U, 0U, 0U, 0xFFFFU, 0, 1},
-    {"scch-inbound-info1-repeater-in-use-31-confirms-nothing", 3U, 31U, 31U, 0U, 0U, 0xFFFFU, 0, 1},
-    {"scch-inbound-info1-confirms", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 1, 1},
-    {"scch-inbound-info3-repeater-in-use-0-confirms-nothing", 1U, 0U, 3U, 1234U, 0U, 0xFFFFU, 0, 1},
-    {"scch-inbound-info3-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1, 1},
+    {"scch-reserved-prefix-confirms-nothing", 1234U, 0xFFFFU, 1U, 2U, 31U, 0U, 0U, 0U},
+    {"scch-valid-confirms", 1234U, 0xFFFFU, 1U, 2U, 3U, 0U, 1U, 0U},
+    {"scch-spare-info1-confirms", 0U, 0xFFFFU, 3U, 0U, 0U, 1U, 1U, 0U},
+    {"scch-spare-info3-confirms", 1234U, 0xFFFFU, 1U, 2U, 3U, 1U, 1U, 0U},
+    {"scch-site-code-0-confirms-nothing", 2041U, (1U << 8) | 0U, 0U, 0U, 0U, 0U, 0U, 0U},
+    {"scch-site-code-251-confirms-nothing", 2041U, (1U << 8) | 251U, 0U, 0U, 0U, 0U, 0U, 0U},
+    {"scch-site-type-00-confirms-nothing", 2041U, (0U << 8) | 17U, 0U, 0U, 0U, 0U, 0U, 0U},
+    {"scch-site-id-confirms", 2041U, (1U << 8) | 17U, 0U, 0U, 0U, 0U, 1U, 0U},
+    {"scch-info1-free-repeater-1-31-confirms-nothing", 0U, 0xFFFFU, 3U, 31U, 3U, 0U, 0U, 0U},
+    {"scch-info1-free-repeater-2-31-confirms-nothing", 0U, 0xFFFFU, 3U, 2U, 31U, 0U, 0U, 0U},
+    {"scch-info1-confirms", 0U, 0xFFFFU, 3U, 2U, 3U, 0U, 1U, 0U},
+    {"scch-free-repeater-31-confirms-nothing", 2044U, 0xFFFFU, 0U, 31U, 3U, 0U, 0U, 0U},
+    {"scch-info3-free-repeater-31-confirms-nothing", 1234U, 0xFFFFU, 1U, 31U, 3U, 0U, 0U, 0U},
+    {"scch-info3-idle-code-confirms-nothing", 2046U, 0xFFFFU, 1U, 2U, 3U, 0U, 0U, 0U},
+    {"scch-info3-all-units-confirms-nothing", 2047U, 0xFFFFU, 1U, 2U, 3U, 0U, 0U, 0U},
+    {"scch-info2-reserved-id-confirms-nothing", 2001U, 0xFFFFU, 2U, 5U, 3U, 0U, 0U, 0U},
+    {"scch-info4-reserved-id-confirms-nothing", 2040U, 0xFFFFU, 0U, 5U, 3U, 1U, 0U, 0U},
+    {"scch-info2-id-31-confirms", 31U, 0xFFFFU, 2U, 5U, 3U, 0U, 1U, 0U},
+    {"scch-info4-all-group-confirms", 2047U, 0xFFFFU, 0U, 5U, 3U, 0U, 1U, 0U},
+    {"scch-info2-special-id-nonzero-prefix-confirms-nothing", 2043U, 0xFFFFU, 2U, 5U, 6U, 0U, 0U, 0U},
+    {"scch-info4-special-id-nonzero-prefix-confirms-nothing", 2042U, 0xFFFFU, 0U, 5U, 6U, 0U, 0U, 0U},
+    {"scch-info4-special-id-prefix-0-confirms", 2043U, 0xFFFFU, 0U, 5U, 0U, 0U, 1U, 0U},
+    {"scch-inbound-info1-repeater-in-use-0-confirms-nothing", 0U, 0xFFFFU, 3U, 0U, 31U, 0U, 0U, 1U},
+    {"scch-inbound-info1-repeater-in-use-31-confirms-nothing", 0U, 0xFFFFU, 3U, 31U, 31U, 0U, 0U, 1U},
+    {"scch-inbound-info1-confirms", 0U, 0xFFFFU, 3U, 2U, 31U, 0U, 1U, 1U},
+    {"scch-inbound-info3-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 1U, 0U, 3U, 0U, 0U, 1U},
+    {"scch-inbound-info3-confirms", 1234U, 0xFFFFU, 1U, 2U, 3U, 0U, 1U, 1U},
 };
 
 static void
@@ -1457,7 +1457,7 @@ test_scch_undefined_content_confirms_nothing(void) {
             (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, c->inbound ? 0U : 1U);
             nxdn_confirm_end_frame(state);
         }
-        rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), c->valid);
+        rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), (int)c->valid);
         free_fixture(opts, state);
     }
     return rc;
