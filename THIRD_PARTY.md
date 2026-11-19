@@ -37,10 +37,15 @@ not a finding that every component is cleared for redistribution.
   it count the transfers libusb owns, return `-1` once none is left, and free nothing until every transfer has been
   called back. The snapshot is not part of any non-Android build, but the Windows, AppImage and macOS release
   packages build librtlsdr from the same pinned upstream revision with `0002` and `0003` applied
-  (`tools/usb_dependency_patches.sh`).
+  (`tools/usb_dependency_patches.sh`). The license text names no holder, so every package that carries librtlsdr
+  also carries `LICENSES/librtlsdr-NOTICES.txt`, the holder lines of every library source and header it compiles
+  (Steve Markgraf, Dimitri Stolnikov, Hoernchen, Harald Welte, Sylvain Munaut, Hans-Frieder Vogt, Fitipower
+  Integrated Technology Inc and Mauro Carvalho Chehab), as `licenses/librtlsdr-NOTICES.txt`.
 - **libusb** (`android/third_party/libusb`; https://github.com/libusb/libusb) - LGPL-2.1-or-later; license text
   `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
-  own Android build uses) built into the Android app. Not part of any non-Android build.
+  own Android build uses) built into the Android app. Not part of any non-Android build. The APK also carries
+  `LICENSES/libusb-android-NOTICES.txt`, the header of every compiled file up to its license text and the upstream
+  AUTHORS file, as `licenses/libusb-android-NOTICES.txt`.
 
 ## Bundled Assets
 
@@ -188,8 +193,9 @@ The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with bina
 license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
 librtlsdr/libusb notices for the Android package. The Windows, AppImage and macOS release packages, which bundle a
-librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt` and
-`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`. The Windows release
+librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt`,
+`packaging/librtlsdr-PATCHES.txt`, naming those patches, as `licenses/librtlsdr-PATCHES.txt`, and its holder lines
+as `licenses/librtlsdr-NOTICES.txt`. The Windows release
 package also carries the notices of its SoapySDR load path (below): `licenses/SoapyAirspy-MIT.txt`,
 `licenses/SoapyHackRF-MIT.txt`, `licenses/libhackrf-BSD-3-Clause.txt`, `licenses/libusb-LGPL-2.1-or-later.txt`,
 `licenses/libusb-COPYRIGHT.txt`, `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and

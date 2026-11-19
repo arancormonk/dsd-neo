@@ -450,7 +450,8 @@
       "id": "android-libusb",
       "name": "libusb Android snapshot",
       "paths": [
-        "android/third_party/libusb/"
+        "android/third_party/libusb/",
+        "LICENSES/libusb-android-NOTICES.txt"
       ],
       "distribution": [
         "source",
@@ -462,15 +463,17 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "notices": [
-        "android/third_party/libusb/COPYING"
+        "android/third_party/libusb/COPYING",
+        "LICENSES/libusb-android-NOTICES.txt"
       ],
-      "assessment": "Library-only Linux USBFS/POSIX snapshot; see retained per-file notices.",
+      "assessment": "Library-only Linux USBFS/POSIX snapshot of release 1.0.30, linked statically into the Android app. The APK carries its COPYING as licenses/libusb-LGPL-2.1-or-later.txt and LICENSES/libusb-android-NOTICES.txt, the header of every compiled file and included header up to its license text and the upstream AUTHORS file, as licenses/libusb-android-NOTICES.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-10-17",
+      "review_date": "2026-11-18",
       "notice_sha256": {
-        "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+        "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
+        "LICENSES/libusb-android-NOTICES.txt": "3a187fff08d93c75c5acdd9cf1f6883e4ee8fd1f7d07a6fe422555a2d7eacab0"
       }
     },
     {
@@ -480,7 +483,8 @@
         "android/third_party/librtlsdr/",
         "android/third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch",
         "android/third_party/patches/0002-librtlsdr-check-async-buffer-allocation.patch",
-        "android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch"
+        "android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch",
+        "LICENSES/librtlsdr-NOTICES.txt"
       ],
       "distribution": [
         "source",
@@ -492,15 +496,17 @@
       "license_declared": "GPL-2.0-or-later",
       "license_concluded": "GPL-2.0-or-later",
       "notices": [
-        "android/third_party/librtlsdr/COPYING"
+        "android/third_party/librtlsdr/COPYING",
+        "LICENSES/librtlsdr-NOTICES.txt"
       ],
-      "assessment": "Vendored 2.0.3 with retained USB file-descriptor injection patch.",
+      "assessment": "Vendored 2.0.3 with retained USB file-descriptor injection patch. The APK carries the GPL text as licenses/librtlsdr-GPL-2.0-or-later.txt and LICENSES/librtlsdr-NOTICES.txt, the holder lines of every compiled library source and included header (the same as the pinned desktop release's), as licenses/librtlsdr-NOTICES.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-10-17",
+      "review_date": "2026-11-18",
       "notice_sha256": {
-        "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6"
+        "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
+        "LICENSES/librtlsdr-NOTICES.txt": "e78e85b444c0528624bccf368480145f432e26da649e0d584132ceb0f167863f"
       }
     },
     {
@@ -511,7 +517,8 @@
         "android/third_party/patches/0003-librtlsdr-account-for-every-transfer.patch",
         "packaging/librtlsdr-PATCHES.txt",
         "tools/usb_dependency_patches.sh",
-        "vcpkg-ports/rtlsdr/"
+        "vcpkg-ports/rtlsdr/",
+        "LICENSES/librtlsdr-NOTICES.txt"
       ],
       "distribution": [
         "binary"
@@ -525,16 +532,18 @@
       "license_concluded": "GPL-2.0-or-later",
       "notices": [
         "android/third_party/librtlsdr/COPYING",
-        "packaging/librtlsdr-PATCHES.txt"
+        "packaging/librtlsdr-PATCHES.txt",
+        "LICENSES/librtlsdr-NOTICES.txt"
       ],
-      "assessment": "Pinned 2.0.3 built for the Windows, AppImage and macOS releases with project patches 0002 and 0003; each ships the GPL text and a note naming the patches. Complete runtime notices and corresponding source remain open (RUNTIME-NOTICES, CORRESPONDING-SOURCE).",
+      "assessment": "Pinned 2.0.3 built for the Windows, AppImage and macOS releases with project patches 0002 and 0003, the library sources only (librtlsdr.c and the five tuner drivers). Each ships the GPL text as licenses/librtlsdr-GPL-2.0-or-later.txt, a note naming the patches (licenses/librtlsdr-PATCHES.txt) and LICENSES/librtlsdr-NOTICES.txt, the holder lines of every compiled source and included header from the pinned commit (Steve Markgraf, Dimitri Stolnikov, Hoernchen, Harald Welte, Sylvain Munaut, Hans-Frieder Vogt, Fitipower Integrated Technology Inc and Mauro Carvalho Chehab), as licenses/librtlsdr-NOTICES.txt. Corresponding source remains open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-11-03",
+      "review_date": "2026-11-18",
       "notice_sha256": {
         "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
-        "packaging/librtlsdr-PATCHES.txt": "ac421aea8ffd8e777ce8e1d1132906b75db5404d19c0da61abb8da450942dbfb"
+        "packaging/librtlsdr-PATCHES.txt": "ac421aea8ffd8e777ce8e1d1132906b75db5404d19c0da61abb8da450942dbfb",
+        "LICENSES/librtlsdr-NOTICES.txt": "e78e85b444c0528624bccf368480145f432e26da649e0d584132ceb0f167863f"
       },
       "windows_release": {
         "binaries": [
@@ -542,7 +551,8 @@
         ],
         "notices": {
           "licenses/librtlsdr-GPL-2.0-or-later.txt": "repo:android/third_party/librtlsdr/COPYING",
-          "licenses/librtlsdr-PATCHES.txt": "repo:packaging/librtlsdr-PATCHES.txt"
+          "licenses/librtlsdr-PATCHES.txt": "repo:packaging/librtlsdr-PATCHES.txt",
+          "licenses/librtlsdr-NOTICES.txt": "repo:LICENSES/librtlsdr-NOTICES.txt"
         }
       },
       "pin": "RTL_SDR_SHA"

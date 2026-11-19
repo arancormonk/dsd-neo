@@ -122,8 +122,9 @@ libairspy that never imports `usleep()` or a librtlsdr without the reader's "no 
 without the patches). The Windows ZIP job checks its `rtlsdr.dll` for the same message; a Windows libairspy build has
 no such mark. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when
 `AIRSPY_SHA` moves (`TOOLS_AIRSPY_PACKAGING` builds the pinned upstream source and expects the probe to reject it).
-All three release packages ship librtlsdr's GPL text and `packaging/librtlsdr-PATCHES.txt`, which names the patches;
-update that note when the series or `RTL_SDR_SHA` changes. The patch files are checked out with LF line endings
+All three release packages ship librtlsdr's GPL text, `packaging/librtlsdr-PATCHES.txt`, which names the patches, and
+`LICENSES/librtlsdr-NOTICES.txt`, the holder lines of the compiled sources; update the two notes when the series or
+`RTL_SDR_SHA` changes. The patch files are checked out with LF line endings
 everywhere (`.gitattributes`), so the digests agree on Windows.
 
 ## Vulnerability Scanning

@@ -235,6 +235,47 @@ class InventoryTests(unittest.TestCase):
         runtime = next(line for line in open_findings.splitlines() if line.startswith("| RUNTIME-NOTICES |"))
         self.assertNotIn("is not reviewed", runtime)
 
+    def test_usb_library_notices_name_every_holder_of_the_compiled_sources(self):
+        # librtlsdr's and the Android libusb's license texts name no holder, so each package carries a notice with the
+        # holder lines of every source and header the library compiles. The Android snapshot of librtlsdr has the
+        # file headers of the pinned desktop release, so one notice serves every package.
+        def holder_lines(paths):
+            lines = set()
+            for path in paths:
+                for line in path.read_text(encoding="utf-8").splitlines()[:40]:
+                    text = line.lstrip("/* ").strip()
+                    if text.startswith(("Copyright", "(C)", "(c)")):
+                        lines.add(text)
+            return lines
+
+        rtl = ROOT / "android/third_party/librtlsdr"
+        libusb = ROOT / "android/third_party/libusb"
+        cases = {
+            "LICENSES/librtlsdr-NOTICES.txt": (
+                ("desktop-rtl", "android-rtl"),
+                sorted((rtl / "src").glob("*.c")) + sorted((rtl / "include").glob("*.h"))),
+            "LICENSES/libusb-android-NOTICES.txt": (
+                ("android-libusb",),
+                sorted((libusb / "libusb").glob("*.[ch]")) + sorted((libusb / "libusb/os").glob("*.[ch]"))
+                + [libusb / "config.h"]),
+        }
+        components = {c["id"]: c for c in self.inventory["components"]}
+        for notice, (records, sources) in cases.items():
+            text = (ROOT / notice).read_text(encoding="utf-8")
+            with self.subTest(notice=notice):
+                self.assertTrue(sources)
+                for line in sorted(holder_lines(sources)):
+                    self.assertIn(line, text)
+                for ident in records:
+                    self.assertIn(notice, components[ident]["notices"])
+        self.assertEqual(components["desktop-rtl"]["windows_release"]["notices"].get("licenses/librtlsdr-NOTICES.txt"),
+                         "repo:LICENSES/librtlsdr-NOTICES.txt")
+        self.assertIn("licenses/librtlsdr-NOTICES.txt",
+                      (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8"))
+        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
+        for name in ("licenses/librtlsdr-NOTICES.txt", "licenses/libusb-android-NOTICES.txt"):
+            self.assertIn(name, android)
+
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
         # SoapySDRUtil.exe, so only its SBOM names it.

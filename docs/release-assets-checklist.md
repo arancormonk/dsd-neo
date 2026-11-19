@@ -28,7 +28,9 @@ resource bundle, so they travel with the binary rather than as a separate file.
   - [ ] Extract with `./dsd-neo-linux-x86_64-portable-*.AppImage --appimage-extract`.
   - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files, plus
         `licenses/codec2-LGPL-2.1.txt`, `licenses/codec2-NOTICES.txt` and `licenses/LicenseRef-codec2-varicode.txt` for
-        the codec2 library the AppImage bundles (the AppImage job fails the build if any is missing).
+        the codec2 library the AppImage bundles, and `licenses/librtlsdr-GPL-2.0-or-later.txt`,
+        `licenses/librtlsdr-PATCHES.txt` and `licenses/librtlsdr-NOTICES.txt` for its librtlsdr (the AppImage job fails
+        the build if any is missing).
 - [ ] Download `dsd-neo-linux-aarch64-portable-*.AppImage`.
   - [ ] Extract with `--appimage-extract` on aarch64 or in a container.
   - [ ] Confirm `squashfs-root/usr/share/doc/dsd-neo/` contains all required files and the two codec2 notices.
@@ -37,7 +39,9 @@ resource bundle, so they travel with the binary rather than as a separate file.
 
 - [ ] Download `dsd-neo-macos-arm64-portable-*.dmg`.
   - [ ] Mount the DMG.
-  - [ ] Confirm `dsd-neo-macos/share/doc/dsd-neo/` contains all required files.
+  - [ ] Confirm `dsd-neo-macos/share/doc/dsd-neo/` contains all required files, plus
+        `licenses/librtlsdr-GPL-2.0-or-later.txt`, `licenses/librtlsdr-PATCHES.txt` and
+        `licenses/librtlsdr-NOTICES.txt` for the librtlsdr it bundles.
 
 ### Windows (ZIP)
 
@@ -54,7 +58,7 @@ resource bundle, so they travel with the binary rather than as a separate file.
         a file without a record or a missing notice.
   - [ ] Confirm `share/doc/dsd-neo/licenses/` holds the notices of the sources the vcpkg-built libraries are compiled
         from that their ports' copyright files lack: `codec2-LGPL-2.1.txt`, `codec2-NOTICES.txt`,
-        `LicenseRef-codec2-varicode.txt`,
+        `LicenseRef-codec2-varicode.txt`, `librtlsdr-NOTICES.txt`,
         `portaudio-NOTICES.txt`, `LicenseRef-PDCurses-Public-Domain.txt`, `OpenSSL-AUTHORS.md`, `OpenSSL-NOTICES.txt`,
         `LicenseRef-OpenSSL-KISA-SEED.txt`, `curl-NOTICES.txt`, `expat-NOTICES.txt`,
         `libsndfile-GSM610-COPYRIGHT.txt`, `libsndfile-ALAC-Apache-2.0.txt`, `LicenseRef-Sun-G72x.txt`,
@@ -81,8 +85,8 @@ resource bundle, so they travel with the binary rather than as a separate file.
 - [ ] Download `dsd-neo-android-arm64-app-*.apk`.
   - [ ] `apksigner verify --print-certs` reports the project release key.
   - [ ] `unzip -l` shows all required files under `assets/doc/dsd-neo/`, plus
-        `licenses/libusb-LGPL-2.1-or-later.txt` and
-        `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
+        `licenses/libusb-LGPL-2.1-or-later.txt`, `licenses/libusb-android-NOTICES.txt`,
+        `licenses/librtlsdr-GPL-2.0-or-later.txt` and `licenses/librtlsdr-NOTICES.txt` for the vendored Android
         libraries, `licenses/codec2-LGPL-2.1.txt`,
         `licenses/codec2-NOTICES.txt` and
         `licenses/LicenseRef-codec2-varicode.txt` for the codec2 library it links, and

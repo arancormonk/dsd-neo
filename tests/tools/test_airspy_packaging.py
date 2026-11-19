@@ -203,7 +203,8 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertIn("tools/check_patched_usb_libs.sh", text)
 
     def test_t15_desktop_librtlsdr_notices(self):
-        """The release packages bundle a librtlsdr built with dsd-neo's patches: its GPL text and a note naming them."""
+        """The release packages bundle a librtlsdr built with dsd-neo's patches: its GPL text, a note naming them and
+        the holder lines of its compiled sources."""
         note = (ROOT / "packaging/librtlsdr-PATCHES.txt").read_text()
         series = run([str(USB_PATCHES), "series", "librtlsdr"])
         self.assert_success(series)
@@ -215,10 +216,13 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn(pins["RTL_SDR_SHA"], note)
 
         gpl, patches = "licenses/librtlsdr-GPL-2.0-or-later.txt", "licenses/librtlsdr-PATCHES.txt"
+        # LICENSES/ reaches every package whole (the legal install component and the APK staging).
+        holders = "licenses/librtlsdr-NOTICES.txt"
         appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text()
         required = re.search(r"required=\(([^\n]+)\)", appimage).group(1).split()
         self.assertIn(gpl, required)
         self.assertIn(patches, required)
+        self.assertIn(holders, required)
         self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$docdir/{gpl}"', appimage)
         self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$docdir/{patches}"', appimage)
         macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
@@ -230,7 +234,8 @@ class AirspyPackaging(unittest.TestCase):
                        if c["id"] == "desktop-rtl")["windows_release"]
         self.assertEqual(windows, {"binaries": ["rtlsdr.dll"],
                                    "notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
-                                               patches: "repo:packaging/librtlsdr-PATCHES.txt"}})
+                                               patches: "repo:packaging/librtlsdr-PATCHES.txt",
+                                               holders: "repo:LICENSES/librtlsdr-NOTICES.txt"}})
         notices = (ROOT / "tools/windows/release_tree_checks.psm1").read_text()
         self.assertIn(f"'{gpl}','{patches}'", notices)
         self.assertIn("no transfer left, canceling", (ROOT / "tools/windows/verify_release_tree.ps1").read_text())
@@ -241,7 +246,8 @@ class AirspyPackaging(unittest.TestCase):
         self.assertEqual(sorted(component["platforms"]), ["linux", "macos", "windows"])
         self.assertEqual(component["license_concluded"], "GPL-2.0-or-later")
         self.assertEqual(component["notices"],
-                         ["android/third_party/librtlsdr/COPYING", "packaging/librtlsdr-PATCHES.txt"])
+                         ["android/third_party/librtlsdr/COPYING", "packaging/librtlsdr-PATCHES.txt",
+                          "LICENSES/librtlsdr-NOTICES.txt"])
         for name in series.stdout.split():
             self.assertIn("android/third_party/patches/" + name, component["paths"])
         self.assertEqual(component["pin"], "RTL_SDR_SHA")
