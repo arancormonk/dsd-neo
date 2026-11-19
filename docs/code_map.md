@@ -682,7 +682,10 @@ Generated (do not edit/commit):
       `YC_SYNC_LOST_CONTENT`): no content a protocol's CRC/FEC gate passed for `-t` (`dsd_state::scan_y_content_m`),
       nor the last frame of a protocol with no such gate (`dsd_state::scan_y_unchecked_m`), and the latest open
       verdict's hold, `dsd_state::scan_y_partial_until_m`, has ended: a deadline, capped at `SCAN_QUIET_PENDING_MAX_MS`
-      after its frame, that adds no `-t` (case `YC_PARTIAL_DEADLINE`). PARTIAL never counts as content, it only delays
+      after its frame, that adds no `-t` (case `YC_PARTIAL_DEADLINE`). The `-Y` hangtime countdown publishes the same
+      deadline (`scan_y_timing_fill_hangtime()` extends the anchor's window to
+      `dsd_engine_scan_y_frames_hold_until_m()` on the decode-mono clock;
+      `test_y_hangtime_publishes_the_deadline_the_step_keeps()`). PARTIAL never counts as content, it only delays
       the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
       (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed

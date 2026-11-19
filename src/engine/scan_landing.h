@@ -120,6 +120,18 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     owner->landing = landing;
 }
 
+/* Until when the -Y row's frames hold it past its hangtime anchor (issue #834), on the decode-mono clock: -t
+   (@p hangtime_s) after its last checked content or its last frame of a protocol with no content check, or the end of
+   its latest open verdict's hold, whichever is later (engine.c's step reads the same: live_scanner_y_frames_hold_row()).
+   Before either is noted, a time long past. */
+static inline double
+dsd_engine_scan_y_frames_hold_until_m(const dsd_state* state, double hangtime_s) {
+    const double last_m =
+        state->scan_y_content_m > state->scan_y_unchecked_m ? state->scan_y_content_m : state->scan_y_unchecked_m;
+    const double until_m = last_m + hangtime_s;
+    return state->scan_y_partial_until_m > until_m ? state->scan_y_partial_until_m : until_m;
+}
+
 /* A landing starts the row's -Y content window afresh (issue #834): checked content, an open verdict or an unchecked
    frame noted on the row left and not yet read at a frame boundary is not this row's, and neither counts for it nor
    delays its step. */

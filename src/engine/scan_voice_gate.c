@@ -22,6 +22,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "scan_landing.h"
 #include "scan_quiet.h"
 
 /* Voice must have run this long before it counts: D-STAR and ProVoice run the
@@ -594,7 +595,13 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
     out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
     /* noCarrier compares whole seconds with strict >. The next integer after
      * -t is the first wall-clock tick that permits a hop, including for -t 0. */
-    const double span_s = floor((double)opts->trunk_hangtime) + 1.0;
+    double span_s = floor((double)opts->trunk_hangtime) + 1.0;
+    /* Checked content, an unchecked protocol's frames or an open verdict hold the row past that (issue #834): the
+       countdown runs to where the step lets it go, read on the decode-mono clock the step reads. */
+    const double frames_until_m = dsd_engine_scan_y_frames_hold_until_m(state, (double)opts->trunk_hangtime);
+    if (frames_until_m > out->started_m + span_s) {
+        span_s = frames_until_m - out->started_m;
+    }
     out->deadline_m = out->started_m + span_s;
     out->span_ms = scan_y_timing_span_ms(span_s);
 }

@@ -16275,6 +16275,40 @@ test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
     return rc;
 }
 
+/* Issue #834: the -Y hangtime countdown is the one the step keeps: checked content inside -t holds the row past the
+   hangtime anchor's -t, and an open verdict's hold until its end, so the published deadline runs to the later of them,
+   on the decode clock the step reads. */
+static int
+test_y_hangtime_publishes_the_deadline_the_step_keeps(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 518012500L) == 0);
+    const double now_m = dsd_decode_now_mono_s();
+    state->last_cc_sync_time = dsd_decode_time() - 11; /* the anchor's -t (10 s) ran out */
+    state->last_cc_sync_time_m = now_m - 11.0;
+    state->scan_y_content_m = now_m - 2.0; /* checked content 2 s ago: 8 s left */
+    yq_timing_tick(opts, state);
+    const double left_s = state->scan_timing.deadline_m - now_m;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "content 2 s old: the countdown has %.2f s left (want 8)", left_s);
+    rc |= expect_true(label, state->scan_timing.reason == DSD_SCAN_STAY_HANGTIME && left_s > 7.9 && left_s < 8.1);
+    state->scan_y_content_m = now_m - 11.0;
+    state->scan_y_partial_until_m = now_m + 0.5; /* an open verdict's hold */
+    yq_timing_tick(opts, state);
+    const double hold_left_s = state->scan_timing.deadline_m - now_m;
+    DSD_SNPRINTF(label, sizeof label, "an open verdict's hold: the countdown has %.2f s left (want 0.5)", hold_left_s);
+    rc |= expect_true(label, hold_left_s > 0.4 && hold_left_s < 0.6);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y hangtime countdown\n");
+    }
+    return rc;
+}
+
 /* Issue #834: an untyped -Y step on rigctl and RTL whose rigctl leg the peer confirmed, and whose RTL leg then failed:
    the receiver moved all the same, so the stream drops what it holds of the row left. */
 static int
@@ -17468,6 +17502,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
     rc |= test_y_untyped_rigctl_move_flushes_when_the_rtl_leg_fails();
+    rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);
