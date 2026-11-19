@@ -3434,6 +3434,11 @@ suite runs under this compiler.
   slot took while held, such as those of a PI header naming no cipher the decoder has (`dmr_flco_drop_held_crypto()`),
   so the call plays as clear; a forced key still plays. From then on the hysteresis runs as before.
 
+  On the dual-slot decoder hearing direct mode (the MS path, `dsd_state::dmr_ms_mode`), where both slots' LCs and voice
+  run on lane 0, a hold is the slot's the sync word named (`dsd_state::dmr_dm_sync_slot`): a checked word of one
+  direct-mode slot ends that slot's hold only, and a frame is judged by its own slot's (`dmr_flco_hold_slot()`,
+  `mbe_dmr_slot_judge()`). A sync word naming no slot leaves both on lane 0, as before.
+
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
   service options, and the key they select keys nothing until the hold ends. Only a key forced onto every frame keys it

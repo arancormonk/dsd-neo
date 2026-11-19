@@ -126,6 +126,18 @@ dmr_flco_crc_checked(const dmr_flco_ctx* ctx) {
            && ctx->state->event_crc_invalid[ctx->slot_idx] == 0U;
 }
 
+/* The slot whose voice hold this LC's word speaks for (dsd_state::dmr_enc_class_held): on the MS path (direct mode,
+   dsd_state::dmr_ms_mode) the slot its sync word named (dsd_state::dmr_dm_sync_slot), whatever lane its LC and voice run
+   on, so a checked word of one direct-mode slot ends no hold of the other; otherwise the slot its voice is judged on. */
+static uint8_t
+dmr_flco_hold_slot(const dmr_flco_ctx* ctx) {
+    const uint8_t named = ctx->state->dmr_dm_sync_slot;
+    if (ctx->state->dmr_ms_mode == 1 && (named == 1U || named == 2U)) {
+        return (uint8_t)(named - 1U);
+    }
+    return ctx->voice_slot;
+}
+
 static int
 dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
     return (ctx != NULL && ctx->opts != NULL) ? ctx->opts->show_keys : 0;
@@ -637,7 +649,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
         // (Hytera Enhanced RC4, 0x02), as for that PI header.
         const int cipher_known = dmr_vcrypt_vendor_cipher_known(0x68U, alg);
         if (cipher_known) {
-            dmr_enc_class_release_hold(ctx->state, ctx->slot);
+            dmr_enc_class_release_hold(ctx->state, dmr_flco_hold_slot(ctx));
         }
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
@@ -727,13 +739,13 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
 
 /* An LC that passed its check (CRCCorrect, a RAS acceptance under -F included) said how its slot's call is encrypted,
    as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
-   the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
-   failed check, a protected LC or an FEC failure says nothing. */
+   its word speaks for (dmr_flco_hold_slot()): the slot the voice is judged on, or in direct mode the slot the sync word
+   named. A failed check, a protected LC or an FEC failure says nothing. */
 /* Whether this LC's slot's voice is held (dmr_enc_class_hold()), where the hold applies: not on the single-slot decoder
    without trunking, whose one lane carries both slots (dsd_opts_dmr_voice_hold_applies()). */
 static int
 dmr_flco_voice_held(const dmr_flco_ctx* ctx) {
-    return dsd_opts_dmr_voice_hold_applies(ctx->opts) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U;
+    return dsd_opts_dmr_voice_hold_applies(ctx->opts) && ctx->state->dmr_enc_class_held[dmr_flco_hold_slot(ctx)] != 0U;
 }
 
 static int
@@ -746,8 +758,7 @@ dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
     if (!dmr_flco_ends_voice_hold(ctx)) {
         return;
     }
-    dmr_enc_class_release_hold(ctx->state, ctx->voice_slot);
-    dmr_enc_class_release_hold(ctx->state, ctx->burst_slot);
+    dmr_enc_class_release_hold(ctx->state, dmr_flco_hold_slot(ctx));
 }
 
 /* The --dmr-force-algid value the voice path installed as a fallback while the slot was held

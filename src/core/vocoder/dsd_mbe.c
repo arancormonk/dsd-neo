@@ -2104,7 +2104,11 @@ static void
 mbe_dmr_slot_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
                    mbe_frame_judgement* j) {
     j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
-    j->crypto_unknown = dsd_opts_dmr_voice_hold_applies(opts) && state->dmr_enc_class_held[slot] != 0U
+    /* On the MS path (direct mode) both slots' voice runs on lane 0: the hold judged is the one of the slot its sync
+       word named, as dmr_flco_hold_slot() releases it. */
+    const uint8_t named = state->dmr_dm_sync_slot;
+    const int hold_slot = (state->dmr_ms_mode == 1 && (named == 1U || named == 2U)) ? (int)named - 1 : slot;
+    j->crypto_unknown = dsd_opts_dmr_voice_hold_applies(opts) && state->dmr_enc_class_held[hold_slot] != 0U
                         && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
 }
 
