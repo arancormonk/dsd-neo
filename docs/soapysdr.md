@@ -161,7 +161,9 @@ exactly. A profile can prefer a rate of its own: the HackRF profile asks for 10 
 and dsd-neo halves it down the same way. It is a preference, not a promise. Near the top of the tuning range, where 10
 MS/s would put the capture (a quarter of the rate above the channel) past the highest frequency dsd-neo can tune, the
 HackRF is asked instead for the rate it offers nearest the plain request among those that fit (2 MS/s at the default
-DSP bandwidth). And the radio's read-back decides in the end: the rate it reports is the rate dsd-neo runs, if the chain
+DSP bandwidth). When no rate it offers fits there, dsd-neo still asks for one and lets the rate the radio reports
+decide: a radio that delivers a slower rate than it offers can still tune the channel. And the radio's read-back decides
+in the end: the rate it reports is the rate dsd-neo runs, if the chain
 can use it. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
 a radio that reports more does not start (`the device runs ... Hz, above the 10000000 Hz capture ceiling`), and dsd-neo
 sizes its input buffer for the rate the radio delivers. A retune keeps to what that buffer holds: a HackRF that started

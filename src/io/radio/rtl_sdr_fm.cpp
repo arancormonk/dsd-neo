@@ -1305,9 +1305,9 @@ apply_actual_capture_rate(const CaptureReadback* rb, uint32_t* out_rate_hz, int*
     if (out_rate_hz) {
         *out_rate_hz = rate_hz;
     }
-    if (rate_hz == rb->capture_rate_hz) {
-        return 0;
-    }
+    /* Judged even when the rate did not move: a capture staged before a SoapySDR read-back, whose offset did not fit
+       the rate asked for, sits on the centre until the rate delivered places it, or refuses it. A capture already
+       placed for the rate is left as it is (retune_capture_frequency_for_actual_rate() writes nothing then). */
     const int rc = retune_capture_frequency_for_actual_rate(rb->center_freq_hz, rb->capture_freq_hz, rate_hz);
     if (rc != 0) {
         *out_refusal = kCaptureRefusalCorrection;
@@ -5937,8 +5937,15 @@ capture_stage_provisional_plan(uint32_t freq, uint32_t request_hz, uint32_t prog
     }
     uint32_t capture_freq_hz = 0U;
     if (capture_frequency_for_rate(freq, programmed_hz, &capture_freq_hz) != 0) {
-        log_capture_frequency_out_of_range(freq, programmed_hz);
-        return kCaptureFrequencyOutOfRange;
+        /* A SoapySDR device's rate is only a request until it reads back: one that delivers a slower rate than any it
+           advertises can still fit the capture. Until then the device is tuned to the centre itself, and the
+           read-back places the capture for the rate delivered or refuses it (apply_actual_capture_rate(),
+           controller_program_initial_capture_settings()). */
+        if (rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY) {
+            log_capture_frequency_out_of_range(freq, programmed_hz);
+            return kCaptureFrequencyOutOfRange;
+        }
+        capture_freq_hz = freq;
     }
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     demod.output_scale = kMonitorDiscriminatorOutputScale;

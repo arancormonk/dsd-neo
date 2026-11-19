@@ -1026,6 +1026,77 @@ test_write_query_follows_the_setter(void) {
     }
 }
 
+/* A device that advertises only 10 MS/s but delivers 2 MS/s, 500 kHz below the top of the tuning range: no advertised
+ * rate's quarter-rate offset fits there, but the 2 MS/s it delivers does (500 kHz), so the open and a retune there are
+ * judged on the read-back, not refused before the rate is written. One that delivers 3 MS/s there, whose 750 kHz
+ * offset does not fit, is refused once it reads it back, and a refused retune goes back to the capture it left. */
+void
+test_offset_refusal_waits_for_the_readback(void) {
+    static const double only_10m[] = {10e6};
+    const uint32_t top_hz = UINT32_MAX - 500000U;
+    for (int delivers_3m = 0; delivers_3m <= 1; delivers_3m++) {
+        rtl_device_test_soapy_gain_fake fake = {};
+        fake.driver_key = "generic";
+        fake.listed_rates = only_10m;
+        fake.listed_rate_count = 1U;
+        fake.readback_rate_hz = delivers_3m ? 3e6 : 2e6;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        dsd_opts* opts = make_soapy_opts(-1);
+        rtl_stream_test_capture_result got{};
+        got.rc = -100;
+        if (dev && opts) {
+            expect_true("the open seam runs",
+                        rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, top_hz, &got) == 0);
+        }
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        if (delivers_3m) {
+            expect_true("an open that reads back 3 MS/s there is refused", got.rc != 0);
+            continue;
+        }
+        expect_true("an open that reads back 2 MS/s there starts", got.rc == 0);
+        expect_eq("it runs 2 MS/s", got.capture_rate_hz, 2000000.0);
+        expect_eq("a quarter of it above the centre", got.capture_freq_hz, (double)top_hz + 500000.0);
+    }
+
+    /* The same on a retune from lower down; the device delivers 2 MS/s at the start and on a rollback. */
+    for (int delivers_3m = 0; delivers_3m <= 1; delivers_3m++) {
+        static const double good[] = {2e6, 2e6};
+        static const double bad[] = {2e6, 3e6, 2e6};
+        rtl_device_test_soapy_gain_fake fake = {};
+        fake.driver_key = "generic";
+        fake.listed_rates = only_10m;
+        fake.listed_rate_count = 1U;
+        fake.delivered_by_write = delivers_3m ? bad : good;
+        fake.delivered_by_write_count = delivers_3m ? 3U : 2U;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        dsd_opts* opts = make_soapy_opts(-1);
+        if (!dev || !opts) {
+            free(opts);
+            rtl_device_test_soapy_gain_device_free(dev);
+            return;
+        }
+        dsd_exitflag_store(0);
+        rtl_stream_test_capture_result got{};
+        expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+        expect_true("the retune runs",
+                    rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, top_hz, 0, &got) == 0);
+        if (delivers_3m) {
+            expect_true("a retune that reads back 3 MS/s there is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+            expect_eq("the stream is back on the old capture", got.capture_freq_hz, (double)kCenterHz + 500000.0);
+            expect_eq("at the 2 MS/s it ran", got.capture_rate_hz, 2000000.0);
+        } else {
+            expect_true("a retune that reads back 2 MS/s there lands", got.completion == RTL_STREAM_TUNE_OK);
+            expect_eq("a quarter of it above the centre", got.capture_freq_hz, (double)top_hz + 500000.0);
+        }
+        expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+        rtl_stream_test_capture_session_end();
+        dsd_exitflag_store(0);
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+    }
+}
+
 /* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
  * and asked on the rollback for the 1,536,000 Hz it delivered, which it now lists and takes as written: request, write
  * and read-back agree, so the restored plan is made again and no longer counts the rate as forced. */
@@ -1378,6 +1449,7 @@ main(int argc, char** argv) {
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
         {"write_query_follows_the_setter", test_write_query_follows_the_setter},
+        {"offset_refusal_waits_for_the_readback", test_offset_refusal_waits_for_the_readback},
         {"listening_waits_for_input_past_the_retune_mute", test_listening_waits_for_input_past_the_retune_mute},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
