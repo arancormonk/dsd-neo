@@ -91,7 +91,8 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   staged tree and the mounted DMG, android-ci on the finished APK with `--index notice-index.txt` (the licences
   screen's index names every other file), and with `--binary-dir` it refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
   `binaries` list names),
-  `tools/check_android_runtime_lock.py` (the APK's Qt kit, NDK, Gradle release runtime classpath and native libraries
+  `tools/check_android_runtime_lock.py` (the APK's Qt kit, NDK, Gradle release runtime classpath, the Java libraries
+  in the generated Gradle project's `libs/` and native libraries, each Qt one by its SHA-1 in the kit's build SBOMs,
   are the ones `legal/android-runtime-lock.json` records for the reviewed Android records) and
   `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
 - Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).

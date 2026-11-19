@@ -1,6 +1,6 @@
 {
   "SPDX-License-Identifier": "GPL-3.0-or-later",
-  "about": "What the qt, ndk-runtime, androidx, kotlin and project records in legal/components.json describe for the release APK: the Qt kit (version and The Qt Company's build SBOMs), the NDK, the Gradle release runtime classpath and the native libraries in lib/arm64-v8a/. tools/check_android_runtime_lock.py fails a build that differs; update this file only together with a review of those records. Gradle's report also names androidx.annotation:annotation, androidx.collection:collection, kotlinx-coroutines-core and kotlinx-coroutines-bom: metadata-only modules of the same projects (Gradle module metadata that points at the -jvm artifacts, and the coroutines version platform), which ship no code of their own.",
+  "about": "What the qt, ndk-runtime, androidx, kotlin and project records in legal/components.json describe for the release APK: the Qt kit (version and The Qt Company's build SBOMs), the NDK, the Gradle release runtime classpath, the Java libraries androiddeployqt copies from the kit into the generated Gradle project's libs/ (by SHA-256; Gradle's dependency report does not list them), and the native libraries in lib/arm64-v8a/ (each Qt one checked against the kit's build SBOMs by SHA-1). tools/check_android_runtime_lock.py fails a build that differs; update this file only together with a review of those records. Gradle's report also names androidx.annotation:annotation, androidx.collection:collection, kotlinx-coroutines-core and kotlinx-coroutines-bom: metadata-only modules of the same projects (Gradle module metadata that points at the -jvm artifacts, and the coroutines version platform), which ship no code of their own.",
   "abi": "arm64-v8a",
   "records": {
     "project": {
@@ -82,7 +82,13 @@
         "libqml_QtQuick_Window_quickwindowplugin_arm64-v8a.so",
         "libqml_QtQuick_qtquick2plugin_arm64-v8a.so",
         "libqml_Qt_labs_folderlistmodel_qmlfolderlistmodelplugin_arm64-v8a.so"
-      ]
+      ],
+      "gradle_libs": {
+        "Qt6Android.jar": "f1fbdb447eddf4532f07131fdf35f8089a301cc3623532e657d1f06bea6b5b82",
+        "Qt6AndroidNetwork.jar": "daaa0f7bebb0efce32c55db13367cfc868eb56b45a62067ad85b274260b91efd",
+        "Qt6AndroidNetworkInformationBackend.jar": "4438895100c5a21cddb93306c65d62bb5f77e0acaddf691f00b1d5079b3c1618",
+        "Qt6AndroidQuick.jar": "8f48027e99bd9b3486f6f620c4d7d4743ea12b247eaceb575f8a8a5107318cd8"
+      }
     },
     "ndk-runtime": {
       "revision": "28.2.13676358",

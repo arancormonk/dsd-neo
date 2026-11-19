@@ -11,14 +11,19 @@ this check fails when the build differs, so a Qt, NDK, AGP or AndroidX update ca
 - the NDK the build was configured with (ANDROID_NDK_ROOT): Pkg.Revision and Pkg.ReleaseName in source.properties;
 - the release runtime classpath, from the output of
   `gradlew dependencies --configuration releaseRuntimeClasspath` in the generated Gradle project;
-- the native libraries the APK carries, all in lib/<abi>/.
+- the Java libraries build.gradle takes from the generated Gradle project's libs/ (libs/*.jar and libs/*.aar, which
+  that report does not list): their names and SHA-256;
+- the native libraries the APK carries, all in lib/<abi>/; each Qt one is the file of that name the locked kit's
+  build SBOMs record, by SHA-1.
 
 Usage:
   tools/check_android_runtime_lock.py --build-dir build/android-app \\
-      --gradle-dependencies release-runtime.txt --apk app.apk
+      --gradle-dependencies release-runtime.txt --apk app.apk \\
+      --gradle-libs build/android-app/android/android-build/libs
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -105,25 +110,33 @@ def check_records(lock, inventory):
 
 
 def check_qt(lock, cache):
+    """The problems of the build's Qt kit, and the SHA-1 of each file its locked build SBOMs record, by file name."""
     qt = lock["records"]["qt"]
     core_dir = cache.get("Qt6Core_DIR")
     if not core_dir:
-        return ["The build's CMake cache names no Qt6Core_DIR"]
+        return ["The build's CMake cache names no Qt6Core_DIR"], {}
     kit = Path(core_dir).parents[2]
     version = read_properties(kit / "mkspecs/qconfig.pri", "=").get("QT_VERSION")
     if version != qt["version"]:
-        return [f"The build uses Qt {version} from {kit}; the records describe Qt {qt['version']}"]
-    problems = []
+        return [f"The build uses Qt {version} from {kit}; the records describe Qt {qt['version']}"], {}
+    problems, digests = [], {}
     for module, namespace in sorted(qt["sbom_namespaces"].items()):
         sbom = kit / "sbom" / f"{module}-{version}.spdx.json"
         try:
-            found = json.loads(sbom.read_text(encoding="utf-8")).get("documentNamespace")
+            document = json.loads(sbom.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             problems.append(f"Cannot read the {module} build SBOM of the Qt kit: {error}")
             continue
+        found = document.get("documentNamespace")
         if found != namespace:
             problems.append(f"The Qt kit's {module} is another build than the records describe: {found}")
-    return problems
+            continue
+        for record in document.get("files", []):
+            name = PurePosixPath(str(record.get("fileName", ""))).name
+            for checksum in record.get("checksums", []):
+                if checksum.get("algorithm") == "SHA1":
+                    digests.setdefault(name, set()).add(checksum.get("checksumValue"))
+    return problems, digests
 
 
 def check_ndk(lock, cache):
@@ -148,9 +161,24 @@ def check_gradle(lock, report):
     return problems
 
 
-def check_apk(lock, apk):
+def check_gradle_libs(lock, libs):
+    """The Java libraries in the generated Gradle project's libs/ against the names and SHA-256 the lock gives."""
+    expected = {name: digest for facts in lock["records"].values()
+                for name, digest in facts.get("gradle_libs", {}).items()}
+    found = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(libs.iterdir())
+             if path.is_file() and path.suffix in (".jar", ".aar")}
+    problems = [f"Gradle's libs/ holds {n}, which no record describes" for n in sorted(set(found) - set(expected))]
+    problems += [f"Gradle's libs/ lacks {n}, which the records describe" for n in sorted(set(expected) - set(found))]
+    problems += [f"Gradle's libs/{n} is another file than the records describe (SHA-256 {found[n]})"
+                 for n in sorted(set(found) & set(expected)) if found[n] != expected[n]]
+    return problems
+
+
+def check_apk(lock, apk, qt_digests=None):
+    """The APK's native libraries against the lock; with @p qt_digests, each Qt one against the kit's SBOM SHA-1."""
     abi = lock["abi"]
     expected = {name for facts in lock["records"].values() for name in facts.get("libraries", [])}
+    qt = set(lock["records"]["qt"].get("libraries", []))
     found, problems = set(), []
     with zipfile.ZipFile(apk) as archive:
         for entry in archive.namelist():
@@ -161,6 +189,11 @@ def check_apk(lock, apk):
                 problems.append(f"The APK carries {entry}, outside lib/{abi}/")
                 continue
             found.add(path.name)
+            if qt_digests is not None and path.name in qt:
+                digest = hashlib.sha1(archive.read(entry)).hexdigest()
+                if digest not in qt_digests.get(path.name, set()):
+                    problems.append(f"The APK's {entry} (SHA-1 {digest}) is not the file of that name the locked "
+                                    "Qt kit's build SBOMs record")
     problems += [f"The APK carries lib/{abi}/{n}, which no record describes" for n in sorted(found - expected)]
     problems += [f"The APK lacks lib/{abi}/{n}, which the records describe" for n in sorted(expected - found)]
     return problems
@@ -172,6 +205,8 @@ def main(argv=None):
     parser.add_argument("--gradle-dependencies", type=Path, required=True,
                         help=f"the output of gradlew dependencies --configuration {CONFIGURATION}")
     parser.add_argument("--apk", type=Path, required=True, help="the release APK")
+    parser.add_argument("--gradle-libs", type=Path, required=True,
+                        help="the generated Gradle project's libs/ folder, whose *.jar and *.aar build.gradle uses")
     parser.add_argument("--lock", type=Path, default=ROOT / "legal/android-runtime-lock.json")
     parser.add_argument("--components", type=Path, default=ROOT / "legal/components.json")
     args = parser.parse_args(argv)
@@ -181,20 +216,24 @@ def main(argv=None):
     problems = check_records(lock, inventory)
     if not problems:
         cache = read_cache(args.build_dir)
+        qt_digests = None
         try:
-            problems += check_qt(lock, cache)
+            qt_problems, qt_digests = check_qt(lock, cache)
+            problems += qt_problems
             problems += check_ndk(lock, cache)
             problems += check_gradle(lock, args.gradle_dependencies.read_text(encoding="utf-8"))
+            problems += check_gradle_libs(lock, args.gradle_libs)
         except (OSError, ValueError) as error:
             problems.append(str(error))
-        problems += check_apk(lock, args.apk)
+        problems += check_apk(lock, args.apk, qt_digests)
     for problem in problems:
         print(f"ERROR: {problem}", file=sys.stderr)
     if problems:
         print("The build differs from what legal/android-runtime-lock.json and the records in legal/components.json "
               "describe: review the changed component, update its record, then the lock.", file=sys.stderr)
         return 1
-    print("Qt kit, NDK runtime, Gradle release runtime classpath and APK native libraries match the legal records.")
+    print("Qt kit, NDK runtime, Gradle release runtime classpath and local Java libraries, and APK native libraries "
+          "match the legal records.")
     return 0
 
 

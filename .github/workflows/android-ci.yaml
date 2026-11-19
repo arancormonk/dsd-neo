@@ -687,8 +687,10 @@ jobs:
             --mapping build/android-app/android/android-build/build/outputs/mapping/release/mapping.txt
 
       # The qt, ndk-runtime, androidx and kotlin records were reviewed for one Qt kit,
-      # one NDK, one Gradle release runtime classpath and one set of native libraries:
-      # a build that differs fails here until the records and the lock are reviewed.
+      # one NDK, one Gradle release runtime classpath (with the Java libraries the
+      # generated project takes from libs/, which Gradle's report leaves out) and one
+      # set of native libraries: a build that differs fails here until the records
+      # and the lock are reviewed.
       - name: Check Qt, the NDK runtime and the Gradle libraries against the legal records
         shell: bash
         env:
@@ -699,7 +701,8 @@ jobs:
           (cd build/android-app/android/android-build \
             && ./gradlew --offline --quiet dependencies --configuration releaseRuntimeClasspath) > "$report"
           python3 tools/check_android_runtime_lock.py --build-dir build/android-app \
-            --gradle-dependencies "$report" --apk "$APK_PATH"
+            --gradle-dependencies "$report" --apk "$APK_PATH" \
+            --gradle-libs build/android-app/android/android-build/libs
 
       - name: Prepare artifact naming and the publish gate
         id: names

@@ -3,6 +3,7 @@
 """The APK's Qt kit, NDK runtime and Gradle libraries checked against the legal records' lock file, with fake builds."""
 
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -55,6 +56,25 @@ def libraries(lock=LOCK):
     return sorted(name for facts in lock["records"].values() for name in facts.get("libraries", []))
 
 
+def library_bytes(name):
+    """A fake native library's content, different for every name."""
+    return b"\x7fELF " + name.encode()
+
+
+def jar_bytes(name):
+    """A fake Java library's content, different for every name."""
+    return b"PK jar " + name.encode()
+
+
+def fake_lock():
+    """The lock with the SHA-256 of each fake Gradle libs/ file, which a test cannot give the locked content."""
+    lock = copy.deepcopy(LOCK)
+    for facts in lock["records"].values():
+        for name in facts.get("gradle_libs", {}):
+            facts["gradle_libs"][name] = hashlib.sha256(jar_bytes(name)).hexdigest()
+    return lock
+
+
 def report(coords):
     """A dependency report that resolves @p coords, the first at the root and the rest nested and repeated."""
     lines = ["", "releaseRuntimeClasspath - Runtime classpath of '/release'."]
@@ -73,8 +93,11 @@ def report(coords):
 class FakeBuild:
     """A configured Android build: its CMake cache, the Qt kit and NDK it names, the Gradle report and the APK."""
 
-    def __init__(self, root, lock=LOCK):
+    def __init__(self, root, lock=None):
         self.root = Path(root)
+        lock = fake_lock() if lock is None else lock
+        self.lock = self.root / "lock.json"
+        self.lock.write_text(json.dumps(lock), encoding="utf-8")
         qt = lock["records"]["qt"]
         ndk = lock["records"]["ndk-runtime"]
         self.kit = self.root / "Qt" / qt["version"] / "android_arm64_v8a"
@@ -97,6 +120,13 @@ class FakeBuild:
         self.gradle.write_text(report(coordinates(lock)), encoding="utf-8")
         self.apk = self.root / "app.apk"
         self.set_apk_libraries(libraries(lock))
+        # The generated Gradle project's libs/: the Java libraries androiddeployqt copies from the kit.
+        self.gradle_libs = self.root / "android-build/libs"
+        (self.gradle_libs / "arm64-v8a").mkdir(parents=True)
+        (self.gradle_libs / "arm64-v8a/libdsd-neo-app_arm64-v8a.so").write_bytes(b"\x7fELF")
+        for facts in lock["records"].values():
+            for name in facts.get("gradle_libs", {}):
+                (self.gradle_libs / name).write_bytes(jar_bytes(name))
 
     def set_qt_version(self, version):
         (self.kit / "mkspecs/qconfig.pri").write_text(
@@ -104,9 +134,17 @@ class FakeBuild:
             f"QT_VERSION = {version}\n"
             "QT_MAJOR_VERSION = 6\n", encoding="utf-8")
 
-    def set_namespace(self, module, namespace, version):
+    def set_namespace(self, module, namespace, version, files=None):
+        # Every locked Qt library is a file of the fake qtbase build SBOM, under its kit path, with its SHA-1.
+        if files is None:
+            files = {f"./lib/{name}": library_bytes(name)
+                     for name in LOCK["records"]["qt"]["libraries"]} if module == "qtbase" else {}
+        records = [{"fileName": path, "checksums": [{"algorithm": "SHA1",
+                                                       "checksumValue": hashlib.sha1(content).hexdigest()}]}
+                   for path, content in files.items()]
         (self.kit / "sbom" / f"{module}-{version}.spdx.json").write_text(
-            json.dumps({"spdxVersion": "SPDX-2.3", "documentNamespace": namespace}), encoding="utf-8")
+            json.dumps({"spdxVersion": "SPDX-2.3", "documentNamespace": namespace, "files": records}),
+            encoding="utf-8")
 
     def set_ndk(self, revision, release):
         (self.ndk / "source.properties").write_text(
@@ -114,17 +152,16 @@ class FakeBuild:
             f"Pkg.Revision = {revision}\n"
             f"Pkg.ReleaseName = {release}\n", encoding="utf-8")
 
-    def set_apk_libraries(self, names, abi="arm64-v8a"):
+    def set_apk_libraries(self, names, abi="arm64-v8a", content=library_bytes):
         with zipfile.ZipFile(self.apk, "w") as apk:
             apk.writestr("classes.dex", b"dex")
             apk.writestr("assets/doc/dsd-neo/LICENSE", b"license")
             for name in names:
-                apk.writestr(f"lib/{abi}/{name}", b"\x7fELF")
+                apk.writestr(f"lib/{abi}/{name}", content(name))
 
     def run(self, lock_path=None, components=None):
-        args = ["--build-dir", str(self.build), "--gradle-dependencies", str(self.gradle), "--apk", str(self.apk)]
-        if lock_path is not None:
-            args += ["--lock", str(lock_path)]
+        args = ["--build-dir", str(self.build), "--gradle-dependencies", str(self.gradle), "--apk", str(self.apk),
+                "--gradle-libs", str(self.gradle_libs), "--lock", str(self.lock if lock_path is None else lock_path)]
         if components is not None:
             args += ["--components", str(components)]
         err = io.StringIO()
@@ -214,6 +251,37 @@ class AndroidRuntimeLockTests(unittest.TestCase):
         self.assert_fails("libQt6Svg_arm64-v8a.so")
         self.fake.set_apk_libraries(libraries(), abi="armeabi-v7a")
         self.assert_fails("armeabi-v7a")
+
+    def test_gradle_local_library_drift_fails(self):
+        # A Java library build.gradle takes from libs/: one added, one gone, or one with other content.
+        locked = sorted(LOCK["records"]["qt"]["gradle_libs"])
+        self.assertEqual(locked, ["Qt6Android.jar", "Qt6AndroidNetwork.jar", "Qt6AndroidNetworkInformationBackend.jar",
+                                  "Qt6AndroidQuick.jar"])
+        extra = self.fake.gradle_libs / "extra.aar"
+        extra.write_bytes(b"aar")
+        self.assert_fails("extra.aar")
+        extra.unlink()
+        gone = self.fake.gradle_libs / locked[0]
+        gone.unlink()
+        self.assert_fails(locked[0])
+        gone.write_bytes(b"another build of the jar")
+        self.assert_fails(locked[0])
+        gone.write_bytes(jar_bytes(locked[0]))
+        code, err = self.fake.run()
+        self.assertEqual(code, 0, err)
+
+    def test_qt_library_from_another_build_fails(self):
+        # A Qt library of the locked name that is not the file the locked kit's SBOM records.
+        stale = "libQt6Core_arm64-v8a.so"
+        self.fake.set_apk_libraries(libraries(), content=lambda n: b"stale " + n.encode() if n == stale
+                                    else library_bytes(n))
+        self.assert_fails(stale)
+        # A Qt library the kit's SBOMs do not record at all.
+        qt = LOCK["records"]["qt"]
+        files = {f"./lib/{name}": library_bytes(name) for name in qt["libraries"] if name != stale}
+        self.fake.set_namespace("qtbase", qt["sbom_namespaces"]["qtbase"], qt["version"], files=files)
+        self.fake.set_apk_libraries(libraries())
+        self.assert_fails(stale)
 
     def test_lock_must_name_known_android_records(self):
         lock = copy.deepcopy(LOCK)
