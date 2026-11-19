@@ -5026,6 +5026,9 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
        finding sync, now on row 1. */
     (void)step_into_a_timed_out_tune(opts, state);
     rc |= expect_true("mid-reception-row-1-pending", g_retune_in_flight.active && state->lcn_freq_roll == 1);
+    /* The reception's syncs keep the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): only the
+       landing ends it. */
+    state->last_cc_sync_time = dsd_decode_time();
     run_synced_frames(opts, state, 6, 1);
     if (g_frame_count != 2) {
         DSD_FPRINTF(stderr, "mid-reception: %d frames decoded in the reception the landing came in (want 2)\n",
@@ -15627,6 +15630,39 @@ test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
     return rc;
 }
 
+/* Issue #834: one hangtime deadline for the frame boundary, noCarrier() and the countdown: the anchor's whole-second
+   rule (-t 1.8 lets a row go at the second wall-clock tick after it landed), never a second, sub-second count on the
+   monotonic clock that only the frame boundary added. A row that landed late in a second (here 0.6 s before its
+   second tick, on the monotonic clock 1.4 s ago) with frames carrying nothing leaves at that tick. */
+static int
+test_y_one_hangtime_deadline(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 521012500L) == 0);
+    opts->trunk_hangtime = 1.8f;
+    state->last_cc_sync_time = dsd_decode_time() - 2; /* two wall-clock ticks: the rule lets it go */
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 1.4;
+    yq_timing_tick(opts, state);
+    const double left_s = state->scan_timing.deadline_m - dsd_decode_now_mono_s();
+    run_synced_frames(opts, state, 5, -1);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "the countdown is out (%.2f s left) and the frame boundary yields with it (frames %d)", left_s,
+                 g_frame_count);
+    rc |= expect_true(label, left_s <= 0.0 && g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("and the step leaves the row", g_rtl_tune_calls == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y one hangtime deadline\n");
+    }
+    return rc;
+}
+
 /* Issue #834: with -t 0 a row's call holds it frame after frame: a frame whose content passed its check is judged at
    the time it was noted, so the clock moving on between the note and the judgement never makes the frame that just
    proved the call too old to hold the row. On a clock that moves (the system's). */
@@ -16852,6 +16888,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
     rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
     rc |= test_y_zero_hangtime_keeps_a_proven_call();
+    rc |= test_y_one_hangtime_deadline();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);

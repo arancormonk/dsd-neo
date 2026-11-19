@@ -4471,8 +4471,9 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
-    if (now_m - state->last_cc_sync_time_m <= (double)opts->trunk_hangtime
-        || live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
+    /* The anchor's rule is the whole-second one above, as noCarrier() applies it and the countdown publishes it: one
+       deadline. */
+    if (live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
     }
     /* What the stay's yield is for: the latest of the anchor, the last checked or unchecked frame and the open verdict's
