@@ -1195,6 +1195,19 @@ row_take_site(CallHistoryModel::Row& row, const Event_History* item) {
 }
 
 /** @brief One committed ring item as a display row. */
+/** @brief The name of a row with no other: who it was to, a talkgroup, a radio (a private call), or, not knowing which,
+ * the number (issue #800). */
+QString
+target_fallback_name(const CallHistoryModel::Row& row) {
+    if (row.gi == 0) {
+        return QStringLiteral("Talkgroup %1").arg(row.tg);
+    }
+    if (row.gi == 1) {
+        return QStringLiteral("Radio %1").arg(row.tg);
+    }
+    return QStringLiteral("Call to %1").arg(row.tg);
+}
+
 void
 row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
     if (row.kind == CallHistoryModel::KindNotice) {
@@ -1217,11 +1230,8 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
          * operator recognises it by, and "Talkgroup 0" is not. */
         row.name = QString::fromUtf8(item->channel_label);
     } else {
-        /* Named for who it was to: a talkgroup, a radio (a private call), or, not knowing which, the number. */
-        row.name = item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode)
-                   : row.gi == 0                    ? QStringLiteral("Talkgroup %1").arg(row.tg)
-                   : row.gi == 1                    ? QStringLiteral("Radio %1").arg(row.tg)
-                                                    : QStringLiteral("Call to %1").arg(row.tg);
+        row.name =
+            item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode) : target_fallback_name(row);
     }
 }
 

@@ -525,6 +525,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Whether rxGen is known (Row::rxGenKnown). */
         bool rxGenKnown = false;
         uint8_t callChannelKind = 0;
+        /* Who the call was to (Event_History::gi): 0 a talkgroup, 1 a radio (a private call), -1 not known. */
+        qint8 gi = -1;
         qint64 when = 0;
         qint64 end = 0;
         int durationSecs = -1;
@@ -559,8 +561,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * the target text is, and a fragment whose later reading learns it gives it to the row. */
         int protocol = -1;
         qulonglong tg = 0;
-        /* Who the call was to (Event_History::gi): 0 a talkgroup, 1 a radio (a private call), -1 not known. */
-        qint8 gi = -1;
         qulonglong src = 0;
         QString sourceText;
         QString targetText;
@@ -581,10 +581,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 when = 0;
         QString name;
         qulonglong tg = 0;
-        /* Who the call was to (Event_History::gi, issue #800): 0 a talkgroup, 1 a radio (a private call), -1 not
-           known. Part of the call's identity: a group call and a private call to the same number are two calls
-           (call_kinds_differ()). A fold adopts a known value. Persisted (`gi`) when known; older rows read -1. */
-        qint8 gi = -1;
         qulonglong src = 0;
         QString sourceName;
         /* Keep the selected label's fragment identity separate from the merged
@@ -595,6 +591,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int sourceNameSlot = 0;
         bool emergency = false;
         bool enc = false;
+        /* Who the call was to (Event_History::gi, issue #800): 0 a talkgroup, 1 a radio (a private call), -1 not
+           known. Part of the call's identity: a group call and a private call to the same number are two calls
+           (call_kinds_differ()). A fold adopts a known value. Persisted (`gi`) when known; older rows read -1. */
+        qint8 gi = -1;
         int durationSecs = -1;
         /* When the call ended, in seconds; 0 when not known. Kept only with a start stamp it is measured from, and
            persisted (`end`), so a span past the plausible cap still reads unknown after a fold, an update or a reload.
