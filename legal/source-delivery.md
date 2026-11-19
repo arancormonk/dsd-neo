@@ -17,8 +17,22 @@ For each release asset, preserve the following together:
    bundled in the asset. Android's USB/RTL/Airspy snapshots and patch are in
    the tracked tree; its Qt kit (the qtbase, qtdeclarative and qtsvg 6.11.3
    archives, with their SHA-256 in the `qt` record), its NDK C++ runtime and
-   its Maven libraries are recorded in the component inventory. The Qt
-   archives must be offered with the APK, which is not done yet. Windows uses the selected vcpkg baseline/ports; macOS
+   its Maven libraries are recorded in the component inventory. Qt's source
+   is provided by directions under GPLv3 section 6(d), the manner LGPL 3
+   section 4(d)(0) points to, not by a copy: every APK the release workflow
+   publishes has `<APK name>.qt-source.txt` beside it, and a tagged release's
+   notes repeat it. The file names the Qt version the build installed, the
+   official qtbase, qtdeclarative and qtsvg source archives of that version on
+   download.qt.io (dsd-neo applies no patches to Qt, so there is no patch set
+   to add) and the source form of the Public Suffix List that Qt Network
+   compiles in, at the upstream commit Qt's records name.
+   `tools/android_source_directions.py` writes it from the build's own Qt kit
+   and fails when the kit is another version. The app's licence screen gives
+   the same directions. No copy is kept on dsd-neo's servers, so the source's
+   availability depends on Qt's and the Public Suffix List's servers; section
+   6(d) leaves the obligation to keep it available with dsd-neo as the
+   distributor of the APK, and if those archives went away dsd-neo would have
+   to provide the source itself. Windows uses the selected vcpkg baseline/ports; macOS
    packages Homebrew libraries; AppImage copies its built runtime closure.
 4. The actual binary dependency/SBOM inventory, with any claimed system-library
    exclusions justified per platform. Do not assume every shared library is
@@ -38,8 +52,9 @@ For each release asset, preserve the following together:
 GPLv3's `Corresponding Source` definition and section 6 are in the repository
 `LICENSE`. Applicable LGPL, Qt and other component obligations also need to be
 evaluated against the actual distribution method. This document records work
-needed to close the finding; it does not assert that an archive, written offer,
-relink kit or store compliance review has already been supplied.
+needed to close the finding; apart from the Qt source directions in item 3, it
+does not assert that an archive, written offer, relink kit or store compliance
+review has already been supplied.
 
 ## Reference recordings
 

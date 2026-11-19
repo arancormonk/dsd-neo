@@ -969,11 +969,30 @@ jobs:
           done
           echo "Launcher identity and Qt loader resources OK."
 
+      # Qt's LGPL source obligation is met by directions to Qt's official
+      # source archives for the Qt version this build installed (GPL 3 section
+      # 6(d)); every published APK carries them as a file beside it, and a
+      # release's notes carry them too.
+      - name: Write the Qt source directions
+        shell: bash
+        env:
+          ART_NAME: ${{ steps.names.outputs.ART_NAME }}
+        run: |
+          set -euo pipefail
+          python3 tools/android_source_directions.py directions \
+            --qt-version "$ANDROID_QT_VERSION" --qt-kit "$QT_ANDROID_ROOT" --apk "${ART_NAME}.apk" \
+            --dsd-source "https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}" \
+            --output "dist/${ART_NAME}.apk.qt-source.txt"
+          cat "dist/${ART_NAME}.apk.qt-source.txt"
+
       - name: Upload APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}
-          path: ${{ steps.names.outputs.APK_PATH }}
+          path: |
+            ${{ steps.names.outputs.APK_PATH }}
+            dist/${{ steps.names.outputs.ART_NAME }}.apk.qt-source.txt
+          if-no-files-found: error
           retention-days: 7
 
       # Capture these before the AAB invocation re-runs Gradle. Retracing a
@@ -1405,6 +1424,7 @@ jobs:
           set -euo pipefail
           test -f "${APK_PATH}"
           test -f "${APK_PATH}.spdx.json"
+          test -s "${APK_PATH}.qt-source.txt"
 
       - name: Wait for release metadata
         if: startsWith(github.ref, 'refs/tags/v')
@@ -1427,8 +1447,27 @@ jobs:
           gh release upload "${RELEASE_TAG}" \
             "${APK_PATH}" \
             "${APK_PATH}.spdx.json" \
+            "${APK_PATH}.qt-source.txt" \
             --repo "${RELEASE_REPOSITORY}" \
             --clobber
+
+      # Only this job edits a tagged release's notes, after the release
+      # workflow created them; a re-run replaces its earlier copy.
+      - name: Add the Qt source directions to the release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes"
+          mkdir -p "$notes"
+          gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" --json body --jq .body > "$notes/body.md"
+          python3 tools/android_source_directions.py notes --body "$notes/body.md" \
+            --directions "${APK_PATH}.qt-source.txt" --output "$notes/notes.md"
+          gh release edit "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" --notes-file "$notes/notes.md"
 
       # The job-level gate already restricts this job to publishable refs, so
       # "not a tag" is all that distinguishes a nightly here.
@@ -1444,6 +1483,7 @@ jobs:
           files: |
             ${{ needs.build-apk.outputs.apk_path }}
             ${{ needs.build-apk.outputs.apk_path }}.spdx.json
+            ${{ needs.build-apk.outputs.apk_path }}.qt-source.txt
           overwrite_files: true
           fail_on_unmatched_files: true
           token: ${{ github.token }}

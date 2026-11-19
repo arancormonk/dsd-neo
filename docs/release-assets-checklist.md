@@ -133,6 +133,11 @@ resource bundle, so they travel with the binary rather than as a separate file.
         a tagged release is always a round thousand, since its commit distance is
         zero (`android-ci` asserts the shape, so this is a spot check that the
         published asset is the one CI built from the tag and not from `main`).
+- [ ] Download `dsd-neo-android-arm64-app-*.apk.qt-source.txt`, published beside the APK, and check the
+      release notes repeat it once. It names the Qt version `ANDROID_QT_VERSION` pins, links the qtbase,
+      qtdeclarative and qtsvg source archives of that version on download.qt.io (open one link and its `.sha256`),
+      and the Public Suffix List's source (`tools/android_source_directions.py` writes it from the build's Qt kit;
+      `legal/source-delivery.md`).
 
 ### Android (AAB — workflow artifact, not a release asset)
 

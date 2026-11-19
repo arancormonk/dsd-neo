@@ -356,8 +356,9 @@ the DMG's staging (`cmake/stage_release_notices.cmake`) and its check (`tools/ch
   android_arm64_v8a kit. Used under the GNU LGPL version 3 (`licenses/LGPL-3.0-only.txt`; the GPL text is `LICENSE`).
   Qt contains third-party code (PCRE2, FreeType, HarfBuzz, libpng, libjpeg-turbo, the Public Suffix List (MPL-2.0),
   Unicode data and others) whose notices are in `licenses/Qt-NOTICES.txt` (`packaging/android/Qt-NOTICES.txt`). Since
-  dsd-neo's source and build scripts are public, the app can be rebuilt against a modified Qt; Qt's own source is not
-  yet offered with the APK (`legal/status.md`). Portions of this software are copyright © 2026 The FreeType Project
+  dsd-neo's source and build scripts are public, the app can be rebuilt against a modified Qt. Qt's own source is in
+  Qt's official source archives for the shipped version: every published APK has `<APK name>.qt-source.txt` beside it,
+  which names them and the Public Suffix List's source (`legal/source-delivery.md`). Portions of this software are copyright © 2026 The FreeType Project
   (https://freetype.org). All rights reserved. This software is based in part on the work of the Independent JPEG
   Group.
 - **LLVM libc++ (Android NDK r28c)** - `libc++_shared.so`, with libc++abi, libunwind and compiler-rt builtins;

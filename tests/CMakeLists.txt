@@ -25840,6 +25840,14 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_release_notices.py
     )
+    # The directions to Qt's source that go beside every APK: generated from the
+    # Qt kit the build used, published with the APK and in a release's notes.
+    add_test(
+        NAME TOOLS_ANDROID_SOURCE_DIRECTIONS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_android_source_directions.py
+    )
     # The macOS DMG's dependency check, with a fake otool: every staged file is
     # built for the triplet's deployment target and loads only staged libraries.
     add_test(

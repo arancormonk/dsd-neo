@@ -534,10 +534,19 @@ class InventoryTests(unittest.TestCase):
             encoding="utf-8"))
         # What the records do not settle stays visible in the findings.
         status = (ROOT / "legal/status.md").read_text(encoding="utf-8")
-        for words in ("Qt's source is not yet offered with the APK",
-                      "licences screen reads a fixed list that leaves out Qt, codec2 and the vcpkg libraries",
+        for words in ("licences screen reads a fixed list that leaves out Qt, codec2 and the vcpkg libraries",
                       "Nothing guards these records against a Qt, Gradle or NDK update"):
             self.assertIn(words, status)
+        # Qt's source is offered by directions beside every APK (GPL 3 section 6(d)); the records say so, and that the
+        # obligation stays with dsd-neo while the archives sit on Qt's servers.
+        self.assertIn("These are now provided by directions under GPL section 6(d)", status)
+        self.assertNotIn("not yet offered with the APK", status)
+        delivery = (ROOT / "legal/source-delivery.md").read_text(encoding="utf-8")
+        for words in ("`<APK name>.qt-source.txt`", "`tools/android_source_directions.py`",
+                      "availability depends on Qt's and the Public Suffix List's servers",
+                      "leaves the obligation to keep it available with dsd-neo as the\n   distributor"):
+            self.assertIn(words, delivery)
+        self.assertIn("tools/android_source_directions.py", components["qt"]["paths"])
 
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF) and the DMG without the overlay's tools
