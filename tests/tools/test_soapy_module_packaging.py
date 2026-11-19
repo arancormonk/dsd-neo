@@ -642,12 +642,25 @@ DEPENDENTS = dumpbin(["Dump of file HackRFSupport.dll", "", "File Type: DLL", ""
 
 # A DLL whose name holds a space, in the delay-load list.
 DEPENDENTS_SPACED = DEPENDENTS.replace("    WS2_32.dll", "    WS2_32.dll\r\n    Vendor Support.dll")
-# Reads one dumpbin /DEPENDENTS report; prints the result as JSON, or the reader's refusal.
-STRICT_READER = r"""param([string]$Module, [string]$File)
+# The report of a DLL that imports nothing: no dependency list, only the summary.
+DEPENDENTS_NONE = dumpbin(["Dump of file forwarder.dll", "", "File Type: DLL", "", "  Summary", "",
+                           "        1000 .rdata", "        1000 .reloc", ""])
+# dumpbin /HEADERS of an x64 DLL, the parts the readers and the hardening check read.
+HEADERS = dumpbin(["Dump of file HackRFSupport.dll", "", "PE signature found", "", "File Type: DLL", "",
+                   "FILE HEADER VALUES", "            8664 machine (x64)", "               6 number of sections", "",
+                   "OPTIONAL HEADER VALUES", "             20B magic # (PE32+)",
+                   "                   High Entropy Virtual Addresses", "                   Dynamic base",
+                   "                   NX compatible", "", "  Summary", "", "        1000 .data",
+                   "        9000 .text", ""])
+# A diagnostic MSVC prints about the file it read, named as the tool was given it: "<file> : warning LNK....".
+FILE_WARNING = "HackRFSupport.dll : warning LNK4048: Invalid format file; ignored"
+# Reads one dumpbin report with one reader (Get-DumpbinDependents or Get-DumpbinMachine); prints the result as JSON,
+# or the reader's refusal.
+STRICT_READER = r"""param([string]$Module, [string]$File, [string]$Reader)
 Import-Module $Module -Force
 $text = [System.IO.File]::ReadAllText($File)
 try {
-    $result = @(Get-DumpbinDependents $text)
+    $result = @(& $Reader $text)
     ConvertTo-Json -Compress -InputObject @{ result = $result }
 } catch {
     [Console]::Out.WriteLine('FAILED: ' + $_.Exception.Message)
@@ -945,11 +958,11 @@ class SoapyReleaseScripts(unittest.TestCase):
                                                 "WS2_32.dll"])
         self.assertEqual(result["kinds"], DLL_KINDS)
 
-    def read_dumpbin(self, text):
+    def read_dumpbin(self, text, reader="Get-DumpbinDependents"):
         report = self.work / f"report-{len(list(self.work.glob('report-*.txt')))}.txt"
         report.write_bytes(text.encode("utf-8"))
         rc, out, err = self.pwsh(STRICT_READER, "-Module", ROOT / "tools/windows/release_tree_checks.psm1",
-                                 "-File", report)
+                                 "-File", report, "-Reader", reader)
         if rc != 0:
             return None, out + err
         return json.loads(out.strip().splitlines()[-1])["result"], out + err
@@ -958,6 +971,11 @@ class SoapyReleaseScripts(unittest.TestCase):
         result, output = self.read_dumpbin(DEPENDENTS_SPACED)
         self.assertEqual(result, ["hackrf.dll", "SoapySDR.dll", "MSVCP140.dll", "KERNEL32.dll", "WS2_32.dll",
                                   "Vendor Support.dll"], output)
+        # A DLL that imports nothing: a clean report with only the summary is an empty list, not a refusal.
+        result, output = self.read_dumpbin(DEPENDENTS_NONE)
+        self.assertEqual(result, [], output)
+        result, output = self.read_dumpbin(HEADERS, reader="Get-DumpbinMachine")
+        self.assertEqual(result, [0x8664], output)
 
     def test_dumpbin_readers_refuse_lines_they_cannot_read(self):
         # A line of a dependency list that the reader cannot place stops it: skipped, it could hide a DLL.
@@ -967,10 +985,32 @@ class SoapyReleaseScripts(unittest.TestCase):
             ("a warning in the dependency list",
              DEPENDENTS.replace("    WS2_32.dll", "    LINK : warning LNK4048: Invalid format file; ignored"),
              "LNK4048"),
+            # dumpbin exits 0 after a warning, and MSVC names the file it read, not the tool, before the severity.
+            # Such a line before the dependency list or after the summary means it read the image only in part,
+            # however empty or complete the list looks.
+            ("a file's warning before the dependency list",
+             DEPENDENTS.replace("  Image has the following dependencies:",
+                                FILE_WARNING + "\r\n  Image has the following dependencies:"), FILE_WARNING),
+            ("a file's warning after the summary", DEPENDENTS + FILE_WARNING + "\r\n", FILE_WARNING),
+            ("a file's warning in a report with no imports", DEPENDENTS_NONE + FILE_WARNING + "\r\n", FILE_WARNING),
+            ("a full path's error before the dependency list",
+             DEPENDENTS.replace("  Image has the following dependencies:",
+                                "C:\\Program Files\\x\\HackRFSupport.dll : fatal error LNK1107: invalid or corrupt file"
+                                "\r\n  Image has the following dependencies:"), "LNK1107"),
+            ("a lower-case tool name", DEPENDENTS + "dumpbin : error LNK1104: cannot open file\r\n", "LNK1104"),
         )
-        for label, text, words in cases:
-            with self.subTest(case=label):
-                result, output = self.read_dumpbin(text)
+        # The header reader refuses the same: a machine line read from part of the headers says nothing.
+        header_cases = (
+            ("a file's warning before the headers",
+             HEADERS.replace("PE signature found", FILE_WARNING + "\r\nPE signature found"), FILE_WARNING),
+            ("a file's warning after the summary", HEADERS + FILE_WARNING + "\r\n", FILE_WARNING),
+            ("a tool's error", HEADERS + "DUMPBIN : fatal error LNK1106: invalid file or disk full\r\n", "LNK1106"),
+        )
+        readers = [(case, "Get-DumpbinDependents") for case in cases]
+        readers += [(case, "Get-DumpbinMachine") for case in header_cases]
+        for (label, text, words), reader in readers:
+            with self.subTest(case=label, reader=reader):
+                result, output = self.read_dumpbin(text, reader=reader)
                 self.assertIsNone(result, output)
                 self.assertIn("FAILED: ", output)
                 self.assertIn(words, output)

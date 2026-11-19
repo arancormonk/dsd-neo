@@ -606,6 +606,12 @@ class StageRuntimeDlls(unittest.TestCase):
         bad = "C:\\vendor\\late.dll"
         for tool, report, words in (
                 ("dumpbin", dumpbin_report("dsd-neo.exe", ["KERNEL32.dll"], delay_loaded=[bad]), [bad]),
+                # dumpbin exits 0 after a warning about the file it read, which it names before the severity: the
+                # report is partial wherever the line stands, even with a list or a summary that looks complete.
+                ("dumpbin", "dsd-neo.exe : warning LNK4048: Invalid format file; ignored\r\n"
+                 + dumpbin_report("dsd-neo.exe", ["KERNEL32.dll"]), ["LNK4048"]),
+                ("dumpbin", dumpbin_report("dsd-neo.exe", []) + "\r\ndsd-neo.exe : warning LNK4048: Invalid format\r\n",
+                 ["LNK4048"]),
                 ("llvm-readobj", llvm_readobj_report(["KERNEL32.dll"]).replace("  Name: KERNEL32.dll\n", ""),
                  ["Import block without a DLL name"]),
                 ("llvm-readobj", llvm_readobj_report(["KERNEL32.dll"]).replace("KERNEL32.dll", bad), [bad]),
@@ -701,6 +707,10 @@ class StageRuntimeDlls(unittest.TestCase):
                 "could not be found\n", 1)), ["There is a first thunk"]),
             ("objdump", "warning", gnu_objdump_report([], imports=gnu_table.split(" 0000a014")[0]) +
              "objdump: warning: private headers incomplete: file truncated\n", ["private headers incomplete"]),
+            # BFD names the file it was reading between the program and the severity.
+            ("objdump", "file's warning", gnu_objdump_report([], imports=gnu_table.split(" 0000a014")[0]) +
+             "objdump: {path}: warning: private headers incomplete: file truncated\n",
+             ["could not read all of", "private headers incomplete"]),
             ("llvm-objdump", "heading only", llvm_objdump_report(["a.dll"], imports="The Import Tables:\n"),
              ["did not finish the import table"]),
             ("llvm-objdump", "descriptor without a name", llvm_objdump_report(["a.dll"], imports=llvm_table.replace(

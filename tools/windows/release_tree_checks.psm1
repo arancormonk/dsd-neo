@@ -405,14 +405,40 @@ function Assert-ReleaseMachine {
     }
 }
 
+# The first warning or error dumpbin printed anywhere in a report, or $null. MSVC tools
+# print a diagnostic as "<origin> : <severity> LNK<code>: <text>", and the origin is the
+# tool (DUMPBIN, LINK) or the file it was reading, under the name it was given (name.dll,
+# a full path); dumpbin still exits 0 after a warning. Any such line means it read the
+# image only in part, wherever it stands in the report.
+function Find-DumpbinDiagnostic {
+    param(
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    foreach ($line in (ConvertTo-CheckLines $Text)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -match '^(DUMPBIN|LINK)\s*:\s*(fatal error|error|warning)\b' -or
+            $trimmed -match '(^|[\s:])(fatal error|error|warning)\s+LNK[0-9]{4}\s*:') {
+            return $trimmed
+        }
+    }
+    return $null
+}
+
 # The COFF machine type dumpbin /HEADERS reports in its file header values
-# ("8664 machine (x64)"). Throws unless the report names exactly one.
+# ("8664 machine (x64)"). Throws unless the report names exactly one, and when dumpbin
+# printed a warning or an error (Find-DumpbinDiagnostic).
 function Get-DumpbinMachine {
     param(
         [AllowEmptyString()]
         [string]$Text
     )
 
+    $diagnostic = Find-DumpbinDiagnostic $Text
+    if ($null -ne $diagnostic) {
+        throw "dumpbin printed '$diagnostic'"
+    }
     $machines = @(ConvertTo-CheckLines $Text | Where-Object { $_ -match '^\s*([0-9A-Fa-f]{1,4}) machine( \(.*\))?\s*$' } |
             ForEach-Object { [System.Convert]::ToInt32(($_.Trim() -split '\s+')[0], 16) })
     if ($machines.Count -ne 1) {
@@ -451,21 +477,23 @@ function Test-ImportName {
 
 # The DLL names dumpbin /DEPENDENTS lists, delay-loaded ones included. Every line of a
 # dependency list is one name; a line that is not throws, so no dependency goes unread,
-# and so does a warning or error dumpbin printed anywhere in the report: it read the
-# image only in part.
+# and so does a warning or error dumpbin printed anywhere in the report
+# (Find-DumpbinDiagnostic): it read the image only in part. A clean report without a
+# list is an image that imports nothing.
 function Get-DumpbinDependents {
     param(
         [AllowEmptyString()]
         [string]$Text
     )
 
+    $diagnostic = Find-DumpbinDiagnostic $Text
+    if ($null -ne $diagnostic) {
+        throw "dumpbin printed '$diagnostic'"
+    }
     $names = New-Object 'System.Collections.Generic.List[string]'
     $inList = $false
     foreach ($line in (ConvertTo-CheckLines $Text)) {
         $trimmed = $line.Trim()
-        if ($trimmed -match '^(DUMPBIN|LINK)\s*:\s*(fatal error|error|warning)\b') {
-            throw "dumpbin printed '$trimmed'"
-        }
         if ($trimmed -match '^Image has the following (delay load )?dependencies:$') {
             $inList = $true
         } elseif ($trimmed -eq 'Summary') {
@@ -552,5 +580,5 @@ function Invoke-IsolatedProcess {
 Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, ConvertTo-ComparablePath, Get-SoapyUtilInfo,
     Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-ReleaseBinaryRecords, Get-ReleaseTreeFiles,
     Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles,
-    Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Get-DumpbinMachine, Test-DumpbinImageReport,
-    Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess
+    Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Find-DumpbinDiagnostic, Get-DumpbinMachine,
+    Test-DumpbinImageReport, Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess

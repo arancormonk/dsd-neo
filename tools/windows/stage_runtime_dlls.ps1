@@ -169,7 +169,8 @@ function Test-ObjdumpDirectoryEntry {
 }
 
 # Throws when an inspection tool printed a warning or an error: it read the image only
-# in part, so its report may leave out a DLL the image loads.
+# in part, so its report may leave out a DLL the image loads. LLVM's tools put the
+# severity after their own name; GNU objdump may put the file it read in between.
 function Assert-NoToolDiagnostics {
     param(
         [Parameter(Mandatory = $true)]
@@ -185,7 +186,7 @@ function Assert-NoToolDiagnostics {
     )
 
     foreach ($line in $Lines) {
-        if ($line -match '(objdump|readobj)(\.exe)?: (warning|error)\b') {
+        if ($line -match '(objdump|readobj)(\.exe)?: (.+: )?(warning|error)\b') {
             throw "$Tool could not read all of ${BinaryPath}: '$line'"
         }
     }
