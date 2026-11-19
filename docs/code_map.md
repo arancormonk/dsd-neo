@@ -2678,15 +2678,23 @@ suite runs under this compiler.
     `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
     a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
     layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and no burst of another sender kind came between on the
-    evidence's lane: every DMR burst reader, once the burst's slot is known (`dmr_note_burst_lane()` in
-    `dmr_flco.c`, from `dmr_data_sync()`, the MS voice bootstrap and the BS burst readers), revokes the embedded
-    GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that burst's lanes
-    (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds the burst's
-    LCs, the data lane the burst's slot), so a return to direct mode after a repeater-mode burst is not the direct-mode
-    call either (`test_direct_mode_after_an_interruption()`, `DMR_DATA_HEADER_AIR`). Another lane's bursts never touch
-    it, and the reception generation does not move with a DMR burst mode, so a carrier with BS-sourced bursts on one
-    slot and MS-sourced ones (which have no CACH and are read on lane 0) on the other keeps each lane's evidence
-    (`test_two_lanes_of_two_sender_kinds()`); and the
+    evidence's lane: every DMR burst counts by its sync word alone (`dmr_note_burst_slot()` in `dmr_flco.c`), and
+    revokes the embedded GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that
+    burst's lanes (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds
+    the burst's LCs, the data lane the burst's slot). A burst a reader reads is noted once its slot is known
+    (`dmr_note_burst_lane()`: `dmr_data_sync()` after the CACH, the MS voice bootstrap, the BS burst readers); one no
+    reader reads, or reads the slot of, is noted by its sync word (`dmr_note_unread_burst()`: an MS or direct-mode burst
+    before anything of it is read, so also one whose slot type fails; a repeater's burst whose CACH fails, on both
+    lanes; an MS or direct-mode burst the dispatcher holds back unread under trunking or with stereo and mono off,
+    `dispatch_dmr.c`). So a return to direct mode after a repeater-mode burst is not the direct-mode call either
+    (`test_direct_mode_after_an_interruption()`, `test_unread_burst_interrupts_its_lane()`, `DMR_DATA_HEADER_AIR`,
+    `DMR_SYNC_DISPATCH`). Another lane's bursts never touch it, and the reception generation does not move with a DMR
+    burst mode. The lanes are the decoder's, not the air's: an MS-sourced burst carries no CACH, so the decoder reads it
+    on lane 0, the lane a repeater's slot 1 (TS1) bursts are on as well. MS-sourced bursts and BS slot 1 bursts
+    therefore revoke each other's evidence and data bindings (fail closed: only a sender is dropped), while BS slot 2
+    bursts keep lane 1 of their own; a direct-mode burst's voice and LCs are on lane 0 too, a direct-mode slot 2
+    burst's data on lane 1. A carrier with BS-sourced bursts on slot
+    2 and MS-sourced ones interleaved keeps each lane's evidence (`test_two_lanes_of_two_sender_kinds()`); and the
     call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
     The P25 trunk SM binds its published record to the generation of its last publication
     (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another

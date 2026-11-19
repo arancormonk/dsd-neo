@@ -305,6 +305,7 @@ collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) 
         ctx->tact_okay = 1;
     }
     if (ctx->tact_okay != 1) {
+        dmr_note_unread_burst(opts, state); /* a repeater's burst on a lane its CACH does not name (issue #800) */
         return 0;
     }
 
@@ -825,6 +826,7 @@ decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ct
         ctx->tact_okay = 1;
     }
     if (ctx->tact_okay != 1) {
+        dmr_note_unread_burst(NULL, state); /* a repeater's burst on a lane its CACH does not name (issue #800) */
         return 0;
     }
 

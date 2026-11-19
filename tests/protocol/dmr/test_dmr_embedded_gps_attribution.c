@@ -482,6 +482,45 @@ test_direct_mode_after_an_interruption(void) {
     }
 }
 
+/* Issue #800, fail closed: a burst counts by its sync word alone, also one no reader reads (held back under trunking,
+ * or whose slot type or CACH fails: dmr_note_unread_burst()). On the single-slot decoder a direct-mode call names
+ * SOURCE; an MS-sourced burst nothing reads comes between; direct mode then resumes with no new LC and its fix is
+ * anonymous. On the two-slot decoder a repeater's burst whose CACH was not read names no lane, so it ends the
+ * MS-sourced evidence on lane 0, while the BS-sourced evidence of slot 2 is its own kind and stays. */
+static void
+test_unread_burst_interrupts_its_lane(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    burst_from(&f, 1);
+    voice_lc(&f, 1U);
+    embedded_gps(&f);
+    expect_fix(&f, "unread: direct mode, slot 2", 1);
+    f.st->synctype = DSD_SYNC_DMR_MS_DATA;
+    f.st->dmr_dm_sync_slot = 0U;
+    dmr_note_unread_burst(f.opts, f.st);
+    burst_from(&f, 1);
+    embedded_gps(&f);
+    expect_fix(&f, "unread: direct mode again after an unread MS-sourced burst", 0);
+    fixture_close(&f);
+
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    two_slot_burst(&f, 1, 1U);
+    voice_lc_on(&f, 1U, 1U);
+    two_slot_burst(&f, 0, 0U);
+    voice_lc_on(&f, 1U, 0U);
+    f.st->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_note_unread_burst(f.opts, f.st);
+    two_slot_burst(&f, 1, 1U);
+    embedded_gps_on(&f, 1U);
+    expect_fix(&f, "unread: the BS-sourced slot keeps its sender", 1);
+    two_slot_burst(&f, 0, 0U);
+    embedded_gps_on(&f, 0U);
+    expect_fix(&f, "unread: a repeater's burst on no known lane ends the MS-sourced lane's", 0);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_reception_change();
@@ -492,6 +531,7 @@ main(void) {
     test_direct_to_repeater_transition();
     test_direct_mode_after_an_interruption();
     test_two_lanes_of_two_sender_kinds();
+    test_unread_burst_interrupts_its_lane();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

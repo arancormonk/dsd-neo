@@ -210,6 +210,13 @@ dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;

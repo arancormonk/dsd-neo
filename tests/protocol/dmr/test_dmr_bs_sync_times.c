@@ -280,6 +280,12 @@ dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
 }
 
 void
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
 dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;

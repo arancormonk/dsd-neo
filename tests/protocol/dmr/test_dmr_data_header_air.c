@@ -97,16 +97,44 @@ slot_type_bits(unsigned type, unsigned char st[20]) {
     return 0;
 }
 
-/* The 144 dibits of a BPTC burst as sent (CACH, payload, slot type, @p sync) carrying the 12 octets @p bytes. */
+/* Corrupt the slot type @p st so its Golay(20,8) check fails: the fewest bits flipped from the first that decode
+   cannot correct. */
 static int
-build_burst(const char* sync, unsigned type, const uint8_t bytes[12], int dibits[144]) {
+break_slot_type(unsigned char st[20]) {
+    unsigned char check[20];
+    for (unsigned mask = 1U; mask < (1U << 20); mask++) {
+        unsigned bits = 0U;
+        for (unsigned m = mask; m != 0U; m &= m - 1U) {
+            bits++;
+        }
+        if (bits < 4U) {
+            continue;
+        }
+        DSD_MEMCPY(check, st, sizeof check);
+        for (unsigned b = 0; b < 20U; b++) {
+            check[b] = (unsigned char)(check[b] ^ ((mask >> b) & 1U));
+        }
+        unsigned char trial[20];
+        DSD_MEMCPY(trial, check, sizeof trial);
+        if (!Golay_20_8_decode(trial)) {
+            DSD_MEMCPY(st, check, sizeof check);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The 144 dibits of a BPTC burst as sent (CACH, payload, slot type, @p sync) carrying the 12 octets @p bytes; its slot
+   type fails its check when @p bad_slot_type. */
+static int
+build_burst(const char* sync, unsigned type, const uint8_t bytes[12], int dibits[144], int bad_slot_type) {
     static const uint8_t reserved[3] = {0, 0, 0};
     uint8_t payload[96];
     unpack(bytes, payload, 12);
     uint8_t info[196];
     dmr_test_encode_bptc_196x96(payload, reserved, info);
     unsigned char st[20];
-    if (!slot_type_bits(type, st)) {
+    if (!slot_type_bits(type, st) || (bad_slot_type && !break_slot_type(st))) {
         return 0;
     }
     DSD_MEMSET(dibits, 0, 144 * sizeof(int));
@@ -129,18 +157,20 @@ typedef struct {
     const char* sync;
     int synctype;
     uint8_t dm_slot;
+    uint8_t bad_slot_type; /* 1: the burst's slot type fails its check, so no reader dispatches it */
 } burst_source;
 
-static const burst_source k_direct_ts1 = {DMR_DIRECT_MODE_TS1_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 1U};
-static const burst_source k_direct_ts2 = {DMR_DIRECT_MODE_TS2_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 2U};
-static const burst_source k_ms = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U};
+static const burst_source k_direct_ts1 = {DMR_DIRECT_MODE_TS1_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 1U, 0U};
+static const burst_source k_direct_ts2 = {DMR_DIRECT_MODE_TS2_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 2U, 0U};
+static const burst_source k_ms = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U, 0U};
+static const burst_source k_ms_unreadable = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U, 1U};
 
 /* Receive one burst of data type @p type through the single-slot reader. */
 static int
 receive_burst(dsd_opts* opts, dsd_state* state, const burst_source* from, unsigned type, const uint8_t bytes[12]) {
     static int payload[90];
     int dibits[144];
-    if (!build_burst(from->sync, type, bytes, dibits)) {
+    if (!build_burst(from->sync, type, bytes, dibits, from->bad_slot_type)) {
         return 0;
     }
     for (size_t i = 0; i < 90U; i++) {
@@ -309,6 +339,7 @@ main(void) {
         {&k_direct_ts1, &k_ms, &k_direct_ts1, 0, "direct mode, a repeater-mode burst between on its lane"},
         {&k_ms, &k_direct_ts1, &k_ms, 0, "repeater mode, a direct-mode burst between on its lane"},
         {&k_direct_ts2, &k_ms, &k_direct_ts2, 1, "direct mode slot 2, a repeater-mode burst on the other lane"},
+        {&k_direct_ts1, &k_ms_unreadable, &k_direct_ts1, 0, "direct mode, an unreadable repeater-mode burst between"},
     };
 
     int failed = 0;

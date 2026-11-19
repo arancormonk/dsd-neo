@@ -177,13 +177,42 @@ dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
 }
 
 void
-dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+dmr_note_burst_slot(const dsd_opts* opts, dsd_state* state, int slot) {
     if (!state) {
         return;
     }
-    const uint8_t lane = (uint8_t)(state->currentslot & 1);
+    if (slot < 0) {
+        dmr_note_burst_slot(opts, state, 0);
+        dmr_note_burst_slot(opts, state, 1);
+        return;
+    }
+    const uint8_t lane = (uint8_t)(slot & 1);
     const int folds = opts != NULL && dmr_flco_single_slot_collapse(opts, state);
     dsd_position_dmr_note_lane_burst(state, folds ? 0U : lane, lane);
+}
+
+void
+dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+    if (state) {
+        dmr_note_burst_slot(opts, state, state->currentslot & 1);
+    }
+}
+
+void
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* A repeater's burst whose CACH was not read names no lane: both. An MS-sourced or direct-mode burst has no CACH:
+       its reader reads its voice and LCs on lane 0, and a direct-mode slot 2 burst's data on lane 1 as well. */
+    if (DSD_SYNC_IS_DMR_BS(state->synctype)) {
+        dmr_note_burst_slot(opts, state, -1);
+        return;
+    }
+    dmr_note_burst_slot(opts, state, 0);
+    if (state->dmr_dm_sync_slot == 2U) {
+        dmr_note_burst_slot(opts, state, 1);
+    }
 }
 
 static void
