@@ -2630,13 +2630,14 @@ channel is delayed.
     everything that arrived after it asked, even audio the radio software sent before its answer, and even when that new
     audio is what ended a wait for input: on UDP input what its receive buffer
     and the system's socket held, on TCP input what its read buffer and the connection held, and on stdin fed by another program what the pipe
-    held. On PulseAudio input (Linux and macOS) DSD-neo drops exactly what PulseAudio had handed over and it had not read
-    when it asked for the tune, even if the sound stopped meanwhile. On sound-card input that says nothing of when its
-    audio arrived (PortAudio on Windows, AAudio on Android), DSD-neo drops what the sound system has handed over but it
-    has not read yet, and keeps the newest part of it, as much audio as the time since it asked for the tune (the audio
-    captured since). What one retune drops at a time is bounded: on TCP and stdin about 4 seconds of 48 kHz mono
-    audio, the rest going with the next reads, before any of it is decoded; on UDP what its buffer holds (about 1
-    second at 48 kHz), and on PortAudio and AAudio input about 2 seconds; no drop spends more than a quarter of a second reading at a time, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
+    held. On sound-card input (PulseAudio on Linux and macOS, PortAudio on Windows, AAudio on Android), which says
+    nothing of when its audio arrived, DSD-neo drops what the sound system has handed over but it has not read yet, and
+    keeps the newest part of it, as much audio as the time since it asked for the tune (the audio captured since). That
+    drop is approximate: it assumes the sound keeps coming, so when the source stops sending during the retune, some
+    of the old channel's audio can be kept and heard as the new channel's first moments. What
+    one retune drops at a time is bounded: on TCP and stdin about 4 seconds of 48 kHz mono audio, the rest going with the
+    next reads, before any of it is decoded; on UDP what its buffer holds (about 1 second at 48 kHz), and on sound-card
+    input about 2 seconds; no drop spends more than a quarter of a second reading at a time, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
     tune asked for while TCP input reconnects drops what the new connection held when it was asked for. It also starts
     its timing over, so nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence,
     the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream.

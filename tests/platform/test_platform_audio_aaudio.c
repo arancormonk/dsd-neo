@@ -25,7 +25,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/env.h>
-#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 /* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the
@@ -1019,15 +1018,6 @@ test_open_failure_paths(void) {
     assert(strcmp(dsd_audio_get_error(), "AAudio granted an unusable rate/channel combination") == 0);
 }
 
-/* A drop of a mark taken at @p marked_ns (dsd_audio_discard_input()): AAudio reads only the mark's time. */
-static int
-discard_since(const dsd_audio_stream* stream, uint64_t marked_ns) {
-    dsd_input_cut cut;
-    DSD_MEMSET(&cut, 0, sizeof cut);
-    cut.marked_ns = marked_ns;
-    return dsd_audio_discard_input(stream, &cut);
-}
-
 static void
 test_input_stream(void) {
     dsd_audio_params params = valid_params(48000, 1);
@@ -1071,13 +1061,13 @@ test_input_stream(void) {
     g.frames_read_step = 0; /* the fake's reads leave the read count where the test puts it */
     g.frames_written = 600;
     g.frames_read = 0;
-    assert(discard_since(stream, g.now_ns) == 600);
+    assert(dsd_audio_discard_input(stream, g.now_ns) == 600);
     assert(g.input_frames_taken == 600);
     g.frames_written = 1200; /* 600 more held */
     g.frames_read = 600;
-    assert(discard_since(stream, g.now_ns - 5000000U) == 360);
+    assert(dsd_audio_discard_input(stream, g.now_ns - 5000000U) == 360);
     assert(g.input_frames_taken == 960);
-    assert(discard_since(stream, g.now_ns - 1000000000U) == 0);
+    assert(dsd_audio_discard_input(stream, g.now_ns - 1000000000U) == 0);
     assert(g.input_frames_taken == 960);
     dsd_audio_close(stream);
 
@@ -1095,7 +1085,7 @@ test_input_stream(void) {
     g.written_late_ns = 100000000U;
     g.written_late_frames = 4800;
     {
-        const int dropped = discard_since(stream, g.now_ns);
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
         if (dropped != 240) {
             DSD_FPRINTF(stderr, "a late count's discard dropped %d frames (expected 240)\n", dropped);
         }
@@ -1120,7 +1110,7 @@ test_input_stream(void) {
     g.overrun_at_read = 2;
     g.overrun_next = 20000;
     {
-        const int dropped = discard_since(stream, g.now_ns);
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
         int16_t next[4] = {0};
         const int got = dsd_audio_read(stream, next, 4);
         if (dropped != 256 || got != 4 || next[0] != 20000) {
@@ -1143,11 +1133,11 @@ test_input_stream(void) {
     g.frames_written = g.frames_read + 1000;
     g.overrun_at_read = 1;
     g.overrun_next = 30000;
-    assert(discard_since(stream, g.now_ns) == 0);
+    assert(dsd_audio_discard_input(stream, g.now_ns) == 0);
     g.frames_written = g.frames_read + 100;
     {
         int16_t one = 0;
-        assert(discard_since(stream, g.now_ns) == 256 + 100);
+        assert(dsd_audio_discard_input(stream, g.now_ns) == 256 + 100);
         assert(dsd_audio_read(stream, &one, 1) == 1);
         assert(one == (int16_t)(30256 + 100));
     }
@@ -1171,7 +1161,7 @@ test_input_stream(void) {
     g.overrun_uncounted = 1;
     g.overrun_written_frames = (int64_t)g.buffer_capacity_frames;
     {
-        const int dropped = discard_since(stream, g.now_ns);
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
         int16_t next[4] = {0};
         const int got = dsd_audio_read(stream, next, 4);
         if (dropped != 256 || got != 4 || next[0] != 20000) {
@@ -1202,7 +1192,7 @@ test_input_stream(void) {
     g.overrun_next = 20000;
     g.overrun_runs_out_of_memory = 1;
     {
-        const int dropped = discard_since(stream, g.now_ns);
+        const int dropped = dsd_audio_discard_input(stream, g.now_ns);
         g_backend_alloc_fails = 0;
         int16_t next = 0;
         const int got = dsd_audio_read(stream, &next, 1);
@@ -1214,7 +1204,7 @@ test_input_stream(void) {
         assert(dropped == 256 && got == 1 && next == 20000);
         const int64_t taken = g.input_frames_taken;
         g_backend_alloc_fails = 1;
-        assert(discard_since(stream, g.now_ns) == -1);
+        assert(dsd_audio_discard_input(stream, g.now_ns) == -1);
         g_backend_alloc_fails = 0;
         assert(g.input_frames_taken == taken);
     }

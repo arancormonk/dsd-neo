@@ -22,7 +22,6 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
-#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 
@@ -1101,12 +1100,8 @@ portaudio_discard_input_timed(const dsd_audio_stream* stream, uint64_t marked_ns
 }
 
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut) {
-    if (!cut) {
-        set_error("Invalid arguments");
-        return -1;
-    }
-    return portaudio_discard_input_timed(stream, cut->marked_ns, dsd_time_monotonic_ns);
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    return portaudio_discard_input_timed(stream, marked_ns, dsd_time_monotonic_ns);
 }
 
 /* An async stream's device is down: once a reopen is due, close the failed device and open it again, on the writer's

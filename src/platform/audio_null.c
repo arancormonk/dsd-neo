@@ -19,7 +19,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
-#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/timing.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -214,8 +213,8 @@ dsd_audio_close(dsd_audio_stream* stream) {
 }
 
 int
-dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut) {
-    (void)cut;
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    (void)marked_ns;
     if (!stream || !stream->is_input) {
         set_error("Invalid arguments");
         return -1;

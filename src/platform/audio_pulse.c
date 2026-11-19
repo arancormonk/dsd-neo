@@ -18,7 +18,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/env.h>
-#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -733,13 +732,6 @@ dsd_audio_list_devices(void) {
     return 0;
 }
 
-/* The input's count for a retune's mark (dsd_input_backlog_attach(), issue #834): every byte the decoder's reads took
-   from the client, and what the client holds. Any thread. */
-static uint64_t
-pulse_input_arrived(const void* queue) {
-    return pulse_record_arrived(((const dsd_audio_stream*)queue)->record);
-}
-
 dsd_audio_stream*
 dsd_audio_open_input(const dsd_audio_params* params) {
     if (!validate_stream_params(params)) {
@@ -771,10 +763,17 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     const char* dev = (params->device && params->device[0]) ? params->device : NULL;
     const char* app = (params->app_name && params->app_name[0]) ? params->app_name : "DSD-neo";
 
+    stream->input_carry = (struct audio_input_carry*)calloc(1, sizeof(*stream->input_carry));
+    if (!stream->input_carry) {
+        set_error("Out of memory");
+        free(stream);
+        return NULL;
+    }
     stream->record = pulse_record_open(app, dev, &ss, &attr, &err);
 
     if (!stream->record) {
         set_error_pa(err);
+        free(stream->input_carry);
         free(stream);
         return NULL;
     }
@@ -782,8 +781,6 @@ dsd_audio_open_input(const dsd_audio_params* params) {
     stream->is_input = 1;
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
-    /* The input a retune's mark counts (issue #834), so its drop takes exactly the audio held at the mark. */
-    dsd_input_backlog_attach(stream, pulse_input_arrived);
 
     return stream;
 }
@@ -978,10 +975,14 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    size_t bytes = frames * (size_t)stream->channels * sizeof(int16_t);
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    if (carried == frames) {
+        return (int)frames;
+    }
+    size_t bytes = (frames - carried) * (size_t)stream->channels * sizeof(int16_t);
     int err = 0;
 
-    if (pulse_record_read(stream->record, buffer, bytes, &err) < 0) {
+    if (pulse_record_read(stream->record, buffer + carried * (size_t)stream->channels, bytes, &err) < 0) {
         set_error_pa(err);
         return -1;
     }
@@ -989,45 +990,171 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
-/* An input discard (dsd_audio_discard_input()) drops in 256-frame reads, of at most 8 channels, of what the client
-   holds, never waiting for more. */
-#define PULSE_DISCARD_CHUNK_FRAMES 256U
+/* An input discard (dsd_audio_discard_input()) reads 32-frame chunks, of at most 8 channels, of what the client holds,
+   never waiting for more. It stops when the client holds no more, after about 2 s of frames, or after 250 ms on the
+   monotonic clock. */
+#define PULSE_DISCARD_CHUNK_FRAMES 32U
 #define PULSE_DISCARD_MAX_CHANNELS 8U
+#define PULSE_DISCARD_MAX_S        2U
+#define PULSE_DISCARD_MAX_NS       250000000ULL
 
-int
-dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut) {
-    if (!stream || !stream->record || !stream->is_input || stream->channels <= 0
-        || (unsigned int)stream->channels > PULSE_DISCARD_MAX_CHANNELS || !cut) {
-        set_error("Invalid arguments");
-        return -1;
+/* The newest frames a discard reads, kept in a ring of `cap` frames: `count` frames passed through it so far. */
+typedef struct {
+    int16_t* buf;
+    size_t cap;
+    size_t ch;
+    size_t count;
+} pulse_keep_ring;
+
+static void
+pulse_keep_push(pulse_keep_ring* ring, const int16_t* frames, size_t n) {
+    for (size_t i = 0; ring->cap > 0U && i < n; i++) {
+        const size_t at = (ring->count + i) % ring->cap;
+        DSD_MEMCPY(ring->buf + at * ring->ch, frames + i * ring->ch, ring->ch * sizeof(int16_t));
     }
-    /* What the input had taken in at the mark, in bytes, all of it from before the retune: it goes, and everything after
-       it, the new channel's, is read. A mark measured on another input, or the decoder already past it, drops
-       nothing. */
-    if (!cut->measured || !dsd_input_backlog_cut_applies(cut, stream)) {
-        return 0;
+    ring->count += n;
+}
+
+/* Swap frames @p a and @p b of the ring's buffer. */
+static void
+pulse_keep_swap(const pulse_keep_ring* ring, size_t a, size_t b) {
+    for (size_t c = 0; c < ring->ch; c++) {
+        const int16_t t = ring->buf[a * ring->ch + c];
+        ring->buf[a * ring->ch + c] = ring->buf[b * ring->ch + c];
+        ring->buf[b * ring->ch + c] = t;
     }
-    const size_t frame_bytes = (size_t)stream->channels * sizeof(int16_t);
-    const uint64_t taken = pulse_record_taken(stream->record);
-    uint64_t left = cut->arrived > taken ? (cut->arrived - taken) / frame_bytes : 0U;
+}
+
+/* Reverse the ring buffer's frames [@p from, @p to). */
+static void
+pulse_keep_reverse(const pulse_keep_ring* ring, size_t from, size_t to) {
+    while (from + 1U < to) {
+        pulse_keep_swap(ring, from, to - 1U);
+        from++;
+        to--;
+    }
+}
+
+/* The carry becomes the ring's newest @p keep frames, oldest first, held in the ring's own buffer, whose ownership
+   passes to the carry (issue #834): nothing is allocated once the frames were read from the client. The others go.
+   Only frames the ring was written are moved: a ring that never wrapped holds its frames from its front, and the room
+   past them (sized for the most a discard could keep) was never written. */
+static void
+pulse_keep_to_carry(struct audio_input_carry* carry, pulse_keep_ring* ring, size_t keep) {
+    size_t held = ring->count < ring->cap ? ring->count : ring->cap;
+    if (held > keep) {
+        held = keep;
+    }
+    if (held == 0U) {
+        audio_input_carry_adopt(carry, NULL, 0U);
+        free(ring->buf);
+        ring->buf = NULL;
+        return;
+    }
+    const size_t first = (ring->count - held) % ring->cap;
+    if (ring->count <= ring->cap) {
+        /* Never wrapped: the kept frames are the last held of the frames written, in order; moved to the front. */
+        if (first > 0U) {
+            DSD_MEMMOVE(ring->buf, ring->buf + first * ring->ch, held * ring->ch * sizeof(int16_t));
+        }
+    } else if (first > 0U) {
+        /* Wrapped, so every frame of it was written: rotated left so its frame first comes to the front, the kept
+           frames its first held, in order. */
+        pulse_keep_reverse(ring, 0U, first);
+        pulse_keep_reverse(ring, first, ring->cap);
+        pulse_keep_reverse(ring, 0U, ring->cap);
+    }
+    audio_input_carry_adopt(carry, ring->buf, held);
+    ring->buf = NULL;
+}
+
+/* What the client holds is read without a wait (pulse_record_read_held()): the fragment the stream handed over and
+   what it queued behind it. A source that stops delivering ends the discard at once: it never waits for one. What the
+   server has not sent the client yet stays there, read after the discard as new audio (it was captured last).
+
+   The client cannot say when a frame it holds was captured, so the frames captured after the mark cannot be told
+   apart before they are read: the discard reads everything and keeps the newest of it in the stream's carry, which
+   reads return first: as much as was captured from the mark until the end of the discard, the time before the discard
+   began (the decoder may have waited) included. A server overrun throws the oldest audio away, so what remains is the
+   newest, and the keep holds. */
+/* Read what the client holds into @p ring, at most @p limit frames, no read begun after the time cap from @p start_ns:
+   the frames read, or -1 on a read error. */
+static long
+pulse_discard_read_held(const dsd_audio_stream* stream, pulse_keep_ring* ring, size_t limit, uint64_t start_ns) {
     int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
-    uint64_t dropped = 0U;
-    while (left > 0U) {
-        const size_t want = left < PULSE_DISCARD_CHUNK_FRAMES ? (size_t)left : PULSE_DISCARD_CHUNK_FRAMES;
+    const size_t frame_bytes = ring->ch * sizeof(int16_t);
+    size_t read_frames = 0U;
+    while (read_frames < limit && dsd_time_monotonic_ns() - start_ns < PULSE_DISCARD_MAX_NS) {
         int err = 0;
-        const long got = pulse_record_read_held(stream->record, chunk, want * frame_bytes, &err);
+        const long got = pulse_record_read_held(stream->record, chunk, PULSE_DISCARD_CHUNK_FRAMES * frame_bytes, &err);
         if (got < 0) {
             set_error_pa(err);
             return -1;
         }
         const size_t frames = (size_t)got / frame_bytes;
-        dropped += frames;
-        left -= frames;
-        if (frames < want) {
-            break; /* the client holds no more (it held what the mark counted, unless its stream lost audio) */
+        pulse_keep_push(ring, chunk, frames);
+        read_frames += frames;
+        if (frames < PULSE_DISCARD_CHUNK_FRAMES) {
+            break; /* the client holds no more */
         }
     }
-    return dropped > (uint64_t)INT32_MAX ? INT32_MAX : (int)dropped;
+    return (long)read_frames;
+}
+
+/* A ring for the newest @p keep frames of @p ch channels, with what an earlier discard kept and no read took yet: the
+   oldest of what the stream holds. Without memory for it the ring has no buffer (and the discard reads nothing). */
+static pulse_keep_ring
+pulse_keep_ring_open(const struct audio_input_carry* carry, size_t keep, size_t ch) {
+    pulse_keep_ring ring = {keep > 0U ? (int16_t*)malloc(keep * ch * sizeof(int16_t)) : NULL, 0U, ch, 0U};
+    ring.cap = ring.buf != NULL ? keep : 0U;
+    if (carry->pos < carry->len) {
+        pulse_keep_push(&ring, carry->frames + carry->pos * ch, carry->len - carry->pos);
+    }
+    return ring;
+}
+
+static int
+pulse_discard_input_valid(const dsd_audio_stream* stream) {
+    return stream && stream->record && stream->is_input && stream->input_carry && stream->channels > 0
+           && (unsigned int)stream->channels <= PULSE_DISCARD_MAX_CHANNELS;
+}
+
+static uint64_t
+pulse_ns_sum(uint64_t a, uint64_t b) {
+    return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+int
+dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+    if (!pulse_discard_input_valid(stream)) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    const uint64_t waited_ns = start_ns > marked_ns ? start_ns - marked_ns : 0U;
+    const size_t rate = (size_t)(stream->sample_rate > 0 ? stream->sample_rate : 48000);
+    const size_t limit = rate * PULSE_DISCARD_MAX_S;
+    /* The most it can keep: what was captured from the mark until the time cap (no read begins past it), and a chunk
+       more for the time the last read took. */
+    const size_t room = (size_t)audio_input_keep_frames(pulse_ns_sum(waited_ns, PULSE_DISCARD_MAX_NS), (int)rate, limit)
+                        + PULSE_DISCARD_CHUNK_FRAMES;
+    struct audio_input_carry* carry = stream->input_carry;
+    pulse_keep_ring ring = pulse_keep_ring_open(carry, room, (size_t)stream->channels);
+    if (ring.buf == NULL) {
+        /* No room for the newest frames (issue #834): reading the client would lose them. Nothing is read, and what the
+           stream holds stays to be read, old audio included. */
+        set_error("Out of memory");
+        return -1;
+    }
+    const size_t carried = ring.count;
+    const long got = pulse_discard_read_held(stream, &ring, limit, start_ns);
+    const size_t keep = (size_t)audio_input_keep_since(marked_ns, dsd_time_monotonic_ns(), (int)rate, room);
+    pulse_keep_to_carry(carry, &ring, keep);
+    if (got < 0) {
+        return -1;
+    }
+    const size_t dropped = carried + (size_t)got - carry->len;
+    return dropped > (size_t)INT32_MAX ? INT32_MAX : (int)dropped;
 }
 
 /* Blocking output: the caller's thread owns the device. A failed write closes it, and the next write that finds a
@@ -1184,11 +1311,9 @@ dsd_audio_close(dsd_audio_stream* stream) {
     if (stream->handle) {
         pa_simple_free(stream->handle);
     }
-    if (stream->record) {
-        dsd_input_backlog_detach(stream);
-    }
     pulse_record_free(stream->record);
 
+    audio_input_carry_free(stream->input_carry);
     free(stream);
 }
 

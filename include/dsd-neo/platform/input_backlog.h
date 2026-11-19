@@ -10,12 +10,12 @@
  *
  * The queue the decoder reads attaches itself while it exists (dsd_input_backlog_attach()): a function that returns
  * how much input the queue has taken in so far, in its own unit, and is safe to call from any thread while attached.
- * The PCM stream reader (stdin, TCP) counts bytes, the UDP ring samples (once the datagrams its socket holds are
- * in it), and the PulseAudio input bytes (what its reads took and what its client holds). A mark
- * (dsd_input_backlog_mark()) records that count and the time; the queue's drop discards input up to the count
- * (dsd_pcm_stream_discard_through(), udp_input_discard_through(), dsd_audio_discard_input()) and only on the
- * attachment it was measured on (dsd_input_backlog_cut_applies()). A PortAudio or AAudio device input attaches
- * nothing: its drop keeps the audio captured since the mark's time (dsd_input_cut::marked_ns).
+ * The PCM stream reader (stdin, TCP) counts bytes and the UDP ring samples (once the datagrams its socket holds are
+ * in it). A mark (dsd_input_backlog_mark()) records
+ * that count and the time; the queue's drop discards input up to the count (dsd_pcm_stream_discard_through(),
+ * udp_input_discard_through()) and only on the attachment it was measured on (dsd_input_backlog_cut_applies()). A
+ * device input (PulseAudio, PortAudio, AAudio) attaches nothing: its drop keeps the audio captured since the mark's
+ * time (dsd_input_cut::marked_ns, dsd_audio_discard_input()).
  *
  * Every mark is taken immediately before the retune is asked for (before the rigctl leg sends the frequency, after any
  * passband request, which the peer answers on the old frequency), and used only once the peer confirmed it: a peer may
