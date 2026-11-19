@@ -7386,7 +7386,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
   refused request or a lost reply installs nothing. Only a complete numeric RPRT line, read with one read as every
   rigctl reply is, says what a frequency request did (`rigctl_read_freq_reply()`: exactly `RPRT`, a space, an optional
-  minus and digits, then the newline): `RPRT 0` confirms and a non-zero status refuses, which leaves the peer where it
+  minus and digits, then the newline, which must be the last byte received, so a NUL and more bytes after it are not
+  one line): `RPRT 0` confirms and a non-zero status refuses, which leaves the peer where it
   last confirmed. Any other reply (garbled, cut short, more than one line), or none, leaves the frequency unknown,
   since the peer may have moved: the client forgets its no-op cache, so the next request goes out, and every leg
   takes `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so

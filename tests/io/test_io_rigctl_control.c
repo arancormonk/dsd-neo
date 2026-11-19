@@ -45,6 +45,8 @@
 static char g_commands[MAX_COMMANDS][64];
 static size_t g_command_count;
 static const char* g_responses[MAX_RESPONSES];
+/* A reply's length when it holds a NUL (0: up to its first NUL). */
+static size_t g_response_lens[MAX_RESPONSES];
 static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
@@ -179,6 +181,15 @@ rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
 static void
 push_response(const char* response) {
     assert(g_response_count < MAX_RESPONSES);
+    g_response_lens[g_response_count] = 0U;
+    g_responses[g_response_count++] = response;
+}
+
+/* A reply of @p len bytes, NULs included. */
+static void
+push_response_len(const char* response, size_t len) {
+    assert(g_response_count < MAX_RESPONSES);
+    g_response_lens[g_response_count] = len;
     g_responses[g_response_count++] = response;
 }
 
@@ -325,8 +336,9 @@ dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     if (!buf || len == 0U || g_response_index >= g_response_count) {
         return 0;
     }
+    const size_t given_len = g_response_lens[g_response_index];
     const char* response = g_responses[g_response_index++];
-    size_t response_len = strlen(response);
+    size_t response_len = given_len != 0U ? given_len : strlen(response);
     if (response_len > len) {
         response_len = len;
     }
@@ -1369,6 +1381,15 @@ test_set_freq_takes_only_a_complete_rprt(void) {
         const size_t before = g_command_count;
         assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)) && g_command_count == before + 1);
     }
+
+    /* The reply is judged by the bytes received: a complete line followed by a NUL and more bytes is not one line. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(130, 851012500L));
+    static const char k_nul_then_more[] = "RPRT 0\n\0RPRT 0\n";
+    push_response_len(k_nul_then_more, sizeof k_nul_then_more - 1U);
+    assert(!SetFreq(130, 851500000L));
+    assert(RigctlConfirmedFreq(130) == 0U);
     return 0;
 }
 
