@@ -18,18 +18,15 @@
 
 #include <arpa/inet.h>
 #include <curl/curl.h>
-#include <curl/curlver.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/tile_fetch.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 
