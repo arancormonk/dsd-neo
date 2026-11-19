@@ -32,15 +32,21 @@ typedef void dsd_audio_backend_handle;
 #endif
 
 /* The frames @p keep_ns of input lasts at @p rate, rounded up and at most @p limit: what an input discard keeps of the
-   newest input (dsd_audio_discard_input()). Past 10 s the count is held, which no discard's cap reaches. */
+   newest input (dsd_audio_discard_input()). Only @p limit, the frames the discard found held, bounds it (issue #834):
+   no fixed time cuts it short. */
 static inline uint64_t
 audio_input_keep_frames(uint64_t keep_ns, int rate, uint64_t limit) {
     if (rate <= 0 || keep_ns == 0U) {
         return 0U;
     }
-    const uint64_t max_ns = 10000000000ULL;
-    const uint64_t ns = keep_ns < max_ns ? keep_ns : max_ns;
-    const uint64_t frames = (ns * (uint64_t)rate + 999999999ULL) / 1000000000ULL;
+    const uint64_t per_s = (uint64_t)rate;
+    const uint64_t whole_s = keep_ns / 1000000000ULL;
+    if (whole_s >= limit / per_s + 1U) {
+        return limit; /* whole_s * rate alone reaches past the limit */
+    }
+    const uint64_t frames =
+        whole_s * per_s
+        + ((keep_ns % 1000000000ULL) * per_s + 999999999ULL) / 1000000000ULL; /* no overflow: rate < 2^31 */
     return frames < limit ? frames : limit;
 }
 

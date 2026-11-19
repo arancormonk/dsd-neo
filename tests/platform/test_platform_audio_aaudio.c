@@ -1825,8 +1825,27 @@ test_api_guards(void) {
     dsd_audio_close(stream);
 }
 
+/* Issue #834: the frames a device discard keeps are the time since the mark at the stream's rate, saturated only at the
+   frames held: a buffer that holds 12 s, all captured after the mark, keeps all 12 s (no fixed time cut short of it),
+   and the longest time counts without overflow. */
+static void
+test_keep_frames_saturate_at_the_limit_only(void) {
+    const uint64_t kept = audio_input_keep_frames(12000000000ULL, 48000, 600000U);
+    if (kept != 576000U) {
+        DSD_FPRINTF(stderr, "12 s at 48 kHz of 600000 frames held keeps %llu (want 576000)\n",
+                    (unsigned long long)kept);
+    }
+    assert(kept == 576000U);
+    assert(audio_input_keep_frames(UINT64_MAX, 48000, 700000U) == 700000U);
+    assert(audio_input_keep_frames(UINT64_MAX, 192000, UINT64_MAX) == 3541774862152234ULL); /* no overflow */
+    assert(audio_input_keep_frames(1U, 48000, 10U) == 1U);                                  /* rounded up */
+    assert(audio_input_keep_frames(0U, 48000, 10U) == 0U);
+    assert(audio_input_keep_frames(1000000000ULL, 0, 10U) == 0U);
+}
+
 int
 main(void) {
+    test_keep_frames_saturate_at_the_limit_only();
     test_size_and_ring_helpers();
     test_open_output_native_format();
     test_output_buffer_size_clamped_to_capacity();
