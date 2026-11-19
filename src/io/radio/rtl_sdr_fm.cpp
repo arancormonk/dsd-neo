@@ -14166,10 +14166,6 @@ rtl_stream_discard_after_external_move(void) {
     if (g_stream) {
         controller_request_input_purge();
     }
-    /* What the demodulator itself retains of the old carrier (filter histories, a TETRA uplink's symbol lookahead,
-       timing state) starts over as at a distant retune, the FLL estimate with it: it was the old transmitter's. */
-    (void)demod_reset_on_retune(&demod, demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 0U, 0U,
-                                                                demod.complex_rate, demod.complex_rate));
     rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
     rtl_stream_leave_demod_family_switch_gate(gate);
 }
@@ -16214,12 +16210,7 @@ rtl_stream_test_external_move_discard(size_t queued_samples, int cached_symbols,
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
     out_result->generation_before = rtl_stream_output_generation();
-    {
-        std::lock_guard<std::mutex> lock(g_test_last_reset_plan_mutex);
-        g_test_last_reset_plan = {};
-    }
     rtl_stream_discard_after_external_move();
-    (void)rtl_stream_test_get_last_reset_plan(&out_result->reset_plan);
     out_result->generation_after = rtl_stream_output_generation();
     out_result->used_after = ring_used(&output);
     out_result->cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();

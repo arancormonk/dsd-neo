@@ -2885,11 +2885,6 @@ main(void) {
                                         external_move.generation_after);
     failed |= expect_size_eq("external move clears queued ring", external_move.used_after, 0U);
     failed |= expect_int_eq("external move resets cached symbols", external_move.cache_pending_after, 0);
-    /* The samples the demodulator itself retains (filter histories, the TETRA uplink lookahead, timing state) start over
-       too, as at a distant retune: the FLL estimate was the old transmitter's. */
-    failed |= expect_int_eq("external move resets the demodulator as a distant retune",
-                            strcmp(external_move.reset_plan.reason, "distant-frequency"), 0);
-    failed |= expect_int_eq("external move resets the retained FLL", external_move.reset_plan.reset_retained_fll, 1);
 
     rtl_stream_test_cqpsk_reacquire_result cqpsk_reacquire = {};
     rc = rtl_stream_test_cqpsk_reacquire(1, 4800, 10, 11U, 5, &cqpsk_reacquire);
