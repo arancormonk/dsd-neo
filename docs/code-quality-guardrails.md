@@ -87,7 +87,8 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   is built for the triplet's deployment target, and that the bundled terminal database itself holds readable
   `xterm-256color` and `tmux-256color` entries), `tools/check_release_notices.py` (a package's documentation folder
   holds every notice its records' `<platform>_release` maps name; the DMG job runs it on the staged tree and the
-  mounted DMG) and
+  mounted DMG, and with `--binary-dir` refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
+  `binaries` list names) and
   `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
 - Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.

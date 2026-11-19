@@ -989,11 +989,13 @@ jobs:
           trap 'hdiutil detach "$mnt" -force || true' EXIT
           # Run help from inside the mounted DMG
           "$mnt/dsd-neo-macos/dsd-neo.sh" -h || (echo 'Running help from DMG failed' >&2; exit 1)
-          # The DMG as a user gets it carries every notice its records name.
+          # The DMG as a user gets it carries every notice its records name, and its bin/
+          # and lib/ hold only files a record's macos_release map lists under binaries.
           read -ra required_docs <<< "$DMG_REQUIRED_DOCS"
           python3 tools/check_release_notices.py --platform macos \
             --doc-dir "$mnt/dsd-neo-macos/share/doc/dsd-neo" --build-dir build/macos-arm64-release \
-            --vcpkg-share "$VCPKG_TRIPLET_DIR/share" --require "${required_docs[@]}"
+            --vcpkg-share "$VCPKG_TRIPLET_DIR/share" --require "${required_docs[@]}" \
+            --binary-dir "$mnt/dsd-neo-macos/bin" "$mnt/dsd-neo-macos/lib"
           hdiutil detach "$mnt" -force
           trap - EXIT
 

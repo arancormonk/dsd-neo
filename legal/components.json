@@ -54,6 +54,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "LICENSE": "repo:LICENSE"
         }
@@ -104,6 +107,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
@@ -156,6 +162,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
@@ -210,6 +219,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
@@ -251,6 +263,9 @@
         "notices": {}
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {}
       },
       "finding": "GOLAY-PERMISSION"
@@ -306,6 +321,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "LICENSE": "repo:LICENSE",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
@@ -360,6 +378,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "LICENSE": "repo:LICENSE",
           "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
@@ -409,6 +430,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
         }
@@ -455,6 +479,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
@@ -502,6 +529,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
         }
@@ -565,6 +595,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libmbe-neo"
+        ],
         "notices": {
           "licenses/mbelib-neo/LICENSE": "legal-component",
           "licenses/mbelib-neo/GPL-2.0-or-later.txt": "legal-component",
@@ -704,6 +737,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "librtlsdr"
+        ],
         "notices": {
           "licenses/librtlsdr-GPL-2.0-or-later.txt": "repo:android/third_party/librtlsdr/COPYING",
           "licenses/librtlsdr-PATCHES.txt": "repo:packaging/librtlsdr-PATCHES.txt",
@@ -757,6 +793,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libairspy"
+        ],
         "notices": {
           "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
         }
@@ -864,6 +903,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "dsd-neo"
+        ],
         "notices": {
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt",
           "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
@@ -917,6 +959,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libSoapySDR"
+        ],
         "notices": {
           "licenses/BSL-1.0.txt": "repo:LICENSES/BSL-1.0.txt",
           "licenses/SoapySDR-COPYRIGHT.txt": "repo:LICENSES/SoapySDR-COPYRIGHT.txt"
@@ -1112,6 +1157,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libusb-1.0"
+        ],
         "notices": {
           "licenses/libusb-LGPL-2.1-or-later.txt": "repo:android/third_party/libusb/COPYING",
           "licenses/libusb-macos-NOTICES.txt": "repo:LICENSES/libusb-macos-NOTICES.txt"
@@ -1218,6 +1266,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libcodec2"
+        ],
         "notices": {
           "licenses/codec2-copyright.txt": "vcpkg:codec2",
           "licenses/codec2-LGPL-2.1.txt": "repo:LICENSES/codec2-LGPL-2.1.txt",
@@ -1269,6 +1320,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libportaudio"
+        ],
         "notices": {
           "licenses/portaudio-copyright.txt": "vcpkg:portaudio",
           "licenses/portaudio-macos-NOTICES.txt": "repo:LICENSES/portaudio-macos-NOTICES.txt"
@@ -1343,6 +1397,10 @@
         "LICENSES/LicenseRef-ncurses-terminfo.txt": "df43ededbd67994276c1e45573280550c4192fdf7105c28642c61c3fd7770ef1"
       },
       "macos_release": {
+        "binaries": [
+          "libformw",
+          "libncursesw"
+        ],
         "notices": {
           "licenses/ncurses-copyright.txt": "vcpkg:ncurses",
           "licenses/X11-distribute-modifications-variant.txt": "repo:LICENSES/X11-distribute-modifications-variant.txt",
@@ -1412,6 +1470,10 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libcrypto",
+          "libssl"
+        ],
         "notices": {
           "licenses/openssl-copyright.txt": "vcpkg:openssl",
           "licenses/OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
@@ -1508,6 +1570,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libcurl"
+        ],
         "notices": {
           "licenses/curl-copyright.txt": "vcpkg:curl",
           "licenses/curl-NOTICES.txt": "repo:LICENSES/curl-NOTICES.txt",
@@ -1562,6 +1627,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libexpat"
+        ],
         "notices": {
           "licenses/expat-copyright.txt": "vcpkg:expat",
           "licenses/expat-NOTICES.txt": "repo:LICENSES/expat-NOTICES.txt"
@@ -1608,6 +1676,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libz"
+        ],
         "notices": {
           "licenses/zlib-copyright.txt": "vcpkg:zlib"
         }
@@ -1675,6 +1746,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libsndfile"
+        ],
         "notices": {
           "licenses/libsndfile-copyright.txt": "vcpkg:libsndfile",
           "licenses/libsndfile-GSM610-COPYRIGHT.txt": "repo:LICENSES/libsndfile-GSM610-COPYRIGHT.txt",
@@ -1724,6 +1798,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libFLAC"
+        ],
         "notices": {
           "licenses/libflac-copyright.txt": "vcpkg:libflac"
         }
@@ -1769,6 +1846,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libogg"
+        ],
         "notices": {
           "licenses/libogg-copyright.txt": "vcpkg:libogg"
         }
@@ -1822,6 +1902,10 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libvorbis",
+          "libvorbisenc"
+        ],
         "notices": {
           "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis",
           "licenses/libvorbis-lpc-NOTICE.txt": "repo:LICENSES/libvorbis-lpc-NOTICE.txt"
@@ -1875,6 +1959,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libopus"
+        ],
         "notices": {
           "licenses/opus-copyright.txt": "vcpkg:opus",
           "licenses/opus-NOTICES.txt": "repo:LICENSES/opus-NOTICES.txt"
@@ -1943,6 +2030,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libmp3lame"
+        ],
         "notices": {
           "licenses/mp3lame-copyright.txt": "vcpkg:mp3lame",
           "licenses/mp3lame-LGPL-2.1.txt": "repo:android/third_party/libusb/COPYING",
@@ -2004,6 +2094,9 @@
         }
       },
       "macos_release": {
+        "binaries": [
+          "libmpg123"
+        ],
         "notices": {
           "licenses/mpg123-copyright.txt": "vcpkg:mpg123",
           "licenses/mpg123-AUTHORS.txt": "repo:LICENSES/mpg123-AUTHORS.txt",

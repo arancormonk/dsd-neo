@@ -271,8 +271,9 @@ The macOS DMG bundles the same baseline's shared builds of those libraries (Open
 on OpenSSL, zlib, Expat, libsndfile and its codecs), PortAudio, libusb, SoapySDR, ncurses, codec2 and mbelib-neo, in
 `lib/` (`vcpkg-triplets/arm64-osx-dynamic-release.cmake`). It carries the notices the ZIP carries for each, under the
 same names in `share/doc/dsd-neo/licenses/`, the port's copyright file taken from the DMG build's vcpkg tree, and
-the macOS ones named below. `legal/components.json` lists them in each record's `macos_release` map, which drives
-the DMG's staging (`cmake/stage_release_notices.cmake`) and its check (`tools/check_release_notices.py`).
+the macOS ones named below. `legal/components.json` lists them in each record's `macos_release` map, with the files
+in `bin/` and `lib/` the component is in, which drives the DMG's staging (`cmake/stage_release_notices.cmake`) and
+its check (`tools/check_release_notices.py`, which also refuses a file in `bin/` or `lib/` that no record lists).
 
 - **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2, the
   commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND

@@ -13792,7 +13792,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   platform's map (the APK and the macOS DMG), `tools/legal_inventory.py --release-notices
   <platform>` lists it, and `tools/check_release_notices.py` checks a package's
   documentation folder against it, text included (the DMG's staged tree and mounted image,
-  and the folder `android-ci` unpacks from the finished APK). `tools/legal_inventory.py` checks the maps
+  and the folder `android-ci` unpacks from the finished APK). The desktop maps also list the
+  files each component is in (`binaries`: Windows file names; for the DMG, the executable's
+  name or a library's name without its version and `.dylib`), and the check refuses a file in
+  the mounted DMG's `bin/` or `lib/` that no record lists. `tools/legal_inventory.py` checks the maps
   and retained notice hashes and supplements release SBOMs without asserting legal clearance.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)

@@ -51,7 +51,8 @@ resource bundle, so they travel with the binary rather than as a separate file.
         (`cmake/stage_release_notices.cmake`) and refuses a staged tree or a mounted DMG without one, or with one
         that differs from its source (`tools/check_release_notices.py`).
   - [ ] Confirm every dylib in `dsd-neo-macos/lib/` comes from vcpkg or is the patched librtlsdr or libairspy (no
-        PulseAudio, libintl or other Homebrew library), and that `share/terminfo/` holds the bundled database.
+        PulseAudio, libintl or other Homebrew library), and that `share/terminfo/` holds the bundled database. The DMG
+        job refuses a file in `bin/` or `lib/` that no record's `macos_release` `binaries` list names.
 
 ### Windows (ZIP)
 

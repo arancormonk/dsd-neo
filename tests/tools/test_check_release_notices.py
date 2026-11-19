@@ -41,7 +41,7 @@ class CheckReleaseNotices(unittest.TestCase):
         self.share = self.work / "share"
         self.write(self.share / "port/copyright", "port copyright\n")
         self.records = {"components": [
-            {"id": "a", "macos_release": {"notices": {
+            {"id": "a", "macos_release": {"binaries": ["dsd-neo", "liba", "libusb-1.0"], "notices": {
                 "LICENSE": "repo:LICENSE",
                 "licenses/a-NOTICES.txt": "repo:LICENSES/a-NOTICES.txt",
                 "licenses/port-copyright.txt": "vcpkg:port",
@@ -57,6 +57,10 @@ class CheckReleaseNotices(unittest.TestCase):
         self.write(self.doc / "licenses/x-LICENSE.txt", "x license\n")
         self.write(self.doc / "licenses/dep/LICENSE", "installed by the legal component\n")
         self.write(self.doc / "legal/status.md", "status\n")
+        # The package's binary folders: each file is a recorded name, a library also with its version.
+        self.package = self.work / "package"
+        for rel in ("bin/dsd-neo", "lib/liba.dylib", "lib/liba.2.dylib", "lib/libusb-1.0.0.dylib"):
+            self.write(self.package / rel, "binary\n")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -129,11 +133,39 @@ class CheckReleaseNotices(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("'../escape.txt' is not a path inside the package", result.stderr)
 
+    def run_binary_check(self):
+        return self.run_check("--binary-dir", str(self.package / "bin"), str(self.package / "lib"))
+
+    def test_recorded_binaries_pass(self):
+        result = self.run_binary_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("4 binaries", result.stdout)
+
+    def test_unrecorded_binary_fails(self):
+        # Another package's names do not count, and a recorded name covers only itself with a version.
+        for rel in ("lib/libstray.3.dylib", "lib/b.dll", "lib/liba-extra.1.dylib", "lib/libab.1.dylib",
+                    "lib/liba.1.dylib.bak", "bin/dsd-neo-helper"):
+            with self.subTest(binary=rel):
+                self.write(self.package / rel, "binary\n")
+                result = self.run_binary_check()
+                (self.package / rel).unlink()
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"{Path(rel).name} in {self.package / Path(rel).parent} is in no record's macos_release "
+                              "binaries", result.stderr)
+
+    def test_missing_binary_folder_fails(self):
+        result = self.run_check("--binary-dir", str(self.package / "Frameworks"))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"missing binary folder {self.package / 'Frameworks'}", result.stderr)
+
     def test_dmg_job_checks_the_staged_tree_and_the_dmg(self):
         # The DMG job runs the check on the staged tree and again on the mounted DMG, with the general files.
         workflow = (ROOT / ".github/workflows/macos-ci.yaml").read_text(encoding="utf-8")
         job = workflow[workflow.index("  package-portable-dmg:"):workflow.index("  publish-portable-dmg:")]
         self.assertEqual(job.count("tools/check_release_notices.py --platform macos"), 2)
+        # The mounted DMG's bin/ and lib/ hold only files a record names.
+        mounted = job[job.index('--doc-dir "$mnt/dsd-neo-macos/share/doc/dsd-neo"'):]
+        self.assertIn('--binary-dir "$mnt/dsd-neo-macos/bin" "$mnt/dsd-neo-macos/lib"', mounted[:mounted.index("\n\n")])
         for name in ("LICENSE", "COPYRIGHT", "THIRD_PARTY.md", "legal/status.md", "legal/components.json"):
             self.assertIn(f" {name}", job[job.index("DMG_REQUIRED_DOCS"):])
 

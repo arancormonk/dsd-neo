@@ -170,6 +170,13 @@ class InventoryTests(unittest.TestCase):
                 "pdcurses", lambda c: c.update(macos_release={"notices": {"licenses/p.txt": "vcpkg:pdcurses"}})),
             "an empty macOS map": edit("airspy", lambda c: c.update(macos_release={"notices": {}})),
             "a macOS component without a map": edit("ncurses", lambda c: c.pop("macos_release")),
+            "a macOS map without its binaries": edit("ncurses", lambda c: c["macos_release"].pop("binaries")),
+            "a macOS binary named with its suffix": edit(
+                "ncurses", lambda c: c["macos_release"].update(binaries=["libncursesw.6.dylib"])),
+            "a macOS binary in a folder": edit(
+                "ncurses", lambda c: c["macos_release"].update(binaries=["lib/libformw"])),
+            "a macOS binary listed twice": edit(
+                "openssl", lambda c: c["macos_release"].update(binaries=["libssl", "libssl"])),
         }
         for label, inventory in cases.items():
             with self.subTest(case=label), self.assertRaises(ValueError):

@@ -76,7 +76,9 @@ rights and distribution issues before claiming GPL-compliant redistribution.
   finished APK's documentation folder and requires every one of them, with
   the text of its source (`tools/check_release_notices.py --platform
   android`). The records accept a `macos_release` map of the same shape for
-  the DMG.
+  the DMG, whose `binaries` name the files in its `bin/` and `lib/` (a
+  library without its version), and the DMG job refuses a file there that no
+  record lists.
 - Publish directions to Qt's source beside every APK
   (`<APK name>.qt-source.txt`, also in a tagged release's notes), written
   from the build's Qt kit by `tools/android_source_directions.py`; see

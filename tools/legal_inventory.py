@@ -38,6 +38,9 @@ VCPKG_PORT = re.compile(r"[a-z0-9-]+")
 # lower case, the one spelling of a name Windows compares without regard to case.
 RELEASE_FILE = re.compile(r'[^<>:"/\\|?*\x00-\x1f]*[^<>:"/\\|?*\x00-\x1f. ]')
 RUNTIME_DLL = re.compile(r"(concrt|msvcp|vccorlib|vcruntime)140(_[a-z0-9_]+)?\.dll")
+# A file the DMG carries in bin/ or lib/, as its records list it: the executable's name, or a library's name without
+# its version and suffix (libssl for libssl.3.dylib), which tools/check_release_notices.py matches with any version.
+MACOS_RELEASE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+.-]*")
 # Components the packages carry with no notice of their own: code compiled into dsd-neo whose grant is unresolved.
 NO_RELEASE_NOTICE = {"wallace-golay"}
 
@@ -109,6 +112,7 @@ def validate(inventory, root=ROOT):
         if "pin" in component and not re.fullmatch(r"[0-9a-f]{40}", pins.get(component["pin"], "")):
             raise ValueError(f"Missing immutable source revision: {ident}")
         validate_windows_release(component, root)
+        validate_macos_release(component)
         for platform in RELEASE_MAPS:
             validate_release_notices(component, platform)
     if ids != REQUIRED:
@@ -133,6 +137,18 @@ def validate_windows_release(component, root=ROOT):
         raise ValueError(f"The ZIP carries no notice for a library it ships: {ident}")
 
 
+def validate_macos_release(component):
+    """Every component of the macOS DMG lists the files it is in (its notices: validate_release_notices)."""
+    release = component.get("macos_release")
+    if not isinstance(release, dict) or not ships(component, "macos"):
+        return
+    files = release.get("binaries")
+    if (not isinstance(files, list) or not files or len(set(files)) != len(files)
+            or not all(isinstance(name, str) and MACOS_RELEASE_FILE.fullmatch(name) and not name.endswith(".dylib")
+                       for name in files)):
+        raise ValueError(f"macOS release files must be distinct names without a folder or .dylib: {component['id']}")
+
+
 def ships(component, platform):
     return platform in component["platforms"] and "binary" in component["distribution"]
 
@@ -147,8 +163,9 @@ def validate_release_notices(component, platform):
         return
     if not ships(component, platform):
         raise ValueError(f"Only a component the {platform} package carries has {key}: {ident}")
-    if not isinstance(release, dict) or (platform != "windows" and set(release) != {"notices"}):
-        raise ValueError(f"{key} must hold only its notices: {ident}")
+    allowed = {"notices", "binaries"} if platform in ("windows", "macos") else {"notices"}
+    if not isinstance(release, dict) or not set(release) <= allowed or "notices" not in release:
+        raise ValueError(f"{key} must hold only its notices and, on the desktop, its binaries: {ident}")
     notices = release.get("notices")
     if not isinstance(notices, dict):
         raise ValueError(f"Release notices must map a path to its source: {ident}")

@@ -8,10 +8,16 @@ mounted package: each notice is there and not empty, and a notice from the repos
 build tree or the vcpkg tree has the content of its source (line endings aside). A
 legal-component notice is installed by the package's general legal files and only has to be
 there. --require names further files the folder must hold.
+
+--binary-dir names the package's binary folders (the DMG's bin/ and lib/): every file in them
+must be one that a record's map lists under "binaries", so a library no record covers, whose
+notices nothing stages, cannot ship. A macOS name stands for the file of that name and for the
+library <name>.dylib with any version, <name>.<n>[.<n>...].dylib.
 """
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -73,6 +79,30 @@ def check(records, platform, doc, repo, build=None, share=None, required=()):
     return problems, len(notices)
 
 
+def recorded(name, names, platform):
+    """Whether a file name is one the records list for a package."""
+    if name in names:
+        return True
+    return platform == "macos" and any(re.fullmatch(re.escape(n) + r"(\.[0-9]+)*\.dylib", name) for n in names)
+
+
+def check_binaries(records, platform, folders):
+    """Return the problems found and the number of files checked in a package's binary folders."""
+    key = RELEASE_MAPS[platform]
+    names = {name for component in records["components"] for name in component.get(key, {}).get("binaries", [])}
+    problems = []
+    count = 0
+    for folder in folders:
+        if not folder.is_dir():
+            problems.append(f"missing binary folder {folder}")
+            continue
+        for entry in sorted(folder.iterdir()):
+            count += 1
+            if not recorded(entry.name, names, platform):
+                problems.append(f"{entry.name} in {folder} is in no record's {key} binaries")
+    return problems, count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--platform", choices=sorted(RELEASE_MAPS), required=True)
@@ -82,16 +112,24 @@ def main():
     parser.add_argument("--build-dir", type=Path, help="the configured build tree (build: notices)")
     parser.add_argument("--vcpkg-share", type=Path, help="the vcpkg tree's share folder (vcpkg: notices)")
     parser.add_argument("--require", nargs="*", default=[], help="further files the folder must hold")
+    parser.add_argument("--binary-dir", type=Path, nargs="*", default=[],
+                        help="the package's binary folders, whose every file a record must list")
     args = parser.parse_args()
     records = json.loads(args.components.read_text(encoding="utf-8"))
     problems, count = check(records, args.platform, args.doc_dir, args.repo, args.build_dir, args.vcpkg_share,
                             args.require)
-    for problem in problems:
+    binary_problems, binaries = check_binaries(records, args.platform, args.binary_dir)
+    for problem in problems + binary_problems:
         print(f"ERROR: {problem}", file=sys.stderr)
     if problems:
         print(f"{args.doc_dir} lacks notices its records name ({len(problems)} problem(s)).", file=sys.stderr)
+    if binary_problems:
+        print(f"The package carries binaries no record names ({len(binary_problems)} problem(s)).", file=sys.stderr)
+    if problems or binary_problems:
         return 1
     print(f"{args.doc_dir} carries the {count} notices legal/components.json names for {args.platform}.")
+    if args.binary_dir:
+        print(f"The {binaries} binaries in {', '.join(map(str, args.binary_dir))} are each named by a record.")
     return 0
 
 
