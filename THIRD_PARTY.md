@@ -367,7 +367,8 @@ these records and the OpenSSL record.
 
 - **vcpkg** (Copyright (c) Microsoft Corporation, https://github.com/microsoft/vcpkg) - MIT. The `soapysdr` and `rtlsdr`
   overlays in `vcpkg-ports/` are copies of vcpkg's builtin ports at the manifest baseline, and `portaudio` of its
-  builtin port at port-version 8, each with the dsd-neo changes its `portfile.cmake` names (GPL-3.0-or-later). vcpkg's
-  license and notice are kept beside them as `vcpkg-ports/LICENSE-vcpkg.txt`. The `ncurses` overlay, which only the
+  builtin port at port-version 8, each with the dsd-neo changes its `portfile.cmake` names (GPL-3.0-or-later), so each
+  copy is under GPL-3.0-or-later AND MIT, as its SPDX line says. vcpkg's license and notice are kept beside them as
+  `vcpkg-ports/LICENSE-vcpkg.txt`. The `ncurses` overlay, which only the
   macOS DMG builds, is a copy of vcpkg's builtin port at the manifest baseline too. The recipes only drive the
   builds: no vcpkg code is compiled into a release package, so the packages do not carry this notice.

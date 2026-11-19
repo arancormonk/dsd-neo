@@ -514,8 +514,13 @@ class SoapyModulePackaging(unittest.TestCase):
                     self.assertTrue(portfile.startswith("# SPDX-License-Identifier: GPL-3.0-or-later\n"),
                                     portfile[:80])
         component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "vcpkg-ports")
-        self.assertEqual((component["license_declared"], component["license_concluded"]), ("MIT", "MIT"))
-        self.assertEqual(component["notices"], ["vcpkg-ports/LICENSE-vcpkg.txt"])
+        # The record covers the copies as they are in the tree, vcpkg's MIT parts and dsd-neo's GPL changes: its
+        # expression is the one every copied portfile declares, and it retains both licence texts.
+        declared = {re.match(r"# SPDX-License-Identifier: (.+)\n", read(f"vcpkg-ports/{name}/portfile.cmake"))[1]
+                    for name in VCPKG_PORT_COPIES}
+        self.assertEqual(declared, {"GPL-3.0-or-later AND MIT"})
+        self.assertEqual((component["license_declared"], component["license_concluded"]), (declared.pop(),) * 2)
+        self.assertEqual(component["notices"], ["LICENSE", "vcpkg-ports/LICENSE-vcpkg.txt"])
         # Build recipes, not compiled into a release: the packages need not carry the notice.
         self.assertEqual(component["distribution"], ["source"])
         self.assertEqual(sorted(component["paths"]),
