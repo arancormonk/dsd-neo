@@ -1333,6 +1333,21 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 1, output)
         self.assertIn(f"{stage / 'share/doc/dsd-neo/licenses/portaudio-NOTICES.txt'}: SHA-256", output)
         self.assertIn("not the reviewed", output)
+        # Two records that put different texts under one name: whichever staging copied last would ship.
+        notice.write_bytes(original)
+        shutil.rmtree(self.work / "dist")
+        components = repo / "legal/components.json"
+        inventory = json.loads(components.read_text(encoding="utf-8"))
+        opus = next(c for c in inventory["components"] if c["id"] == "opus")
+        opus["windows_release"]["notices"]["licenses/portaudio-NOTICES.txt"] = "repo:packaging/windows/opus-NOTICES.txt"
+        components.write_text(json.dumps(inventory), encoding="utf-8")
+        rc, output, stage = self.stage(tools, build, installed, windows, repo=repo)
+        self.assertEqual(rc, 1, output)
+        # Whichever record staging reads first, the refusal names both files.
+        self.assertIn("The notice licenses/portaudio-NOTICES.txt comes from both ", output)
+        self.assertIn(", whose texts differ", output)
+        for source in (notice, repo / "packaging/windows/opus-NOTICES.txt"):
+            self.assertIn(str(source), output)
 
     def test_stage_release_tree_takes_the_runtime_from_the_toolset(self):
         # The Visual C++ runtime comes from the toolset's redistributable folder, the files Microsoft's terms cover

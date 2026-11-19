@@ -215,11 +215,16 @@ foreach ($file in @(Get-ReleaseTreeFiles -TreeRoot $stage)) {
             if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
                 throw "The notice $notice of $($record.Component) comes from $source, which is not a file"
             }
-            $hash = Get-NoticeHash -Path $source
-            if ($stagedFrom.ContainsKey($notice) -and $stagedFrom[$notice].Hash -ne $hash) {
-                throw "The notice $notice comes from both $($stagedFrom[$notice].Source) and $source, whose texts differ"
+            # Many files share a record (dsd-neo.exe's) or a notice (LICENSE): each notice is
+            # copied once, and a second source for it must hold the same text.
+            if ($stagedFrom.ContainsKey($notice)) {
+                $first = $stagedFrom[$notice]
+                if ($first -ne $source -and (Get-NoticeHash -Path $first) -ne (Get-NoticeHash -Path $source)) {
+                    throw "The notice $notice comes from both $first and $source, whose texts differ"
+                }
+                continue
             }
-            $stagedFrom[$notice] = [pscustomobject]@{ Source = $source; Hash = $hash }
+            $stagedFrom[$notice] = $source
             $destination = Join-Path $docDir $notice
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
             Copy-Item -Force -LiteralPath $source -Destination $destination -ErrorAction Stop

@@ -740,7 +740,9 @@ function Resolve-CanonicalPath {
     if (-not [System.IO.Path]::IsPathRooted($spelled)) {
         $spelled = Join-Path (Get-Location).ProviderPath $spelled
     }
-    if (!(Test-Path -LiteralPath $spelled)) {
+    # .NET's own checks: the file system provider's Get-Item and Test-Path cost tens of
+    # milliseconds each, and the walk below makes one check per folder.
+    if (-not ([System.IO.File]::Exists($spelled) -or [System.IO.Directory]::Exists($spelled))) {
         throw "$Path does not exist on this machine"
     }
     if ($IsWindows) {
@@ -769,8 +771,8 @@ function Resolve-CanonicalPath {
             continue
         }
         $next = [System.IO.Path]::Join($current, $part)
-        $item = Get-Item -Force -LiteralPath $next -ErrorAction SilentlyContinue
-        if ($null -eq $item) {
+        $item = [System.IO.FileInfo]::new($next)
+        if (-not $item.LinkTarget -and -not ([System.IO.File]::Exists($next) -or [System.IO.Directory]::Exists($next))) {
             throw "$Path does not exist on this machine"
         }
         if ($item.LinkTarget) {
@@ -884,20 +886,21 @@ function Assert-ToolsetRedistributable {
     $toolsVersion = Split-Path -Leaf $tools
     $redistVersion = Split-Path -Leaf $redist
     $build = Join-Path $toolsVc 'Auxiliary/Build'
-    $folders = @(Get-Item -LiteralPath $build -ErrorAction SilentlyContinue) +
-        @(Get-ChildItem -LiteralPath $build -Directory -Force -ErrorAction SilentlyContinue)
+    $folders = @()
+    if ([System.IO.Directory]::Exists($build)) {
+        $folders = @($build) + @([System.IO.Directory]::GetDirectories($build))
+    }
     $paired = $false
     $named = $false
-    foreach ($folder in @($folders | Where-Object { $_ })) {
-        foreach ($file in @(Get-ChildItem -LiteralPath $folder.FullName -File -Force -Filter 'Microsoft.VCToolsVersion.*.txt')) {
-            if ((Get-Content -Raw -LiteralPath $file.FullName).Trim() -ne $toolsVersion) {
+    foreach ($folder in $folders) {
+        foreach ($file in @([System.IO.Directory]::GetFiles($folder, 'Microsoft.VCToolsVersion.*.txt'))) {
+            if ([System.IO.File]::ReadAllText($file).Trim() -ne $toolsVersion) {
                 continue
             }
             $named = $true
-            $suffix = $file.Name.Substring('Microsoft.VCToolsVersion.'.Length)
-            $pair = Join-Path $folder.FullName ('Microsoft.VCRedistVersion.' + $suffix)
-            if ((Test-Path -LiteralPath $pair -PathType Leaf) -and
-                (Get-Content -Raw -LiteralPath $pair).Trim() -eq $redistVersion) {
+            $suffix = [System.IO.Path]::GetFileName($file).Substring('Microsoft.VCToolsVersion.'.Length)
+            $pair = [System.IO.Path]::Join($folder, 'Microsoft.VCRedistVersion.' + $suffix)
+            if ([System.IO.File]::Exists($pair) -and [System.IO.File]::ReadAllText($pair).Trim() -eq $redistVersion) {
                 $paired = $true
             }
         }
