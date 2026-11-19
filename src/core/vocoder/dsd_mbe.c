@@ -2099,12 +2099,12 @@ mbe_dmr_slot_key_forced(const dsd_state* state, int slot, const mbe_frame_ctx_t*
 // are, until its checked LC or accepted PI header says, whatever the frame's class reads. The privacy bit or ALG ID
 // that class reads may come from data no check passed (an embedded LC whose checksum failed), and the key it selects
 // keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()). The single-slot
-// decoder without trunking has no hold (dsd_opts_dmr_voice_hold_applies()).
+// decoder without trunking and direct-mode traffic have no hold (dsd_dmr_voice_hold_applies()).
 static void
 mbe_dmr_slot_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
                    mbe_frame_judgement* j) {
     j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
-    j->crypto_unknown = dsd_opts_dmr_voice_hold_applies(opts) && state->dmr_enc_class_held[slot] != 0U
+    j->crypto_unknown = dsd_dmr_voice_hold_applies(opts, state) && state->dmr_enc_class_held[slot] != 0U
                         && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
 }
 

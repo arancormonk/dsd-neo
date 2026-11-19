@@ -1212,21 +1212,6 @@ dsd_opts_trunk_vc_followed(const dsd_opts* opts) {
 }
 
 /**
- * @brief Return 1 when the DMR voice hold applies (dsd_state::dmr_enc_class_held), 0 otherwise.
- *
- * The hold applies where the decoder keeps the two timeslots apart: the dual-slot decoder, and the single-slot decoder
- * under trunking, which keeps each standalone burst on its own slot. The single-slot decoder without trunking (-fr,
- * -nm) decodes both slots on one lane, where crypto and call state can mix across slots: there the hold does not apply.
- *
- * @param opts Decoder options (may be NULL).
- * @return 0 for the single-slot decoder without trunking; 1 otherwise and for NULL.
- */
-static inline int
-dsd_opts_dmr_voice_hold_applies(const dsd_opts* opts) {
-    return (opts == NULL || opts->dmr_mono != 1 || opts->trunk_enable == 1) ? 1 : 0;
-}
-
-/**
  * @brief Return 1 when the session's input carries PCM audio, 0 otherwise.
  *
  * Pulse, stdin, WAV/file, UDP and TCP inputs deliver audio something else already demodulated (a rigctl peer such as

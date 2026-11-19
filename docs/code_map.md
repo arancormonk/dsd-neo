@@ -3369,10 +3369,12 @@ suite runs under this compiler.
   Privacy, forced with `-4` too, `-S`, a mapped Vertex keystream), or forced clear (`dsd_key_dmr_forced_clear()`)
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
   After the receiver moves off a carrier or releases its call, each DMR slot's voice is held (`dmr_enc_class_hold()`).
-  The hold applies only where the decoder keeps the two timeslots apart: the dual-slot decoder, and the single-slot
-  decoder under trunking (`dsd_opts_dmr_voice_hold_applies()`). The single-slot decoder without trunking (`-fr`, `-nm`)
-  has no hold, as on main: both timeslots share its one lane, so their crypto and call state can mix there (the
-  limit is stated with the lane below).
+  The hold applies only where the decoder keeps the two timeslots on separate lanes: repeater traffic on the dual-slot
+  decoder, and the single-slot decoder under trunking (`dsd_dmr_voice_hold_applies()`, one predicate for both limits).
+  Where both slots share one lane there is no hold, as on main, and their crypto and call state can mix: the single-slot
+  decoder without trunking (`-fr`, `-nm`; the limit is stated with the lane below) and direct-mode traffic on any
+  decoder (an MS sync, `DSD_SYNC_IS_DMR_MS()`, or the MS path's `dsd_state::dmr_ms_mode`), whose two slots run on lane 0,
+  burst A included.
   Who judges each move, once:
   - A carrier boundary: every one but a stream gap. The release of a followed call inside it leaves the judgement to
     the boundary. With trunking off, a manual move's own carrier boundary judges it.

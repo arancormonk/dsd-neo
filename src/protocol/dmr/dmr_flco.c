@@ -730,10 +730,10 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
    the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
    failed check, a protected LC or an FEC failure says nothing. */
 /* Whether this LC's slot's voice is held (dmr_enc_class_hold()), where the hold applies: not on the single-slot decoder
-   without trunking, whose one lane carries both slots (dsd_opts_dmr_voice_hold_applies()). */
+   without trunking or for direct-mode traffic, whose one lane carries both slots (dsd_dmr_voice_hold_applies()). */
 static int
 dmr_flco_voice_held(const dmr_flco_ctx* ctx) {
-    return dsd_opts_dmr_voice_hold_applies(ctx->opts) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U;
+    return dsd_dmr_voice_hold_applies(ctx->opts, ctx->state) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U;
 }
 
 static int
