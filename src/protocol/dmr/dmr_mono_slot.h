@@ -88,12 +88,13 @@ dmr_mono_burst_slot_known(const dsd_state* state, uint8_t burst_slot) {
     return state->dmr_ms_mode != 1 || state->dmr_dm_sync_slot == (uint8_t)(burst_slot + 1U);
 }
 
-/* The over-the-air slot (1 or 2) of lane 0's active call, or 0 when lane 0 has no active call or its slot is not
-   known. */
+/* The over-the-air slot (1 or 2) of lane 0's active DMR call, or 0 when lane 0 has no active call, its call is another
+   protocol's (a P25 Phase 2 or X2-TDMA call names a receive slot too), or its slot is not known. */
 static inline uint8_t
 dmr_mono_lane_call_slot(const dsd_state* state) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DMR(call.protocol)) {
         return 0U;
     }
     return call.receive_identity.slot <= 2U ? call.receive_identity.slot : 0U;

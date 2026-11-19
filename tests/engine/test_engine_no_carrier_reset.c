@@ -4946,6 +4946,43 @@ test_dmr_mono_lane_hold_per_slot(char frame[4][24]) {
     return rc;
 }
 
+/* Without trunking, a single-slot decoder that also decodes P25 can have a P25 Phase 2 call on lane 0, whose receive slot
+   is 1 too. That is no DMR call the lane carries: a DMR slot 1 PI header heard then is discarded, so the P25 call's live
+   ALG ID stays and the DMR hold stays armed. */
+static int
+test_dmr_mono_pi_needs_a_dmr_call(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 404U,
+        .policy_target_id = 404U,
+    };
+    (void)dsd_call_state_observe(state, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_call_snapshot call;
+    int rc = expect_true("-fr with P25: lane 0 holds an active P25 Phase 2 call on receive slot 1",
+                         dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                             && call.receive_identity.slot == 1U);
+    state->payload_algid = 0x84;
+    dmr_enc_class_hold(state);
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+    rc |= expect_true("-fr with P25: a DMR slot 1 PI header leaves the P25 call's ALG ID and the DMR hold",
+                      state->payload_algid == 0x84 && state->dmr_enc_class_held[0] == 1U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
    slot. A slot 1 one heard while lane 0 carries a slot 2 call resets slot 1's packet, never slot 2's; a slot 2 one,
    with the lane on a slot 1 call or idle (where it is folded onto lane 0), resets slot 2's, never slot 1's. */
@@ -5048,6 +5085,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
+    rc |= test_dmr_mono_pi_needs_a_dmr_call();
     rc |= test_dmr_mono_lane_hold_per_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
