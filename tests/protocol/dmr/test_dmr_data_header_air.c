@@ -19,6 +19,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -96,16 +97,44 @@ slot_type_bits(unsigned type, unsigned char st[20]) {
     return 0;
 }
 
-/* The 144 dibits of a BPTC burst as sent (CACH, payload, slot type, @p sync) carrying the 12 octets @p bytes. */
+/* Corrupt the slot type @p st so its Golay(20,8) check fails: the fewest bits flipped from the first that decode
+   cannot correct. */
 static int
-build_burst(const char* sync, unsigned type, const uint8_t bytes[12], int dibits[144]) {
+break_slot_type(unsigned char st[20]) {
+    unsigned char check[20] = {0};
+    for (unsigned mask = 1U; mask < (1U << 20); mask++) {
+        unsigned bits = 0U;
+        for (unsigned m = mask; m != 0U; m &= m - 1U) {
+            bits++;
+        }
+        if (bits < 4U) {
+            continue;
+        }
+        DSD_MEMCPY(check, st, sizeof check);
+        for (unsigned b = 0; b < 20U; b++) {
+            check[b] = (unsigned char)(check[b] ^ ((mask >> b) & 1U));
+        }
+        unsigned char trial[20] = {0};
+        DSD_MEMCPY(trial, check, sizeof trial);
+        if (!Golay_20_8_decode(trial)) {
+            DSD_MEMCPY(st, check, sizeof check);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The 144 dibits of a BPTC burst as sent (CACH, payload, slot type, @p sync) carrying the 12 octets @p bytes; its slot
+   type fails its check when @p bad_slot_type. */
+static int
+build_burst(const char* sync, unsigned type, const uint8_t bytes[12], int dibits[144], int bad_slot_type) {
     static const uint8_t reserved[3] = {0, 0, 0};
     uint8_t payload[96];
     unpack(bytes, payload, 12);
     uint8_t info[196];
     dmr_test_encode_bptc_196x96(payload, reserved, info);
-    unsigned char st[20];
-    if (!slot_type_bits(type, st)) {
+    unsigned char st[20] = {0};
+    if (!slot_type_bits(type, st) || (bad_slot_type && !break_slot_type(st))) {
         return 0;
     }
     DSD_MEMSET(dibits, 0, 144 * sizeof(int));
@@ -128,18 +157,20 @@ typedef struct {
     const char* sync;
     int synctype;
     uint8_t dm_slot;
+    uint8_t bad_slot_type; /* 1: the burst's slot type fails its check, so no reader dispatches it */
 } burst_source;
 
-static const burst_source k_direct_ts1 = {DMR_DIRECT_MODE_TS1_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 1U};
-static const burst_source k_direct_ts2 = {DMR_DIRECT_MODE_TS2_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 2U};
-static const burst_source k_ms = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U};
+static const burst_source k_direct_ts1 = {DMR_DIRECT_MODE_TS1_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 1U, 0U};
+static const burst_source k_direct_ts2 = {DMR_DIRECT_MODE_TS2_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 2U, 0U};
+static const burst_source k_ms = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U, 0U};
+static const burst_source k_ms_unreadable = {DMR_MS_DATA_SYNC, DSD_SYNC_DMR_MS_DATA, 0U, 1U};
 
 /* Receive one burst of data type @p type through the single-slot reader. */
 static int
 receive_burst(dsd_opts* opts, dsd_state* state, const burst_source* from, unsigned type, const uint8_t bytes[12]) {
     static int payload[90];
     int dibits[144];
-    if (!build_burst(from->sync, type, bytes, dibits)) {
+    if (!build_burst(from->sync, type, bytes, dibits, from->bad_slot_type)) {
         return 0;
     }
     for (size_t i = 0; i < 90U; i++) {
@@ -153,6 +184,7 @@ receive_burst(dsd_opts* opts, dsd_state* state, const burst_source* from, unsign
     state->synctype = from->synctype;
     state->lastsynctype = from->synctype;
     state->dmr_dm_sync_slot = from->dm_slot;
+    dsd_rxid_note_sync(state, state->synctype); /* as processFrame() notes every frame it dispatches */
     dmrMSData(opts, state);
     return 1;
 }
@@ -212,19 +244,24 @@ reset_state(dsd_state* state) {
     state->dmr_color_code = 16;
 }
 
-/* Send the header from @p header_from and the block from @p block_from; 1 when the feed then holds the report as
-   radio 123456's, 0 when it holds none, -1 for anything else. */
+/* Send the header from @p header_from, an idle burst from @p between_from (none when NULL), and the block from
+   @p block_from; 1 when the feed then holds the report as radio 123456's, 0 when it holds none, -1 for anything
+   else. */
 static int
-send_packet(dsd_opts* opts, dsd_state* state, const burst_source* header_from, const burst_source* block_from) {
+send_packet(dsd_opts* opts, dsd_state* state, const burst_source* header_from, const burst_source* between_from,
+            const burst_source* block_from) {
     reset_state(state);
     if (dsd_position_feed_start(state) != 0) {
         return -1;
     }
     uint8_t hdr[12];
     uint8_t block[12];
+    static const uint8_t idle[12] = {0};
     udt_header(hdr);
     udt_block(block);
-    if (!receive_burst(opts, state, header_from, 0x06U, hdr) || !receive_burst(opts, state, block_from, 0x07U, block)) {
+    if (!receive_burst(opts, state, header_from, 0x06U, hdr)
+        || (between_from != NULL && !receive_burst(opts, state, between_from, 0x09U, idle))
+        || !receive_burst(opts, state, block_from, 0x07U, block)) {
         return -1;
     }
     dsd_position_fix kept[4];
@@ -280,24 +317,34 @@ main(void) {
     }
     opts.aggressive_framesync = 1;
 
+    /* A burst of another mode between the header and its block on the header's lane (issue #800, fail closed): the
+       transmission the header began was interrupted there, so a block of the header's own mode after it is not shown to
+       be that packet's. A burst on another lane (direct mode's slot 2 is lane 1; an MS-sourced burst, which has no
+       slot, is read on lane 0) leaves the header's binding alone. */
     static const struct {
         const burst_source* header;
+        const burst_source* between;
         const burst_source* block;
         int want;
         const char* tag;
     } cases[] = {
-        {&k_direct_ts2, &k_direct_ts2, 1, "direct mode, header and block on slot 2"},
-        {&k_direct_ts1, &k_direct_ts1, 1, "direct mode, header and block on slot 1"},
-        {&k_direct_ts2, &k_direct_ts1, 0, "direct mode, header on slot 2, block on slot 1"},
-        {&k_direct_ts1, &k_direct_ts2, 0, "direct mode, header on slot 1, block on slot 2"},
-        {&k_direct_ts1, &k_ms, 0, "direct-mode header, repeater-mode (MS-sourced) block"},
-        {&k_ms, &k_direct_ts1, 0, "repeater-mode (MS-sourced) header, direct-mode block"},
-        {&k_ms, &k_ms, 1, "repeater-mode (MS-sourced) header and block"},
+        {&k_direct_ts2, NULL, &k_direct_ts2, 1, "direct mode, header and block on slot 2"},
+        {&k_direct_ts1, NULL, &k_direct_ts1, 1, "direct mode, header and block on slot 1"},
+        {&k_direct_ts2, NULL, &k_direct_ts1, 0, "direct mode, header on slot 2, block on slot 1"},
+        {&k_direct_ts1, NULL, &k_direct_ts2, 0, "direct mode, header on slot 1, block on slot 2"},
+        {&k_direct_ts1, NULL, &k_ms, 0, "direct-mode header, repeater-mode (MS-sourced) block"},
+        {&k_ms, NULL, &k_direct_ts1, 0, "repeater-mode (MS-sourced) header, direct-mode block"},
+        {&k_ms, NULL, &k_ms, 1, "repeater-mode (MS-sourced) header and block"},
+        {&k_direct_ts1, &k_direct_ts1, &k_direct_ts1, 1, "direct mode, an idle burst of the same mode between"},
+        {&k_direct_ts1, &k_ms, &k_direct_ts1, 0, "direct mode, a repeater-mode burst between on its lane"},
+        {&k_ms, &k_direct_ts1, &k_ms, 0, "repeater mode, a direct-mode burst between on its lane"},
+        {&k_direct_ts2, &k_ms, &k_direct_ts2, 1, "direct mode slot 2, a repeater-mode burst on the other lane"},
+        {&k_direct_ts1, &k_ms_unreadable, &k_direct_ts1, 0, "direct mode, an unreadable repeater-mode burst between"},
     };
 
     int failed = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-        const int got = send_packet(&opts, &state, cases[i].header, cases[i].block);
+        const int got = send_packet(&opts, &state, cases[i].header, cases[i].between, cases[i].block);
         if (got != cases[i].want) {
             DSD_FPRINTF(stderr, "\n%s: got %d, want %d\n", cases[i].tag, got, cases[i].want);
             failed = 1;

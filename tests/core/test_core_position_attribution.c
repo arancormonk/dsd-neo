@@ -323,9 +323,17 @@ reception(uint8_t kind, uint32_t a, uint32_t b, int64_t freq_hz, uint64_t rx_gen
     return r;
 }
 
+/* @p r heard on the tuned frequency @p tuned_hz. */
+static dsd_position_reception
+on_carrier(dsd_position_reception r, int64_t tuned_hz) {
+    r.tuned_hz = tuned_hz;
+    return r;
+}
+
 /* The reception rule (dsd_position_same_reception(), fail closed): known and equal scopes match across generations;
  * within one generation an unknown scope or a refinement matches; anything else -- an unknown side across generations,
- * two families, two tuned frequencies, two values of one kind -- does not. Symmetric. */
+ * two families, two tuned frequencies, two values of one kind, two known carriers whatever the scopes -- does not.
+ * Symmetric. */
 static void
 test_reception_rule(void) {
     const uint8_t nac = DSD_POS_SCOPE_P25_NAC;
@@ -348,6 +356,8 @@ test_reception_rule(void) {
         "two networks",
         "EDACS site then system",
         "EDACS two sites",
+        "equal known scopes, two carriers",
+        "equal known scopes, one carrier unknown",
     };
 
     const struct {
@@ -372,6 +382,10 @@ test_reception_rule(void) {
          reception(DSD_POS_SCOPE_FEED_EDACS, 0x10001U, 0x10002U, 0, 7U, 1U), 1},
         {reception(DSD_POS_SCOPE_FEED_EDACS, 0x10001U, 0U, 0, 7U, 1U),
          reception(DSD_POS_SCOPE_FEED_EDACS, 0x10003U, 0U, 0, 7U, 1U), 0},
+        {on_carrier(reception(net, 0xA1234U, 0x111U, 0, 1U, 1U), 450000000),
+         on_carrier(reception(net, 0xA1234U, 0x111U, 0, 2U, 1U), 451000000), 0},
+        {on_carrier(reception(net, 0xA1234U, 0x111U, 0, 1U, 1U), 450000000),
+         reception(net, 0xA1234U, 0x111U, 0, 2U, 1U), 1},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -399,7 +413,8 @@ test_reception_rule(void) {
     expect_true("report admitted", dsd_position_admit(NULL, st, &fix, 1, 1, NULL) != DSD_POSITION_REFUSED);
     dsd_position_fix_reception(&fix, &r);
     expect_true("report reception", r.scope.kind == nac && r.scope.a == 0x293U && (uint32_t)r.rx_gen == 9U
-                                        && r.epoch_known == 1U && r.identity_freq_hz == fix.freq_hz);
+                                        && r.epoch_known == 1U && r.identity_freq_hz == fix.freq_hz
+                                        && r.tuned_hz == fix.freq_hz);
     free_state(st);
 }
 

@@ -6389,6 +6389,42 @@ test_weaker_identity_joins_stronger(void) {
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
 }
 
+/* Issue #800, fail closed: two carriers of one system are two receptions, though the system's scope (a P25 WACN and
+ * SYSID) names no carrier. A call's fragment heard on 450 MHz and a fragment of the same talkgroup and radio heard on
+ * 451 MHz with a fix, both under that system: the calls still merge, but the row takes none of the 451 MHz fix, live
+ * and after a reload (the carrier its reception was read with is stored, `rxHz`). On 450 MHz both times it takes it. */
+void
+test_fix_stays_on_its_carrier(void) {
+    const time_t when = 1754706500;
+    for (int moved = 0; moved <= 1; moved++) {
+        resetStorage();
+        {
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* first =
+                with_rx(ring.commit(0, 80625U, 8625U, when, when + 3), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            first->systype = DSD_SYNC_P25P1_POS;
+            first->rx_scope.tuned_hz = 450000000;
+            model.refresh(ring.state);
+            Event_History* second = with_gps(
+                with_rx(ring.commit(0, 80625U, 8625U, when + 5, when + 8), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0),
+                "GPS: second fragment", 225000000, 450000000, 4U);
+            second->systype = DSD_SYNC_P25P1_POS;
+            second->rx_scope.tuned_hz = moved ? 451000000 : 450000000;
+            model.refresh(ring.state);
+            expect("carrier: the fragments merge", model.count() == 1);
+            expect(moved ? "carrier: the other carrier's fix is not the row's" : "carrier: one carrier's fix is",
+                   model.count() == 1 && detail_of(model, 0).isEmpty() == (moved != 0));
+        } // destructor flushes the stores
+        const QJsonObject stored = stored_row_with(80625U, 8625U);
+        expect("carrier: the row's carrier is stored",
+               stored.value(QLatin1String("rxHz")).toVariant().toLongLong() == 450000000);
+        expect("carrier: the stored row's fix", stored.contains(QLatin1String("gps")) == (moved == 0));
+        CallHistoryModel reloaded;
+        expect("carrier: after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty() == (moved != 0));
+    }
+}
+
 /* Issue #800, fail closed: a fragment gives a merged row its fix, and the row learns a stronger reception scope from it,
  * only when it was heard on the reception the row's other fragments were, read before anything is adopted (the core's
  * reception rule, call_history_same_reception()). A P25 call heard on 450 MHz with only a tuned-frequency scope, then
@@ -7662,6 +7698,7 @@ main(int argc, char** argv) {
     test_system_identity_splits_conventional_systems();
     test_weaker_identity_joins_stronger();
     test_fix_stays_on_its_reception();
+    test_fix_stays_on_its_carrier();
     test_fix_stays_on_its_p25_phase();
     test_merged_row_keeps_its_anchor();
     test_late_position_rechecks_reception_system();

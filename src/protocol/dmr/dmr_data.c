@@ -475,8 +475,34 @@ dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_da
     }
 }
 
+/* A burst of another sender kind on its lane interrupts what the lane held (issue #800, fail closed), by its sync word
+   alone, whether or not anything of the burst decodes: an MS-sourced or direct-mode burst names its lane before it is
+   read (dmr_data_note_unread()), a repeater's once its CACH is read, both lanes when it is not
+   (dmr_data_note_cach()). Returns whether the burst is a repeater's. */
+static int
+dmr_data_note_unread(const dsd_opts* opts, dsd_state* state) {
+    const int repeater_burst = DSD_SYNC_IS_DMR_BS(state->synctype);
+    if (!repeater_burst || dsd_state_sync_readback_invalid(state) != 0U) {
+        dmr_note_unread_burst(opts, state);
+    }
+    return repeater_burst;
+}
+
+static void
+dmr_data_note_cach(const dsd_opts* opts, dsd_state* state, int repeater_burst, int cach_read) {
+    if (!repeater_burst) {
+        return;
+    }
+    if (cach_read) {
+        dmr_note_burst_lane(opts, state);
+    } else {
+        dmr_note_unread_burst(opts, state);
+    }
+}
+
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
+    const int repeater_burst = dmr_data_note_unread(opts, state);
     /* A read-back not all the stream's (dsd_state_sync_readback_invalid(): a cold start or an acquisition reset left no
        soft history to re-read what noCarrier() cleared) holds the burst's CACH, then the first half of its payload and
        slot type: nothing of the burst decodes. Its live half is read past, as a decoded burst's is. */
@@ -511,7 +537,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         dmr_mono_slot_begin(state);
     }
 
-    if (dmr_data_collect_cach(&ctx)) {
+    const int cach_read = dmr_data_collect_cach(&ctx);
+    dmr_data_note_cach(opts, state, repeater_burst, cach_read);
+    if (cach_read) {
         dmr_data_collect_first_half(&ctx);
         dmr_data_collect_slot_type_prefix(&ctx);
         dmr_data_collect_sync(&ctx);

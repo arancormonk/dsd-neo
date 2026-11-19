@@ -456,6 +456,7 @@ row_reception(const CallHistoryModel::Row& row) {
     reception.ring = row.rxRing;
     reception.gen = row.rxGen;
     reception.genKnown = row.rxGenKnown;
+    reception.tunedHz = row.rxHz;
     return reception;
 }
 
@@ -477,6 +478,7 @@ take_reception(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
     to.rxRing = from.rxRing;
     to.rxGen = from.rxGen;
     to.rxGenKnown = from.rxGenKnown;
+    to.rxHz = from.rxHz;
 }
 
 /** @brief Keep the newest kMaxSessionOrdinals of @p rings, by ordinal. */
@@ -570,6 +572,7 @@ row_take_payload(CallHistoryModel::Row& row, const Event_History* item) {
     // The generation the reception was read under counts in the item's ring, which the walk gives the row (Row::rxRing).
     row.rxGen = item->rx_scope.rx_gen;
     row.rxGenKnown = item->rx_scope.epoch_known != 0U;
+    row.rxHz = item->rx_scope.resolved != 0U ? item->rx_scope.tuned_hz : 0;
     row.messageText = item_text(item->text_message, sizeof(item->text_message));
     row.msgWhen = row.when;
     row.msgSeq = row.seq;
@@ -821,6 +824,7 @@ row_payload_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.sourceScope = scope_from_json(obj, "sscope");
     row.rxScope = scope_from_json(obj, "rx");
     reception_epoch_from_json(row, obj);
+    row.rxHz = qMax<qint64>(json_i64_or(obj, "rxHz", 0), 0);
     row.messageText = obj.value(QLatin1String("msg")).toString();
     row.msgWhen = json_i64_or(obj, "msgWhen", row.when);
     row.msgSeq = static_cast<qulonglong>(json_i64_or(obj, "msgSeq", static_cast<qint64>(row.seq)));
@@ -855,6 +859,9 @@ row_payload_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
     if (row.rxGenKnown && row.rxRing != 0U) {
         obj.insert(QLatin1String("rxGen"), QString::number(row.rxGen, 16));
         obj.insert(QLatin1String("rxRing"), QString::number(row.rxRing, 16));
+    }
+    if (row.rxHz > 0) {
+        obj.insert(QLatin1String("rxHz"), row.rxHz);
     }
     if (!row.messageText.isEmpty()) {
         obj.insert(QLatin1String("msg"), row.messageText);

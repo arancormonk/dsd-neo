@@ -111,16 +111,16 @@ int p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sy
 /* The identity of a slot's canonical call as the state machine and the Phase 2 voice users last named it, and which of
  * its fields are checked, under which reception. */
 typedef struct {
-    uint64_t epoch;    // Canonical call epoch the identity was published under; 0 = none
-    uint64_t rx_gen;   // dsd_state_reception_generation() at the last publication: attribution binds to it
-    uint32_t source;   // Source RID, 0 = none
-    uint32_t target;   // Talkgroup (group) or destination RID (private)
-    uint32_t rx_epoch; // dsd_state::rx_id epoch the checked flags were earned under (a flag of another one is dropped)
-    int32_t protocol;  // DSD_SYNC_* of the published call
-    uint8_t kind;      // dsd_call_kind of the published call
-    uint8_t is_group;  // 1 when target is a talkgroup
-    uint8_t checked;   // P25_SM_IDENTITY_CHECKED_* bits
-    uint8_t reserved[5];
+    uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
+    uint64_t rx_gen;  // dsd_state_reception_generation() at the last publication: the checked flags were earned
+                      // under it and count only there, and attribution binds to it
+    uint32_t source;  // Source RID, 0 = none
+    uint32_t target;  // Talkgroup (group) or destination RID (private)
+    int32_t protocol; // DSD_SYNC_* of the published call
+    uint8_t kind;     // dsd_call_kind of the published call
+    uint8_t is_group; // 1 when target is a talkgroup
+    uint8_t checked;  // P25_SM_IDENTITY_CHECKED_* bits
+    uint8_t reserved[1];
 } p25_sm_published_identity;
 
 /* ============================================================================
@@ -255,7 +255,9 @@ typedef struct {
                                 // The suppressed transmission occupies the carrier with no assignment, epoch,
                                 // or audio trace, so this is the only evidence of it that survives the teardown.
     uint8_t identity_checked;   // P25_SM_IDENTITY_CHECKED_* bits for src, ota_tg/dst and is_group (assignment)
-    uint32_t identity_rx_epoch; // dsd_state::rx_id epoch the assignment was accepted under: its flags count only there
+    /* dsd_state_reception_generation() the assignment's flags were earned under: they count only there. A grant
+       stores it after the retune it causes, so its checked talker carries to the channel it sends the receiver to. */
+    uint64_t identity_rx_gen;
     p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 

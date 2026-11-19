@@ -731,15 +731,19 @@ typedef struct {
 /**
  * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
  * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()), its identity
- * discriminator (the tuned frequency for a P25 NAC scope, else 0) and the reception generation it was read under. A
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0), the tuned frequency it was read with and the
+ * reception generation it was read under. A
  * call row takes it by the rule its site follows (Event_History::site_id: the live record only while the call is
  * active on the carrier it began on, the record as the call ended once it has), pinned once resolved; a data notice at
  * emit. A position lands on a row, or merges into it, only under the reception rule (dsd_position_same_reception()):
- * both scopes known and equal, or the same generation with nothing that says otherwise; an unknown side never matches
- * across generations. Laid out without padding.
+ * both scopes known and equal on one carrier, or the same generation with nothing that says otherwise; an unknown side
+ * never matches across generations. Laid out without padding.
  */
 typedef struct {
     int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    /** The tuned frequency the reception was read with, whatever its scope (0 when unknown): two carriers are two
+     * receptions, also of one system whose scope names no carrier. */
+    int64_t tuned_hz;
     /** The reception generation the reception was read under (dsd_state_reception_generation(): the record's epoch,
      * the retunes and the P25 phase changes). */
     uint64_t rx_gen;
@@ -3408,8 +3412,9 @@ struct dsd_state {
        another protocol moves rx_id's epoch even when neither sent any identity (issue #800, fail closed). Decoder
        thread; outside every snapshot copy range. */
     uint16_t rx_sync_protocol;
-    /* The P25 phase the last frame sync named (1 or 2; 0 after a sync of another protocol or since the last
-       dsd_rxid_reset()): dsd_rxid_note_sync(). Decoder thread; outside every snapshot copy range. */
+    /* The P25 phase the last frame sync named (1 or 2; 0 after a sync of another protocol, since the last
+       dsd_rxid_reset() or since an applied trunking retune): dsd_rxid_note_sync(). Decoder thread; outside every
+       snapshot copy range. */
     uint8_t rx_p25_phase;
     /* Moves with every change of P25 phase between two P25 syncs (dsd_rxid_note_sync()), never back: a part of the
        reception generation (dsd_state_reception_generation()), so a transmission of the other phase on the carrier is

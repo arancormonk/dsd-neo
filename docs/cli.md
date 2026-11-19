@@ -602,7 +602,8 @@ does.
     than its packet holds: `Position suppressed (incomplete document)`. A data packet whose IP datagram declares more
     than the packet's user data holds (`Incomplete Datagram; not decoded;`): a pad or CRC octet never completes it.
   - A DMR data packet whose blocks came in another slot, from another kind of sender (a direct-mode header, then
-    repeater-mode blocks) or after a retune: `Data block not from its header's slot or reception; packet dropped;`. A
+    repeater-mode blocks), after a burst of another kind of sender came between on its slot, or after a retune:
+    `Data block not from its header's slot or reception; packet dropped;`. A
     DMR MNIS (Motorola) packet's octet just before its CRC32, which that CRC does not cover, is never read: a report
     whose last digit would be in it gives no position.
 
@@ -611,14 +612,17 @@ does.
   The source column is the radio ID only when it came from checked content, else `00000000`. DMR embedded GPS takes
   the call's source only when a checked voice header or full LC of the same transmission (not a RAS one) named it,
   in a burst from the same kind of sender on the same slot: a repeater-mode burst after a direct-mode call whose
-  terminator was missed is `0` until a checked LC of the new transmission names its radio.
+  terminator was missed is `0` until a checked LC of the new transmission names its radio, and so is a direct-mode
+  burst after such a repeater-mode burst, until a checked LC names its radio again.
   P25 Phase 1 L3Harris and Motorola GPS take it only from a hard-decoded voice link control of the same active call,
   never from an ended one. P25 Phase 2 L3Harris takes it only when the call's source, talkgroup and kind all came from
   messages whose CRC passed: a call followed from a grant that failed its CRC under `-F` gets none until a checked
   MAC_PTT or MAC_ACTIVE names all three again. A change of P25 phase on the carrier (Phase 2 frames heard during a
   Phase 1 call whose terminator was missed, or the other way round) counts as another reception: a call left open
   across it names no later report's sender until a checked voice link control or voice user of the call names it
-  again.
+  again, even when the call's talker is still shown. A grant's checked talker counts only on the voice channel the
+  grant tunes to. An L3Harris update with a soft-decoded half prints only `Harris GPS: not used (unchecked)` (its
+  quality and fields only with `-Z`).
 
   Speed and heading: LRRP speed is km/h with three decimals (earlier versions wrote 0.01 mph); a LIP speed above 1043
   km/h is written as 1043 and an ambiguous LIP direction as 0; UDT NMEA above 126 knots is written as 233; L3Harris rows

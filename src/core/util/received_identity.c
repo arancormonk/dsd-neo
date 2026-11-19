@@ -196,6 +196,9 @@ dsd_rxid_trunk_tune(dsd_state* state) {
     if (state != NULL) {
         rxid_drop(&state->rx_id, DSD_RXID_ACCESS);
         state->rx_tune_seq++; /* another carrier: another reception generation, the system kept (issue #800) */
+        /* The carrier reached starts its own P25 phase: the retune already moved the generation, so its first sync of
+           either phase (a Phase 2 voice channel a Phase 1 control channel granted) moves nothing more. */
+        state->rx_p25_phase = 0U;
     }
 }
 

@@ -646,6 +646,78 @@ test_generation_moves_with_retune_and_phase(void) {
     free_state(st);
 }
 
+/* Issue #800: the reception generation is the carrier's, not a DMR lane's. A change of DMR burst mode on the carrier (a
+ * repeater's BS-sourced bursts, a radio's MS-sourced ones, direct mode, as a carrier relaying on its other slot may
+ * send) never moves it: a burst-mode interruption revokes only the evidence of the lane it came on
+ * (dsd_position_dmr_note_lane_burst()). An applied retune moves it once: the carrier reached starts its own P25 phase,
+ * so a Phase 2 voice channel a Phase 1 control channel granted moves it only by the retune. */
+static void
+test_generation_keeps_dmr_burst_mode_and_retune_starts_phase(void) {
+    dsd_state* st = new_state();
+
+    const struct {
+        int synctype;
+        uint8_t dm_slot;
+    } steps[] = {
+        {DSD_SYNC_DMR_BS_DATA_POS, 0U}, {DSD_SYNC_DMR_MS_DATA, 0U},  {DSD_SYNC_DMR_MS_VOICE, 2U},
+        {DSD_SYNC_DMR_RC_DATA, 0U},     {DSD_SYNC_DMR_MS_VOICE, 0U}, {DSD_SYNC_DMR_BS_VOICE_POS, 0U},
+    };
+
+    dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    const uint64_t gen = dsd_state_reception_generation(st);
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        st->dmr_dm_sync_slot = steps[i].dm_slot;
+        dsd_rxid_note_sync(st, steps[i].synctype);
+        if (dsd_state_reception_generation(st) != gen) {
+            DSD_FPRINTF(stderr, "FAIL: DMR burst mode step %u moved the reception generation\n", (unsigned)i);
+            exit(1);
+        }
+    }
+    free_state(st);
+
+    st = new_state();
+    dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS);
+    dsd_rxid_trunk_tune(st);
+    const uint64_t tuned = dsd_state_reception_generation(st);
+    dsd_rxid_note_sync(st, DSD_SYNC_P25P2_POS);
+    assert(dsd_state_reception_generation(st) == tuned);
+    dsd_rxid_note_sync(st, DSD_SYNC_P25P1_POS);
+    assert(dsd_state_reception_generation(st) != tuned);
+    free_state(st);
+}
+
+/* Issue #800, fail closed: two reports whose receptions no scope names are one reception only within one reception
+ * generation. On conventional DMR heard from PCM input (no tuned frequency, no network identity) a colour-code change
+ * moves the generation and leaves both reception scopes unknown: the same radio's unchanged checked report on colour
+ * code 1, then on colour code 2 within the repeat window, is a new record. On colour code 1 both times it is a repeat.
+ **/
+static void
+test_unscoped_generation_change_is_not_a_repeat(void) {
+    for (int change = 0; change <= 1; change++) {
+        dsd_state* st = new_state();
+        assert(dsd_position_feed_start(st) == 0);
+        clock_at_ms(T0_MS);
+        dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        dsd_position_fix f = base_fix();
+        assert(dsd_position_admit(NULL, st, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT);
+        assert(f.reception_scope.kind == DSD_POS_SCOPE_NONE && f.freq_hz == 0);
+        const uint64_t first_gen = f.origin_gen;
+        if (change) {
+            dsd_rxid_note_access(st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 2U);
+        }
+        clock_at_ms(T0_MS + 1000U);
+        f = base_fix();
+        const dsd_position_admit_result r = dsd_position_admit(NULL, st, &f, 1, 1, NULL);
+        assert(f.reception_scope.kind == DSD_POS_SCOPE_NONE && (f.origin_gen != first_gen) == (change != 0));
+        if (r != (change ? DSD_POSITION_ADMITTED_KEPT : DSD_POSITION_ADMITTED_NOT_KEPT)) {
+            DSD_FPRINTF(stderr, "FAIL: unscoped reports %s were %s\n", change ? "of two generations" : "of one",
+                        change ? "folded" : "kept twice");
+            exit(1);
+        }
+        free_state(st);
+    }
+}
+
 static void
 test_anonymous_never_fold(void) {
     dsd_state* st = new_state();
@@ -932,6 +1004,8 @@ main(void) {
     test_reception_change_is_not_a_repeat();
     test_phase_change_is_not_a_repeat();
     test_generation_moves_with_retune_and_phase();
+    test_generation_keeps_dmr_burst_mode_and_retune_starts_phase();
+    test_unscoped_generation_change_is_not_a_repeat();
     test_track_table_forgets_the_oldest();
     test_ring_wrap_and_read();
     test_read_edges();

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
@@ -101,21 +102,26 @@ put_bits(uint8_t* bits, unsigned offset, unsigned width, uint32_t value) {
 }
 
 /* A group voice LC (FLCO 0) of SOURCE to TARGET whose own check passed: a voice LC header (@p type 1) or a late-entry
- * embedded LC (type 3), on slot 0. */
+ * embedded LC (type 3), on slot @p slot. */
 static void
-voice_lc(fixture* f, uint8_t type) {
+voice_lc_on(fixture* f, uint8_t type, uint8_t slot) {
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof bits);
     put_bits(bits, 24U, 24U, TARGET);
     put_bits(bits, 48U, 24U, SOURCE);
     uint32_t irr = 0U;
-    f->st->currentslot = 0;
+    f->st->currentslot = slot;
     dmr_flco(f->opts, f->st, bits, 1U, &irr, type);
 }
 
-/* An embedded GPS LC (FLCO 0x08) at 22.5 N, 0 E whose checksum passed, on slot 0. */
 static void
-embedded_gps(fixture* f) {
+voice_lc(fixture* f, uint8_t type) {
+    voice_lc_on(f, type, 0U);
+}
+
+/* An embedded GPS LC (FLCO 0x08) at 22.5 N, 0 E whose checksum passed, on slot @p slot. */
+static void
+embedded_gps_on(fixture* f, uint8_t slot) {
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof bits);
     put_bits(bits, 2U, 6U, 0x08U);
@@ -123,8 +129,13 @@ embedded_gps(fixture* f) {
     put_bits(bits, 20U, 3U, f->pos_err);
     put_bits(bits, 48U, 24U, 0x200000U);
     uint32_t irr = 0U;
-    f->st->currentslot = 0;
+    f->st->currentslot = slot;
     dmr_flco(f->opts, f->st, bits, 1U, &irr, 3U);
+}
+
+static void
+embedded_gps(fixture* f) {
+    embedded_gps_on(f, 0U);
 }
 
 static int
@@ -270,6 +281,41 @@ test_failed_report_prints_no_content(void) {
     }
 }
 
+/* Issue #800, fail closed: a protected embedded GPS LC whose burst failed its check says nothing of itself by default,
+ * its protect flag included: only that its position was suppressed. -Z shows the flag. */
+static void
+test_failed_protected_report_prints_no_flag(void) {
+    for (int payload = 0; payload <= 1; payload++) {
+        fixture f;
+        fixture_open(&f);
+        f.opts->payload = payload;
+        voice_lc(&f, 1U);
+        f.st->event_crc_invalid[0] = 1U;
+        uint8_t bits[80];
+        DSD_MEMSET(bits, 0, sizeof bits);
+        bits[0] = 1U; /* PF */
+        put_bits(bits, 2U, 6U, 0x08U);
+        put_bits(bits, 48U, 24U, 0x200000U);
+        dsd_test_capture_stderr cap;
+        char out[2048];
+        out[0] = '\0';
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_embedded_protected") != 0) {
+            expect_true("capture", 0);
+            fixture_close(&f);
+            return;
+        }
+        dmr_embedded_gps(f.opts, f.st, bits);
+        dsd_test_capture_stderr_end(&cap);
+        expect_true("capture read", dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+        f.st->event_crc_invalid[0] = 0U;
+        expect_true(payload ? "failed protected GPS: -Z shows the flag" : "failed protected GPS: no flag",
+                    (strstr(out, "Protected") != NULL) == (payload == 1));
+        expect_true("failed protected GPS: suppressed",
+                    payload == 1 || strstr(out, "Position: (suppressed; CRC ERR)") != NULL);
+        fixture_close(&f);
+    }
+}
+
 /* The single-slot decoder carries either over-the-air slot on its one lane (lane 0): its report publishes the slot the
  * CACH proved, not the lane, so the same fix heard on TS2 then on TS1 is two records (the repeat rule compares where it
  * was heard). One heard while no slot is proven names none: slot 0 marked DSD_POS_FLAG_SLOT_UNKNOWN, never a repeat of
@@ -320,6 +366,58 @@ burst_from(fixture* f, int direct) {
     f->st->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
     f->st->dmr_dm_sync_slot = direct ? 2U : 0U;
     f->st->dmr_mono_rx_slot = direct ? DSD_DMR_MONO_RX_TS2 : DSD_DMR_MONO_RX_PENDING;
+    /* As processFrame() notes every frame it dispatches, and the single-slot reader notes the burst on its lane 0. */
+    dsd_rxid_note_sync(f->st, f->st->synctype);
+    f->st->currentslot = 0;
+    dmr_note_burst_lane(f->opts, f->st);
+}
+
+/* A burst on the two-slot decoder: a repeater's BS-sourced one on slot @p slot, or (@p bs 0) a radio's MS-sourced one,
+ * which has no CACH and is read on lane 0; noted as frame sync and the burst reader note it. */
+static void
+two_slot_burst(fixture* f, int bs, uint8_t slot) {
+    f->st->synctype = bs ? DSD_SYNC_DMR_BS_VOICE_POS : DSD_SYNC_DMR_MS_VOICE;
+    f->st->lastsynctype = f->st->synctype;
+    f->st->dmr_dm_sync_slot = 0U;
+    f->st->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    dsd_rxid_note_sync(f->st, f->st->synctype);
+    f->st->currentslot = bs ? slot : 0U;
+    dmr_note_burst_lane(f->opts, f->st);
+}
+
+/* The slot's ACTIVE call names SOURCE to TARGET. */
+static int
+call_open_on(const fixture* f, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(f->st, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == SOURCE && call.ota_target_id == TARGET;
+}
+
+/* Issue #800: the revocation is per lane. On the two-slot decoder a carrier sends a repeater's BS-sourced bursts on
+ * slot 2 and a radio's MS-sourced bursts (read on lane 0) at the same time, interleaved: each lane's checked LC names
+ * its call's talker, and each lane's embedded GPS keeps its sender, however often the other lane's sender kind comes
+ * between. The reception generation does not move with the other lane's kind. */
+static void
+test_two_lanes_of_two_sender_kinds(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    two_slot_burst(&f, 1, 1U);
+    voice_lc_on(&f, 1U, 1U);
+    two_slot_burst(&f, 0, 0U);
+    voice_lc_on(&f, 1U, 0U);
+    expect_true("two lanes: both calls open", call_open_on(&f, 0U) && call_open_on(&f, 1U));
+    const uint64_t gen = dsd_state_reception_generation(f.st);
+    for (int round = 0; round < 3; round++) {
+        two_slot_burst(&f, 1, 1U);
+        embedded_gps_on(&f, 1U);
+        expect_fix(&f, "two lanes: the BS-sourced slot keeps its sender", 1);
+        two_slot_burst(&f, 0, 0U);
+        embedded_gps_on(&f, 0U);
+        expect_fix(&f, "two lanes: the MS-sourced lane keeps its sender", 1);
+    }
+    expect_true("two lanes: one reception generation", dsd_state_reception_generation(f.st) == gen);
+    fixture_close(&f);
 }
 
 /* Issue #800, fail closed: the sync words tell a direct-mode transmission from a repeater-mode one. A direct-mode voice
@@ -353,13 +451,87 @@ test_direct_to_repeater_transition(void) {
     fixture_close(&f);
 }
 
+/* Issue #800, fail closed: evidence of a direct-mode call does not come back after a burst-mode interruption. A
+ * direct-mode voice header names SOURCE; with its terminator missed, a repeater-mode (MS-sourced) burst follows and its
+ * embedded GPS is anonymous. Direct mode on slot 2 then returns with no new naming LC: the burst identity is the
+ * header's again, but the transmission was interrupted, so its fix stays anonymous until a checked LC names the talker.
+ * Without the interruption the direct-mode call's fixes keep their sender. */
+static void
+test_direct_mode_after_an_interruption(void) {
+    for (int interrupted = 0; interrupted <= 1; interrupted++) {
+        fixture f;
+        fixture_open(&f);
+        dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+        burst_from(&f, 1);
+        voice_lc(&f, 1U);
+        embedded_gps(&f);
+        expect_fix(&f, "interruption: direct mode, slot 2", 1);
+        if (interrupted) {
+            burst_from(&f, 0);
+            embedded_gps(&f);
+            expect_fix(&f, "interruption: the repeater-mode burst", 0);
+        }
+        burst_from(&f, 1);
+        expect_true("interruption: call kept", call_open(&f));
+        embedded_gps(&f);
+        expect_fix(&f, interrupted ? "interruption: direct mode again, no new LC" : "interruption: none", !interrupted);
+        voice_lc(&f, 3U);
+        embedded_gps(&f);
+        expect_fix(&f, "interruption: named by a checked LC of the direct-mode transmission", 1);
+        fixture_close(&f);
+    }
+}
+
+/* Issue #800, fail closed: a burst counts by its sync word alone, also one no reader reads (held back under trunking,
+ * or whose slot type or CACH fails: dmr_note_unread_burst()). On the single-slot decoder a direct-mode call names
+ * SOURCE; an MS-sourced burst nothing reads comes between; direct mode then resumes with no new LC and its fix is
+ * anonymous. On the two-slot decoder a repeater's burst whose CACH was not read names no lane, so it ends the
+ * MS-sourced evidence on lane 0, while the BS-sourced evidence of slot 2 is its own kind and stays. */
+static void
+test_unread_burst_interrupts_its_lane(void) {
+    fixture f;
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    burst_from(&f, 1);
+    voice_lc(&f, 1U);
+    embedded_gps(&f);
+    expect_fix(&f, "unread: direct mode, slot 2", 1);
+    f.st->synctype = DSD_SYNC_DMR_MS_DATA;
+    f.st->dmr_dm_sync_slot = 0U;
+    dmr_note_unread_burst(f.opts, f.st);
+    burst_from(&f, 1);
+    embedded_gps(&f);
+    expect_fix(&f, "unread: direct mode again after an unread MS-sourced burst", 0);
+    fixture_close(&f);
+
+    fixture_open(&f);
+    dsd_rxid_note_access(f.st, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    two_slot_burst(&f, 1, 1U);
+    voice_lc_on(&f, 1U, 1U);
+    two_slot_burst(&f, 0, 0U);
+    voice_lc_on(&f, 1U, 0U);
+    f.st->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_note_unread_burst(f.opts, f.st);
+    two_slot_burst(&f, 1, 1U);
+    embedded_gps_on(&f, 1U);
+    expect_fix(&f, "unread: the BS-sourced slot keeps its sender", 1);
+    two_slot_burst(&f, 0, 0U);
+    embedded_gps_on(&f, 0U);
+    expect_fix(&f, "unread: a repeater's burst on no known lane ends the MS-sourced lane's", 0);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_reception_change();
     test_same_reception();
     test_failed_report_prints_no_content();
+    test_failed_protected_report_prints_no_flag();
     test_single_slot_decoder_publishes_proven_slot();
     test_direct_to_repeater_transition();
+    test_direct_mode_after_an_interruption();
+    test_two_lanes_of_two_sender_kinds();
+    test_unread_burst_interrupts_its_lane();
     dsd_decode_clock_use_system();
     if (g_fail) {
         return 1;

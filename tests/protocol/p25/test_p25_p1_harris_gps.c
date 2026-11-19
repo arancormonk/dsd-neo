@@ -748,6 +748,47 @@ test_checks(void) {
     fixture_close(&f);
 }
 
+/* Run @p body's update with its Part B soft (unchecked) or hard, and return what the console printed in @p out. */
+static void
+capture_update(fixture* f, const uint8_t body[BODY_OCTETS], int soft_b, char* out, size_t cap_size) {
+    dsd_test_capture_stderr cap;
+    out[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap, "harris_gps_unchecked") != 0) {
+        exit(2);
+    }
+    send_lc(f, LCO_A_ODD, MFID_HARRIS, body, 0);
+    send_lc(f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, soft_b);
+    dsd_test_capture_stderr_end(&cap);
+    if (dsd_test_capture_stderr_read(&cap, out, cap_size) != 0) {
+        exit(2);
+    }
+}
+
+/* Issue #800, fail closed: an unchecked report says nothing of its content by default. A hard Part A and a
+ * soft-erasure Part B carrying quality %11 (GPS not enabled) print only that the update was unchecked, never the
+ * quality; -Z reads it. A checked update prints its quality. */
+static void
+test_unchecked_report_prints_no_content(void) {
+    for (int payload = 0; payload <= 1; payload++) {
+        fixture f;
+        fixture_open(&f);
+        f.opts->payload = payload;
+        (void)start_call(&f, TG_A, SRC_A);
+        body_fields b = fields_default();
+        b.quality = 3U;
+        uint8_t body[BODY_OCTETS];
+        make_body(&b, body);
+        char out[4096];
+        capture_update(&f, body, 1, out, sizeof out);
+        expect_true(payload ? "unchecked Harris quality: -Z reads it" : "unchecked Harris quality: not read",
+                    (strstr(out, "GPS Not Enabled") != NULL) == (payload == 1));
+        expect_true("unchecked Harris update: says so", payload == 1 || strstr(out, "not used (unchecked)") != NULL);
+        capture_update(&f, body, 0, out, sizeof out);
+        expect_true("checked Harris quality: read", strstr(out, "GPS Not Enabled") != NULL);
+        fixture_close(&f);
+    }
+}
+
 /* Dispatch one link control with the RS verdict @p errors (irrecoverable errors), through p25_lcw() or, with @p tdulc,
  * p25_lcw_from_tdulc(); never a soft-erasure retry. */
 static void
@@ -1148,6 +1189,7 @@ main(void) {
     test_event_log_one_label();
     test_checks();
     test_uncorrectable_verdict();
+    test_unchecked_report_prints_no_content();
     test_reserved_source();
     test_voice_user_withdraws_evidence();
     test_repeat_grant_withdraws_evidence();

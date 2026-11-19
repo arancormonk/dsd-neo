@@ -512,6 +512,126 @@ test_reception_scope_of_a_call_ended_unseen(void) {
     assert(row(1)->rx_scope.identity_freq_hz == 450000000);
 }
 
+/* One move of the reception that keeps the received identity's epoch: 1 an applied trunking retune, 2 a change of P25
+ * phase (Phase 2 frames heard, then Phase 1 again); 0 none. */
+static void
+move_reception(int move) {
+    if (move == 1) {
+        dsd_rxid_trunk_tune(&g_state);
+        g_opts.rtlsdr_center_freq = 451000000U;
+    } else if (move == 2) {
+        dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P2_POS);
+        dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P1_POS);
+    }
+}
+
+/* Issue #800, fail closed: an ended call's scope is frozen only from its own reception. A NAC-only P25 call on 450 MHz
+ * ends before any render; between its start and its end the receiver retunes (or hears the other P25 phase), which
+ * keeps the record's epoch, and then learns a WACN and SYSID. The row takes neither that system nor the reception it
+ * was learned on: none of the record, only its own carrier's frequency, under the call's own generation. With no move
+ * the system learned before the end is the call's. The live render of an open call takes the system only by the same
+ * rule. */
+static void
+test_ended_scope_of_the_calls_own_reception(void) {
+    for (int move = 0; move <= 2; move++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P1_POS);
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 1201U,
+            .policy_target_id = 1201U,
+            .ota_source_id = 111U,
+            .frequency_hz = 450000000,
+            .observed_m = 1.0,
+        };
+        assert(dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&g_state, 0U, &call) == 1);
+        const uint64_t call_gen = call.rx_gen;
+        move_reception(move);
+        dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+        assert(dsd_call_state_end_ex(&g_state, 0U, 1.1, DSD_CALL_END_TERMINATOR) == 1);
+        dsd_event_sync_slot(&g_opts, &g_state, 0U);
+        assert(row(1)->source_id == 111U && row(1)->rx_scope.resolved == 1U && row(1)->rx_scope.rx_gen == call_gen);
+        if (move != 0) {
+            /* None of the record: only the call's own carrier, the frequency the row is given. */
+            if (row(1)->rx_scope.scope.kind != DSD_POS_SCOPE_FEED_TUNED_FREQ || row(1)->rx_scope.scope.a != 450000000U
+                || row(1)->sys_id1 != 0U) {
+                DSD_FPRINTF(stderr, "FAIL: an unrendered call froze the scope of the reception after a move %d\n",
+                            move);
+                exit(1);
+            }
+        } else {
+            assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25 && row(1)->rx_scope.scope.a == 0xA1234U);
+            assert(row(1)->sys_id1 == 0xA1234U);
+        }
+
+        /* An open call's live render, by the same rule. */
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        dsd_rxid_note_sync(&g_state, DSD_SYNC_P25P1_POS);
+        dsd_rxid_note_access(&g_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+        (void)observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        move_reception(move);
+        dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+        dsd_event_sync_slot(&g_opts, &g_state, 0U);
+        if (move != 0) {
+            if (row(0)->sys_id1 != 0U || row(0)->rx_scope.scope.kind != DSD_POS_SCOPE_P25_NAC) {
+                DSD_FPRINTF(stderr, "FAIL: an open call's row took the system of the reception after a move %d\n",
+                            move);
+                exit(1);
+            }
+        } else {
+            assert(row(0)->sys_id1 == 0xA1234U && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+        }
+    }
+}
+
+/* Issue #800, fail closed: two carriers of one system are two receptions. A P25 call committed on 450 MHz with the
+ * system's WACN and SYSID known loses sync; after an applied retune to 451 MHz the same radio and talkgroup are
+ * reacquired on the same system, whose scope names no carrier. The call rows may merge, but the 450 MHz row never takes
+ * the fix heard only on 451 MHz. Heard on 450 MHz both times, it takes it. */
+static void
+test_reacquired_position_on_another_carrier_of_the_system(void) {
+    for (int retuned = 0; retuned <= 1; retuned++) {
+        reset_fixture();
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 450000000U;
+        DSD_MEMSET(&g_state.rx_id, 0, sizeof(g_state.rx_id));
+        dsd_rxid_note_p25_network(&g_state, 0xA1234U, 0x111U);
+        const uint64_t first = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->rx_scope.scope.kind == DSD_POS_SCOPE_P25 && row(1)->rx_scope.tuned_hz == 450000000);
+        if (retuned) {
+            move_reception(1);
+        }
+        const uint64_t second = observe(DSD_SYNC_P25P1_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
+        assert(second != first && row(0)->rx_scope.scope.kind == DSD_POS_SCOPE_P25);
+        const dsd_position_fix f = admitted(DSD_SYNC_P25P1_POS, 111U, 225000000, 450000000);
+        assert(f.freq_hz == (retuned ? 451000000 : 450000000));
+        assert(dsd_event_enrich_position(NULL, &g_state, 0U, second, &f, "segment fix") == 1);
+        end_call(DSD_CALL_END_SYNC_LOSS);
+        assert(row(1)->source_id == 111U && row(2)->source_id == 0U); /* one row */
+        assert(row(1)->rx_scope.tuned_hz == 450000000);
+        if (retuned) {
+            if (row(1)->pos.valid != 0U || row(1)->gps_s[0] != '\0') {
+                DSD_FPRINTF(stderr, "FAIL: the 450 MHz row took the fix heard on another carrier of its system\n");
+                exit(1);
+            }
+        } else {
+            expect_row_fix(row(1), &f, "segment fix");
+        }
+    }
+}
+
 /* A position the row declines still leaves the transmission's CRC provenance on the call, as every enrichment does. */
 static void
 test_declined_position_keeps_crc_marking(void) {
@@ -887,6 +1007,8 @@ main(void) {
     test_closing_fix_checks_the_merged_row();
     test_unknown_reception_never_merges_gps();
     test_reception_scope_of_a_call_ended_unseen();
+    test_ended_scope_of_the_calls_own_reception();
+    test_reacquired_position_on_another_carrier_of_the_system();
     test_declined_position_keeps_crc_marking();
     test_callsign_sources();
     test_text_only_after_gps();

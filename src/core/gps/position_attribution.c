@@ -41,23 +41,31 @@ dmr_air_mono_slot(const dsd_state* state, uint8_t kind) {
     return kind == DMR_AIR_KIND_MS ? 0U : DSD_POSITION_DMR_AIR_UNKNOWN;
 }
 
-uint8_t
-dsd_position_dmr_air(const dsd_state* state) {
-    if (!state) {
-        return DSD_POSITION_DMR_AIR_NONE;
-    }
+/* The sender kind of the DMR burst @p state is decoding, by its own sync word (or the last one's); 0 when neither is
+ * DMR. */
+static uint8_t
+dmr_air_kind(const dsd_state* state) {
     int sync = state->synctype;
     if (!DSD_SYNC_IS_DMR(sync)) {
         sync = state->lastsynctype;
     }
     if (!DSD_SYNC_IS_DMR(sync)) {
+        return 0U;
+    }
+    if (DSD_SYNC_IS_DMR_BS(sync)) {
+        return DMR_AIR_KIND_BS;
+    }
+    return (state->dmr_dm_sync_slot == 1U || state->dmr_dm_sync_slot == 2U) ? DMR_AIR_KIND_DIRECT : DMR_AIR_KIND_MS;
+}
+
+uint8_t
+dsd_position_dmr_air(const dsd_state* state) {
+    if (!state) {
         return DSD_POSITION_DMR_AIR_NONE;
     }
-    uint8_t kind = DMR_AIR_KIND_MS;
-    if (DSD_SYNC_IS_DMR_BS(sync)) {
-        kind = DMR_AIR_KIND_BS;
-    } else if (state->dmr_dm_sync_slot == 1U || state->dmr_dm_sync_slot == 2U) {
-        kind = DMR_AIR_KIND_DIRECT;
+    const uint8_t kind = dmr_air_kind(state);
+    if (kind == 0U) {
+        return DSD_POSITION_DMR_AIR_NONE;
     }
     uint8_t slot = 0U;
     if (state->dmr_mono_rx_slot != DSD_DMR_MONO_RX_NONE) {
@@ -72,6 +80,31 @@ dsd_position_dmr_air(const dsd_state* state) {
 int
 dsd_position_dmr_air_same(uint8_t a, uint8_t b) {
     return a == b && a != DSD_POSITION_DMR_AIR_UNKNOWN;
+}
+
+/* Whether a burst identity @p air was of the sender kind @p kind; an unknown one is of none. */
+static int
+dmr_air_of_kind(uint8_t air, uint8_t kind) {
+    return air != DSD_POSITION_DMR_AIR_UNKNOWN && (uint8_t)(air >> 2) == kind;
+}
+
+void
+dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane) {
+    if (!state) {
+        return;
+    }
+    const uint8_t kind = dmr_air_kind(state);
+    if (kind == 0U) {
+        return;
+    }
+    dsd_position_attribution* const evidence = &state->dmr_lc_attribution[evidence_lane & 1U];
+    if (evidence->call_epoch != 0U && !dmr_air_of_kind(evidence->air, kind)) {
+        dsd_position_attribution_clear(evidence);
+    }
+    uint8_t* const data_air = &state->dmr_data_air[data_lane & 1U];
+    if (*data_air != DSD_POSITION_DMR_AIR_NONE && !dmr_air_of_kind(*data_air, kind)) {
+        *data_air = DSD_POSITION_DMR_AIR_UNKNOWN;
+    }
 }
 
 /* The DMR burst identity evidence or a report of @p protocol carries: dsd_position_dmr_air() for DMR, else NONE. */

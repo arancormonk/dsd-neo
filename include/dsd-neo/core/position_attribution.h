@@ -17,14 +17,16 @@
  *    the evidence's: a call of another protocol, or of the other P25 phase, still open on the slot is not this one;
  *  - it is the call the evidence was learned in: the same epoch, or for a producer that binds to the transmission
  *    (DMR, whose call layer heals a fade into a new epoch of one transmission) the same transmission;
- *  - the reception has not changed since: the received identity's epoch (dsd_received_identity::epoch, moved by
- *    another access code, system, site or family on the carrier) is the one the evidence was learned under. A trunk
- *    follow keeps that epoch; a carrier change ends the call or clears the evidence;
+ *  - the reception has not changed since: the reception generation (dsd_state_reception_generation(), moved by
+ *    another access code, system, site or family on the carrier, an applied retune or a change of P25 phase) is the one
+ *    the evidence was learned under;
  *  - the call still names the evidence's source (and, for the target, its target);
  *  - for DMR, the burst carrying the report is the evidence's: the same sender kind by its sync word (a repeater's
  *    BS-sourced burst, a radio's MS-sourced one, direct mode's) on the same over-the-air slot
  *    (dsd_position_dmr_air_same()). A direct-mode call whose terminator was missed is not the repeater-mode call
- *    that follows it on the carrier, whatever the call layer kept.
+ *    that follows it on the carrier, whatever the call layer kept; and no burst of another sender kind came between on
+ *    the evidence's lane (dsd_position_dmr_note_lane_burst()), so a return to direct mode after such a burst is not
+ *    the direct-mode call either.
  * Anything else (a relock to another colour code, a NAC or system change, a new talker, another slot's or phase's
  * call) leaves the report anonymous. The evidence itself is only ever learned from content whose own check passed.
  */
@@ -100,6 +102,20 @@ uint8_t dsd_position_dmr_air(const dsd_state* state);
  * DSD_POSITION_DMR_AIR_UNKNOWN. */
 int dsd_position_dmr_air_same(uint8_t a, uint8_t b);
 
+/**
+ * @brief A DMR burst of the sender kind its own sync word names (a repeater's BS-sourced burst, a radio's MS-sourced
+ * one, direct mode) is being read on the decoder's lanes @p evidence_lane (the lane its embedded GPS evidence is kept
+ * under, dsd_state::dmr_lc_attribution) and @p data_lane (the lane its data assembly is kept under,
+ * dsd_state::dmr_data_air) (issue #800, fail closed).
+ *
+ * Evidence or a data header binding of another sender kind on that lane is revoked: the transmission it was learned in
+ * was interrupted on the lane, so a later burst of its own kind there is not shown to be the same transmission (a
+ * direct-mode call whose terminator was missed, a repeater-mode burst, then direct mode again). Another lane's bursts
+ * never touch it, so a carrier with BS-sourced bursts on one slot and MS-sourced ones on the other keeps each slot's
+ * evidence. The reception generation does not move. NULL does nothing. Decoder thread.
+ */
+void dsd_position_dmr_note_lane_burst(dsd_state* state, uint8_t evidence_lane, uint8_t data_lane);
+
 /** Zero @p a (no evidence). NULL does nothing. Inline, so state helpers that clear it need no core link. */
 static inline void
 dsd_position_attribution_clear(dsd_position_attribution* a) {
@@ -119,7 +135,7 @@ int dsd_position_attribution_call_from_closing(const struct dsd_event_closing_ca
  * @brief Record that content of @p call whose own check passed named @p source (and @p target with @p group).
  *
  * Recorded only while @p call is open and holds that source (a target the call does not hold is left out): @p out then
- * takes the call, its protocol, the binding @p bind, the reception's epoch and, for a DMR call, the identity of the
+ * takes the call, its protocol, the binding @p bind, the reception generation and, for a DMR call, the identity of the
  * burst that carried the content (dsd_position_dmr_air()), and 1 is returned. Otherwise @p out is left as it was and 0
  * is returned.
  */
