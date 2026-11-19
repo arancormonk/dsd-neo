@@ -105,6 +105,20 @@ set(dsd_neo_vcpkg_share_dir
 # every APK, written by the same tool from the build's own Qt kit: the archives of its
 # version and the Public Suffix List's source at the commit its SBOM names. The qt record's
 # android_release map stages this file into the APK, where the licences screen lists it.
+# They also say where the source and build scripts of this APK are: android-ci passes the
+# repository at the commit it builds, as the published copy names it.
+set(DSD_ANDROID_SOURCE_URL
+    ""
+    CACHE STRING
+    "Where the source and build scripts of this APK are, at the revision it is built from"
+)
+if(DSD_ANDROID_SOURCE_URL)
+    set(dsd_neo_source "${DSD_ANDROID_SOURCE_URL}")
+else()
+    set(dsd_neo_source
+        "https://github.com/arancormonk/dsd-neo (this APK was built locally, and the revision it was built from is not recorded)"
+    )
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 get_filename_component(dsd_neo_qt_kit "${Qt6Core_DIR}/../../.." ABSOLUTE)
 file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/qt-source")
@@ -113,9 +127,22 @@ execute_process(
         ${Python3_EXECUTABLE}
         ${PROJECT_SOURCE_DIR}/tools/android_source_directions.py directions
         --qt-version "${Qt6Core_VERSION}" --qt-kit "${dsd_neo_qt_kit}" --apk
-        "this app" --dsd-source "https://github.com/arancormonk/dsd-neo"
-        --output "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"
+        "this app" --dsd-source "${dsd_neo_source}" --output
+        "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"
     COMMAND_ERROR_IS_FATAL ANY
+)
+# Written at configure time, so a change to the tool or to the kit's files it reads
+# configures again.
+set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY
+        CMAKE_CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/tools/android_source_directions.py"
+            "${dsd_neo_qt_kit}/mkspecs/qconfig.pri"
+            "${dsd_neo_qt_kit}/sbom/qtbase-${Qt6Core_VERSION}.spdx.json"
+            "${dsd_neo_qt_kit}/sbom/qtdeclarative-${Qt6Core_VERSION}.spdx.json"
+            "${dsd_neo_qt_kit}/sbom/qtsvg-${Qt6Core_VERSION}.spdx.json"
 )
 
 # Stage once at configure time as well, so the directory androiddeployqt is pointed at

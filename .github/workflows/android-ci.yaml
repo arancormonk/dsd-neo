@@ -634,8 +634,11 @@ jobs:
           # AAB" step names that target — which it does on every publishable
           # run (release tags, pushes to main/master, and workflow_dispatch),
           # not only on tags.
+          # The APK's Qt source directions name the source it is built from,
+          # as the copy published beside it does.
           cmake --preset android-app -G Ninja \
             -DQT_ANDROID_SIGN_AAB=ON \
+            -DDSD_ANDROID_SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
           grep -F "Codec2 available: ON (M17 voice)" "$log"

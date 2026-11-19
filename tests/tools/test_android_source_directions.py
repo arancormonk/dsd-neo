@@ -180,12 +180,30 @@ class SourceDirections(unittest.TestCase):
         # android_release map stages that file into the APK, where the licences screen lists it and points to it.
         cmake = (ROOT / "android/CMakeLists.txt").read_text(encoding="utf-8")
         call = cmake[cmake.index("tools/android_source_directions.py"):]
-        call = call[:call.index(")")]
+        call = " ".join(call[:call.index(")")].split())
         for words in ("directions", "--qt-version", "--qt-kit", "--apk", "--dsd-source",
                       '--output "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"'):
             self.assertIn(words, call)
         self.assertLess(cmake.index("tools/android_source_directions.py"),
                         cmake.index("cmake/stage_android_package.cmake"))
+        # The APK names the repository and commit that built it, as the file published beside it does; android-ci
+        # passes them in, and a local build that passes none says so instead of naming a revision.
+        self.assertIn('--dsd-source "${dsd_neo_source}"', call)
+        self.assertIn('set(dsd_neo_source "${DSD_ANDROID_SOURCE_URL}")', cmake)
+        self.assertIn("revision it was built from is not recorded", cmake)
+        url = '"https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}"'
+        source = WORKFLOW.read_text(encoding="utf-8")
+        configure = script(step(job(source, "build-apk"), "Configure (android-app)"))
+        self.assertIn(f"-DDSD_ANDROID_SOURCE_URL={url}", configure)
+        self.assertIn(f"--dsd-source {url}", script(step(job(source, "build-apk"), "Write the Qt source directions")))
+        # Editing the tool or the kit's files it reads configures again, so the APK never keeps older directions.
+        depends = cmake[cmake.index("CMAKE_CONFIGURE_DEPENDS"):]
+        depends = depends[:depends.index(")")]
+        for path in ("${PROJECT_SOURCE_DIR}/tools/android_source_directions.py",
+                     "${dsd_neo_qt_kit}/mkspecs/qconfig.pri",
+                     *(f"${{dsd_neo_qt_kit}}/sbom/{module}-${{Qt6Core_VERSION}}.spdx.json"
+                       for module in ("qtbase", "qtdeclarative", "qtsvg"))):
+            self.assertIn(f'"{path}"', depends)
         records = json.loads((ROOT / "legal/components.json").read_text(encoding="utf-8"))
         qt = next(c for c in records["components"] if c["id"] == "qt")
         self.assertEqual(qt["android_release"]["notices"]["licenses/Qt-SOURCE.txt"], "build:qt-source/qt-source.txt")
