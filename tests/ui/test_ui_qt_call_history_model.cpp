@@ -6597,6 +6597,33 @@ test_merged_row_keeps_its_anchor(void) {
     expect("anchor: the rebuilt row is a Phase 2 row with no fix",
            rebuilt.value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P2_POS
                && !rebuilt.contains(QLatin1String("gps")));
+    // Gate g62-r9: the first fragment withdrawn (another system), then read again on the row's system with a fix. It
+    // is restored at its own place ahead of the Phase 2 fragment, so it is the row's anchor again: the row goes back to
+    // Phase 1 and takes the fix heard there.
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80644U, 8644U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80644U, 8644U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        Event_History* first = &ring.rings[0].Event_History_Items[2];
+        (void)with_rx(first, DSD_POS_SCOPE_P25, 0xBEE01U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: the withdrawn first fragment leaves a Phase 2 row", model.count() == 1);
+        (void)with_rx(first, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        with_gps(first, "GPS: phase one restored", 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: the restored anchor's fix is the row's",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one restored"));
+    }
+    const QJsonObject restored = stored_row_with(80644U, 8644U);
+    expect("anchor: the restored row is a Phase 1 row with the fix",
+           restored.value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS
+               && restored.contains(QLatin1String("gps")));
 }
 
 /* B5: an identity known in part is the same system as one that knows more of it. An EDACS call whose first fragment knew

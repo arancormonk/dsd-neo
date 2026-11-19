@@ -354,7 +354,10 @@ DecoderHostAndroid::noteRecordingShareFailed(const QString& path) {
 
 void
 DecoderHostAndroid::startRecordingShareClean() {
-    m_transfer_worker->start([]() { platformCleanRecordingShares(); });
+    m_transfer_worker->start([]() {
+        platformCleanRecordingShares();
+        platformCleanDiagnosticsShares();
+    });
 }
 
 } // namespace dsd_android

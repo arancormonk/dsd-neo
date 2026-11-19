@@ -143,7 +143,8 @@ that could hold a key are removed from it, and so are lines that show a position
 air or a part of one, together with the raw bytes of the position message printed on them. Lines that always show
 the raw bytes of a short data message that may carry a position are removed as well. Lines saved by an earlier
 version of the app are checked again when the log loads, and a line in a form those versions used for a position, or
-for the raw bytes of a data message, is removed too, even when it holds a plain text message. It can contain your
+for the raw bytes of a data message, is removed too, even when it holds a plain text message. The load removes these
+lines from the log's saved files as well, not only from what the app shows. It can contain your
 device's maker and model, its Android version, and what the app decoded, such as talkgroups
 and radio IDs. If you turn on raw message printing (the `-Z` option, off by default), the log
 also keeps the raw bytes of received messages, and those can still hold a position in coded

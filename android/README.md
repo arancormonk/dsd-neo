@@ -2067,7 +2067,8 @@ no exemption at all.
 
 The writer keeps the newest 256 KiB as two append-only segments in
 `files/diagnostics/`: `tail.prev.log`, then `tail.log`, at most 128 KiB each.
-- **Writing:** records are appended, never rewritten. The writer drains every
+- **Writing:** records are appended, never rewritten (only the load rewrites a
+  segment, to scrub it, below). The writer drains every
   250 ms and syncs at most once a second, so a trunked session that prints about
   70 lines a second writes those lines and nothing more. Before issue #745 the
   whole 256 KiB tail was rewritten and synced for every line, about 12 MB/s on a
@@ -2078,7 +2079,10 @@ The writer keeps the newest 256 KiB as two append-only segments in
   failures never stop decoding.
 - **Recovery at load:** the loader drops a record a crash left half-written,
   deletes temporaries a kill left behind, and splits an older build's single
-  `tail.log` at line starts.
+  `tail.log` at line starts. It also scrubs the stored records as it loads
+  them (issue #800): a segment the scrub changed is written back with its old
+  modification time (so its seven days do not restart), or removed when that
+  fails, and a segment that exists but cannot be read is removed.
 
 ### Host and session records
 
@@ -2163,7 +2167,10 @@ first, for the reason given. The app cannot read why the device restarted; an
 
 Sharing creates a temporary text file in `cacheDir/diagnostics/`, exposed through
 our separate, non-exported diagnostics FileProvider with a temporary read grant.
-Files older than one hour are removed on the next share. The API accepts text,
+Files more than one hour old (either way of the clock) are removed at the next
+app start or share, whichever comes first, so a copy an older build shared with
+position lines in it does not wait for a share (`DiagnosticsShare.clean()`, from
+the host's transfer worker at start; issue #800). The API accepts text,
 not paths; systems, preferences, and imported CSVs are outside that provider.
 Qt's own provider paths are unchanged.
 

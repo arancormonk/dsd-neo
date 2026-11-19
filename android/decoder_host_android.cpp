@@ -1032,6 +1032,16 @@ DecoderHostAndroid::platformCleanRecordingShares() {
     }
 }
 
+void
+DecoderHostAndroid::platformCleanDiagnosticsShares() {
+    const QJniObject context = android_context();
+    if (context.isValid()) {
+        // Must match DiagnosticsShare.kt: @JvmStatic fun clean(context: Context).
+        QJniObject::callStaticMethod<void>("io/github/arancormonk/dsdneo/DiagnosticsShare", "clean",
+                                           "(Landroid/content/Context;)V", context.object());
+    }
+}
+
 QString
 DecoderHostAndroid::platformTakeRecordingShareFailure() {
     // Must match RecordingShare.kt: @JvmStatic fun takeFailure(): String.

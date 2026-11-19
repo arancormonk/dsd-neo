@@ -2215,8 +2215,11 @@ test_type1_length_is_received_octets_less_crc_and_pad(void) {
     // The reporter's PDU: nine octets in one rate-3/4 unconfirmed block, 18 - 4 - 5 pad octets.
     rc |= (run_type1_length_case(3U, 18U, 1U, 5U, 0U) != 9U);
     rc |= (run_type1_length_case(4U, 24U, 2U, 7U, 1U) != (uint16_t)(48U - 4U - 7U));
-    // A pad count larger than the data (a relaxed-CRC header) is ignored rather than wrapped.
-    rc |= (run_type1_length_case(3U, 12U, 1U, 20U, 0U) != 8U);
+    // A pad count larger than the data leaves no user data (issue #800, fail closed): never wrapped, never ignored.
+    rc |= (run_type1_length_case(3U, 12U, 1U, 20U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 9U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 8U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 7U, 0U) != 1U);
     // Widths too narrow to hold a CRC32 carry no data.
     rc |= (run_type1_length_case(3U, 2U, 1U, 0U, 0U) != 0U);
     rc |= (run_type1_length_case(3U, 3U, 1U, 0U, 0U) != 0U);

@@ -1943,7 +1943,10 @@ suite runs under this compiler.
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
   is exactly one ARS message of that specification's section 3.4 (`dmr_ars_record_is_exact()`; a TMS ack shares the
   0xBF header octet and differs by length; length-value sizes are octets). The SAP length handed to every SAP decoder
-  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); the decrypt
+  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); a pad count
+  larger than the octets the blocks hold after the CRC32 (after the MNIS header's 7 for MNIS) leaves no user data at all,
+  whatever the header's check said, so no SAP or MNIS decoder (LRRP, LIP, LOCN among them) reads a packet whose lengths
+  disagree (`dmr_block_type1_checked_len()`, issue #800 fail closed; test `DMR_EVENT_CRC`); the decrypt
   window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
   P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
   set; `data_block_crc_valid` holds the header plus 127 block verdicts.
@@ -15879,8 +15882,10 @@ Qt Quick frontend (`src/ui/qt`):
       known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
       `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
       receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
-      to its first fragment still folded in (gate g62-r8): a new reading of that fragment is judged as the row's own
-      reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
+      to its first fragment still folded in (gate g62-r8), chosen from the parts as they stand once the reading is in
+      (gate g62-r9: a withdrawn fragment restored at its own place ahead of the others is the anchor again, so the row
+      returns to its reception and phase and takes that fragment's new fix): a new reading of that fragment is judged as
+      the row's own reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
       alias neither withdraws its fix nor moves it to another fragment's phase; after every fold the fixes the row
       keeps are only those of fragments heard on its reception now (`requalify_row_gps()`), so a row rebuilt onto the
       other P25 phase (its anchor withdrawn) keeps no fix of the first. The merge of the conversation is
@@ -17464,9 +17469,12 @@ Qt Quick frontend (`src/ui/qt`):
   `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
   `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
   degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
-  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded
-  (`DiagnosticsLog::redactStored()`, from `seedRing()`, its dropped context and `seedHostRing()`), so an older build's
-  log never reaches Copy or Share with one. Fail closed: a stored record carries no mark of the build that wrote it, so
+  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded: `loadSegments()`
+  passes every record of both segments of both logs (`tail`, `host`) through `DiagnosticsLog::redactStored()`
+  (`storedRecords()`) before the rings are seeded or a legacy tail is split, and writes the scrubbed records back over
+  any segment they changed (`replaceStoredRecords()`; removed when the rewrite fails; the split writes only scrubbed
+  records), so an older build's log never reaches Copy or Share with one and no position line stays on the device
+  until rotation (test `UI_QT_DIAGNOSTICS_LOG`, `storedPositionsLeaveTheFiles()`). Fail closed: a stored record carries no mark of the build that wrote it, so
   the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
   printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
   text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
@@ -17487,13 +17495,18 @@ Qt Quick frontend (`src/ui/qt`):
   holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
   carries the label.
   The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
-  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file (only the load
+  does, below). It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
   it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
   - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
-  - splits an older build's single tail at line starts.
+  - splits an older build's single tail at line starts;
+  - scrubs every stored record (`storedRecords()`, issue #800, D10) and writes back a segment the scrub changed, with
+    its old modification time, so the scrub never restarts the seven days (`replaceStoredRecords()`; the segment is
+    removed when the rewrite fails); a segment file that exists but cannot be read is removed (fail closed: it cannot
+    be scrubbed).
 
   Host, session and process records (issue #782) also go to a store of their own, so decoder output cannot push them
   out: `m_hostRing` (`kHostRingLimit`, 500) and the segment pair `host.prev.log`/`host.log`, each at most

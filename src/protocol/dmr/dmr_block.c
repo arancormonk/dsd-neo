@@ -1397,15 +1397,17 @@ dmr_block_print_locn_text(const uint8_t* text, uint16_t len) {
 
 /* The user data octets from @p start that the packet's own CRC32 covered (issue #800, fail closed): the octets the
  * blocks carried less the CRC32 and the @p poc pad octets, and never past the CRC's span (ctx->crc_end), which for
- * Motorola's compressed MNIS data leaves out the octet just before the CRC32. A pad count larger than the data
- * (possible only from a header accepted under relaxed CRC) is ignored, so the header still prints. */
+ * Motorola's compressed MNIS data leaves out the octet just before the CRC32. A pad count the packet cannot hold (more
+ * pad octets than the octets after @p start, a header CRC-valid or not) leaves no user data at all: the lengths
+ * disagree, so no octet is known to be the sender's and nothing reaches a payload decoder. The header still prints. */
 static uint16_t
 dmr_block_type1_checked_len(const dmr_block_assembler_ctx* ctx, uint16_t start, uint8_t poc) {
     const uint16_t received = dmr_block_type1_received_octets(ctx);
     uint16_t end = (received >= 4U) ? (uint16_t)(received - 4U) : 0U;
-    if (end >= start && poc <= (uint16_t)(end - start)) {
-        end = (uint16_t)(end - poc);
+    if (end < start || poc > (uint16_t)(end - start)) {
+        return 0U;
     }
+    end = (uint16_t)(end - poc);
     if (end > ctx->crc_end) {
         end = ctx->crc_end;
     }
