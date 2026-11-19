@@ -71,7 +71,13 @@ class NoticeHost : public dsd_qt::DecoderHost {
 bool
 write_file(const QString& path, const QByteArray& bytes) {
     QDir().mkpath(path.left(path.lastIndexOf(QLatin1Char('/'))));
-    FILE* file = dsd_fopen_private(QFile::encodeName(path).constData(), "wb");
+#ifdef _WIN32
+    /* The Windows helper opens a UTF-8 path by its UTF-16 name; the ANSI code page may not hold the temp folder's. */
+    const QByteArray native = path.toUtf8();
+#else
+    const QByteArray native = QFile::encodeName(path);
+#endif
+    FILE* file = dsd_fopen_private(native.constData(), "wb");
     if (file == nullptr) {
         return false;
     }
