@@ -371,15 +371,6 @@ dmr_pi_run(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorr
     }
 }
 
-/* Whether lane 0 carries a call of over-the-air slot 1: active, its slot known and not slot 2. A slot 2 PI header
-   says nothing of that call, whose voice the lane decodes. */
-static int
-dmr_pi_lane0_carries_slot1_call(const dsd_state* state) {
-    dsd_call_snapshot call;
-    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-           && call.receive_identity.slot == 1U;
-}
-
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     if (IrrecoverableErrors != 0) {
@@ -387,12 +378,9 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     }
     /* Where the single-slot decoder folds a slot 2 burst onto lane 0 (dmr_mono_folds_standalone_burst()), its PI header
        is folded with its LC (dmr_flco_ctx_init()): the ALG ID, key ID and MI go where the lane's voice decrypts from,
-       and the burst's CRC verdict, indexed by its own slot, follows it. Not while the lane carries a slot 1 call: the
-       header is slot 2's and stays there, as on the dual-slot decoder, so it neither changes that call's crypto nor
-       ends its hold (AGENTS.md, CRC/FEC provenance). */
+       and the burst's CRC verdict, indexed by its own slot, follows it. */
     const uint8_t saved_crc = state->event_crc_invalid[0];
-    const int folded = dmr_mono_folds_standalone_burst(opts, state) && state->currentslot == 1
-                       && !dmr_pi_lane0_carries_slot1_call(state);
+    const int folded = dmr_mono_folds_standalone_burst(opts, state) && state->currentslot == 1;
     if (folded) {
         state->event_crc_invalid[0] |= state->event_crc_invalid[1];
         state->currentslot = 0;

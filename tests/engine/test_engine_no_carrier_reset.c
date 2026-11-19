@@ -4660,47 +4660,6 @@ test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
     return rc;
 }
 
-/* Without trunking, while lane 0 carries a clear slot 1 call its checked voice LC header opened, a slot 2 PI header
-   (RC4, key ID 5) is slot 2's: it stays on slot 2, so the slot 1 call's crypto and its lane's voice keep what that
-   call said, and its frame plays as it came, never through slot 2's keystream. */
-static int
-test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(char frame[4][24]) {
-    char as_it_came[49] = {0};
-    int rc = expect_true("-fr slot 1 call: a fresh decoder records the frame",
-                         dmr_hold_fresh_frame(dmr_fold_rc4_key, frame, as_it_came));
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    dmr_fold_rc4_key(opts, state);
-    opts->dmr_mono = 1;
-    opts->trunk_enable = 0;
-    state->dmr_stereo = 0;
-    state->dmr_ms_mode = 0;
-    state->dmr_mono_slot = 0;
-    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
-    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x10U, 0x00U, 101U);
-    dsd_call_snapshot call;
-    rc |= expect_true("-fr slot 1 call: its header opened a slot 1 call on lane 0",
-                      dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-                          && call.receive_identity.slot == 1U);
-    /* The burst decoder judges a standalone burst by its own CACH slot while it dispatches it (dmr_data_sync()). */
-    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
-    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
-    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
-    rc |= expect_true("-fr slot 1 call: a slot 2 PI header stays on slot 2",
-                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_algidR == 0x21);
-    rc |= expect_true("-fr slot 1 call: the slot 1 call's crypto is unchanged",
-                      dsd_call_state_get(state, 0U, &call) > 0 && call.algid == 0U && call.ota_target_id == 101U);
-    char recorded[49] = {0};
-    rc |= expect_true("-fr slot 1 call: its frame after a slot 2 PI header plays as it came",
-                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
-                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
 /* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: lane 0's
    voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL), which the single-slot decoder's lane carrying a slot 2 AES
    call is keyed by while a slot 1 packet runs on index 0, stay as they were. */
@@ -4761,7 +4720,6 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_heal_keeps_hold(frame);
     rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
-    rc |= test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(frame);
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
 }
