@@ -523,14 +523,14 @@ function Assert-RuntimeCopy {
     }
 }
 
-if (!(Test-Path $TargetBinary)) {
+if (!(Test-Path -LiteralPath $TargetBinary)) {
     throw "TargetBinary not found: $TargetBinary"
 }
 
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 
-$destinationFull = (Resolve-Path $DestinationDir).Path
-$targetFull = (Resolve-Path $TargetBinary).Path
+$destinationFull = (Resolve-Path -LiteralPath $DestinationDir).Path
+$targetFull = (Resolve-Path -LiteralPath $TargetBinary).Path
 
 $dumpbin = Get-DumpbinPath
 $readobj = Get-ReadobjPath
@@ -631,7 +631,7 @@ if ($missing.Count -gt 0) {
 }
 
 $manifest = Join-Path $destinationFull 'dlls-manifest.txt'
-Get-ChildItem -Path $destinationFull -Filter '*.dll' -File -Force -ErrorAction SilentlyContinue |
+Get-ChildItem -LiteralPath $destinationFull -Filter '*.dll' -File -Force -ErrorAction SilentlyContinue |
     Sort-Object -Property Name |
     Select-Object -ExpandProperty Name |
-    Set-Content -Path $manifest -Encoding UTF8
+    Set-Content -LiteralPath $manifest -Encoding UTF8

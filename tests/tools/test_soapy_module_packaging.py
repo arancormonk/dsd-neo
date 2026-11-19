@@ -1168,8 +1168,8 @@ class SoapyReleaseScripts(unittest.TestCase):
             f"VCPKG_INSTALLED_DIR:PATH={installed.parent}\r\nVCPKG_TARGET_TRIPLET:STRING={installed.name}\r\n"
             "VCPKG_TARGET_TRIPLET-ADVANCED:INTERNAL=1\r\n")
 
-    def stage(self, tools, build, installed, windows, repo=ROOT):
-        stage = self.work / "dist/dsd-neo-msvc"
+    def stage(self, tools, build, installed, windows, repo=ROOT, folder="dsd-neo-msvc"):
+        stage = self.work / "dist" / folder
         env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows))
         env["ProgramFiles(x86)"] = str(self.program_files)
         for name in ("VCToolsInstallDir", "VCToolsRedistDir"):
@@ -1227,6 +1227,16 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertFalse(any(line.endswith("  licenses/portaudio-NOTICES.txt") for line in expected))
         log = normalized((tools / "cmake.log").read_text(encoding="utf-8"))
         self.assertEqual(log, f"--install {build} --prefix {stage} --component legal\n")
+
+    def test_stage_release_tree_in_a_folder_with_brackets(self):
+        # PowerShell reads [ ] in a -Path as a wildcard: staging into a folder such as "Radio [new]" must take the
+        # folder, the binaries it stages and the DLLs it lists literally.
+        tools, build, installed, windows = self.fake_tree()
+        rc, output, stage = self.stage(tools, build, installed, windows, folder="Radio [new]")
+        self.assertEqual(rc, 0, output)
+        manifest = (stage / "bin/dlls-manifest.txt").read_text(encoding="utf-8-sig").split()
+        self.assertEqual(sorted(manifest), sorted(p.name for p in (stage / "bin").glob("*.dll")))
+        self.assertIn("SoapySDR.dll", manifest)
 
     def test_stage_release_tree_needs_an_empty_folder(self):
         tools, build, installed, windows = self.fake_tree()
@@ -1518,15 +1528,15 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assertEqual(rc, 1, output)
         self.assertIn(".SoapyRemoteSupport.dll", output)
 
-    def release_tree(self):
-        """A release tree as stage_release_tree.ps1 leaves it, with fake programs and a fake dumpbin.exe."""
+    def release_tree(self, folder="release"):
+        """A release tree as stage_release_tree.ps1 leaves it, in folder, with fake programs and a fake dumpbin.exe."""
         tools = self.work / "verify-tools"
         tools.mkdir()
         (tools / "dumpbin.exe").write_text(FAKE_VERIFY_DUMPBIN.format(python=sys.executable), encoding="utf-8")
         (tools / "dumpbin.exe").chmod(0o755)
         self.report = {"dependents": json.loads(json.dumps(RELEASE_DEPENDENTS))}
         self.write_report(tools)
-        root = self.work / "release"
+        root = self.work / folder
         bin_dir = root / "bin"
         bin_dir.mkdir(parents=True)
         for name in INSTALLED_BIN + RUNTIME_DLLS:
@@ -1627,6 +1637,15 @@ class SoapyReleaseScripts(unittest.TestCase):
         rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 1, output)
         self.assertIn(f"missing PE NX compatible: {root / 'bin/hackrf.dll'}", output)
+
+    def test_verify_release_tree_in_a_folder_with_brackets(self):
+        # The ZIP may be unpacked into a folder such as "Radio [new]". PowerShell reads [ ] in a -Path as a wildcard,
+        # so a check that took the tree's folders that way would find no DLL or module in them.
+        tools, root, windows = self.release_tree("Radio [new]")
+        rc, output = self.verify(tools, root, windows)
+        self.assertEqual(rc, 0, output)
+        self.assertIn(f"Release tree verified: {root}", output)
+        self.assertIn("OK: rtlsdr.dll is built with the librtlsdr transfer patches", output)
 
     def test_verify_release_tree_refusals(self):
         tools, root, windows = self.release_tree()
@@ -1963,11 +1982,13 @@ RELEASE_SCRIPT_SHARDS = (
      "test_stage_release_tree_takes_the_runtime_from_the_toolset", "test_stage_release_tree_sees_hidden_modules"),
     ("test_stage_release_tree_needs_the_developer_shell_of_the_build",
      "test_stage_release_tree_checks_the_text_of_repository_notices",
-     "test_stage_release_tree_takes_the_vcpkg_tree_of_the_build", "test_stage_release_tree"),
+     "test_stage_release_tree_takes_the_vcpkg_tree_of_the_build", "test_stage_release_tree",
+     "test_stage_release_tree_in_a_folder_with_brackets"),
     ("test_stage_release_tree_refusals", "test_verify_release_tree_follows_imports_whatever_the_suffix",
      "test_verify_release_tree_needs_a_record_and_notices_for_every_file", "test_verify_release_tree",
      "test_verify_release_tree_checks_the_text_of_every_notice",
-     "test_verify_release_tree_needs_one_copy_of_each_shared_library"),
+     "test_verify_release_tree_needs_one_copy_of_each_shared_library",
+     "test_verify_release_tree_in_a_folder_with_brackets"),
     ("test_verify_release_tree_needs_the_runtime_record_with_the_runtime",
      "test_verify_release_tree_refuses_images_of_another_machine",
      "test_verify_release_tree_refuses_unrecorded_runtime_dlls", "test_verify_release_tree_sees_hidden_files",

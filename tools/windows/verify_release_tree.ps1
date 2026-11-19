@@ -217,7 +217,7 @@ function Test-PatchedRtlsdr {
     # The overlay applies the patches; this checks the DLL the tree ships came out of
     # that build. Only librtlsdr has a probe: the libairspy patch adds no mark to a
     # Windows build (tools/check_patched_usb_libs.sh probes it on Linux and macOS).
-    $dlls = @(Get-ChildItem -Path $Bin -File -Force -Filter '*rtlsdr*.dll')
+    $dlls = @(Get-ChildItem -LiteralPath $Bin -File -Force -Filter '*rtlsdr*.dll')
     if ($dlls.Count -ne 1) { throw "Expected exactly one staged librtlsdr DLL, found $($dlls.Count)" }
     $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dlls[0].FullName))
     if (-not $text.Contains('no transfer left, canceling')) {
@@ -262,7 +262,7 @@ function Test-LoadPath {
             throw "Expected one $name, in $bin; found $($paths.Count): $($paths -join ', ')"
         }
     }
-    $found = @(Get-ChildItem -Path $moduleDir -File -Force | Select-Object -ExpandProperty Name | Sort-Object)
+    $found = @(Get-ChildItem -LiteralPath $moduleDir -File -Force | Select-Object -ExpandProperty Name | Sort-Object)
     $expected = @($Modules.Values | Sort-Object)
     if (($found -join ',') -ne ($expected -join ',')) {
         throw "Expected exactly $($expected -join ', ') in $moduleDir; found $($found -join ', ')"
@@ -307,7 +307,7 @@ function Test-LoadPath {
     $images = New-Object 'System.Collections.Generic.List[string]'
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $queue = New-Object 'System.Collections.Generic.Queue[System.IO.FileInfo]'
-    $roots = @(Get-ChildItem -Path $bin -File -Force) + @(Get-ChildItem -Path $moduleDir -File -Force)
+    $roots = @(Get-ChildItem -LiteralPath $bin -File -Force) + @(Get-ChildItem -LiteralPath $moduleDir -File -Force)
     foreach ($root in @($roots | Where-Object { $_.Extension -in @('.exe', '.dll') })) {
         $queue.Enqueue($root)
     }
