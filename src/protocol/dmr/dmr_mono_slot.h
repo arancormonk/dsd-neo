@@ -82,13 +82,11 @@ dmr_mono_folds_standalone_burst(const dsd_opts* opts, const dsd_state* state) {
 /* Whether lane 0 carries an active call known to be of the other over-the-air slot than @p burst_slot (0: slot 1,
    1: slot 2): its receive slot is known and is not the burst's. A standalone burst the single-slot decoder would fold
    onto lane 0 (dmr_mono_folds_standalone_burst()) says nothing of that call: its terminator and PI header act on the
-   other index (1), as the other slot's do on the dual-slot decoder, and neither end it nor re-key it. The MS path puts
-   every burst on index 0 unless a direct-mode sync word named slot 2: there a burst's slot is known only when its sync
-   word named it (dsd_state::dmr_dm_sync_slot), and one whose slot is not known (an MS-sourced burst,
-   dmr_mono_slot_begin()) is taken for the lane's, as before. */
+   other index (1), as the other slot's do on the dual-slot decoder, and neither end it nor re-key it. One whose slot
+   is not known (an MS-sourced burst on slot 1's index, dmr_mono_slot_begin()) is taken for the lane's, as before. */
 static inline int
 dmr_mono_lane_call_is_other_slot(const dsd_state* state, uint8_t burst_slot) {
-    if (state->dmr_ms_mode == 1 && state->dmr_dm_sync_slot != (uint8_t)(burst_slot + 1U)) {
+    if (state->dmr_ms_mode == 1 && burst_slot == 0U) {
         return 0;
     }
     dsd_call_snapshot call;

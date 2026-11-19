@@ -3424,8 +3424,7 @@ suite runs under this compiler.
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
   trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded, so
   a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`). While lane 0 carries an active call
-  of the other slot (its receive slot known and not the burst's, `dmr_mono_lane_call_is_other_slot()`; on the MS path
-  a burst's slot is known only where its direct-mode sync word named it, `dsd_state::dmr_dm_sync_slot`), either way
+  of the other slot (its receive slot known and not the burst's, `dmr_mono_lane_call_is_other_slot()`), either way
   round, a standalone burst does not act on it: its PI header and terminator act on index 1 (`dmr_pi()`,
   `dmr_flco_ctx_init()`), as the other slot's do on the dual-slot decoder, and a slot 1 data header or data block is
   dispatched on index 1 (`dmr_data_route_off_lane()`; a slot 2 one is there already), so the lane's call is neither
