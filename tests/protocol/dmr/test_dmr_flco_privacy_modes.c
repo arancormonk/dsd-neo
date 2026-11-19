@@ -3357,10 +3357,10 @@ test_terminator_privacy_bit_does_not_lock_out(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// On RAS systems under the aggressive default every LC arrives with the masked CRC failed, so
-// the header is weak evidence too: the first encrypted observation classifies tentatively and
-// the lockout waits for the repeat -- which a real encrypted call supplies within one embedded
-// LC cadence.
+// On RAS systems every LC arrives with the masked CRC failed. Such an LC, header or embedded, names its talkgroup with
+// no check, so however often it repeats it arms no lockout, which records an event and drops the channel (AGENTS.md,
+// CRC/FEC provenance); it would otherwise lock out whatever talkgroup a corrupt LC named. -F accepts RAS LCs
+// (CRCCorrect 1), and one of those arms it.
 static void
 test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     static dsd_opts opts;
@@ -3388,6 +3388,12 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 3U);
+    assert(irr == 0);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
     assert(irr == 0);
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);

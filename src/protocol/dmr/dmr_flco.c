@@ -1468,7 +1468,10 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     // encrypted calls (or with trunking off). Matches the P25 handle_enc release
     // guard and the NXDN VCALL early return; without it a clear DMR LC in follow
     // mode would drop entries that then owe a fresh probe once lockout returns.
-    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0);
+    // Only an LC whose check passed (a RAS acceptance under -F included) names the talkgroup it acts on: one whose
+    // checksum failed may name another call's, which it must neither lock out nor release.
+    const int lockout_active =
+        (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0) && ctx->CRCCorrect == 1U;
     if (!(ctx->so & 0x40)) {
         // Corroborated clear voice on this target releases any retained
         // lockout entry so a talkgroup that stopped encrypting recovers.

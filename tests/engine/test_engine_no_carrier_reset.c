@@ -4610,6 +4610,33 @@ test_dmr_hold_ends_on_the_checked_word(char frame[4][24]) {
     return rc;
 }
 
+/* With encryption lockout on, an established Basic Privacy call on talkgroup 123 keyed from the keys file plays on; an
+   embedded LC whose checksum failed naming talkgroup 202 (no key) with the privacy bit is no check of anything: it locks
+   no talkgroup out and releases none, whatever talkgroup it names. */
+static int
+test_dmr_enc_lockout_needs_a_checked_lc(void) {
+    int rc = 0;
+    for (int locked = 0; locked <= 1; locked++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->trunk_enable = 1;
+        opts->trunk_tune_enc_calls = 0;
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        if (locked) {
+            (void)dsd_enc_lockout_note(state, 202U, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
+        }
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, locked ? 0x00U : 0x40U, 202U);
+        rc |= expect_true(locked ? "lockout: an unchecked clear LC releases no talkgroup"
+                                 : "lockout: an unchecked LC naming a keyless talkgroup locks nothing out",
+                          dsd_enc_lockout_entry_active(state, 202U, 1) == locked);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* Without trunking the single-slot decoder (-fr) decodes both slots on one lane, where crypto and call state can mix
    across slots, as on main: the DMR voice hold does not apply there, so after a carrier boundary held both slots, lane
    0's frame plays as it came before any LC says. A slot 2 PI header stays on slot 2's fields (index 1), as on main: only
@@ -4702,6 +4729,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_heal_keeps_hold(frame);
     rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_has_no_voice_hold(frame);
+    rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
 }

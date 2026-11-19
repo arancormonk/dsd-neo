@@ -1960,7 +1960,8 @@ suite runs under this compiler.
   still the slot's call, so a new call's frames before its LC key from the old call's talkgroup (the code cannot tell
   them apart before that LC). The call's LC, its printed key and the encryption lockout are judged by the key its own
   slot and talkgroup leave (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`,
-  `dmr_flco_missing_alg_key_can_decrypt()`). The terminal UI's slot row shows the key its own call keyed from
+  `dmr_flco_missing_alg_key_can_decrypt()`). Only an LC whose check passed (a RAS acceptance under `-F` included) arms or
+  releases the lockout (`dmr_flco_apply_enc_lockout()`): one whose checksum failed may name another call's talkgroup. The terminal UI's slot row shows the key its own call keyed from
   (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI snapshot holds no keyring), or none, and the Loaded lines and the
   Hytera menu label show the key the user loaded (the key the autoload replaced while its key is the working key), never
   a talkgroup's, revealed only by `--show-keys` through the redaction helpers. The autoload owns the working key from
