@@ -13789,7 +13789,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   (option `DSD_ENABLE_QT_UI`, default OFF)
 - Legal resources: the licences screen (`LicensesScreen.qml`) first shows where the source
   code of the Qt version the app is built with is (`DecoderHost::qtSourceNotice()`: Qt's
-  archive URLs for qtbase, qtdeclarative and qtsvg, from `QT_VERSION_*`), then lists by name
+  archive URLs for qtbase, qtdeclarative and qtsvg, from `QT_VERSION_*`, and a pointer to
+  `licenses/Qt-SOURCE.txt`, the release's directions with the Public Suffix List's pinned source, which
+  `android/CMakeLists.txt` writes with `tools/android_source_directions.py` from the build's Qt kit and the `qt`
+  record's `android_release` map stages), then lists by name
   every file that the package's notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo`
   in the APK, none in the base host) names in its `notice-index.txt`, in that order
   (`licenseFiles()`). A file's text is read and laid out only when it is opened, one at a

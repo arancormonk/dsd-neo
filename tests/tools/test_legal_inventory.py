@@ -513,8 +513,11 @@ class InventoryTests(unittest.TestCase):
                 self.assertTrue(packages[ident]["licenseConcluded"].startswith(expression), packages[ident])
                 self.assertNotIn("GPL-2.0-only", component["license_concluded"])
                 self.assertNotIn("finding", component)
-                shipped = component["android_release"]["notices"]
+                shipped = dict(component["android_release"]["notices"])
                 self.assertEqual(shipped["licenses/Apache-2.0.txt"], "repo:LICENSES/Apache-2.0.txt")
+                if ident == "qt":
+                    # Besides its retained notices, the APK carries the Qt source directions the build writes.
+                    self.assertEqual(shipped.pop("licenses/Qt-SOURCE.txt"), "build:qt-source/qt-source.txt")
                 self.assertEqual({source.removeprefix("repo:") for source in shipped.values()}, set(component["notices"]))
         for platform in ("windows", "linux", "macos"):
             document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
@@ -661,7 +664,7 @@ class NoticeStagingTests(unittest.TestCase):
         package.mkdir()
         build = self.work / "build"
         for name in ("pffft-licenses/pffft-LICENSE.txt", "pffft-licenses/pffft-NOTICES.txt",
-                     "tetra_crypto-licenses/tetra_crypto-LICENSE.txt"):
+                     "tetra_crypto-licenses/tetra_crypto-LICENSE.txt", "qt-source/qt-source.txt"):
             (build / name).parent.mkdir(parents=True, exist_ok=True)
             (build / name).write_text(name + "\n", encoding="utf-8")
         share = self.work / "vcpkg_installed/arm64-android-static/share"

@@ -174,6 +174,24 @@ class SourceDirections(unittest.TestCase):
         nightly = step(publish, "Upload APK nightly assets (overwrite)")
         self.assertIn("${{ needs.build-apk.outputs.apk_path }}.qt-source.txt", nightly)
 
+    def test_the_apk_carries_the_same_directions(self):
+        # Someone with only the APK finds the same directions, the Public Suffix List's pinned source among them: the
+        # Android configure writes them with this tool from the build's kit into the build tree, and the qt record's
+        # android_release map stages that file into the APK, where the licences screen lists it and points to it.
+        cmake = (ROOT / "android/CMakeLists.txt").read_text(encoding="utf-8")
+        call = cmake[cmake.index("tools/android_source_directions.py"):]
+        call = call[:call.index(")")]
+        for words in ("directions", "--qt-version", "--qt-kit", "--apk", "--dsd-source",
+                      '--output "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"'):
+            self.assertIn(words, call)
+        self.assertLess(cmake.index("tools/android_source_directions.py"),
+                        cmake.index("cmake/stage_android_package.cmake"))
+        records = json.loads((ROOT / "legal/components.json").read_text(encoding="utf-8"))
+        qt = next(c for c in records["components"] if c["id"] == "qt")
+        self.assertEqual(qt["android_release"]["notices"]["licenses/Qt-SOURCE.txt"], "build:qt-source/qt-source.txt")
+        screen = (ROOT / "src/ui/qt/decoder_host.cpp").read_text(encoding="utf-8")
+        self.assertIn("licenses/Qt-SOURCE.txt", screen)
+
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "the publisher runs in Bash")
     def test_release_notes_step_edits_the_tag_once(self):
         # Replay the publisher's step with a stand-in gh: it reads the notes, adds the directions and writes them back.

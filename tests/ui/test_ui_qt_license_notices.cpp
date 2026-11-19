@@ -106,6 +106,10 @@ test_qt_source_section() {
     for (const QString& module : {QStringLiteral("qtbase"), QStringLiteral("qtdeclarative"), QStringLiteral("qtsvg")}) {
         CHECK(text.contains(archive_url(module)), "each Qt module's source archive is named at that version");
     }
+    CHECK(text.contains(QStringLiteral("licenses/Qt-SOURCE.txt")),
+          "and the file in the list that gives the same directions as the release, written from the build's Qt kit");
+    CHECK(text.contains(QStringLiteral("Public Suffix List")),
+          "which name the source form of the Public Suffix List at the commit the app carries");
     CHECK(text.size() < 2000, "the section is short: no notice file's text is part of it");
 }
 

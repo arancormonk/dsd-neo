@@ -101,6 +101,23 @@ set(dsd_neo_vcpkg_share_dir
     "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share"
 )
 
+# The directions to the source of the Qt this APK carries, as the release publishes them beside
+# every APK, written by the same tool from the build's own Qt kit: the archives of its
+# version and the Public Suffix List's source at the commit its SBOM names. The qt record's
+# android_release map stages this file into the APK, where the licences screen lists it.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+get_filename_component(dsd_neo_qt_kit "${Qt6Core_DIR}/../../.." ABSOLUTE)
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/qt-source")
+execute_process(
+    COMMAND
+        ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/android_source_directions.py directions
+        --qt-version "${Qt6Core_VERSION}" --qt-kit "${dsd_neo_qt_kit}" --apk
+        "this app" --dsd-source "https://github.com/arancormonk/dsd-neo"
+        --output "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"
+    COMMAND_ERROR_IS_FATAL ANY
+)
+
 # Stage once at configure time as well, so the directory androiddeployqt is pointed at
 # already exists when Qt writes the deployment settings.
 execute_process(

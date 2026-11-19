@@ -2208,6 +2208,7 @@
           "LICENSE": "repo:LICENSE",
           "licenses/LGPL-3.0-only.txt": "repo:LICENSES/LGPL-3.0-only.txt",
           "licenses/Qt-NOTICES.txt": "repo:packaging/android/Qt-NOTICES.txt",
+          "licenses/Qt-SOURCE.txt": "build:qt-source/qt-source.txt",
           "licenses/Apache-2.0.txt": "repo:LICENSES/Apache-2.0.txt",
           "licenses/MPL-2.0.txt": "repo:LICENSES/MPL-2.0.txt",
           "licenses/Unicode-3.0.txt": "repo:LICENSES/Unicode-3.0.txt",

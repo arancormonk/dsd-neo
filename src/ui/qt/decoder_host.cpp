@@ -62,7 +62,8 @@ abort_handed_out(const std::vector<std::weak_ptr<Transport>>& handedOut) {
     }
 }
 
-/** @brief Where the source code of the Qt version this app is built with is, named from Qt's own version macros. */
+/** @brief Where the source code of the Qt version this app is built with is, named from Qt's own version macros, and
+ * the packaged file with the directions written from the build's Qt kit (the Public Suffix List's pinned source). */
 QString
 qt_source_notice() {
     const QString series = QStringLiteral("%1.%2").arg(QT_VERSION_MAJOR).arg(QT_VERSION_MINOR);
@@ -88,6 +89,11 @@ qt_source_notice() {
     lines.append(QStringLiteral("While Qt %1 is a current release, the same files are also under "
                                 "https://download.qt.io/official_releases/qt/%2/%1/submodules/.")
                      .arg(version, series));
+    lines.append(QString());
+    lines.append(QStringLiteral("licenses/Qt-SOURCE.txt in the list below gives these directions as the release "
+                                "does, written from the Qt kit the app was built with. It also names the source form "
+                                "of the Public Suffix List that Qt Network compiles in, at the commit this app "
+                                "carries."));
     return lines.join(QLatin1Char('\n'));
 }
 

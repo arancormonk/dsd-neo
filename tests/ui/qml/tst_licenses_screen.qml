@@ -47,6 +47,7 @@ Item {
             compare(source.text, decoderHost.qtSourceNotice());
             compare(source.text.indexOf("Qt source code\n"), 0);
             verify(source.text.indexOf("https://download.qt.io/archive/qt/") > 0);
+            verify(source.text.indexOf("licenses/Qt-SOURCE.txt") > 0);
             verify(source.readOnly && source.selectByMouse);
             var rows = findChild(screen, "licenseFileRows");
             compare(rows.count, decoderHost.licenseFiles().length);

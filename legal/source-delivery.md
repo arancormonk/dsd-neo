@@ -27,8 +27,10 @@ For each release asset, preserve the following together:
    to add) and the source form of the Public Suffix List that Qt Network
    compiles in, at the upstream commit Qt's records name.
    `tools/android_source_directions.py` writes it from the build's own Qt kit
-   and fails when the kit is another version. The app's licence screen gives
-   the same directions. No copy is kept on dsd-neo's servers, so the source's
+   and fails when the kit is another version. The APK carries the same
+   directions as `licenses/Qt-SOURCE.txt`, which the Android configure writes
+   with that tool from the build's kit, and the app's licence screen lists
+   that file and points to it. No copy is kept on dsd-neo's servers, so the source's
    availability depends on Qt's and the Public Suffix List's servers; section
    6(d) leaves the obligation to keep it available with dsd-neo as the
    distributor of the APK, and if those archives went away dsd-neo would have
