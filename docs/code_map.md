@@ -7358,11 +7358,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   change (`dsd_engine_forget_carrier_decoding()`) and on a rigctl peer's confirmed retune (issue #834,
   `dsd_engine_note_rigctl_retune()` in `trunk_tuning.c`): the audio a rigctl peer sends runs on across its retune, so
   this stands in for the RTL flush. Every rigctl leg calls it once the peer answered `RPRT 0` to a frequency other
-  than the one it last accepted (`dsd_opts::rigctl_sent_freq_hz`) and nothing flushes the stream after the leg: the
-  backend tune (`dsd_engine_tune_with_backend()`, unless a conventional scan's RTL leg follows: every trunk grant, hop,
-  control-channel tune and return, and every scan tune), the legacy leg (`no_carrier_tune_rigctl_if_needed()`, whose
-  caller says whether an RTL leg follows: only the untyped `-Y` step on an RTL input has one; the no-carrier pass's
-  direct control-channel return has none, also on an RTL input rigctl alone retunes) and app-control's io_control leg
+  than the one it last accepted (`dsd_opts::rigctl_sent_freq_hz`) unless a stream flush after the leg says the
+  radio moved: the backend tune (`dsd_engine_tune_with_backend()`: every trunk grant, hop, control-channel tune and
+  return, and every scan tune; behind a conventional scan's RTL leg only when that leg did not land, deferred, failed
+  or still in flight, since only a landed RTL retune flushes the stream), the legacy leg
+  (`no_carrier_tune_rigctl_if_needed()`, at once, even before the untyped `-Y` step's RTL leg, which may be deferred or
+  fail) and app-control's io_control leg
   (`svc_io_control_tune()`, also a trunked manual return or channel walk, which runs no carrier boundary). A tune to
   the frequency the peer is on, a refused request and a lost reply move nothing. The epoch moves at once, and the
   input's queued samples are asked to go: `dsd_state::input_drop_pending`, which the decoder thread carries out at its
@@ -7399,12 +7400,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   and port (`svc_rigctl_resync()`, through `svc_rigctl_connect()`, at most once a second while the peer cannot be
   reached); the rebind clears it (`test_set_freq_resyncs_after_a_late_reply()`,
   `test_set_freq_reply_has_one_deadline()`, `UI_RIGCTL_CONNECT` `test_resync_reconnects_a_connection_out_of_step()`). On an RTL input whose carrier the rigctl peer
-  moved with no RTL leg after it (a trunk leg outside conventional scan, the io_control leg), the stream has no retune
-  of its own to flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
+  moved with no RTL leg after it that landed (a trunk leg outside conventional scan, the io_control leg, the legacy
+  leg, a conventional scan's or untyped step's RTL leg deferred or failed), the stream has no retune of its own to
+  flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
   (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, and the output ring clears under
   a new output generation, which drops the decoder's cached symbols), on any thread under the reconfigure gate; the
   samples after the move go with it, since the stream cannot tell them apart (`ENGINE_TRUNK_RETUNE_REGRESSION`
-  `check_rigctl_move_drops_the_rtl_stream()`, `IO_RTL_RETUNE_PREPARE`). The queue the decoder reads attaches itself while it exists
+  `check_rigctl_move_drops_the_rtl_stream()`, `check_rigctl_move_kept_when_the_rtl_leg_fails()`,
+  `ENGINE_NO_CARRIER_RESET` `test_y_untyped_rigctl_move_flushes_when_the_rtl_leg_fails()`, `IO_RTL_RETUNE_PREPARE`). A
+  trunk tune whose rigctl leg moved the receiver and whose RTL leg then failed is reported failed, but the move's carrier
+  change stands: what a move leaves behind of the DMR calls goes as for a tune that succeeded
+  (`dsd_engine_tune_failure_keeps_rigctl_move()`). The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

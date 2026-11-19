@@ -9032,6 +9032,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
             "-Wl,--wrap=rtl_stream_get_last_applied_freq"
+            "-Wl,--wrap=rtl_stream_discard_after_external_move"
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=processFrame"
             "-Wl,--wrap=p25_sm_tick_guard_enter"

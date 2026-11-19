@@ -2978,6 +2978,40 @@ check_rigctl_move_drops_the_rtl_stream(dsd_opts* opts, dsd_state* state) {
     assert(g_rtl_external_discards == 2);
     g_rtl_external_discards = 0;
 }
+
+/* Issue #834: a conventional scan's tune on rigctl and RTL, whose rigctl leg the peer confirmed, and whose RTL leg
+   then was deferred or failed: the receiver moved all the same. The stream, which no retune of its own flushed, drops
+   what it holds, and the move leaves the DMR calls' carrier, though the tune is reported failed. */
+static void
+check_rigctl_move_kept_when_the_rtl_leg_fails(dsd_opts* opts, dsd_state* state) {
+    static const int k_rtl_results[] = {RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
+    for (size_t i = 0; i < sizeof k_rtl_results / sizeof k_rtl_results[0]; i++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->use_rigctl = 1;
+        opts->scanner_mode = 1; /* conventional scan: an RTL leg follows the rigctl leg */
+        opts->rigctl_sent_freq_hz = 853000000U;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        g_setfreq_result = true;
+        g_rtl_tune_result = k_rtl_results[i];
+        g_rtl_external_discards = 0;
+        seed_left_dmr_call(state);
+        const dsd_trunk_tune_result result = dsd_engine_trunk_tune_to_freq_request(opts, state, 853200000, 0, 0U);
+        (void)dsd_engine_apply_dmr_leave(state);
+        if (g_rtl_external_discards != 1 || state->dmr_enc_class_held[0] != 1U) {
+            DSD_FPRINTF(stderr,
+                        "a rigctl move whose RTL leg came back %d: stream dropped %d times, DMR held %u (want 1, 1)\n",
+                        k_rtl_results[i], g_rtl_external_discards, (unsigned)state->dmr_enc_class_held[0]);
+        }
+        assert(!dsd_trunk_tune_result_is_ok(result));
+        assert(g_rtl_external_discards == 1 && state->dmr_so == 0 && state->dmr_enc_class_held[0] == 1U);
+        assert(opts->rigctl_sent_freq_hz == 853200000U);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_external_discards = 0;
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+}
 #endif
 
 /* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
@@ -3352,6 +3386,7 @@ main(void) {
 #ifdef USE_RADIO
     check_dmr_leave_waits_for_a_pending_tune(opts, state);
     check_rigctl_move_drops_the_rtl_stream(opts, state);
+    check_rigctl_move_kept_when_the_rtl_leg_fails(opts, state);
 #endif
 
     /* RTL input driven by rigctl still needs the generic output drain because
