@@ -3107,6 +3107,22 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
     }
 }
 
+/* The DSD_CALL_CRYPTO_RX_* fields the live call received that this checked VCALL contradicts. */
+static uint8_t
+nxdn_vcall_contradicted(const dsd_state* state, const struct nxdn_vcall_info* info) {
+    uint8_t contradicted = 0U;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0) {
+        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_ALG) != 0U && call.received_algid != info->cipher_type) {
+            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
+        }
+        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_KID) != 0U && call.received_kid != info->key_id) {
+            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
+        }
+    }
+    return contradicted;
+}
+
 static void
 nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     int protocol = DSD_SYNC_IS_NXDN(state->synctype) ? state->synctype : state->lastsynctype;
@@ -3151,16 +3167,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     const int carries = (uint32_t)info->cipher_type == state->nxdn_cipher_type;
     const uint8_t received =
         carries && nxdn_cipher_received_enc(state) ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID) : 0U;
-    uint8_t contradicted = 0U;
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0) {
-        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_ALG) != 0U && call.received_algid != info->cipher_type) {
-            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
-        }
-        if ((call.crypto_received & DSD_CALL_CRYPTO_RX_KID) != 0U && call.received_kid != info->key_id) {
-            contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_KID;
-        }
-    }
+    const uint8_t contradicted = nxdn_vcall_contradicted(state, info);
     // This checked VCALL's own cipher says whether the call is encrypted, whatever the applied (possibly forced or
     // held) cipher is.
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, received,
@@ -3729,6 +3736,34 @@ nxdn_scch_carry_crypto(dsd_state* state, const dsd_call_snapshot* call, int same
     }
 }
 
+/* The observation an SCCH naming @p source_id and/or @p target_id (0: keep the call's) makes of the live call @p call:
+ * its route, service metadata and the texts of what the message does not name carried over. */
+static void
+nxdn_scch_identity_observation(const dsd_call_snapshot* call, uint32_t source_id, uint32_t target_id,
+                               dsd_call_kind kind, dsd_call_observation* observation) {
+    DSD_MEMSET(observation, 0, sizeof(*observation));
+    observation->protocol = call->protocol;
+    observation->slot = 0U;
+    observation->kind = nxdn_scch_named_kind(call, target_id, kind);
+    observation->ota_target_id = target_id != 0U ? target_id : call->ota_target_id;
+    observation->policy_target_id = target_id != 0U ? target_id : call->policy_target_id;
+    observation->ota_source_id = source_id != 0U ? source_id : call->ota_source_id;
+    observation->channel = call->channel;
+    observation->frequency_hz = call->frequency_hz;
+    observation->service_options = call->service_options;
+    observation->emergency = call->emergency;
+    observation->priority = call->priority;
+    observation->has_service_metadata = call->has_service_metadata;
+    if (source_id == 0U) {
+        DSD_MEMCPY(observation->source_text, call->source_text, sizeof(observation->source_text));
+    }
+    if (target_id == 0U) {
+        DSD_MEMCPY(observation->target_text, call->target_text, sizeof(observation->target_text));
+    }
+    DSD_MEMCPY(observation->route_text[0], call->route_text[0], sizeof(observation->route_text[0]));
+    DSD_MEMCPY(observation->route_text[1], call->route_text[1], sizeof(observation->route_text[1]));
+}
+
 /* @p dest_prefix: the Type-D home repeater / destination prefix a target message names with @p target_id (-1: none). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id, dsd_call_kind kind,
@@ -3738,28 +3773,8 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
         return;
     }
-    dsd_call_observation observation = {
-        .protocol = call.protocol,
-        .slot = 0U,
-        .kind = nxdn_scch_named_kind(&call, target_id, kind),
-        .ota_target_id = target_id != 0U ? target_id : call.ota_target_id,
-        .policy_target_id = target_id != 0U ? target_id : call.policy_target_id,
-        .ota_source_id = source_id != 0U ? source_id : call.ota_source_id,
-        .channel = call.channel,
-        .frequency_hz = call.frequency_hz,
-        .service_options = call.service_options,
-        .emergency = call.emergency,
-        .priority = call.priority,
-        .has_service_metadata = call.has_service_metadata,
-    };
-    if (source_id == 0U) {
-        DSD_MEMCPY(observation.source_text, call.source_text, sizeof(observation.source_text));
-    }
-    if (target_id == 0U) {
-        DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
-    }
-    DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
-    DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
+    dsd_call_observation observation;
+    nxdn_scch_identity_observation(&call, source_id, target_id, kind, &observation);
 
     int same_call = nxdn_scch_names_the_same_call(&call, target_id, kind, observation.kind);
     if (same_call && target_id != 0U && dest_prefix >= 0 && nxdn_received_iv_note_prefix(state, (uint8_t)dest_prefix)) {

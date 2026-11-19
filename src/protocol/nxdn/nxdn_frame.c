@@ -813,6 +813,16 @@ nxdn_frame_begin_evidence(const dsd_opts* opts, dsd_state* state, uint32_t frame
     nxdn_confirm_begin_frame(state);
 }
 
+/* A frame whose channel retuned the receiver: its remaining channels and voice were read on the carrier left and are
+   dropped, nothing of it stamps the carrier reached as active or steps its cipher, and the IV the carrier left's call
+   received is not the next carrier's. */
+static void
+nxdn_frame_left(dsd_state* state) {
+    state->nxdn_scch_frame_part = 0U;
+    dsd_nxdn_received_iv_clear(state);
+    DSD_FPRINTF(stderr, "\n");
+}
+
 int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
@@ -889,12 +899,8 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
     if (left_carrier) {
-        /* A channel of the frame retuned the receiver: its remaining channels and voice were read on the carrier left
-           and are dropped, and nothing of it stamps the carrier reached as active, nor steps its cipher. The IV the
-           carrier left's call received is not the next carrier's. */
-        state->nxdn_scch_frame_part = 0U;
-        dsd_nxdn_received_iv_clear(state);
-        DSD_FPRINTF(stderr, "\n");
+        /* A channel of the frame retuned the receiver: the rest was read on the carrier left (nxdn_frame_left()). */
+        nxdn_frame_left(state);
         goto END;
     }
     nxdn_finish_decoded_frame(opts, state, &ctx);
