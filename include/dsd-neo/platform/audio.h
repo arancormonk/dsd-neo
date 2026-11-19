@@ -121,9 +121,10 @@ int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
  * - PulseAudio (Linux, macOS): the input is the queue the mark counts (dsd_input_backlog_attach()): every byte the
  *   reads took from the client, and what the client held at the mark. The drop takes exactly what the reads had not
  *   taken of that count, from what the client holds, without a wait, so audio held at the mark goes even when nothing
- *   came since (a stopped source), and every frame after it is kept. A mark measured on another input, or one the
- *   reads already passed, drops nothing. What the server had not sent the client at the mark is not in the count: it
- *   is read after the drop as new audio.
+ *   came since (a stopped source), and every frame after it is kept. A hole in the stream counts as the audio does.
+ *   The drop stops after 250 ms on the monotonic clock, and the next read drops the rest before it returns anything. A
+ *   mark measured on another input, or one the reads already passed, drops nothing. What the server had not sent the
+ *   client at the mark is not in the count: it is read after the drop as new audio.
  * - PortAudio (Windows) and AAudio (Android) attach no queue: a device captures in real time, so the newest frames it
  *   holds, as many as the time since the mark (dsd_input_cut::marked_ns) lasts, are the audio captured since then. That
  *   time is read after the backend counts what it holds, so audio captured while the caller waited before the count is

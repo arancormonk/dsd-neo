@@ -24,6 +24,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "dsd-neo/platform/timing.h"
+
 struct pulse_record {
     pa_threaded_mainloop* mainloop;
     pa_context* context;
@@ -33,9 +35,11 @@ struct pulse_record {
     const uint8_t* data;
     size_t len;
     size_t index;
-    /* Every byte the reads took from the client so far (issue #834): with what the client holds, the stream's count of
-       its input (pulse_record_arrived()). Written under the mainloop lock. */
+    /* Every byte the reads took from the client so far, holes in the stream included (issue #834): with what the
+       client holds, the stream's count of its input (pulse_record_arrived()). Written under the mainloop lock. */
     uint64_t taken;
+    /* The count a retune's drop goes through (pulse_record_discard_through()): no read hands over a byte before it. */
+    uint64_t drop_through;
 };
 
 /* Every state change and every arrival of audio wakes a thread waiting on the mainloop. */
@@ -87,6 +91,7 @@ pulse_record_peek_locked(struct pulse_record* rec, int* err) {
             return 0;
         }
         if (data == NULL) {
+            rec->taken += len; /* a hole is on the byte count the client's readable size gave */
             if (pa_stream_drop(rec->stream) < 0) {
                 *err = pa_context_errno(rec->context);
                 return -1;
@@ -210,11 +215,66 @@ pulse_record_open(const char* app, const char* dev, const pa_sample_spec* spec, 
     return rec;
 }
 
+/* Drop what the client holds up to rec->drop_through, never waiting, until @p deadline_ns on the monotonic clock: the
+   bytes of audio dropped (holes it passed not counted), or -1 on error. Mainloop lock held. */
+static long
+pulse_record_drop_locked(struct pulse_record* rec, uint64_t deadline_ns, int* err) {
+    long dropped = 0;
+    while (rec->taken < rec->drop_through) {
+        if (!pulse_record_alive_locked(rec, err)) {
+            return -1;
+        }
+        const int held = pulse_record_peek_locked(rec, err);
+        if (held <= 0) {
+            return held < 0 ? -1 : dropped; /* nothing held now (a hole the peek passed may have reached it) */
+        }
+        const uint64_t want = rec->drop_through - rec->taken;
+        const size_t n = (uint64_t)rec->len < want ? rec->len : (size_t)want;
+        rec->index += n;
+        rec->len -= n;
+        rec->taken += n;
+        dropped += (long)n;
+        if (rec->len == 0U) {
+            rec->data = NULL;
+            rec->index = 0U;
+            if (pa_stream_drop(rec->stream) < 0) {
+                *err = pa_context_errno(rec->context);
+                return -1;
+            }
+        }
+        if (dsd_time_monotonic_ns() >= deadline_ns) {
+            break; /* the rest goes at the next read, before it hands anything over */
+        }
+    }
+    return dropped;
+}
+
+long
+pulse_record_discard_through(struct pulse_record* rec, uint64_t position, uint64_t deadline_ns, int* err) {
+    pa_threaded_mainloop_lock(rec->mainloop);
+    if (position > rec->drop_through) {
+        rec->drop_through = position;
+    }
+    const long dropped = pulse_record_drop_locked(rec, deadline_ns, err);
+    pa_threaded_mainloop_unlock(rec->mainloop);
+    return dropped;
+}
+
 int
 pulse_record_read(struct pulse_record* rec, void* data, size_t bytes, int* err) {
     uint8_t* out = (uint8_t*)data;
     int rc = 0;
     pa_threaded_mainloop_lock(rec->mainloop);
+    /* What a retune's drop did not get to goes first (pulse_record_discard_through()). */
+    while (rec->taken < rec->drop_through) {
+        if (pulse_record_drop_locked(rec, UINT64_MAX, err) < 0) {
+            pa_threaded_mainloop_unlock(rec->mainloop);
+            return -1;
+        }
+        if (rec->taken < rec->drop_through) {
+            pa_threaded_mainloop_wait(rec->mainloop); /* counted at the mark, not in the client yet */
+        }
+    }
     while (bytes > 0U) {
         if (!pulse_record_alive_locked(rec, err)) {
             rc = -1;
@@ -280,11 +340,6 @@ pulse_record_arrived(struct pulse_record* rec) {
     const uint64_t arrived = rec->taken + (queued > taken_of_fragment ? queued - taken_of_fragment : 0U);
     pa_threaded_mainloop_unlock(rec->mainloop);
     return arrived;
-}
-
-uint64_t
-pulse_record_taken(const struct pulse_record* rec) {
-    return rec->taken;
 }
 
 void
