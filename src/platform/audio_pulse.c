@@ -989,9 +989,9 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
-/* An input discard (dsd_audio_discard_input()) drops what the client holds, never waiting for more, for at most a
-   quarter of a second on the monotonic clock, of a stream of at most 8 channels. */
-#define PULSE_DISCARD_MAX_NS       250000000ULL
+/* An input discard (dsd_audio_discard_input()) drops in 256-frame reads, of at most 8 channels, of what the client
+   holds, never waiting for more. */
+#define PULSE_DISCARD_CHUNK_FRAMES 256U
 #define PULSE_DISCARD_MAX_CHANNELS 8U
 
 int
@@ -1007,16 +1007,27 @@ dsd_audio_discard_input(const dsd_audio_stream* stream, const dsd_input_cut* cut
     if (!cut->measured || !dsd_input_backlog_cut_applies(cut, stream)) {
         return 0;
     }
-    /* A quarter of a second at most: what it does not get to, the next read drops before it hands anything over. */
-    int err = 0;
-    const long dropped = pulse_record_discard_through(stream->record, cut->arrived,
-                                                      dsd_time_monotonic_ns() + PULSE_DISCARD_MAX_NS, &err);
-    if (dropped < 0) {
-        set_error_pa(err);
-        return -1;
+    const size_t frame_bytes = (size_t)stream->channels * sizeof(int16_t);
+    const uint64_t taken = pulse_record_taken(stream->record);
+    uint64_t left = cut->arrived > taken ? (cut->arrived - taken) / frame_bytes : 0U;
+    int16_t chunk[PULSE_DISCARD_CHUNK_FRAMES * PULSE_DISCARD_MAX_CHANNELS];
+    uint64_t dropped = 0U;
+    while (left > 0U) {
+        const size_t want = left < PULSE_DISCARD_CHUNK_FRAMES ? (size_t)left : PULSE_DISCARD_CHUNK_FRAMES;
+        int err = 0;
+        const long got = pulse_record_read_held(stream->record, chunk, want * frame_bytes, &err);
+        if (got < 0) {
+            set_error_pa(err);
+            return -1;
+        }
+        const size_t frames = (size_t)got / frame_bytes;
+        dropped += frames;
+        left -= frames;
+        if (frames < want) {
+            break; /* the client holds no more (it held what the mark counted, unless its stream lost audio) */
+        }
     }
-    const long frames = dropped / (long)((size_t)stream->channels * sizeof(int16_t));
-    return frames > (long)INT32_MAX ? INT32_MAX : (int)frames;
+    return dropped > (uint64_t)INT32_MAX ? INT32_MAX : (int)dropped;
 }
 
 /* Blocking output: the caller's thread owns the device. A failed write closes it, and the next write that finds a

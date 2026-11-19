@@ -10906,14 +10906,11 @@ Notes:
   `pa_simple` hides what its client holds and its read waits for the source with no bound. The PulseAudio input is
   the queue a mark counts (`dsd_input_backlog_attach()` at open, detached at close): its count is every byte the reads
   took from the client plus what the client holds (`pulse_record_arrived()`: `pa_stream_readable_size()`, less what
-  the reads took of the fragment handed over, under the mainloop lock, from any thread), a hole in the stream counted
-  as the reads pass it as the readable size counted it, so its drop takes exactly what the reads had not taken of the
-  mark's count, from what the client holds (`pulse_record_discard_through()`, never a wait, for at most 250 ms on the
-  monotonic clock: the position stays in the record, and the next read drops the rest before it hands anything
-  over), and keeps every frame after it: audio held at the mark goes even when nothing came since (a stopped source),
+  the reads took of the fragment handed over, under the mainloop lock, from any thread), so its drop takes exactly
+  what the reads had not taken of the mark's count, from what the client holds (`pulse_record_read_held()`, never a
+  wait), and keeps every frame after it: audio held at the mark goes even when nothing came since (a stopped source),
   a mark the reads already passed or one measured on another input drops nothing (`PLATFORM_AUDIO_PULSE_HELPERS`
-  `test_pulse_input_discard_drops_what_was_held_at_the_mark()`, `test_pulse_input_discard_of_a_stopped_source()`,
-  `test_pulse_input_discard_counts_a_hole()`, `test_pulse_input_discard_is_bounded_by_time()`).
+  `test_pulse_input_discard_drops_what_was_held_at_the_mark()`, `test_pulse_input_discard_of_a_stopped_source()`).
   What the server had not sent the client at the mark is not in the count, and is read after the drop. The decoder's
   own reads (`pulse_record_read()`) wait for the source as `pa_simple_read()` did. PortAudio and AAudio attach no
   queue: they drop what the stream holds but for the newest audio, as much as the time since the mark (`marked_ns`):

@@ -72,8 +72,6 @@ static int g_pa_waits;
 static int g_pa_unbounded_waits;
 /* The next peek finds a hole in the stream of this many bytes (issue #834), once. */
 static size_t g_pa_hole_bytes;
-/* How long each peek takes on the fake clock (issue #834): a loaded host. */
-static uint64_t g_pa_peek_ns;
 static int g_pa_simple_write_fail;
 static int g_pa_simple_write_calls;
 static int g_pa_simple_drain_fail;
@@ -100,7 +98,6 @@ reset_pa_simple_fakes(void) {
     g_pa_waits = 0;
     g_pa_unbounded_waits = 0;
     g_pa_hole_bytes = 0U;
-    g_pa_peek_ns = 0U;
     g_pa_simple_write_fail = 0;
     g_pa_simple_write_calls = 0;
     g_pa_simple_drain_fail = 0;
@@ -421,7 +418,6 @@ pa_stream_peek(pa_stream* p, const void** data, size_t* nbytes) {
     if (g_pa_record_peek_fail) {
         return -1;
     }
-    g_now_ns += g_pa_peek_ns;
     if (g_pa_hole_bytes > 0U) {
         *nbytes = g_pa_hole_bytes;
         g_fake_hole_out = g_pa_hole_bytes;
@@ -460,7 +456,7 @@ size_t
 pa_stream_readable_size(const pa_stream* p) {
     (void)p;
     assert(g_pa_lock_depth == 1);
-    return (g_pa_capture_on ? g_pa_capture_held : 0U) * sizeof(int16_t) + g_pa_hole_bytes + g_fake_hole_out;
+    return (g_pa_capture_on ? g_pa_capture_held : 0U) * sizeof(int16_t);
 }
 
 /* The input backlog (issue #834): the input a mark counts, and its attachment. */
@@ -1242,55 +1238,6 @@ test_pulse_input_discard_of_nothing_to_drop(void) {
     reset_pa_simple_fakes();
 }
 
-/* Issue #834: a hole in the stream (audio the server lost) is on the same byte count as the audio: the client's count
-   at the mark takes it in, and the drop counts it as it passes, so the new channel's audio after the mark is kept. */
-static void
-test_pulse_input_discard_counts_a_hole(void) {
-    dsd_audio_stream* in = open_capture_input();
-    g_pa_hole_bytes = 100U; /* 50 frames' worth, before frames 0..299 */
-    g_pa_capture_held = 300U;
-    const dsd_input_cut cut = mark_input();
-    g_pa_capture_held += 200U; /* the new channel's 300..499 */
-    (void)dsd_audio_discard_input(in, &cut);
-    int16_t frame = -1;
-    assert(dsd_audio_read(in, &frame, 1) == 1);
-    if (frame != 300) {
-        DSD_FPRINTF(stderr, "a drop over a hole: the next frame read is %d (want 300)\n", frame);
-    }
-    assert(frame == 300);
-    dsd_audio_close(in);
-    reset_pa_simple_fakes();
-}
-
-/* Issue #834: a drop of a large backlog on a loaded host stops at its time bound (250 ms on the monotonic clock) and
-   the reads that follow drop the rest of what the mark counted before they return anything: no audio from before the
-   mark is read. */
-static void
-test_pulse_input_discard_is_bounded_by_time(void) {
-    dsd_audio_stream* in = open_capture_input();
-    g_pa_capture_held = 3000U; /* 30 fragments of 100 */
-    const dsd_input_cut cut = mark_input();
-    g_pa_peek_ns = 20000000ULL; /* 20 ms a peek */
-    const uint64_t start = g_now_ns;
-    const int dropped = dsd_audio_discard_input(in, &cut);
-    const uint64_t took = g_now_ns - start;
-    if (took > 270000000ULL || dropped >= 3000) {
-        DSD_FPRINTF(stderr, "a drop of 3000 held frames took %llu ms and dropped %d (want <= 270 ms, < 3000)\n",
-                    (unsigned long long)(took / 1000000ULL), dropped);
-    }
-    assert(took <= 270000000ULL && dropped < 3000);
-    g_pa_peek_ns = 0U;
-    g_pa_capture_held += 10U; /* the new channel's 3000.. */
-    int16_t frame = -1;
-    assert(dsd_audio_read(in, &frame, 1) == 1);
-    if (frame != 3000) {
-        DSD_FPRINTF(stderr, "after a bounded drop the next frame read is %d (want 3000)\n", frame);
-    }
-    assert(frame == 3000);
-    dsd_audio_close(in);
-    reset_pa_simple_fakes();
-}
-
 int
 main(void) {
     test_pulse_size_helpers();
@@ -1306,8 +1253,6 @@ main(void) {
     test_pulse_input_discard_drops_what_was_held_at_the_mark();
     test_pulse_input_discard_of_a_stopped_source();
     test_pulse_input_discard_of_nothing_to_drop();
-    test_pulse_input_discard_counts_a_hole();
-    test_pulse_input_discard_is_bounded_by_time();
     return 0;
 }
 

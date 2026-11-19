@@ -43,10 +43,8 @@ long pulse_record_read_held(struct pulse_record* rec, void* data, size_t bytes, 
  * the client holds now. Takes the mainloop lock: any thread but the mainloop's own. */
 uint64_t pulse_record_arrived(struct pulse_record* rec);
 
-/** Drop what the client holds before byte @p position of its count (pulse_record_arrived()), never waiting for the
- * source, until @p deadline_ns on the monotonic clock (issue #834). What it does not get to, the next read drops before
- * it hands anything over. Returns the bytes of audio dropped, or -1 with the PulseAudio error code in @p err. */
-long pulse_record_discard_through(struct pulse_record* rec, uint64_t position, uint64_t deadline_ns, int* err);
+/** What the reads took from the client so far, in bytes. The reading thread. */
+uint64_t pulse_record_taken(const struct pulse_record* rec);
 
 /** Close the stream and free it (NULL is a no-op). */
 void pulse_record_free(struct pulse_record* rec);
