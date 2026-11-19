@@ -17,6 +17,10 @@
 # Run as a build step rather than at configure time so edits to android/package/ reach the
 # APK without re-running CMake. file(COPY) and configure_file(COPYONLY) both skip files
 # that are already current, so a no-op build does not make Gradle repackage.
+#
+# The documentation folder is staged afresh beside the package and then brought in line
+# with it: a notice no longer staged leaves the package and its index, as a clean build
+# would leave it out, and a file whose content is unchanged is not rewritten.
 
 foreach(
     _required
@@ -38,41 +42,66 @@ foreach(
 endforeach()
 
 set(_doc_dir "${STAGE_DIR}/assets/doc/dsd-neo")
+set(_fresh_dir "${STAGE_DIR}-doc")
 set(DSD_MBELIB_NOTICE_DIR "${MBELIB_NOTICE_DIR}")
 include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 
 file(COPY "${SOURCE_DIR}/" DESTINATION "${STAGE_DIR}")
-file(COPY "${REPO_DIR}/legal" DESTINATION "${_doc_dir}")
-file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_doc_dir}/licenses")
-file(COPY "${MBELIB_NOTICE_DIR}/" DESTINATION "${_doc_dir}/licenses/mbelib-neo")
+file(REMOVE_RECURSE "${_fresh_dir}")
+file(COPY "${REPO_DIR}/legal" DESTINATION "${_fresh_dir}")
+file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_fresh_dir}/licenses")
+file(
+    COPY "${MBELIB_NOTICE_DIR}/"
+    DESTINATION "${_fresh_dir}/licenses/mbelib-neo"
+)
 
 file(
     COPY
         "${REPO_DIR}/LICENSE"
         "${REPO_DIR}/COPYRIGHT"
         "${REPO_DIR}/THIRD_PARTY.md"
-    DESTINATION "${_doc_dir}"
+    DESTINATION "${_fresh_dir}"
 )
 
 # The notices of every component the APK carries, under the names its record gives them:
 # the vendored USB libraries, the fonts compiled into the Qt resource bundle, the
 # downloaded PFFFT and TETRA_crypto, and the libraries vcpkg links into the app.
 set(PLATFORM android)
-set(DOC_DIR "${_doc_dir}")
+set(DOC_DIR "${_fresh_dir}")
 include("${REPO_DIR}/cmake/stage_release_notices.cmake")
+
+set(_index_name "notice-index.txt")
+file(
+    GLOB_RECURSE _staged
+    LIST_DIRECTORIES false
+    RELATIVE "${_fresh_dir}"
+    "${_fresh_dir}/*"
+)
+list(REMOVE_ITEM _staged "${_index_name}")
+set(_present "")
+if(EXISTS "${_doc_dir}")
+    file(
+        GLOB_RECURSE _present
+        LIST_DIRECTORIES false
+        RELATIVE "${_doc_dir}"
+        "${_doc_dir}/*"
+    )
+endif()
+foreach(_name IN LISTS _present)
+    if(NOT _name STREQUAL _index_name AND NOT _name IN_LIST _staged)
+        file(REMOVE "${_doc_dir}/${_name}")
+    endif()
+endforeach()
+foreach(_name IN LISTS _staged)
+    # COPYONLY leaves a file whose content is already current as it is.
+    configure_file("${_fresh_dir}/${_name}" "${_doc_dir}/${_name}" COPYONLY)
+endforeach()
+file(REMOVE_RECURSE "${_fresh_dir}")
 
 # The app's licences screen reads the files this index names, one path per line: the
 # project's own legal files first, then every other file the folder holds, sorted. It is
 # taken from the folder as staged, so a notice a record's map adds is listed with no
 # change to the app.
-set(_index_name "notice-index.txt")
-file(
-    GLOB_RECURSE _staged
-    LIST_DIRECTORIES false
-    RELATIVE "${_doc_dir}"
-    "${_doc_dir}/*"
-)
-list(REMOVE_ITEM _staged "${_index_name}")
 list(SORT _staged)
 set(_first LICENSE COPYRIGHT THIRD_PARTY.md)
 list(REMOVE_ITEM _staged ${_first})

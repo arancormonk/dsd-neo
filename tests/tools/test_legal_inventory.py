@@ -736,6 +736,30 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertIn("licenses/Added-NOTICES.txt", index)
         self.assertEqual(index.count("licenses/Added-NOTICES.txt"), 1)
 
+        # Dropped from the map again, an incremental build removes it from the folder and the index, as a clean
+        # build would; a file the staging never wrote goes as well.
+        (docs / "licenses/stray.txt").write_text("stray\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+        for gone in ("licenses/Added-NOTICES.txt", "licenses/stray.txt"):
+            self.assertFalse((docs / gone).exists(), gone)
+            self.assertNotIn(gone, index)
+        staged = sorted(path.relative_to(docs).as_posix() for path in docs.rglob("*")
+                        if path.is_file() and path.name != "notice-index.txt")
+        self.assertEqual(sorted(index), staged)
+
+    def test_android_staging_rerun_rewrites_nothing(self):
+        # A no-op build leaves every staged file as it was, so Gradle has nothing to repackage.
+        build, share, docs, args = self.android_fixture()
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        before = {path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = {path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+
     def test_release_notice_staging_follows_any_platform_map(self):
         # The staging the APK uses takes any platform's map, so the DMG can use it as well; it refuses a source it does
         # not know, a path outside its root and a legal-component notice the package lacks.
