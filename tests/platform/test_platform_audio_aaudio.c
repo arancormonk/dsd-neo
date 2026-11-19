@@ -1171,6 +1171,19 @@ test_input_stream(void) {
                         (unsigned long long)(stream->device_frames - counted));
         }
         assert(stream->device_frames == counted + 4U);
+        /* A read the carry starts and the device fails returns nothing: nothing of it counts. */
+        const size_t left = audio_input_carry_left(stream->input_carry);
+        static int16_t more[512];
+        assert(left > 0U && left + 4U <= sizeof more / sizeof more[0]);
+        const uint64_t before = stream->device_frames;
+        g.read_result_pending = 1;
+        g.read_result = AAUDIO_ERROR_INTERNAL;
+        assert(dsd_audio_read(stream, more, left + 4U) == -1);
+        if (stream->device_frames != before) {
+            DSD_FPRINTF(stderr, "a failed read counted %llu input frames (expected 0)\n",
+                        (unsigned long long)(stream->device_frames - before));
+        }
+        assert(stream->device_frames == before);
         if (dropped != 256 || got != 4 || next[0] != 20000) {
             DSD_FPRINTF(stderr,
                         "an uncounted overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n",
