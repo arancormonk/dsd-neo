@@ -185,6 +185,38 @@ test_mark_is_complete_after_a_stall(void) {
     return rc;
 }
 
+/* Issue #834: the counts the UI shows follow a ring that never empties. 2000 datagrams wait in the ring (a mark moved
+   them in), and 1500 samples are read: the counters are copied within a bounded run of reads, not only when the ring
+   empties, which a sender that keeps it filled never lets happen. */
+static int
+test_counters_follow_a_ring_that_never_empties(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.wav_sample_rate = 48000;
+    udp_input_test_hold_receive(1);
+    if (udp_input_start(&opts, "127.0.0.1", 0, 48000) != 0) {
+        udp_input_test_hold_receive(0);
+        DSD_FPRINTF(stderr, "udp_input_start failed\n");
+        return 1;
+    }
+    udp_input_test_queue_datagrams(2000);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    int rc = expect("the datagrams wait in the ring", cut.measured == 1U && cut.arrived == 2000U);
+    for (int i = 0; rc == 0 && i < 1500; i++) {
+        int16_t s = 0;
+        rc |= expect("a sample is read", udp_input_read_sample_wait(&opts, &s, 20U) == 1);
+    }
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the counts follow while the ring holds samples (packets %llu, want 2000)",
+                 (unsigned long long)opts.udp_in_packets);
+    rc |= expect(label, opts.udp_in_packets == 2000ULL);
+    udp_input_test_queue_datagrams(0);
+    udp_input_test_hold_receive(0);
+    udp_input_stop(&opts);
+    return rc;
+}
+
 /* What the endless sender's case does on a thread of its own, so a lock held without end shows as a case that never
    finishes: a sample read, a mark taken and the input stopped, each while the socket never goes quiet. */
 typedef struct {
@@ -269,6 +301,7 @@ main(void) {
     }
     int rc = test_mark_counts_queued_datagrams();
     rc |= test_mark_is_complete_after_a_stall();
+    rc |= test_counters_follow_a_ring_that_never_empties();
     rc |= test_endless_sender_holds_no_lock();
     dsd_socket_cleanup();
     if (rc == 0) {

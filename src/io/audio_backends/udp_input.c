@@ -64,7 +64,12 @@ typedef struct udp_input_ctx {
     /* The most the socket's receive buffer holds (SO_RCVBUF as the system reports it): a backlog mark's drain budget
        (udp_input_arrived()). */
     uint64_t rcvbuf_bytes;
+    /* Samples read since the counters were last copied into the options; the decoder thread's only. */
+    unsigned int reads_unmirrored;
 } udp_input_ctx;
+
+/* The most samples read between two copies of the counters, when the ring never empties: about 21 ms at 48 kHz. */
+#define UDP_INPUT_MIRROR_READS    1024U
 
 /* The largest datagram a read takes. */
 #define UDP_INPUT_DATAGRAM_MAX    65536U
@@ -589,7 +594,7 @@ udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
  * queued commands; issue #634). A spurious wakeup can end the wait early, as a timeout.
  *
  * @param opts Decoder options containing UDP context; their packet, byte and drop counts are brought up to date once per
- *             block: when a read empties the ring, or finds none in time.
+ *             block: when a read empties the ring, every UDP_INPUT_MIRROR_READS samples, or when none arrive in time.
  * @param out [out] Receives one PCM16 sample.
  * @param timeout_ms Longest wait for a sample.
  * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when none arrived in time.
@@ -621,10 +626,12 @@ udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms
     }
     *out = ctx->ring.buf[ctx->ring.tail];
     ctx->ring.tail = (ctx->ring.tail + 1) % ctx->ring.cap;
-    const int drained = ring_used(&ctx->ring) == 0;
+    const int drained = ctx->ring.head == ctx->ring.tail;
     dsd_mutex_unlock(&ctx->ring.m);
-    /* The counts the UI shows, on the decoder's thread, once per block the reader drains rather than per sample. */
-    if (drained) {
+    /* The counts the UI shows, on the decoder's thread, once per block the reader drains rather than per sample, and at
+       least every UDP_INPUT_MIRROR_READS samples while a sender keeps the ring filled. */
+    if (drained || ++ctx->reads_unmirrored >= UDP_INPUT_MIRROR_READS) {
+        ctx->reads_unmirrored = 0U;
         udp_input_mirror_counters(opts, ctx);
     }
     return 1;
