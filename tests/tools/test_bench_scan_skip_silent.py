@@ -75,6 +75,25 @@ class SilentModes(unittest.TestCase):
                 self.assertIn("nxdn48-conventional", trunk.read())
 
 
+    def test_a_trunk_run_with_no_silent_target_is_refused(self):
+        # One silent channel takes the first mode, dPMR, which a trunk target list has no type for: nothing silent runs.
+        code, message = parse(*BASE_ARGS, "--scan", "trunk", "--silent", "1", "--silent-modes", "dpmr,nxdn48")
+        self.assertEqual(code, 2)
+        self.assertIn("no silent", message)
+
+    def test_rescoring_takes_the_modes_the_run_used(self):
+        # A saved run is scored with the modes its typed map gave each frequency, whatever today's rotation gives.
+        channels = bench.scene_layout(3)
+        with tempfile.TemporaryDirectory() as out_dir:
+            with open(os.path.join(out_dir, "typed.csv"), "w", encoding="ascii") as typed:
+                typed.write("channel,frequency_hz,name,mode,options\n")
+                modes = {c.index: "dpmr" if c.kind == "silent" else c.kind for c in channels}
+                typed.writelines(f"{c.index + 1},{c.frequency},{c.name},{modes[c.index]},\n" for c in channels)
+            bench.apply_saved_modes(channels, out_dir)
+        modes = [bench.channel_mode(c, ("dpmr", "nxdn48")) for c in channels if c.kind == "silent"]
+        self.assertEqual(modes, ["dpmr", "dpmr", "dpmr"])
+
+
 class DecoderCommand(unittest.TestCase):
     def test_an_uncapped_run_disables_the_cap(self):
         # A cap a DSD_NEO_CONFIG file sets must not stay in force: 0 is passed, as the decoder's "off".

@@ -62,6 +62,7 @@ hardware, and serves the loopback interface only.
 """
 
 import argparse
+import csv
 import collections
 import json
 import math
@@ -124,6 +125,7 @@ class Channel:
         self.index = index
         self.kind = kind  # "silent", "nfm", "dmr" or "p25"
         self.silent_index = index if silent_index is None else silent_index  # its place among the silent channels
+        self.mode = None  # the mode a saved run's typed map gave it (apply_saved_modes()), if any
         self.frequency = BASE_HZ + index * SPACING_HZ
         self.starts: np.ndarray | None = None  # call start times, scene time s
         self.snr_db: float | None = None
@@ -306,7 +308,22 @@ class Scene(tcp_bench.Source):
 
 def channel_mode(channel, silent_modes=ACTIVE):
     """The mode a channel runs: an active channel its own, a silent one the silent modes in turn."""
-    return channel.kind if channel.kind != "silent" else silent_modes[channel.silent_index % len(silent_modes)]
+    if channel.kind != "silent":
+        return channel.kind
+    return channel.mode or silent_modes[channel.silent_index % len(silent_modes)]
+
+
+def apply_saved_modes(channels, out_dir):
+    """A saved run scored again (--rescore, --analyze): each silent channel takes the mode the run's own typed map
+    (OUT_DIR/typed.csv) gave its frequency, so a run made under another mode rotation is scored as it ran."""
+    path = os.path.join(out_dir, "typed.csv")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="ascii") as typed:
+        saved = {int(row["frequency_hz"]): row["mode"] for row in csv.DictReader(typed)}
+    for c in channels:
+        if c.kind == "silent" and c.frequency in saved:
+            c.mode = saved[c.frequency]
 
 
 def write_lists(channels, out_dir, silent_modes=ACTIVE):
@@ -885,8 +902,13 @@ def parse_args():
             "--scan untyped runs every row under -ft (DMR and P25 only) from a map with no mode column: "
             "--silent-modes applies to --scan typed and --scan trunk"
         )
-    if args.scan == "trunk" and all(m == "dpmr" for m in args.silent_modes):
-        parser.error("--scan trunk has no dPMR target type: give it another silent mode too")
+    if args.scan == "trunk" and all(
+        channel_mode(c, args.silent_modes) == "dpmr" for c in scene_layout(args.silent) if c.kind == "silent"
+    ):
+        parser.error(
+            "--scan trunk has no dPMR target type, and the silent modes give every silent channel dPMR: no silent "
+            "channel would run; give another silent mode first, or more silent channels"
+        )
     reception.ARGS = argparse.Namespace(dsd=args.dsd, dmr_synth_gen=args.dmr_synth_gen)
     return args
 
@@ -910,6 +932,7 @@ def main():
         with open(os.path.join(args.out, "run.json"), encoding="utf-8") as handle:
             record = report_options(json.load(handle), args)
         channels = scene_channels(record["silent"], record["level"], record["seed"], record["jitter_s"])
+        apply_saved_modes(channels, os.path.abspath(args.out))
         if args.analyze:
             analyze(args, record, channels)
         else:
