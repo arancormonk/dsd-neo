@@ -12245,7 +12245,8 @@ Private per-protocol modules worth knowing about:
   `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
   carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on every frame of the
   voice superframe (a fully stolen one with no position included: its slots still run the register on; a Type-D frame
-  of the non-superframe structure, LICH USC 0x, TS 1-E Table 5.2-1, with no position is none), places the register
+  of the non-superframe structure, LICH USC 0x, TS 1-E Table 5.2-1, is none: its single SCCH, structure 00, places
+  nothing, and its slots run the register on only for a cipher already selected, as before), places the register
   at the frame's start with the cipher and key this frame chose, only from a checked position and only once (a scalar
   key loaded only; the SACCH segment decoder places nothing itself, so a VCALL the SACCH completed may choose them
   first), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH or SACCH

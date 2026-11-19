@@ -584,14 +584,15 @@ nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (!nxdn_frame_steps_after_signalling(state, ctx)) {
         return;
     }
-    const uint8_t part = ctx->result->seed_part;
     /* A forced scrambler (-4) covers every frame of the voice superframe, a fully stolen one with no position included:
        its slots still run the register on. Only the absolute placement needs a checked position. A Type-D frame of the
        non-superframe structure (its LICH's USC 0x, TS 1-E Table 5.2-1: a standalone FACCH1, UDCH2 or FACCH3 frame) is
-       no frame of the voice superframe: without a position it selects nothing, and with a cipher still clear its slots
-       take nothing (a superframe SACCH's frame always is one). */
+       no frame of the voice superframe: its single SCCH (structure 00, Table 6.3-1) places nothing, it selects nothing,
+       and its slots run the register on only for a cipher already selected, as they always did (a superframe SACCH's
+       frame always is one). */
     const int superframe_frame = !ctx->scch || (ctx->lich & 0x10U) != 0U;
-    if ((ctx->voice || part != 0U || superframe_frame) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
+    const uint8_t part = superframe_frame ? ctx->result->seed_part : 0U;
+    if ((ctx->voice || superframe_frame) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
     if (part != 0U && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {

@@ -1409,6 +1409,7 @@ static const scch_content_case k_scch_content_cases[] = {
     {"scch-inbound-info4-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 0U, 0U, 3U, 0U, 0U, 1U},
     {"scch-inbound-info2-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 2U, 0U, 3U, 0U, 0U, 1U},
     {"scch-inbound-info4-eot-confirms", 1234U, 0xFFFFU, 0U, 31U, 3U, 0U, 1U, 1U},
+    {"scch-inbound-info2-eot-confirms", 1234U, 0xFFFFU, 2U, 31U, 3U, 0U, 1U, 1U},
 };
 
 static void

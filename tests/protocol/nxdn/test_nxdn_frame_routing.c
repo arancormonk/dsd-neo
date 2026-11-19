@@ -116,6 +116,8 @@ static unsigned long long g_stub_scch_places_register;
 static int g_positioned_part = -1;
 static unsigned g_positioned_cipher;
 static int g_placements; /* nxdn_prepare_sacch_payload_seed() calls */
+/* The superframe position + 1 a verified SCCH of the stub gives (1: the first frame; 4: structure 00). */
+static uint8_t g_stub_scch_part;
 /* A checked superframe SACCH's VCALL selects Scramble after the SACCH placed the register (its last segment). */
 static int g_stub_sacch_selects_scramble;
 /* The FACCH1 is a control channel's CCH_INFO: a Type-C site (as dsd_nxdn_note_type_c() notes it). */
@@ -174,6 +176,7 @@ reset_state(void) {
     g_positioned_part = -1;
     g_positioned_cipher = 0U;
     g_placements = 0;
+    g_stub_scch_part = 1U;
     g_stub_sacch_selects_scramble = 0;
     g_stub_facch_notes_type_c = 0;
     g_stub_sacch2_resets_register = 0;
@@ -331,7 +334,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         }
     }
     if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
-        result.seed_part = 1U; /* a verified SCCH at the superframe's first frame */
+        result.seed_part = g_stub_scch_part; /* a verified SCCH: the first frame unless a test names another */
     }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
@@ -1361,6 +1364,26 @@ test_forced_scramble_skips_a_standalone_header(void) {
     int rc = 0;
     rc |= expect_int("standalone header: no PN slot stepped", g_lfsr_calls, 0);
     rc |= expect_int("standalone header: no scrambler selected", (int)g_state.nxdn_cipher_type, 0);
+
+    /* Its single SCCH, valid, reads as structure 00 (4/4 or single, TS 1-E Table 6.3-1): it places nothing, forced
+       Scramble or not. With Scramble already running, the header's slots run the register on as they always did
+       (origin/main's nxdn_apply_data_frame_lfsr() for every data frame). */
+    for (int running = 0; running < 2; running++) {
+        reset_state();
+        g_state.M = 1;
+        g_state.R = 0x5A5AULL;
+        g_state.nxdn_cipher_type = running ? 1U : 0U;
+        g_state.nxdn_payload_mi = 777ULL;
+        g_stub_scch_ok = 1;
+        g_stub_scch_part = 4U;
+        g_stub_scch_places_register = 1000ULL;
+        (void)route_frame(0x61U);
+        rc |= expect_int(running ? "running header: nothing placed" : "valid header: nothing placed", g_placements, 0);
+        rc |= expect_u64(running ? "running header: four slots run on" : "valid header: the register kept",
+                         g_state.nxdn_payload_mi, running ? 781ULL : 777ULL);
+        rc |= expect_int(running ? "running header: scramble kept" : "valid header: no scrambler selected",
+                         (int)g_state.nxdn_cipher_type, running ? 1 : 0);
+    }
     return rc;
 }
 
@@ -1376,13 +1399,15 @@ test_spacing_confirmation_starts_the_scan_hold(void) {
     g_stub_facch_ok = 1;
     (void)route_nxdn48_frame_at(0x62U, 30000U);
     int rc = expect_int("pending facch: not yet confirmed", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("pending facch: no scan hold yet", (int)g_state.last_cc_sync_time, 1000);
     g_stub_scch_ok = 1;
     g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 0;
     (void)route_nxdn48_frame_at(0x62U, 30192U);
     rc |= expect_int("spacing confirmed the transmission", nxdn_confirm_is_confirmed(&g_state), 1);
-    rc |= expect_int("spacing confirmation: the scan hold starts", g_state.last_cc_sync_time > 1000, 1);
+    rc |=
+        expect_int("spacing confirmation: the scan hold starts", g_state.last_cc_sync_time == dsd_decode_time() + 2, 1);
     g_state.last_cc_sync_time = 1000;
     (void)route_nxdn48_frame_at(0x62U, 30384U);
     rc |= expect_int("later diagnostic frame: the scan hold not extended", (int)g_state.last_cc_sync_time, 1000);
