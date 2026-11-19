@@ -54,6 +54,11 @@ def notice_source(source):
     return all(part not in ("", ".", "..") for part in rest.split("/"))
 
 
+def notice_sha256(path):
+    """The SHA-256 of a retained notice over LF line endings, so a CRLF checkout holds the same text."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def read_inventory(root=ROOT):
     return json.loads((root / "legal/components.json").read_text(encoding="utf-8"))
 
@@ -91,8 +96,8 @@ def validate(inventory, root=ROOT):
             path = Path(notice)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("Notice must be a repository-relative path")
-            content = (root / path).read_bytes().replace(b"\r\n", b"\n")
-            if not content.strip() or hashlib.sha256(content).hexdigest() != component["notice_sha256"].get(notice):
+            if (not (root / path).read_bytes().strip()
+                    or notice_sha256(root / path) != component["notice_sha256"].get(notice)):
                 raise ValueError(f"Missing or altered notice: {notice}")
         if (component["copyright_permission"] == "unresolved"
                 and (component["license_concluded"] != "NOASSERTION"

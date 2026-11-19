@@ -26,6 +26,15 @@ MBE_NOTICES = (
     "legal/status.md", "legal/patents.md",
 )
 
+# LICENSES/Apache-2.0.txt is the apache.org text; every record that names Apache-2.0 retains this one file.
+APACHE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+
+
+def apache_sha256(path):
+    """The digest of a retained licence text, as the inventory check takes it."""
+    return legal.notice_sha256(path)
+
+
 # The libraries vcpkg links statically into the Android app.
 VCPKG_ANDROID_PORTS = ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus",
                        "mp3lame", "mpg123")
@@ -457,8 +466,7 @@ class InventoryTests(unittest.TestCase):
         for custom in ("LicenseRef-SHA1-Public-Domain", "LicenseRef-ICC-License"):
             self.assertEqual(extracted[custom], (ROOT / "LICENSES" / (custom + ".txt")).read_text(encoding="utf-8"))
         # One Apache-2.0 text for every record that names it: the apache.org file.
-        self.assertEqual(hashlib.sha256((ROOT / "LICENSES/Apache-2.0.txt").read_bytes()).hexdigest(),
-                         "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30")
+        self.assertEqual(apache_sha256(ROOT / "LICENSES/Apache-2.0.txt"), APACHE_SHA256)
         self.assertIn("LICENSES/Apache-2.0.txt", components["openssl"]["notices"])
         qt = (ROOT / "packaging/android/Qt-NOTICES.txt").read_text(encoding="utf-8")
         for words in ("This software is based in part on the work of the Independent JPEG Group.",
@@ -488,6 +496,20 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual("SoapySDR" in names, platform in ("linux", "macos", "windows"), names)
                 self.assertEqual([n for n in names if "SoapySDRUtil" in n],
                                  ["SoapySDRUtil"] if platform == "windows" else [])
+
+    def test_apache_text_digest_ignores_crlf_checkouts(self):
+        # A checkout with CRLF line endings (Git's autocrlf on Windows) holds the same licence text: the digest is
+        # taken over LF line endings, as the inventory check takes every retained notice.
+        text = (ROOT / "LICENSES/Apache-2.0.txt").read_bytes().replace(b"\r\n", b"\n")
+        with tempfile.TemporaryDirectory() as directory:
+            for name, content in (("lf.txt", text), ("crlf.txt", text.replace(b"\n", b"\r\n"))):
+                path = Path(directory) / name
+                path.write_bytes(content)
+                with self.subTest(line_endings=name):
+                    self.assertEqual(apache_sha256(path), APACHE_SHA256)
+            altered = Path(directory) / "altered.txt"
+            altered.write_bytes(text.replace(b"Apache License", b"Apache Licence", 1))
+            self.assertNotEqual(apache_sha256(altered), APACHE_SHA256)
 
     def test_scanner_records_are_preserved_and_conflicting_licenses_fail(self):
         scanner = {"SPDXID": "SPDXRef-scanned-library", "name": "library"}
