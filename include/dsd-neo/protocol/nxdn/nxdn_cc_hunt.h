@@ -15,6 +15,9 @@
  * An IDAS Type-D site has no dedicated control channel: a confirmed SCCH names NXDN the owner, which ends a startup
  * hunt where it is, and never arms a hunt afterwards.
  *
+ * The DISC's and an SCCH end of transmission's return to the control channel keeps its tune request here too, and the
+ * tick settles it as it settles a probe (nxdn_cc_hunt_note_return()).
+ *
  * Every function runs on the decoder thread; the ticks run under the P25 SM tick guard. The context lives in the
  * DSD_STATE_EXT_PROTO_NXDN_CC_HUNT state extension.
  */
@@ -100,6 +103,19 @@ void nxdn_cc_hunt_forget_attribution(const dsd_state* state);
  * whatever the old one was (a Type-D site never hunts once proven).
  */
 void nxdn_cc_hunt_note_system_replaced(dsd_state* state);
+
+/**
+ * @brief A DISC's or an end of transmission's return to the control channel is in flight (its tune request
+ * @p request_id answered PENDING).
+ *
+ * Kept and settled as a probe is: nxdn_cc_hunt_tick_locked() waits for it until NXDN_CC_HUNT_TUNE_TIMEOUT_S, then fails
+ * it; landed, the receiver's voice-channel follow is released; failed, the return is asked again. Nothing of the
+ * follow is released while it is in flight.
+ */
+void nxdn_cc_hunt_note_return(dsd_state* state, uint64_t request_id);
+
+/** @brief Return 1 while a DISC or end-of-transmission return noted by nxdn_cc_hunt_note_return() is unsettled. */
+int nxdn_cc_hunt_return_pending(const dsd_state* state);
 
 /** @brief Return 1 while the window is armed or a hunt runs. */
 int nxdn_cc_hunt_active(const dsd_state* state);

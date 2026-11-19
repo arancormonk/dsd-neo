@@ -529,7 +529,8 @@ test_frame_sets(void) {
 }
 
 /* A call's return to the control channel that is still in flight restarts the window at its completion and holds
-   every probe; DISC clears trunk_is_tuned before the tune lands. */
+   every probe. (A DISC's own return keeps trunk_is_tuned until it lands, nxdn_return_to_cc_landed(): this one is a
+   tune the hunt does not own, whatever cleared the flag.) */
 static void
 test_pending_return(void) {
     session();

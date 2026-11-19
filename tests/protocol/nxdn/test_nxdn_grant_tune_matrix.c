@@ -23,6 +23,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -86,6 +87,9 @@ static int g_tune_count = 0;
 static long g_last_tune_freq = 0;
 static int g_tune_cc_count = 0;
 static long g_last_tune_cc_freq = 0;
+/* What the control-channel tune answers (OK at once, or PENDING until the test completes it) and its request. */
+static dsd_trunk_tune_result g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_last_cc_request = 0U;
 static long g_rigctl_freq = 0;
 static int g_rigctl_queries = 0;
 
@@ -285,10 +289,10 @@ nxdn_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sp
     (void)opts;
     (void)state;
     (void)ted_sps;
-    (void)request_id;
     g_tune_cc_count++;
     g_last_tune_cc_freq = freq;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    g_last_cc_request = request_id;
+    return g_cc_result;
 }
 
 static void
@@ -1035,6 +1039,59 @@ send_disc(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     set_message_type(bits, 0x11U);
     NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* The DISC's and the end of transmission's return to the control channel, asked while the receiver follows a call, on
+ * a backend whose tune answers PENDING (an RTL retune): until it lands the receiver still follows the call
+ * (trunk_is_tuned, the follow), so a return that fails is not lost; the tick settles it as the control-channel hunt
+ * settles its own probes (nxdn_cc_hunt_tick_locked()). Landed, the follow is released. Failed (asynchronously), the
+ * return is asked again, and that one landing releases it. */
+static int
+nxdn_run_cc_return_settles_case(void) {
+    const nxdn_case termination = {
+        "type-d-cc-return-settles", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
+    };
+    int rc = 0;
+    for (int variant = 0; variant < 4; variant++) {
+        const int disc = (variant & 1) != 0;
+        const int fails_first = (variant & 2) != 0;
+        const char* const name = disc ? (fails_first ? "disc-fails-then-lands" : "disc-lands")
+                                      : (fails_first ? "eot-fails-then-lands" : "eot-lands");
+        nxdn_setup_fixture(&termination);
+        nxdn_install_hooks();
+        g_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        g_opts.trunk_is_tuned = 1;
+        g_state.nxdn_follow.freq_hz = 936012500L; /* the voice channel followed */
+        g_state.nxdn_follow.repeater = 5U;
+        if (disc) {
+            send_disc();
+        } else {
+            uint8_t message[32];
+            build_scch(message, &termination);
+            NXDN_decode_scch(&g_opts, &g_state, message, 1);
+        }
+        rc |= nxdn_expect(g_tune_cc_count == 1 && nxdn_cc_hunt_return_pending(&g_state) == 1, termination.name, name,
+                          "the return asked and in flight");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1 && g_state.nxdn_follow.freq_hz != 0, termination.name, name,
+                          "in flight: the follow kept");
+        nxdn_cc_hunt_tick_locked(&g_opts, &g_state);
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, termination.name, name, "unanswered: still following");
+        if (fails_first) {
+            dsd_trunk_tuning_request_complete(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+            nxdn_cc_hunt_tick_locked(&g_opts, &g_state);
+            rc |= nxdn_expect(g_tune_cc_count == 2 && nxdn_cc_hunt_return_pending(&g_state) == 1, termination.name,
+                              name, "failed: the return asked again");
+            rc |= nxdn_expect(g_opts.trunk_is_tuned == 1 && g_state.nxdn_follow.freq_hz != 0, termination.name, name,
+                              "failed: the follow kept for the retry");
+        }
+        dsd_trunk_tuning_request_complete(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_OK);
+        nxdn_cc_hunt_tick_locked(&g_opts, &g_state);
+        rc |= nxdn_expect(nxdn_cc_hunt_return_pending(&g_state) == 0 && g_opts.trunk_is_tuned == 0
+                              && g_state.nxdn_follow.freq_hz == 0,
+                          termination.name, name, "landed: the follow released");
+        g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    }
+    return rc;
 }
 
 /* Voice is being heard on the receiver's channel now. */
@@ -2580,6 +2637,7 @@ main(void) {
     rc |= nxdn_run_scch_termination_case();
     rc |= nxdn_run_scch_info2_termination_returns_case();
     rc |= nxdn_run_scch_null_destination_case();
+    rc |= nxdn_run_cc_return_settles_case();
     rc |= nxdn_run_unconfirmed_scch_case();
     rc |= nxdn_run_scch_busy_enrich_case("tuned-there", NXDN_RX_TUNED_THERE, 1);
     rc |= nxdn_run_scch_busy_enrich_case("tuned-elsewhere", NXDN_RX_TUNED_ELSEWHERE, 0);
