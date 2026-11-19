@@ -60,3 +60,37 @@ file(
 set(PLATFORM android)
 set(DOC_DIR "${_doc_dir}")
 include("${REPO_DIR}/cmake/stage_release_notices.cmake")
+
+# The app's licences screen reads the files this index names, one path per line: the
+# project's own legal files first, then every other file the folder holds, sorted. It is
+# taken from the folder as staged, so a notice a record's map adds is listed with no
+# change to the app.
+set(_index_name "notice-index.txt")
+file(
+    GLOB_RECURSE _staged
+    LIST_DIRECTORIES false
+    RELATIVE "${_doc_dir}"
+    "${_doc_dir}/*"
+)
+list(REMOVE_ITEM _staged "${_index_name}")
+list(SORT _staged)
+set(_first LICENSE COPYRIGHT THIRD_PARTY.md)
+list(REMOVE_ITEM _staged ${_first})
+foreach(_name IN LISTS _first)
+    if(NOT EXISTS "${_doc_dir}/${_name}")
+        message(
+            FATAL_ERROR
+            "The package's ${_name} is missing from ${_doc_dir}"
+        )
+    endif()
+endforeach()
+string(JOIN "\n" _index ${_first} ${_staged})
+string(APPEND _index "\n")
+# Unchanged content is not rewritten, so a no-op build does not make Gradle repackage.
+set(_old_index "")
+if(EXISTS "${_doc_dir}/${_index_name}")
+    file(READ "${_doc_dir}/${_index_name}" _old_index)
+endif()
+if(NOT _old_index STREQUAL _index)
+    file(WRITE "${_doc_dir}/${_index_name}" "${_index}")
+endif()

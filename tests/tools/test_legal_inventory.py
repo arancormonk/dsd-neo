@@ -705,6 +705,34 @@ class NoticeStagingTests(unittest.TestCase):
         (self.mbe / "legal/status.md").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
 
+    def test_android_notice_index_lists_every_staged_file(self):
+        # The app's licences screen reads the files this index names, so it lists exactly what the APK carries:
+        # the project's own files first, then every other staged file in a stable order.
+        build, share, docs, args = self.android_fixture()
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+        staged = sorted(path.relative_to(docs).as_posix() for path in docs.rglob("*")
+                        if path.is_file() and path.name != "notice-index.txt")
+        self.assertEqual(index[:3], ["LICENSE", "COPYRIGHT", "THIRD_PARTY.md"])
+        self.assertEqual(index[3:], sorted(set(staged) - {"LICENSE", "COPYRIGHT", "THIRD_PARTY.md"}))
+        for notice in legal.release_notices(legal.read_inventory(ROOT), "android"):
+            self.assertIn(notice, index)
+        self.assertIn("licenses/Qt-NOTICES.txt", index)
+        self.assertIn("licenses/LGPL-3.0-only.txt", index)
+
+        # A notice added to a record's map reaches the index with no other change.
+        inventory = legal.read_inventory(ROOT)
+        qt = next(c for c in inventory["components"] if c["id"] == "qt")
+        qt["android_release"]["notices"]["licenses/Added-NOTICES.txt"] = "repo:LICENSES/ISC.txt"
+        components = self.work / "components.json"
+        components.write_text(json.dumps(inventory), encoding="utf-8")
+        result = self.run_cmake(f"-DCOMPONENTS={components}", *args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+        self.assertIn("licenses/Added-NOTICES.txt", index)
+        self.assertEqual(index.count("licenses/Added-NOTICES.txt"), 1)
+
     def test_release_notice_staging_follows_any_platform_map(self):
         # The staging the APK uses takes any platform's map, so the DMG can use it as well; it refuses a source it does
         # not know, a path outside its root and a legal-component notice the package lacks.
