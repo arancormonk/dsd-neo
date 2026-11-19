@@ -50,7 +50,7 @@ test_lfsrn_voice_scrambler_vector(void) {
 
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.payload_miN = 0x1234ULL;
+    state.nxdn_payload_mi = 0x1234ULL;
 
     char input[49];
     char output[49];
@@ -61,7 +61,7 @@ test_lfsrn_voice_scrambler_vector(void) {
 
     LFSRN(input, output, &state);
 
-    int rc = expect_ull("lfsrn-advanced-seed", state.payload_miN, 0x3BDEULL);
+    int rc = expect_ull("lfsrn-advanced-seed", state.nxdn_payload_mi, 0x3BDEULL);
     for (int i = 0; i < 49; i++) {
         char tag[40];
         DSD_SNPRINTF(tag, sizeof(tag), "%s", "lfsrn-output");
@@ -77,7 +77,7 @@ test_lfsr128n_aes_iv_vector(void) {
 
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.payload_miN = 0x0123456789ABCDEFULL;
+    state.nxdn_payload_mi = 0x0123456789ABCDEFULL;
     DSD_MEMSET(state.aes_iv, 0xA5, sizeof(state.aes_iv));
 
     LFSR128n(&state);

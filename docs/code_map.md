@@ -11165,8 +11165,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     message's G/U bit (INFO2 has INFO4's format, TS 1-E §6.5.2.3, §6.5.3.3) sets the canonical call's group or private
     kind, so a later message for that target never reads a previous call's class: an INFO2 naming another target than
     the live call's names another call, of its own G/U class, held and judged for preemption as that class; an INFO2 or
-    busy INFO4 with ID 0 (the Null ID) names no destination and changes nothing; UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
-    the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
+    busy INFO4 with ID 0 (the Null ID) names no destination and changes nothing (no identity, no recent activity, no
+    tune; a termination still ends the sending); UNKNOWN never relabels. While voice is live a busy message for OTHER
+    takes the receiver for the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
     enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy. A
     source other than the live call's makes the canonical layer open another epoch of the same target and class, which
@@ -12209,37 +12210,50 @@ Private per-protocol modules worth knowing about:
   TS 2-B §5.1.2's test vectors pin it): the ID of an INFO2, INFO3 or INFO4 is always a unit or group ID (31 is a
   standard ID); the idle, halt, free repeater and site ID messages are outbound only (`nxdn_scch_is_status()`).
   Content TS 1-E does not define (`nxdn_scch_content_valid()`: an INFO2, INFO3 or busy INFO4 with the reserved prefix 31,
-  Table 6.6-4; an INFO1 or INFO3 with its Spare bit set, Figs 6.5-2/6.5-3; an inbound INFO1 whose Pass Character is not
-  31, Fig 6.5-3; an inbound INFO4 or INFO2 naming a status ID, 2041/2044-2046) is printed and nothing else: no
-  confirmation evidence or SCCH streak, no area, control channel sync, hunt, activity, identity, tune, cipher or key, and
-  the "Type-D" layout it names stays with its frame even on a confirmed transmission
-  (`dsd_state::nxdn_scch_frame_invalid`), though never over a Type-C site a later channel of that frame verified
-  (`dsd_nxdn_note_type_c()`). An INFO2 with Repeater in Use / Go to Repeater 31 ends the sending as an INFO4 does (TS
-  2-E Table 5.1-5), the tuner returning under the same policy (`nxdn_scch_apply_busy_tune()`). A call option naming a
-  cipher Type-D reserves (10, 11; shown as DES/AES) is kept like any other. No SCCH carries an IV or writes the
-  decoder's scrambler register or IV (`payload_miN`): Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F §16),
-  whose register the key loads at a superframe's start and which runs on four 49-bit VCH slots a frame, a FACCH1-stolen
-  slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). A CRC-verified, valid SCCH, or a CRC-verified Type-C superframe
-  SACCH segment, records its frame's position (`dsd_state::nxdn_frame_seed_part`); `nxdn_frame()`, once the frame's
-  signalling decoded on this carrier (not after it retuned the receiver, not on a foreign frame), selects a forced
-  scrambler on a voice frame or a frame so placed (all four slots stolen included), places the register at the frame's
-  start with the cipher and key this frame chose (a scalar key loaded only; a VCALL the SACCH completed may have chosen
-  them after the SACCH's own placement), then steps the stolen slots, so the voice after a leading FACCH1 starts two
-  slots in; a failed SCCH places nothing.
-  MI provenance: an NXDN call's published MI (crypto publications, event history, the API feed) and the terminal's NXDN
-  "IV" are only an IV a CRC-verified VCALL_IV carried over the air, while the working register still holds it
-  (`dsd_state::nxdn_iv_on_air`, `nxdn_published_mi()`); the register a scrambled call loaded from the key and ran on
-  (`nxdn_reset_payload_seed_if_forced()`, `LFSRN()`, an assignment's key load clear the flag) is never one, and the
-  terminal shows the scrambler seed only through the key redaction (`test_nxdn_history_mi_only_from_received_iv`,
-  `test_nxdn_encryption_line_redacts_the_seed`). The DES/AES IV, muting and keystream arming are otherwise unchanged:
-  the vocoder starts a session from the working IV at a superframe start after a VCALL_IV (`nxdn_new_iv`), and a call
-  is decryptable once its cipher has a key.
+  Table 6.6-4; an INFO1 with its Spare bit set, the one Spare bit taken into account (every other Spare bit is ignored on
+  reception, Table 9.1-1); an inbound INFO1 whose Pass Character is not 31, Fig 6.5-3; an inbound INFO4 or INFO2 naming
+  a status ID, 2041/2044-2046; a site ID message with a reserved Site Code, 0 or 251-255, §6.6.5) is printed and
+  nothing else: no confirmation evidence or SCCH streak, no frame position, no area, control channel sync, hunt,
+  activity, identity, tune, cipher or key, and the "Type-D" layout it names stays with its frame even on a confirmed
+  transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later channel of that frame
+  verified (`dsd_nxdn_note_type_c()`). A termination (Repeater in Use / Go to Repeater 31), in an INFO2 as in an INFO4
+  (TS 2-E Table 5.1-5), ends the sending and, once admitted, returns a receiver following a voice channel to the
+  control channel the way a DISC does (`nxdn_scch_return_to_cc()`: the control-channel tune, `trunk_is_tuned` cleared,
+  the follow released). A call option naming a cipher Type-D reserves (10, 11; shown as DES/AES) is kept like any
+  other. No SCCH carries an IV or writes the scrambler register or IV: Type-D defines only Scramble (TS 1-E Table
+  6.6-31, TS 1-F §16), whose register the key loads at a superframe's start and which runs on four 49-bit VCH slots a
+  frame, a FACCH1-stolen slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). A frame that can carry its own position
+  (an SCCH or a superframe SACCH, `nxdn_frame_steps_after_signalling()`) steps its stolen slots after its signalling:
+  a CRC-verified, valid SCCH, or a CRC-verified superframe SACCH segment, hands its frame position to the rest of the
+  frame (`nxdn_channel_result::seed_part`, returned by `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()`, kept in
+  `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
+  carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on a voice frame or a
+  frame so placed (all four slots stolen included), places the register at the frame's start with the cipher and key
+  this frame chose (a scalar key loaded only; a VCALL the SACCH completed may have chosen them after the SACCH's own
+  placement), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH
+  places nothing. Every other frame (a DCR SB0/PICH header, a non-superframe SACCH's, a control channel's) steps them
+  before its signalling, as before, so a reset that signalling makes (the DCR SACCH2's first block) stands for the
+  voice after it. Voice withheld before the transmission is confirmed still runs the Scramble register across its words
+  (`nxdn_step_withheld_voice()`), nothing playing.
+  Register and MI provenance: NXDN (and dPMR's scrambler) works in its own register, `dsd_state::nxdn_payload_mi`, the
+  Scramble LFSR or the DES/AES IV. P25 Phase 2 and DMR keep slot 2's MI in `payload_miN`, which P25 publishes, and NXDN
+  shared it once: a key loaded there, by an unconfirmed frame on a false IDAS sync during P25 Phase 2 reception
+  included, could be published as that slot's MI. No NXDN path reads or writes `payload_miN` now; the resets that clear
+  it (no carrier, a carrier boundary, a released tune, a reset of call tracking, init) clear NXDN's register and flag
+  too. An NXDN call's published MI (crypto publications, event history, the API feed) and the terminal's NXDN "IV" are
+  only an IV a CRC-verified VCALL_IV carried over the air, while the register still holds it (`dsd_state::nxdn_iv_on_air`,
+  `nxdn_published_mi()`); the register a scrambled call loaded from the key and ran on (`nxdn_reset_payload_seed_if_forced()`,
+  `LFSRN()`, an assignment's key load, a reset clear the flag) is never one, and the terminal shows the scrambler seed
+  only through the key redaction (`test_nxdn_keeps_the_shared_register`, `test_unconfirmed_frame_keeps_the_shared_register`,
+  `test_nxdn_history_mi_only_from_received_iv`, `test_nxdn_encryption_line_redacts_the_seed`). The DES/AES IV, muting and
+  keystream arming are otherwise unchanged: the vocoder starts a session from the working IV at a superframe start
+  after a VCALL_IV (`nxdn_new_iv`), and a call is decryptable once its cipher has a key.
   Documented limit, DES/AES late entry: TS 1-D §5.4.4.2(4) sends the first IV in the first frame's FACCH1 beside the
   VCALL and then one VCALL_IV in the SACCH of every second superframe, each for the next two-superframe session (8
   frames, 640 ms; TS 1-A defines DES and AES for Type-C). A receiver that joins a DES/AES call mid-call has no IV for
   the session in progress, and can play garbled audio until the next IV takes effect: on Type-C the next SACCH
-  VCALL_IV, up to about 0.64 s away (longer if one is lost). Type-D (TS 1-E, TS 1-F) defines no DES/AES and no VCALL_IV (Table 6.6-31; its
-  message type 0x03 is unassigned): the 22-bit Type-D VCALL_IV decoders read is a FACCH1 message, Type-D has no SACCH
+  VCALL_IV, up to about 0.64 s away (longer if one is lost). Type-D (TS 1-E, TS 1-F) defines no DES/AES and no
+  VCALL_IV (Table 6.6-31; its message type 0x03 is unassigned): the 22-bit Type-D VCALL_IV decoders read is a FACCH1 message, Type-D has no SACCH
   superframe to repeat one in and SCCH carries none, so a Type-D DES/AES call joined after its IV went by can stay
   garbled for the rest of the call. The parsed SCCH diagnostics print the bits some decoders read as IV parts only
   through the key redaction; the `-Z` raw payload dump after them prints all four decoded bytes, which are on-air bits,

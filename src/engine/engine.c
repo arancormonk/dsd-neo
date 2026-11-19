@@ -3105,6 +3105,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dropL = 256;
     state->dropR = 256;
     state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
     forget_dmr_voice_crypto_continuity(state);
     state->p25vc = 0;
     state->payload_miP = 0;
@@ -3667,6 +3669,10 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     p25p2_frame_forget_carrier(state);
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
+    /* NXDN: its own working register (the Scramble LFSR, or the IV a VCALL_IV carried), which the P25 slot reset above
+       cleared too while the two shared one register: the next carrier's call loads or receives its own. */
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
 }
 
 void

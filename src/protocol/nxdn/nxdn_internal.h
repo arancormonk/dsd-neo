@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -51,15 +52,28 @@ nxdn_live_call_is_nxdn(const dsd_state* state) {
    scrambled call loads from the key, and runs on from there, is never one. */
 static inline unsigned long long
 nxdn_published_mi(const dsd_state* state) {
-    return state->nxdn_iv_on_air != 0U ? state->payload_miN : 0ULL;
+    return state->nxdn_iv_on_air != 0U ? state->nxdn_payload_mi : 0ULL;
+}
+
+/* Whether a site ID message's Site Code (SCCH bits 5-12, NXDN TS 1-E Fig 6.5-8) names a site: 1-250; 0 and 251-255 are
+   reserved (§6.6.5, Table 6.6-3). */
+static inline int
+nxdn_scch_site_code_valid(const uint8_t* bits) {
+    unsigned site_code = 0U;
+    for (size_t i = 5U; i < 13U; i++) {
+        site_code = (site_code << 1) | bits[i];
+    }
+    return site_code != 0U && site_code <= 250U;
 }
 
 /* Whether an SCCH's 25 bits carry content NXDN TS 1-E defines (§6.5; Table 9.1-1). Not: an INFO2, INFO3 or busy INFO4
-   with the reserved prefix 31 (Table 6.6-4); an INFO1 (D2) or INFO3 with its Spare bit set, or an inbound INFO1 whose Pass
-   Character is not 31 (Fig 6.5-3; TS 2-E Table 5.1-12); an inbound INFO4 or INFO2 naming a status ID (2041, 2044-2046:
-   site ID, free, halt, idle repeater), which only the outbound layouts carry (Figs 6.5-5..6.5-8) and which name no
-   destination (Tables 6.6-5, 6.6-6). Such an SCCH is printed but is no evidence of a transmission and changes nothing
-   past its frame. The outbound status messages have no prefix at bits 8-12. */
+   with the reserved prefix 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2: the one Spare bit taken into account;
+   every other Spare bit is ignored on reception, Table 9.1-1); an inbound INFO1 whose Pass Character is not 31 (Fig
+   6.5-3; TS 2-E Table 5.1-12); an inbound INFO4 or INFO2 naming a status ID (2041, 2044-2046: site ID, free, halt, idle
+   repeater), which only the outbound layouts carry (Figs 6.5-5..6.5-8) and which name no destination (Tables 6.6-5,
+   6.6-6); a site ID message whose Site Code (bits 5-12, Fig 6.5-8) is reserved (0, 251-255: §6.6.5, Table 6.6-3). Such
+   an SCCH is printed but is no evidence of a transmission and changes nothing past its frame. The outbound status
+   messages have no prefix at bits 8-12. */
 static inline int
 nxdn_scch_content_valid(const uint8_t* bits, uint8_t direction) {
     const unsigned sf = ((unsigned)bits[0] << 1) | bits[1];
@@ -74,11 +88,11 @@ nxdn_scch_content_valid(const uint8_t* bits, uint8_t direction) {
     if (sf == 3U) {
         return bits[24] == 0U && (direction == 1U || prefix == 31U);
     }
-    if (sf == 1U && bits[24] != 0U) {
-        return 0; /* INFO3's bit 24 is Spare too (Figs 6.5-2, 6.5-9) */
-    }
     const int status_id = id == 2041U || id == 2044U || id == 2045U || id == 2046U;
     if (sf == 0U || sf == 2U) {
+        if (status_id && direction == 1U && id == 2041U) {
+            return nxdn_scch_site_code_valid(bits);
+        }
         if (status_id) {
             return direction == 1U;
         }
@@ -97,8 +111,8 @@ nxdn_end_live_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason r
     return 1;
 }
 
-void nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
-                       uint8_t check);
+nxdn_channel_result nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf,
+                                      const uint8_t* m_data, uint8_t crc, uint8_t check);
 void nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                         uint8_t crc, uint8_t check);
 void nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint16_t crc);

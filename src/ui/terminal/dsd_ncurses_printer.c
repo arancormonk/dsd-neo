@@ -3096,8 +3096,8 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
    may still hold when the cipher changes. */
 static void
 ui_print_nxdn_received_iv(const dsd_state* state) {
-    if (state->nxdn_iv_on_air != 0U && state->payload_miN != 0ULL) {
-        printw("IV: %016llX ", state->payload_miN);
+    if (state->nxdn_iv_on_air != 0U && state->nxdn_payload_mi != 0ULL) {
+        printw("IV: %016llX ", state->nxdn_payload_mi);
     } else {
         printw("IV: none ");
     }
@@ -3126,8 +3126,8 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
                 attron(COLOR_PAIR(1));
                 /* The scrambler register: the key itself at each superframe's start, key stream after. */
                 char seed_text[16];
-                printw("Seed: %s ",
-                       dsd_secret_format_hex(seed_text, sizeof seed_text, opts->show_keys, state->payload_miN, 4U, 0));
+                printw("Seed: %s ", dsd_secret_format_hex(seed_text, sizeof seed_text, opts->show_keys,
+                                                          state->nxdn_payload_mi, 4U, 0));
                 char key_text[16];
                 printw("Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));

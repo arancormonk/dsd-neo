@@ -2157,19 +2157,14 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
-    /* 1 while payload_miN holds the IV a CRC-verified VCALL_IV carried over the air; 0 once the scrambler loaded the
-       register from the key or ran it (nxdn_reset_payload_seed_if_forced(), LFSRN()). Only such an IV is ever an NXDN
-       call's MI (nxdn_published_mi()): the key-loaded register never is. */
+    /* NXDN's working register, its own (P25 Phase 2 and DMR keep slot 2's MI in payload_miN, which NXDN once shared):
+       the Scramble LFSR (dPMR's too), loaded from the key and run on, or the DES/AES IV a VCALL_IV carried. No other
+       protocol reads or writes it, so a key-derived value here never reaches another protocol's metadata. */
+    unsigned long long int nxdn_payload_mi;
+    /* 1 while nxdn_payload_mi holds the IV a CRC-verified VCALL_IV carried over the air; 0 once anything else wrote it
+       (a key load, a scrambler step: nxdn_reset_payload_seed_if_forced(), LFSRN(); a reset). Only such an IV is ever an
+       NXDN call's MI (nxdn_published_mi()): the key-loaded register never is. */
     uint8_t nxdn_iv_on_air;
-    /* Set while the frame being decoded carried an SCCH whose CRC-7 passed with content NXDN TS 1-E does not define
-       (a reserved prefix, an INFO1 with its Spare bit set): the Type-D layout it names stays with the frame
-       (nxdn_decode_frame_channels()). */
-    uint8_t nxdn_scch_frame_invalid;
-    /* The superframe position (part + 1; 0: none) the frame being decoded gave: a CRC-verified, valid SCCH's
-       (nxdn_deperm_scch_soft()) or a superframe SACCH's (nxdn_handle_sacch_superframe()). The frame places the
-       scrambler register there once its signalling and key selection are done, before its stolen or voice slots step
-       it (nxdn_frame()). */
-    uint8_t nxdn_frame_seed_part;
     uint16_t nxdn_pn95_seed;
 
     /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,

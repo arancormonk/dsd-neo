@@ -21,7 +21,7 @@ LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
         return;
     }
 
-    int lfsr = (int)(state->payload_miN & 0x7FFFULL);
+    int lfsr = (int)(state->nxdn_payload_mi & 0x7FFFULL);
 
     for (int i = 0; i < 49; i++) {
         const int pn = lfsr & 0x1;
@@ -30,7 +30,7 @@ LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
         BufferOut[i] = (char)(BufferIn[i] ^ pn);
     }
 
-    state->payload_miN = (unsigned long long)(lfsr & 0x7FFF);
+    state->nxdn_payload_mi = (unsigned long long)(lfsr & 0x7FFF);
     state->nxdn_iv_on_air = 0U; /* the register now holds key stream, no received IV */
 }
 
@@ -40,7 +40,7 @@ LFSR128n(dsd_state* state) {
         return;
     }
 
-    unsigned long long int lfsr = state->payload_miN;
+    unsigned long long int lfsr = state->nxdn_payload_mi;
 
     state->aes_iv[0] = (uint8_t)((lfsr >> 56) & 0xFFU);
     state->aes_iv[1] = (uint8_t)((lfsr >> 48) & 0xFFU);

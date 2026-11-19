@@ -950,6 +950,8 @@ init_state_nxdn_defaults(dsd_state* state) {
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
     state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
 }
 
 /* DMR voice crypto continuity and polarity evidence (issue #729): nothing known, every frame unpositioned. */

@@ -116,6 +116,9 @@ typedef struct {
        (nxdn_frame_left_carrier()). */
     uint64_t tune_generation;
     uint64_t tune_pending_request;
+
+    /* What the frame's SCCH or superframe SACCH told the rest of the frame (nxdn_frame()'s own, frame-local). */
+    nxdn_channel_result* result;
 } nxdn_frame_ctx;
 
 typedef struct {
@@ -498,8 +501,8 @@ nxdn_roll_voice_lfsr(dsd_state* state, int rounds) {
 static void
 nxdn_apply_data_frame_lfsr(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
-        if (state->payload_miN == 0) {
-            state->payload_miN = state->R;
+        if (state->nxdn_payload_mi == 0) {
+            state->nxdn_payload_mi = state->R;
         }
         nxdn_roll_voice_lfsr(state, 4);
     }
@@ -512,8 +515,8 @@ nxdn_apply_data_frame_lfsr(dsd_state* state) {
 static void
 nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
-        if (state->payload_miN == 0) {
-            state->payload_miN = state->R;
+        if (state->nxdn_payload_mi == 0) {
+            state->nxdn_payload_mi = state->R;
         }
         nxdn_roll_voice_lfsr(state, 2);
     }
@@ -522,8 +525,28 @@ nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     }
 }
 
+/* Whether the frame can carry its own superframe position, an SCCH or a superframe SACCH: its cipher slots are stepped
+   after its signalling, which may place the register (nxdn_step_cipher_after_signalling()). Every other frame (a DCR
+   SB0/PICH header, a non-superframe SACCH's, a control channel's) steps them before, as it always did, so a reset its
+   signalling makes (the DCR SACCH2's first block, nxdn_reset_payload_seed_if_forced()) stands for the voice after it. */
+static int
+nxdn_frame_steps_after_signalling(const dsd_state* state, const nxdn_frame_ctx* ctx) {
+    return ctx->scch || (ctx->sacch && state->nxdn_sacch_non_superframe == 0);
+}
+
+/* The cipher slots the frame's leading non-voice part takes (NXDN TS 1-D Fig 5.4-2, TS 1-F Fig 16.4-1: the PN sequence
+   and the DES/AES output keep their places in a stolen slot): a data frame's four, a leading FACCH1's two. */
 static void
-nxdn_print_voice_or_data(dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_step_stolen_slots(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (ctx->voice == 0) {
+        nxdn_apply_data_frame_lfsr(state);
+    } else if (ctx->facch == 1) {
+        nxdn_apply_pre_voice_facch1_lfsr(state);
+    }
+}
+
+static void
+nxdn_print_voice_or_data_and_sync_lfsr(dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->voice == 0) {
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, "Data  ");
@@ -541,32 +564,31 @@ nxdn_print_voice_or_data(dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->voice && ctx->facch == 1 && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
+    if (!nxdn_frame_steps_after_signalling(state, ctx)) {
+        nxdn_step_stolen_slots(state, ctx);
+    }
 }
 
-/* The scrambler position and the cipher slots the frame's leading non-voice part takes, once the frame's signalling
-   decoded on this carrier (never after it retuned the receiver, never on another channel's frame): a forced scrambler
-   (-4) is selected first, on a voice frame or a traffic frame whose SCCH or SACCH placed it (all four slots stolen
-   included); the position then places the register at the frame's start with the cipher and key this frame's
-   signalling chose (nxdn_prepare_sacch_payload_seed(): a SACCH superframe segment's, as main placed it before its
-   messages, again once a VCALL it completed selected Scramble or its key; a checked, valid SCCH's); and the stolen slots
-   step it
-   (NXDN TS 1-D Fig 5.4-2, TS 1-F Fig 16.4-1: the PN sequence and the DES/AES output keep their places in a stolen
-   slot): a data frame's four, a leading FACCH1's two, so the voice starts where it belongs. */
+/* The scrambler position and the cipher slots of a frame that can carry its own position
+   (nxdn_frame_steps_after_signalling()), once its signalling decoded on this carrier (never after it retuned the
+   receiver, never on another channel's frame): a forced scrambler (-4) is selected first, on a voice frame or a frame
+   so placed (all four slots stolen included); a position (nxdn_channel_result::seed_part: a checked, valid SCCH's, or a
+   checked superframe SACCH segment's, whose own placement came before the VCALL it completed chose Scramble or its key)
+   places the register at the frame's start with the cipher and key the frame chose (nxdn_prepare_sacch_payload_seed());
+   and the stolen slots step it after that, so the voice after a leading FACCH1 starts two slots in. */
 static void
-nxdn_step_cipher_before_voice(dsd_state* state, const nxdn_frame_ctx* ctx) {
-    const uint8_t part = state->nxdn_frame_seed_part;
-    state->nxdn_frame_seed_part = 0U;
+nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (!nxdn_frame_steps_after_signalling(state, ctx)) {
+        return;
+    }
+    const uint8_t part = ctx->result->seed_part;
     if ((ctx->voice || part != 0U) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
     if (part != 0U && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
         nxdn_prepare_sacch_payload_seed(state, (int)part - 1);
     }
-    if (ctx->voice == 0) {
-        nxdn_apply_data_frame_lfsr(state);
-    } else if (ctx->facch == 1) {
-        nxdn_apply_pre_voice_facch1_lfsr(state);
-    }
+    nxdn_step_stolen_slots(state, ctx);
 }
 
 static void
@@ -615,7 +637,8 @@ nxdn_frame_left_carrier(const nxdn_frame_ctx* ctx) {
 static void
 nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->scch) {
-        nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab, ctx->direction);
+        *ctx->result =
+            nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab, ctx->direction);
         if (nxdn_frame_left_carrier(ctx)) {
             return;
         }
@@ -631,7 +654,7 @@ nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
 static void
 nxdn_decode_sacch_cac_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch) {
-        nxdn_deperm_sacch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
+        *ctx->result = nxdn_deperm_sacch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
     }
     if (ctx->cac) {
         nxdn_deperm_cac_soft(opts, state, (uint8_t*)ctx->cac_bits, (uint8_t*)ctx->cac_reliab);
@@ -702,21 +725,33 @@ nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx
     char category[sizeof(state->nxdn_location_category)];
     DSD_MEMCPY(category, state->nxdn_location_category, sizeof(category));
     const uint8_t type_c_before = state->nxdn_site.type_c;
-    state->nxdn_scch_frame_invalid = 0U;
-    state->nxdn_frame_seed_part = 0U;
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
     /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
        channels only: it never outlives the frame, whatever confirmed the transmission. The rollback undoes only the
        SCCH's provisional layout: a Type-C site a later channel of the frame verified (dsd_nxdn_note_type_c()) never
        reads "Type-D" again. */
-    if (!nxdn_confirm_is_confirmed(state) || state->nxdn_scch_frame_invalid != 0U) {
+    if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U) {
         DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
         if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
         }
     }
-    state->nxdn_scch_frame_invalid = 0U;
     return left_carrier;
+}
+
+/* Voice withheld before the transmission is confirmed still takes its places in the PN sequence (NXDN TS 1-F Fig
+   16.4-1): the Scramble register runs on across the withheld words as the vocoder would have run it
+   (mbe_apply_nxdn_cipher1()), so the next frame's voice starts where it belongs. The audio gate is unchanged: nothing
+   plays. */
+static void
+nxdn_step_withheld_voice(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (!ctx->voice || !dsd_key_scalar_present(state, 0) || (state->nxdn_cipher_type != 0x1 && state->M != 1)) {
+        return;
+    }
+    if (state->nxdn_payload_mi == 0) {
+        state->nxdn_payload_mi = state->R;
+    }
+    nxdn_roll_voice_lfsr(state, ctx->voice == 3 ? 4 : 2);
 }
 
 static void
@@ -736,6 +771,7 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         nxdn_voice(opts, state, ctx->voice, (uint8_t*)ctx->dbuf, (uint8_t*)ctx->dbuf_reliab);
         return;
     }
+    nxdn_step_withheld_voice(state, ctx);
 
     if (opts->mbe_out_f == NULL) {
         return;
@@ -779,11 +815,10 @@ nxdn_finalize_sync_reject(dsd_state* state) {
 static void
 nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->foreign) {
-        state->nxdn_frame_seed_part = 0U;
         DSD_FPRINTF(stderr, "\n");
         return;
     }
-    nxdn_step_cipher_before_voice(state, ctx);
+    nxdn_step_cipher_after_signalling(state, ctx);
     if (nxdn_confirm_is_confirmed(state)) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
@@ -825,9 +860,22 @@ nxdn_frame_begin_evidence(const dsd_opts* opts, dsd_state* state, uint32_t frame
 /* A frame whose channel retuned the receiver: its remaining channels and voice were read on the carrier left and are
    dropped, and nothing of it stamps the carrier reached as active or steps its cipher. */
 static void
-nxdn_frame_left(dsd_state* state) {
-    state->nxdn_frame_seed_part = 0U;
+nxdn_frame_left(void) {
     DSD_FPRINTF(stderr, "\n");
+}
+
+/* What the frame does before its channels decode: the SACCH mode its LICH names, the voice/data banner and the cipher
+   slots of a frame that carries no position (nxdn_print_voice_or_data_and_sync_lfsr()), the channel the element
+   parsers read, and whether it is another channel's control traffic. */
+static void
+nxdn_frame_before_channels(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
+    nxdn_update_sacch_mode(state, ctx->lich);
+    nxdn_print_voice_or_data_and_sync_lfsr(state, ctx);
+    state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
+    /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
+       messages may name, follow or play anything here. */
+    ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
+    state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
 }
 
 int
@@ -839,8 +887,11 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     int frame_proved = 0;
     int frame_read = 0; // the body reached the confirmation gate
 
+    nxdn_channel_result result = {0U, 0U};
+
     nxdn_note_fsw_anchor(state);
     nxdn_frame_ctx_init(&ctx);
+    ctx.result = &result;
     const uint32_t carrier_seq = state->carrier_seq;
     const uint32_t frame_symbol = (uint32_t)state->symbolcnt;
     nxdn_collect_lich(opts, state, &ctx);
@@ -892,13 +943,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
-    nxdn_print_voice_or_data(state, &ctx);
-    nxdn_update_sacch_mode(state, ctx.lich);
-    state->nxdn_frame_channel = nxdn_frame_channel_of(&ctx);
-    /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
-       messages may name, follow or play anything here. */
-    ctx.foreign = (ctx.cac || ctx.composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
-    state->nxdn_frame_foreign = (uint8_t)ctx.foreign;
+    nxdn_frame_before_channels(opts, state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
@@ -907,7 +952,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     frame_proved = nxdn_confirm_frame_proved(state);
     if (left_carrier) {
         /* A channel of the frame retuned the receiver: the rest was read on the carrier left (nxdn_frame_left()). */
-        nxdn_frame_left(state);
+        nxdn_frame_left();
         goto END;
     }
     nxdn_finish_decoded_frame(opts, state, &ctx);

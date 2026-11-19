@@ -1861,7 +1861,7 @@ test_vcall_des_keyloader_and_iv_signal(void) {
 
     write_vcall_iv_fields(iv_bits, iv);
     NXDN_Elements_Content_decode(opts, state, iv_bits, sizeof(iv_bits));
-    rc |= expect_u64("vcall-des-iv", (uint64_t)state->payload_miN, iv);
+    rc |= expect_u64("vcall-des-iv", (uint64_t)state->nxdn_payload_mi, iv);
     rc |= expect_int("vcall-des-new-iv", state->nxdn_new_iv, 1);
 
     dsd_state_ext_free_all(state);
@@ -1953,7 +1953,7 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
 
     write_vcall_iv_fields(iv_bits, iv);
     NXDN_Elements_Content_decode(opts, state, iv_bits, sizeof(iv_bits));
-    rc |= expect_u64("vcall-aes-iv", (uint64_t)state->payload_miN, iv);
+    rc |= expect_u64("vcall-aes-iv", (uint64_t)state->nxdn_payload_mi, iv);
     rc |= expect_int("vcall-aes-new-iv", state->nxdn_new_iv, 1);
     dsd_call_snapshot call;
     rc |= expect_int("vcall-aes-canonical", dsd_call_state_get(state, 0U, &call), 1);
@@ -2276,7 +2276,7 @@ test_type_d_scch_publishes_call_option_crypto(void) {
     rc |= expect_int("type-d-scch-option-legacy-cipher", state->nxdn_cipher_type, cipher);
     rc |= expect_int("type-d-scch-option-legacy-key", state->nxdn_key, key_id);
 
-    state->payload_miN = held_iv;
+    state->nxdn_payload_mi = held_iv;
     DSD_MEMSET(message, 0, sizeof(message));
     write_bits_u64(message, 0U, 3U, 2U);
     write_bits_u64(message, 8U, 0x12U, 5U);
@@ -2289,7 +2289,7 @@ test_type_d_scch_publishes_call_option_crypto(void) {
     rc |= expect_int("type-d-scch-spare-algid", call.algid, cipher);
     rc |= expect_int("type-d-scch-spare-key", call.kid, key_id);
     rc |= expect_u64("type-d-scch-spare-mi", call.mi, 0U);
-    rc |= expect_u64("type-d-scch-spare-legacy-mi", state->payload_miN, held_iv);
+    rc |= expect_u64("type-d-scch-spare-legacy-mi", state->nxdn_payload_mi, held_iv);
     rc |= expect_int("type-d-scch-spare-legacy-key", state->nxdn_key, key_id);
 
     dsd_state_ext_free_all(state);
@@ -2363,7 +2363,7 @@ test_unconfirmed_type_d_scch_acts_on_nothing(void) {
         .kind = DSD_CALL_KIND_GROUP_VOICE,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    state->payload_miN = 0x155ULL << 11;
+    state->nxdn_payload_mi = 0x155ULL << 11;
 
     decode_type_d_scch_set(opts, state);
 
@@ -2376,7 +2376,7 @@ test_unconfirmed_type_d_scch_acts_on_nothing(void) {
     rc |= expect_int("unconfirmed-scch-cipher", state->nxdn_cipher_type, 0);
     rc |= expect_int("unconfirmed-scch-key", state->nxdn_key, 0);
     /* No SCCH writes the decoder's working IV (NXDN TS 1-E §6.5 carries none). */
-    rc |= expect_u64("unconfirmed-scch-iv-kept", state->payload_miN, 0x155ULL << 11);
+    rc |= expect_u64("unconfirmed-scch-iv-kept", state->nxdn_payload_mi, 0x155ULL << 11);
     rc |= expect_u64("unconfirmed-scch-call-mi", call.mi, 0U);
     rc |= expect_int("unconfirmed-scch-recent-activity", recent_activity_entries(state), 0);
 
@@ -2597,7 +2597,7 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     rc |= expect_int("assignment-group-activity-emergency", recent.entries[0].observation.emergency, 1);
     rc |= expect_int("assignment-group-activity-channel", recent.entries[0].observation.channel, channel);
     rc |= expect_u64("assignment-group-key", (uint64_t)state->R, (uint64_t)scrambler_key);
-    rc |= expect_u64("assignment-group-mi", (uint64_t)state->payload_miN, (uint64_t)scrambler_key);
+    rc |= expect_u64("assignment-group-mi", (uint64_t)state->nxdn_payload_mi, (uint64_t)scrambler_key);
     rc |= expect_int("assignment-group-m-cipher", state->nxdn_cipher_type, 1);
     rc |= expect_int("assignment-group-sync-reset", state->lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("assignment-group-sacch-reset", all_sacch_segments_are(1U, state), 1);
@@ -2907,13 +2907,13 @@ test_short_buffers_never_read_past_their_length(void) {
     /* VCALL_IV: 64 IV bits after the type on Type-C, 22 on Type-D. */
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_vcall_iv_fields(bits, 0x0102030405060708ULL);
-    state->payload_miN = 0x55ULL;
+    state->nxdn_payload_mi = 0x55ULL;
     decode_exact(opts, state, bits, 26U);
-    rc |= expect_u64("vcall-iv-26", state->payload_miN, 0x55ULL);
+    rc |= expect_u64("vcall-iv-26", state->nxdn_payload_mi, 0x55ULL);
     decode_exact(opts, state, bits, 71U);
-    rc |= expect_u64("vcall-iv-71", state->payload_miN, 0x55ULL);
+    rc |= expect_u64("vcall-iv-71", state->nxdn_payload_mi, 0x55ULL);
     decode_exact(opts, state, bits, 72U);
-    rc |= expect_u64("vcall-iv-72", state->payload_miN, 0x0102030405060708ULL);
+    rc |= expect_u64("vcall-iv-72", state->nxdn_payload_mi, 0x0102030405060708ULL);
 
     /* The ARIB VCALL carries its fields 8 elements later, and the ARIB alias six characters from element 24. */
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -3466,7 +3466,7 @@ test_type_d_scch_unit_id_31_is_a_unit(void) {
 /*
  * The one cipher Type-D defines is Scramble (NXDN TS 1-E Table 6.6-31; TS 1-F §16): its 15-stage register is loaded
  * from the key at each superframe's first SCCH and runs on across the four frames (TS 1-F §16.4.2). No SCCH message
- * carries cipher state (TS 1-E §6.5), so none may rewrite the decoder's working register or IV (`payload_miN`): not an
+ * carries cipher state (TS 1-E §6.5), so none may rewrite the decoder's working register or IV (`nxdn_payload_mi`): not an
  * INFO2 naming destination 31, not an INFO1 with its Spare bit set. The call's crypto keeps the IV it had.
  */
 static int
@@ -3480,18 +3480,18 @@ test_type_d_scch_never_rewrites_cipher_state(void) {
     dsd_call_snapshot call;
     int rc = 0;
     state->nxdn_cipher_type = 1U;
-    state->payload_miN = 0x1234U; // the scrambler register partway through the superframe
+    state->nxdn_payload_mi = 0x1234U; // the scrambler register partway through the superframe
 
     scch_from_ts2b(message, 0x81081F0U); // OSM INFO2, destination 31
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_u64("scch-cipher-state-info2-id31", state->payload_miN, 0x1234U);
+    rc |= expect_u64("scch-cipher-state-info2-id31", state->nxdn_payload_mi, 0x1234U);
 
     /* OSM INFO1 (TS 2-B: Free Repeater 1 = 2, Free Repeater 2 = 3), Key ID 0x2D and the Spare bit set. */
     scch_from_ts2b(message, 0xC218000U);
     write_bits_u64(message, 18U, 0x2DU, 6U);
     message[24] = 1U;
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_u64("scch-cipher-state-info1-spare", state->payload_miN, 0x1234U);
+    rc |= expect_u64("scch-cipher-state-info1-spare", state->nxdn_payload_mi, 0x1234U);
     rc |= expect_int("scch-cipher-state-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_u64("scch-cipher-state-call-mi", call.mi, 0U);
     rc |= expect_int("scch-cipher-state-cipher", state->nxdn_cipher_type, 1);
@@ -3771,7 +3771,7 @@ test_type_d_scch_publishes_no_register_mi(void) {
     dsd_call_snapshot call;
     int rc = 0;
     state->R = 0x5A5AU; // the scrambler key
-    state->payload_miN = state->R;
+    state->nxdn_payload_mi = state->R;
     write_scch_call_option(message, 1U, 3U);
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("scch-mi-scramble-call", dsd_call_state_get(state, 0U, &call), 1);
@@ -3794,7 +3794,7 @@ test_type_d_scch_publishes_no_register_mi(void) {
     NXDN_decode_scch(opts, state, message, 1U);
     rc |= expect_int("scch-mi-iv-kept-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_u64("scch-mi-iv-kept", call.mi, 0x1122334455667788ULL);
-    rc |= expect_u64("scch-mi-iv-register-untouched", state->payload_miN, 0x1122334455667788ULL);
+    rc |= expect_u64("scch-mi-iv-register-untouched", state->nxdn_payload_mi, 0x1122334455667788ULL);
     type_d_scch_free(opts, state);
     return rc;
 }
@@ -3817,7 +3817,7 @@ test_type_d_scch_reserved_cipher_mi_is_received(void) {
         return 1;
     }
     state->R = 0x0123456789ABCDEFULL;
-    state->payload_miN = state->R; /* a key an assignment loaded (nxdn_vcall_assgn_load_scrambler_key()) */
+    state->nxdn_payload_mi = state->R; /* a key an assignment loaded (nxdn_vcall_assgn_load_scrambler_key()) */
     for (int repeat = 0; repeat < 3; repeat++) {
         write_scch_call_option(message, 2U, 0x2AU);
         NXDN_decode_scch(opts, state, message, 1U);
@@ -3931,6 +3931,17 @@ test_type_d_null_id_names_no_destination(void) {
         rc |= expect_int(tag, call.kind, DSD_CALL_KIND_GROUP_VOICE);
         type_d_call_on_repeater_5_free(opts, state);
     }
+    /* Nor does a busy INFO4 naming it note any recent activity; one naming a unit does (the control). */
+    for (int named = 0; named < 2; named++) {
+        if (type_d_scch_live_call(&opts, &state) != 0) {
+            return 1;
+        }
+        write_scch_identity(message, 0U, 5U, 1U, named ? 0x0456U : 0U, 1U);
+        NXDN_decode_scch(opts, state, message, 1U);
+        rc |= expect_int(named ? "info4-unit-activity" : "info4-null-id-no-activity", recent_activity_entries(state),
+                         named ? 1 : 0);
+        type_d_scch_free(opts, state);
+    }
     return rc;
 }
 
@@ -4027,7 +4038,7 @@ test_type_d_scch_info1_fields_print(void) {
     /* Spare bit set, with a scrambled call's register freshly loaded from the key. */
     state->nxdn_cipher_type = 1U;
     state->R = 0x5A5AU;
-    state->payload_miN = state->R;
+    state->nxdn_payload_mi = state->R;
     if (dsd_test_capture_stderr_begin(&cap, "nxdn_scch_info1") != 0) {
         type_d_scch_free(opts, state);
         return 1;

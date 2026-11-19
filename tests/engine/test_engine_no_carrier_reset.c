@@ -7312,6 +7312,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->payload_algid = 0x84;
     state->payload_keyid = 0x1234;
     state->payload_miP = 0x0102030405060708ULL;
+    state->nxdn_payload_mi = 0x1122334455667788ULL; /* an NXDN call's received IV */
+    state->nxdn_iv_on_air = 1U;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
 
@@ -7363,6 +7365,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                           && state->p25_p2_ess_b_stale[0] == 1U && state->p25_p2_ess_b_stale[1] == 1U);
     rc |= expect_true("assemblies: the boundary drops the ended call's P25 crypto",
                       state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_miP == 0ULL);
+    rc |= expect_true("assemblies: the boundary drops the NXDN working register and its received IV",
+                      state->nxdn_payload_mi == 0ULL && state->nxdn_iv_on_air == 0U);
 
     free_test_runtime(opts, state);
     return rc;

@@ -2187,7 +2187,7 @@ nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, cons
         char key_text[24];
         DSD_FPRINTF(stderr, " Key Loaded: %s",
                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
-        state->payload_miN = state->R;
+        state->nxdn_payload_mi = state->R;
         state->nxdn_iv_on_air = 0U; /* loaded from the key: never an MI */
     }
     if (state->M == 1) {
@@ -3314,9 +3314,9 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
    (nxdn_published_mi()). */
 static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    state->payload_miN = nxdn_vcall_iv_extract(state, Message);
+    state->nxdn_payload_mi = nxdn_vcall_iv_extract(state, Message);
     state->nxdn_iv_on_air = 1U;
-    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
+    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->nxdn_payload_mi);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
@@ -3559,6 +3559,24 @@ nxdn_scch_busy_tuned(dsd_state* state, const struct nxdn_scch_info* info, long i
     }
 }
 
+/* An admitted termination (Repeater in Use / Go to Repeater 31, in an INFO4 or an INFO2) returns the tuner to the
+ * control channel at @p freq the way a DISC does (nxdn_element_handle_disc()): through the control-channel tune, after
+ * which the receiver follows no voice channel (trunk_is_tuned clear, the follow released), so the next busy message is
+ * judged as one heard on the control channel. Only a receiver tuned away from it returns. */
+static void
+nxdn_scch_return_to_cc(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info, long int freq,
+                       const dsd_tg_policy_decision* decision) {
+    if (opts->trunk_is_tuned != 1) {
+        return;
+    }
+    const dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, NULL);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        return;
+    }
+    opts->trunk_is_tuned = 0;
+    nxdn_scch_busy_tuned(state, info, freq, 0, decision, NXDN_FOLLOW_NEW);
+}
+
 /* Tune to the admitted busy message's go-to repeater at @p freq (@p preempted: a preemption). A message repeated past
  * the voice window for the call the receiver still holds follows that same call in place; a follow to another carrier
  * ends the call left there (nxdn_end_left_call()). */
@@ -3566,8 +3584,12 @@ static void
 nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info, long int freq,
                       const dsd_tg_policy_decision* decision, int preempted) {
     const int is_private_call = (info->gu == 1U) ? 1 : 0;
+    if (info->rep1 == 31U) {
+        nxdn_scch_return_to_cc(opts, state, info, freq, decision);
+        return;
+    }
     const int held = nxdn_follow_holds_call(opts, state, info->id, is_private_call, freq);
-    const int leaves = info->rep1 != 31U && nxdn_tune_leaves_carrier(opts, state, freq);
+    const int leaves = nxdn_tune_leaves_carrier(opts, state, freq);
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
@@ -3586,7 +3608,8 @@ nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
  * whose repeater cannot be placed, never moves it. */
 static void
 nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U) {
+    /* A termination (31) ends the sending whatever its ID; any other message with the Null ID names no call to follow. */
+    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U || (info->rep1 != 31U && info->id == 0U)) {
         return;
     }
 
@@ -3637,7 +3660,8 @@ nxdn_scch_update_busy_display(const dsd_opts* opts, dsd_state* state, const stru
         // Channel-update termination signaling: positive over-the-air end evidence, for an NXDN call.
         (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
         nxdn_call_identity_end(opts, state);
-    } else if (info->rep1 != 0U) {
+    } else if (info->rep1 != 0U && info->id != 0U) {
+        /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so no activity to note. */
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
@@ -3956,9 +3980,6 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     info.acts = nxdn_confirm_is_confirmed(state);
     info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
     info.diagnostic_only = (uint8_t)!nxdn_scch_content_valid(Message, direction);
-    if (info.diagnostic_only) {
-        state->nxdn_scch_frame_invalid = 1U;
-    }
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);

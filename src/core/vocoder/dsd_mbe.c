@@ -1053,8 +1053,8 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
 
 static void
 mbe_apply_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
-    if (state->payload_miN == 0) {
-        state->payload_miN = state->R;
+    if (state->nxdn_payload_mi == 0) {
+        state->nxdn_payload_mi = state->R;
     }
 
     char ambe_temp[49];
@@ -1070,7 +1070,7 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x02 && state->nxdn_new_iv == 1 && state->nxdn_part_of_frame == 0) {
         DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
-        des_ofb_keystream_output(state->payload_miN, state->R, state->ks_octetL, 26);
+        des_ofb_keystream_output(state->nxdn_payload_mi, state->R, state->ks_octetL, 26);
         state->bit_counterL = 0;
         dsd_unpack_bytes_to_bits(state->ks_octetL + 8, sizeof(state->ks_octetL) - 8U, state->ks_bitstreamL,
                                  sizeof(state->ks_bitstreamL), (size_t)26U * 8U);

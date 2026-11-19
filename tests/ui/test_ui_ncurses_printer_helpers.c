@@ -5109,7 +5109,7 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
     state->carrier = 1;
     state->nxdn_cipher_type = 1;
     state->R = 0x5A5AULL;
-    state->payload_miN = 0x5A5AULL;
+    state->nxdn_payload_mi = 0x5A5AULL;
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
     assert_capture_contains("Seed: [redacted]");
@@ -5121,14 +5121,14 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
 
     opts->show_keys = 0;
     state->nxdn_cipher_type = 2;
-    state->payload_miN = 0x5A5AULL; /* a register the scrambler left */
+    state->nxdn_payload_mi = 0x5A5AULL; /* a register the scrambler left */
     state->nxdn_iv_on_air = 0U;
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
     assert_capture_contains("IV: none");
     assert(strstr(g_printw_capture, "5A5A") == NULL);
     /* An IV a VCALL_IV carried is shown. */
-    state->payload_miN = 0x1122334455667788ULL;
+    state->nxdn_payload_mi = 0x1122334455667788ULL;
     state->nxdn_iv_on_air = 1U;
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
