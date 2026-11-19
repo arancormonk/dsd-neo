@@ -855,6 +855,19 @@ heartbeat_and_single_candidate(void) {
     return rc;
 }
 
+/* Wait until the watchdog thread's beat is observed, or the fixture's deadline passes. 1 when one was. */
+static int
+wait_for_watchdog_beat(double deadline_s) {
+    while (!p25_sm_watchdog_tick_wanted()) {
+        if (dsd_realtime_mono_s() >= deadline_s) {
+            DSD_FPRINTF(stderr, "FAIL: no watchdog beat before the fixture deadline\n");
+            return 0;
+        }
+        dsd_sleep_ms(1U);
+    }
+    return 1;
+}
+
 static int
 watchdog_ownership_thread(void) {
     if (setup(0.0f)) {
@@ -876,31 +889,33 @@ watchdog_ownership_thread(void) {
     const double old_try = dsd_decode_now_mono_s() - 20.0;
     p25->t_hunt_try_m = old_try;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_DMR);
+    /* One deadline for the fixture, which only ends one that broke: each beat is waited for as it is observed, however
+     * late the watchdog thread is scheduled, and serviced at once. */
+    const double fixture_deadline_s = dsd_realtime_mono_s() + 60.0;
     p25_sm_watchdog_start(&g_opts, &g_state);
     /* Acquisition changes these hints between the beats; the tick each beat asks for runs here, on the decoder thread,
      * and a DMR owner excludes P25 recovery whatever they say. */
     int ticks = 0;
-    for (int i = 0; i < 450; ++i) {
+    for (int i = 0; i < 3; ++i) {
         g_state.synctype = (i & 1) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
         g_state.lastsynctype = g_state.synctype;
         g_state.p25_cc_is_tdma = i & 1;
+        if (!wait_for_watchdog_beat(fixture_deadline_s)) {
+            break;
+        }
         ticks += p25_sm_watchdog_service(&g_opts, &g_state);
-        dsd_sleep_ms(1U);
     }
     p25_sm_watchdog_stop();
-    int rc = expect(ticks > 0, "the watchdog's beats ask the decoder thread for ticks");
+    int rc = expect(ticks == 3, "each observed watchdog beat asks the decoder thread for a tick it runs");
     rc |=
         expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9, "watchdog-paced ticks exclude DMR despite changing raw hints");
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_NONE;
     g_state.p25_cc_is_tdma = 0;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
     p25_sm_watchdog_start(&g_opts, &g_state);
-    ticks = 0;
-    for (int i = 0; i < 500 && ticks == 0; ++i) {
-        ticks += p25_sm_watchdog_service(&g_opts, &g_state);
-        dsd_sleep_ms(1U);
-    }
+    ticks = wait_for_watchdog_beat(fixture_deadline_s) ? p25_sm_watchdog_service(&g_opts, &g_state) : 0;
     p25_sm_watchdog_stop();
+    rc |= expect(ticks == 1, "the positive control's observed beat is serviced");
     rc |= expect(p25->t_hunt_try_m > old_try, "watchdog-paced tick positive control drives P25 recovery");
     cleanup();
     return rc;
