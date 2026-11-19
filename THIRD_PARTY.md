@@ -216,11 +216,8 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   builds the library alone. The ZIP's `SoapySDRUtil.exe` comes from the `soapysdr` overlay's `tools` feature; its MSVC `getopt.h` is mingw-w64's
   public-domain file. The macOS DMG bundles Homebrew's SoapySDR.
 - **SoapyAirspy** (Charles J. Cliffe, https://github.com/pothosware/SoapyAirspy) - MIT; release 0.2.1, built against
-  the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. It carries one
-  project patch, kept beside the overlay: `vcpkg-ports/soapy-airspy/0001-soapyairspy-report-device-errors.patch`
-  reports a tune, sample rate, gain or stream start the radio refuses, and reports a setting only once the radio has
-  taken it (`tools/usb_dependency_patches.sh`). Notice `vcpkg-ports/soapy-airspy/copyright`, shipped as
-  `licenses/SoapyAirspy-MIT.txt`.
+  the patched libairspy above, so the module and the native Airspy input share one `airspy.dll`. Notice
+  `vcpkg-ports/soapy-airspy/copyright`, shipped as `licenses/SoapyAirspy-MIT.txt`.
 - **SoapyHackRF** (Wei Jiang, Josh Blum, Kevin Mehall, https://github.com/pothosware/SoapyHackRF) - MIT; release
   0.3.6. Its LICENSE names no holder, so the notice `vcpkg-ports/soapy-hackrf/copyright` adds the source headers'
   holders; shipped as `licenses/SoapyHackRF-MIT.txt`.

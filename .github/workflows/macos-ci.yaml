@@ -252,9 +252,8 @@ jobs:
           pkg-config --modversion libpulse || true
           pkg-config --modversion sndfile || true
 
-      # The DESKTOP_* tests build these: the libairspy and librtlsdr the DMG
-      # ships, and the SoapyAirspy module the Windows ZIP ships.
-      - name: Fetch the patched libairspy, librtlsdr and SoapyAirspy sources
+      # The DESKTOP_* transfer tests build these, the sources the DMG ships.
+      - name: Fetch the patched libairspy and librtlsdr sources
         shell: bash
         run: tools/usb_dependency_patches.sh fetch-all "$RUNNER_TEMP/desktop-usb"
 

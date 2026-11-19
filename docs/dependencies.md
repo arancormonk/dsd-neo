@@ -88,11 +88,7 @@ Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
 builds `SoapySDRUtil.exe`, which the registry port leaves out), the device
 library `hackrf` (libhackrf, release 2026.01.3), and the modules
 `soapy-airspy` and `soapy-hackrf`, which build against the overlays' libraries
-(`soapy-airspy` against the held `airspy` overlay below). The `soapy-airspy`
-overlay applies dsd-neo's
-`vcpkg-ports/soapy-airspy/0001-soapyairspy-report-device-errors.patch`, so the
-module reports a tune, sample rate, gain or stream start the radio refuses
-instead of reporting the setting as applied. The macOS DMG bundles
+(`soapy-airspy` against the held `airspy` overlay below). The macOS DMG bundles
 Homebrew's SoapySDR and no modules. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
 SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker

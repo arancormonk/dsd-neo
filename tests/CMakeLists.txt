@@ -19867,12 +19867,11 @@ endif()
 # Android app's copies. DESKTOP_* build the pinned upstream sources with the
 # patches the Windows, AppImage and macOS releases carry, from the tree that
 # tools/usb_dependency_patches.sh fetch-all writes, when
-# DSD_TEST_DESKTOP_USB_SOURCES names it; that tree also holds the SoapyAirspy
-# module the Windows release builds on libairspy.
+# DSD_TEST_DESKTOP_USB_SOURCES names it.
 set(DSD_TEST_DESKTOP_USB_SOURCES
     ""
     CACHE PATH
-    "Patched desktop libairspy, librtlsdr and SoapyAirspy sources (tools/usb_dependency_patches.sh fetch-all)"
+    "Patched desktop libairspy and librtlsdr sources (tools/usb_dependency_patches.sh fetch-all)"
 )
 
 function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
@@ -19949,41 +19948,6 @@ function(dsd_neo_add_usb_library_tests kind airspy_src rtlsdr_root threads)
     )
 endfunction()
 
-# SoapyAirspy, the module the Windows release builds on libairspy, from the same
-# tree. Its sources keep upstream style and build without the project warnings,
-# as the vcpkg port builds them, against SoapySDR; the test links them against
-# stub libairspy entry points.
-function(dsd_neo_add_soapyairspy_test module_src airspy_src_dir)
-    set(_lib dsd-neo_test_desktop_soapyairspy)
-    # The module includes <libairspy/airspy.h>, where the vcpkg port installs it.
-    set(_include "${CMAKE_CURRENT_BINARY_DIR}/desktop-soapyairspy-include")
-    foreach(_header airspy.h airspy_commands.h)
-        configure_file(
-            "${airspy_src_dir}/${_header}"
-            "${_include}/libairspy/${_header}"
-            COPYONLY
-        )
-    endforeach()
-    add_library(
-        ${_lib}
-        STATIC
-        ${module_src}/Settings.cpp
-        ${module_src}/Streaming.cpp
-    )
-    set_property(TARGET ${_lib} PROPERTY LINK_LIBRARIES "")
-    target_include_directories(${_lib} SYSTEM PUBLIC ${module_src} ${_include})
-    target_link_libraries(
-        ${_lib}
-        PUBLIC dsd-neo_feature_soapy
-        PRIVATE dsd-neo_sanitizers
-    )
-
-    set(_target dsd-neo_test_desktop_soapyairspy_errors)
-    add_executable(${_target} io/test_desktop_soapyairspy_errors.cpp)
-    target_link_libraries(${_target} PRIVATE ${_lib} dsd-neo_platform)
-    add_test(NAME DESKTOP_SOAPYAIRSPY_ERRORS COMMAND ${_target})
-endfunction()
-
 set(_dsd_neo_usb_test_threads "")
 if(NOT ANDROID AND NOT CYGWIN)
     if(UNIX AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -20013,16 +19977,14 @@ if(_dsd_neo_usb_test_threads)
             "${DSD_TEST_DESKTOP_USB_SOURCES}/libairspy/libairspy/src/airspy.c"
         )
         set(_desktop_rtlsdr "${DSD_TEST_DESKTOP_USB_SOURCES}/librtlsdr")
-        set(_desktop_soapyairspy "${DSD_TEST_DESKTOP_USB_SOURCES}/soapyairspy")
         if(
             NOT EXISTS "${_desktop_airspy}"
             OR NOT EXISTS "${_desktop_rtlsdr}/src/librtlsdr.c"
-            OR NOT EXISTS "${_desktop_soapyairspy}/Settings.cpp"
         )
             message(
                 FATAL_ERROR
                 "DSD_TEST_DESKTOP_USB_SOURCES=${DSD_TEST_DESKTOP_USB_SOURCES} holds no "
-                "libairspy/, librtlsdr/ and soapyairspy/ trees; create them with "
+                "libairspy/ and librtlsdr/ trees; create them with "
                 "tools/usb_dependency_patches.sh fetch-all"
             )
         endif()
@@ -20032,17 +19994,6 @@ if(_dsd_neo_usb_test_threads)
             "${_desktop_rtlsdr}"
             "${_dsd_neo_usb_test_threads}"
         )
-        if(DSD_HAS_SOAPYSDR)
-            get_filename_component(
-                _desktop_airspy_dir
-                "${_desktop_airspy}"
-                DIRECTORY
-            )
-            dsd_neo_add_soapyairspy_test(
-                "${_desktop_soapyairspy}"
-                "${_desktop_airspy_dir}"
-            )
-        endif()
     endif()
 elseif(DSD_TEST_DESKTOP_USB_SOURCES)
     message(

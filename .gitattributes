@@ -15,5 +15,3 @@ tests/fixtures/iq/*.iq binary
 # (tools/usb_dependency_patches.sh): LF on every platform, so a Windows checkout
 # hashes the same.
 android/third_party/patches/*.patch text eol=lf
-# SoapyAirspy's sources have LF line endings, like the patches above.
-vcpkg-ports/soapy-airspy/*.patch text eol=lf

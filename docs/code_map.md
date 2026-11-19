@@ -8821,11 +8821,6 @@ Key public headers:
   `Interlocked*` shim, so one patch file builds everywhere. Tests: `VENDORED_LIBAIRSPY_TRANSFERS` (MSVC included) and
   `DESKTOP_LIBAIRSPY_TRANSFERS`, the pinned upstream source with the patch, registered when
   `DSD_TEST_DESKTOP_USB_SOURCES` names a `tools/usb_dependency_patches.sh fetch-all` tree (Linux and macOS CI).
-  The Windows ZIP's SoapyAirspy module carries `vcpkg-ports/soapy-airspy/0001-soapyairspy-report-device-errors.patch`:
-  a refused tune, rate, gain or AGC write throws (a SoapySDR C API error code), a failed rate write or start fails
-  `activateStream()` and the read that applies a pending rate, and the module reports a setting only once the radio
-  took it, so `rtl_device`'s Soapy calls see the failure. Test: `DESKTOP_SOAPYAIRSPY_ERRORS`, the module's sources
-  from the fetch-all tree against stub libairspy calls (built when SoapySDR is found).
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
   - USB reader exit (`dongle_thread_fn()` in `rtl_device.cpp`): any `rtlsdr_read_async()` return with no stop in

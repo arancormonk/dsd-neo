@@ -4428,10 +4428,7 @@ Android app's patched copies on all three. The `backend-matrix (both, …)` legs
 and the macOS job also build their `DESKTOP_*` twins against the pinned upstream
 sources with the patches the AppImage and the DMG ship: they run
 `tools/usb_dependency_patches.sh fetch-all <dir>` and configure with
-`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally. That
-tree also holds the patched SoapyAirspy module the Windows ZIP builds, which
-`DESKTOP_SOAPYAIRSPY_ERRORS` builds against SoapySDR and stub libairspy calls
-that fail on request; it registers only when SoapySDR is found.
+`-DDSD_TEST_DESKTOP_USB_SOURCES=<dir>`, which works the same way locally.
 
 Some tests drive an external tool: two `TOOLS_*` tests need ripgrep,
 `TOOLS_GCC_FANALYZER` needs GNU GCC's analyzer under the name `gcc`,
