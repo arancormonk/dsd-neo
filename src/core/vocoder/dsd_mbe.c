@@ -2098,11 +2098,14 @@ mbe_dmr_slot_key_forced(const dsd_state* state, int slot, const mbe_frame_ctx_t*
 // released its call (dsd_state::dmr_enc_class_held): its encryption is unknown, as an X2-TDMA call's opening frames
 // are, until its checked LC or accepted PI header says, whatever the frame's class reads. The privacy bit or ALG ID
 // that class reads may come from data no check passed (an embedded LC whose checksum failed), and the key it selects
-// keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()).
+// keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()). The single-slot
+// decoder without trunking has no hold (dsd_opts_dmr_voice_hold_applies()).
 static void
-mbe_dmr_slot_judge(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, mbe_frame_judgement* j) {
+mbe_dmr_slot_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                   mbe_frame_judgement* j) {
     j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
-    j->crypto_unknown = state->dmr_enc_class_held[slot] != 0U && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
+    j->crypto_unknown = dsd_opts_dmr_voice_hold_applies(opts) && state->dmr_enc_class_held[slot] != 0U
+                        && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
 }
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
@@ -2129,7 +2132,7 @@ static mbe_frame_judgement
 mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
     mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR, 0};
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: mbe_dmr_slot_judge(state, slot, frame_ctx, &j); break;
+        case DSD_VOICE_PROTOCOL_DMR: mbe_dmr_slot_judge(opts, state, slot, frame_ctx, &j); break;
         case DSD_VOICE_PROTOCOL_NXDN:
         case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
         case DSD_VOICE_PROTOCOL_X2TDMA: mbe_x2_slot_judge(state, slot, &j); break;

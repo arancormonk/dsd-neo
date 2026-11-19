@@ -434,6 +434,8 @@ Windows console runs:
   loses nothing. Every channel change does this except the run's first landing: a trunked call followed, a return to
   the control channel, a `-Y` step, a trunk-scan switch, a frequency you enter, a signal search step, a replay retune.
   So does the release of a call on the same channel, including a return to the control channel when none is known.
+  The single-slot decoder without trunking (`-fr`, `-nm`) does not do this, as before: it plays both timeslots on one
+  channel, so one slot's encryption details and call can carry over to the other slot's call there.
   With encrypted audio unmuted and without `-q` the held frames play, and a key forced onto every frame (`-4` with a
   Basic Privacy or Hytera key, `-S`, or a vendor key: `-A`, `-2`, `-!`, `-@`, `-5`, `-9`, `--dmr-baofeng-pc5`,
   `--dmr-csi-ee72`) decrypts them, as before. A key the call's own signalling selects waits for that

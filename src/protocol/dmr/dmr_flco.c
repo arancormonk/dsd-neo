@@ -728,6 +728,13 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
    as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
    the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
    failed check, a protected LC or an FEC failure says nothing. */
+/* Whether this LC's slot's voice is held (dmr_enc_class_hold()), where the hold applies: not on the single-slot decoder
+   without trunking, whose one lane carries both slots (dsd_opts_dmr_voice_hold_applies()). */
+static int
+dmr_flco_voice_held(const dmr_flco_ctx* ctx) {
+    return dsd_opts_dmr_voice_hold_applies(ctx->opts) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U;
+}
+
 static int
 dmr_flco_ends_voice_hold(const dmr_flco_ctx* ctx) {
     return ctx->CRCCorrect == 1U && ctx->voice_slot_known && dmr_flco_lc_readable(ctx);
@@ -754,7 +761,7 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
     if (ctx->unk != 1U || ctx->type == 2U) {
         return;
     }
-    if (dmr_flco_ends_voice_hold(ctx) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+    if (dmr_flco_ends_voice_hold(ctx) && dmr_flco_voice_held(ctx)) {
         dmr_enc_class_reset(ctx->state, ctx->voice_slot);
         unsigned int fid = 0U;
         unsigned int so = 0U;
@@ -787,7 +794,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
         // heal restoring what one wrote) or from a PI header naming no cipher.
-        if (ctx->CRCCorrect == 1U && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+        if (ctx->CRCCorrect == 1U && dmr_flco_voice_held(ctx)) {
             dmr_enc_class_reset(ctx->state, ctx->voice_slot);
         }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;

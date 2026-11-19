@@ -3357,6 +3357,10 @@ suite runs under this compiler.
   Privacy, forced with `-4` too, `-S`, a mapped Vertex keystream), or forced clear (`dsd_key_dmr_forced_clear()`)
   settles its decryptability in the frame classification; no mixer applies a forced-privacy unmute override.
   After the receiver moves off a carrier or releases its call, each DMR slot's voice is held (`dmr_enc_class_hold()`).
+  The hold applies only where the decoder keeps the two timeslots apart: the dual-slot decoder, and the single-slot
+  decoder under trunking (`dsd_opts_dmr_voice_hold_applies()`). The single-slot decoder without trunking (`-fr`, `-nm`)
+  has no hold, as on main: both timeslots share its one lane, so their crypto and call state can mix there (the
+  limit is stated with the lane below).
   Who judges each move, once:
   - A carrier boundary: every one but a stream gap. The release of a followed call inside it leaves the judgement to
     the boundary. With trunking off, a manual move's own carrier boundary judges it.
@@ -3422,8 +3426,10 @@ suite runs under this compiler.
   before), the `-S` keystream, or `-4` with a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
   decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
-  trunking the single-slot decoder folds a slot 2 LC and its PI header alike onto lane 0, where its voice is decoded, so
-  a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`).
+  trunking the single-slot decoder is as on main: it folds every slot 2 LC onto lane 0, where both slots' voice is
+  decoded, while a PI header and data stay on their own slot's fields. Its limit: both timeslots share the one lane, so
+  one slot's LC, terminator, crypto and call state act on the other slot's call there, and no hold keeps an unknown
+  call muted (`mbe_dmr_slot_judge()`, `dmr_flco_voice_held()`).
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
