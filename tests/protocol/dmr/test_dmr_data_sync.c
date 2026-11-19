@@ -41,13 +41,11 @@ static int g_handler_mono_slot;
 static int g_handler_moves_carrier;
 static int g_handler_writes_fix;
 /* The handler acts as a data packet would on its index: a data header (burst 6) arms the packet and writes an
-   encrypted packet's ALG ID 0x24, key ID 7 and MI; a rate 1 block (burst 10) completes it. Every burst records the ALG
-   ID its index held when it ran. */
+   encrypted packet's ALG ID 0x24, key ID 7 and MI; a rate 1 block (burst 10) completes it. */
 static int g_handler_data_crypto;
 /* The handler leaves currentslot at lane 0 for a slot 2 burst, as an LC folded onto the single-slot lane does
    (dmr_flco_ctx_init()). */
 static int g_handler_folds;
-static int g_handler_algid_seen;
 /* The handler observes the lane-0 call as a voice LC header the single-slot output folds there does (issue #637):
    0 none, 1 a new epoch for g_handler_target, 2 that epoch again (a repeated header). */
 static int g_handler_observes;
@@ -193,7 +191,6 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     }
     if (g_handler_data_crypto) {
         const int idx = state->currentslot & 1;
-        g_handler_algid_seen = idx == 0 ? state->payload_algid : state->payload_algidR;
         if (databurst == 6U) {
             if (idx == 0) {
                 state->payload_algid = 0x24;
