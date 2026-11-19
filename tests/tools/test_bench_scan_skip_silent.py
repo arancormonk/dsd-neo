@@ -17,6 +17,7 @@ import importlib.util
 import io
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -61,6 +62,27 @@ class SilentModes(unittest.TestCase):
         args, message = parse(*BASE_ARGS, "--scan", "typed", "--by-mode", "--silent-modes", "nxdn48,dpmr")
         self.assertIsNone(message)
         self.assertEqual(args.silent_modes, ("nxdn48", "dpmr"))
+
+    def test_silent_modes_go_to_the_silent_channels_in_turn(self):
+        # Issue #834: by silent ordinal, not channel index, which counts the active channels too: with three silent
+        # channels both modes run, and a trunk target list has the nxdn48 ones.
+        channels = bench.scene_layout(3)
+        modes = [bench.channel_mode(c, ("dpmr", "nxdn48")) for c in channels if c.kind == "silent"]
+        self.assertEqual(modes, ["dpmr", "nxdn48", "dpmr"])
+        with tempfile.TemporaryDirectory() as out_dir:
+            paths = bench.write_lists(channels, out_dir, ("dpmr", "nxdn48"))
+            with open(paths["trunk"], encoding="ascii") as trunk:
+                self.assertIn("nxdn48-conventional", trunk.read())
+
+
+class DecoderCommand(unittest.TestCase):
+    def test_an_uncapped_run_disables_the_cap(self):
+        # A cap a DSD_NEO_CONFIG file sets must not stay in force: 0 is passed, as the decoder's "off".
+        args, message = parse(*BASE_ARGS, "--scan", "typed", "--max-visit-ms", "0")
+        self.assertIsNone(message)
+        cmd = bench.dsd_command(args, 1234, {"trunk": "t.csv", "typed": "y.csv", "untyped": "u.csv"})
+        at = cmd.index("--scan-max-visit-ms")
+        self.assertEqual(cmd[at + 1], "0")
 
 
 def visits_record(scan, modes, channels):

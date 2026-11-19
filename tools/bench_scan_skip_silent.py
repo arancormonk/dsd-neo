@@ -120,9 +120,10 @@ AMBE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) FRAME AMBE slot=\d+ data=(
 
 
 class Channel:
-    def __init__(self, index, kind):
+    def __init__(self, index, kind, silent_index=None):
         self.index = index
         self.kind = kind  # "silent", "nfm", "dmr" or "p25"
+        self.silent_index = index if silent_index is None else silent_index  # its place among the silent channels
         self.frequency = BASE_HZ + index * SPACING_HZ
         self.starts: np.ndarray | None = None  # call start times, scene time s
         self.snr_db: float | None = None
@@ -185,13 +186,22 @@ def schedule(seed, k, jitter_s):
     return first + PERIOD_S * np.arange(count) + rng.uniform(-jitter_s, jitter_s, count)
 
 
-def build_scene(silent, level, seed, jitter_s, work_dir):
-    """The channels in frequency order, the three active ones spread among the silent ones."""
+def scene_layout(silent):
+    """The channels in frequency order, the three active ones spread among the silent ones, each silent one numbered
+    among the silent ones (the silent modes go to them in turn)."""
     count = silent + len(ACTIVE)
     kinds = ["silent"] * count
     for k, kind in enumerate(ACTIVE):
         kinds[(k * count) // len(ACTIVE) + count // (2 * len(ACTIVE))] = kind
-    channels = [Channel(i, kind) for i, kind in enumerate(kinds)]
+    channels = []
+    for i, kind in enumerate(kinds):
+        channels.append(Channel(i, kind, sum(1 for c in channels if c.kind == "silent")))
+    return channels
+
+
+def build_scene(silent, level, seed, jitter_s, work_dir):
+    """The channels in frequency order (scene_layout()), the active ones with their calls."""
+    channels = scene_layout(silent)
     n = round(CALL_S * bif.SAMPLE_RATE_HZ)
     for k, kind in enumerate(ACTIVE):
         channel = next(c for c in channels if c.kind == kind)
@@ -296,7 +306,7 @@ class Scene(tcp_bench.Source):
 
 def channel_mode(channel, silent_modes=ACTIVE):
     """The mode a channel runs: an active channel its own, a silent one the silent modes in turn."""
-    return channel.kind if channel.kind != "silent" else silent_modes[channel.index % len(silent_modes)]
+    return channel.kind if channel.kind != "silent" else silent_modes[channel.silent_index % len(silent_modes)]
 
 
 def write_lists(channels, out_dir, silent_modes=ACTIVE):
@@ -331,8 +341,8 @@ def write_lists(channels, out_dir, silent_modes=ACTIVE):
 def dsd_command(args, port, lists):
     cmd = [str(Path(args.dsd).resolve()), "--frontend", "none", "-i", f"rtltcp:127.0.0.1:{port}:{BASE_HZ}:0:0:48:0:1"]
     cmd += ["-o", "null"]
-    if args.max_visit_ms > 0:
-        cmd += ["--scan-max-visit-ms", str(args.max_visit_ms)]
+    # Always given, 0 included: a cap a DSD_NEO_CONFIG file sets must not stay in force on an uncapped run.
+    cmd += ["--scan-max-visit-ms", str(args.max_visit_ms)]
     cmd += ["--frame-log", "frames.log"]
     cmd += ["-P", "-7", "calls", "--wav-journal", "calls.jsonl", "--analog-record-preroll-ms", "0"]
     cmd += ["--scan-skip-silent" if args.skip == "on" else "--no-scan-skip-silent"]
