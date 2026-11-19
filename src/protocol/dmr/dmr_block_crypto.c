@@ -227,7 +227,7 @@ dmr_block_crypto_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_cr
 
 /* The packet's AES IV, expanded from its header's MI (@p ctx) into @p maes alone, and printed as a PI header's is: the
    slot's voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL) are its voice's, which a packet heard between
-   superframes, or on the single-slot decoder's other slot while lane 0 carries an AES call, must not change. */
+   superframes of the slot's AES call must not change. */
 static void
 dmr_block_crypto_prepare_aes_iv(const dsd_state* state, const dmr_block_crypto_ctx* ctx, uint8_t maes[16]) {
     (void)dmr_aes_expand_iv((uint32_t)ctx->mi, maes);
