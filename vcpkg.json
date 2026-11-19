@@ -26,7 +26,10 @@
       "name": "soapysdr",
       "platform": "windows | osx",
       "features": [
-        "tools"
+        {
+          "name": "tools",
+          "platform": "windows"
+        }
       ]
     },
     {

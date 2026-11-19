@@ -72,6 +72,7 @@ VCPKG_PORT_COPIES = {
     "soapysdr": "ports/soapysdr at the manifest baseline",
     "rtlsdr": "ports/rtlsdr at the manifest baseline",
     "portaudio": "ports/portaudio at port-version 8",
+    "ncurses": "ports/ncurses at the manifest baseline",
 }
 BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice"
 # The libraries vcpkg builds for the Windows ZIP -> {name under licenses/: where staging takes it from}. Each carries
@@ -262,7 +263,9 @@ class SoapyModulePackaging(unittest.TestCase):
 
     def test_manifest_takes_the_modules_and_the_tool_on_windows_only(self):
         entries = {e["name"]: e for e in json.loads(read("vcpkg.json"))["dependencies"] if isinstance(e, dict)}
-        self.assertEqual(entries["soapysdr"], {"name": "soapysdr", "platform": "windows", "features": ["tools"]})
+        # The macOS DMG bundles the library too, but not SoapySDRUtil.
+        self.assertEqual(entries["soapysdr"], {"name": "soapysdr", "platform": "windows | osx",
+                                               "features": [{"name": "tools", "platform": "windows"}]})
         for name in MODULES:
             self.assertEqual(entries[name], {"name": name, "platform": "windows"})
 
