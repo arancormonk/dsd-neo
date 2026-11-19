@@ -44,7 +44,8 @@ many were skipped (a skip logged inside the visit) as a share of all of them, vi
 skip latency (the scene's retune onto the channel to the skip's line, median and p95); and how each visit ended:
 skipped, left early with no skip (under 1.5 s), left at its dwell or hangtime (1.5 to 3.5 s), or held past it (a
 -Y row whose syncs refresh its hangtime, up to the 8 s visit cap); and the visits to an active channel that left while
-its call was still on air with at least LEFT_MID_CALL_S of it to go (a call cut short).
+its call was still on air with at least LEFT_MID_CALL_S of it to go (a call cut short), with those that left within the
+call's first LEFT_AT_ONSET_S also reported on their own.
 
 Usage, from the repository root:
     python3 tools/bench_scan_skip_silent.py --dsd build/dev-release/apps/dsd-cli/dsd-neo \\
@@ -102,6 +103,7 @@ NXDN48_DWELL_MS = 2000
 EARLY_S = 1.5  # --by-mode's visit end buckets: under this a visit left early, past HELD_S it was held
 HELD_S = 3.5
 LEFT_MID_CALL_S = 0.5  # --by-mode: a visit to an active channel that ends with this much of its call still to go
+LEFT_AT_ONSET_S = 0.2  # --by-mode: of those, the ones that ended this soon after the call began (reported on their own)
 P25_LDU_S = 0.18
 DMR_FRAMES_PER_BURST = 3
 SCHEDULE_PHASE_S = 7.3  # the schedule's shift per seed, in seconds (mod PERIOD_S)
@@ -651,7 +653,8 @@ def silent_by_mode(record, channels, lines, skips):
 
 def left_mid_call(record, channels):
     """--by-mode: per active mode, the visits that left the channel while a call was on air with LEFT_MID_CALL_S or more
-    of it still to go (scene time, the scored visits only)."""
+    of it still to go (scene time, the scored visits only), and under "<mode> in its first 200 ms" those of them that left
+    within the call's first LEFT_AT_ONSET_S (counted in the mode's total too)."""
     out = {}
     scored = visits(record, channels)
     lead = next((i for i, (c, _v0, _v1) in enumerate(scored) if c is not None), len(scored))
@@ -659,8 +662,11 @@ def left_mid_call(record, channels):
         if c is None or c.kind == "silent":
             continue
         start = c.call_at(v1)
-        cut = start is not None and start <= v1 and start + CALL_S - v1 >= LEFT_MID_CALL_S and start < v1 - 0.2
+        cut = start is not None and start <= v1 and start + CALL_S - v1 >= LEFT_MID_CALL_S
         out[c.kind] = out.get(c.kind, 0) + (1 if cut else 0)
+        if cut and v1 - start < LEFT_AT_ONSET_S:
+            onset = f"{c.kind} in its first {LEFT_AT_ONSET_S * 1000:.0f} ms"
+            out[onset] = out.get(onset, 0) + 1
     return out
 
 

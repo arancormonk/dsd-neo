@@ -6,6 +6,7 @@
   which would name modes no row runs, and the typed scan takes them.
 - --by-mode groups an untyped run's silent visits under the one decoder set every row runs, and a typed run's under
   each row's mode.
+- --by-mode counts the visits that left an active channel mid-call, those at the call's onset included.
 
 These run in seconds and never start a decoder or serve a scene.
 """
@@ -87,6 +88,35 @@ class ByMode(unittest.TestCase):
         out = bench.silent_by_mode(record, self.channels, [], [])
         self.assertEqual(set(out), {"nxdn48", "dpmr"})
         self.assertEqual(sum(row["visits"] for row in out.values()), 8)
+
+
+class LeftMidCall(unittest.TestCase):
+    """--by-mode counts every visit that left an active channel with LEFT_MID_CALL_S or more of its call to go, those
+    that left within the call's first 200 ms included; those are also reported on their own."""
+
+    def record(self, channels, leave_s):
+        silent, dmr = channels
+        tunes = [(0.0, 0.0, silent.frequency, 0), (5.0, 0.0, dmr.frequency, 0), (leave_s, 0.0, silent.frequency, 0)]
+        tunes.append((20.0, 0.0, dmr.frequency, 0))
+        return {"tunes": tunes, "end_s": 40.0}
+
+    def setUp(self):
+        self.channels = [bench.Channel(0, "silent"), bench.Channel(1, "dmr")]
+        self.channels[1].starts = bench.np.array([10.0, 30.0])
+
+    def test_a_departure_at_the_calls_onset_counts(self):
+        out = bench.left_mid_call(self.record(self.channels, 10.1), self.channels)
+        self.assertEqual(out.get("dmr"), 1, f"left 100 ms into a {bench.CALL_S} s call: {out}")
+        self.assertEqual(out.get("dmr in its first 200 ms"), 1, f"and reported on its own: {out}")
+
+    def test_a_departure_later_in_the_call(self):
+        out = bench.left_mid_call(self.record(self.channels, 11.0), self.channels)
+        self.assertEqual(out.get("dmr"), 1, f"left 1 s into the call: {out}")
+        self.assertIsNone(out.get("dmr in its first 200 ms"), f"not at its onset: {out}")
+
+    def test_a_departure_with_little_of_the_call_left(self):
+        out = bench.left_mid_call(self.record(self.channels, 10.0 + bench.CALL_S - 0.2), self.channels)
+        self.assertEqual(out.get("dmr"), 0, f"200 ms of the call left: {out}")
 
 
 class StampedLines(unittest.TestCase):
