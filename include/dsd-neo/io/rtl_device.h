@@ -310,7 +310,8 @@ int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested
  *
  * Pure query; the device is not reconfigured. A SoapySDR device answers with the advertised rate nearest
  * @p requested, without the profile's preferred rate that rtl_device_nearest_supported_rate() plans with; other
- * backends with @p requested.
+ * backends, a native Airspy included (which rtl_device_nearest_supported_rate() answers with the rate it runs), with
+ * @p requested.
  *
  * @param dev RTL-SDR device handle.
  * @param requested Rate in Hz.

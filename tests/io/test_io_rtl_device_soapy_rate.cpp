@@ -915,6 +915,19 @@ test_rollback_replans_a_changed_write(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 }
 
+/* A native Airspy plans with the rate it runs (it picks its own), but a write programs the rate asked for: an R2 running
+ * 10 MS/s asked for 2.5 MS/s is written 2.5 MS/s, and the write query says so. */
+void
+test_airspy_write_query_is_the_request(void) {
+    uint32_t planned_hz = 0U;
+    uint32_t written_hz = 0U;
+    expect_true("the queries answer", rtl_device_test_rate_queries(RTL_DEVICE_TEST_BACKEND_AIRSPY, 10000000U, 2500000U,
+                                                                   &planned_hz, &written_hz)
+                                          == 0);
+    expect_eq("the plan is made for the rate it runs", (double)planned_hz, 10000000.0);
+    expect_eq("the write programs the rate asked for", (double)written_hz, 2500000.0);
+}
+
 /* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
  * read back, and the ring is sized for it. */
 void
@@ -1142,6 +1155,7 @@ main(int argc, char** argv) {
         {"oversized_rate_written_refused", test_oversized_rate_written_refused},
         {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
+        {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
         {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},

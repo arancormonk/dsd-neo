@@ -3163,6 +3163,21 @@ rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conversion, 
 }
 
 extern "C" int
+rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requested_hz, uint32_t* out_planned_hz,
+                             uint32_t* out_written_hz) {
+    if (!out_planned_hz || !out_written_hz || backend == RTL_DEVICE_TEST_BACKEND_SOAPY) {
+        return -1;
+    }
+    rtl_device dev{};
+    dev.backend = backend;
+    dev.rate = device_rate_hz;
+    if (rtl_device_nearest_supported_rate(&dev, requested_hz, out_planned_hz) != 0) {
+        return -1;
+    }
+    return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
+}
+
+extern "C" int
 rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
                           const unsigned char* bytes, size_t len, float* out) {
     unsigned char copy[64];
@@ -10662,7 +10677,8 @@ soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_prefe
 static int
 // cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
 rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual, bool with_preference) {
-    if (dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
+    /* A native Airspy picks its own rate, which the stream plans with; a write programs the rate it is given. */
+    if (with_preference && dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
         *out_actual = dev->rate;
         return 0;
     }
