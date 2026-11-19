@@ -276,6 +276,8 @@ typedef struct {
     double media_started_m;
     /** Most recent decoded-media update in this logical transmission (monotonic seconds), or 0. */
     double media_updated_m;
+    /** The reception generation when this epoch began (dsd_state_reception_generation()). */
+    uint64_t rx_gen;
     dsd_call_phase phase;
     int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     dsd_call_kind kind;
@@ -335,8 +337,6 @@ typedef struct {
     char service_label[DSD_SERVICE_LABEL_SIZE];
     /** dsd_received_identity::epoch of dsd_state::rx_id when this epoch began: the carrier the call was heard on. */
     uint32_t rx_id_epoch;
-    /** The reception generation when this epoch began (dsd_state_reception_generation()). */
-    uint64_t rx_gen;
     /**
      * The received identity record (dsd_state::rx_id) as it stood when this epoch ended, captured at that transition
      * while the reception was still the one the call began on (the same reception generation, rx_gen: no reset, other
