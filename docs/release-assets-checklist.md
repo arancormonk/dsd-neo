@@ -39,11 +39,15 @@ resource bundle, so they travel with the binary rather than as a separate file.
 
 - [ ] Download `dsd-neo-macos-arm64-portable-*.dmg`.
   - [ ] Mount the DMG.
-  - [ ] Confirm `dsd-neo-macos/share/doc/dsd-neo/` contains all required files, plus
-        `licenses/codec2-LGPL-2.1.txt`, `licenses/codec2-NOTICES.txt` and
-        `licenses/LicenseRef-codec2-varicode.txt` for the codec2 library it bundles,
-        `licenses/librtlsdr-GPL-2.0-or-later.txt`, `licenses/librtlsdr-PATCHES.txt` and
-        `licenses/librtlsdr-NOTICES.txt` for the librtlsdr it bundles.
+  - [ ] Confirm `dsd-neo-macos/share/doc/dsd-neo/` contains all required files, plus every notice the records in
+        `legal/components.json` name under `macos_release` (`python3 tools/legal_inventory.py --release-notices
+        macos` lists them): among them the codec2 and librtlsdr notices, `licenses/<port>-copyright.txt` for each
+        library vcpkg builds, `licenses/libusb-macos-NOTICES.txt`, `licenses/portaudio-macos-NOTICES.txt`,
+        `licenses/curl-macos-NOTICES.txt`, `licenses/X11-distribute-modifications-variant.txt` and
+        `licenses/LicenseRef-ncurses-terminfo.txt`. The DMG job stages them from those maps
+        (`cmake/stage_release_notices.cmake`).
+  - [ ] Confirm every dylib in `dsd-neo-macos/lib/` comes from vcpkg or is the patched librtlsdr or libairspy (no
+        PulseAudio, libintl or other Homebrew library), and that `share/terminfo/` holds the bundled database.
 
 ### Windows (ZIP)
 

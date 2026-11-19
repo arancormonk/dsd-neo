@@ -225,10 +225,13 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn(holders, required)
         self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$docdir/{gpl}"', appimage)
         self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$docdir/{patches}"', appimage)
-        macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
-        self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/{gpl}"', macos)
-        self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/{patches}"', macos)
-        self.assertIn(f" {gpl} {patches} ", macos)
+        # The DMG's staging copies the notices of the record's macos_release map.
+        self.assert_macos_stages_the_maps()
+        macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                     if c["id"] == "desktop-rtl")["macos_release"]
+        self.assertEqual(macos, {"notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
+                                             patches: "repo:packaging/librtlsdr-PATCHES.txt",
+                                             holders: "repo:LICENSES/librtlsdr-NOTICES.txt"}})
         # The Windows staging copies the notices the record of each staged file names.
         windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                        if c["id"] == "desktop-rtl")["windows_release"]
@@ -305,14 +308,22 @@ class AirspyPackaging(unittest.TestCase):
         build_dep = next(line for line in appimage.splitlines()
                          if "build_dep https://github.com/airspy/airspyone_host " in line)
         self.assertIn("-DCMAKE_POLICY_VERSION_MINIMUM=3.5", build_dep)
-        macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
-        self.assertIn(" licenses/" + NOTICE + " ", macos)
+        self.assert_macos_stages_the_maps()
+        macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                     if c["id"] == "airspy")["macos_release"]
+        self.assertEqual(macos, {"notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
         self.assertIn("'licenses/" + NOTICE + "'", (ROOT / "tools/windows/release_tree_checks.psm1").read_text())
         windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                        if c["id"] == "airspy")["windows_release"]
         self.assertEqual(windows, {"binaries": ["airspy.dll"],
                                    "notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
         self.assert_windows_release_scripts()
+
+    def assert_macos_stages_the_maps(self):
+        """The DMG job stages each component's notices from its record's macos_release map."""
+        macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
+        self.assertIn("cmake -DPLATFORM=macos ", macos)
+        self.assertIn("-P cmake/stage_release_notices.cmake", macos)
 
     def assert_windows_release_scripts(self):
         """The Windows release job and the pull-request Release build stage and check the tree with the scripts."""
