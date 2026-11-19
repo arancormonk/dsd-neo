@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -14,7 +15,9 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -91,13 +94,30 @@ p25_sm_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* One tick, under the guard, that notes the tune requests it began and left in flight (an RTL retune the stream
+   applies on its own thread): the engine starts no hunt until they land (dsd_state::p25_tick_tune_after). Every tick
+   runs through here, wherever the decoder runs it from. One load when the tick began no request. */
+static void
+p25_sm_tick_noting_tunes(dsd_opts* opts, dsd_state* state) {
+    const uint64_t before = dsd_trunk_tuning_last_request();
+    p25_sm_tick_locked(opts, state);
+    const uint64_t newest = dsd_trunk_tuning_last_request();
+    if (newest == before || !dsd_trunk_tuning_request_pending_in(before, newest)) {
+        return;
+    }
+    if (state->p25_tick_tune_through == 0U) {
+        state->p25_tick_tune_after = before;
+    }
+    state->p25_tick_tune_through = newest;
+}
+
 void
 p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
-        p25_sm_tick_locked(opts, state);
+        p25_sm_tick_noting_tunes(opts, state);
         p25_sm_tick_guard_leave();
     }
 }
@@ -122,7 +142,7 @@ p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     atomic_store(&g_p25_sm_tick_wanted, 0);
-    p25_sm_tick_locked(opts, state);
+    p25_sm_tick_noting_tunes(opts, state);
     p25_sm_tick_guard_leave();
     return 1;
 }

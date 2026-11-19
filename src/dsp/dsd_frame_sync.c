@@ -337,6 +337,8 @@ typedef struct {
     dsd_state* state;
     time_t now;
     double nowm;
+    /* The control channel's wall sync stamp when the call began (frame_sync_note_cc_sync()). */
+    time_t cc_stamp_at_entry;
     int synctest_pos;
     float lmax;
     float lmin;
@@ -511,16 +513,20 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     state->min = ((state->min) + ctx->lmin) / 2;
 }
 
-/* The control channel's sync stamps only move forward, each on its own clock: the hunt's decode times are the ones its
-   call started with, and a tick inside the call (the grace after a tune) may already have stamped later ones, the wall
-   clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. */
+/* The control channel's sync stamps a sync accept writes, from the call's decode times, each by its own clock's rule. The
+   monotonic stamp only moves forward: a tick inside the call (the grace after a tune) may already have stamped a later
+   one. The wall stamp follows the wall clock, set back included, so a stale-carrier or hangtime check never reads a
+   negative age; only one a tick wrote during this call (its grace, stamped as the tick saw the clock, while the hunt's
+   time is the call's start) is kept. */
 static inline void
 frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
-    if (ctx->now > ctx->state->last_cc_sync_time) {
-        ctx->state->last_cc_sync_time = ctx->now;
+    dsd_state* state = ctx->state;
+    if (ctx->nowm > state->last_cc_sync_time_m) {
+        state->last_cc_sync_time_m = ctx->nowm;
     }
-    if (ctx->nowm > ctx->state->last_cc_sync_time_m) {
-        ctx->state->last_cc_sync_time_m = ctx->nowm;
+    const int wall_written_in_call = state->last_cc_sync_time != ctx->cc_stamp_at_entry;
+    if (!wall_written_in_call) {
+        state->last_cc_sync_time = ctx->now;
     }
 }
 
@@ -3680,6 +3686,9 @@ typedef struct frame_sync_runtime_ctx {
        tune since then (a release's tune in the no-sync hooks, say) leaves a history that is not kept. */
     uint32_t history_drops;
     uint64_t history_tune_gen;
+    /* The control channel's wall sync stamp when the call began: one that differs at a sync accept was written during
+       the call (a tick's grace after a tune), and is kept (frame_sync_note_cc_sync()). */
+    time_t cc_stamp_at_entry;
     /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
        read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
     int resumed;
@@ -3768,6 +3777,7 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->history_rf_mod = state->rf_mod;
     rt->history_drops = state->frame_sync_carry.drops;
     rt->history_tune_gen = dsd_trunk_tuning_generation();
+    rt->cc_stamp_at_entry = state->last_cc_sync_time;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -4407,6 +4417,7 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .state = state,
         .now = now,
         .nowm = nowm,
+        .cc_stamp_at_entry = rt->cc_stamp_at_entry,
         .synctest_pos = rt->synctest_pos,
         .lmax = rt->lmax,
         .lmin = rt->lmin,
@@ -4463,6 +4474,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .state = state,
         .now = 0,
         .nowm = 0.0,
+        .cc_stamp_at_entry = state->last_cc_sync_time,
         .synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0,
         .lmax = state->max,
         .lmin = state->min,
@@ -5965,11 +5977,7 @@ static int
 frame_sync_entry_tick_moved_chain(dsd_opts* opts, dsd_state* state, time_t now) {
     frame_sync_chain_mark entry;
     frame_sync_chain_mark_take(&entry, state);
-    if (!frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) || !frame_sync_chain_moved(&entry, state)) {
-        return 0;
-    }
-    frame_sync_note_tick_tune(&entry, state);
-    return 1;
+    return frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state);
 }
 
 /* getFrameSync()'s entry: 1 when the call ends before it hunts, with *@p out its result: -1 with no context, or no sync

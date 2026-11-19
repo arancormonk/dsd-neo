@@ -406,6 +406,22 @@ main(void) {
     dsd_trunk_tuning_request_publish(owner_request, DSD_TRUNK_TUNE_RESULT_FAILED);
     dsd_trunk_tuning_request_complete(owner_request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_pending_request() == 0U);
+
+    // A range of requests is pending while any in it is: one P25 tick's two requests, a CQPSK retry still in flight and
+    // then a return the receiver deferred, leave the range pending though its newest is not.
+    const uint64_t before_tick = dsd_trunk_tuning_last_request();
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    uint64_t retry = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 853000000, 0, &retry) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    const uint64_t newest = dsd_trunk_tuning_last_request();
+    assert(dsd_trunk_tuning_request_status(newest, NULL) != DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_trunk_tuning_request_pending_in(before_tick, newest));
+    assert(!dsd_trunk_tuning_request_pending_in(retry, newest));
+    assert(!dsd_trunk_tuning_request_pending_in(newest, newest));
+    dsd_trunk_tuning_request_publish(retry, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(!dsd_trunk_tuning_request_pending_in(before_tick, newest));
     g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_OK;
 
     // No tuner-free hook installed reads as free; an installed one answers.

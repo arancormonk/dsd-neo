@@ -11,15 +11,13 @@
  * back at once with no sync and no no-carrier pass, as a read that leaves for a queued command does, and the engine's
  * next call starts on the new carrier. A tune request the receiver refused or deferred before it moved changes
  * nothing (dsd_trunk_tuning_retuned_since()). One still in flight (an RTL retune the stream applies on its own thread)
- * is carried through the hand-back (dsd_state::frame_sync_tick_tune_request): the engine starts no hunt until it lands,
- * so the next takes the generation at the actual tune boundary. Apart from dsd_symbol.c and dsd_frame_sync.c, which tests link one
- * without the other. */
+ * is noted by the tick itself (dsd_state::p25_tick_tune_after, p25_sm_watchdog.c): the engine starts no hunt until it
+ * lands, so the next takes the generation at the actual tune boundary. Apart from dsd_symbol.c and dsd_frame_sync.c,
+ * which tests link one without the other. */
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stddef.h>
-#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -39,21 +37,9 @@ frame_sync_chain_moved(const frame_sync_chain_mark* mark, const dsd_state* state
            || state->samplesPerSymbol != mark->samples_per_symbol || dsd_trunk_tuning_retuned_since(mark->last_request);
 }
 
-void
-frame_sync_note_tick_tune(const frame_sync_chain_mark* mark, dsd_state* state) {
-    const uint64_t newest = dsd_trunk_tuning_last_request();
-    if (newest > mark->last_request && dsd_trunk_tuning_request_status(newest, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        state->frame_sync_tick_tune_request = newest;
-    }
-}
-
 int
 frame_sync_service_p25_watchdog(dsd_opts* opts, dsd_state* state) {
     frame_sync_chain_mark mark;
     frame_sync_chain_mark_take(&mark, state);
-    if (!dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state) || !frame_sync_chain_moved(&mark, state)) {
-        return 0;
-    }
-    frame_sync_note_tick_tune(&mark, state);
-    return 1;
+    return dsd_frame_sync_hook_p25_sm_watchdog_service(opts, state) && frame_sync_chain_moved(&mark, state);
 }

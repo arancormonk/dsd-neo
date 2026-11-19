@@ -4472,6 +4472,38 @@ live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The tunes a P25 tick began, wherever it ran (in the hunt, between frames, in the main pass), still in flight
+   (dsd_state::p25_tick_tune_after, p25_sm_watchdog.c): neither loop starts a hunt until they resolve, so the next takes
+   the tuning generation after the landing, at the actual tune boundary, and reads nothing of the carrier left (every
+   frame read meanwhile would be gated anyway). 1 while one is pending; one load while none is noted. */
+static int
+live_scanner_tick_tune_in_flight(dsd_state* state) {
+    if (state->p25_tick_tune_through == 0U) {
+        return 0;
+    }
+    if (dsd_trunk_tuning_request_pending_in(state->p25_tick_tune_after, state->p25_tick_tune_through)) {
+        return 1;
+    }
+    state->p25_tick_tune_after = 0U;
+    state->p25_tick_tune_through = 0U;
+    return 0;
+}
+
+/* Whether the run of synced frames stops before its next hunt: a command replaced the input (issue #634), and what
+   follows is another stream, which the outer loop starts with the end of this reception; or a tick between frames left
+   a tune in flight, which the main pass waits for, keeping the interruption so no no-carrier pass runs. */
+static int
+live_scanner_frames_stop_before_hunt(dsd_state* state) {
+    if (state->input_boundary) {
+        return 1;
+    }
+    if (live_scanner_tick_tune_in_flight(state)) {
+        state->input_interrupted = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* The -Y frame-boundary step (issue #834 item 3), its terms other than the time: -Y owns the step with no voice gate,
    tone verdict or analog carrier deciding it, and nothing keeps the row: no operator hold, awaited tune or typed step
    in flight, not an avoided row (its paced departure decides), and another row to land on. */
@@ -4670,9 +4702,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             break;
         }
         dsd_runtime_pump_controls(opts, state);
-        /* A command replaced the input (issue #634): what follows is another stream, which the outer loop starts with
-           the end of this reception. */
-        if (state->input_boundary) {
+        if (live_scanner_frames_stop_before_hunt(state)) {
             live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
@@ -4799,23 +4829,6 @@ dsd_engine_tetra_trunk_tick_locked(dsd_opts* opts, dsd_state* state) {
     if (opts && state && opts->frame_tetra == 1 && !dsd_trunk_scan_owns_tuner(opts, state)) {
         tetra_sm_tick(opts, state);
     }
-}
-
-/* A tune a P25 tick inside the hunt began, still in flight when the hunt handed back (frame_sync_watchdog_tick.c): no
-   hunt starts until it resolves, so the next takes the tuning generation after the landing, at the actual tune
-   boundary, and reads nothing of the carrier left (every frame read meanwhile would be gated anyway). 1 while it waits;
-   one load while none is carried. */
-static int
-live_scanner_tick_tune_in_flight(dsd_state* state) {
-    const uint64_t request = state->frame_sync_tick_tune_request;
-    if (request == 0U) {
-        return 0;
-    }
-    if (dsd_trunk_tuning_request_status(request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        return 1;
-    }
-    state->frame_sync_tick_tune_request = 0U;
-    return 0;
 }
 
 /* One pass of the live loop: the interruption the last pass left, the command pump and the ticks, noCarrier() unless

@@ -15049,10 +15049,18 @@ static _Thread_local int t_wd6_decoder = 0;
 static dsd_state* g_wd6_state = NULL;
 static int g_wd6_off_thread_tunes = 0;
 
+/* The voice channel's word the between-frame case dispatches first (WD_PENDING_BEAT_IN_FRAME), before the beat. */
+enum { WD6_VC_WORD_SYMBOL = 60 };
+
+static int g_wd6_vc_word = 0;
+
 static int
 wd6_level(long symbol) {
     if (symbol >= WD6_WORD_SYMBOL && symbol < WD6_WORD_SYMBOL + 24) {
         return P25P1_SYNC[symbol - WD6_WORD_SYMBOL] == '1' ? 3 : -3;
+    }
+    if (g_wd6_vc_word && symbol >= WD6_VC_WORD_SYMBOL && symbol < WD6_VC_WORD_SYMBOL + 24) {
+        return P25P1_SYNC[symbol - WD6_VC_WORD_SYMBOL] == '1' ? 3 : -3;
     }
     /* Data: a fixed scramble of the four levels. */
     static const int k_levels[4] = {3, 1, -1, -3};
@@ -15067,6 +15075,8 @@ static struct {
     int pending_returns;
     uint64_t request;
     int landed;
+    int fail_first; /* the first return lands failed, and the state machine's next tick makes another */
+    int failed;
 } g_wd7;
 
 static dsd_trunk_tune_result
@@ -15094,6 +15104,11 @@ wd7_land(void) {
     }
     const uint64_t request = g_wd7.request;
     g_wd7.request = 0U;
+    if (g_wd7.fail_first && !g_wd7.failed) {
+        g_wd7.failed = 1;
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return;
+    }
     g_wd7.landed++;
     g_wd6.returned = 1;
     g_wd6.return_s = dsd_decode_now_mono_s();
@@ -15147,6 +15162,14 @@ wd6_setfreq(long int freq) {
 static int
 wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
+    if (g_wd6_vc_word && !g_wd6.beat_posted) {
+        /* The voice channel's frame: a beat the watchdog posts while it decodes, with the release it makes, serviced
+           between frames (live_scanner_process_synced_frames()). */
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+        return 1;
+    }
     if (g_wd6.returned && g_wd6.frames++ == 0) {
         g_wd6.first_sync = state->synctype;
         g_wd6.first_cc_stamp_s = state->last_cc_sync_time_m;
@@ -15155,8 +15178,11 @@ wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
     return 1; /* the frame is noted, not decoded */
 }
 
+enum { WD_RIGCTL = 0, WD_PENDING = 1, WD_PENDING_BEAT_IN_FRAME = 2, WD_PENDING_REPLACED = 3 };
+
 static int
-run_live_p25_beat_in_a_read(int pending_return) {
+run_live_p25_beat_in_a_read(int mode) {
+    const int pending_return = mode != WD_RIGCTL;
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -15183,6 +15209,8 @@ run_live_p25_beat_in_a_read(int pending_return) {
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
     dsd_engine_trunk_tuning_hooks_install();
     DSD_MEMSET(&g_wd7, 0, sizeof g_wd7);
+    g_wd6_vc_word = mode == WD_PENDING_BEAT_IN_FRAME;
+    g_wd7.fail_first = mode == WD_PENDING_REPLACED;
     if (pending_return) {
         g_wd7.pending_returns = 1;
         dsd_trunk_tuning_hooks_set(
@@ -15213,6 +15241,7 @@ run_live_p25_beat_in_a_read(int pending_return) {
     g_setfreq_observer = NULL;
     g_sleep_observer = NULL;
     g_process_frame_observer = NULL;
+    g_wd6_vc_word = 0;
     t_wd6_decoder = 0;
     g_wd6_state = NULL;
 
@@ -15221,10 +15250,15 @@ run_live_p25_beat_in_a_read(int pending_return) {
         DSD_FPRINTF(stderr, "FAIL: the grant was not followed (state %d)\n", (int)ctx->state);
         rc = 1;
     }
-    if (!g_wd6.returned || g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL || (pending_return && g_wd7.landed != 1)) {
+    static const char* const k_mode[] = {"rigctl return", "pending return", "pending return from a beat in a frame",
+                                         "pending return replacing a failed one"};
+    const int in_read = mode == WD_RIGCTL || mode == WD_PENDING;
+    if (!g_wd6.returned || (in_read && g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL)
+        || (pending_return && g_wd7.landed != 1) || (mode == WD_PENDING_REPLACED && !g_wd7.failed)) {
         DSD_FPRINTF(stderr,
-                    "FAIL: the beat's tick did not return in the read it was posted at (%s, returned %d, symbol %ld)\n",
-                    pending_return ? "pending return" : "rigctl", g_wd6.returned, g_wd6.return_sample / WD6_SPS);
+                    "FAIL: the beat's tick did not return where expected (%s, returned %d, symbol %ld, landed %d, "
+                    "failed %d)\n",
+                    k_mode[mode], g_wd6.returned, g_wd6.return_sample / WD6_SPS, g_wd7.landed, g_wd7.failed);
         rc = 1;
     }
     if (g_wd6_off_thread_tunes != 0) {
@@ -15233,9 +15267,8 @@ run_live_p25_beat_in_a_read(int pending_return) {
     }
     if (g_wd6.frames == 0 || !DSD_SYNC_IS_P25P1(g_wd6.first_sync)) {
         DSD_FPRINTF(stderr,
-                    "FAIL: the control channel's first frame after the %s return was not dispatched (frames %d, "
-                    "sync %d)\n",
-                    pending_return ? "pending" : "rigctl", g_wd6.frames, g_wd6.first_sync);
+                    "FAIL: the control channel's first frame after the %s was not dispatched (frames %d, sync %d)\n",
+                    k_mode[mode], g_wd6.frames, g_wd6.first_sync);
         rc = 1;
     } else if (g_wd6.first_cc_stamp_s + 1e-6 < g_wd6.return_s) {
         DSD_FPRINTF(stderr,
@@ -15252,14 +15285,28 @@ run_live_p25_beat_in_a_read(int pending_return) {
 
 static int
 test_live_p25_beat_in_a_read(void) {
-    return run_live_p25_beat_in_a_read(0);
+    return run_live_p25_beat_in_a_read(WD_RIGCTL);
 }
 
 /* The same return answered PENDING, landing on the receiver's own time after the hand-back: the hunt after it takes the
    tuning generation of the landing, and the control channel's first frame dispatches. */
 static int
 test_live_p25_beat_pending_return_lands_before_the_next_hunt(void) {
-    return run_live_p25_beat_in_a_read(1);
+    return run_live_p25_beat_in_a_read(WD_PENDING);
+}
+
+/* A beat posted while a frame decodes is serviced between frames (live_scanner_process_synced_frames()), and its
+   return answered PENDING: the inner loop starts no hunt either until it lands. */
+static int
+test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(WD_PENDING_BEAT_IN_FRAME);
+}
+
+/* The first return lands failed, and the state machine's next tick makes another, PENDING too: the hunt waits for the
+   one in flight, not the one the hand-back carried. */
+static int
+test_live_p25_replaced_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(WD_PENDING_REPLACED);
 }
 
 static int
@@ -17726,6 +17773,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_trunk_scan_skips_a_quiet_target(0);
     rc |= test_live_p25_beat_in_a_read();
     rc |= test_live_p25_beat_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_replaced_pending_return_lands_before_the_next_hunt();
     return rc;
 }
 #endif

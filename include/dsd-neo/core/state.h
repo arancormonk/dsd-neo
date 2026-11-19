@@ -2848,10 +2848,13 @@ struct dsd_state {
     int input_interrupted;
     /* Why input_interrupted stands (dsd_input_interrupt_reason); the engine loop clears both. */
     int input_interrupt_reason;
-    /* A tune request a P25 tick inside the frame-sync hunt began that was still in flight when the hunt handed back
-       (frame_sync_watchdog_tick.c), 0 for none: the engine loop starts no hunt until it resolves, so the next takes the
-       tuning generation after the landing and reads nothing of the carrier left. */
-    uint64_t frame_sync_tick_tune_request;
+    /* The tune requests a P25 tick began that were still in flight when it ended, as the range (after, through] of
+       request IDs (0, 0 for none), whatever ran the tick: the frame-sync hunt (a beat at its checkpoint or in a read,
+       the entry tick), the engine between frames or in its main pass (p25_sm_watchdog.c). Neither engine loop starts a
+       hunt while one is pending, so the next takes the tuning generation after the landing and reads nothing of the
+       carrier left. A later tick's range joins this one. */
+    uint64_t p25_tick_tune_after;
+    uint64_t p25_tick_tune_through;
     /* The radio stream's discontinuity count the decoder has taken up to (D5): the symbol reader raises a stream-gap
        interruption when the samples a read returned carry a newer one, and the EDACS analog call loop and the M17
        encoder, which read the stream themselves, take it up there. The engine sets it to the stream's count at each
