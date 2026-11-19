@@ -319,14 +319,13 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
     /* Its -Y call marker moves only when its decoder took it, on the carrier it was dispatched on and uninterrupted:
        a ProVoice sync its decoder has not confirmed (UNPRODUCTIVE), a frame dropped or cut, is no call. Nor is an
-       X2-TDMA data burst: it carries no checked content, and its decoder reads it the same whether it decoded anything
-       or not (a sync on noise); X2-TDMA voice is the call. Nor is a TETRA burst, even one whose CRC passed: an idle
-       control channel's signalling passes it too, and a TETRA call is heard when the call store begins it. */
+       X2-TDMA burst, data or voice: one voice sync on noise is taken too, and an X2-TDMA call is heard when its
+       decoder corroborates the superframe and the call store begins it. Nor is a TETRA burst, even one whose CRC
+       passed: an idle control channel's signalling passes it too, and a TETRA call is heard when the store begins it. */
     const int taken =
         !dropped && !cut && (verdict == DSD_FRAME_VERDICT_PRODUCTIVE || verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    const int x2_data = synctype == DSD_SYNC_X2TDMA_DATA_POS || synctype == DSD_SYNC_X2TDMA_DATA_NEG;
-    const int tetra = expected_handler == TEST_HANDLER_TETRA;
-    const unsigned want_call = unchecked && taken && !x2_data && !tetra ? 1U : 0U;
+    const int provoice = expected_handler == TEST_HANDLER_PROVOICE;
+    const unsigned want_call = unchecked && taken && provoice ? 1U : 0U;
     if (state->scan_y_call_seq != want_call) {
         DSD_FPRINTF(stderr, "the -Y call marker of synctype %d with verdict %d moved %u (want %u)\n", synctype,
                     (int)verdict, (unsigned)state->scan_y_call_seq, want_call);
@@ -630,6 +629,9 @@ main(void) {
     run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
     run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
     run_dispatch_case(DSD_SYNC_X2TDMA_DATA_NEG, TEST_HANDLER_X2TDMA);
+    /* Nor is an X2-TDMA voice frame its decoder took: one sync on noise is taken too, before the superframe is
+       corroborated. */
+    run_dispatch_case(DSD_SYNC_X2TDMA_VOICE_POS, TEST_HANDLER_X2TDMA);
     run_dispatch_case(DSD_SYNC_EDACS_POS, TEST_HANDLER_EDACS);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
     run_dispatch_case(-1, TEST_HANDLER_NONE);

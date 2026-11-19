@@ -745,10 +745,11 @@ Generated (do not edit/commit):
       content only; checked content that is no call, an idle control channel's traffic, moves nothing
       (`test_y_quiet_no_check_outlasts_checked_control_traffic()`); an analog call admitted, which
       `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
-      a tone check rejected, or a frame a decoder of a protocol with no content check took, which `processFrame()`
-      moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA voice frame (a data burst carries nothing checked and is no call),
-      a ProVoice frame once a second sync confirmed the transmission, never one sync, nor a TETRA burst whose CRC passed
-      (an idle control channel's signalling passes it too; a TETRA call moves it as the call store begins it),
+      a tone check rejected, or a ProVoice frame its decoder took, which `processFrame()` moves after the handler only
+      for a verdict that took the frame on its carrier, uninterrupted: once a second sync confirmed the transmission,
+      never one sync. An X2-TDMA burst is no call there (one voice sync on noise is taken too), nor a TETRA burst whose
+      CRC passed (an idle control channel's signalling passes it too): their calls move it as the call store begins
+      them, an X2-TDMA one once its decoder corroborated the superframe;
       against the value the landing recorded, `dsd_engine_scan_landing::y_call_seq`), since under the
       legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start
       frequency before the first step, a step that forgot the landing and then failed, an input switch) against the

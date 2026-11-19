@@ -48,12 +48,13 @@ process_frame_apply_off_thread_retunes(dsd_state* state) {
     }
 }
 
-/* Whether a frame of @p synctype can be a call's for the -Y stay's call marker: not an X2-TDMA data burst, nor a TETRA
-   burst, whose CRC an idle control channel's signalling passes too (a TETRA call moves the marker as the call store
-   begins it, dsd_call_state_observe()). */
+/* Whether a frame of @p synctype can be a call's for the -Y stay's call marker: a ProVoice frame only. An X2-TDMA burst
+   is not (one voice sync on noise is taken too; an X2-TDMA call moves the marker as its decoder corroborates the
+   superframe and the call store begins it), nor a TETRA burst, whose CRC an idle control channel's signalling passes
+   too (a TETRA call moves it as the call store begins it, dsd_call_state_observe()). */
 static int
 process_frame_may_be_a_call(int synctype) {
-    return synctype != DSD_SYNC_X2TDMA_DATA_POS && synctype != DSD_SYNC_X2TDMA_DATA_NEG && !DSD_SYNC_IS_TETRA(synctype);
+    return DSD_SYNC_IS_PROVOICE(synctype);
 }
 
 /* The handler's verdict, settled once the frame ran on @p carrier_seq, and the -Y stay's call marker (@p call_frame: a
@@ -72,11 +73,9 @@ process_frame_settle_verdict(dsd_state* state, uint32_t carrier_seq, int call_fr
            frame the engine declined to dispatch it is withheld from the SPS hunt's accounting. */
         state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
     }
-    /* The -Y stay's call marker (issue #834) moves only for a frame of a protocol with no content check its decoder
-       took, on the carrier it was dispatched on and uninterrupted: X2-TDMA voice reports no verdict, ProVoice none until
-       a second sync confirms its transmission. One sync is no call, and an X2-TDMA data burst none at all: it carries
-       nothing checked, and its decoder takes it the same whether it decoded anything or not. Nor is a TETRA burst whose
-       CRC passed, which an idle control channel's signalling is too: a TETRA call moves it as the store begins it. */
+    /* The -Y stay's call marker (issue #834) moves here only for a ProVoice frame its decoder took, on the carrier it was
+       dispatched on and uninterrupted: once a second sync confirmed its transmission (one sync is no call). The other
+       protocols with no content check move it as the call store begins their call (process_frame_may_be_a_call()). */
     if (call_frame
         && (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
             || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN)) {
