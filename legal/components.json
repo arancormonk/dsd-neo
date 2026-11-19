@@ -1088,7 +1088,7 @@
       "paths": [
         "vcpkg.json",
         "packaging/windows/OpenSSL-AUTHORS.md",
-        "packaging/windows/OpenSSL-NOTICES.txt",
+        "LICENSES/OpenSSL-NOTICES.txt",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
       ],
       "distribution": [
@@ -1101,17 +1101,17 @@
       "license_concluded": "Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED",
       "notices": [
         "packaging/windows/OpenSSL-AUTHORS.md",
-        "packaging/windows/OpenSSL-NOTICES.txt",
+        "LICENSES/OpenSSL-NOTICES.txt",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
       ],
-      "assessment": "libcrypto-3-x64.dll in the Windows ZIP; vcpkg's openssl port at the manifest baseline (3.6.5, tag openssl-3.6.5), configured VC-WIN64A, shared, with static engines. dsd-neo links only libcrypto and libcurl uses Windows' Schannel, so the ZIP carries no libssl and no legacy provider module. The library is under the Apache License 2.0; crypto/siphash/siphash.c is dedicated under CC0-1.0, and the SEED sources (crypto/seed/, include/openssl/seed.h) also carry the Korea Information Security Agency's terms, whose conditions cover source redistribution (LicenseRef-OpenSSL-KISA-SEED). Files also offered under other terms (crypto/LPdir_win*.c, crypto/x509/v3_pci*.c, the Camellia and CRYPTOGAMS assembly) are used under the Apache License 2.0. OpenSSL ships no NOTICE file. The ZIP carries the copyright file the port installs (share/openssl/copyright, LICENSE.txt) as licenses/openssl-copyright.txt; packaging/windows/OpenSSL-AUTHORS.md, the upstream AUTHORS.md unmodified, as licenses/OpenSSL-AUTHORS.md; packaging/windows/OpenSSL-NOTICES.txt, the other holders named in the compiled sources with their dual-license, CC0 and public-domain notes, as licenses/OpenSSL-NOTICES.txt; and LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt, KISA's notice from crypto/seed/seed.c, as licenses/LicenseRef-OpenSSL-KISA-SEED.txt; each from the pinned archive. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "libcrypto-3-x64.dll in the Windows ZIP; vcpkg's openssl port at the manifest baseline (3.6.5, tag openssl-3.6.5), configured VC-WIN64A, shared, with static engines. dsd-neo links only libcrypto and libcurl uses Windows' Schannel, so the ZIP carries no libssl and no legacy provider module. The library is under the Apache License 2.0; crypto/siphash/siphash.c is dedicated under CC0-1.0, and the SEED sources (crypto/seed/, include/openssl/seed.h) also carry the Korea Information Security Agency's terms, whose conditions cover source redistribution (LicenseRef-OpenSSL-KISA-SEED). Files also offered under other terms (crypto/LPdir_win*.c, crypto/x509/v3_pci*.c, the Camellia and CRYPTOGAMS assembly) are used under the Apache License 2.0. OpenSSL ships no NOTICE file. The ZIP carries the copyright file the port installs (share/openssl/copyright, LICENSE.txt) as licenses/openssl-copyright.txt; packaging/windows/OpenSSL-AUTHORS.md, the upstream AUTHORS.md unmodified, as licenses/OpenSSL-AUTHORS.md; LICENSES/OpenSSL-NOTICES.txt, the other holders named in the sources each package's OpenSSL build compiles (among them Nokia's and Siemens AG's CMP, CRMF and HTTP client code and Patrick Powell's bio_print.c) with their dual-license, CC0 and public-domain notes, as licenses/OpenSSL-NOTICES.txt; and LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt, KISA's notice from crypto/seed/seed.c, as licenses/LicenseRef-OpenSSL-KISA-SEED.txt; each from the pinned archive. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
         "packaging/windows/OpenSSL-AUTHORS.md": "b9f638dfc06b59c2d3b808186c3b30f713805a5db390f5b77b1703ac58acb83e",
-        "packaging/windows/OpenSSL-NOTICES.txt": "cf8dbfc7c1e2af349a568298db5762a9bc066b8b6a3c434a55e4f3a617406eea",
+        "LICENSES/OpenSSL-NOTICES.txt": "43badbfcd9e4f725264f3206fd1fc12ef744d45628e87e0d9cc1a5bfdc14fee2",
         "LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt": "c99ddbef66aee7e2d676e27c81ae748d0922b3d1f831ae952d5a1786b7aaf9ab"
       },
       "windows_release": {
@@ -1121,7 +1121,7 @@
         "notices": {
           "licenses/openssl-copyright.txt": "vcpkg:openssl",
           "licenses/OpenSSL-AUTHORS.md": "repo:packaging/windows/OpenSSL-AUTHORS.md",
-          "licenses/OpenSSL-NOTICES.txt": "repo:packaging/windows/OpenSSL-NOTICES.txt",
+          "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
           "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
         }
       }

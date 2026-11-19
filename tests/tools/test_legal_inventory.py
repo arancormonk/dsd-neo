@@ -276,6 +276,45 @@ class InventoryTests(unittest.TestCase):
         for name in ("licenses/librtlsdr-NOTICES.txt", "licenses/libusb-android-NOTICES.txt"):
             self.assertIn(name, android)
 
+    def test_openssl_notice_names_the_holders_of_every_build(self):
+        # One notice serves every package that carries vcpkg's OpenSSL 3.6.5: it names the holders of the CMP, CRMF and
+        # HTTP client code and of bio_print.c, which the Windows libcrypto compiles too, and of the libssl and arm64
+        # sources the Android build adds.
+        notice = "LICENSES/OpenSSL-NOTICES.txt"
+        text = (ROOT / notice).read_text(encoding="utf-8")
+        listed, holder = {}, None
+        for line in text[text.index("besides The OpenSSL Project"):text.index("\n-----")].split("\n")[3:]:
+            if line.startswith("    "):
+                listed[holder].add(line.strip())
+            elif line:
+                holder = line
+                listed[holder] = set()
+        for holder, path in (("Copyright Nokia 2007-2019", "crypto/cmp/cmp_ctx.c"),
+                             ("Copyright Nokia 2007-2018", "crypto/crmf/crmf_lib.c"),
+                             ("Copyright Nokia 2007-2020", "crypto/cmp/cmp_vfy.c"),
+                             ("Copyright Siemens AG 2015-2019", "crypto/crmf/crmf_pbm.c"),
+                             ("Copyright Siemens AG 2015-2020", "crypto/cmp/cmp_vfy.c"),
+                             ("Copyright Siemens AG 2018-2020", "crypto/http/http_client.c"),
+                             ("Copyright Siemens AG 2022", "crypto/cmp/cmp_genm.c"),
+                             ("Copyright Patrick Powell 1995", "crypto/bio/bio_print.c"),
+                             ("Copyright 2005 Nokia. All rights reserved.", "ssl/t1_enc.c"),
+                             ("Copyright 2011 Google Inc.", "crypto/ec/ecp_nistp256.c"),
+                             ("Copyright 2023 IBM Corp.", "crypto/ec/ecp_nistp384.c"),
+                             ("Copyright (C) Cavium networks Ltd. 2016.", "crypto/aes/asm/aes-sha1-armv8.pl"),
+                             ("Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .",
+                              "crypto/camellia/camellia.c"),
+                             ("Copyright (c) 2004, 2018, Richard Levitte <richard@levitte.org>", "crypto/LPdir_unix.c"),
+                             ("Copyright (C) 2006, Network Resonance, Inc. Copyright (C) 2011, RTFM, Inc.",
+                              "ssl/d1_srtp.c")):
+            with self.subTest(holder=holder):
+                self.assertIn(path, listed.get(holder, ()))
+        self.assertIn("It may be used for any purpose as long as this notice remains intact", text)
+        self.assertNotIn("Windows libcrypto-3-x64.dll: release", text)
+        openssl = next(c for c in self.inventory["components"] if c["id"] == "openssl")
+        self.assertIn(notice, openssl["notices"])
+        self.assertEqual(openssl["windows_release"]["notices"]["licenses/OpenSSL-NOTICES.txt"], "repo:" + notice)
+        self.assertFalse((ROOT / "packaging/windows/OpenSSL-NOTICES.txt").exists())
+
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
         # SoapySDRUtil.exe, so only its SBOM names it.

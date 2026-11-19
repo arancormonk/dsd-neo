@@ -1,9 +1,15 @@
-OpenSSL (https://www.openssl.org) copyright notices for the Windows libcrypto-3-x64.dll: release
-3.6.5 (archive https://github.com/openssl/openssl/archive/openssl-3.6.5.tar.gz, SHA512
+OpenSSL (https://www.openssl.org) copyright notices for the OpenSSL libraries dsd-neo's packages
+carry: release 3.6.5 (archive https://github.com/openssl/openssl/archive/openssl-3.6.5.tar.gz,
+SHA512
 40f0b346a9a5cf4cb37f1ecebdc74750c39a95783710061bfac58964883b0831543ecee0aee9f747ea093781b13c58a543b0b935d222519e3cb19648d77a0276),
-as vcpkg's openssl port builds it (VC-WIN64A, shared, static engines). OpenSSL is under the Apache
-License 2.0, openssl-copyright.txt; OpenSSL-AUTHORS.md lists The OpenSSL Project Authors. README.md
-names the project's holders:
+as vcpkg's openssl port builds it at dsd-neo's manifest baseline: libcrypto for the Windows ZIP
+(libcrypto-3-x64.dll; VC-WIN64A, shared, static engines) and libcrypto with the built-in legacy
+provider and libssl, linked statically into the Android app (android-arm64, no-shared no-module,
+enable-ec_nistp_64_gcc_128). The holder list below is the union of the sources these builds compile;
+a file one build does not compile (the x86_64 assembly on Android, libssl and the arm64 files on
+Windows) stays listed. OpenSSL is under the Apache License 2.0 (in the Windows ZIP
+openssl-copyright.txt, in other packages the copyright file the package names for OpenSSL);
+OpenSSL-AUTHORS.md lists The OpenSSL Project Authors. README.md names the project's holders:
 
 Copyright (c) 1998-2026 The OpenSSL Project Authors
 
@@ -11,7 +17,8 @@ Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson
 
 All rights reserved.
 
-The sources the library is built from also name these holders, besides The OpenSSL Project Authors:
+The sources the libraries are built from also name these holders, besides The OpenSSL Project
+Authors:
 
 Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
     crypto/bn/bn_gf2m.c
@@ -44,19 +51,31 @@ Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
     include/openssl/ssl.h.in
     include/openssl/ssl3.h
     include/openssl/tls1.h
+    ssl/s3_lib.c
+    ssl/ssl_cert.c
+    ssl/ssl_ciph.c
+    ssl/ssl_lib.c
+    ssl/ssl_local.h
+    ssl/statem/statem_clnt.c
+    ssl/statem/statem_lib.c
+    ssl/statem/statem_srvr.c
 Copyright (c) 2004 Kungliga Tekniska Högskolan (Royal Institute of Technology, Stockholm, Sweden).
     crypto/x509/v3_pci.c
     crypto/x509/v3_pcia.c
+Copyright (c) 2004, 2018, Richard Levitte <richard@levitte.org>
+    crypto/LPdir_unix.c
 Copyright (c) 2004, EdelKey Project. All Rights Reserved.
     crypto/srp/srp_lib.c
     crypto/srp/srp_vfy.c
     include/openssl/srp.h.in
+    ssl/tls_srp.c
 Copyright (c) 2004, Richard Levitte <richard@levitte.org>
     crypto/LPdir_win.c
     crypto/LPdir_win32.c
     include/internal/o_dir.h
 Copyright (C) 2006, Network Resonance, Inc. Copyright (C) 2011, RTFM, Inc.
     include/openssl/srtp.h
+    ssl/d1_srtp.c
 Copyright (c) 2007 KISA(Korea Information Security Agency). All rights reserved.
     crypto/seed/seed.c
     crypto/seed/seed_local.h
@@ -132,13 +151,34 @@ Copyright (c) 2024, Intel Corporation. All Rights Reserved.
 Copyright (c) 2025, Intel Corporation. All Rights Reserved.
     crypto/aes/asm/aes-cfb-avx512.pl
     crypto/sm4/asm/sm4-x86_64.pl
+Copyright (C) Cavium networks Ltd. 2016.
+    crypto/aes/asm/aes-sha1-armv8.pl
+    crypto/aes/asm/aes-sha256-armv8.pl
 Copyright 2004-2014, Akamai Technologies. All Rights Reserved.
     crypto/mem_sec.c
 Copyright 2005 Nokia. All rights reserved.
     include/openssl/ssl.h.in
     include/openssl/tls1.h
+    ssl/s3_enc.c
+    ssl/s3_lib.c
+    ssl/ssl_asn1.c
+    ssl/ssl_ciph.c
+    ssl/ssl_lib.c
+    ssl/ssl_local.h
+    ssl/ssl_sess.c
+    ssl/ssl_stat.c
+    ssl/ssl_txt.c
+    ssl/statem/statem_clnt.c
+    ssl/statem/statem_srvr.c
+    ssl/t1_enc.c
 Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .
     crypto/camellia/cmll_local.h
+    crypto/camellia/camellia.c
+Copyright 2011 Google Inc.
+    crypto/ec/ecp_nistp224.c
+    crypto/ec/ecp_nistp256.c
+    crypto/ec/ecp_nistp521.c
+    crypto/ec/ecp_nistputil.c
 Copyright 2012, Samuel Neves <sneves@dei.uc.pt>
     providers/implementations/digests/blake2_impl.h
     providers/implementations/digests/blake2b_prov.c
@@ -179,6 +219,58 @@ Copyright 2017 Ribose Inc. All Rights Reserved.
     include/internal/sm3.h
 Copyright 2019 Red Hat, Inc.
     providers/implementations/kdfs/kbkdf.c.in
+Copyright 2023 IBM Corp.
+    crypto/ec/ecp_nistp384.c
+Copyright Nokia 2007-2018
+    crypto/crmf/crmf_lib.c
+Copyright Nokia 2007-2019
+    crypto/cmp/cmp_asn.c
+    crypto/cmp/cmp_client.c
+    crypto/cmp/cmp_ctx.c
+    crypto/cmp/cmp_hdr.c
+    crypto/cmp/cmp_http.c
+    crypto/cmp/cmp_local.h
+    crypto/cmp/cmp_msg.c
+    crypto/cmp/cmp_protect.c
+    crypto/cmp/cmp_server.c
+    crypto/cmp/cmp_status.c
+    crypto/cmp/cmp_util.c
+    crypto/crmf/crmf_asn.c
+    crypto/crmf/crmf_local.h
+    crypto/crmf/crmf_pbm.c
+    include/openssl/cmp.h.in
+    include/openssl/cmp_util.h
+    include/openssl/crmf.h.in
+Copyright Nokia 2007-2020
+    crypto/cmp/cmp_vfy.c
+Copyright Patrick Powell 1995
+    crypto/bio/bio_print.c
+Copyright Siemens AG 2015-2019
+    crypto/cmp/cmp_asn.c
+    crypto/cmp/cmp_client.c
+    crypto/cmp/cmp_ctx.c
+    crypto/cmp/cmp_hdr.c
+    crypto/cmp/cmp_http.c
+    crypto/cmp/cmp_local.h
+    crypto/cmp/cmp_msg.c
+    crypto/cmp/cmp_protect.c
+    crypto/cmp/cmp_server.c
+    crypto/cmp/cmp_status.c
+    crypto/cmp/cmp_util.c
+    crypto/crmf/crmf_asn.c
+    crypto/crmf/crmf_lib.c
+    crypto/crmf/crmf_local.h
+    crypto/crmf/crmf_pbm.c
+    include/openssl/cmp.h.in
+    include/openssl/cmp_util.h
+    include/openssl/crmf.h.in
+Copyright Siemens AG 2015-2020
+    crypto/cmp/cmp_vfy.c
+Copyright Siemens AG 2018-2020
+    crypto/http/http_client.c
+    include/openssl/http.h
+Copyright Siemens AG 2022
+    crypto/cmp/cmp_genm.c
 
 ----- crypto/siphash/siphash.c, lines 12-23 (CC0-1.0) -----
 
@@ -204,6 +296,38 @@ terms; dsd-neo uses them under the Apache License 2.0.
  * terms:
  *
  * Copyright (c) 2004, Richard Levitte <richard@levitte.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+crypto/LPdir_unix.c is also offered under the terms it states; dsd-neo uses it under the Apache
+License 2.0.
+
+----- crypto/LPdir_unix.c, lines 11-36 -----
+
+ * This file is dual-licensed and is also available under the following
+ * terms:
+ *
+ * Copyright (c) 2004, 2018, Richard Levitte <richard@levitte.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -307,3 +431,147 @@ license:
  *     http://seed.kisa.or.kr/ (Korean)
  *
  * Public domain version is distributed above.
+
+----- crypto/bio/bio_print.c, lines 18-23 -----
+
+/*
+ * Copyright Patrick Powell 1995
+ * This code is based on code written by Patrick Powell <papowell@astart.com>
+ * It may be used for any purpose as long as this notice remains intact
+ * on all source code distributions.
+ */
+
+----- crypto/ec/ecp_nistp224.c, lines 10-23 (also ecp_nistp256.c, ecp_nistp521.c, ecp_nistputil.c) -----
+
+/* Copyright 2011 Google Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ *
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+
+----- crypto/ec/ecp_nistp224.c, lines 32-37 -----
+
+/*
+ * A 64-bit implementation of the NIST P-224 elliptic curve point multiplication
+ *
+ * Inspired by Daniel J. Bernstein's public domain nistp224 implementation
+ * and Adam Langley's public domain 64-bit C implementation of curve25519
+ */
+
+----- crypto/camellia/camellia.c, lines 10-23 -----
+
+/* ====================================================================
+ * Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .
+ * ALL RIGHTS RESERVED.
+ *
+ * Intellectual Property information for Camellia:
+ *     http://info.isl.ntt.co.jp/crypt/eng/info/chiteki.html
+ *
+ * News Release for Announcement of Camellia open source:
+ *     http://www.ntt.co.jp/news/news06e/0604/060413a.html
+ *
+ * The Camellia Code included herein is developed by
+ * NTT (Nippon Telegraph and Telephone Corporation), and is contributed
+ * to the OpenSSL project.
+ */
+
+----- crypto/aes/aes_core.c, lines 10-34 -----
+
+/**
+ * rijndael-alg-fst.c
+ *
+ * @version 3.0 (December 2000)
+ *
+ * Optimised ANSI C code for the Rijndael cipher (now AES)
+ *
+ * @author Vincent Rijmen
+ * @author Antoon Bosselaers
+ * @author Paulo Barreto
+ *
+ * This code is hereby placed in the public domain.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ''AS IS'' AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+----- crypto/aes/asm/aes-sha1-armv8.pl, lines 3-16 (also aes-sha256-armv8.pl) -----
+
+# Copyright 2023-2026 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright (C) Cavium networks Ltd. 2016.
+#
+# Licensed under the Apache License 2.0 (the "License").  You may not use
+# this file except in compliance with the License.  You can obtain a copy
+# in the file LICENSE in the source distribution or at
+# https://www.openssl.org/source/license.html
+
+#========================================================================
+# Derived from following files in
+# https://github.com/ARM-software/AArch64cryptolib
+# AArch64cryptolib_opt_big/aes_cbc_sha1/aes128cbc_sha1_hmac.S
+# AArch64cryptolib_opt_big/aes_cbc_sha1/sha1_hmac_aes128cbc_dec.S
+#========================================================================
+
+The aarch64 assembly generators by Andy Polyakov (for example crypto/aes/asm/aesv8-armx.pl and
+crypto/bn/asm/armv8-mont.pl) carry the same dual-license note as the x86_64 ones above; obtained from
+OpenSSL, they are under OpenSSL's license.
+
+----- crypto/modes/asm/aes-gcm-armv8-unroll8_64.pl, lines 10-16 -----
+
+#========================================================================
+# Written by Xiaokang Qian <xiaokang.qian@arm.com> for the OpenSSL project,
+# derived from https://github.com/ARM-software/AArch64cryptolib, original
+# author Samuel Lee <Samuel.Lee@arm.com>. The module is, however, dual
+# licensed under OpenSSL and SPDX BSD-3-Clause licenses depending on where you
+# obtain it.
+#========================================================================
+
+----- crypto/aes/asm/bsaes-armv8.pl, lines 35-46 -----
+
+// Copyright 2021-2025 The OpenSSL Project Authors. All Rights Reserved.
+//
+// Licensed under the OpenSSL license (the "License").  You may not use
+// this file except in compliance with the License.  You can obtain a copy
+// in the file LICENSE in the source distribution or at
+// https://www.openssl.org/source/license.html
+//
+// ====================================================================
+// Written by Ben Avison <bavison@riscosopen.org> for the OpenSSL
+// project. Rights for redistribution and usage in source and binary
+// forms are granted according to the OpenSSL license.
+// ====================================================================
+
+----- crypto/aes/asm/vpaes-armv8.pl, lines 14-15 -----
+
+## By Mike Hamburg (Stanford University), 2009
+## Public domain.
+
+----- ssl/tls_srp.c, lines 2-11 -----
+
+ * Copyright 2004-2025 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright (c) 2004, EdelKey Project. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ *
+ * Originally written by Christophe Renou and Peter Sylvester,
+ * for the EdelKey project.

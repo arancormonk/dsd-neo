@@ -269,7 +269,10 @@ the ones those sources carry; where a port's `vcpkg.json` declares another, `leg
   `licenses/LicenseRef-PDCurses-Public-Domain.txt` (upstream's statements).
 - **OpenSSL** (`libcrypto-3-x64.dll`; https://www.openssl.org, release 3.6.5; no libssl, since libcurl uses
   Schannel) - Apache-2.0 AND CC0-1.0 AND LicenseRef-OpenSSL-KISA-SEED. `licenses/OpenSSL-AUTHORS.md`,
-  `licenses/OpenSSL-NOTICES.txt` and `licenses/LicenseRef-OpenSSL-KISA-SEED.txt`.
+  `licenses/OpenSSL-NOTICES.txt` and `licenses/LicenseRef-OpenSSL-KISA-SEED.txt`. `LICENSES/OpenSSL-NOTICES.txt`
+  names the holders of the sources every package's OpenSSL 3.6.5 build compiles (Nokia's and Siemens AG's CMP, CRMF
+  and HTTP client code and Patrick Powell's `bio_print.c` among them), with their dual-license, CC0 and public-domain
+  notes.
 - **libcurl** (`libcurl.dll`; https://curl.se/, release 8.23.0, Schannel) - curl AND ISC.
   `licenses/curl-NOTICES.txt`.
 - **Expat** (`libexpat.dll`; https://github.com/libexpat/libexpat, release 2.9.0) - MIT AND CC0-1.0.

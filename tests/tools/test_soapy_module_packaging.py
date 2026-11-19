@@ -85,7 +85,7 @@ VCPKG_LIBRARY_NOTICES = {
     "pdcurses.dll": {"LicenseRef-PDCurses-Public-Domain.txt": "repo:LICENSES/LicenseRef-PDCurses-Public-Domain.txt"},
     "libcrypto-3-x64.dll": {"openssl-copyright.txt": "vcpkg:openssl",
                             "OpenSSL-AUTHORS.md": "repo:packaging/windows/OpenSSL-AUTHORS.md",
-                            "OpenSSL-NOTICES.txt": "repo:packaging/windows/OpenSSL-NOTICES.txt",
+                            "OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
                             "LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"},
     "libcurl.dll": {"curl-copyright.txt": "vcpkg:curl", "curl-NOTICES.txt": "repo:packaging/windows/curl-NOTICES.txt"},
     "libexpat.dll": {"expat-copyright.txt": "vcpkg:expat",
