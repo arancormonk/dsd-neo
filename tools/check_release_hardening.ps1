@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [string]$Artifact
+    [string]$Artifact,
+
+    # dumpbin /HEADERS output for the artifact that the caller already read, so the
+    # headers are not read twice; without it the headers are read here.
+    [string]$Headers
 )
 
 Set-StrictMode -Version Latest
@@ -52,10 +56,14 @@ if (-not (Test-Path -LiteralPath $Artifact)) {
     throw "release artifact not found: $Artifact"
 }
 
-$dumpbin = Resolve-Dumpbin
-$headers = & $dumpbin /headers $Artifact 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) {
-    throw "dumpbin failed for $Artifact"
+if ($PSBoundParameters.ContainsKey('Headers')) {
+    $headers = $Headers
+} else {
+    $dumpbin = Resolve-Dumpbin
+    $headers = & $dumpbin /headers $Artifact 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "dumpbin failed for $Artifact"
+    }
 }
 
 if ($headers -notmatch "Dynamic base") {

@@ -596,6 +596,9 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertLess(release.index(stage), release.index(verify))
         self.assertLess(release.index("Archive native MSVC ZIP"), release.rindex(verify))
         self.assertIn("ExtractToDirectory", release[release.index("Archive native MSVC ZIP"):release.rindex(verify)])
+        # -SkipProgramRuns stops the check before it runs the tree's programs: only tests use it, never a workflow.
+        for workflow in sorted((ROOT / ".github/workflows").iterdir()):
+            self.assertNotIn("SkipProgramRuns", workflow.read_text(encoding="utf-8"), workflow.name)
         # The staging, the librtlsdr probe and the smoke runs live in the scripts now.
         for old in ("Copy-Item", "no transfer left, canceling", "& $exe -h"):
             self.assertNotIn(old, release)
@@ -772,7 +775,7 @@ try {
 """
 
 # dumpbin for the staging run: each binary's dependencies come from DEPS (name -> list), as dumpbin prints them.
-FAKE_DUMPBIN = r"""#!{python} -I
+FAKE_DUMPBIN = r"""#!{python} -IS
 import sys
 from pathlib import Path
 
@@ -785,7 +788,7 @@ sys.stdout.write("\r\n".join(lines))
 
 # cmake --install <build> --prefix <stage> --component legal, as the legal component installs the repository's
 # LICENSES/ and legal/ and the mbelib notices.
-FAKE_CMAKE = r"""#!{python} -I
+FAKE_CMAKE = r"""#!{python} -IS
 import shutil
 import sys
 from pathlib import Path
@@ -832,13 +835,16 @@ RUNTIME_DLLS = ("MSVCP140.dll", "VCRUNTIME140.dll")
 # from report.json beside it (its "unhardened" files lack NX compatibility, its "machines" name a file's machine line). SoapySDRUtil.exe and dsd-neo.exe model SoapySDR 0.8.1: they load each module in
 # <their folder>/../lib/SoapySDR/modules0.8, which fails when the module's library is not in their own folder, and
 # print what the real programs print (the probe messages are the drivers' own).
-FAKE_VERIFY_DUMPBIN = r"""#!{python} -I
+FAKE_VERIFY_DUMPBIN = r"""#!{python} -IS
 import json
 import sys
 from pathlib import Path
 
-report = json.loads((Path(sys.argv[0]).resolve().parent / "report.json").read_text())
+here = Path(sys.argv[0]).resolve().parent
+report = json.loads((here / "report.json").read_text())
 option, path = sys.argv[1], sys.argv[2]
+with open(here / "calls.log", "a", encoding="utf-8") as log:
+    log.write(option.upper() + " " + path + "\n")
 name = Path(path).name
 kind = report.get("types", {{}}).get(name, "EXECUTABLE IMAGE" if name.endswith(".exe") else "DLL")
 lines = ["Microsoft (R) COFF/PE Dumper Version 14.44.35217.0", "", "Dump of file " + path, "", "File Type: " + kind, ""]
@@ -858,7 +864,7 @@ lines += ["", "  Summary", "", "        1000 .data"]
 sys.stdout.write("\r\n".join(lines) + "\r\n")
 """
 
-FAKE_SOAPY_PROGRAM = r"""#!{python} -I
+FAKE_SOAPY_PROGRAM = r"""#!{python} -IS
 import sys
 from pathlib import Path
 
@@ -907,9 +913,9 @@ sys.exit(1)
 """
 
 # Runs verify_release_tree.ps1 and prints a failure's message whole.
-VERIFY = r"""param([string]$Script, [string]$Root)
+VERIFY = r"""param([string]$Script, [string]$Root, [switch]$SkipProgramRuns)
 try {
-    & $Script -Root $Root -TimeoutSeconds 60
+    & $Script -Root $Root -TimeoutSeconds 60 -SkipProgramRuns:$SkipProgramRuns
 } catch {
     [Console]::Error.WriteLine('FAILED: ' + $_.Exception.Message)
     exit 1
@@ -1551,10 +1557,18 @@ class SoapyReleaseScripts(unittest.TestCase):
     def write_report(self, tools):
         (tools / "report.json").write_text(json.dumps(self.report), encoding="utf-8")
 
-    def verify(self, tools, root, windows):
+    def verify(self, tools, root, windows, programs=True):
+        """Runs verify_release_tree.ps1 on the tree. programs=False stops it after steps 0-3 (-SkipProgramRuns): only
+        for a passing run that shows a tree passes those steps before or after a test changes something they check;
+        test_verify_release_tree and every refusal run the whole script."""
         env = dict(os.environ, PATH=str(tools), SystemRoot=str(windows), RUNNER_TEMP=str(self.work))
+        switch = [] if programs else ["-SkipProgramRuns"]
         rc, out, err = self.pwsh(VERIFY, "-Script", ROOT / "tools/windows/verify_release_tree.ps1", "-Root", root,
-                                 env=env)
+                                 *switch, env=env)
+        if not programs and rc == 0:
+            self.assertIn(f"no program of the tree was run (-SkipProgramRuns), so it is not verified: {root}", out)
+            self.assertNotIn("Release tree verified", out)
+            self.assertNotIn(".exe --", out)
         return rc, out + err
 
     def test_verify_release_tree(self):
@@ -1568,6 +1582,24 @@ class SoapyReleaseScripts(unittest.TestCase):
         # Every program ran: the drivers, --info, -h, three probes, and both damaged copies.
         self.assertEqual(output.count("SoapySDRUtil.exe --check="), 6)
         self.assertEqual(output.count("dsd-neo.exe --frontend none -i soapy"), 6)
+        # Each image's headers are read once, for the machine check and the hardening check alike.
+        calls = (tools / "calls.log").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(calls)
+        self.assertEqual(len(calls), len(set(calls)), calls)
+        self.assertEqual({call.split(" ", 1)[0] for call in calls}, {"/HEADERS", "/DEPENDENTS"})
+        self.assertEqual(sorted(call.split(" ", 1)[1] for call in calls if call.startswith("/HEADERS ")),
+                         sorted(call.split(" ", 1)[1] for call in calls if call.startswith("/DEPENDENTS ")))
+        # The baselines' switch runs steps 0-3, the hardening check included, and no program of the tree.
+        (tools / "calls.log").unlink()
+        rc, output = self.verify(tools, root, windows, programs=False)
+        self.assertEqual(rc, 0, output)
+        self.assertIn(f"Windows PE hardening OK: {root / 'bin/dsd-neo.exe'}", output)
+        self.assertIn("OK: every notice holds its reviewed or staged text", output)
+        self.report["unhardened"] = ["hackrf.dll"]
+        self.write_report(tools)
+        rc, output = self.verify(tools, root, windows, programs=False)
+        self.assertEqual(rc, 1, output)
+        self.assertIn(f"missing PE NX compatible: {root / 'bin/hackrf.dll'}", output)
 
     def test_verify_release_tree_refusals(self):
         tools, root, windows = self.release_tree()
@@ -1652,7 +1684,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         (windows / "System32/KERNEL32.dll").unlink()
         self.report["dependents"]["libusb-1.0.dll"] = ["KERNEL32.dll", "ADVAPI32.dll"]
         self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
 
     def test_verify_release_tree_refuses_unrecorded_runtime_dlls(self):
@@ -1675,7 +1707,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.assert_verify_refuses(tools, root, windows, f"{components} has no msvc-runtime record")
         self.write_notices(root)
         self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
 
     def test_verify_release_tree_reads_every_dependency_name(self):
@@ -1714,7 +1746,7 @@ class SoapyReleaseScripts(unittest.TestCase):
                 self.assert_verify_refuses(tools, root, windows, "missing PE NX compatible", str(bin_dir / name))
         del self.report["unhardened"]
         self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
         self.assertIn(f"Windows PE hardening OK: {bin_dir / 'vendor.drv'}", output)
 
@@ -1735,7 +1767,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         notice.write_text("")
         self.assert_verify_refuses(tools, root, windows, f"portaudio.dll (portaudio): {notice}")
         self.write_notices(root)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
         self.assertIn("OK: every file in bin\\ and lib\\ has a component record, and the tree carries its notices",
                       output)
@@ -1758,7 +1790,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         # A reviewed notice with Windows line endings holds the same text.
         crlf = docs / "licenses/portaudio-NOTICES.txt"
         crlf.write_bytes(crlf.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
         # Every wrong notice is named, so one run shows each kind refused.
         for name in reviewed:
@@ -1793,7 +1825,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         for dependents in self.report["dependents"].values():
             dependents[:] = [name for name in dependents if name not in RUNTIME_DLLS]
         self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
 
     def test_verify_release_tree_refuses_images_of_another_machine(self):
@@ -1806,7 +1838,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.report["dependents"]["late.dll"] = ["KERNEL32.dll"]
         self.report["dependents"]["airspy.dll"].append("late.dll")
         self.write_report(tools)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
         for image, machine, label in (("late.dll", "14C machine (x86)", "0x014C"),
                                       ("hackrf.dll", "AA64 machine (ARM64)", "0xAA64"),
@@ -1857,7 +1889,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         tools, root, windows = self.release_tree()
         record = root / "share/doc/dsd-neo/legal/msvc-runtime.md"
         self.assertEqual(record.read_bytes(), (ROOT / "legal/msvc-runtime.md").read_bytes())
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
         # Another text than the one staged.
         record.write_text("Visual C++ runtime terms\n")
@@ -1868,7 +1900,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         record.write_text("")
         self.assert_verify_refuses(tools, root, windows, f"MSVCP140.dll (msvc-runtime): {record}")
         self.write_notices(root)
-        rc, output = self.verify(tools, root, windows)
+        rc, output = self.verify(tools, root, windows, programs=False)
         self.assertEqual(rc, 0, output)
 
     def test_verify_release_tree_needs_one_copy_of_each_shared_library(self):

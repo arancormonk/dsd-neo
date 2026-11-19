@@ -30,7 +30,7 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 # Answers every call from files beside it: responses/<tool>/<name of the inspected file>.{out,err,rc}. "{path}" in a
 # .out file becomes the path the tool was given, as objdump prints it.
-FAKE_TOOL = """#!{python} -I
+FAKE_TOOL = """#!{python} -IS
 import sys
 from pathlib import Path
 

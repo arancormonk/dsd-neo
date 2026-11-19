@@ -24,6 +24,9 @@
 #   7. dsd-neo.exe reaches each driver (it cannot open a device: there is none);
 #   8. without lib\, no driver is found;
 #   9. without bin\hackrf.dll, only the HackRF module fails to load.
+# -SkipProgramRuns stops after step 3 and runs no program of the tree: for a test of a
+# change to steps 0-3 only. It never prints "Release tree verified"; the release jobs
+# run every step.
 # Each program runs in a fresh process from an empty working directory, with PATH
 # reduced to bin\ and the Windows folders and SOAPY_SDR_ROOT, SOAPY_SDR_PLUGIN_PATH
 # and DSD_NEO_CONFIG removed.
@@ -35,7 +38,11 @@ param(
     # dsd-neo.exe's exit code when it cannot open its input.
     [int]$ProbeExitCode = 1,
 
-    [int]$TimeoutSeconds = 120
+    [int]$TimeoutSeconds = 120,
+
+    # Stop after steps 0-3 (notices, librtlsdr, load path with hardening, records),
+    # without running any program of the tree. Not a verification of the release.
+    [switch]$SkipProgramRuns
 )
 
 Set-StrictMode -Version Latest
@@ -57,6 +64,11 @@ function Resolve-Dumpbin {
     return $command.Source
 }
 
+# Each report dumpbin printed in this run, by option and full path: the load path walk
+# reads the images it checks links for again, and the hardening check reads the
+# /HEADERS report the machine check read. Only a report of a successful run is kept.
+$script:DumpbinReports = @{}
+
 function Invoke-Dumpbin {
     param(
         [Parameter(Mandatory = $true)]
@@ -66,10 +78,15 @@ function Invoke-Dumpbin {
         [string]$Path
     )
 
+    $key = $Option.ToUpperInvariant() + '|' + [System.IO.Path]::GetFullPath($Path)
+    if ($script:DumpbinReports.ContainsKey($key)) {
+        return $script:DumpbinReports[$key]
+    }
     $output = & $script:Dumpbin $Option $Path 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         throw "dumpbin $Option failed for ${Path} (exit $LASTEXITCODE):`n$output"
     }
+    $script:DumpbinReports[$key] = $output
     return $output
 }
 
@@ -209,7 +226,8 @@ function Test-PatchedRtlsdr {
     Write-Host "OK: $($dlls[0].Name) is built with the librtlsdr transfer patches"
 }
 
-# Every binary Test-LoadPath found: each must pass check_release_hardening.ps1.
+# Every binary Test-LoadPath found: each must pass check_release_hardening.ps1, given the
+# /HEADERS report Get-ImageDependents read and checked for diagnostics.
 function Test-Hardening {
     param(
         [Parameter(Mandatory = $true)]
@@ -219,7 +237,7 @@ function Test-Hardening {
 
     if ($Images.Count -eq 0) { throw 'No PE files found in the tree' }
     foreach ($image in $Images) {
-        & (Join-Path $PSScriptRoot '../check_release_hardening.ps1') $image
+        & (Join-Path $PSScriptRoot '../check_release_hardening.ps1') $image -Headers (Invoke-Dumpbin '/HEADERS' $image)
     }
 }
 
@@ -446,13 +464,19 @@ try {
     Assert-ReleaseNoticeContents -TreeRoot $treeRoot -ComponentsPath (Join-Path $treeRoot 'share/doc/dsd-neo/legal/components.json')
     Write-Host 'OK: every notice holds its reviewed or staged text'
     Test-Hardening -Images $images
-    Test-Drivers -TreeRoot $treeRoot
-    Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
-    Test-WithoutHackrfLibrary -TreeRoot $treeRoot -Scratch $scratch
+    if (-not $SkipProgramRuns) {
+        Test-Drivers -TreeRoot $treeRoot
+        Test-WithoutModules -TreeRoot $treeRoot -Scratch $scratch
+        Test-WithoutHackrfLibrary -TreeRoot $treeRoot -Scratch $scratch
+    }
 } finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host "Release tree verified: $treeRoot"
+if ($SkipProgramRuns) {
+    Write-Host "Steps 0-3 passed; no program of the tree was run (-SkipProgramRuns), so it is not verified: $treeRoot"
+} else {
+    Write-Host "Release tree verified: $treeRoot"
+}
 # GitHub's pwsh steps end with "exit $LASTEXITCODE"; the last program run above may
 # have exited non-zero on purpose.
 $global:LASTEXITCODE = 0
