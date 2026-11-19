@@ -22,6 +22,10 @@
 # with it: a notice no longer staged leaves the package and its index, as a clean build
 # would leave it out, and a file whose content is unchanged is not rewritten.
 
+# Script mode leaves policies unset, and CMake 3.x then refuses if(IN_LIST): ask for the
+# project's minimum, as its CMakeLists.txt does.
+cmake_minimum_required(VERSION 3.20)
+
 foreach(
     _required
     IN

@@ -19,6 +19,10 @@
 #
 # Also included by cmake/stage_android_package.cmake with the same variables set.
 
+# Script mode leaves policies unset: ask for the project's minimum, as its CMakeLists.txt does,
+# so the if() rules do not depend on the host CMake (string(JSON) needs 3.19).
+cmake_minimum_required(VERSION 3.20)
+
 foreach(_required IN ITEMS PLATFORM REPO_DIR BUILD_DIR DOC_DIR)
     if(NOT DEFINED ${_required})
         message(

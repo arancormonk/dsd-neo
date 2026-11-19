@@ -646,6 +646,16 @@ class NoticeStagingTests(unittest.TestCase):
         return subprocess.run(["cmake", *map(str, args)], cwd=self.work,
                               text=True, capture_output=True, check=False)
 
+    def test_standalone_scripts_set_the_project_policies(self):
+        # `cmake -P` leaves every policy unset, so on CMake 3.x IN_LIST and the newer if() rules are not available
+        # unless the script asks for the project's minimum itself.
+        minimum = re.search(r"(?m)^cmake_minimum_required\(VERSION ([0-9.]+)\)", (ROOT / "CMakeLists.txt").read_text())
+        for script in ("cmake/stage_android_package.cmake", "cmake/stage_release_notices.cmake"):
+            with self.subTest(script=script):
+                text = (ROOT / script).read_text(encoding="utf-8")
+                commands = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
+                self.assertEqual(commands[0], f"cmake_minimum_required(VERSION {minimum[1]})")
+
     def test_installed_mbelib_layouts_and_missing_notices(self):
         for config in ("lib/cmake/mbe-neo", "lib64/cmake/mbe-neo", "share/mbe-neo",
                        "lib/x86_64-linux-gnu/cmake/mbe-neo"):
