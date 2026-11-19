@@ -13,9 +13,10 @@
  * request before it is sent, and lets the fake transfer feed the real header,
  * body and progress callbacks the caps and the cancel live in.
  *
- * Built twice: RUNTIME_TILE_FETCH_CURL against the installed headers, and
- * RUNTIME_TILE_FETCH_CURL_PRE_7_85 with the version forced below 7.85, which
- * must take CURLOPT_PROTOCOLS instead of CURLOPT_PROTOCOLS_STR.
+ * Built twice: RUNTIME_TILE_FETCH_CURL against the installed headers (either
+ * protocol option, as those headers have it), and RUNTIME_TILE_FETCH_CURL_PRE_7_85
+ * with the version forced below 7.85, which must take CURLOPT_PROTOCOLS instead
+ * of CURLOPT_PROTOCOLS_STR.
  */
 
 #include "tile_fetch_test_hooks.h"
@@ -67,6 +68,14 @@ expect_str(const char* what, const char* got, const char* want) {
     }
 }
 
+/* The version tile_fetch.c compiles for: the forced one only when it is lower than the installed headers' (the same
+ * rule as TF_CURL_VERSION_NUM there), so the default build works on every supported curl, 7.85 or not. */
+#if defined(DSD_TILE_FETCH_TEST_CURL_VERSION_NUM) && DSD_TILE_FETCH_TEST_CURL_VERSION_NUM < LIBCURL_VERSION_NUM
+#define TEST_CURL_VERSION_NUM DSD_TILE_FETCH_TEST_CURL_VERSION_NUM
+#else
+#define TEST_CURL_VERSION_NUM LIBCURL_VERSION_NUM
+#endif
+
 #define TEST_HOST "tiles.example.invalid"
 #define TEST_URL  "https://" TEST_HOST "/7/64/42.png"
 
@@ -92,6 +101,10 @@ typedef struct {
     int refuse_call; /**< 1-based setopt call to refuse; 0 for none. */
     int perform_calls;
     int features;
+    const char* const* protocols; /**< curl_version_info()'s protocol list. */
+    int global_ready_rc;          /**< What the stand-in for dsd_curl_global_ready() returns. */
+    int global_ready_calls;
+    int probed_before_init; /**< curl_version_info() was read before the global init guard ran. */
     long response_code;
     CURLcode perform_result; /**< Returned when the fake transfer itself succeeds. */
     const char* headers;     /**< Fed to the header callback line by line. */
@@ -105,10 +118,14 @@ typedef struct {
 
 static fake_curl g_fake;
 
+static const char* const k_protocols_https[] = {"file", "http", "https", NULL};
+static const char* const k_protocols_http_only[] = {"file", "http", NULL};
+
 static void
 fake_reset(void) {
     DSD_MEMSET(&g_fake, 0, sizeof(g_fake));
     g_fake.features = CURL_VERSION_ASYNCHDNS | CURL_VERSION_SSL;
+    g_fake.protocols = k_protocols_https;
     g_fake.response_code = 200;
     g_fake.perform_result = CURLE_OK;
 }
@@ -288,9 +305,22 @@ dsd_tile_fetch_test_response_code(CURL* curl, long* out) {
     return CURLE_OK;
 }
 
+const curl_version_info_data*
+dsd_tile_fetch_test_curl_version_info(void) {
+    static curl_version_info_data info;
+    if (g_fake.global_ready_calls == 0) {
+        g_fake.probed_before_init = 1;
+    }
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.features = g_fake.features;
+    info.protocols = g_fake.protocols;
+    return &info;
+}
+
 int
-dsd_tile_fetch_test_curl_features(void) {
-    return g_fake.features;
+dsd_tile_fetch_test_global_ready(void) {
+    g_fake.global_ready_calls++;
+    return g_fake.global_ready_rc;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -343,7 +373,7 @@ test_options_set(void) {
     expect_long_opt("declared length capped", CURLOPT_MAXFILESIZE, (long)DSD_TILE_FETCH_BODY_CAP_BYTES);
     expect_long_opt("progress callback enabled", CURLOPT_NOPROGRESS, 0L);
 
-#ifdef DSD_TILE_FETCH_TEST_CURL_VERSION_NUM
+#if TEST_CURL_VERSION_NUM < 0x075500
     expect_long_opt("pre-7.85: https only by bitmask", CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
 #if LIBCURL_VERSION_NUM >= 0x075500
     expect("pre-7.85: no protocol string", find_opt(CURLOPT_PROTOCOLS_STR) == NULL);
@@ -535,6 +565,27 @@ static void
 test_capability(void) {
     fake_reset();
     expect("available with an asynchronous resolver", dsd_tile_fetch_available() == 1);
+    expect("the probe runs after libcurl's global initialization", g_fake.probed_before_init == 0);
+
+    fake_reset();
+    g_fake.protocols = k_protocols_http_only;
+    expect("unavailable without https", dsd_tile_fetch_available() == 0);
+    {
+        dsd_tile_fetch_response noHttps;
+        expect_ll("built-in transport refuses without https", (long long)fetch_plain(&noHttps),
+                  DSD_TILE_FETCH_ERR_UNSUPPORTED);
+        dsd_tile_fetch_response_free(&noHttps);
+    }
+
+    fake_reset();
+    g_fake.global_ready_rc = -1;
+    expect("unavailable when libcurl cannot be initialized", dsd_tile_fetch_available() == 0);
+    expect("and nothing probed", g_fake.probed_before_init == 0);
+    {
+        dsd_tile_fetch_response failed;
+        expect_ll("an init failure is a setup failure", (long long)fetch_plain(&failed), DSD_TILE_FETCH_ERR_SETUP);
+        dsd_tile_fetch_response_free(&failed);
+    }
 
     fake_reset();
     g_fake.features = CURL_VERSION_SSL; /* synchronous resolver */

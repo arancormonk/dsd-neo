@@ -31,8 +31,10 @@ CURLcode dsd_tile_fetch_test_setopt_data_cb(CURL* curl, CURLoption option, curl_
 CURLcode dsd_tile_fetch_test_setopt_xferinfo_cb(CURL* curl, CURLoption option, curl_xferinfo_callback value);
 CURLcode dsd_tile_fetch_test_perform(CURL* curl);
 CURLcode dsd_tile_fetch_test_response_code(CURL* curl, long* out);
-/** Stands in for curl_version_info(CURLVERSION_NOW)->features. */
-int dsd_tile_fetch_test_curl_features(void);
+/** Stands in for curl_version_info(CURLVERSION_NOW) (features and protocols are read). */
+const curl_version_info_data* dsd_tile_fetch_test_curl_version_info(void);
+/** Stands in for dsd_curl_global_ready(): 0 when libcurl is initialized. */
+int dsd_tile_fetch_test_global_ready(void);
 
 #ifdef __cplusplus
 }

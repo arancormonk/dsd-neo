@@ -199,11 +199,14 @@ typedef struct {
 /**
  * @brief Whether the BUILT-IN transport can fetch tiles in this build.
  *
- * True only with libcurl AND an asynchronous resolver (CURL_VERSION_ASYNCHDNS).
- * With signals off a synchronous resolver ignores every timeout while it looks a
- * name up, so a fetch could hang without bound; such builds report false and the
- * UI says online map tiles are not available in this build. An injected
- * transport works regardless.
+ * True only with libcurl that supports https AND has an asynchronous resolver
+ * (CURL_VERSION_ASYNCHDNS). With signals off a synchronous resolver ignores
+ * every timeout while it looks a name up, so a fetch could hang without bound;
+ * a library without https fails every request. Such builds report false and the
+ * UI says online map tiles are not available in this build. The probe runs after
+ * libcurl's global initialization (the shared guard), since curl_version_info()
+ * is not thread-safe before it; if that initialization fails, false as well. An
+ * injected transport works regardless.
  *
  * @return 1 when available, 0 otherwise.
  */

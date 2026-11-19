@@ -420,8 +420,9 @@ dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return incoming;
 }
 
-#ifdef DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
-/* Lets a test build compile the older-libcurl branches against current headers. */
+#if defined(DSD_CURL_COMMON_TEST_CURL_VERSION_NUM) && DSD_CURL_COMMON_TEST_CURL_VERSION_NUM < LIBCURL_VERSION_NUM
+/* Lets a test build compile the older-libcurl branches against newer headers. It only ever lowers the version: a
+ * branch the installed headers do not declare is never selected. */
 #define CC_CURL_VERSION_NUM DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
 #else
 #define CC_CURL_VERSION_NUM LIBCURL_VERSION_NUM

@@ -11,8 +11,9 @@
  * curl_common.c is compiled into this test with DSD_CURL_COMMON_TEST_HOOKS, so
  * every multi-interface call, the loaded library's version and the sleep come
  * here. Built twice: RUNTIME_CURL_CANCELLABLE against the installed headers
- * (curl_multi_poll, CURLMOPT_QUICK_EXIT), and RUNTIME_CURL_CANCELLABLE_PRE_7_66
- * with the version forced to 7.65 (curl_multi_wait, no quick exit).
+ * (curl_multi_poll from 7.66, CURLMOPT_QUICK_EXIT from 8.20, each only when the
+ * headers have it), and RUNTIME_CURL_CANCELLABLE_PRE_7_66 with the version forced
+ * to 7.65 (curl_multi_wait, no quick exit).
  */
 
 #include "curl_common.h"
@@ -23,11 +24,15 @@
 #include <dsd-neo/runtime/log.h>
 #include <stdio.h>
 
-#ifdef DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
-#define TEST_OLD_HEADERS 1
+/* The version curl_common.c compiles for: the forced one only when it is lower than the installed headers' (the same
+ * rule as CC_CURL_VERSION_NUM there). Quick exit needs 8.20, curl_multi_poll 7.66; neither follows from the other. */
+#if defined(DSD_CURL_COMMON_TEST_CURL_VERSION_NUM) && DSD_CURL_COMMON_TEST_CURL_VERSION_NUM < LIBCURL_VERSION_NUM
+#define TEST_CURL_VERSION_NUM DSD_CURL_COMMON_TEST_CURL_VERSION_NUM
 #else
-#define TEST_OLD_HEADERS 0
+#define TEST_CURL_VERSION_NUM LIBCURL_VERSION_NUM
 #endif
+#define TEST_HAS_QUICK_EXIT (TEST_CURL_VERSION_NUM >= 0x081400)
+#define TEST_HAS_MULTI_POLL (TEST_CURL_VERSION_NUM >= 0x074200)
 
 /* curl_common.c is compiled on its own here; the runtime library normally supplies this. */
 void
@@ -305,7 +310,7 @@ static void
 test_quick_exit(void) {
     fake_reset();
     (void)run();
-#if TEST_OLD_HEADERS
+#if !TEST_HAS_QUICK_EXIT
     expect_ll("no quick exit with headers older than 8.20", g_fake.setopts, 0);
 #else
     expect_ll("quick exit set once on 8.20+", g_fake.setopts, 1);
@@ -326,7 +331,7 @@ test_quick_exit(void) {
 
 static void
 test_idle(void) {
-#if TEST_OLD_HEADERS
+#if !TEST_HAS_MULTI_POLL
     fake_reset();
     g_fake.wait_ready = 0;
     (void)run();

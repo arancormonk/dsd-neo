@@ -198,9 +198,10 @@ dsd_tile_fetch_user_agent(char* out, size_t cap) {
 #define TF_SETOPT_XFERINFO_CB    dsd_tile_fetch_test_setopt_xferinfo_cb
 #define TF_PERFORM(curl, cancel) ((void)(cancel), dsd_tile_fetch_test_perform(curl))
 #define TF_RESPONSE_CODE         dsd_tile_fetch_test_response_code
-#define TF_CURL_FEATURES         dsd_tile_fetch_test_curl_features
-#ifdef DSD_TILE_FETCH_TEST_CURL_VERSION_NUM
-/* Lets a test build take the pre-7.85 protocol branch against current headers. */
+#define TF_CURL_INFO             dsd_tile_fetch_test_curl_version_info
+#define TF_GLOBAL_READY          dsd_tile_fetch_test_global_ready
+#if defined(DSD_TILE_FETCH_TEST_CURL_VERSION_NUM) && DSD_TILE_FETCH_TEST_CURL_VERSION_NUM < LIBCURL_VERSION_NUM
+/* Lets a test build take the pre-7.85 protocol branch against newer headers; it only ever lowers the version. */
 #define TF_CURL_VERSION_NUM DSD_TILE_FETCH_TEST_CURL_VERSION_NUM
 #endif
 #else
@@ -229,10 +230,9 @@ tf_response_code(CURL* curl, long* out) {
     return curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, out);
 }
 
-static int
-tf_curl_features(void) {
-    const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
-    return (info != NULL) ? info->features : 0;
+static const curl_version_info_data*
+tf_curl_info(void) {
+    return curl_version_info(CURLVERSION_NOW);
 }
 
 /** Cancel predicate for dsd_curl_perform_cancellable(). */
@@ -247,16 +247,38 @@ tf_cancel_requested(const void* ctx) {
 #define TF_SETOPT_DATA_CB        tf_setopt_data_cb
 #define TF_SETOPT_XFERINFO_CB    tf_setopt_xferinfo_cb
 #define TF_RESPONSE_CODE         tf_response_code
-#define TF_CURL_FEATURES         tf_curl_features
+#define TF_CURL_INFO             tf_curl_info
+#define TF_GLOBAL_READY          dsd_curl_global_ready
 #endif
 
 #ifndef TF_CURL_VERSION_NUM
 #define TF_CURL_VERSION_NUM LIBCURL_VERSION_NUM
 #endif
 
+/** @return 1 when @p protocols (curl_version_info()'s NULL-ended list) names https. */
+static int
+tf_lists_https(const char* const* protocols) {
+    for (const char* const* p = protocols; p != NULL && *p != NULL; p++) {
+        if (strcmp(*p, "https") == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 dsd_tile_fetch_available(void) {
-    return (TF_CURL_FEATURES() & CURL_VERSION_ASYNCHDNS) != 0 ? 1 : 0;
+    /* curl_version_info() may change static data and is not thread-safe before curl_global_init() (an rdio upload
+     * or a RadioReference request may be doing the first init on another thread): probe behind the shared guard. */
+    if (TF_GLOBAL_READY() != 0) {
+        return 0;
+    }
+    const curl_version_info_data* info = TF_CURL_INFO();
+    if (info == NULL || (info->features & CURL_VERSION_ASYNCHDNS) == 0) {
+        return 0;
+    }
+    /* Every tile request is https: a library without it would fail every request, so offer nothing. */
+    return tf_lists_https(info->protocols);
 }
 
 static int
@@ -473,15 +495,15 @@ tf_transfer_free(tf_transfer* t) {
 static int
 tf_curl_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exchange* exchange) {
     (void)ctx;
+    if (TF_GLOBAL_READY() != 0) {
+        /* libcurl failed to start at run time (checked first: the capability probe needs it). */
+        exchange->status = DSD_TILE_FETCH_ERR_SETUP;
+        tf_copy_text(exchange->error, sizeof(exchange->error), "libcurl could not be initialized");
+        return -1;
+    }
     if (!dsd_tile_fetch_available()) {
         exchange->status = DSD_TILE_FETCH_ERR_UNSUPPORTED;
         tf_copy_text(exchange->error, sizeof(exchange->error), TF_UNAVAILABLE);
-        return -1;
-    }
-    if (dsd_curl_global_ready() != 0) {
-        /* The build has what it needs; libcurl failed to start at run time. */
-        exchange->status = DSD_TILE_FETCH_ERR_SETUP;
-        tf_copy_text(exchange->error, sizeof(exchange->error), "libcurl could not be initialized");
         return -1;
     }
 
@@ -655,7 +677,12 @@ tf_store_single(tf_parse* p, const tf_field* f, const char* value, size_t len, i
     resp->header_present |= f->bit;
     const size_t used = continuation ? strlen(dst) : 0U;
     const size_t sep_len = (continuation && used > 0U && len > 0U) ? 1U : 0U;
-    if (repeat || (!continuation && len == 0U) || !tf_value_bytes_ok(value, len) || used + sep_len + len >= f->cap) {
+    /* A validator goes back in If-None-Match / If-Modified-Since, which refuse a tab (tf_request_value_ok): one that
+     * could not be sent is dropped here, so the next request goes out unconditionally instead of failing. */
+    const int validator = (f->bit & (DSD_TILE_FETCH_HDR_ETAG | DSD_TILE_FETCH_HDR_LAST_MODIFIED)) != 0U;
+    const int unsendable = validator && len > 0U && memchr(value, '\t', len) != NULL;
+    if (repeat || (!continuation && len == 0U) || unsendable || !tf_value_bytes_ok(value, len)
+        || used + sep_len + len >= f->cap) {
         resp->header_invalid |= f->bit;
         dst[0] = '\0';
         return;

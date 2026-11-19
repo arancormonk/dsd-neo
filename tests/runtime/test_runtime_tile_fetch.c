@@ -446,6 +446,7 @@ test_header_parsing(void) {
         CC = DSD_TILE_FETCH_HDR_CACHE_CONTROL,
         EX = DSD_TILE_FETCH_HDR_EXPIRES,
         D = DSD_TILE_FETCH_HDR_DATE,
+        LM = DSD_TILE_FETCH_HDR_LAST_MODIFIED,
     };
 
     static const header_case k_cases[] = {
@@ -467,6 +468,9 @@ test_header_parsing(void) {
         {"repeated ETag is invalid", "HTTP/1.1 200 OK\r\nETag: \"a\"\r\nETag: \"b\"\r\n\r\n", E, E, "", "", ""},
         {"empty Expires is invalid", "HTTP/1.1 200 OK\r\nExpires:   \r\n\r\n", EX, EX, "", "", ""},
         {"malformed Expires kept as text", "HTTP/1.1 200 OK\r\nExpires: 0\r\n\r\n", EX, 0U, "", "", "0"},
+        {"a tab in ETag cannot be sent back: invalid", "HTTP/1.1 200 OK\r\nETag: \"a\tb\"\r\n\r\n", E, E, "", "", ""},
+        {"a tab in Last-Modified cannot be sent back: invalid",
+         "HTTP/1.1 200 OK\r\nLast-Modified: Wed,\t03 Jan 2024 03:04:05 GMT\r\n\r\n", LM, LM, "", "", ""},
         {"control byte in Date is invalid", "HTTP/1.1 200 OK\r\nDate: Tue,\x01 02 Jan\r\n\r\n", D, D, "", "", ""},
         {"obs-fold joins a list field", "HTTP/1.1 200 OK\r\nCache-Control: max-age=60,\r\n no-cache\r\n\r\n", CC, 0U,
          "", "max-age=60, no-cache", ""},
@@ -575,9 +579,15 @@ test_status_names(void) {
 static void
 test_availability(void) {
 #ifdef USE_CURL
+    /* After dsd_tile_fetch_available(): it runs libcurl's global init first, which curl_version_info() needs. */
+    const int available = dsd_tile_fetch_available();
     const curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
     const int async_dns = (info != NULL && (info->features & CURL_VERSION_ASYNCHDNS) != 0) ? 1 : 0;
-    expect_ll("available exactly when libcurl resolves asynchronously", dsd_tile_fetch_available(), async_dns);
+    int https = 0;
+    for (const char* const* p = (info != NULL) ? info->protocols : NULL; p != NULL && *p != NULL; p++) {
+        https = https || strcmp(*p, "https") == 0;
+    }
+    expect_ll("available exactly when libcurl resolves asynchronously and speaks https", available, async_dns && https);
 #else
     expect_ll("unavailable without libcurl", dsd_tile_fetch_available(), 0);
 #endif
@@ -688,7 +698,8 @@ canceller_thread(void* arg) {
 static void
 test_loopback_stalled_transfer_cancelled(void) {
     if (!dsd_tile_fetch_available()) {
-        DSD_FPRINTF(stderr, "SKIP: stalled-transfer cancel (libcurl has no asynchronous resolver)\n");
+        DSD_FPRINTF(stderr, "SKIP: stalled-transfer cancel (the built-in transport is unavailable: no https or no "
+                            "asynchronous resolver)\n");
         return;
     }
     stall_server server;
@@ -785,11 +796,17 @@ test_lookup_stall_cancelled(void) {
     atomic_store(&arg.released_early, 0);
     dsd_thread_t canceller;
     dsd_thread_t releaser;
-    const int threads_ok = dsd_thread_create(&canceller, lookup_canceller_thread, &arg) == 0
-                           && dsd_thread_create(&releaser, lookup_releaser_thread, &arg) == 0;
-    expect("lookup-stall threads started", threads_ok);
-    if (!threads_ok) {
+    const int canceller_ok = dsd_thread_create(&canceller, lookup_canceller_thread, &arg) == 0;
+    const int releaser_ok = canceller_ok && dsd_thread_create(&releaser, lookup_releaser_thread, &arg) == 0;
+    expect("lookup-stall threads started", canceller_ok && releaser_ok);
+    if (!canceller_ok || !releaser_ok) {
+        /* A thread that did start still holds &arg and its cancel token: let it finish before both go. */
         dsd_fake_resolver_hold(0);
+        atomic_store(&arg.fetch_done, 1);
+        if (canceller_ok) {
+            (void)dsd_thread_join(canceller);
+        }
+        dsd_tile_fetch_cancel_destroy(arg.cancel);
         return;
     }
 
@@ -837,8 +854,55 @@ run_loopback_cases(void) {
 #endif
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+typedef struct {
+    atomic_int* go;
+    int result;
+} first_use_arg;
+
+static DSD_THREAD_RETURN_TYPE
+first_use_thread(void* arg) {
+    first_use_arg* a = (first_use_arg*)arg;
+    while (atomic_load(a->go) == 0) {}
+    a->result = dsd_tile_fetch_available();
+    DSD_THREAD_RETURN;
+}
+
+/* The first libcurl use in the process, from several threads at once (the map's probe beside an upload): the probe
+ * goes through the shared global-init guard, so every thread gets the same answer (run under tsan-debug too). */
+static void
+test_first_use_concurrent(void) {
+    enum { kThreads = 4 };
+
+    atomic_int go;
+    atomic_store(&go, 0);
+    first_use_arg args[kThreads];
+    dsd_thread_t threads[kThreads];
+    int started = 0;
+    for (int i = 0; i < kThreads; i++) {
+        args[i].go = &go;
+        args[i].result = -1;
+        if (dsd_thread_create(&threads[i], first_use_thread, &args[i]) != 0) {
+            break;
+        }
+        started++;
+    }
+    atomic_store(&go, 1);
+    for (int i = 0; i < started; i++) {
+        (void)dsd_thread_join(threads[i]);
+    }
+    expect("first-use threads started", started == kThreads);
+    for (int i = 1; i < started; i++) {
+        expect("every first-use probe agrees", args[i].result == args[0].result);
+    }
+}
+#endif
+
 int
 main(void) {
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+    test_first_use_concurrent(); /* first: no libcurl use may come before it */
+#endif
     test_user_agent();
     test_cancel_token();
     test_validation();

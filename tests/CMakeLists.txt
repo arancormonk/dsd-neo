@@ -7241,8 +7241,11 @@ add_test(
 # The built-in libcurl transport with every easy-handle call routed through the
 # test (DSD_TILE_FETCH_TEST_HOOKS): options and their values, fail-closed setup,
 # caps and cancel, with no network. Built a second time with the curl version
-# forced below 7.85 for the CURLOPT_PROTOCOLS branch. CURL_DISABLE_DEPRECATION
-# because both name CURLOPT_PROTOCOLS, deprecated in current headers.
+# forced below 7.85 for the CURLOPT_PROTOCOLS branch. A forced version only ever
+# lowers the installed headers' one, and the test picks its expectations from the
+# same effective version, so both build on every supported curl (7.56 and up).
+# CURL_DISABLE_DEPRECATION because both name CURLOPT_PROTOCOLS, deprecated in
+# current headers.
 if(DSD_HAS_CURL)
     foreach(
         _tile_variant
@@ -7285,7 +7288,9 @@ if(DSD_HAS_CURL)
 
     # dsd_curl_perform_cancellable() branch by branch, its multi-interface calls
     # routed through the test (DSD_CURL_COMMON_TEST_HOOKS). Built a second time
-    # with the curl version forced to 7.65 for the curl_multi_wait branch.
+    # with the curl version forced to 7.65 for the curl_multi_wait branch. Quick
+    # exit (8.20) and curl_multi_poll (7.66) are each chosen from the effective
+    # version, which a forced one only lowers.
     foreach(
         _cc_variant
         IN
@@ -7321,7 +7326,8 @@ if(DSD_HAS_CURL)
     # Build checks, no test: curl_common.c as shipped (no hooks) with the curl
     # version forced below 8.20 (no CURLMOPT_QUICK_EXIT) and below 7.66
     # (curl_multi_wait), so warnings-as-errors catches code that only compiles
-    # against current headers.
+    # against current headers. A forced version above the installed one is
+    # ignored (curl_common.c clamps it), so older headers build these too.
     foreach(_cc_old_version IN ITEMS 0x081300 0x074100)
         add_library(
             dsd-neo_test_build_curl_common_${_cc_old_version}
