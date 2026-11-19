@@ -657,14 +657,20 @@ test_failed_header_leaves_records_anonymous(void) {
     rig_close(&r);
 }
 
-/* A superframe holding text blocks: @p count blocks, block i at place @p first + i with five characters of @p text. */
+/* A superframe holding text blocks: @p count blocks, block i at place @p first + i with five characters of @p text
+ * (spaces past its end). */
 static void
 send_text(rig* r, unsigned first, const char* text, size_t count) {
     uint8_t bytes[60];
     DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+    const size_t len = strlen(text);
     for (size_t i = 0U; i < count; i++) {
         bytes[i * 6U] = (uint8_t)(0x40U | (first + i));
-        DSD_MEMCPY(bytes + (i * 6U) + 1U, text + (i * 5U), 5U);
+        DSD_MEMSET(bytes + (i * 6U) + 1U, ' ', 5U);
+        const size_t at = i * 5U;
+        if (at < len) {
+            DSD_MEMCPY(bytes + (i * 6U) + 1U, text + at, len - at < 5U ? len - at : 5U);
+        }
     }
     send_superframe(r, bytes);
 }
