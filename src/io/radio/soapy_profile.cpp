@@ -597,6 +597,32 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
     return supported ? nearest : requested;
 }
 
+/* The point of @p range nearest @p requested among those that round (llround()) to @p max_rate or less, in
+ * @p out_point: a point the range holds, which a write of it keeps. A stepped range's points are its grid, whose last
+ * one within the limit is found by stepping down from the limit; a continuous range is cut at the limit's whole hertz,
+ * or at its own maximum when that rounds within it. False when the range has no such point. */
+static bool
+range_point_within(const SoapyRange& range, double requested, double max_rate, double* out_point) {
+    if (!(range.maximum >= range.minimum) || std::llround(range.minimum) > std::llround(max_rate)) {
+        return false;
+    }
+    if (!(range.step > 0.0)) {
+        const double top = std::llround(range.maximum) <= std::llround(max_rate)
+                               ? range.maximum
+                               : std::max(range.minimum, std::min(range.maximum, max_rate));
+        *out_point = std::min(std::max(requested, range.minimum), top);
+        return true;
+    }
+    const double last_steps = std::floor((range_last_point(range) - range.minimum) / range.step + 0.5);
+    double steps = std::min(last_steps, std::floor((max_rate + 0.5 - range.minimum) / range.step));
+    while (steps > 0.0 && std::llround(range.minimum + steps * range.step) > std::llround(max_rate)) {
+        steps -= 1.0;
+    }
+    const double nearest = std::floor((requested - range.minimum) / range.step + 0.5);
+    *out_point = range.minimum + std::min(std::max(nearest, 0.0), steps) * range.step;
+    return true;
+}
+
 double
 soapy_nearest_sample_rate_within(double requested, double max_rate, const std::vector<double>& listed_rates,
                                  const std::vector<SoapyRange>& ranges, bool* out_found) {
@@ -621,17 +647,8 @@ soapy_nearest_sample_rate_within(double requested, double max_rate, const std::v
     /* A range's nearest point within the limit competes with the listed rates, whether or not one of them is the
        request itself. */
     for (const SoapyRange& range : ranges) {
-        if (range.maximum < range.minimum || !(range.minimum < below)) {
-            continue;
-        }
-        /* A stepped range's points are where they are, and one under the half-hertz above the limit rounds within it;
-           a continuous range is cut at the limit's whole hertz itself. */
-        const double top = range.step > 0.0 ? std::nextafter(below, 0.0) : max_rate;
-        SoapyRange cut{range.minimum, std::min(range.maximum, top), range.step};
-        cut.maximum = range_last_point(cut);
-        bool supported = false;
-        const double point = soapy_nearest_in_ranges(requested, {cut}, &supported);
-        if (supported) {
+        double point = 0.0;
+        if (range_point_within(range, requested, max_rate, &point)) {
             consider(point);
         }
     }

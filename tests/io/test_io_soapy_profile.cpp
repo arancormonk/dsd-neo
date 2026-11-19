@@ -236,6 +236,24 @@ test_nearest_rate_within_limit(void) {
     rc |= expect_double("the nearer range point wins over a listed rate",
                         dsdneo::soapy_nearest_sample_rate_within(1536000.0, 4000003.0, far_listed, halves, &found),
                         1500000.0);
+    /* A range's point is one the device advertises, within the cap once rounded, and a write of it keeps it: a
+       one-point range at 1,520,003.2 Hz under a 1,520,003 Hz cap, and a range in 3 Hz steps from 1,520,000.5 Hz whose
+       next point, 1,520,003.5 Hz, rounds over it. */
+    const std::vector<dsdneo::SoapyRange> singleton = {{1520003.2, 1520003.2, 0.0}};
+    const std::vector<dsdneo::SoapyRange> thirds = {{1520000.5, 1600000.0, 3.0}};
+    for (const auto* ranges : {&singleton, &thirds}) {
+        const double point = dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, *ranges, &found);
+        bool adjusted = false;
+        const double written = dsdneo::soapy_nearest_sample_rate(point, {}, *ranges, &adjusted);
+        rc |= expect_true("a range point within the cap is found", found);
+        rc |= expect_double("the setter keeps the point", written, point);
+        rc |= expect_true("which rounds within the cap", std::llround(written) <= 1520003LL);
+    }
+    rc |=
+        expect_double("the one-point range's point",
+                      dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, singleton, &found), 1520003.2);
+    rc |= expect_double("the stepped range's last point within the cap",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, thirds, &found), 1520000.5);
     rc |= expect_double("a listed rate nearer than every range point wins",
                         dsdneo::soapy_nearest_sample_rate_within(2900000.0, 4000003.0, far_listed, halves, &found),
                         3072025.0);
