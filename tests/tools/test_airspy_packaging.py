@@ -229,7 +229,8 @@ class AirspyPackaging(unittest.TestCase):
         self.assert_macos_stages_the_maps()
         macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                      if c["id"] == "desktop-rtl")["macos_release"]
-        self.assertEqual(macos, {"notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
+        self.assertEqual(macos, {"binaries": ["librtlsdr"],
+                                 "notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
                                              patches: "repo:packaging/librtlsdr-PATCHES.txt",
                                              holders: "repo:LICENSES/librtlsdr-NOTICES.txt"}})
         # The Windows staging copies the notices the record of each staged file names.
@@ -311,7 +312,8 @@ class AirspyPackaging(unittest.TestCase):
         self.assert_macos_stages_the_maps()
         macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                      if c["id"] == "airspy")["macos_release"]
-        self.assertEqual(macos, {"notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
+        self.assertEqual(macos, {"binaries": ["libairspy"],
+                                 "notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
         self.assertIn("'licenses/" + NOTICE + "'", (ROOT / "tools/windows/release_tree_checks.psm1").read_text())
         windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                        if c["id"] == "airspy")["windows_release"]
