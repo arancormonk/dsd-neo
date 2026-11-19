@@ -1526,8 +1526,6 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         if (valid) {
             const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
             state->nxdn_scch_frame_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
-        }
-        if (valid) {
             nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
             nxdn_confirm_note_scch(state);
         }
