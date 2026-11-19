@@ -939,13 +939,15 @@ dmr_flco_missing_alg_key_can_decrypt(const dmr_flco_ctx* ctx, uint8_t slot, uint
    (dmr_flco_publish_voice()). */
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_other_protocol) {
+    if (slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return; /* dmr_flco_publish_voice(), the sole caller, never passes one */
+    }
     const int encrypted = (ctx->so & 0x40U) != 0U;
     const uint8_t algid = (uint8_t)(slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
 
-    // Slot bound: dmr_flco_publish_voice(), the sole caller, passes @p slot only once it is below
-    // DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
+    // Slot bound: checked above, so the per-slot reads below are in range.
     // Classify under the ALG the voice path will decrypt with; the published `.algid` stays OTA.
     const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)slot, (int)ctx->so);
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
