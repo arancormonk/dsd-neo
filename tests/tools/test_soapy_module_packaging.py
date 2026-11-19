@@ -1340,14 +1340,14 @@ class SoapyReleaseScripts(unittest.TestCase):
         components = repo / "legal/components.json"
         inventory = json.loads(components.read_text(encoding="utf-8"))
         opus = next(c for c in inventory["components"] if c["id"] == "opus")
-        opus["windows_release"]["notices"]["licenses/portaudio-NOTICES.txt"] = "repo:packaging/windows/opus-NOTICES.txt"
+        opus["windows_release"]["notices"]["licenses/portaudio-NOTICES.txt"] = "repo:LICENSES/opus-NOTICES.txt"
         components.write_text(json.dumps(inventory), encoding="utf-8")
         rc, output, stage = self.stage(tools, build, installed, windows, repo=repo)
         self.assertEqual(rc, 1, output)
         # Whichever record staging reads first, the refusal names both files.
         self.assertIn("The notice licenses/portaudio-NOTICES.txt comes from both ", output)
         self.assertIn(", whose texts differ", output)
-        for source in (notice, repo / "packaging/windows/opus-NOTICES.txt"):
+        for source in (notice, repo / "LICENSES/opus-NOTICES.txt"):
             self.assertIn(str(source), output)
 
     def test_stage_release_tree_takes_the_runtime_from_the_toolset(self):
