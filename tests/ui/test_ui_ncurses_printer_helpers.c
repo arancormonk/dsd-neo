@@ -5133,6 +5133,11 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
     assert_capture_contains("IV: 1122334455667788");
+    /* An IV of all zero bits a VCALL_IV carried is one too: shown, not "none". */
+    state->nxdn_payload_mi = 0ULL;
+    reset_printw_capture();
+    ui_render_nxdn_encryption_line(opts, state);
+    assert_capture_contains("IV: 0000000000000000");
     free(state);
     free(opts);
 }

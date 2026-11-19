@@ -1397,6 +1397,9 @@ static const scch_content_case k_scch_content_cases[] = {
     {"scch-info4-reserved-id-confirms-nothing", 0U, 5U, 3U, 2040U, 1U, 0xFFFFU, 0},
     {"scch-info2-id-31-confirms", 2U, 5U, 3U, 31U, 0U, 0xFFFFU, 1},
     {"scch-info4-all-group-confirms", 0U, 5U, 3U, 2047U, 0U, 0xFFFFU, 1},
+    {"scch-info2-special-id-nonzero-prefix-confirms-nothing", 2U, 5U, 6U, 2043U, 0U, 0xFFFFU, 0},
+    {"scch-info4-special-id-nonzero-prefix-confirms-nothing", 0U, 5U, 6U, 2042U, 0U, 0xFFFFU, 0},
+    {"scch-info4-special-id-prefix-0-confirms", 0U, 5U, 0U, 2043U, 0U, 0xFFFFU, 1},
 };
 
 static void
@@ -1419,7 +1422,8 @@ make_scch_content_case(uint8_t payload[25], const scch_content_case* c) {
  * (Table 9.1-1: a reserved value is not valid): frames of them alone never confirm one. The cases: the reserved prefix
  * 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2); a site ID message's reserved Site Type 00 or Site Code 0, 251
  * (§6.6.4, §6.6.5); a reserved Free Repeater 31 (Table 6.6-8) in an INFO1, an INFO3 or the free repeater message; an
- * INFO3 sender naming a status code or All Units; a reserved ID 2001-2040 (Tables 6.6-5, 6.6-6). Valid SCCHs confirm,
+ * INFO3 sender naming a status code or All Units; a reserved ID 2001-2040 (Tables 6.6-5, 6.6-6); the special IDs 2042
+ * and 2043 under a prefix other than 0 (§6.6.7, §6.6.8). Valid SCCHs confirm,
  * among them an INFO3 with its Spare bit set, which a receiver ignores, and the standard ID 31.
  */
 static int
@@ -1581,9 +1585,11 @@ test_nxdn_keeps_the_shared_register(void) {
         char out[49];
         LFSRN(in, out, state);
     }
+    state->nxdn_iv_on_air = 1U;                  /* as if an IV had come */
     make_sacch2_trellis(trellis, 1U, 0U, 0x00U); /* a DCR first block */
     nxdn_handle_sacch2(opts, state, trellis, m_data, 0U, 0U);
     rc |= expect_int("shared-register-kept-by-the-scrambler", state->payload_miN == p25_mi ? 1 : 0, 1);
+    rc |= expect_int("dcr-first-block-holds-no-iv", state->nxdn_iv_on_air, 0);
 
     state->M = 0;
     make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 0x01U);

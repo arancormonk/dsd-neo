@@ -3415,6 +3415,12 @@ type_d_scch_free(dsd_opts* opts, dsd_state* state) {
     free(opts);
 }
 
+static int decode_on_repeater_5(const uint8_t* message, uint8_t direction, int recent_voice,
+                                dsd_call_snapshot* call_out, int* tunes_out, dsd_state** state_out,
+                                dsd_opts** opts_out);
+static void write_scch_identity(uint8_t* message, uint8_t structure, uint8_t rep1, uint8_t prefix, uint16_t id,
+                                uint8_t bit24);
+
 /*
  * The ID field of an INFO2, INFO3 and INFO4 (NXDN TS 1-E §6.5.2-6.5.3, Figs 6.5-1, 6.5-2, 6.5-4, 6.5-9) is always a
  * unit or group ID, and 31 is a Standard ID (Tables 6.6-5 and 6.6-6: 1-2000). A source 31 is the call's source, as the
@@ -3464,7 +3470,24 @@ test_type_d_scch_unit_id_31_is_a_unit(void) {
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     rc |= expect_contains("scch-id-31-target-printed", out, "TGT: 31");
     rc |= expect_not_contains("scch-id-31-target-no-iv", out, "IV");
+    type_d_scch_free(opts, state);
 
+    /* With the receiver on the message's repeater (5), the target update takes ID 31 as the call's target. */
+    int tunes = 0;
+    write_scch_identity(message, 2U, 5U, 1U, 31U, 0U);
+    if (decode_on_repeater_5(message, 1U, 1, &call, &tunes, &state, &opts) != 0) {
+        return 1;
+    }
+    rc |= expect_u64("scch-id-31-matched-target", call.ota_target_id, 31U);
+    rc |= expect_u64("scch-id-31-matched-policy-target", call.policy_target_id, 31U);
+    type_d_scch_free(opts, state);
+    /* A busy INFO4 naming destination 31 on repeater 5, no voice heard lately: followed there, its activity noted. */
+    write_scch_identity(message, 0U, 5U, 1U, 31U, 0U);
+    if (decode_on_repeater_5(message, 1U, 0, &call, &tunes, &state, &opts) != 0) {
+        return 1;
+    }
+    rc |= expect_int("scch-id-31-busy-tune", tunes, 1);
+    rc |= expect_int("scch-id-31-busy-activity", recent_activity_entries(state), 1);
     type_d_scch_free(opts, state);
     return rc;
 }
@@ -3914,6 +3937,37 @@ type_d_call_on_repeater_5_free(dsd_opts* opts, dsd_state* state) {
     type_d_scch_free(opts, state);
 }
 
+/* An SCCH refused as not valid says which field is at fault, never blaming a valid one: an outbound INFO3 from source 31
+   whose Free Repeater 1 is the reserved 31 (Table 6.6-8), and a site ID message naming site 17 under the reserved Site
+   Type 00 (Table 6.6-2). */
+static int
+test_type_d_scch_diagnostics_name_the_field(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (type_d_scch_live_call(&opts, &state) != 0) {
+        return 1;
+    }
+    uint8_t message[32];
+    dsd_test_capture_stderr cap;
+    char out[2048];
+    int rc = 0;
+    write_scch_identity(message, 1U, 31U, 3U, 31U, 0U);
+    if (dsd_test_capture_stderr_begin(&cap, "nxdn_scch_field") != 0) {
+        type_d_scch_free(opts, state);
+        return 1;
+    }
+    NXDN_decode_scch(opts, state, message, 1U);
+    write_scch_site_id(message, 0U, 0U, 0U, 17U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    rc |= expect_contains("scch-field-free-repeater", out, "Not valid: Free Repeater 1 reserved (ID 31)");
+    rc |= expect_not_contains("scch-field-no-id-blamed", out, "ID 31 (not valid");
+    rc |= expect_contains("scch-field-site-type", out, "Site Code: 17; (not valid: Site Type reserved)");
+    type_d_scch_free(opts, state);
+    return rc;
+}
+
 /* An INFO3's sender is one unit (TS 1-E §6.6.7.2): one naming the Idle Repeater code (2046) or a reserved ID (2001-2040,
    Table 6.6-5) names no talker, so the live call's source stands. */
 static int
@@ -4153,6 +4207,7 @@ main(void) {
     rc |= test_type_d_scch_spare_info1_keeps_no_state();
     rc |= test_type_d_null_id_names_no_destination();
     rc |= test_type_d_info3_sender_must_be_a_unit();
+    rc |= test_type_d_scch_diagnostics_name_the_field();
     rc |= test_type_d_info2_eot_ends_the_call();
     rc |= test_type_d_inbound_info1_needs_its_pass_character();
     rc |= test_type_d_scch_info1_fields_print();

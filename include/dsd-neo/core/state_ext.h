@@ -97,9 +97,6 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* P25 Phase 2 scrambling code recovery: the candidate waiting for its confirmation
      * (src/protocol/p25/phase2/p25p2_seed_recover.c). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER = 29,
-    /* NXDN Type-D scrambler position: the superframe frame the next contiguous frame is expected to be
-       (src/protocol/nxdn/nxdn_frame.c). Decoder-thread private. */
-    DSD_STATE_EXT_PROTO_NXDN_SCRAMBLER = 30,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);

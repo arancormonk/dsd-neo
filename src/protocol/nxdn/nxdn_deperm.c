@@ -378,7 +378,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 nxdn_channel_result
 nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                   uint8_t check) {
-    nxdn_channel_result result = {0U, 0U, 0U};
+    nxdn_channel_result result = {0U, 0U};
     if (crc != check) {
         nxdn_reset_sacch_segments(state);
     }
@@ -798,6 +798,7 @@ static void
 nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
         state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U; /* the register reloads from the key: no IV held */
     }
     if (!nxdn_sacch2_crc_ok(fields)) {
         return;
@@ -833,6 +834,7 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     }
     if (fields->sf_fb) {
         state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U; /* the register reloads from the key: no IV held */
     }
 }
 
@@ -1486,7 +1488,7 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
  */
 nxdn_channel_result
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
-    nxdn_channel_result result = {0U, 0U, 0U};
+    nxdn_channel_result result = {0U, 0U};
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " SCCH");
 
@@ -1536,7 +1538,6 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         if (valid) {
             const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
             result.seed_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
-            result.scch_valid = 1U;
             nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
             nxdn_confirm_note_scch(state);
         } else {

@@ -3096,7 +3096,7 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
    may still hold when the cipher changes. */
 static void
 ui_print_nxdn_received_iv(const dsd_state* state) {
-    if (state->nxdn_iv_on_air != 0U && state->nxdn_payload_mi != 0ULL) {
+    if (state->nxdn_iv_on_air != 0U) { /* an IV of all zero bits is still one received */
         printw("IV: %016llX ", state->nxdn_payload_mi);
     } else {
         printw("IV: none ");
