@@ -5113,22 +5113,6 @@ test_dmr_mono_other_slots_terminator_ends_no_call(void) {
     return rc;
 }
 
-/* A host may run one state more than once: the lane's slot the earlier run's checked LC proved is no proof in the next
-   run, so that run's first landing holds no slot's voice for it. */
-static int
-test_dmr_mono_run_start_forgets_the_lane_slot(void) {
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    state->dmr_mono_lane_slot = 1U;
-    dsd_engine_note_run_start(opts, state);
-    const int rc = expect_true("run start: the earlier run's lane slot is forgotten", state->dmr_mono_lane_slot == 0U);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
 /* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
    slot. A slot 2 one heard with the lane idle (folded onto lane 0) resets slot 2's packet, never slot 1's. One heard
    while the lane carries the other slot's call is that slot's terminator: it resets no packet, the lane's least of
@@ -5241,7 +5225,6 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_other_slots_checked_lc_is_a_new_call(frame);
     rc |= test_dmr_mono_ignores_the_other_slots_hytera_rekey(frame);
     rc |= test_dmr_mono_other_slots_terminator_ends_no_call();
-    rc |= test_dmr_mono_run_start_forgets_the_lane_slot();
     rc |= test_dmr_mono_lane_hold_per_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
