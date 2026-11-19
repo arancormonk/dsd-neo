@@ -101,7 +101,7 @@ slot_type_bits(unsigned type, unsigned char st[20]) {
    cannot correct. */
 static int
 break_slot_type(unsigned char st[20]) {
-    unsigned char check[20];
+    unsigned char check[20] = {0};
     for (unsigned mask = 1U; mask < (1U << 20); mask++) {
         unsigned bits = 0U;
         for (unsigned m = mask; m != 0U; m &= m - 1U) {
@@ -114,7 +114,7 @@ break_slot_type(unsigned char st[20]) {
         for (unsigned b = 0; b < 20U; b++) {
             check[b] = (unsigned char)(check[b] ^ ((mask >> b) & 1U));
         }
-        unsigned char trial[20];
+        unsigned char trial[20] = {0};
         DSD_MEMCPY(trial, check, sizeof trial);
         if (!Golay_20_8_decode(trial)) {
             DSD_MEMCPY(st, check, sizeof check);
@@ -133,7 +133,7 @@ build_burst(const char* sync, unsigned type, const uint8_t bytes[12], int dibits
     unpack(bytes, payload, 12);
     uint8_t info[196];
     dmr_test_encode_bptc_196x96(payload, reserved, info);
-    unsigned char st[20];
+    unsigned char st[20] = {0};
     if (!slot_type_bits(type, st) || (bad_slot_type && !break_slot_type(st))) {
         return 0;
     }
