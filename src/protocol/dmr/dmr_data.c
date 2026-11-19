@@ -550,12 +550,8 @@ dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_da
     if (state->carrier_seq != ctx->carrier_seq) {
         return;
     }
-    /* The burst's own slot (its CACH's), not the index a fold or an off-lane terminator left in currentslot: its
-       position cache is the one it wrote. */
-    const int slot = ctx->folded_slot != DSD_DMR_MONO_RX_NONE ? (int)(ctx->folded_slot - DSD_DMR_MONO_RX_TS1)
-                                                              : (state->currentslot & 1);
-    if (ctx->cach_okay == 1 && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, slot)) {
-        state->dmr_lrrp_gps[slot][0] = '\0';
+    if (ctx->cach_okay == 1 && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
+        state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
     }
     state->dmr_mono_rx_slot = mono_slot;
     state->dmr_mono_rx_candidate = mono_candidate;

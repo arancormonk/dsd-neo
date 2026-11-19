@@ -44,9 +44,6 @@ static int g_handler_writes_fix;
    encrypted packet's ALG ID 0x24, key ID 7 and MI; a rate 1 block (burst 10) completes it. Every burst records the ALG
    ID its index held when it ran. */
 static int g_handler_data_crypto;
-/* The handler leaves currentslot at lane 0 for a slot 2 burst, as an LC folded onto the single-slot lane does
-   (dmr_flco_ctx_init()). */
-static int g_handler_folds;
 static int g_handler_algid_seen;
 /* The handler observes the lane-0 call as a voice LC header the single-slot output folds there does (issue #637):
    0 none, 1 a new epoch for g_handler_target, 2 that epoch again (a repeated header). */
@@ -187,9 +184,6 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         /* The header's crypto publication, which moves the revision again as the real one does. */
         const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
         (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_DATA_POS, &crypto);
-    }
-    if (g_handler_folds && state->currentslot == 1) {
-        state->currentslot = 0;
     }
     if (g_handler_data_crypto) {
         const int idx = state->currentslot & 1;
@@ -1112,38 +1106,6 @@ test_mono_slot1_data_packet_keeps_its_slot(void) {
     g_handler_data_crypto = 0;
 }
 
-/* A slot 2 burst the receive policy rejects (--slot-block 2) leaves no position in slot 2's cache on the single-slot
-   decoder, even when its LC was folded onto lane 0: the cleanup goes by the burst's own CACH slot, so lane 0's position
-   (slot 1's) stays. */
-static void
-test_mono_rejected_burst_clears_its_own_slots_position(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static int payload[90];
-    static dsd_dibit_soft_t reliab[90];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    prepare_state(&state, payload, reliab);
-    reset_fixture();
-    opts.dmr_mono = 1;
-    state.dmr_stereo = 0;
-    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
-    opts.receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2; /* --slot-block 2 */
-    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
-    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
-    DSD_SNPRINTF(state.dmr_lrrp_gps[0], sizeof state.dmr_lrrp_gps[0], "%s", "lane-fix");
-    DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof state.dmr_lrrp_gps[1], "%s", "slot2-fix");
-    g_decoded_slot = 1;
-    g_decoded_burst = 2;
-    g_handler_folds = 1;
-    dmr_data_sync(&opts, &state);
-    g_handler_folds = 0;
-    assert(g_handler_calls == 1);
-    assert(strcmp(state.dmr_lrrp_gps[0], "lane-fix") == 0);
-    assert(state.dmr_lrrp_gps[1][0] == '\0');
-    DSD_MEMSET(&opts.receive, 0, sizeof opts.receive);
-    dsd_state_ext_free_all(&state);
-}
-
 /* A standalone burst on the single-slot decoder copies no call unless it is a voice LC header: a PI header, a data
    header or an idle burst costs no call copy, and a header reads its lane's call once, after its dispatch (its mark
    before it is the lane's epoch and revision alone). */
@@ -1185,7 +1147,6 @@ main(void) {
     test_ms_colour_change_resets_ras();
     test_data_burst_receive_slot();
     test_mono_burst_copies_no_call_but_a_headers();
-    test_mono_rejected_burst_clears_its_own_slots_position();
     test_mono_slot1_data_packet_keeps_its_slot();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();

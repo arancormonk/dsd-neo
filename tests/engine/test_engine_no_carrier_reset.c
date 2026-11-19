@@ -4618,10 +4618,10 @@ dmr_fold_rc4_key(dsd_opts* opts, dsd_state* state) {
     state->scalar_key_present[0] = state->scalar_key_present[1] = 1U;
 }
 
-/* Without trunking the single-slot decoder (-fr) decodes a repeater's voice on lane 0, and folds a slot 2 LC there. Once
-   slot 2's voice LC header has opened the lane's call, its slot 2 PI header is folded with it: the RC4 ALG ID, key ID
-   and MI reach lane 0, whose voice decrypts with them as the dual-slot decoder decrypts slot 1's after the same header
-   on slot 1. */
+/* Without trunking the single-slot decoder (-fr) decodes a repeater's voice on lane 0, and folds a slot 2 LC there. Its
+   slot 2 PI header heard while the lane is idle waits for slot 2's call: once slot 2 takes the lane (its voice LC
+   header opens the lane's call), the RC4 ALG ID, key ID and MI reach lane 0, whose voice decrypts with them as the
+   dual-slot decoder decrypts slot 1's after the same header on slot 1. Until then lane 0 keeps none of them. */
 static int
 test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
     char reference[49] = {0};
@@ -4650,11 +4650,12 @@ test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
     state->dmr_ms_mode = 0;
     state->dmr_mono_slot = 0;
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
-    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 202U);
     dmr_hop_pi_header_on(opts, state, 1, 0x21U);
-    rc |= expect_true("-fr: with slot 2's call on lane 0, its PI header's ALG ID, key ID and MI reach lane 0",
-                      state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi != 0ULL
-                          && state->payload_algidR == 0);
+    rc |= expect_true("-fr: a slot 2 PI header waits for slot 2's call, off lane 0",
+                      state->payload_algid == 0 && state->payload_algidR == 0x21);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 202U);
+    rc |= expect_true("-fr: once slot 2's call takes lane 0, its PI header's ALG ID, key ID and MI reach lane 0",
+                      state->payload_algid == 0x21 && state->payload_keyid == 0x05 && state->payload_mi != 0ULL);
     char recorded[49] = {0};
     rc |= expect_true("-fr: lane 0's frame after a slot 2 PI header decrypts as on the dual-slot decoder",
                       dmr_hop_record_frame(opts, state, frame, recorded)
@@ -4664,8 +4665,8 @@ test_dmr_mono_folds_slot2_pi_onto_lane0(char frame[4][24]) {
 }
 
 /* Without trunking, while lane 0 carries a clear slot 1 call its checked voice LC header opened, a slot 2 PI header
-   (RC4, key ID 5) is slot 2's, for a slot the lane is not carrying: it is discarded, so the slot 1 call's crypto and its
-   lane's voice keep what that call said, and its frame plays as it came, never through slot 2's keystream. */
+   (RC4, key ID 5) is slot 2's: it stays on slot 2, so the slot 1 call's crypto and its lane's voice keep what that
+   call said, and its frame plays as it came, never through slot 2's keystream. */
 static int
 test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(char frame[4][24]) {
     char as_it_came[49] = {0};
@@ -4692,8 +4693,8 @@ test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(char frame[4][24]) {
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
     dmr_hop_pi_header_on(opts, state, 1, 0x21U);
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
-    rc |= expect_true("-fr slot 1 call: a slot 2 PI header is discarded",
-                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_algidR == 0);
+    rc |= expect_true("-fr slot 1 call: a slot 2 PI header stays on slot 2",
+                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_algidR == 0x21);
     rc |= expect_true("-fr slot 1 call: the slot 1 call's crypto is unchanged",
                       dsd_call_state_get(state, 0U, &call) > 0 && call.algid == 0U && call.ota_target_id == 101U);
     char recorded[49] = {0};
@@ -4814,14 +4815,13 @@ test_dmr_mono_direct_mode_slot1_burst_names_its_slot(void) {
     return rc;
 }
 
-/* Without trunking the single-slot decoder applies a PI header only while lane 0 carries its slot's call; one for a slot
-   the lane is not carrying is discarded, neither applied nor kept (index 1 untouched too, whose fields a slot 2 data
-   packet decrypts with). A slot 2 one (RC4) heard with the lane idle never keys the slot 1 call that takes the lane
-   next: that clear call keeps no ALG ID, receives none and plays as it came. A slot 1 one heard while the lane carries
-   a slot 2 call never keys slot 1's call either when its voice LC header then takes the lane: that call waits for its
-   own PI header. A slot 1 one heard while the lane carries slot 1's call keys it, as on the dual-slot decoder. */
+/* Without trunking a PI header belongs to its own slot's call on the single-slot decoder, whichever call lane 0 carries
+   when it comes. A slot 2 one (RC4) heard with the lane idle never keys the slot 1 call that takes the lane next: that
+   clear call keeps no ALG ID, receives none and plays as it came. A slot 1 one heard while the lane carries a slot 2
+   call is slot 1's call's once its voice LC header takes the lane: that call is keyed with it and decrypts as the
+   dual-slot decoder decrypts slot 1 after the same header. */
 static int
-test_dmr_mono_discards_pi_for_the_other_slot(char frame[4][24]) {
+test_dmr_mono_pi_waits_for_its_slot(char frame[4][24]) {
     char as_it_came[49] = {0};
     char reference[49] = {0};
     int rc = expect_true("-fr PI per slot: a fresh decoder records the frame",
@@ -4837,7 +4837,7 @@ test_dmr_mono_discards_pi_for_the_other_slot(char frame[4][24]) {
                       dmr_hop_record_frame(opts, state, frame, reference)
                           && memcmp(reference, as_it_came, sizeof reference) != 0);
     free_test_runtime(opts, state);
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < 2; c++) {
         if (init_test_runtime(&opts, &state) != 0) {
             return 1;
         }
@@ -4849,37 +4849,30 @@ test_dmr_mono_discards_pi_for_the_other_slot(char frame[4][24]) {
         state->dmr_mono_slot = 0;
         if (c == 1) {
             dmr_mono_lane_call_on(opts, state, 1); /* The lane carries a slot 2 call. */
-        } else if (c == 2) {
-            dmr_mono_lane_call_on(opts, state, 0); /* The lane carries slot 1's call. */
         }
         const int pi_slot = c == 0 ? 1 : 0;
         state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + pi_slot);
         dmr_hop_pi_header_on(opts, state, pi_slot, 0x21U);
-        state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
-        dsd_call_snapshot call;
-        char recorded[49] = {0};
-        if (c == 2) {
-            rc |= expect_true("-fr PI per slot: the lane's own slot's PI header keys its call",
-                              dsd_call_state_get(state, 0U, &call) > 0 && call.algid == 0x21U
-                                  && state->payload_algid == 0x21 && state->payload_keyid == 5);
-            rc |= expect_true("-fr PI per slot: that call's frame decrypts as on the dual-slot decoder",
-                              dmr_hop_record_frame(opts, state, frame, recorded)
-                                  && memcmp(recorded, reference, sizeof recorded) == 0);
-            free_test_runtime(opts, state);
-            continue;
-        }
-        rc |= expect_true("-fr PI per slot: the other slot's PI header is discarded, index 1 untouched too",
-                          state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyidR == 0);
+        rc |= expect_true("-fr PI per slot: lane 0 takes none of the PI header yet", state->payload_algid == 0);
         /* Slot 1's call takes the lane: its voice LC header, clear (case 0) or asking for privacy (case 1). */
+        state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
         dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x10U, c == 0 ? 0x00U : 0x40U, 303U);
+        dsd_call_snapshot call;
         const int got = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
                         && call.receive_identity.slot == 1U && call.ota_target_id == 303U;
-        rc |= expect_true("-fr PI per slot: the slot 1 call that takes the lane gets no discarded PI header",
-                          got && call.algid == 0U && call.crypto_received == 0U && state->payload_algid == 0);
+        char recorded[49] = {0};
         if (c == 0) {
-            rc |= expect_true("-fr PI per slot: the clear slot 1 call's frame plays as it came",
+            rc |= expect_true("-fr PI per slot: a slot 2 PI header leaves the slot 1 call clear",
+                              got && call.algid == 0U && call.crypto_received == 0U && state->payload_algid == 0);
+            rc |= expect_true("-fr PI per slot: the slot 1 call's frame plays as it came",
                               dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
                                   && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        } else {
+            rc |= expect_true("-fr PI per slot: the slot 1 call takes its own PI header",
+                              got && call.algid == 0x21U && state->payload_algid == 0x21 && state->payload_keyid == 5);
+            rc |= expect_true("-fr PI per slot: the slot 1 call's frame decrypts as on the dual-slot decoder",
+                              dmr_hop_record_frame(opts, state, frame, recorded)
+                                  && memcmp(recorded, reference, sizeof recorded) == 0);
         }
         free_test_runtime(opts, state);
     }
@@ -4949,7 +4942,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(frame);
     rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
-    rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
+    rc |= test_dmr_mono_pi_waits_for_its_slot(frame);
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
 }
