@@ -1129,6 +1129,15 @@ MapViewItem::keepStandIns(const QSet<MapTileKey>& inView, bool complete) {
         double distance = 0.0;
     };
 
+    /* An image the cache rules do not let us show again (no-store, no-cache, must-revalidate) ends with its
+     * presentation: once out of the view's tiles it is dropped, so it never stands in or comes back. */
+    for (auto it = m_tileImages.begin(); it != m_tileImages.end();) {
+        if (!it.value().reusable && !inView.contains(it.key())) {
+            it = m_tileImages.erase(it);
+        } else {
+            ++it;
+        }
+    }
     std::vector<Candidate> candidates;
     const int tz = mm::tile_zoom(m_vp.zoom);
     for (auto it = m_tileImages.begin(); it != m_tileImages.end(); ++it) {
@@ -1160,21 +1169,37 @@ MapViewItem::keepStandIns(const QSet<MapTileKey>& inView, bool complete) {
 }
 
 void
-MapViewItem::onTileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale) {
+MapViewItem::onTileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale, bool reusable) {
     /* Any generation (a stale copy too) is drawn while its tile is in view; a fresher one replaces it. */
     (void)generation;
     (void)stale;
-    /* A result for an older request is drawn only while its tile is still in view. */
     const MapTileKey key{z, x, y};
-    if (!tilesWanted() || !m_requested.contains(key) || image.isNull()) {
+    if (image.isNull()) {
+        /* Withdrawn: the server has no usable tile there now, so a stale copy shown before goes at once. */
+        if (m_tileImages.remove(key) > 0) {
+            polish();
+            update();
+        }
         return;
     }
-    HeldTile held;
-    held.source = image;
-    held.toned = toneTile(image);
-    held.serial = ++m_tileSerial;
-    held.current = true;
-    m_tileImages.insert(key, held);
+    /* A result for an older request is drawn only while its tile is still in view. */
+    if (!tilesWanted() || !m_requested.contains(key)) {
+        return;
+    }
+    const auto held = m_tileImages.find(key);
+    if (held != m_tileImages.end() && held.value().source.cacheKey() == image.cacheKey()) {
+        /* The same image again (a memory hit for a re-requested view): keep its toned copy and texture. */
+        held.value().current = true;
+        held.value().reusable = reusable;
+        return;
+    }
+    HeldTile fresh;
+    fresh.source = image;
+    fresh.toned = toneTile(image);
+    fresh.serial = ++m_tileSerial;
+    fresh.current = true;
+    fresh.reusable = reusable;
+    m_tileImages.insert(key, fresh);
     polish();
     update();
 }

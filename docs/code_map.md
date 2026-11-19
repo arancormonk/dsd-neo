@@ -4843,10 +4843,13 @@ suite runs under this compiler.
   - Map tile fetch (issue #800; `include/dsd-neo/runtime/tile_fetch.h`, `src/runtime/tile_fetch.c`): one blocking
     HTTPS GET of one map tile per `dsd_tile_fetch()` call, for the Qt map's tile worker, which owns the thread, the
     cache and the backoff (UI, Qt, "Map"). The header names no curl or Qt type, includes only `<stddef.h>` and declares
-    every entry point unconditionally: `dsd_tile_fetch_available()` is the runtime answer, true only with libcurl **and**
-    an asynchronous resolver (`CURL_VERSION_ASYNCHDNS`), since with `NOSIGNAL` a synchronous lookup ignores every
-    timeout; without either, the built-in transport returns `DSD_TILE_FETCH_ERR_UNSUPPORTED` ("online map tiles are not
-    available in this build"). Rules:
+    every entry point unconditionally: `dsd_tile_fetch_available()` is the runtime answer, true only with libcurl that
+    lists `https` **and** has an asynchronous resolver (`CURL_VERSION_ASYNCHDNS`), since with `NOSIGNAL` a synchronous
+    lookup ignores every timeout; without them, the built-in transport returns `DSD_TILE_FETCH_ERR_UNSUPPORTED` ("online
+    map tiles are not available in this build"). The probe runs behind `dsd_curl_global_ready()` (the shared init
+    guard), since `curl_version_info()` is not thread-safe before `curl_global_init()` and the map's probe can race an
+    rdio upload's or a RadioReference request's first init; an init failure reads as unavailable (and a fetch is
+    `ERR_SETUP`). Rules:
     - https only, twice: the request URL is checked (`https://` + host, visible ASCII, at most 2048 B; else
       `ERR_INVALID`, nothing sent), and after `dsd_curl_apply_hardening()` (which allows http for rdio) the helper
       restricts the protocol itself, `CURLOPT_PROTOCOLS_STR "https"` from libcurl 7.85 and `CURLPROTO_HTTPS` below,
@@ -4856,6 +4859,8 @@ suite runs under this compiler.
     - Caps: body 512 KiB (`DSD_TILE_FETCH_BODY_CAP_BYTES`), header block 32 KiB; over either is `ERR_TOO_LARGE`.
     - Response fields (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`, `Date`, `Age`, `Vary`, `Retry-After`) come
       raw from the final header block with `header_present`/`header_invalid` masks; interpreting them is the caller's.
+      An `ETag` or `Last-Modified` with a tab is invalid on receipt: it could not be sent back in `If-None-Match` /
+      `If-Modified-Since` (`tf_request_value_ok()`), so the next request goes out unconditionally instead of failing.
       A `Cache-Control` or `Vary` that cannot be carried whole fails the fetch (`ERR_BAD_HEADER`), so a lost `no-store`
       or `Vary: *` can never be cached.
     - Cancel: an opaque atomic token. The built-in transport runs through `dsd_curl_perform_cancellable()`
@@ -4871,7 +4876,9 @@ suite runs under this compiler.
     Tests: `RUNTIME_TILE_FETCH` (fake transport and a held name lookup: caps, header parsing, classification, cancel),
     `RUNTIME_TILE_FETCH_NO_CURL`,
     `RUNTIME_TILE_FETCH_CURL` and `RUNTIME_TILE_FETCH_CURL_PRE_7_85` (the options and their fail-closed setup, with
-    libcurl only), and the header smoke tests.
+    libcurl only), and the header smoke tests. A test-only forced curl version (`DSD_TILE_FETCH_TEST_CURL_VERSION_NUM`,
+    `DSD_CURL_COMMON_TEST_CURL_VERSION_NUM`) only ever lowers the installed headers' version, and the tests pick their
+    expectations from the same effective version, so every target builds on each supported libcurl (7.56 and up).
   - Session input failure latch (`include/dsd-neo/runtime/input_failure.h`, `src/runtime/input_failure.c`): the last
     failure of the session's input, kind and native code (`dsd_input_failure_report()`; `dsd_input_failure_clear()`
     at the session's start and when an Airspy opens or an rtl_tcp server connects), which
@@ -18083,7 +18090,8 @@ Qt Quick frontend (`src/ui/qt`):
     holds one response per tile, the one the request named in `If-None-Match`. One
     file per tile (`<z>-<x>-<y>.tile`: magic, metadata JSON, PNG; written whole by `QSaveFile`, owner-only) under
     `QStandardPaths::CacheLocation/map-tiles/<first 128 bits of the template's SHA-256>`, so the template itself is
-    never written. 64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
+    never written. A lookup opens an entry with `ExistingOnly`, so a miss writes nothing to the directory.
+    64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
     entries are deleted and stray temp files removed at the first scan. `Storage::MemoryOnly` (a view the device's
     position placed; spec 4.8, final review I1) never touches the disk: no read (a read can stamp the access time), no
     write, no mtime stamp, no delete, no directory. A memory entry is `persistable` only while its image is its file's
@@ -18098,9 +18106,15 @@ Qt Quick frontend (`src/ui/qt`):
     the foreground. A key still asked for keeps its fetch in flight. Epochs: work started before an on/off or template
     change delivers nothing, posts no state, adds no backoff and is never retried, so one template's validators never
     reach another server. Backoff: 1 s doubling to 5 min, or `Retry-After` (seconds or date, at least 1 s); a success
-    or a template change resets it (on/off does not). A miss (a hole: 404, 410, 204 or an empty 200; or a 200 whose
-    body is not a PNG the map can use, not PNG or over 512×512) skips that tile for its generation with no backoff and
-    resets the wait like a success. Only the non-PNG 200 is evidence about the source: when a view's requests end and
+    or a template change resets it (on/off does not). A miss (a hole: 404, 410, 204 or an empty 200; a response over
+    the body or header cap, `ERR_TOO_LARGE`; or a 200 whose body is not a PNG the map can use, not PNG or over
+    512×512) skips that tile for its generation with no backoff and resets the wait like a success. It also drops the
+    key from the cache (memory only for a device-placed view) and withdraws it (`tileReady` with a null image), so a
+    stale copy shown while it was revalidated goes at once and never comes back from the cache. `tileReady` carries
+    `reusable` (`mapTileReusable()`: false for `no-store`, `no-cache`, `must-revalidate`); the canvas shows such an
+    image only while its key stays in view. A 200 is stored with the validators the request sent as nominated values,
+    so a `Vary: If-None-Match` entry never matches a later unconditional request.
+    Only the non-PNG 200 is evidence about the source: when a view's requests end and
     the epoch has seen such a body and no usable PNG (no fetch, no cache hit), the state is `NoPngTiles` ("The tile
     server sent no PNG tiles the map can use. Check Map settings."), and the next PNG makes it `Ready`. Holes alone
     never lead there (a regional server's 404s outside its coverage stay `Ready`). Network failures, 429, 5xx, redirects
@@ -18191,7 +18205,11 @@ Qt Quick frontend (`src/ui/qt`):
     size, within half a zoom step, the built area still covering the view) and built again once the zoom has held still,
     so a pinch no longer rebuilds 200 × 100 trails per frame. New data, a colour, a wrap-copy flip or a resize rebuilds
     at once. While a new
-    zoom's tiles load, earlier zooms' tiles in view stand in (at most 64). The item holds no gesture state: the screen's
+    zoom's tiles load, earlier zooms' tiles in view stand in (at most 64), except an image the cache rules do not let
+    be shown again (`reusable` false), which goes as soon as its key leaves the view's tiles. A null `tileReady` image
+    withdraws its key at once, and the same image delivered again (a memory hit for a re-requested view) keeps its
+    toned copy and texture serial, so a pan does not re-tone and re-upload it.
+    The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
     also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds

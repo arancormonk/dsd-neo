@@ -324,6 +324,12 @@ MapTileRequestFields::value(const QByteArray& lowerName) const {
     if (lowerName == "accept") {
         return QByteArrayLiteral("*/*");
     }
+    if (lowerName == "if-none-match") {
+        return ifNoneMatch;
+    }
+    if (lowerName == "if-modified-since") {
+        return ifModifiedSince;
+    }
     return QByteArray();
 }
 
@@ -379,6 +385,14 @@ mapTileMetaFromResponse(const dsd_tile_fetch_response& response, qint64 requestT
     meta.responseTime = responseTime;
     meta.varyValues = nominated_values(meta.vary, sent);
     return meta;
+}
+
+bool
+mapTileReusable(const MapTileMeta& meta) {
+    const map_tile_http::CacheControl cc = map_tile_http::parseCacheControl(meta.cacheControl);
+    bool star = false;
+    (void)map_tile_http::parseVary(meta.vary, &star);
+    return !(cc.noStore || cc.noCache || cc.mustRevalidate || cc.syntaxError || star);
 }
 
 QImage
@@ -472,6 +486,7 @@ MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent, St
     } else {
         out.reuse = fresh ? Reuse::Fresh : Reuse::StaleUsable;
         out.image = entry.image;
+        out.reusable = mapTileReusable(entry.meta);
     }
     return out;
 }
@@ -479,13 +494,19 @@ MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent, St
 bool
 MapTileCache::store(const MapTileKey& key, const dsd_tile_fetch_response& response, const QByteArray& png,
                     const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent,
-                    Storage storage) {
+                    Storage storage, bool* reusable) {
+    if (reusable != nullptr) {
+        *reusable = false;
+    }
     if (!key.valid() || image.isNull() || png.isEmpty()) {
         return false;
     }
     MemoryEntry entry;
     entry.image = image;
     entry.meta = mapTileMetaFromResponse(response, requestTime, responseTime, sent);
+    if (reusable != nullptr) {
+        *reusable = mapTileReusable(entry.meta);
+    }
     if (must_not_store(entry.meta)) {
         drop(key, storage);
         return false;
@@ -498,7 +519,10 @@ MapTileCache::store(const MapTileKey& key, const dsd_tile_fetch_response& respon
 
 QImage
 MapTileCache::refresh(const MapTileKey& key, const dsd_tile_fetch_response& response, qint64 requestTime,
-                      qint64 responseTime, const MapTileRequestFields& sent, Storage storage) {
+                      qint64 responseTime, const MapTileRequestFields& sent, Storage storage, bool* reusable) {
+    if (reusable != nullptr) {
+        *reusable = false;
+    }
     if (!key.valid()) {
         return QImage();
     }
@@ -514,6 +538,9 @@ MapTileCache::refresh(const MapTileKey& key, const dsd_tile_fetch_response& resp
         return QImage();
     }
     merge_not_modified(&entry.meta, response, requestTime, responseTime, sent);
+    if (reusable != nullptr) {
+        *reusable = mapTileReusable(entry.meta);
+    }
     if (must_not_store(entry.meta)) {
         drop(key, storage);
         return entry.image;
@@ -535,6 +562,11 @@ MapTileCache::remove(const MapTileKey& key) {
     if (!path.isEmpty()) {
         dropFile(path);
     }
+}
+
+void
+MapTileCache::invalidate(const MapTileKey& key, Storage storage) {
+    drop(key, storage);
 }
 
 void
@@ -574,7 +606,8 @@ MapTileCache::loadFromDisk(const MapTileKey& key, MemoryEntry* entry) {
         return false;
     }
     QFile file(path);
-    if (!file.open(QIODevice::ReadWrite)) {
+    /* ExistingOnly: a miss must not create an empty file (two directory writes, and a stray file if interrupted). */
+    if (!file.open(QIODevice::ReadWrite | QIODevice::ExistingOnly)) {
         /* An entry that exists but cannot be opened (its permissions damaged) would fail every lookup: drop it. */
         if (file.exists()) {
             ensureScanned();

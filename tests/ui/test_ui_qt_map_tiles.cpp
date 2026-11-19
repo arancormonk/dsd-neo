@@ -40,6 +40,7 @@
 #include <QList>
 #include <QLocale>
 #include <QObject>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -712,6 +713,7 @@ struct Delivered {
     quint64 generation = 0;
     MapTileKey key;
     bool stale = false;
+    bool reusable = false;
     QColor color;
 };
 
@@ -721,6 +723,8 @@ struct Harness {
     FakeServer server;
     dsd_tile_fetch_transport transport{};
     std::vector<Delivered> tiles;
+    /* Keys withdrawn (tileReady with a null image): the server has no usable tile there. */
+    std::vector<MapTileKey> gone;
     MapTileWorker* worker = nullptr;
 
     explicit Harness(const QString& root) {
@@ -736,11 +740,16 @@ struct Harness {
         worker = new MapTileWorker(options);
         worker->setUrlTemplate(kTemplate);
         QObject::connect(worker, &MapTileWorker::tileReady, worker,
-                         [this](quint64 gen, int z, int x, int y, const QImage& image, bool stale) {
+                         [this](quint64 gen, int z, int x, int y, const QImage& image, bool stale, bool reusable) {
+                             if (image.isNull()) {
+                                 gone.push_back(key(z, x, y));
+                                 return;
+                             }
                              Delivered d;
                              d.generation = gen;
                              d.key = key(z, x, y);
                              d.stale = stale;
+                             d.reusable = reusable;
                              d.color = image.pixelColor(0, 0);
                              tiles.push_back(d);
                          });
@@ -1021,6 +1030,13 @@ test_templates() {
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}/{z}.png"))
                && !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{x}/{y}.png"))
                && !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png?r={y}")));
+    expect("a placeholder only in the fragment, which is never sent, is refused",
+           !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/map.png#{z}/{x}/{y}"))
+               && !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}.png#{y}")));
+    expect("a brace in the fragment is refused",
+           !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png#{")));
+    expect("a plain fragment after a full template is fine",
+           MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png#top")));
     expect("a placeholder in the host is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://{z}.example.test/{x}/{y}.png")));
     expect("spaces are refused", !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z} /{x}/{y}")));
@@ -1472,6 +1488,146 @@ test_late_device_result_stays_off_disk(const QString& root) {
     }
 }
 
+/* PR2 r1: an oversized tile is a miss for that tile, never a wait for the whole view. */
+void
+test_oversized_tile_is_skipped(const QString& root) {
+    Harness h(root + QStringLiteral("/oversized"));
+    h.worker->setEnabled(true);
+    const MapTileKey big = key(13, 1, 1);
+    const MapTileKey next = key(13, 2, 1);
+    FakeReply huge;
+    huge.headers = {"Cache-Control: max-age=600"};
+    huge.body = QByteArray(static_cast<int>(DSD_TILE_FETCH_BODY_CAP_BYTES) + 1024, 'x');
+    h.server.script(big, huge);
+    h.worker->requestTiles({big, next}, kByHand);
+    expect("the tile after an oversized one loads", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("the oversized tile was asked once, with no backoff",
+           h.server.seenCount() == 2U && h.worker->backoffRemainingMsForTest() == 0
+               && h.worker->state() == MapTileWorker::State::Ready);
+}
+
+/* PR2 r1: a revalidation that says the tile is gone withdraws the stale copy and drops it from the cache, from
+ * memory only for a device-placed view. */
+void
+gone_on_revalidation(const QString& root, MapTileWorker::ViewOrigin origin) {
+    const QString dir = root + (origin == kByHand ? QStringLiteral("/gone-hand") : QStringLiteral("/gone-device"));
+    Harness h(dir);
+    h.worker->setEnabled(true);
+    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileKey a = key(14, 3, 3);
+    FakeReply first;
+    first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
+    first.body = make_png(256, 256, Qt::green);
+    h.server.script(a, first);
+    FakeReply removed;
+    removed.status = 410;
+    h.server.script(a, removed);
+    h.worker->requestTiles({a}, origin);
+    expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    const bool wasOnDisk = QFileInfo::exists(paths.pathFor(a));
+    g_wall += 120;
+    h.tiles.clear();
+    h.worker->requestTiles({a}, origin);
+    expect("the 410 withdraws the stale copy shown", wait_for([&h] { return !h.gone.empty(); }));
+    expect("which was shown stale first",
+           h.tiles.size() == 1U && h.tiles[0].stale && !h.gone.empty() && h.gone[0] == a);
+    expect("the revalidation sent the stored ETag", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
+    if (origin == kByHand) {
+        expect("by hand, the entry leaves the disk", wasOnDisk && !QFileInfo::exists(paths.pathFor(a)));
+    }
+    h.tiles.clear();
+    h.worker->requestTiles({a}, origin);
+    expect("the next visit fetches the tile anew", wait_for([&h] { return h.tiles.size() == 1U; }));
+    settle();
+    expect("without showing the stale copy again, and unconditionally",
+           h.tiles.size() == 1U && !h.tiles[0].stale && h.tiles[0].color == QColor(Qt::gray)
+               && h.server.seenCount() == 3U && h.server.seenAt(2).ifNoneMatch.isEmpty());
+}
+
+void
+test_gone_on_revalidation(const QString& root) {
+    gone_on_revalidation(root, kByHand);
+    gone_on_revalidation(root, kFromDevice);
+}
+
+/* PR2 r1: a Vary naming If-None-Match stores the value the revalidation sent, so a later unconditional request does
+ * not match it. */
+void
+test_vary_on_validator(const QString& root) {
+    const QString dir = root + QStringLiteral("/vary-inm");
+    const MapTileKey a = key(15, 4, 4);
+    {
+        Harness h(dir);
+        h.worker->setEnabled(true);
+        FakeReply first;
+        first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
+        first.body = make_png(256, 256, Qt::green);
+        h.server.script(a, first);
+        FakeReply replaced;
+        replaced.headers = {"Cache-Control: max-age=600", "ETag: \"v2\"", "Vary: If-None-Match"};
+        replaced.body = make_png(256, 256, Qt::blue);
+        h.server.script(a, replaced);
+        h.worker->requestTiles({a}, kByHand);
+        expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+        g_wall += 120;
+        h.worker->requestTiles({a}, kByHand);
+        expect("the revalidation's 200 arrives", wait_for([&h] { return h.tiles.size() == 3U; }));
+        expect("it was conditional", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
+    }
+    MapTileCache cache(dir, kTemplate, wall_now);
+    expect("an unconditional request does not match a response that varies on If-None-Match",
+           cache.lookup(a, fields()).reuse == MapTileCache::Reuse::Miss);
+    MapTileRequestFields conditional = fields();
+    conditional.ifNoneMatch = QByteArrayLiteral("\"v1\"");
+    MapTileCache again(dir, kTemplate, wall_now);
+    expect("the same conditional request does", again.lookup(a, conditional).reuse == MapTileCache::Reuse::Fresh);
+}
+
+/* PR2 r1: tiles whose cache rules forbid reuse say so, so the canvas never keeps them past their presentation. */
+void
+test_reusable_flag(const QString& root) {
+    Harness h(root + QStringLiteral("/reusable"));
+    h.worker->setEnabled(true);
+    const QList<QPair<QByteArray, bool>> cases = {{"Cache-Control: max-age=600", true},
+                                                  {"Cache-Control: no-store", false},
+                                                  {"Cache-Control: no-cache", false},
+                                                  {"Cache-Control: max-age=600, must-revalidate", false}};
+    int n = 0;
+    for (const auto& c : cases) {
+        FakeReply reply;
+        reply.headers = {c.first};
+        reply.body = make_png(256, 256, Qt::green);
+        h.server.script(key(16, n, 1), reply);
+        h.tiles.clear();
+        h.worker->requestTiles({key(16, n, 1)}, kByHand);
+        const bool arrived = wait_for([&h] { return h.tiles.size() == 1U; });
+        expect(qPrintable(QString::fromLatin1(c.first) + QStringLiteral(": reusable as the rules say")),
+               arrived && h.tiles[0].reusable == c.second);
+        n++;
+    }
+    h.tiles.clear();
+    h.worker->requestTiles({key(16, 0, 1)}, kByHand);
+    expect("a memory hit carries it too", wait_for([&h] { return h.tiles.size() == 1U; }) && h.tiles[0].reusable);
+}
+
+/* PR2 r1: a lookup miss creates no file, not even for a moment (the directory is not written). */
+void
+test_lookup_miss_writes_nothing(const QString& root) {
+    MapTileCache cache(root, kTemplate, wall_now);
+    expect("a tile is stored", store_tile(cache, key(17, 1, 1), {"Cache-Control: max-age=600"}));
+    const QString dir = cache.directory();
+    const QDateTime before = QFileInfo(dir).lastModified();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    MapTileCache cold(root, kTemplate, wall_now);
+    expect("a cold lookup of another tile misses",
+           cold.lookup(key(17, 2, 1), fields()).reuse == MapTileCache::Reuse::Miss);
+    expect("and leaves no file", !QFileInfo::exists(cold.pathFor(key(17, 2, 1))));
+    QFileInfo after(dir);
+    after.refresh();
+    expect("and the directory was not written", after.lastModified() == before);
+}
+
 } // namespace
 
 int
@@ -1496,6 +1652,7 @@ main(int argc, char** argv) {
     test_unreadable_and_oversized(root + QStringLiteral("/c6"));
     test_disk_lru_and_memory_bound(root + QStringLiteral("/c7"));
     test_memory_only_storage(root + QStringLiteral("/c8"));
+    test_lookup_miss_writes_nothing(root + QStringLiteral("/c9"));
 
     test_off_means_nothing(root);
     expect("the off test's thread ended", wait_threads_gone());
@@ -1517,6 +1674,10 @@ main(int argc, char** argv) {
     test_missing_tile_is_skipped(root);
     test_source_without_png(root);
     test_late_device_result_stays_off_disk(root);
+    test_oversized_tile_is_skipped(root);
+    test_gone_on_revalidation(root);
+    test_vary_on_validator(root);
+    test_reusable_flag(root);
     expect("every worker thread so far ended", wait_threads_gone());
     test_shutdown_joins_threads(root);
 

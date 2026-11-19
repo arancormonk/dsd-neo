@@ -333,10 +333,17 @@ class MapViewItem : public QQuickItem {
     /** @brief The software path's picture. */
     QImage testSoftwareImage(double pixel_ratio);
 
-    /** @brief Deliver a tile as the worker would (generation ignored). */
+    /** @brief Deliver a tile as the worker would (generation ignored); a null image withdraws it. */
     void
-    testDeliverTile(int z, int x, int y, const QImage& image) {
-        onTileReady(0, z, x, y, image, false);
+    testDeliverTile(int z, int x, int y, const QImage& image, bool reusable = true) {
+        onTileReady(0, z, x, y, image, false, reusable);
+    }
+
+    /** @brief The serial of the held image of (@p z, @p x, @p y) (its texture's identity), 0 when none is held. */
+    quint64
+    testTileSerial(int z, int x, int y) const {
+        const auto found = m_tileImages.constFind(MapTileKey{z, x, y});
+        return found != m_tileImages.cend() ? found.value().serial : 0U;
     }
 
     /** @brief Keys of the tiles asked for last, in order. */
@@ -468,7 +475,7 @@ class MapViewItem : public QQuickItem {
     void onAgesChanged();
     void onModelDestroyed();
     void onTileSourceDestroyed();
-    void onTileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale);
+    void onTileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale, bool reusable);
     void onTileSettingsChanged();
     void onApplicationStateChanged(Qt::ApplicationState state);
     void rebuildScene();
@@ -590,6 +597,9 @@ class MapViewItem : public QQuickItem {
         QImage toned;
         quint64 serial = 0;
         bool current = false; /* at the view's tile zoom; else standing in */
+        /* The cache rules allow showing it again (MapTileWorker::tileReady): if not, it goes when it leaves the view
+         * and never stands in or comes back. */
+        bool reusable = true;
     };
 
     QHash<MapTileKey, HeldTile> m_tileImages;

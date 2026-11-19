@@ -149,7 +149,8 @@ class MapTileWorker : public QObject {
      * @brief Whether @p urlTemplate is a usable tile template.
      *
      * It must be `https://` with a non-empty host free of placeholders and of userinfo, visible ASCII only, hold each
-     * of `{z}`, `{x}` and `{y}` exactly once and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the
+     * of `{z}`, `{x}` and `{y}` exactly once in the part that is sent (path or query, not a `#` fragment, which may
+     * hold no brace) and no other brace, and still fit DSD_TILE_FETCH_URL_MAX bytes with the
      * longest coordinates.
      *
      * @param host Receives the host (with any port) for the "sent to" line when valid.
@@ -214,9 +215,14 @@ class MapTileWorker : public QObject {
      *
      * @param generation The request it answers; a result for an older generation may still arrive and should be
      *                   dropped when the key is no longer in view.
+     * @param image      The tile; a null image withdraws the key: the server has no usable tile there (a stale
+     *                   copy delivered before must go).
      * @param stale      The image is a stale copy shown while it is revalidated; a fresh one may follow.
+     * @param reusable   The cache rules let the image be shown again for another view (mapTileReusable()); when
+     *                   false (`no-store`, `no-cache`, `must-revalidate`) it may be drawn only while its key stays
+     *                   in view, never kept as a stand-in or brought back.
      */
-    void tileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale);
+    void tileReady(quint64 generation, int z, int x, int y, const QImage& image, bool stale, bool reusable);
     void enabledChanged();
     void urlTemplateChanged();
     void stateChanged();
@@ -227,7 +233,7 @@ class MapTileWorker : public QObject {
     bool ensureThread();
     void restart(bool templateChanged, bool resetBackoff);
     void deliverState(State next);
-    void deliverTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale);
+    void deliverTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale, bool reusable);
     State idleState() const;
 
     std::shared_ptr<Core> m_core;

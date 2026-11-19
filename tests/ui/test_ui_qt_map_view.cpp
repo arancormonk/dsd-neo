@@ -375,6 +375,14 @@ test_tiles() {
     tiles.setEnabled(true); /* settle: nothing in flight */
     f.map->testPolish();
     assert(spin_until([&] { return f.map->testHeldTiles() == asked.size(); }));
+    /* The canned tiles are no-store, which may never stand in (PR2 r1): put reusable copies in their place. */
+    {
+        QImage reusable(256, 256, QImage::Format_ARGB32_Premultiplied);
+        reusable.fill(Qt::white);
+        for (const MapTileKey& key : asked) {
+            f.map->testDeliverTile(key.z, key.x, key.y, reusable, true);
+        }
+    }
     f.map->setZoom(13.0);
     f.map->testPolish();
     const int standing = f.map->testHeldTiles();
@@ -459,6 +467,62 @@ test_background_stops_loading() {
     assert(f.map->testRequestedTiles().isEmpty());
     f.map->setParentItem(f.window.contentItem());
     f.map->setTileSource(nullptr);
+}
+
+/* PR2 r1: the canvas's held tiles follow the worker's word. A withdrawn key goes at once; an image the cache rules
+ * forbid reusing ends with its presentation (no stand-in, never brought back); the same image again keeps its toned
+ * copy and texture. */
+void
+test_held_tiles_follow_the_cache_rules() {
+    Fixture f;
+    stub::MapTileSourceStub tiles;
+    f.map->setTileSource(&tiles);
+    tiles.setEnabled(true);
+    f.map->testPolish();
+    const QList<MapTileKey> asked = f.map->testRequestedTiles();
+    assert(!asked.isEmpty());
+    const MapTileKey k = asked.front();
+    QImage image(256, 256, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+
+    /* The same image again: no re-tone, no new texture. */
+    f.map->testDeliverTile(k.z, k.x, k.y, image);
+    const quint64 serial = f.map->testTileSerial(k.z, k.x, k.y);
+    assert(serial != 0U);
+    f.map->testDeliverTile(k.z, k.x, k.y, image);
+    assert(f.map->testTileSerial(k.z, k.x, k.y) == serial);
+    QImage other = image.copy();
+    f.map->testDeliverTile(k.z, k.x, k.y, other);
+    assert(f.map->testTileSerial(k.z, k.x, k.y) != serial); /* a new image is a new texture */
+
+    /* Withdrawn: gone at once, even while in view. */
+    f.map->testDeliverTile(k.z, k.x, k.y, QImage());
+    assert(f.map->testTileSerial(k.z, k.x, k.y) == 0U);
+
+    /* Not reusable: it does not stand in for the next zoom, so zooming back cannot bring it back. At zoom 13 only
+     * the centre tile of zoom 12 is still in view, so it is the one stand-in there could be. */
+    f.map->setTileSource(nullptr);
+    for (const bool centreReusable : {true, false}) {
+        stub::MapTileSourceStub quiet;
+        f.map->setZoom(12.0);
+        f.map->setTileSource(&quiet);
+        quiet.setEnabled(true);
+        f.map->testPolish();
+        const QList<MapTileKey> view = f.map->testRequestedTiles();
+        assert(!view.isEmpty() && view.front().z == 12);
+        for (const MapTileKey& key : view) {
+            f.map->testDeliverTile(key.z, key.x, key.y, image, key == view.front() ? centreReusable : true);
+        }
+        const MapTileKey centre = view.front();
+        f.map->setZoom(13.0);
+        f.map->testPolish(); /* the new zoom's tiles have not arrived */
+        if (centreReusable) {
+            assert(f.map->testHeldTiles() == 1 && f.map->testTileSerial(centre.z, centre.x, centre.y) != 0U);
+        } else {
+            assert(f.map->testHeldTiles() == 0);
+        }
+        f.map->setTileSource(nullptr);
+    }
 }
 
 /* Final review I1: every tile request of a view the device's position placed is memory only (Locate me, Follow my
@@ -682,6 +746,7 @@ main(int argc, char** argv) {
     test_tiles();
     test_background_stops_loading();
     test_device_views_ask_memory_only();
+    test_held_tiles_follow_the_cache_rules();
     test_overlay_follows_the_wrap_copy();
     test_labels_render_on_the_gui_thread();
     test_label_priority();

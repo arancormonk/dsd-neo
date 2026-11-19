@@ -89,10 +89,14 @@ qHash(const MapTileKey& key, size_t seed = 0) {
 struct MapTileRequestFields {
     QByteArray userAgent;
     QByteArray host;
+    /** The conditional request's validators, as sent (empty for an unconditional request). */
+    QByteArray ifNoneMatch;
+    QByteArray ifModifiedSince;
 
     /**
      * @brief The value sent for @p lowerName: the User-Agent, the URL's host, libcurl's default Accept (any media
-     *        type), and empty for any field the app does not send (Accept-Encoding among them).
+     *        type), If-None-Match and If-Modified-Since as sent, and empty for any field the app does not send
+     *        (Accept-Encoding among them).
      */
     QByteArray value(const QByteArray& lowerName) const;
 };
@@ -132,6 +136,13 @@ MapTileFreshness mapTileFreshness(const MapTileMeta& meta, qint64 nowSecs);
 MapTileMeta mapTileMetaFromResponse(const dsd_tile_fetch_response& response, qint64 requestTime, qint64 responseTime,
                                     const MapTileRequestFields& sent);
 
+/**
+ * @brief Whether an image under @p meta may be shown again for another view without asking the server (the canvas's
+ *        held and stand-in tiles): not for `no-store`, `no-cache`, `must-revalidate`, `Vary: *` or an unparseable
+ *        Cache-Control. Such an image is shown for the presentation it was delivered for only.
+ */
+bool mapTileReusable(const MapTileMeta& meta);
+
 /** @brief Decode @p png as a PNG of at most 512×512 pixels; a null image for anything else. */
 QImage mapTileDecodePng(const QByteArray& png);
 
@@ -160,7 +171,8 @@ class MapTileCache {
 
     struct Lookup {
         Reuse reuse = Reuse::Miss;
-        QImage image; /**< Set for Fresh and StaleUsable. */
+        QImage image;          /**< Set for Fresh and StaleUsable. */
+        bool reusable = false; /**< mapTileReusable() of the entry. */
         QByteArray ifNoneMatch;
         QByteArray ifModifiedSince;
     };
@@ -187,12 +199,13 @@ class MapTileCache {
     /**
      * @brief Take a 200 response whose @p png decoded to @p image.
      *
+     * @param reusable Receives mapTileReusable() of the response, when not null.
      * @return whether it was stored (in memory only for Storage::MemoryOnly). `no-store`, `Vary: *` and an
      *         unparseable Cache-Control are not, and remove the older entry (from memory only for MemoryOnly).
      */
     bool store(const MapTileKey& key, const dsd_tile_fetch_response& response, const QByteArray& png,
                const QImage& image, qint64 requestTime, qint64 responseTime, const MapTileRequestFields& sent,
-               Storage storage = Storage::DiskAndMemory);
+               Storage storage = Storage::DiskAndMemory, bool* reusable = nullptr);
 
     /**
      * @brief Merge a 304 into the stored entry and return the image it validates.
@@ -203,7 +216,11 @@ class MapTileCache {
      * merged or removed, and an entry held only on disk selects nothing.
      */
     QImage refresh(const MapTileKey& key, const dsd_tile_fetch_response& response, qint64 requestTime,
-                   qint64 responseTime, const MapTileRequestFields& sent, Storage storage = Storage::DiskAndMemory);
+                   qint64 responseTime, const MapTileRequestFields& sent, Storage storage = Storage::DiskAndMemory,
+                   bool* reusable = nullptr);
+
+    /** @brief The server says @p key has no tile now (a miss): drop it, from memory only for MemoryOnly. */
+    void invalidate(const MapTileKey& key, Storage storage);
 
     /** @brief Drop @p key from memory and disk. */
     void remove(const MapTileKey& key);

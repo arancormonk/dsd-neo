@@ -82,6 +82,8 @@ struct FetchResult {
     bool dropValidators = false;
     /* A 200 with a body that is not a PNG the map can use (the only evidence for NoPngTiles; a hole is not). */
     bool notPng = false;
+    /* mapTileReusable() of what was delivered: false means the canvas shows it for this presentation only. */
+    bool reusable = false;
 };
 
 bool
@@ -274,7 +276,8 @@ struct MapTileWorker::Core {
     MapTileCache& cacheFor(const QString& templateText, quint64 serial);
     MapTileRequestFields fieldsFor(const QString& templateText) const;
     void postState(State next);
-    void postTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale) const;
+    void postTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale, bool reusable) const;
+    void postGone(quint64 gen, const MapTileKey& key) const;
 };
 
 void
@@ -353,14 +356,25 @@ MapTileWorker::Core::postState(State next) {
 }
 
 void
-MapTileWorker::Core::postTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale) const {
+MapTileWorker::Core::postTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale,
+                              bool reusable) const {
     if (receiver == nullptr || image.isNull()) {
         return;
     }
     MapTileWorker* target = receiver;
     QMetaObject::invokeMethod(
-        target, [target, gen, key, image, stale]() { target->deliverTile(gen, key, image, stale); },
+        target, [target, gen, key, image, stale, reusable]() { target->deliverTile(gen, key, image, stale, reusable); },
         Qt::QueuedConnection);
+}
+
+void
+MapTileWorker::Core::postGone(quint64 gen, const MapTileKey& key) const {
+    if (receiver == nullptr) {
+        return;
+    }
+    MapTileWorker* target = receiver;
+    QMetaObject::invokeMethod(
+        target, [target, gen, key]() { target->deliverTile(gen, key, QImage(), false, false); }, Qt::QueuedConnection);
 }
 
 void
@@ -384,7 +398,7 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
             postState(State::Ready);
         }
     }
-    postTile(gen, key, found.image, found.reuse == MapTileCache::Reuse::StaleUsable);
+    postTile(gen, key, found.image, found.reuse == MapTileCache::Reuse::StaleUsable, found.reusable);
     if (found.reuse != MapTileCache::Reuse::Fresh) {
         NetJob job;
         job.key = key;
@@ -456,30 +470,43 @@ MapTileWorker::Core::perform(const NetJob& job, const QString& url, Exchange* ex
     ex->responseTime = wallSecs();
 }
 
+/* A 200: decode, then store with the storage and request fields the fetch had. */
+static FetchResult
+interpret_body(const MapTileKey& key, Exchange* ex, MapTileCache& tiles, const MapTileRequestFields& sent,
+               MapTileCache::Storage storage) {
+    FetchResult result;
+    const dsd_tile_fetch_response* resp = &ex->resp;
+    const QByteArray png(reinterpret_cast<const char*>(resp->body), static_cast<qsizetype>(resp->body_len));
+    result.image = mapTileDecodePng(png);
+    if (result.image.isNull()) {
+        /* Not a PNG the map can use (a JPEG source, an HTML page, over 512×512): skipped, not retried. */
+        result.outcome = Outcome::Miss;
+        result.notPng = true;
+        return result;
+    }
+    (void)tiles.store(key, *resp, png, result.image, ex->requestTime, ex->responseTime, sent, storage,
+                      &result.reusable);
+    result.outcome = Outcome::Success;
+    return result;
+}
+
 FetchResult
 MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& tiles,
                                const MapTileRequestFields& fields) {
     FetchResult result;
-    dsd_tile_fetch_response* resp = &ex->resp;
+    const dsd_tile_fetch_response* resp = &ex->resp;
     const MapTileCache::Storage storage = storage_for(job.memoryOnly);
+    /* What went out, validators included, so a Vary naming them stores the values sent (RFC 9111 §4.1). */
+    MapTileRequestFields sent = fields;
+    sent.ifNoneMatch = job.ifNoneMatch;
+    sent.ifModifiedSince = job.ifModifiedSince;
     switch (resp->status) {
-        case DSD_TILE_FETCH_OK: {
-            const QByteArray png(reinterpret_cast<const char*>(resp->body), static_cast<qsizetype>(resp->body_len));
-            result.image = mapTileDecodePng(png);
-            if (result.image.isNull()) {
-                /* Not a PNG the map can use (a JPEG source, an HTML page, over 512×512): skipped, not retried. */
-                result.outcome = Outcome::Miss;
-                result.notPng = true;
-                return result;
-            }
-            (void)tiles.store(job.key, *resp, png, result.image, ex->requestTime, ex->responseTime, fields, storage);
-            result.outcome = Outcome::Success;
-            return result;
-        }
+        case DSD_TILE_FETCH_OK: result = interpret_body(job.key, ex, tiles, sent, storage); break;
         case DSD_TILE_FETCH_NOT_MODIFIED:
             /* A 304 to a request that carried no validator selects nothing. */
             if (!job.ifNoneMatch.isEmpty() || !job.ifModifiedSince.isEmpty()) {
-                result.image = tiles.refresh(job.key, *resp, ex->requestTime, ex->responseTime, fields, storage);
+                result.image =
+                    tiles.refresh(job.key, *resp, ex->requestTime, ex->responseTime, sent, storage, &result.reusable);
             }
             result.outcome = result.image.isNull() ? Outcome::Failure : Outcome::Success;
             result.dropValidators = result.image.isNull();
@@ -487,13 +514,20 @@ MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& ti
         case DSD_TILE_FETCH_ERR_CANCELLED: result.outcome = Outcome::Cancelled; return result;
         case DSD_TILE_FETCH_ERR_INVALID: result.outcome = Outcome::Invalid; return result;
         case DSD_TILE_FETCH_ERR_UNSUPPORTED: result.outcome = Outcome::Unsupported; return result;
-        default: break;
+        /* Over the body or header cap: the same answer every time, so a miss for this tile, not a wait for all. */
+        case DSD_TILE_FETCH_ERR_TOO_LARGE: result.outcome = Outcome::Miss; break;
+        default:
+            if (tile_missing(*resp)) {
+                result.outcome = Outcome::Miss;
+            }
+            break;
     }
-    if (tile_missing(*resp)) {
-        result.outcome = Outcome::Miss;
+    if (result.outcome == Outcome::Miss) {
+        /* The server has no usable tile there now: a stale copy must not come back from the cache. */
+        tiles.invalidate(job.key, storage);
         return result;
     }
-    if ((resp->header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U
+    if (result.outcome == Outcome::Failure && (resp->header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U
         && (resp->header_invalid & DSD_TILE_FETCH_HDR_RETRY_AFTER) == 0U) {
         result.hasRetryAfter =
             MapTileWorker::retryAfterMs(QByteArray(resp->retry_after), ex->responseTime, &result.retryAfterMs);
@@ -512,11 +546,12 @@ MapTileWorker::Core::apply(const NetJob& job, const FetchResult& result) {
     switch (result.outcome) {
         case Outcome::Success:
             answered(result);
-            postTile(job.generation, job.key, result.image, false);
+            postTile(job.generation, job.key, result.image, false, result.reusable);
             return;
         case Outcome::Miss:
-            /* Skipped for this generation; the rest of the view goes on at once. */
+            /* Skipped for this generation; the rest of the view goes on at once. A stale copy already shown goes. */
             answered(result);
+            postGone(job.generation, job.key);
             return;
         case Outcome::Cancelled:
             /* Cancelled by a clear that a later request for the same tile overtook: still wanted, so again. */
@@ -775,12 +810,12 @@ MapTileWorker::deliverState(State next) {
 }
 
 void
-MapTileWorker::deliverTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale) {
+MapTileWorker::deliverTile(quint64 gen, const MapTileKey& key, const QImage& image, bool stale, bool reusable) {
     /* A tile from before tiles were turned off or the template changed belongs to another source. */
     if (!m_enabled || gen < m_epochGeneration) {
         return;
     }
-    Q_EMIT tileReady(gen, key.z, key.x, key.y, image, stale);
+    Q_EMIT tileReady(gen, key.z, key.x, key.y, image, stale, reusable);
 }
 
 bool
@@ -795,8 +830,14 @@ MapTileWorker::validTemplate(const QString& urlTemplate, QString* host) {
     if (authority.isEmpty()) {
         return false;
     }
+    /* A fragment is never sent: a placeholder there would fetch one resource for many tiles. No brace may sit in it. */
+    const qsizetype hash = rest.indexOf(QLatin1Char('#'));
+    const QString sent = hash < 0 ? rest : rest.left(hash);
+    if (hash >= 0 && (rest.indexOf(QLatin1Char('{'), hash) >= 0 || rest.indexOf(QLatin1Char('}'), hash) >= 0)) {
+        return false;
+    }
     int counts[3] = {0, 0, 0};
-    if (!scan_placeholders(rest, counts) || counts[0] != 1 || counts[1] != 1 || counts[2] != 1
+    if (!scan_placeholders(sent, counts) || counts[0] != 1 || counts[1] != 1 || counts[2] != 1
         || longest_url(urlTemplate.size(), counts) > static_cast<qint64>(DSD_TILE_FETCH_URL_MAX)) {
         return false;
     }
