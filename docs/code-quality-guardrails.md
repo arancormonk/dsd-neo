@@ -88,7 +88,9 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   `xterm-256color` and `tmux-256color` entries), `tools/check_release_notices.py` (a package's documentation folder
   holds every notice its records' `<platform>_release` maps name; the DMG job runs it on the staged tree and the
   mounted DMG, and with `--binary-dir` refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
-  `binaries` list names) and
+  `binaries` list names),
+  `tools/check_android_runtime_lock.py` (the APK's Qt kit, NDK, Gradle release runtime classpath and native libraries
+  are the ones `legal/android-runtime-lock.json` records for the reviewed Android records) and
   `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
 - Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.

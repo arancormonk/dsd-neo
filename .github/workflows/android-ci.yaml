@@ -685,6 +685,21 @@ jobs:
             --dexdump "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/dexdump" \
             --mapping build/android-app/android/android-build/build/outputs/mapping/release/mapping.txt
 
+      # The qt, ndk-runtime, androidx and kotlin records were reviewed for one Qt kit,
+      # one NDK, one Gradle release runtime classpath and one set of native libraries:
+      # a build that differs fails here until the records and the lock are reviewed.
+      - name: Check Qt, the NDK runtime and the Gradle libraries against the legal records
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.apk.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/release-runtime-classpath.txt"
+          (cd build/android-app/android/android-build \
+            && ./gradlew --offline --quiet dependencies --configuration releaseRuntimeClasspath) > "$report"
+          python3 tools/check_android_runtime_lock.py --build-dir build/android-app \
+            --gradle-dependencies "$report" --apk "$APK_PATH"
+
       - name: Prepare artifact naming and the publish gate
         id: names
         shell: bash

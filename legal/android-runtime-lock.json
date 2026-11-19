@@ -1,0 +1,128 @@
+{
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "about": "What the qt, ndk-runtime, androidx, kotlin and project records in legal/components.json describe for the release APK: the Qt kit (version and The Qt Company's build SBOMs), the NDK, the Gradle release runtime classpath and the native libraries in lib/arm64-v8a/. tools/check_android_runtime_lock.py fails a build that differs; update this file only together with a review of those records.",
+  "abi": "arm64-v8a",
+  "records": {
+    "project": {
+      "libraries": [
+        "libdsd-neo-app_arm64-v8a.so"
+      ]
+    },
+    "qt": {
+      "version": "6.11.3",
+      "sbom_namespaces": {
+        "qtbase": "https://qt.io/spdxdocs/qtbase-574695a7+HEAD-host-darwin-arm64-target-android-aarch64-dccb2ba4-e707-535f-bced-4f4a11f035c0",
+        "qtdeclarative": "https://qt.io/spdxdocs/qtdeclarative-95e4cecc+HEAD-host-darwin-arm64-target-android-aarch64-c3010dc1-2624-57d0-b1bc-d202d7f0f7f5",
+        "qtsvg": "https://qt.io/spdxdocs/qtsvg-f5d9972+HEAD-host-darwin-arm64-target-android-aarch64-25655c5c-c0b4-5c90-ba28-434df19ab696"
+      },
+      "libraries": [
+        "libQt6Core_arm64-v8a.so",
+        "libQt6Gui_arm64-v8a.so",
+        "libQt6LabsFolderListModel_arm64-v8a.so",
+        "libQt6Network_arm64-v8a.so",
+        "libQt6OpenGL_arm64-v8a.so",
+        "libQt6QmlMeta_arm64-v8a.so",
+        "libQt6QmlModels_arm64-v8a.so",
+        "libQt6QmlWorkerScript_arm64-v8a.so",
+        "libQt6Qml_arm64-v8a.so",
+        "libQt6QuickControls2BasicStyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2Basic_arm64-v8a.so",
+        "libQt6QuickControls2FluentWinUI3StyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2FusionStyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2Fusion_arm64-v8a.so",
+        "libQt6QuickControls2ImagineStyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2Imagine_arm64-v8a.so",
+        "libQt6QuickControls2Impl_arm64-v8a.so",
+        "libQt6QuickControls2MaterialStyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2Material_arm64-v8a.so",
+        "libQt6QuickControls2UniversalStyleImpl_arm64-v8a.so",
+        "libQt6QuickControls2Universal_arm64-v8a.so",
+        "libQt6QuickControls2_arm64-v8a.so",
+        "libQt6QuickDialogs2QuickImpl_arm64-v8a.so",
+        "libQt6QuickDialogs2Utils_arm64-v8a.so",
+        "libQt6QuickDialogs2_arm64-v8a.so",
+        "libQt6QuickEffects_arm64-v8a.so",
+        "libQt6QuickLayouts_arm64-v8a.so",
+        "libQt6QuickShapes_arm64-v8a.so",
+        "libQt6QuickTemplates2_arm64-v8a.so",
+        "libQt6Quick_arm64-v8a.so",
+        "libQt6Svg_arm64-v8a.so",
+        "libplugins_iconengines_qsvgicon_arm64-v8a.so",
+        "libplugins_imageformats_qgif_arm64-v8a.so",
+        "libplugins_imageformats_qico_arm64-v8a.so",
+        "libplugins_imageformats_qjpeg_arm64-v8a.so",
+        "libplugins_imageformats_qsvg_arm64-v8a.so",
+        "libplugins_networkinformation_qandroidnetworkinformation_arm64-v8a.so",
+        "libplugins_platforms_qoffscreen_arm64-v8a.so",
+        "libplugins_platforms_qtforandroid_arm64-v8a.so",
+        "libplugins_tls_qopensslbackend_arm64-v8a.so",
+        "libqml_QtQml_Models_modelsplugin_arm64-v8a.so",
+        "libqml_QtQml_WorkerScript_workerscriptplugin_arm64-v8a.so",
+        "libqml_QtQml_qmlplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Basic_impl_qtquickcontrols2basicstyleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Basic_qtquickcontrols2basicstyleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_FluentWinUI3_impl_qtquickcontrols2fluentwinui3styleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_FluentWinUI3_qtquickcontrols2fluentwinui3styleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Fusion_impl_qtquickcontrols2fusionstyleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Fusion_qtquickcontrols2fusionstyleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Imagine_impl_qtquickcontrols2imaginestyleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Imagine_qtquickcontrols2imaginestyleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Material_impl_qtquickcontrols2materialstyleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Material_qtquickcontrols2materialstyleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Universal_impl_qtquickcontrols2universalstyleimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_Universal_qtquickcontrols2universalstyleplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_impl_qtquickcontrols2implplugin_arm64-v8a.so",
+        "libqml_QtQuick_Controls_qtquickcontrols2plugin_arm64-v8a.so",
+        "libqml_QtQuick_Dialogs_qtquickdialogsplugin_arm64-v8a.so",
+        "libqml_QtQuick_Dialogs_quickimpl_qtquickdialogs2quickimplplugin_arm64-v8a.so",
+        "libqml_QtQuick_Effects_effectsplugin_arm64-v8a.so",
+        "libqml_QtQuick_Layouts_qquicklayoutsplugin_arm64-v8a.so",
+        "libqml_QtQuick_Shapes_qmlshapesplugin_arm64-v8a.so",
+        "libqml_QtQuick_Templates_qtquicktemplates2plugin_arm64-v8a.so",
+        "libqml_QtQuick_Window_quickwindowplugin_arm64-v8a.so",
+        "libqml_QtQuick_qtquick2plugin_arm64-v8a.so",
+        "libqml_Qt_labs_folderlistmodel_qmlfolderlistmodelplugin_arm64-v8a.so"
+      ]
+    },
+    "ndk-runtime": {
+      "revision": "28.2.13676358",
+      "release": "r28c",
+      "libraries": [
+        "libc++_shared.so"
+      ]
+    },
+    "androidx": {
+      "release_runtime_classpath": [
+        "androidx.annotation:annotation-experimental:1.4.1",
+        "androidx.annotation:annotation-jvm:1.8.1",
+        "androidx.annotation:annotation:1.8.1",
+        "androidx.arch.core:core-common:2.2.0",
+        "androidx.arch.core:core-runtime:2.2.0",
+        "androidx.collection:collection-jvm:1.4.2",
+        "androidx.collection:collection:1.4.2",
+        "androidx.concurrent:concurrent-futures:1.1.0",
+        "androidx.core:core-viewtree:1.0.0",
+        "androidx.core:core:1.17.0",
+        "androidx.interpolator:interpolator:1.0.0",
+        "androidx.lifecycle:lifecycle-common:2.6.2",
+        "androidx.lifecycle:lifecycle-runtime:2.6.2",
+        "androidx.profileinstaller:profileinstaller:1.3.0",
+        "androidx.startup:startup-runtime:1.1.1",
+        "androidx.tracing:tracing:1.2.0",
+        "androidx.versionedparcelable:versionedparcelable:1.1.1",
+        "com.google.guava:listenablefuture:1.0",
+        "org.jspecify:jspecify:1.0.0"
+      ]
+    },
+    "kotlin": {
+      "release_runtime_classpath": [
+        "org.jetbrains.kotlin:kotlin-stdlib:2.2.10",
+        "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1",
+        "org.jetbrains.kotlinx:kotlinx-coroutines-bom:1.8.1",
+        "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1",
+        "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1",
+        "org.jetbrains:annotations:23.0.0"
+      ]
+    }
+  }
+}

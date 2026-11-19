@@ -25882,6 +25882,14 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_release_notices.py
     )
+    # The APK's Qt kit, NDK runtime, Gradle release runtime classpath and native
+    # libraries against legal/android-runtime-lock.json, with fake builds.
+    add_test(
+        NAME TOOLS_CHECK_ANDROID_RUNTIME_LOCK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_android_runtime_lock.py
+    )
     # The directions to Qt's source that go beside every APK: generated from the
     # Qt kit the build used, published with the APK and in a release's notes.
     add_test(
