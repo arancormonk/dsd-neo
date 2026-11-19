@@ -206,7 +206,7 @@ jobs:
       - name: Build (${{ matrix.variant }})
         if: env.CI_RUN_CHECK == 'true'
         run: |
-          cmake --build --preset dev-debug -j
+          cmake --build --preset dev-debug -j "$(nproc)"
 
       - name: Test (${{ matrix.variant }})
         if: env.CI_RUN_CHECK == 'true'
@@ -272,7 +272,7 @@ jobs:
           base=$(git merge-base HEAD origin/main)
           git worktree add --detach "$RUNNER_TEMP/base" "$base"
           for tree in "$GITHUB_WORKSPACE" "$RUNNER_TEMP/base"; do
-            (cd "$tree" && cmake --preset perf-bench > /dev/null && cmake --build --preset perf-bench -j --target dsd-neo_bench_dsp)
+            (cd "$tree" && cmake --preset perf-bench > /dev/null && cmake --build --preset perf-bench -j "$(nproc)" --target dsd-neo_bench_dsp)
           done
           echo "BENCH_BASE_SHA=$base" >> "$GITHUB_ENV"
 
@@ -448,7 +448,7 @@ jobs:
 
       - name: Build (android shape)
         if: env.CI_RUN_CHECK == 'true'
-        run: cmake --build --preset dev-debug -j
+        run: cmake --build --preset dev-debug -j "$(nproc)"
 
       - name: Test (android shape)
         if: env.CI_RUN_CHECK == 'true'
@@ -865,7 +865,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build --preset dev-release -j
+          cmake --build --preset dev-release -j "$(nproc)"
 
       - name: Smoke test - show CLI help
         run: |
@@ -1915,7 +1915,7 @@ jobs:
 
       - name: Build (${{ matrix.preset }})
         if: env.CI_RUN_CHECK == 'true'
-        run: cmake --build --preset ${{ matrix.preset }} --parallel
+        run: cmake --build --preset ${{ matrix.preset }} --parallel "$(nproc)"
 
       - name: Test (${{ matrix.preset }})
         if: env.CI_RUN_CHECK == 'true'

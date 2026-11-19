@@ -39,8 +39,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $BUILD -eq 1 ]]; then
+  # The preset builds with Make, where a bare -j starts every job at once.
+  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
   cmake --preset fuzz-asan-debug
-  cmake --build --preset fuzz-asan-debug -j
+  cmake --build --preset fuzz-asan-debug -j "$JOBS"
 fi
 
 BUILD_DIR="build/fuzz-asan-debug"
