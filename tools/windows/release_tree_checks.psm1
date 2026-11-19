@@ -508,6 +508,183 @@ function Get-DumpbinDependents {
     return $names.ToArray()
 }
 
+# GetFinalPathNameByHandleW: the path Windows opened, with 8.3 short names expanded and
+# symbolic links, junctions and SUBST drives resolved. Compiled only on Windows, on first use.
+$script:FinalPathSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class DsdNeoFinalPath
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
+                                                     uint disposition, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint size,
+                                                         uint flags);
+
+    public static string Get(string path)
+    {
+        // FILE_READ_ATTRIBUTES, any sharing, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS (a folder too).
+        using (SafeFileHandle handle = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+        {
+            if (handle.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), path);
+            }
+            StringBuilder buffer = new StringBuilder(1024);
+            uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length >= buffer.Capacity)
+            {
+                buffer = new StringBuilder((int)length + 1);
+                length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            }
+            if (length == 0 || length >= buffer.Capacity)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), path);
+            }
+            string final = buffer.ToString(0, (int)length);
+            if (final.StartsWith(@"\\?\UNC\", StringComparison.Ordinal))
+            {
+                return @"\\" + final.Substring(8);
+            }
+            return final.StartsWith(@"\\?\", StringComparison.Ordinal) ? final.Substring(4) : final;
+        }
+    }
+}
+'@
+
+# The one path an existing file or folder has, whatever spelling named it: on Windows the
+# path GetFinalPathNameByHandleW reports (short 8.3 names such as PROGRA~1 expanded,
+# symbolic links and junctions resolved); elsewhere every symbolic link resolved, as
+# realpath does. The paths come from a Windows build (its CMake cache, its developer
+# shell), which may separate folders with either slash. Throws when nothing is there.
+function Resolve-CanonicalPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $spelled = $Path.Trim()
+    if (-not $IsWindows) {
+        $spelled = $spelled.Replace('\', '/')
+    }
+    if (-not [System.IO.Path]::IsPathRooted($spelled)) {
+        $spelled = Join-Path (Get-Location).ProviderPath $spelled
+    }
+    if (!(Test-Path -LiteralPath $spelled)) {
+        throw "$Path does not exist on this machine"
+    }
+    if ($IsWindows) {
+        if (-not ('DsdNeoFinalPath' -as [type])) {
+            Add-Type -TypeDefinition $script:FinalPathSource
+        }
+        return [DsdNeoFinalPath]::Get($spelled).TrimEnd('\')
+    }
+
+    # Each part in turn from the root, a link replaced by its target and the walk
+    # resumed there, so a '..' after a link climbs out of the link's target.
+    $parts = [System.Collections.Generic.List[string]]::new()
+    $parts.AddRange([string[]]@($spelled.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)))
+    $current = '/'
+    $links = 0
+    $index = 0
+    while ($index -lt $parts.Count) {
+        $part = $parts[$index]
+        $index++
+        if ($part -eq '.') {
+            continue
+        }
+        if ($part -eq '..') {
+            $parent = [System.IO.Path]::GetDirectoryName($current)
+            $current = if ($null -eq $parent) { '/' } else { $parent }
+            continue
+        }
+        $next = [System.IO.Path]::Join($current, $part)
+        $item = Get-Item -Force -LiteralPath $next -ErrorAction SilentlyContinue
+        if ($null -eq $item) {
+            throw "$Path does not exist on this machine"
+        }
+        if ($item.LinkTarget) {
+            $links++
+            if ($links -gt 40) {
+                throw "$Path has too many levels of symbolic links"
+            }
+            $target = [string]$item.LinkTarget
+            $rest = $parts.GetRange($index, $parts.Count - $index)
+            $parts = [System.Collections.Generic.List[string]]::new()
+            $parts.AddRange([string[]]@($target.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)))
+            $parts.AddRange($rest)
+            $index = 0
+            if ($target.StartsWith('/')) {
+                $current = '/'
+            }
+            continue
+        }
+        $current = $next
+    }
+    return $current
+}
+
+# Whether two canonical paths (Resolve-CanonicalPath) are the same: without regard to
+# case on Windows, as its file systems compare names.
+function Test-SamePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Other
+    )
+
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    return [string]::Equals($Path, $Other, $comparison)
+}
+
+# Whether a canonical path is the canonical folder itself or lies inside it: the folder's
+# path followed by a separator, so C:\VC\Tools\MSVC\14.44 does not hold
+# C:\VC\Tools\MSVC\14.44-old\cl.exe.
+function Test-PathInside {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Folder
+    )
+
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $prefix = $Folder.TrimEnd($separator) + $separator
+    return (Test-SamePath -Path $Path -Other $Folder) -or $Path.StartsWith($prefix, $comparison)
+}
+
+# The value of one entry of a build's CMakeCache.txt (NAME:TYPE=value). Throws unless the
+# cache holds the entry exactly once.
+function Get-CMakeCacheValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Build,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $cache = Join-Path $Build 'CMakeCache.txt'
+    if (!(Test-Path -LiteralPath $cache -PathType Leaf)) {
+        throw "No CMakeCache.txt in $Build, so the toolset that built it is unknown"
+    }
+    $entries = @(Get-Content -LiteralPath $cache | Where-Object { $_ -cmatch "^$([regex]::Escape($Name)):[A-Z]+=" })
+    if ($entries.Count -ne 1) {
+        throw "$cache names $($entries.Count) $Name entries, not one"
+    }
+    return $entries[0].Substring($entries[0].IndexOf('=') + 1).Trim()
+}
+
 # Runs a program in a fresh process, from a new empty working directory, with PATH
 # set to $PathValue and the variables that would point SoapySDR or dsd-neo elsewhere
 # removed. Returns the exit code and both streams as check text; throws when the
@@ -581,4 +758,5 @@ Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, Convert
     Find-SoapyLoadError, Get-ReleaseNotices, Assert-ReleaseNotices, Get-ReleaseBinaryRecords, Get-ReleaseTreeFiles,
     Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles,
     Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Find-DumpbinDiagnostic, Get-DumpbinMachine,
-    Test-DumpbinImageReport, Test-ImportName, Get-DumpbinDependents, Invoke-IsolatedProcess
+    Test-DumpbinImageReport, Test-ImportName, Get-DumpbinDependents, Resolve-CanonicalPath, Test-SamePath,
+    Test-PathInside, Get-CMakeCacheValue, Invoke-IsolatedProcess

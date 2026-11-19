@@ -39,7 +39,10 @@ $installed = (Resolve-Path -LiteralPath $InstalledDir).Path
 # The Visual C++ runtime the release carries must be that of the toolset that built it
 # (legal/msvc-runtime.md). stage_runtime_dlls.ps1 takes it from VCToolsRedistDir, the
 # runtime folder of the developer shell's toolset, so the build's compilers must be that
-# toolset's: under VCToolsInstallDir, which the same shell sets.
+# toolset's: under VCToolsInstallDir, which the same shell sets. Paths are compared as
+# the file system resolves them, so a cache that names the toolset through another
+# spelling of the same folder (a short 8.3 name, a link or a junction) passes, and a
+# compiler that only appears to be under it does not.
 function Assert-BuildToolset {
     param(
         [Parameter(Mandatory = $true)]
@@ -51,20 +54,16 @@ function Assert-BuildToolset {
             throw "$variable is not set: run from the Visual Studio developer shell of the toolset that built $Build"
         }
     }
-    $toolset = $env:VCToolsInstallDir.Trim().Replace('\', '/').TrimEnd('/') + '/'
-    $cache = Join-Path $Build 'CMakeCache.txt'
-    if (!(Test-Path -LiteralPath $cache -PathType Leaf)) {
-        throw "No CMakeCache.txt in $Build, so the toolset that built it is unknown"
-    }
-    $lines = @(Get-Content -LiteralPath $cache)
+    $toolset = Resolve-CanonicalPath $env:VCToolsInstallDir
     foreach ($language in @('C', 'CXX')) {
-        $entries = @($lines | Where-Object { $_ -cmatch "^CMAKE_${language}_COMPILER:[A-Z]+=" })
-        if ($entries.Count -ne 1) {
-            throw "$cache names no CMAKE_${language}_COMPILER, so the toolset that built $Build is unknown"
+        $compiler = Get-CMakeCacheValue -Build $Build -Name "CMAKE_${language}_COMPILER"
+        try {
+            $resolved = Resolve-CanonicalPath $compiler
+        } catch {
+            throw "$Build was built with $compiler, which is not on this machine, so it is not the toolset of this developer shell ($env:VCToolsInstallDir), whose Visual C++ runtime the release would carry"
         }
-        $compiler = $entries[0].Substring($entries[0].IndexOf('=') + 1).Trim()
-        if (-not $compiler.Replace('\', '/').StartsWith($toolset, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "$Build was built with $compiler, not with the toolset of this developer shell ($env:VCToolsInstallDir), whose Visual C++ runtime the release would carry"
+        if (-not (Test-PathInside -Path $resolved -Folder $toolset)) {
+            throw "$Build was built with $compiler ($resolved), not with the toolset of this developer shell ($env:VCToolsInstallDir), whose Visual C++ runtime the release would carry"
         }
     }
 }
