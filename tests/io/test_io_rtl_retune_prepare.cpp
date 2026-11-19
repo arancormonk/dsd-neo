@@ -1748,7 +1748,32 @@ test_hunt_live_read_idle_bound(void) {
     failed |= expect_int_eq("no-stream reader's hunt read", hunt_read(dev, 0U, &digital, 1, 3000, &got, &waited_ms), 0);
     failed |=
         expect_int_eq("a reader that asks for both gets DSD_RTL_READ_NO_STREAM first", got, DSD_RTL_READ_NO_STREAM);
+
+    /* The hunt's first read also asks to hear of an empty output before it waits (DSD_RTL_READ_EMPTY), to service a
+       P25 watchdog beat. A queued command keeps its priority over that while the device has no stream: the read
+       yields at once, so the decoder applies the command and starts no tune on the receiver being replaced. */
+    rtl_stream_test_live_read_request empty_req = {};
+    empty_req.dev = dev;
+    empty_req.live_opts = &digital;
+    empty_req.want_idle_bound = 1;
+    empty_req.want_empty_return = 1;
+    empty_req.event_after_ms = 3000;
+    empty_req.feed = 1;
+    g_live_commands_pending.store(1);
+    failed |= expect_int_eq("no-stream empty-return read with a command",
+                            rtl_stream_test_live_read(&empty_req, &got, &waited_ms), 0);
+    failed |=
+        expect_int_eq("no stream and a queued command: the empty-return read yields first", got, DSD_RTL_READ_YIELD);
+    g_live_commands_pending.store(0);
+    failed |= expect_int_eq("no-stream empty-return read", rtl_stream_test_live_read(&empty_req, &got, &waited_ms), 0);
+    failed |=
+        expect_int_eq("no stream and no command: the empty-return read says empty at once", got, DSD_RTL_READ_EMPTY);
+    failed |= expect_waited("an empty-return read", waited_ms, 0U, 100U);
     rtl_device_test_set_recovering(dev, 0);
+    failed |=
+        expect_int_eq("empty-return read on a stream", rtl_stream_test_live_read(&empty_req, &got, &waited_ms), 0);
+    failed |= expect_int_eq("a stream with nothing buffered: the empty-return read says empty at once", got,
+                            DSD_RTL_READ_EMPTY);
 
     dsd_runtime_set_controls_pending(nullptr);
     rtl_device_test_usb_gain_device_free(dev);

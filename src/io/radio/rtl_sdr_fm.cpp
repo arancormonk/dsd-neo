@@ -11208,19 +11208,13 @@ struct rtl_live_read_idle {
     int want_no_stream;   /* The reader takes DSD_RTL_READ_NO_STREAM (rtl_live_read_no_stream()). */
     int no_stream_waited; /* A wait slice passed with the device having no stream. */
     int want_idle_bound;  /* The reader takes DSD_RTL_READ_IDLE (rtl_live_read_idle_expired()). */
-    int want_empty; /* The reader takes DSD_RTL_READ_EMPTY at the first empty poll (rtl_live_read_idle_expired()). */
+    int want_empty; /* The reader takes DSD_RTL_READ_EMPTY at the first empty poll (rtl_live_read_empty_poll()). */
 };
 } // namespace
 
 /* One empty poll of a live read. Returns 1 when the read gives up, with its result in @p *result. */
 static int
 rtl_live_read_idle_expired(rtl_live_read_idle* idle, int* result) {
-    /* A reader that services its own waiters first (the decoder's hunt) hears of an empty output before any wait, and
-       reads again to wait. */
-    if (idle->want_empty) {
-        *result = DSD_RTL_READ_EMPTY;
-        return 1;
-    }
     if (idle->analog_monitor < 0) {
         /* The receive mode in force now (an NFM monitor switched to AM, or a digital session to NFM, changes it while
            the stream runs): the decoder's options, which this read runs on the thread of. */
@@ -11295,6 +11289,22 @@ rtl_live_read_no_stream(rtl_live_read_idle* idle, int* result) {
     return 0;
 }
 
+/* One empty poll of a live read, in priority order: the idle bound (rtl_live_read_idle_expired()), the device with no
+   stream, whose queued command yields first (rtl_live_read_no_stream()), then a reader that services its own waiters
+   (the decoder's hunt) hearing of the empty output before any wait, to read again to wait. Returns 1 when the read
+   ends, with its result in @p *result. */
+static int
+rtl_live_read_empty_poll(rtl_live_read_idle* idle, int* result) {
+    if (rtl_live_read_idle_expired(idle, result) || rtl_live_read_no_stream(idle, result)) {
+        return 1;
+    }
+    if (idle->want_empty) {
+        *result = DSD_RTL_READ_EMPTY;
+        return 1;
+    }
+    return 0;
+}
+
 static int
 rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t count, const dsd_opts* live_opts,
                              int wants) {
@@ -11328,11 +11338,7 @@ rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t co
            ownership of the tuner; it is timed from the first empty poll, so a read that
            finds samples reads no clock. */
         int idle_result = 0;
-        if (rtl_live_read_idle_expired(&idle, &idle_result)) {
-            return idle_result;
-        }
-        /* With no stream at all, the decoder gives way to queued commands rather than wait out the outage. */
-        if (rtl_live_read_no_stream(&idle, &idle_result)) {
+        if (rtl_live_read_empty_poll(&idle, &idle_result)) {
             return idle_result;
         }
 
@@ -18498,7 +18504,8 @@ rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out
     feeder.event_ctx = req->event_ctx;
     feeder.feed = req->feed;
     const int wants = (req->want_no_stream ? DSD_RTL_READ_WANT_NO_STREAM : 0)
-                      | (req->want_idle_bound ? DSD_RTL_READ_WANT_IDLE_BOUND : 0);
+                      | (req->want_idle_bound ? DSD_RTL_READ_WANT_IDLE_BOUND : 0)
+                      | (req->want_empty_return ? DSD_RTL_READ_WANT_EMPTY_RETURN : 0);
     return rtl_stream_test_run_live_read(req->dev, req->search_owner, req->live_opts, wants, &feeder, out_got,
                                          out_waited_ms);
 }

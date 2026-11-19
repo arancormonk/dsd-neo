@@ -2649,10 +2649,11 @@ symbol_rtl_read_yielded(dsd_state* state) {
    again. Returns 1 when the read leaves. Nothing of the stream is lost either way: the read found no samples. */
 static int
 symbol_rtl_read_idle_leaves(dsd_opts* opts, dsd_state* state) {
-    /* A P25 watchdog beat's tick runs here, as in a PCM read that waits; one that moved the chain ends the read at once
-       (frame_sync_watchdog_tick.c). */
-    if (frame_sync_service_p25_watchdog(opts, state) || dsd_runtime_controls_pending()
-        || dsd_runtime_publish_pending()) {
+    /* A queued command or a put-off publication first, with a P25 watchdog beat left asked for, so no tune starts on a
+       receiver the command replaces. Else the beat's tick runs here, as in a PCM read that waits; one that moved the
+       chain ends the read at once (frame_sync_watchdog_tick.c). */
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
+        || frame_sync_service_p25_watchdog(opts, state)) {
         state->input_interrupted = 1;
         return 1;
     }
@@ -2683,6 +2684,11 @@ symbol_rtl_read_wants(const symbol_work_ctx* work) {
 static int
 symbol_rtl_read_waits(dsd_opts* opts, dsd_state* state, int* wants) {
     *wants &= ~DSD_RTL_READ_WANT_EMPTY_RETURN;
+    /* A queued command or a put-off publication keeps the beat asked for: the read waits on to its idle bound, where it
+       gives way to them (symbol_rtl_read_idle_leaves()), and no tune starts on a receiver the command replaces. */
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+        return 0;
+    }
     if (frame_sync_service_p25_watchdog(opts, state)) {
         state->input_interrupted = 1;
         return 1;
@@ -2934,20 +2940,23 @@ symbol_tcp_reconnect_cancelled_hunting(void* context) {
     return 0;
 }
 
-/* Wait out the reconnect backoff in slices. Returns 1 when the reconnect was cancelled meanwhile. */
+/* Wait out the reconnect backoff in slices, to one deadline on the real-time clock that counts the cancel checks' own
+   time too (a hunt's check services a P25 tick, which can wait on a rigctl reply). Returns 1 when the reconnect was
+   cancelled meanwhile. */
 static int
 symbol_tcp_backoff(int backoff_ms, dsd_socket_cancel_fn cancelled, void* context) {
-    int waited = 0;
-    while (waited < backoff_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + (uint64_t)(backoff_ms > 0 ? backoff_ms : 0);
+    for (;;) {
         if (cancelled(context)) {
             return 1;
         }
-        const int left = backoff_ms - waited;
-        const int slice = left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS;
-        dsd_sleep_ms((unsigned int)slice);
-        waited += slice;
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (now_ms >= deadline_ms) {
+            return 0;
+        }
+        const uint64_t left = deadline_ms - now_ms;
+        dsd_sleep_ms((unsigned int)(left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS));
     }
-    return cancelled(context);
 }
 
 /* A cancelled reconnect: shutdown, or a hunt read that leaves for a queued command with the TCP input still
@@ -3060,7 +3069,10 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     if (reconnected > 0 && context.moved) {
         /* A P25 tick moved the chain while the reconnect waited: the new connection's samples are the next hunt's,
-           which takes the tuning generation and the decode time after the tune, as any hand-back does. */
+           which takes the tuning generation and the decode time after the tune, as any hand-back does. The old
+           connection's staged tail and resampler history go now (a carrier the receiver left), so the next hunt's first
+           sample is the new connection's alone. */
+        dsd_opts_reset_pcm_input_state(opts);
         state->input_interrupted = 1;
         return 0;
     }
@@ -3126,10 +3138,13 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, cons
 static int
 symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
                        symbol_pcm_read_wait_fn read_wait) {
-    /* A sample already buffered is taken at once; only a read that has to wait on its transport goes on below. */
-    const int buffered = read_wait(opts, out, 0U);
-    if (buffered >= 0) {
-        return buffered;
+    /* A hunt read takes a sample already buffered at once; only one that has to wait on its transport goes on below, to
+       service a P25 watchdog beat first. Frame decoding services none, so it goes straight to its bounded wait. */
+    if (work->hunting) {
+        const int buffered = read_wait(opts, out, 0U);
+        if (buffered >= 0) {
+            return buffered;
+        }
     }
     uint64_t silent_since_ms = 0U;
     int silent = 0;

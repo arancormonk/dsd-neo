@@ -35,6 +35,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/socket.h>
+#endif
 
 static int g_cleanup_calls = 0;
 static int g_failures = 0;
@@ -236,6 +240,11 @@ test_frame_decoding_never_leaves_its_read(void) {
     assert(state.input_interrupted == 0);
     assert(g_waits == 9);
     assert(g_cleanup_calls == 0);
+    /* Frame decoding services no beat, so it makes no zero-time probe either: each wait is one bounded read. */
+    if (g_probes != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a frame read probed its transport %d times\n", g_probes);
+        g_failures++;
+    }
     g_pending = 0;
 }
 
@@ -318,6 +327,11 @@ fake_tcp_close(tcp_input_ctx* ctx) {
 
 /* A beat the watchdog posts while the reconnect's connect waits (set by a case, read by fake_tcp_connect()). */
 static int g_beat_during_connect = 0;
+/* The services the reconnect made before its connect, and how long each service takes (a tick waiting on a rigctl
+   reply). */
+static int g_services_before_connect = -1;
+static unsigned int g_service_ms = 0U;
+static int g_services;
 static int g_beat;
 
 static dsd_socket_t
@@ -325,6 +339,9 @@ fake_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn c
     (void)host;
     (void)port;
     assert(resolve == 0); /* a reconnect looks nothing up */
+    if (g_tcp_connects == 0) {
+        g_services_before_connect = g_services;
+    }
     g_tcp_connects++;
     if (g_command_during_connect) {
         g_pending = 1;
@@ -458,13 +475,14 @@ test_a_lost_tcp_input_is_no_socket(void) {
    or nothing (no beat was waiting). Counts every service the read makes. */
 enum { BEAT_NONE = 0, BEAT_MOVES = 1, BEAT_REFUSED = 2 };
 
-static int g_services = 0;
-
 static int
 fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_services++;
+    if (g_service_ms != 0U) {
+        dsd_sleep_ms(g_service_ms);
+    }
     if (g_beat == BEAT_NONE) {
         return 0;
     }
@@ -583,11 +601,33 @@ test_slow_reads_that_succeed_service_the_beat(void) {
    beat. A tick there that retunes does not cancel the reconnect (a receiver that kept moving would otherwise keep it
    from ever connecting): the reconnect goes on, connects, and the read hands back before the new connection's first
    sample, which is the next hunt's. */
+/* The socket the server's return gives the reconnect: this test's own, so a close it makes closes nothing else of the
+   process. A case that leaves the connection open closes it (close_owned_tcp_socket()). */
+static void
+open_owned_tcp_socket(void) {
+    g_tcp_connect_result = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    assert(g_tcp_connect_result != DSD_INVALID_SOCKET);
+}
+
+static void
+close_owned_tcp_socket(dsd_opts* opts) {
+    if (opts->tcp_sockfd != DSD_INVALID_SOCKET && opts->tcp_sockfd == g_tcp_connect_result) {
+        (void)dsd_socket_close(opts->tcp_sockfd);
+    }
+    opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    opts->tcp_in_ctx = NULL;
+    g_tcp_connect_result = DSD_INVALID_SOCKET;
+}
+
 static void
 run_tcp_reconnect_with_beat(dsd_opts* opts, dsd_state* state, int beat, int beat_during_connect) {
     install_watchdog_service();
     init_tcp_session(opts, state, 0);
-    g_tcp_connect_result = (dsd_socket_t)7; /* the server is back */
+    open_owned_tcp_socket(); /* the server is back */
+    /* The old connection's resampler state, as a low-rate stream leaves it. */
+    opts->input_upsample_prev_valid = 1;
+    opts->input_upsample_len = 4;
+    opts->input_upsample_pos = 1;
     g_beat = beat;
     g_beat_during_connect = beat_during_connect;
     (void)getSymbol(opts, state, 0);
@@ -604,20 +644,39 @@ test_a_tcp_reconnect_services_the_beat(void) {
         DSD_FPRINTF(stderr, "FAIL: a TCP reconnect serviced no beat\n");
         g_failures++;
     }
+    close_owned_tcp_socket(opts); /* the read met the end of the stream and closed it already */
 
     const int cases[2][2] = {{BEAT_MOVES, 0}, {BEAT_NONE, BEAT_MOVES}};
     const char* const where[2] = {"backoff", "connect wait"};
     for (int i = 0; i < 2; i++) {
         run_tcp_reconnect_with_beat(opts, state, cases[i][0], cases[i][1]);
+        /* The old connection's resampler history and staged samples went with it: the next hunt reads the new one
+           alone (run_tcp_reconnect_with_beat() leaves them as a low-rate stream would: staged, with history). */
+        const int old_history = opts->input_upsample_prev_valid != 0 || opts->input_upsample_len != 0;
         if (g_tcp_connects != 1 || opts->tcp_in_ctx == NULL || state->input_interrupted != 1
-            || state->input_fallback_pending != 0 || state->symbolcnt != 0U) {
+            || state->input_fallback_pending != 0 || state->symbolcnt != 0U || old_history) {
             DSD_FPRINTF(stderr,
-                        "FAIL: a retune in the reconnect's %s kept it from reconnecting and handing back (connects %d, "
-                        "connected %d, interrupted %d, fallback %d, symbols %u)\n",
+                        "FAIL: a retune in the reconnect's %s kept it from reconnecting and handing back cleanly "
+                        "(connects %d, connected %d, interrupted %d, fallback %d, symbols %u, old history %d)\n",
                         where[i], g_tcp_connects, opts->tcp_in_ctx != NULL, state->input_interrupted,
-                        state->input_fallback_pending, (unsigned)state->symbolcnt);
+                        state->input_fallback_pending, (unsigned)state->symbolcnt, old_history);
             g_failures++;
         }
+        close_owned_tcp_socket(opts);
+    }
+
+    /* The backoff is bounded by one deadline that counts its services' own time: 150 ms services in the default
+       300 ms backoff leave room for at most two, however slow the host; counting only the 100 ms sleeps allowed four. */
+    install_watchdog_service();
+    init_tcp_session(opts, state, 0);
+    g_service_ms = 150U;
+    g_services_before_connect = -1;
+    (void)getSymbol(opts, state, 0);
+    g_service_ms = 0U;
+    if (g_services_before_connect < 1 || g_services_before_connect > 2) {
+        DSD_FPRINTF(stderr, "FAIL: the reconnect backoff ran %d services of 150 ms in its 300 ms\n",
+                    g_services_before_connect);
+        g_failures++;
     }
 
     /* A queued command (or shutdown) wins over a beat: the reconnect gives way without running the tick, so no tune
@@ -782,6 +841,19 @@ test_slow_rtl_reads_that_succeed_service_the_beat(void) {
                     state->input_interrupted, state->symbolcnt - before);
         g_failures++;
     }
+    /* A queued command keeps the beat asked for: the empty read runs no tick (no tune on a receiver the command
+       replaces), and the read waits on for its sample. */
+    install_watchdog_service();
+    state->input_interrupted = 0;
+    g_pending = 1;
+    g_beat = BEAT_MOVES;
+    (void)getSymbol(opts, state, 0);
+    if (g_services != 0 || g_beat != BEAT_MOVES) {
+        DSD_FPRINTF(stderr, "FAIL: a slow RTL hunt read ran the beat's tick with a command queued (services %d)\n",
+                    g_services);
+        g_failures++;
+    }
+    g_pending = 0;
     g_beat = BEAT_NONE;
     dsd_frame_sync_hooks_set(NULL);
     dsd_rtl_stream_io_hooks_set(NULL);

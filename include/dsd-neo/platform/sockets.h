@@ -112,7 +112,8 @@ dsd_socket_t dsd_socket_accept(dsd_socket_t sock, struct sockaddr* addr, int* ad
  */
 int dsd_socket_connect(dsd_socket_t sock, const struct sockaddr* addr, int addrlen);
 /** Connect a new blocking socket within timeout_ms, checking cancellation every
- * 100 ms. Restores blocking mode. Returns 0 on success, -1 with native error.
+ * 100 ms. timeout_ms is one deadline on the monotonic clock that counts the cancellation checks' own time too.
+ * Restores blocking mode. Returns 0 on success, -1 with native error.
  * Hostname resolution is separate and follows the system resolver's timeout. */
 typedef int (*dsd_socket_cancel_fn)(void* context);
 int dsd_socket_connect_bounded(dsd_socket_t sock, const struct sockaddr* addr, int addrlen, unsigned int timeout_ms,

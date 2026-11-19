@@ -6,6 +6,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -339,6 +340,89 @@ done:
 }
 #endif
 
+#if defined(__linux__)
+/* A connect that stays pending (the listener's accept queue is full, so Linux drops its SYN) is bounded by one deadline
+   that counts the cancel checks' own time: a check that blocks (the decoder services a P25 tick there, which can wait
+   on a rigctl reply) never stretches the bound. With 150 ms checks and a 300 ms bound, the deadline allows at most two
+   checks, whatever the host's load; counting only the 100 ms waits allowed three. */
+static int g_slow_cancel_calls = 0;
+
+static int
+slow_cancel(void* context) {
+    (void)context;
+    g_slow_cancel_calls++;
+    dsd_sleep_ms(150U);
+    return 0;
+}
+
+static int
+test_connect_bound_counts_slow_cancel_checks(void) {
+    enum { FILL_MAX = 16 };
+
+    dsd_socket_t fill[FILL_MAX];
+    int filled = 0;
+    int rc = 0;
+    dsd_socket_t listener = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (listener == DSD_INVALID_SOCKET) {
+        return 1;
+    }
+    struct sockaddr_in bind_addr;
+    DSD_MEMSET(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind_addr.sin_port = htons(0);
+    struct sockaddr_in listener_addr;
+    if (dsd_socket_bind(listener, (const struct sockaddr*)&bind_addr, (int)sizeof(bind_addr)) != 0
+        || dsd_socket_listen(listener, 0) != 0 || get_bound_addr(listener, &listener_addr) != 0) {
+        (void)dsd_socket_close(listener);
+        return 1;
+    }
+    /* Fill the queue until a connect stays pending past a short bound. */
+    int pending = 0;
+    while (filled < FILL_MAX && !pending) {
+        fill[filled] = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+        if (fill[filled] == DSD_INVALID_SOCKET) {
+            break;
+        }
+        int code = 0;
+        pending = dsd_socket_connect_bounded(fill[filled], (const struct sockaddr*)&listener_addr,
+                                             (int)sizeof(listener_addr), 200U, NULL, NULL, &code)
+                      != 0
+                  && code == ETIMEDOUT;
+        filled++;
+    }
+    if (!pending) {
+        DSD_FPRINTF(stderr, "SKIP: no connect stayed pending on this host's loopback\n");
+    } else {
+        dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+        int code = 0;
+        g_slow_cancel_calls = 0;
+        const int result = client == DSD_INVALID_SOCKET
+                               ? 0
+                               : dsd_socket_connect_bounded(client, (const struct sockaddr*)&listener_addr,
+                                                            (int)sizeof(listener_addr), 300U, slow_cancel, NULL, &code);
+        if (result != -1 || code != ETIMEDOUT || g_slow_cancel_calls > 2) {
+            DSD_FPRINTF(
+                stderr,
+                "FAIL: a pending connect's bound did not count its cancel checks (result %d, code %d, %d checks "
+                "of 150 ms in a 300 ms bound)\n",
+                result, code, g_slow_cancel_calls);
+            rc = 1;
+        }
+        if (client != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(client);
+        }
+    }
+    for (int i = 0; i < filled; i++) {
+        if (fill[i] != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_close(fill[i]);
+        }
+    }
+    (void)dsd_socket_close(listener);
+    return rc;
+}
+#endif
+
 static int
 cancel_connect(void* context) {
     return *(int*)context;
@@ -370,6 +454,9 @@ main(void) {
     }
 
     rc |= test_cancelled_connect();
+#if defined(__linux__)
+    rc |= test_connect_bound_counts_slow_cancel_checks();
+#endif
     rc |= test_port_range();
     rc |= expect_numeric_ipv4_resolves("127.0.0.1", 7355);
     rc |= expect_numeric_ipv4_resolves("192.168.1.50", 7355);
