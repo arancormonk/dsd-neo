@@ -119,6 +119,12 @@ SoapyBandwidthChoice soapy_choose_bandwidth_hz(int tuner_bw_hz, bool tuner_bw_hz
 double soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges, bool* out_supported);
 double soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
                                  const std::vector<SoapyRange>& ranges, bool* out_adjusted);
+/* soapy_nearest_sample_rate() among the advertised rates not above @p max_rate: the listed rates at or below it and
+ * each range cut back to its last point at or below it. A device that advertises no rate at all is given @p requested.
+ * Sets @p out_found (required) false, and returns 0, when nothing advertised is at or below @p max_rate. Each rate it
+ * returns is an advertised point, so a write of it (soapy_nearest_sample_rate() on every advertised rate) keeps it. */
+double soapy_nearest_sample_rate_within(double requested, double max_rate, const std::vector<double>& listed_rates,
+                                        const std::vector<SoapyRange>& ranges, bool* out_found);
 /* Whether the device runs @p rate_hz itself: a listed rate within 1 Hz of it, or a range point (minimum + k * step,
  * any point of a range with no step) within 1 Hz. */
 bool soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,

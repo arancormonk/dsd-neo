@@ -321,6 +321,21 @@ int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested
 int rtl_device_rate_written_for(struct rtl_device* dev, uint32_t requested, uint32_t* out_written);
 
 /**
+ * @brief Report the rate to write for a requested rate, among those not above a limit.
+ *
+ * Pure query; the device is not reconfigured. A SoapySDR device answers with the advertised rate nearest
+ * @p requested among the advertised rates at or below @p max_hz (each a rate a write of it keeps), without the
+ * profile's preferred rate; other backends with @p requested when it is at or below @p max_hz.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param requested Rate in Hz.
+ * @param max_hz The highest rate to answer with, in Hz.
+ * @param out_written Receives the rate to write, in Hz.
+ * @return 0 on success, negative when the backend cannot answer or advertises nothing at or below @p max_hz.
+ */
+int rtl_device_rate_written_within(struct rtl_device* dev, uint32_t requested, uint32_t max_hz, uint32_t* out_written);
+
+/**
  * @brief The rate planner's backend for @p dev (issue #806, <dsd-neo/io/rate_plan.h>).
  *
  * An Airspy and a SoapySDR device may force their own rate and step it to the DSP bandwidth; an RTL-SDR, rtl_tcp and

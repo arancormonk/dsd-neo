@@ -597,6 +597,37 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
     return supported ? nearest : requested;
 }
 
+double
+soapy_nearest_sample_rate_within(double requested, double max_rate, const std::vector<double>& listed_rates,
+                                 const std::vector<SoapyRange>& ranges, bool* out_found) {
+    *out_found = false;
+    if (listed_rates.empty() && ranges.empty()) {
+        *out_found = requested <= max_rate;
+        return *out_found ? requested : 0.0;
+    }
+    std::vector<double> listed;
+    for (double rate : listed_rates) {
+        if (rate <= max_rate) {
+            listed.push_back(rate);
+        }
+    }
+    std::vector<SoapyRange> within;
+    for (const SoapyRange& range : ranges) {
+        if (range.maximum < range.minimum || range.minimum > max_rate) {
+            continue;
+        }
+        SoapyRange cut = range;
+        cut.maximum = std::min(range.maximum, max_rate);
+        cut.maximum = range_last_point(cut);
+        within.push_back(cut);
+    }
+    if (listed.empty() && within.empty()) {
+        return 0.0;
+    }
+    *out_found = true;
+    return soapy_nearest_sample_rate(requested, listed, within, nullptr);
+}
+
 bool
 soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
                              const std::vector<SoapyRange>& ranges) {

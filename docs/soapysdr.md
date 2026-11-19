@@ -160,12 +160,14 @@ one whose rate cannot be resampled to the bandwidth within 5 ppm (`dsd-neo canno
 exactly. A profile can prefer a rate of its own: the HackRF profile asks for 10 MS/s when the radio offers that rate,
 and dsd-neo halves it down the same way. It is a preference, not a promise. Near the top of the tuning range, where 10
 MS/s would put the capture (a quarter of the rate above the channel) past the highest frequency dsd-neo can tune, the
-HackRF is asked instead for its listed rate nearest the plain request (2 MS/s at the default DSP bandwidth), if that one
-fits. And the radio's read-back decides in the end: the rate it reports is the rate dsd-neo runs, if the chain can use
-it. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
+HackRF is asked instead for the rate it offers nearest the plain request among those that fit (2 MS/s at the default
+DSP bandwidth). And the radio's read-back decides in the end: the rate it reports is the rate dsd-neo runs, if the chain
+can use it. Up to 10 MS/s is accepted, checked on the rate the radio reports back;
 a radio that reports more does not start (`the device runs ... Hz, above the 10000000 Hz capture ceiling`), and dsd-neo
-sizes its input buffer for the rate the radio delivers. A retune whose reported rate moves above what that buffer holds
-is refused and the radio stays where it was; restart the stream to use the new rate.
+sizes its input buffer for the rate the radio delivers. A retune keeps to what that buffer holds: a HackRF that started
+at 2 MS/s near the top of the range stays at 2 MS/s when you tune further down, where 10 MS/s would fit the range but
+not the buffer. A retune whose reported rate still moves above what the buffer holds is refused and the radio stays where
+it was; restart the stream to use the new rate.
 
 **Tuner filter.** A SoapySDR capture is tuned a quarter of the sample rate above the channel (dsd-neo moves it back in
 software, which keeps the channel away from the radio's centre spike), so the radio's filter has to keep a channel

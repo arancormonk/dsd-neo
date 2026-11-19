@@ -5946,23 +5946,47 @@ capture_stage_provisional_plan(uint32_t freq, uint32_t request_hz, uint32_t prog
     return 0;
 }
 
-/* The rate to stage at @p freq for @p request_hz on a device that says it delivers @p deliverable_hz. A SoapySDR
- * device's rate is only a request until it reads back, so one whose capture frequency would be out of range there (a
- * HackRF's preferred 10 MS/s 2.5 MHz above a centre near the top of the range) is given instead the advertised rate
- * nearest the request, the rate its write would program without the preference, when that one fits; the read-back
- * then places the capture for the rate delivered. Otherwise @p deliverable_hz, and a capture out of range refuses the
- * tune. */
+/* The highest capture rate whose capture frequency for @p freq is in range (capture_frequency_for_rate()): with the
+ * Fs/4 shift, the capture sits a quarter of the rate above the centre (and the edge), which the top of the range
+ * bounds; without it the rate moves nothing. 0 when the centre itself is past the top. */
 static uint32_t
-capture_provisional_rate(uint32_t freq, uint32_t request_hz, uint32_t deliverable_hz) {
-    if (deliverable_hz == request_hz || rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY) {
+capture_rate_limit_for_frequency(uint32_t freq) {
+    if (!capture_fs4_shift_active()) {
+        return UINT32_MAX;
+    }
+    const int64_t base_hz = (int64_t)freq + ((int64_t)controller.edge * (int64_t)demod.rate_in) / 2;
+    const int64_t headroom_hz = (int64_t)UINT32_MAX - base_hz;
+    if (headroom_hz < 0) {
+        return 0U;
+    }
+    const int64_t limit_hz = headroom_hz * 4 + 3;
+    return limit_hz > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)limit_hz;
+}
+
+/* The rate to stage at @p freq for @p request_hz on a device that says it delivers @p deliverable_hz. A SoapySDR
+ * device's rate is only a request until it reads back, and one that does not fit is not the device's only choice: a
+ * rate whose capture frequency would be out of range (a HackRF's preferred 10 MS/s 2.5 MHz above a centre near the top
+ * of the range), or, once the stream sized its input ring (@p ring_sized: a retune), one above the rate that ring
+ * holds (the preferred 10 MS/s on a stream that opened at 2 MS/s), is replaced by the advertised rate nearest the
+ * request that fits both, the rate its write would program without the preference
+ * (rtl_device_rate_written_within()); the read-back then places the capture for the rate delivered. With none that
+ * fits, @p deliverable_hz, which the stage or the read-back refuses. */
+static uint32_t
+capture_provisional_rate(uint32_t freq, uint32_t request_hz, uint32_t deliverable_hz, int ring_sized) {
+    if (rate_chain_backend() != DSD_RATE_PLAN_BACKEND_SOAPY) {
         return deliverable_hz;
     }
+    uint32_t limit_hz = capture_rate_limit_for_frequency(freq);
+    if (ring_sized) {
+        limit_hz = std::min(limit_hz, g_input_ring_rate_hz);
+    }
     uint32_t capture_freq_hz = 0U;
-    if (capture_frequency_for_rate(freq, deliverable_hz, &capture_freq_hz) == 0) {
+    if (deliverable_hz <= limit_hz && capture_frequency_for_rate(freq, deliverable_hz, &capture_freq_hz) == 0) {
         return deliverable_hz;
     }
     uint32_t fallback_hz = 0U;
-    if (rtl_device_rate_written_for(rtl_device_handle, request_hz, &fallback_hz) == 0 && fallback_hz != 0U
+    if (limit_hz != 0U && rtl_device_rate_written_within(rtl_device_handle, request_hz, limit_hz, &fallback_hz) == 0
+        && fallback_hz != 0U && fallback_hz <= limit_hz
         && capture_frequency_for_rate(freq, fallback_hz, &capture_freq_hz) == 0) {
         return fallback_hz;
     }
@@ -5979,15 +6003,13 @@ capture_provisional_rate(uint32_t freq, uint32_t request_hz, uint32_t deliverabl
  * the device's read-back gives the final plan; the I/Q rate step is not designed for it.
  *
  * @param freq Desired RF center frequency in Hz.
- * @param rate Current input sample rate (unused).
+ * @param ring_sized Whether the stream's input ring was sized (a retune), which then bounds the rate staged.
  * @return 0; kCaptureFrequencyOutOfRange (logged) when the capture frequency for @p freq is out of the device's range;
  * or kCaptureRateChainRefused when the planner refuses the rate (g_rate_chain_refusal says why; for a SoapySDR
  * device's advertised rate the read-back decides, capture_provisional_plan()). Nothing is staged on either refusal.
  */
 static int
-optimal_settings(uint32_t freq, int rate) {
-    UNUSED(rate);
-
+optimal_settings(uint32_t freq, int ring_sized) {
     const uint32_t request_hz = capture_request_rate_hz();
     /* Devices with a fixed rate grid cannot honour the RTL-shaped request: the plan is made for what they will
        actually deliver, so the fs/4 capture offset and rate_out below follow the real stream rate. */
@@ -5995,7 +6017,7 @@ optimal_settings(uint32_t freq, int rate) {
     uint32_t deliverable_hz = 0U;
     if (request_hz > 0U && rtl_device_nearest_supported_rate(rtl_device_handle, request_hz, &deliverable_hz) == 0
         && deliverable_hz > 0U) {
-        programmed_hz = capture_provisional_rate(freq, request_hz, deliverable_hz);
+        programmed_hz = capture_provisional_rate(freq, request_hz, deliverable_hz, ring_sized);
     }
     return capture_stage_provisional_plan(freq, request_hz, programmed_hz);
 }
@@ -6140,7 +6162,7 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSetting
     }
     CaptureSettingsSnapshot previous =
         restore_on_frequency_failure ? *restore_on_frequency_failure : capture_settings_snapshot();
-    int rc = optimal_settings(center_freq_hz, demod.rate_in);
+    int rc = optimal_settings(center_freq_hz, 1);
     const uint32_t requested_rate_hz = load_dongle_rate();
     uint32_t generation = 0U;
     const int cacheable = capture_writes_generation(&generation);
@@ -7610,7 +7632,7 @@ controller_program_initial_device(const struct controller_state* s, const dsd_op
     dongle.offset_tuning = rtl_device_get_offset_tuning(rtl_device_handle);
     /* A centre whose capture frequency is out of range, or a rate the planner refuses, fails the start before anything
        is written (issue #670 B4, issue #806). */
-    const int rc = optimal_settings(s->freqs[0], demod.rate_in);
+    const int rc = optimal_settings(s->freqs[0], 0);
     if (rc != 0) {
         if (rc == kCaptureRateChainRefused) {
             LOG_ERROR("The stream cannot start: %s.\n", g_rate_chain_refusal);
@@ -15045,13 +15067,13 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
     store_dongle_rate(960000U);
 
     CaptureSettingsSnapshot before = capture_settings_snapshot_for_center(851000000U);
-    (void)optimal_settings(855000000U, demod.rate_in);
+    (void)optimal_settings(855000000U, 1);
     restore_capture_settings(&before);
     *out_full_freq_hz = load_dongle_frequency();
     *out_full_rate_hz = load_dongle_rate();
     *out_full_rate_out_hz = demod.rate_out;
 
-    (void)optimal_settings(855000000U, demod.rate_in);
+    (void)optimal_settings(855000000U, 1);
     restore_capture_rate_settings(&before);
     *out_partial_freq_hz = load_dongle_frequency();
     *out_partial_rate_hz = load_dongle_rate();
@@ -15881,7 +15903,7 @@ rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, int* 
     const int outer_post_downsample = demod.post_downsample;
     demod.rate_in = dsp_bw_hz;
     demod.post_downsample = 1;
-    (void)optimal_settings(851375000U, demod.rate_in);
+    (void)optimal_settings(851375000U, 0);
     *out_capture_rate_hz = load_dongle_rate();
     *out_passes = demod.downsample_passes;
     *out_rate_out_hz = demod.rate_out;

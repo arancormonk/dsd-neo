@@ -8952,10 +8952,12 @@ Key public headers:
     `stream_open_validate_device_capture_rate()` checks an advertised rate early for every backend but SoapySDR, whose
     drivers may deliver another; for the same reason a provisional plan refused on a SoapySDR device's advertised rate
     is deferred (`capture_provisional_plan()`: the chain runs the request's own plan until the read-back's final plan
-    validates the rate delivered), and a preferred rate whose capture frequency would be out of range is not staged
-    when the rate the device would write for the plain request fits (`capture_provisional_rate()`,
-    `rtl_device_rate_written_for()`: the advertised rate nearest the request, without the preference; the capture is
-    placed for it and moved again for the rate the device delivers). A final plan refused on the rate written is made again on a SoapySDR
+    validates the rate delivered), and a rate whose capture frequency would be out of range, or, on a retune, that is
+    above the rate the running input ring holds, is not staged when an advertised rate fits both
+    (`capture_provisional_rate()`, `rtl_device_rate_written_within()`: the advertised rate nearest the request among
+    those at or below the limit, without the preference; the capture is placed for it and moved again for the rate the
+    device delivers). `rtl_device_rate_written_for()` is the same query with no limit; for a native Airspy it answers
+    with the rate asked for, as the setter writes it, while the planning query answers with the rate the Airspy runs. A final plan refused on the rate written is made again on a SoapySDR
     read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
     3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and
     the device as having forced its rate when that differs from the request. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports

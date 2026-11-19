@@ -191,6 +191,37 @@ test_sddc_rate_grid(void) {
     return rc;
 }
 
+/* The advertised rate nearest a request among those not above a limit: listed rates past it are left out, a range is
+ * cut back to its last point at or below it, and nothing at or below it is no answer. */
+static int
+test_nearest_rate_within_limit(void) {
+    int rc = 0;
+    bool found = false;
+    const std::vector<double> hackrf_listed = {1e6, 2e6, 3e6, 4e6, 10e6};
+    const std::vector<dsdneo::SoapyRange> hackrf_range = {{2e6, 20e6, 0.0}};
+    rc |= expect_double(
+        "a 10 MS/s list under a 3.2 MS/s limit gives 2 MS/s",
+        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 3200000.0, hackrf_listed, hackrf_range, &found), 2000000.0);
+    rc |= expect_true("found under the limit", found);
+    const std::vector<double> ends = {1500000.0, 10e6};
+    const std::vector<dsdneo::SoapyRange> between = {{1500000.0, 10e6, 0.0}};
+    rc |=
+        expect_double("a request the range holds past the limit gives the listed rate under it",
+                      dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, ends, between, &found), 1500000.0);
+    const std::vector<dsdneo::SoapyRange> stepped = {{1e6, 10e6, 250000.0}};
+    rc |= expect_double("a stepped range is cut to its last step under the limit",
+                        dsdneo::soapy_nearest_sample_rate_within(3000000.0, 2600000.0, {}, stepped, &found), 2500000.0);
+    rc |= expect_true("found in the cut range", found);
+    (void)dsdneo::soapy_nearest_sample_rate_within(1536000.0, 900000.0, ends, between, &found);
+    rc |= expect_true("nothing advertised under the limit is no answer", !found);
+    rc |= expect_double("a device that advertises nothing is given the request",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 3200000.0, {}, {}, &found), 1536000.0);
+    rc |= expect_true("found for a device that advertises nothing", found);
+    (void)dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1000000.0, {}, {}, &found);
+    rc |= expect_true("nor above the limit", !found);
+    return rc;
+}
+
 static int
 test_bandwidth_selection(void) {
     int rc = 0;
@@ -630,6 +661,7 @@ main(void) {
     rc |= test_returned_values_are_advertised();
     rc |= test_points_stay_inside_the_advertised_ranges();
     rc |= test_closest_point_wins();
+    rc |= test_nearest_rate_within_limit();
     rc |= test_ties_and_lower_steps();
     rc |= test_expect_point_rejects_nan();
     rc |= test_floor_filter_passes_the_warning();

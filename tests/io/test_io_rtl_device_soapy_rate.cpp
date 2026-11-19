@@ -442,17 +442,21 @@ test_write_programs_asked_rate(void) {
     expect_eq("the advertised point is planned", got.nearest_hz, 9999999.0);
 }
 
-/* A retune refused for a rate above the running input ring rolls back to the rate the stream ran, and the stream goes
- * on: a HackRF that opened at 2 MS/s (10 MS/s not offered) then offers 10 MS/s too. */
+/* A HackRF that opened at 2 MS/s (10 MS/s not offered) then offers 10 MS/s too: a retune is asked for the 2 MS/s its
+ * input ring holds, not the preferred 10 MS/s. One whose device moves to 10 MS/s all the same, above that ring, is
+ * refused and rolls back to the rate the stream ran, and the stream goes on. */
 void
 test_rollback_restores_saved_rate(void) {
     static const double only_2m[] = {2e6};
     static const double both[] = {2e6, 10e6};
+    static const double delivered[] = {0.0, 10e6, 0.0};
     rtl_device_test_soapy_gain_fake fake = hackrf_fake();
     fake.listed_rates = only_2m;
     fake.listed_rate_count = 1U;
     fake.rate_ranges = nullptr;
     fake.rate_range_count = 0U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 3U;
     rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
     dsd_opts* opts = make_soapy_opts(-1);
     if (!dev || !opts) {
@@ -470,7 +474,8 @@ test_rollback_restores_saved_rate(void) {
     expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
                                                                         kCenterHz + 25000U, 72000, &got)
                                        == 0);
-    expect_true("the retune to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("rate writes: start, hop and one rollback", (double)fake.rate_writes, 3.0);
+    expect_true("the retune the device moved to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
     expect_eq("the stream goes back on 2 MS/s", got.capture_rate_hz, 2000000.0);
     expect_eq("the device goes back on 2 MS/s", fake.rate_hz, 2000000.0);
     expect_true("the stream keeps running", dsd_exitflag_load() == 0);
@@ -480,18 +485,21 @@ test_rollback_restores_saved_rate(void) {
     rtl_device_test_soapy_gain_device_free(dev);
 }
 
-/* A HackRF listing 2 and 10 MS/s that delivers 2 MS/s at the start, asked for 10, then honours 10 on a hop: the ring
- * sized for 2 MS/s refuses the hop, and the rollback puts the device back on the 2 MS/s it delivered, checked by its
- * read-back, instead of writing the 10 MS/s it was asked for again and stopping the stream. */
+/* A HackRF listing 2 and 10 MS/s that delivers 2 MS/s at the start, asked for 10. A hop is asked for the 2 MS/s its
+ * ring holds, but the device moves to 10 MS/s: the ring sized for 2 MS/s refuses the hop, and the rollback puts the
+ * device back on the 2 MS/s it delivered, checked by its read-back, instead of writing the 10 MS/s the start was asked
+ * for again and stopping the stream. */
 void
 test_rollback_restores_delivered_rate(void) {
     static const double both[] = {2e6, 10e6};
+    static const double delivered[] = {2e6, 10e6, 0.0};
     rtl_device_test_soapy_gain_fake fake = hackrf_fake();
     fake.listed_rates = both;
     fake.listed_rate_count = 2U;
     fake.rate_ranges = nullptr;
     fake.rate_range_count = 0U;
-    fake.readback_rate_hz = 2e6;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 3U;
     rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
     dsd_opts* opts = make_soapy_opts(-1);
     if (!dev || !opts) {
@@ -503,11 +511,11 @@ test_rollback_restores_delivered_rate(void) {
     rtl_stream_test_capture_result got{};
     expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
     expect_eq("the start runs the 2 MS/s delivered", got.capture_rate_hz, 2000000.0);
-    fake.readback_rate_hz = 0.0;
     expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
                                                                         kCenterHz + 25000U, 72000, &got)
                                        == 0);
-    expect_true("the retune to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("rate writes: start, hop and one rollback", (double)fake.rate_writes, 3.0);
+    expect_true("the retune the device moved to 10 MS/s is refused", got.completion == RTL_STREAM_TUNE_FAILED);
     expect_eq("the device goes back on the 2 MS/s it delivered", fake.rate_hz, 2000000.0);
     expect_eq("the stream goes back on 2 MS/s", got.capture_rate_hz, 2000000.0);
     expect_true("the stream keeps running", dsd_exitflag_load() == 0);
@@ -870,6 +878,64 @@ test_preference_out_of_tuning_range(void) {
     expect_true("a rate is written", fake.rate_writes > 0);
     expect_eq("the capture runs 2 MS/s", got.capture_rate_hz, 2000000.0);
     expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 500000.0);
+
+    /* The stream that opened there sized its input ring for 2 MS/s. A retune further down, where the preferred 10 MS/s
+       would fit the tuning range, stays within that ring: it runs the 2 MS/s the device is asked for without the
+       preference, as both centres can, instead of being refused for a rate the ring does not hold. */
+    rtl_device_test_soapy_gain_fake hopper = hackrf_fake();
+    dev = rtl_device_test_soapy_gain_device(&hopper, 0);
+    opts = make_soapy_opts(hopper.bandwidth_request_hz);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result hop{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, center_hz, &hop) == 0);
+    expect_eq("the session starts at 2 MS/s", hop.capture_rate_hz, 2000000.0);
+    expect_true("the retune runs",
+                rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, kCenterHz, 0, &hop) == 0);
+    expect_true("the retune further down lands", hop.completion == RTL_STREAM_TUNE_OK);
+    expect_eq("it runs 2 MS/s", hop.capture_rate_hz, 2000000.0);
+    expect_eq("the device was asked for 2 MS/s", hopper.rate_hz, 2000000.0);
+    expect_eq("the capture sits a quarter of it above the centre", hop.capture_freq_hz, (double)kCenterHz + 500000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A centre 380 kHz below the top of the tuning range on a device that lists 1.5 and 10 MS/s, accepts any rate between
+ * them, and delivers 1.5 MS/s whatever it is given: neither the preferred 10 MS/s nor the 1.536 MS/s request fits its
+ * quarter-rate offset (2.5 MHz and 384 kHz), but the 1.5 MS/s delivered does (375 kHz). The open is not refused
+ * before the device reads back what it delivers. */
+void
+test_offset_judged_on_the_readback_near_the_top(void) {
+    static const double listed[] = {1500000.0, 10e6};
+    static const rtl_device_test_soapy_range between[] = {{1500000.0, 10e6, 0.0}};
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    fake.listed_rates = listed;
+    fake.listed_rate_count = 2U;
+    fake.rate_ranges = between;
+    fake.rate_range_count = 1U;
+    fake.readback_rate_hz = 1500000.0;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(fake.bandwidth_request_hz);
+    rtl_stream_test_capture_result got{};
+    got.rc = -100;
+    const uint32_t center_hz = UINT32_MAX - 380000U;
+    if (dev && opts) {
+        expect_true("the open seam runs",
+                    rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, center_hz, &got) == 0);
+    }
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+    expect_true("the open starts", got.rc == 0);
+    expect_true("a rate is written", fake.rate_writes > 0);
+    expect_eq("the capture runs the 1.5 MS/s delivered", got.capture_rate_hz, 1500000.0);
+    expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 375000.0);
 }
 
 /* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
@@ -1154,6 +1220,7 @@ main(int argc, char** argv) {
         {"rate_written_judges_the_readback", test_rate_written_judges_the_readback},
         {"oversized_rate_written_refused", test_oversized_rate_written_refused},
         {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
+        {"offset_judged_on_the_readback_near_the_top", test_offset_judged_on_the_readback_near_the_top},
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
         {"oversized_readback_refused", test_oversized_readback_refused},
