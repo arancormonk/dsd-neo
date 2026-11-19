@@ -40,6 +40,8 @@ resource bundle, so they travel with the binary rather than as a separate file.
 - [ ] Download `dsd-neo-macos-arm64-portable-*.dmg`.
   - [ ] Mount the DMG.
   - [ ] Confirm `dsd-neo-macos/share/doc/dsd-neo/` contains all required files, plus
+        `licenses/codec2-LGPL-2.1.txt`, `licenses/codec2-NOTICES.txt` and
+        `licenses/LicenseRef-codec2-varicode.txt` for the codec2 library it bundles,
         `licenses/librtlsdr-GPL-2.0-or-later.txt`, `licenses/librtlsdr-PATCHES.txt` and
         `licenses/librtlsdr-NOTICES.txt` for the librtlsdr it bundles.
 

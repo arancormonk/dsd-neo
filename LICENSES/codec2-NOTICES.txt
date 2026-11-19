@@ -1,6 +1,6 @@
 codec2 (https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2)
 copyright notices for the codec2 library dsd-neo carries in the Windows ZIP (codec2.dll), the
-Android app and the Linux AppImage, all built from commit ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44
+Android app, the Linux AppImage and the macOS DMG, all built from commit ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44
 (release 1.2.0; archive
 https://github.com/arancormonk/codec2/archive/ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44.tar.gz,
 SHA512

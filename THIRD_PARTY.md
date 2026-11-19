@@ -265,8 +265,8 @@ sources both builds compile, the arm64 files of OpenSSL and Opus included.
 
 - **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2, the
   commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND
-  BSD-2-Clause. The Android app links the same overlay's static library and the AppImage bundles a shared library
-  built from the same commit, so all three carry `licenses/codec2-LGPL-2.1.txt` (codec2's COPYING) and
+  BSD-2-Clause. The Android app links the same overlay's static library, and the AppImage and the macOS DMG bundle a
+  shared library built from the same commit, so all four carry `licenses/codec2-LGPL-2.1.txt` (codec2's COPYING) and
   `licenses/codec2-NOTICES.txt` (the holders, the kiss_fft and Mozilla BSD notices and the LGPL-2.1-or-later Valenti
   notice), and `licenses/LicenseRef-codec2-varicode.txt` (the varicode files' "GNU General Public License version 2.1"
   grant, unmodified, with a note that dsd-neo reads it as the LGPL 2.1 of codec2's COPYING and README).

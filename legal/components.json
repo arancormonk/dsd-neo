@@ -1063,6 +1063,7 @@
         "vcpkg.json",
         "vcpkg-ports/codec2/",
         ".github/workflows/linux-appimage.yaml",
+        ".github/workflows/macos-ci.yaml",
         "LICENSES/codec2-LGPL-2.1.txt",
         "LICENSES/codec2-NOTICES.txt",
         "LICENSES/LicenseRef-codec2-varicode.txt"
@@ -1073,6 +1074,7 @@
       "platforms": [
         "android",
         "linux",
+        "macos",
         "windows"
       ],
       "license_declared": "LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause",
@@ -1082,14 +1084,14 @@
         "LICENSES/codec2-NOTICES.txt",
         "LICENSES/LicenseRef-codec2-varicode.txt"
       ],
-      "assessment": "The codec2 library from the pinned arancormonk/codec2 commit (CODEC2_SHA; release 1.2.0, a fork of drowe67/codec2), which dsd-neo uses for M17 voice: codec2.dll in the Windows ZIP, built by the codec2 overlay; the same overlay's static library, linked into the Android app (arm64-android-static); and the shared library the Linux AppImage builds from the same commit and bundles. Each build compiles the sources of src/CMakeLists.txt's CODEC2_SRCS with LPCNet off. Most files grant the LGPL 2.1 without \"or later\"; the Valenti code in src/mpdecode_core.c is LGPL-2.1-or-later, src/kiss_fft.c and src/kiss_fftr.c are BSD-3-Clause (Mark Borgerding) and src/lpcnet_freq.c is BSD-2-Clause (Mozilla). src/varicode.c, varicode.h and varicode_table.h grant \"the GNU General Public License version 2.1\", a version the FSF never published; they are recorded as LGPL-2.1-only, the license of codec2's COPYING and README.md. LICENSES/codec2-LGPL-2.1.txt is the upstream COPYING, unmodified. LICENSES/codec2-NOTICES.txt names the holders of the compiled sources and reproduces the BSD and Valenti notices from the pinned archive (its SHA512 is CODEC2_TARBALL_SHA512). LICENSES/LicenseRef-codec2-varicode.txt reproduces the varicode grant unmodified, with a note stating that reading; it records the reading, not a separate license, so no LicenseRef enters the license expression. The Windows ZIP, the APK and the AppImage carry the three as licenses/codec2-LGPL-2.1.txt, licenses/codec2-NOTICES.txt and licenses/LicenseRef-codec2-varicode.txt, and the ZIP also carries the copyright file the overlay installs (share/codec2/copyright, the same COPYING) as licenses/codec2-copyright.txt. Corresponding source is open (CORRESPONDING-SOURCE).",
+      "assessment": "The codec2 library from the pinned arancormonk/codec2 commit (CODEC2_SHA; release 1.2.0, a fork of drowe67/codec2), which dsd-neo uses for M17 voice: codec2.dll in the Windows ZIP, built by the codec2 overlay; the same overlay's static library, linked into the Android app (arm64-android-static); and the shared libraries the Linux AppImage and the macOS DMG build from the same commit and bundle. Each build compiles the sources of src/CMakeLists.txt's CODEC2_SRCS with LPCNet off. Most files grant the LGPL 2.1 without \"or later\"; the Valenti code in src/mpdecode_core.c is LGPL-2.1-or-later, src/kiss_fft.c and src/kiss_fftr.c are BSD-3-Clause (Mark Borgerding) and src/lpcnet_freq.c is BSD-2-Clause (Mozilla). src/varicode.c, varicode.h and varicode_table.h grant \"the GNU General Public License version 2.1\", a version the FSF never published; they are recorded as LGPL-2.1-only, the license of codec2's COPYING and README.md. LICENSES/codec2-LGPL-2.1.txt is the upstream COPYING, unmodified. LICENSES/codec2-NOTICES.txt names the holders of the compiled sources and reproduces the BSD and Valenti notices from the pinned archive (its SHA512 is CODEC2_TARBALL_SHA512). LICENSES/LicenseRef-codec2-varicode.txt reproduces the varicode grant unmodified, with a note stating that reading; it records the reading, not a separate license, so no LicenseRef enters the license expression. The Windows ZIP, the APK, the AppImage and the DMG carry the three as licenses/codec2-LGPL-2.1.txt, licenses/codec2-NOTICES.txt and licenses/LicenseRef-codec2-varicode.txt, and the ZIP also carries the copyright file the overlay installs (share/codec2/copyright, the same COPYING) as licenses/codec2-copyright.txt. Corresponding source is open (CORRESPONDING-SOURCE).",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-18",
       "notice_sha256": {
         "LICENSES/codec2-LGPL-2.1.txt": "9ebb6f82b7380a62ac74c5f0322c88e6744dedf2ebe1f54d6f088282b39844bf",
-        "LICENSES/codec2-NOTICES.txt": "9a030f28e3a6dc2ccf8e47f1a4d3d5fa103bdde86ae879fac6cb4ac7477683f7",
+        "LICENSES/codec2-NOTICES.txt": "c79667c3ad420467385a4b392f2f38d3fc009433c8df4ba07e1310d71d3fd3fa",
         "LICENSES/LicenseRef-codec2-varicode.txt": "a56ce9ba618b0ab2d1d81e9d4c4b539ee53a860cc57898c4d75db3182e96ed50"
       },
       "windows_release": {

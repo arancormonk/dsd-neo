@@ -419,7 +419,7 @@ class SoapyModulePackaging(unittest.TestCase):
         # and copied whole into the APK; the AppImage's check requires them, and the APK's every notice the record's
         # android_release map names.
         component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "codec2")
-        self.assertEqual(sorted(component["platforms"]), ["android", "linux", "windows"])
+        self.assertEqual(sorted(component["platforms"]), ["android", "linux", "macos", "windows"])
         self.assertEqual(component["notices"], ["LICENSES/codec2-LGPL-2.1.txt", "LICENSES/codec2-NOTICES.txt",
                                                 "LICENSES/LicenseRef-codec2-varicode.txt"])
         self.assertEqual(component["pin"], "CODEC2_SHA")

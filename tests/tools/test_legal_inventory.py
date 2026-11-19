@@ -245,20 +245,19 @@ class InventoryTests(unittest.TestCase):
                 legal.add_spdx(document, self.inventory, self.pins, platform)
 
     def test_sboms_carry_codec2_where_it_ships(self):
-        # The Windows ZIP (overlay DLL), the Android app (the same overlay, statically linked) and the AppImage (a
-        # shared library built from the same commit) carry codec2; the DMG's comes from Homebrew and is not recorded.
+        # The Windows ZIP (overlay DLL), the Android app (the same overlay, statically linked), the AppImage and the DMG
+        # (shared libraries built from the same commit) carry codec2.
         expression = "LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause"
         for platform in legal.PLATFORMS:
             document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
             legal.add_spdx(document, self.inventory, self.pins, platform)
             packages = {p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-"): p for p in document["packages"]}
             with self.subTest(platform=platform):
-                self.assertEqual("codec2" in packages, platform != "macos")
-                if platform != "macos":
-                    codec2 = packages["codec2"]
-                    self.assertEqual((codec2["licenseDeclared"], codec2["licenseConcluded"]), (expression, expression))
-                    self.assertEqual(codec2["versionInfo"], self.pins["CODEC2_SHA"])
-                    self.assertNotIn("licenseComments", codec2)
+                codec2 = packages["codec2"]
+                self.assertEqual((codec2["licenseDeclared"], codec2["licenseConcluded"]), (expression, expression))
+                self.assertEqual(codec2["versionInfo"], self.pins["CODEC2_SHA"])
+                self.assertNotIn("licenseComments", codec2)
+                self.assertIn("macOS DMG", codec2["sourceInfo"])
         android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
         self.assertIn("grep -qE '(^| )codec2_create$'", android)
         self.assertIn('build_dep https://github.com/arancormonk/codec2 "$codec2_sha"',
