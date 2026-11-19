@@ -123,9 +123,10 @@ resource bundle, so they travel with the binary rather than as a separate file.
         (each record's `android_release` map in `legal/components.json` names the
         notices the APK carries for it and where each comes from;
         `cmake/stage_android_package.cmake` stages them through
-        `cmake/stage_release_notices.cmake`, and `android-ci` fails the build if
-        any notice `tools/legal_inventory.py --release-notices android` lists is
-        missing).
+        `cmake/stage_release_notices.cmake`, and `android-ci` unpacks the finished
+        APK's `assets/doc/dsd-neo/` and fails the build if
+        `tools/check_release_notices.py --platform android` finds a notice missing,
+        empty or different from its source).
   - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty
         `application-icon-*`, `versionName` equal to the tag without its `v`, and
         `versionCode` equal to `(major * 10000 + minor * 100 + patch) * 1000` —

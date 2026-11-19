@@ -884,11 +884,16 @@ jobs:
         shell: bash
         env:
           APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+          # Where the APK staging took its build: and vcpkg: notices from
+          # (android/CMakeLists.txt), so their text can be compared.
+          APK_NOTICE_BUILD_DIR: build/android-app
+          APK_NOTICE_VCPKG_SHARE: build/android-app/vcpkg_installed/arm64-android-static/share
         run: |
           set -euo pipefail
           docdir="assets/doc/dsd-neo"
-          # The project's legal files and mbelib's records, then every notice the
-          # android_release maps in legal/components.json name.
+          # The project's legal files and mbelib's records. The check adds every
+          # notice the android_release maps in legal/components.json name, and
+          # compares each one's text with its source, as the DMG job does.
           required=(
             LICENSE
             COPYRIGHT
@@ -898,19 +903,14 @@ jobs:
             licenses/mbelib-neo/legal/status.md
             licenses/mbelib-neo/legal/patents.md
           )
-          mapfile -t from_records < <(python3 tools/legal_inventory.py --release-notices android)
-          if [ "${#from_records[@]}" -eq 0 ]; then
-            echo "ERROR: legal/components.json names no notice for the APK" >&2
-            exit 1
-          fi
-          entries=$(unzip -Z1 "$APK_PATH")
-          for f in "${required[@]}" "${from_records[@]}"; do
-            if ! grep -qxF "$docdir/$f" <<< "$entries"; then
-              echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
-              exit 1
-            fi
-          done
-          echo "All required license files are packaged."
+          # Check the files of the finished APK, not the staged tree: unpack its
+          # documentation folder into an empty directory.
+          extracted="$RUNNER_TEMP/apk-notices"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          unzip -q "$APK_PATH" "$docdir/*" -d "$extracted"
+          python3 tools/check_release_notices.py --platform android --doc-dir "$extracted/$docdir" \
+            --build-dir "$APK_NOTICE_BUILD_DIR" --vcpkg-share "$APK_NOTICE_VCPKG_SHARE" --require "${required[@]}"
 
       - name: Verify the APK's launcher and Qt loader resources
         shell: bash

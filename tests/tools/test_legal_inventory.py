@@ -190,7 +190,7 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("licenses/OpenSSL-NOTICES.txt", listed)
         self.assertIn("licenses/mbelib-neo/legal/status.md", listed)
         android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
-        self.assertIn("tools/legal_inventory.py --release-notices android", android)
+        self.assertIn("tools/check_release_notices.py --platform android", android)
         self.assertNotIn("licenses/opus-NOTICES.txt", android)
         for platform in legal.RELEASE_MAPS:
             result = subprocess.run([sys.executable, str(ROOT / "tools/legal_inventory.py"), "--release-notices",

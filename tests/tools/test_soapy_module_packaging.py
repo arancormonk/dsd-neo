@@ -462,7 +462,7 @@ class SoapyModulePackaging(unittest.TestCase):
                       read("cmake/stage_android_package.cmake"))
         appimage = re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split()
         android = list(component["android_release"]["notices"])
-        self.assertIn("tools/legal_inventory.py --release-notices android", read(".github/workflows/android-ci.yaml"))
+        self.assertIn("tools/check_release_notices.py --platform android", read(".github/workflows/android-ci.yaml"))
         checklist = read("docs/release-assets-checklist.md")
         for name in ("licenses/codec2-LGPL-2.1.txt", "licenses/codec2-NOTICES.txt",
                      "licenses/LicenseRef-codec2-varicode.txt"):
