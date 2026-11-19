@@ -10,12 +10,10 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/control_pump.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -81,36 +79,9 @@ p25_sm_tick_guard_busy(void) { // NOLINT(misc-use-internal-linkage)
     return g_guard_busy;
 }
 
-/* The control pump installed, and what it did, in order: R the rigctl resync, D the command drain. */
-static dsd_control_pump_fn g_pump;
-static char g_pump_calls[8];
-static size_t g_pump_call_count;
-
-static void
-note_pump_call(char call) {
-    if (g_pump_call_count + 1U < sizeof g_pump_calls) {
-        g_pump_calls[g_pump_call_count++] = call;
-        g_pump_calls[g_pump_call_count] = '\0';
-    }
-}
-
 void
 dsd_runtime_set_control_pump(dsd_control_pump_fn fn) { // NOLINT(misc-use-internal-linkage)
-    g_pump = fn;
-}
-
-int
-svc_rigctl_resync(dsd_opts* opts, dsd_state* state, uint64_t now_ms) {
-    (void)opts;
-    (void)state;
-    (void)now_ms;
-    note_pump_call('R');
-    return 0;
-}
-
-uint64_t
-dsd_realtime_mono_ms(void) {
-    return 0U;
+    (void)fn;
 }
 
 void
@@ -189,7 +160,6 @@ int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
-    note_pump_call('D');
     return 0;
 }
 
@@ -257,11 +227,6 @@ main(void) {
        the previous one's last call. */
     dsd_app_frontend_runtime_start(NULL, NULL);
     assert(g_session_open == 1);
-    /* The pump makes a rigctl connection a lost reply left out of step again before it drains commands (issue
-       #834). */
-    assert(g_pump != NULL);
-    g_pump(NULL, NULL);
-    assert(strcmp(g_pump_calls, "RD") == 0);
     assert(g_notification_resets == 0 && g_search_session_ends == 0 && g_snapshot_key_wipes == 0
            && g_opts_snapshot_key_wipes == 0);
     /* A silent input's wait asks the queue whether a command waits (issue #634). */

@@ -7371,23 +7371,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`test_old_audio_while_the_passband_is_set()`), and a peer may move and send the new channel's audio before its
   reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
-  refused request or a lost reply installs nothing. Only a complete numeric RPRT line says what a frequency request
-  did (`rigctl_read_freq_reply()` reads through the newline, every read after the first waiting only for what is left
-  of one deadline, the connection's receive timeout from the first read): `RPRT 0` confirms and a non-zero status
-  refuses, which
-  leaves the peer where it last confirmed. Any other reply, or none, leaves the frequency unknown, since the peer may
-  have moved: the client forgets its no-op cache, so the next request goes out, and every leg takes
-  `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so the next
-  tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed before
-  (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()`, `ENGINE_RIGCTL_RETUNE`
-  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). Such a reply may also still be on its way, and
-  would be read as the next request's: the connection is then out of step (`RigctlNeedsResync()`), nothing is sent on
-  it (`Send()` refuses, so every request on it fails at once), and the control pump makes it again to the same host
-  and port (`svc_rigctl_resync()`, through `svc_rigctl_connect()`, at most once a second while the peer cannot be
-  reached); the rebind clears it (`test_set_freq_resyncs_after_a_late_reply()`,
-  `test_set_freq_reply_has_one_deadline()`, `UI_RIGCTL_CONNECT` `test_resync_reconnects_a_connection_out_of_step()`). Rigctl tuning while reading an RTL input is not a
-  supported mix: the RTL input is tuned natively (`-i rtl`, `-i rtltcp`), so a rigctl move does nothing to the RTL
-  stream, whose queued samples are the old carrier's until the stream's own retune flushes them. The queue the decoder reads attaches itself while it exists
+  refused request or a lost reply installs nothing. Only a complete numeric RPRT line, read with one read as every
+  rigctl reply is, says what a frequency request did (`rigctl_read_freq_reply()`: exactly `RPRT`, a space, an optional
+  minus and digits, then the newline): `RPRT 0` confirms and a non-zero status refuses, which leaves the peer where it
+  last confirmed. Any other reply (garbled, cut short, more than one line), or none, leaves the frequency unknown,
+  since the peer may have moved: the client forgets its no-op cache, so the next request goes out, and every leg
+  takes `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so
+  the next tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed
+  before (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()`, `ENGINE_RIGCTL_RETUNE`
+  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). A limit, as before #834: a reply that comes after
+  its request timed out stays on the connection and is read as the next request's, whichever command that is (a
+  frequency, a passband or a reading), so a late `RPRT 0` can confirm a request the peer then refuses; nothing tells
+  the replies apart on the one connection. Rigctl tuning while reading an RTL input is not a supported mix: the RTL
+  input is tuned natively (`-i rtl`, `-i rtltcp`), so a rigctl move does nothing to the RTL stream, whose queued
+  samples are the old carrier's until the stream's own retune flushes them. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

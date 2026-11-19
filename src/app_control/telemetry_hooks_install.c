@@ -12,7 +12,6 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/control_pump.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/stream_notice_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
@@ -53,8 +52,6 @@ dsd_app_frontend_publish_pending(void) {
 
 static void
 dsd_app_frontend_control_pump(dsd_opts* opts, dsd_state* state) {
-    /* A rigctl connection a lost or unreadable reply left out of step is made again first (issue #834). */
-    (void)svc_rigctl_resync(opts, state, dsd_realtime_mono_ms());
     (void)dsd_app_drain_cmds(opts, state);
 }
 

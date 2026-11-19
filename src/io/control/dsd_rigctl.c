@@ -25,7 +25,6 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <errno.h>
@@ -113,24 +112,6 @@ Connect(char* hostname, int portno) {
     return sockfd;
 }
 
-/* The receive timeout a connection runs with, in ms: the rigctl one, else the TCP one, else 1500; 0 for none. */
-static unsigned int
-rigctl_recv_timeout_ms(void) {
-    int to_ms = 1500;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg) {
-        dsd_neo_config_init();
-        cfg = dsd_neo_get_config();
-    }
-    if (cfg) {
-        to_ms = cfg->rigctl_rcvtimeo_ms;
-        if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
-            to_ms = cfg->tcp_rcvtimeo_ms;
-        }
-    }
-    return to_ms > 0 ? (unsigned int)to_ms : 0U; /* 0: no timeout */
-}
-
 /* The receive timeout, keepalive and options every connection Connect() and ConnectBounded() make runs with. */
 static int
 connect_apply_options(dsd_socket_t sockfd) {
@@ -145,7 +126,19 @@ connect_apply_options(dsd_socket_t sockfd) {
 #endif
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
-        (void)dsd_socket_set_recv_timeout(sockfd, rigctl_recv_timeout_ms());
+        int to_ms = 1500;
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg) {
+            dsd_neo_config_init();
+            cfg = dsd_neo_get_config();
+        }
+        if (cfg) {
+            to_ms = cfg->rigctl_rcvtimeo_ms;
+            if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
+                to_ms = cfg->tcp_rcvtimeo_ms;
+            }
+        }
+        (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
         int nodelay = 1;
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
@@ -245,21 +238,6 @@ ConnectBounded(const char* hostname, int portno, int resolve, dsd_socket_cancel_
     return sockfd;
 }
 
-/* The connection whose stream may still bring a reply it was asked for and did not read (issue #834: a frequency
-   request's reply was late, cut short or unreadable), so a reply read on it now could be that one: 1 + its number, 0
-   for none. Nothing is sent on it (Send()) until a reconnect replaces it (RigctlRebindPeer()). Any thread. */
-static dsd_atomic_u64 s_resync_sock = {0U};
-
-static int
-rigctl_needs_resync(dsd_socket_t sockfd) {
-    return sockfd != DSD_INVALID_SOCKET && dsd_atomic_u64_load_acquire(&s_resync_sock) == (uint64_t)sockfd + 1U;
-}
-
-int
-RigctlNeedsResync(dsd_socket_t sockfd) {
-    return rigctl_needs_resync(sockfd);
-}
-
 /**
  * @brief Send a null-terminated RIGCTL command.
  *
@@ -271,8 +249,8 @@ RigctlNeedsResync(dsd_socket_t sockfd) {
  */
 static bool
 Send(dsd_socket_t sockfd, const char* buf) {
-    if (buf == NULL || rigctl_needs_resync(sockfd)) {
-        return false; /* a late reply may still come on it: nothing is asked until it is made again */
+    if (buf == NULL) {
+        return false;
     }
     const size_t len = strlen(buf);
     const int n = dsd_socket_send(sockfd, buf, len, DSD_RIGCTL_SEND_FLAGS);
@@ -362,57 +340,28 @@ static uint32_t s_last_freq = 0U;
    status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
 enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED = 2 };
 
-/* What a complete reply line @p buf of @p len bytes (its newline last) states. */
-static int
-rigctl_parse_freq_reply(const char* buf, size_t len) {
-    if (strncmp(buf, "RPRT ", 5) != 0) {
-        return RIGCTL_FREQ_UNKNOWN;
-    }
-    char* end = NULL;
-    errno = 0;
-    const long code = strtol(buf + 5, &end, 10);
-    if (end == buf + 5 || errno != 0 || (*end == '\r' ? end + 1 : end) != buf + len - 1U) {
-        return RIGCTL_FREQ_UNKNOWN;
-    }
-    return code == 0 ? RIGCTL_FREQ_CONFIRMED : RIGCTL_FREQ_REFUSED;
-}
-
-/* Read one reply line into @p buf (BUFSIZE + 1 bytes), through its newline: one read can return a line in pieces,
-   and every read after the first waits only for what is left of one deadline, the connection's receive timeout from
-   the first read (the timeout is put back after). Returns the outcome it states. */
+/* Read the reply into @p buf (BUFSIZE + 1 bytes) with one read, as every request here does, and say what it states:
+   exactly one line "RPRT", a space, an optional minus and digits, then the newline (after an optional CR). A reply cut
+   short, one with anything else in it (another line included), or none is unknown. A reply that comes after its
+   request timed out is read as the next request's: as on every rigctl request, the client cannot tell. */
 static int
 rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
-    const unsigned int timeout_ms = rigctl_recv_timeout_ms();
-    const uint64_t deadline_ms = dsd_realtime_mono_ms() + timeout_ms;
-    size_t len = 0U;
-    int shortened = 0;
-    int outcome = RIGCTL_FREQ_UNKNOWN;
-    while (len == 0U || buf[len - 1U] != '\n') {
-        if (len >= BUFSIZE) {
-            break;
-        }
-        if (len > 0U && timeout_ms > 0U) {
-            const uint64_t now_ms = dsd_realtime_mono_ms();
-            if (now_ms >= deadline_ms) {
-                break;
-            }
-            (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)(deadline_ms - now_ms));
-            shortened = 1;
-        }
-        const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
-        if (n <= 0) {
-            break;
-        }
-        len += (size_t)n;
+    if (!Recv(sockfd, buf) || strncmp(buf, "RPRT ", 5) != 0) {
+        return RIGCTL_FREQ_UNKNOWN;
     }
-    if (shortened) {
-        (void)dsd_socket_set_recv_timeout(sockfd, timeout_ms);
+    const char* p = buf + 5;
+    const int negative = *p == '-';
+    p += negative ? 1 : 0;
+    const char* digits = p;
+    int nonzero = 0;
+    while (*p >= '0' && *p <= '9') {
+        nonzero |= *p != '0';
+        p++;
     }
-    if (len > 0U && buf[len - 1U] == '\n') {
-        buf[len] = '\0';
-        outcome = rigctl_parse_freq_reply(buf, len);
+    if (p == digits || (*p == '\r' ? p[1] != '\n' || p[2] != '\0' : p[0] != '\n' || p[1] != '\0')) {
+        return RIGCTL_FREQ_UNKNOWN;
     }
-    return outcome;
+    return nonzero ? RIGCTL_FREQ_REFUSED : RIGCTL_FREQ_CONFIRMED;
 }
 
 /* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last confirmed on this socket. The request is
@@ -434,13 +383,9 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
         s_last_freq = freq_hz;
         return true;
     }
-    if (outcome == RIGCTL_FREQ_UNKNOWN) {
-        if (sockfd == s_last_sockfd) {
-            s_last_sockfd = DSD_INVALID_SOCKET;
-            s_last_freq = 0U;
-        }
-        /* The reply may still come, and would be read as the next request's: the connection is made again first. */
-        dsd_atomic_u64_store_release(&s_resync_sock, (uint64_t)sockfd + 1U);
+    if (outcome == RIGCTL_FREQ_UNKNOWN && sockfd == s_last_sockfd) {
+        s_last_sockfd = DSD_INVALID_SOCKET;
+        s_last_freq = 0U;
     }
     return false;
 }
@@ -615,8 +560,6 @@ RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
      * connection that gets its number back would otherwise be taken for one on that frequency. */
     s_last_sockfd = DSD_INVALID_SOCKET;
     s_last_freq = 0U;
-    /* The connection that needed it is replaced (or another one is made): nothing late can reach the new one. */
-    dsd_atomic_u64_store_release(&s_resync_sock, 0U);
     /* A reset record's socket is DSD_INVALID_SOCKET, which a missing old socket must not match. Only a record of a
      * request that may have changed the old socket's peer is worth handing over. */
     if (old_fd != DSD_INVALID_SOCKET && s_peer.sockfd == old_fd && s_peer.touched) {

@@ -149,15 +149,6 @@ int svc_tcp_connect_audio(dsd_opts* opts, dsd_state* state, const char* host, in
  */
 int svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port);
 /**
- * @brief Make the rigctl connection again when its stream may still bring a reply it was asked for and did not read
- * (RigctlNeedsResync(), issue #834: a frequency request's reply was late, cut short or unreadable). The client asks
- * nothing on such a connection, since a late reply would be read as the next request's, so the session reconnects to
- * the same host and port (svc_rigctl_connect()), at most once a second by @p now_ms (dsd_realtime_mono_ms()): a peer
- * that cannot be reached keeps the connection in need until it can. Decoder thread, from the control pump. Returns 1
- * when it reconnected, else 0.
- */
-int svc_rigctl_resync(dsd_opts* opts, dsd_state* state, uint64_t now_ms);
-/**
  * @brief The request a rigctl peer that demodulates audio input is to run now (issue #621): the demodulator and
  * passband dsd_rigctl_passband_of() gives for the options in force and the scan row whose scope is in force
  * (dsd_scan_mode_row_options(), as dsd_engine_scan_rigctl_apply_modulation() asks it). FOLLOW, FM at -B, without such

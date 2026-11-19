@@ -11,7 +11,6 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
-#include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -88,23 +87,4 @@ svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port)
     dsd_engine_rigctl_ask_session_passband(opts, state);
     p25_sm_tick_guard_leave();
     return 0;
-}
-
-/* When the last reconnect for a connection in need was tried (svc_rigctl_resync()), and whether one was. */
-static uint64_t s_resync_tried_ms = 0U;
-static int s_resync_tried = 0;
-
-int
-svc_rigctl_resync(dsd_opts* opts, dsd_state* state, uint64_t now_ms) {
-    if (!opts || opts->use_rigctl != 1 || !RigctlNeedsResync(opts->rigctl_sockfd)) {
-        return 0;
-    }
-    if (s_resync_tried && now_ms - s_resync_tried_ms < 1000U) {
-        return 0;
-    }
-    s_resync_tried = 1;
-    s_resync_tried_ms = now_ms;
-    char host[sizeof opts->rigctlhostname];
-    DSD_SNPRINTF(host, sizeof host, "%s", opts->rigctlhostname);
-    return svc_rigctl_connect(opts, state, host, opts->rigctlportno) == 0 ? 1 : 0;
 }

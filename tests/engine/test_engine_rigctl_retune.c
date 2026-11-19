@@ -116,19 +116,14 @@ start_producer(dsd_thread_t* th,
 /* ---- A rigctl peer on a loopback socket ---- */
 
 /* What the peer does with a frequency request (F). The RIG_MOVES_* modes apply the frequency, then answer once with a
-   reply the client cannot take as a complete RPRT (a garbled line, a malformed status), or with a complete RPRT 0 in two
-   pieces; the next request is taken. */
+   reply the client cannot take as a complete RPRT (a garbled line, a malformed status); the next request is taken. */
 enum {
     RIG_TAKES = 0,
     RIG_REFUSES = 1,
     RIG_DROPS = 2,
     RIG_MOVES_GARBLED = 3,
     RIG_MOVES_MALFORMED = 4,
-    RIG_MOVES_SPLIT = 5,
 };
-
-/* The reply fake_rig_reply() hands back for RIG_MOVES_SPLIT: fake_rig_main() sends "RPRT " and "0\n" apart. */
-static const char k_split_reply[] = "RPRT 0\n";
 
 typedef struct {
     dsd_socket_t listener;
@@ -146,9 +141,6 @@ typedef struct {
        reply does. m_taken counts the M requests. */
     atomic_int m_audio_value;
     atomic_int m_taken;
-    /* Accept one more connection once the one served ends (a reconnect the case makes). */
-    atomic_int reaccept;
-    int port;
 } fake_rig;
 
 /* Two samples reach the audio input before the peer's reply does, numbered from *@p next_value (0: none): the new
@@ -193,9 +185,6 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
         if (mode == RIG_MOVES_MALFORMED) {
             return "RPRT x\n";
         }
-        if (mode == RIG_MOVES_SPLIT) {
-            return k_split_reply;
-        }
         return "RPRT 0\n";
     }
     if (line[0] == 'M') {
@@ -213,11 +202,17 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
     return "RPRT 0\n";
 }
 
-/* Serve the connection rig->conn until it ends, then close it. */
-static void
-fake_rig_serve(fake_rig* rig, long* freq_io, char* buf, size_t cap) {
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    fake_rig_main(void* arg) {
+    fake_rig* rig = (fake_rig*)arg;
+    rig->conn = dsd_socket_accept(rig->listener, NULL, NULL);
     char line[256];
     size_t len = 0U;
+    long freq = 0;
+    char buf[64];
     while (rig->conn != DSD_INVALID_SOCKET) {
         char c = 0;
         if (dsd_socket_recv(rig->conn, &c, 1U, 0) <= 0) {
@@ -231,15 +226,7 @@ fake_rig_serve(fake_rig* rig, long* freq_io, char* buf, size_t cap) {
         }
         line[len] = '\0';
         len = 0U;
-        const char* reply = fake_rig_reply(rig, line, freq_io, buf, cap);
-        if (reply == k_split_reply) {
-            /* The reply's first piece, then the rest once the client has had time to read the first alone. */
-            if (dsd_socket_send(rig->conn, "RPRT ", 5U, 0) < 0) {
-                break;
-            }
-            dsd_sleep_ms(50U);
-            reply = "0\n";
-        }
+        const char* reply = fake_rig_reply(rig, line, &freq, buf, sizeof buf);
         if (reply == NULL || dsd_socket_send(rig->conn, reply, strlen(reply), 0) < 0) {
             break;
         }
@@ -248,22 +235,6 @@ fake_rig_serve(fake_rig* rig, long* freq_io, char* buf, size_t cap) {
         (void)dsd_socket_close(rig->conn);
         rig->conn = DSD_INVALID_SOCKET;
     }
-}
-
-static DSD_THREAD_RETURN_TYPE
-#if DSD_PLATFORM_WIN_NATIVE
-    __stdcall
-#endif
-    fake_rig_main(void* arg) {
-    fake_rig* rig = (fake_rig*)arg;
-    long freq = 0;
-    char buf[64];
-    /* One connection at a time; once it ends, another when the case asked for one (fake_rig::reaccept). The frequency
-       is the peer's, so it carries over. */
-    do {
-        rig->conn = dsd_socket_accept(rig->listener, NULL, NULL);
-        fake_rig_serve(rig, &freq, buf, sizeof buf);
-    } while (atomic_exchange(&rig->reaccept, 0) != 0);
     DSD_THREAD_RETURN;
 }
 
@@ -303,9 +274,7 @@ fake_rig_open(fake_rig* rig, dsd_opts* opts) {
     }
     rig->started = 1;
     char host[] = "127.0.0.1";
-    rig->port = (int)ntohs(bound.sin_port);
-    atomic_store(&rig->reaccept, 0);
-    opts->rigctl_sockfd = Connect(host, rig->port);
+    opts->rigctl_sockfd = Connect(host, (int)ntohs(bound.sin_port));
     if (opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
         return -1;
     }
@@ -1784,11 +1753,9 @@ test_new_audio_before_the_reply(void) {
 }
 
 /* Issue #834: a reply that is not a complete numeric RPRT (garbled, malformed, cut short) leaves the peer's frequency
-   unknown: it may have moved. Nothing more is asked on the connection until it is made again (a late reply would be
-   read as the next request's); then the next tune goes out whatever the frequency last confirmed, and counts as a
-   move: what the input held is dropped, even for a tune back to that frequency. A complete RPRT refusal leaves the peer where it
-   was, as known: a tune back there sends nothing and drops nothing. A complete RPRT 0 that arrives in pieces confirms.
-   On the trunk, watchdog, io_control and scan legs. */
+   unknown: it may have moved. The next tune goes out whatever the frequency last confirmed, and counts as a move: what
+   the input held is dropped, even for a tune back to that frequency. A complete RPRT refusal leaves the peer where it
+   was, as known: a tune back there sends nothing and drops nothing. On the trunk, watchdog, io_control and scan legs. */
 static int
 unknown_frequency_case(rig_leg_fn leg, const char* what) {
     rig_case c;
@@ -1815,19 +1782,8 @@ unknown_frequency_case(rig_leg_fn leg, const char* what) {
         DSD_SNPRINTF(label, sizeof label, "%s, reply %d: the tune to B is not confirmed", what, k_ambiguous[i]);
         rc |= expect_true(label, !leg(opts, state, VC2_HZ));
         take_at_the_next_read(opts, state);
-        /* Its reply may still be in the stream: nothing goes out on the connection until it is made again. */
-        int taken = atomic_load(&c.rig.f_taken);
-        DSD_SNPRINTF(label, sizeof label, "%s, reply %d: nothing more is asked on that connection", what,
-                     k_ambiguous[i]);
-        rc |= expect_true(label, RigctlNeedsResync(opts->rigctl_sockfd) && !leg(opts, state, VC1_HZ)
-                                     && atomic_load(&c.rig.f_taken) == taken);
-        take_at_the_next_read(opts, state);
-        atomic_store(&c.rig.reaccept, 1);
-        rc |= expect_true("unknown frequency: the connection made again",
-                          svc_rigctl_connect(opts, state, "127.0.0.1", c.rig.port) == 0
-                              && !RigctlNeedsResync(opts->rigctl_sockfd));
         rc |= expect_true("unknown frequency: queued audio", pipe_put(fds[1], (int16_t)(31 + i)));
-        taken = atomic_load(&c.rig.f_taken);
+        const int taken = atomic_load(&c.rig.f_taken);
         const uint32_t e = state->symbol_clock_epoch;
         DSD_SNPRINTF(label, sizeof label, "%s, reply %d: the tune back to A is taken", what, k_ambiguous[i]);
         rc |= expect_true(label, leg(opts, state, VC1_HZ));
@@ -1858,19 +1814,6 @@ unknown_frequency_case(rig_leg_fn leg, const char* what) {
         "read %d)",
         what, atomic_load(&c.rig.f_taken) - taken, state->symbol_clock_epoch - e, (int)next);
     rc |= expect_true(label, atomic_load(&c.rig.f_taken) == taken && state->symbol_clock_epoch == e && next == 51);
-    /* A complete RPRT 0 in two pieces confirms. */
-    atomic_store(&c.rig.f_mode, RIG_MOVES_SPLIT);
-    taken = atomic_load(&c.rig.f_taken);
-    DSD_SNPRINTF(label, sizeof label, "%s: an RPRT 0 that comes in two pieces confirms the tune", what);
-    rc |= expect_true(label, leg(opts, state, VC2_HZ) && atomic_load(&c.rig.f_taken) == taken + 1);
-    take_at_the_next_read(opts, state);
-    atomic_store(&c.rig.f_mode, RIG_TAKES);
-    taken = atomic_load(&c.rig.f_taken);
-    rc |= expect_true("unknown frequency: B again", leg(opts, state, VC2_HZ));
-    take_at_the_next_read(opts, state);
-    DSD_SNPRINTF(label, sizeof label, "%s: and the peer is on B as known: a tune to B sends nothing (sent %d)", what,
-                 atomic_load(&c.rig.f_taken) - taken);
-    rc |= expect_true(label, atomic_load(&c.rig.f_taken) == taken);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     dsd_pcm_stream_close(opts->audio_in_stdin);
     opts->audio_in_stdin = NULL;
