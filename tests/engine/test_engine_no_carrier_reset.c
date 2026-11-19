@@ -15761,6 +15761,14 @@ test_y_continuing_call_explains_a_new_stay(void) {
     (void)dsd_call_state_get(state, 0U, &after);
     rc |= expect_true("the same call goes on", after.epoch == before.epoch);
     rc |= expect_true("and is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
+    /* Its voice may come with no further observation: the vocoder's media update of the call explains a stay too, and
+       an update that says no media does not. */
+    dsd_engine_scan_y_stay_begin(state);
+    (void)dsd_call_state_update_media(state, 0U, 0, 0.0);
+    rc |= expect_true("no media explains nothing", state->scan_y_call_seq == state->scan_y_stay_call_seq);
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    rc |=
+        expect_true("the call's media is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
     free_test_runtime(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y continuing call\n");

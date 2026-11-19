@@ -1042,6 +1042,9 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
             snapshot->media_started_m = now_m;
         }
         snapshot->media_updated_m = now_m;
+        /* The admitted call's media, heard on the -Y stay it plays on (issue #834): a stay a refused step began with
+           the call going on and no observation since. */
+        state->scan_y_call_seq++;
     }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
