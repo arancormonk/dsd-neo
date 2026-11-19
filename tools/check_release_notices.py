@@ -6,8 +6,13 @@ Reads the <platform>_release map of each record in legal/components.json (the sa
 cmake/stage_release_notices.cmake stages from) and checks the folder of a staged tree or a
 mounted package: each notice is there and not empty, and a notice from the repository, the
 build tree or the vcpkg tree has the content of its source (line endings aside). A
-legal-component notice is installed by the package's general legal files and only has to be
-there. --require names further files the folder must hold.
+legal-component notice, and each further file --require names, comes with the package's
+general legal files: one under licenses/mbelib-neo/ has the content of the mbelib-neo notice
+folder the build selected (DSD_MBELIB_SELECTED_NOTICE_DIR in --build-dir's CMake cache), any
+other the content of the repository's file (licenses/ is the repository's LICENSES/).
+
+--index names the folder's index of its files (the APK's notice-index.txt, which the licences
+screen reads): it must be there and name each other file of the folder, and only those.
 
 --binary-dir names the package's binary folders (the DMG's bin/ and lib/): every file in them
 must be one that a record's map lists under "binaries", so a library no record covers, whose
@@ -44,11 +49,29 @@ def source_file(source, repo, build, share):
     return None
 
 
+def selected_mbelib(build):
+    """The mbelib-neo notice folder the configured build at @p build packages, or None when the cache names none."""
+    for line in (build / "CMakeCache.txt").read_text(encoding="utf-8").splitlines():
+        name, _, value = line.partition("=")
+        if name.partition(":")[0] == "DSD_MBELIB_SELECTED_NOTICE_DIR" and value:
+            return Path(value)
+    return None
+
+
+def general_file(name, repo, mbelib):
+    """The file a general legal file of the package is installed from; None for mbelib's when no folder is known."""
+    if name.startswith("licenses/mbelib-neo/"):
+        return None if mbelib is None else mbelib / name.removeprefix("licenses/mbelib-neo/")
+    if name.startswith("licenses/"):
+        return repo / "LICENSES" / name.removeprefix("licenses/")
+    return repo / name
+
+
 def normalized(path):
     return path.read_bytes().replace(b"\r\n", b"\n")
 
 
-def check(records, platform, doc, repo, build=None, share=None, required=()):
+def check(records, platform, doc, repo, build=None, share=None, required=(), mbelib=None):
     """Return the problems found and the number of notices checked."""
     problems = []
     notices = {}
@@ -70,13 +93,31 @@ def check(records, platform, doc, repo, build=None, share=None, required=()):
             problems.append(f"empty {notice}")
             continue
         for ident, source in owners:
-            origin = source_file(source, repo, build, share)
+            if source == "legal-component":
+                origin = general_file(notice, repo, mbelib)
+            else:
+                origin = source_file(source, repo, build, share)
             if origin is not None and (not origin.is_file() or normalized(origin) != normalized(path)):
                 problems.append(f"{notice} differs from {source} ({ident})")
     for name in required:
         if not inside(name) or not (doc / name).is_file():
             problems.append(f"missing {name} (required)")
+            continue
+        origin = general_file(name, repo, mbelib)
+        if origin is not None and (not origin.is_file() or normalized(origin) != normalized(doc / name)):
+            problems.append(f"{name} differs from {origin} (required)")
     return problems, len(notices)
+
+
+def check_index(doc, index):
+    """Return the problems of the folder's index of its files: missing, or not naming exactly the other files."""
+    if not inside(index) or not (doc / index).is_file():
+        return [f"missing {index}"]
+    listed = {line.strip() for line in (doc / index).read_text(encoding="utf-8").splitlines() if line.strip()}
+    present = {path.relative_to(doc).as_posix() for path in doc.rglob("*") if path.is_file()} - {index}
+    problems = [f"{name} is in the folder but not in {index}" for name in sorted(present - listed)]
+    problems += [f"{index} names {name}, which the folder lacks" for name in sorted(listed - present)]
+    return problems
 
 
 def recorded(name, names, platform):
@@ -112,12 +153,22 @@ def main():
     parser.add_argument("--build-dir", type=Path, help="the configured build tree (build: notices)")
     parser.add_argument("--vcpkg-share", type=Path, help="the vcpkg tree's share folder (vcpkg: notices)")
     parser.add_argument("--require", nargs="*", default=[], help="further files the folder must hold")
+    parser.add_argument("--index", help="the folder's index of its other files, which must name each of them")
     parser.add_argument("--binary-dir", type=Path, nargs="*", default=[],
                         help="the package's binary folders, whose every file a record must list")
     args = parser.parse_args()
     records = json.loads(args.components.read_text(encoding="utf-8"))
-    problems, count = check(records, args.platform, args.doc_dir, args.repo, args.build_dir, args.vcpkg_share,
-                            args.require)
+    problems, mbelib = [], None
+    if args.build_dir is not None:
+        mbelib = selected_mbelib(args.build_dir)
+        if mbelib is None:
+            problems.append(f"The build at {args.build_dir} names no DSD_MBELIB_SELECTED_NOTICE_DIR, so mbelib-neo's "
+                            "notices cannot be compared with the ones it packages")
+    found, count = check(records, args.platform, args.doc_dir, args.repo, args.build_dir, args.vcpkg_share,
+                         args.require, mbelib)
+    problems += found
+    if args.index is not None:
+        problems += check_index(args.doc_dir, args.index)
     binary_problems, binaries = check_binaries(records, args.platform, args.binary_dir)
     for problem in problems + binary_problems:
         print(f"ERROR: {problem}", file=sys.stderr)

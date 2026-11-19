@@ -86,8 +86,10 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies, that every staged file
   is built for the triplet's deployment target, and that the bundled terminal database itself holds readable
   `xterm-256color` and `tmux-256color` entries), `tools/check_release_notices.py` (a package's documentation folder
-  holds every notice its records' `<platform>_release` maps name; the DMG job runs it on the staged tree and the
-  mounted DMG, and with `--binary-dir` refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
+  holds every notice its records' `<platform>_release` maps name, with the text of its source, and the general legal
+  files with the text of the repository's or of the mbelib-neo notices the build selected; the DMG job runs it on the
+  staged tree and the mounted DMG, android-ci on the finished APK with `--index notice-index.txt` (the licences
+  screen's index names every other file), and with `--binary-dir` it refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
   `binaries` list names),
   `tools/check_android_runtime_lock.py` (the APK's Qt kit, NDK, Gradle release runtime classpath and native libraries
   are the ones `legal/android-runtime-lock.json` records for the reviewed Android records) and

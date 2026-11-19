@@ -909,7 +909,10 @@ jobs:
           docdir="assets/doc/dsd-neo"
           # The project's legal files and mbelib's records. The check adds every
           # notice the android_release maps in legal/components.json name, and
-          # compares each one's text with its source, as the DMG job does.
+          # compares each one's text with its source, as the DMG job does: the
+          # general legal files with the repository, mbelib's with the notice
+          # folder the build selected. The licences screen lists the files
+          # notice-index.txt names, so it must name every other file.
           required=(
             LICENSE
             COPYRIGHT
@@ -926,7 +929,8 @@ jobs:
           mkdir -p "$extracted"
           unzip -q "$APK_PATH" "$docdir/*" -d "$extracted"
           python3 tools/check_release_notices.py --platform android --doc-dir "$extracted/$docdir" \
-            --build-dir "$APK_NOTICE_BUILD_DIR" --vcpkg-share "$APK_NOTICE_VCPKG_SHARE" --require "${required[@]}"
+            --build-dir "$APK_NOTICE_BUILD_DIR" --vcpkg-share "$APK_NOTICE_VCPKG_SHARE" --require "${required[@]}" \
+            --index notice-index.txt
 
       - name: Verify the APK's launcher and Qt loader resources
         shell: bash

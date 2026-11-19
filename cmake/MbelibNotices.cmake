@@ -39,3 +39,9 @@ foreach(_notice IN LISTS _mbe_required_notices)
         )
     endif()
 endforeach()
+# The folder this build packages, for the release checks (tools/check_release_notices.py).
+set(DSD_MBELIB_SELECTED_NOTICE_DIR
+    "${DSD_MBELIB_NOTICE_DIR}"
+    CACHE INTERNAL
+    "The mbelib-neo notice folder this build packages"
+)
