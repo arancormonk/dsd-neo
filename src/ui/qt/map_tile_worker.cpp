@@ -187,7 +187,7 @@ template_authority(const QString& rest) {
            && rest.at(end) != QLatin1Char('#')) {
         ++end;
     }
-    const QString authority = rest.left(end);
+    QString authority = rest.left(end);
     /* No userinfo: a credential there would be shown as the server's name and stored as the Host value. */
     if (authority.contains(QLatin1Char('{')) || authority.contains(QLatin1Char('}'))
         || authority.contains(QLatin1Char('@'))) {

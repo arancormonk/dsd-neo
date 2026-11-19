@@ -124,7 +124,7 @@ json_vary_values(const QJsonObject& o, QList<QPair<QByteArray, QByteArray>>* out
         return false;
     }
     const QJsonArray array = v.toArray();
-    for (const QJsonValue& item : array) {
+    for (const auto& item : array) {
         const QJsonArray pair = item.toArray();
         if (pair.size() != 2 || !pair.at(0).isString() || !pair.at(1).isString()) {
             return false;
@@ -634,8 +634,8 @@ MapTileCache::loadFromDisk(const MapTileKey& key, MemoryEntry* entry) {
     file.close();
     ensureScanned();
     noteFile(path, bytes.size(), stamp);
-    entry->image = image;
-    entry->meta = meta;
+    entry->image = std::move(image);
+    entry->meta = std::move(meta);
     entry->persistable = true;
     remember(key, *entry);
     return true;
