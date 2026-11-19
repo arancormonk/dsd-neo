@@ -58,11 +58,19 @@ void dstar_confirm_reset(dsd_state* state);
 
 /**
  * @brief A transmission boundary (an RF header, decoded or not, or the carrier's end): the next transmission begins.
- * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets (state.h
- * dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS record and the text
- * message being assembled. Confirmation is left to dstar_confirm_reset().
+ * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets
+ * (dstar_sd_state.h dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS
+ * record and the text message being assembled. Confirmation is left to dstar_confirm_reset().
  */
 void dstar_tx_begin(dsd_state* state);
+
+/**
+ * @brief The transmission names no call any more, within it (a checked header that names no voice call, issue #800):
+ * clears dsd_state::dstar_tx_call_epoch and the reception it holds on. A D-PRS record or text message assembled under
+ * that naming resets at its next use (its dstar_sd_binding names a call no longer named); one assembled while no call
+ * was named goes on. The transmission and its confirmation stay.
+ */
+void dstar_tx_unname(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void dstar_confirm_begin_frame(dsd_state* state);

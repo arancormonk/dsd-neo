@@ -2616,14 +2616,23 @@ tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
     return sdu_ssi(sdu, &ssi) ? ssi : 0u;
 }
 
-int
-tetra_calls_addressed_ssi_known(const tetra_mac_sdu* sdu, uint32_t* ssi) {
-    uint32_t value = 0;
-    const int known = sdu_ssi(sdu, &value);
-    if (ssi) {
-        *ssi = known ? value : 0u;
+tetra_calls_party
+tetra_calls_addressed_party(const tetra_mac_sdu* sdu, uint32_t* value) {
+    uint32_t ssi = 0;
+    tetra_calls_party party = TETRA_CALLS_PARTY_NONE;
+    if (sdu_ssi(sdu, &ssi)) {
+        if (address_is_smi(&sdu->addr)) {
+            party = TETRA_CALLS_PARTY_SMI;
+        } else if (sdu->addr.type == TETRA_MAC_ADDR_USSI) {
+            party = TETRA_CALLS_PARTY_USSI;
+        } else {
+            party = TETRA_CALLS_PARTY_SSI;
+        }
     }
-    return known;
+    if (value) {
+        *value = party != TETRA_CALLS_PARTY_NONE ? ssi : 0u;
+    }
+    return party;
 }
 
 void

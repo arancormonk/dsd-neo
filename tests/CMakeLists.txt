@@ -2061,7 +2061,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/audio/dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
     dsd-neo_test_dstar_process
@@ -2076,7 +2078,9 @@ add_executable(
     dsd-neo_test_dstar_confirm
     protocol/dstar/test_dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
     dsd-neo_test_dstar_confirm

@@ -252,8 +252,10 @@ feed_since(const session* s, uint64_t after_seq, dsd_position_fix* out, size_t c
 }
 
 /* A short report under PID 10, with and without the LLC FCS: the notice row carries the position and its text, the
- * location file a row, the feed the record, all as the SDS sender's to the addressed party. A wrong FCS discards the
- * PDU before the MLE, so nothing of it is published. */
+ * location file a row, the feed the record, all as the SDS sender's; the notice names the addressed party, the record
+ * no target (issue #800 g62-r9: the MAC address does not say whether the SSI is a radio or a group, and a record's
+ * target is a radio unless marked a talkgroup). A wrong FCS discards the PDU before the MLE, so nothing of it is
+ * published. */
 static void
 test_direct_with_and_without_fcs(void) {
     for (int fcs = 0; fcs <= 1; fcs++) {
@@ -279,7 +281,7 @@ test_direct_with_and_without_fcs(void) {
         dsd_position_fix rec[2];
         assert(feed_since(&s, 0, rec, 2) == 1);
         assert(rec[0].kind == DSD_POS_TETRA_LIP && DSD_SYNC_IS_TETRA(rec[0].protocol) && rec[0].slot == 0U
-               && rec[0].source_id == SENDER_SSI && rec[0].target_id == ADDRESSED && rec[0].age_class == 0U
+               && rec[0].source_id == SENDER_SSI && rec[0].target_id == 0U && rec[0].age_class == 0U
                && rec[0].speed_dkmh == 100U && rec[0].heading_ddeg == 900U);
         assert(rec[0].sender_scope.kind == DSD_POS_SCOPE_TETRA && rec[0].sender_scope.a == HOME_MCC);
         assert(dsd_event_staged_position(s.state, 0U)->rev == 0U); /* the notice took it */
@@ -543,7 +545,7 @@ test_concatenated_one_recipient(void) {
     c = sds_concat_part(SENDER_SSI, 0, 5, 2, lip.bits + 40, lip.n - 40);
     send_sds(&s, &c, 0, 0);
     assert(strstr(s.log, "dst_SSI=257 short location report; LIP: 22.50000") != NULL);
-    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000 && rec[0].target_id == ADDRESSED);
+    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000 && rec[0].target_id == 0U);
     session_close(&s);
 
     s = session_open();
@@ -556,6 +558,41 @@ test_concatenated_one_recipient(void) {
     read_lfile(&s, lfile, sizeof lfile);
     assert(lfile[0] == '\0');
     session_close(&s);
+}
+
+/* Issue #800 (g62-r9): an SMI or a USSI and an SSI may hold one value and still be two identities (EN 300 392-1
+ * clauses 7.3.2, 7.3.3). Part 2 of a report addressed by @p addr_type to 257 and part 1 of another addressed to SSI 257,
+ * with the same sender and reference, assemble into nothing; the SSI's message completes from its own part 2. */
+static void
+concatenated_other_space_is_another_party(uint32_t addr_type) {
+    const ttb_block lip = lip_short(LAT_22_5, LON_45_0, 1, 10, 4);
+    const ttb_block other = lip_short(LAT_MINUS_22, LON_MINUS_45, 1, 10, 4);
+    session s = session_open();
+    ttb_block c = sds_concat_part(SENDER_SSI, 0, 5, 2, other.bits + 40, other.n - 40);
+    send_sds_to(&s, addr_type, ADDRESSED, &c, 0, 0);
+    c = sds_concat_part(SENDER_SSI, 0, 5, 1, lip.bits, 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "TETRA SDS LIP") == NULL);
+    dsd_position_fix rec[2];
+    assert(feed_since(&s, 0, rec, 2) == 0);
+    char lfile[512];
+    read_lfile(&s, lfile, sizeof lfile);
+    assert(lfile[0] == '\0');
+
+    c = sds_concat_part(SENDER_SSI, 0, 5, 2, lip.bits + 40, lip.n - 40);
+    send_sds(&s, &c, 0, 0);
+    assert(strstr(s.log, "dst_SSI=257 short location report; LIP: 22.50000") != NULL);
+    assert(feed_since(&s, 0, rec, 2) == 1 && rec[0].lat_e7 == 225000000);
+    session_close(&s);
+}
+
+/* concatenated_other_space_is_another_party() for an SMI and for a USSI (a migrating radio's home SSI). */
+static void
+test_concatenated_smi_and_ssi_are_two_parties(void) {
+    static const uint32_t other_spaces[2] = {TETRA_MAC_ADDR_SMI, TETRA_MAC_ADDR_USSI};
+    for (size_t k = 0U; k < 2U; k++) {
+        concatenated_other_space_is_another_party(other_spaces[k]);
+    }
 }
 
 /* Two concatenated messages from one sender to one party can share a reference. A part 1 with the same bits as the
@@ -720,6 +757,7 @@ main(void) {
     test_undecoded();
     test_concatenated();
     test_concatenated_one_recipient();
+    test_concatenated_smi_and_ssi_are_two_parties();
     test_concatenated_first_part_pid();
     test_sender_network_labels();
     test_mac_fragmented_report();

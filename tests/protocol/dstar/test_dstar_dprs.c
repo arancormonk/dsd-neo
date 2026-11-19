@@ -33,6 +33,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
 /* The published vector: CRC-16/X.25 of the text after the comma, CR included, is 9E3E. */
 static const char k_vector[] = "$$CRC9E3E,N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test\r";
@@ -90,6 +91,13 @@ rig_close(rig* r) {
     free(r->opts);
 }
 
+/* Whether a D-PRS record is being collected (the D-STAR slow-data state extension, created empty on first use). */
+static int
+dprs_collecting(const rig* r) {
+    const dstar_sd_state* sd = dstar_sd_st(r->state);
+    return sd != NULL && sd->dprs.collecting != 0U;
+}
+
 /* Open a D-STAR voice call as a decoded RF header leaves it (dstar_header_decode_soft() hands its fields to
  * dstar_header_observe()): only a header whose CRC passed names a callsign, and it names the transmission's call. */
 static void
@@ -135,6 +143,14 @@ x25(const char* text, size_t len) {
 static void
 record_for(char* out, size_t cap, const char* body) {
     DSD_SNPRINTF(out, cap, "$$CRC%04X,%s", (unsigned)x25(body, strlen(body)), body);
+}
+
+/* The published vector's position, sent by @p from (its APRS source, -SSID included when given), its CRC correct. */
+static void
+record_from(char* out, size_t cap, const char* from) {
+    char body[96];
+    DSD_SNPRINTF(body, sizeof(body), "%s>API51,DSTAR*:!2230.00N/04500.00E>test\r", from);
+    record_for(out, cap, body);
 }
 
 /* The superframe's 60 bytes, scrambled and bit-ordered as processDSTAR_SD() reads them. */
@@ -203,6 +219,59 @@ test_vector_position(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9): the slow-data assemblies live in the D-STAR protocol's state extension, not in public dsd_state:
+ * a state that never heard D-STAR slow data holds none, the first superframe creates them, and the state's extension
+ * cleanup frees them, so the next run's first superframe starts from empty assemblies. */
+static void
+test_assemblies_in_protocol_extension(void) {
+    rig r;
+    rig_open(&r);
+    expect_int("no slow data, no extension", dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL,
+               0);
+    open_call(&r, "N0CALL");
+    send_gps(&r, k_vector, 25U, 0);
+    expect_int("slow data creates the extension",
+               dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL, 1);
+    expect_int("record collected there", dprs_collecting(&r), 1);
+    dsd_state_ext_free_all(r.state);
+    expect_int("extension freed with the state's extensions",
+               dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA) != NULL, 0);
+    expect_int("feed restarts", dsd_position_feed_start(r.state), 0);
+    send_gps(&r, k_vector + 25U, strlen(k_vector) - 25U, 0);
+    dsd_position_fix f[2];
+    expect_int("the last run's half record completes nothing", feed_records(&r, f, 2U), 0);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r9 review): N0OLD's call is ACTIVE and named (its terminator and the next transmission's RF header
+ * missed, no slow-data header heard since). A CRC-valid record whose own APRS source is N0NEW is not N0OLD's: it
+ * reaches the feed anonymous and no row. One whose source is N0OLD with an SSID is N0OLD's. */
+static void
+test_record_from_another_station_is_not_the_calls(void) {
+    rig r;
+    rig_open(&r);
+    open_call(&r, "N0OLD");
+    char record[128];
+    record_from(record, sizeof(record), "N0NEW");
+    send_gps(&r, record, strlen(record), 0);
+    dsd_position_fix f[2];
+    expect_int("another station's record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("another station's record names nobody", f[0].source_text, "");
+    expect_int("another station's record is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", r.history[0].Event_History_Items[0].pos.valid, 0);
+    rig_close(&r);
+
+    rig_open(&r);
+    open_call(&r, "N0OLD");
+    record_from(record, sizeof(record), "N0OLD-7");
+    send_gps(&r, record, strlen(record), 0);
+    expect_int("the caller's record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("the caller's record (SSID aside) is N0OLD's", f[0].source_text, "N0OLD");
+    expect_int("N0OLD's row takes the position", r.history[0].Event_History_Items[0].pos.valid, 1);
+    rig_close(&r);
+}
+
 /* One changed character, or a CRC written without the CR: no position, no evidence. */
 static void
 test_crc_mismatch(void) {
@@ -232,7 +301,7 @@ test_literal_alone_is_no_evidence(void) {
     rig_open(&r);
     send_gps(&r, "$$CRC1234,N0CALL>API51,DSTAR*:!22", 33U, 0);
     expect_int("literal alone does not confirm", r.state->dstar_confirmed, 0);
-    expect_int("record still being collected", r.state->dstar_dprs.collecting, 1);
+    expect_int("record still being collected", dprs_collecting(&r), 1);
     rig_close(&r);
 }
 
@@ -322,7 +391,7 @@ test_bounded_record(void) {
     DSD_MEMSET(longrec, 'x', sizeof(longrec));
     DSD_MEMCPY(longrec, "$$CRC0000,", 10U);
     send_gps(&r, longrec, sizeof(longrec), 0);
-    expect_int("over-long record dropped", r.state->dstar_dprs.collecting, 0);
+    expect_int("over-long record dropped", dprs_collecting(&r), 0);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     dsd_position_fix f[2];
     expect_int("next record decodes", feed_records(&r, f, 2U), 1);
@@ -338,7 +407,7 @@ test_record_bound_to_its_call(void) {
     open_call(&r, "N0CALL");
     const size_t half = 25U;
     send_gps(&r, k_vector, half, 0);
-    expect_int("record half collected", r.state->dstar_dprs.collecting, 1);
+    expect_int("record half collected", dprs_collecting(&r), 1);
     open_call(&r, "N1CALL");
     const uint64_t rev = dsd_position_last_rev();
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
@@ -359,7 +428,7 @@ test_record_bound_to_its_call(void) {
     open_call(&r, "N0CALL");
     send_gps(&r, k_vector, half, 0);
     dstar_confirm_reset(r.state);
-    expect_int("carrier end clears the record", r.state->dstar_dprs.collecting, 0);
+    expect_int("carrier end clears the record", dprs_collecting(&r), 0);
     rig_close(&r);
 }
 
@@ -427,7 +496,7 @@ test_malformed_records(void) {
     DSD_MEMSET(bytes, 0x66, sizeof(bytes));
     bytes[0] = 0x36U; /* six data bytes: no such block */
     send_superframe(&r, bytes);
-    expect_int("oversized block drops the record", r.state->dstar_dprs.collecting, 0);
+    expect_int("oversized block drops the record", dprs_collecting(&r), 0);
     uint64_t rev = dsd_position_last_rev();
     send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
     expect_int("dropped record admits nothing", (long long)(dsd_position_last_rev() - rev), 0);
@@ -579,7 +648,9 @@ test_failed_header_leaves_records_anonymous(void) {
                DSD_POS_FLAG_SOURCE_UNVERIFIED);
     send_slow_data_header(&r, "N0TWO");
     expect_int("a checked header names the transmission", r.state->dstar_tx_call_epoch != 0U, 1);
-    send_gps(&r, k_vector, strlen(k_vector), 0);
+    char two[128];
+    record_from(two, sizeof(two), "N0TWO");
+    send_gps(&r, two, strlen(two), 0);
     expect_int("record after the checked header admitted", feed_records(&r, f, 3U), 3);
     expect_str("record after the checked header is N0TWO's", f[2].source_text, "N0TWO");
     expect_int("record after the checked header is checked", f[2].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED, 0);
@@ -612,7 +683,7 @@ test_reception_change_before_cr_proves_nothing(void) {
     rig_open(&r);
     open_call(&r, "N0CALL");
     send_gps(&r, k_vector, strlen(k_vector) - 1U, 0);
-    expect_int("record waits for its CR", r.state->dstar_dprs.collecting, 1);
+    expect_int("record waits for its CR", dprs_collecting(&r), 1);
     dsd_trunk_tuning_generation_advance();
     const uint64_t rev = dsd_position_last_rev();
     send_gps(&r, "\r", 1U, 0);
@@ -820,6 +891,67 @@ test_data_header_names_no_voice_call(void) {
     rig_close(&r);
 }
 
+/* Issue #800 (g62-r9): N0OLD's voice call is ACTIVE and named (its terminator and the next RF header missed) when a
+ * CRC-valid slow-data header with the DATA bit set names N0DATA. That header is no voice call's, so it revokes
+ * N0OLD's naming without making a new one: a D-PRS record and a whole text message heard after it reach the feed
+ * anonymous and no row, and the text message begun under N0OLD's naming before it never completes on N0OLD's row. */
+static void
+test_data_header_revokes_the_voice_naming(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0OLD");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    expect_int("voice header names the call", r.state->dstar_tx_call_epoch != 0U, 1);
+    send_text(&r, 0U, "OLD MESSAGE TEXT    ", 4U);
+    expect_str("N0OLD's own message", open_row(&r)->text_message, "OLD MESSAGE TEXT");
+    send_text(&r, 0U, "PART1", 1U);
+    expect_str("first block of N0OLD's next message", open_row(&r)->text_message, "PART1");
+
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0DATA", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("data header revokes the voice naming", (long long)r.state->dstar_tx_call_epoch, 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("call still open", dsd_call_state_get(r.state, 0U, &call), 1);
+    expect_str("data header changes no voice call's source", call.source_text, "N0OLD");
+
+    send_text(&r, 1U, " PART2 PART3", 3U);
+    expect_str("message begun before the data header completes on no row", open_row(&r)->text_message, "PART1");
+    send_text(&r, 0U, "NEW DATA MESSAGE    ", 4U);
+    expect_str("message after the data header stays off the row", open_row(&r)->text_message, "PART1");
+
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    dsd_position_fix f[2];
+    expect_int("record admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record after the data header names nobody", f[0].source_text, "");
+    expect_int("record after the data header is unverified", f[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED,
+               DSD_POS_FLAG_SOURCE_UNVERIFIED);
+    expect_int("N0OLD's row takes no position", open_row(&r)->pos.valid, 0);
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r9 review): a checked DATA header takes back only what an earlier header named. In a data-flagged
+ * transmission nothing is named, so an anonymous D-PRS record whose bytes straddle the next DATA header superframe
+ * completes and reaches the feed (anonymous), as it does across a blank-MY voice header. */
+static void
+test_data_header_keeps_an_anonymous_record(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0DATA", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("data header confirms", r.state->dstar_confirmed, 1);
+    const size_t half = 25U;
+    send_gps(&r, k_vector, half, 0);
+    send_superframe(&r, bytes);
+    send_gps(&r, k_vector + half, strlen(k_vector) - half, 0);
+    dsd_position_fix f[2];
+    expect_int("record across the data header admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record across the data header names nobody", f[0].source_text, "");
+    rig_close(&r);
+}
+
 /* Issue #800 (g62-r8): a rebroadcast header fills nine of a superframe's ten blocks; the tenth may be a text block.
  * It is read like any other text block: the message's first block ("HELLO"), heard after the header that names
  * N0TEXT, starts the message, and with the rest of it the whole message reaches N0TEXT's row. */
@@ -838,6 +970,40 @@ test_text_block_after_a_header(void) {
     send_text(&r, 1U, " WORLD TEST MSG", 3U);
     expect_str("whole message shown", r.state->dstar_txt, "HELLO WORLD TEST MSG");
     expect_str("whole message on the row", open_row(&r)->text_message, "HELLO WORLD TEST MSG");
+    rig_close(&r);
+}
+
+/* Issue #800 (g62-r9): the header CRC covers a rebroadcast header's octets, not its nine blocks' mini-headers. A header
+ * block whose mini-header arrives as a text block's (0x41) or a GPS block's (0x35) in an otherwise valid header still
+ * holds header octets: they are never text or GPS data. N0TEXT's message "HELLO" stays "HELLO" on the row (no repeater
+ * callsign appended), and a D-PRS record whose bytes straddle the header superframe completes and is N0TEXT's. */
+static void
+test_header_blocks_are_never_text_or_gps(void) {
+    rig r;
+    rig_open(&r);
+    send_slow_data_header(&r, "N0TEXT");
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    send_text(&r, 0U, "HELLO", 1U);
+    expect_str("first block on the row", open_row(&r)->text_message, "HELLO");
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0TEXT", 0x00U);
+    bytes[18] = 0x41U; /* block 3's mini-header */
+    send_superframe(&r, bytes);
+    expect_str("header octets are no text", r.state->dstar_txt, "HELLO");
+    expect_str("row keeps its message", open_row(&r)->text_message, "HELLO");
+
+    const size_t half = 25U;
+    char record[128];
+    record_from(record, sizeof(record), "N0TEXT");
+    send_gps(&r, record, half, 0);
+    build_slow_data_header(bytes, "N0TEXT", 0x00U);
+    bytes[24] = 0x35U; /* block 4's mini-header */
+    send_superframe(&r, bytes);
+    send_gps(&r, record + half, strlen(record) - half, 0);
+    dsd_position_fix f[2];
+    expect_int("record across the header superframe admitted", feed_records(&r, f, 2U), 1);
+    expect_str("record is N0TEXT's", f[0].source_text, "N0TEXT");
+    expect_int("N0TEXT's row takes the position", open_row(&r)->pos.valid, 1);
     rig_close(&r);
 }
 
@@ -869,6 +1035,8 @@ test_missed_first_block_starts_a_new_message(void) {
 int
 main(void) {
     test_vector_position();
+    test_assemblies_in_protocol_extension();
+    test_record_from_another_station_is_not_the_calls();
     test_crc_mismatch();
     test_literal_alone_is_no_evidence();
     test_time_stamps();
@@ -890,8 +1058,11 @@ main(void) {
     test_header_bound_across_a_protocol_switch();
     test_new_message_starts_empty();
     test_data_header_names_no_voice_call();
+    test_data_header_revokes_the_voice_naming();
+    test_data_header_keeps_an_anonymous_record();
     test_text_block_after_a_header();
     test_missed_first_block_starts_a_new_message();
+    test_header_blocks_are_never_text_or_gps();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

@@ -619,45 +619,6 @@ typedef struct dmr_talker_alias_assembly {
     uint8_t piece[4][7]; /* each piece's bits as stored (header 48 or 49, a block 56), packed MSB first */
 } dmr_talker_alias_assembly;
 
-/** The longest D-STAR D-PRS (GPS-A) record kept, "$$CRC" through its closing CR. */
-#define DSTAR_DPRS_RECORD_MAX 300U
-
-/**
- * What a D-STAR slow-data assembly (a D-PRS record, the text message) is bound to from its first byte or block
- * (src/protocol/dstar/dstar_slow_data.c, issue #800): the transmission (dsd_state::dstar_tx_seq), the call a checked
- * header of that transmission named on the current reception (dstar_tx_named_call(), 0: none), whether the
- * transmission was confirmed (dsd_state::dstar_confirmed) and the reception (dsd_position_origin_capture()). A block
- * heard when any of them has changed resets the assembly before it is used: nothing assembled across two transmissions, two receptions, a header
- * naming another call or the confirmation reaches the evidence, a position or a call.
- */
-typedef struct dstar_sd_binding {
-    uint32_t tx;
-    uint64_t call_epoch;
-    dsd_position_origin origin;
-    uint8_t confirmed;
-} dstar_sd_binding;
-
-/**
- * One D-STAR D-PRS (GPS-A) record being collected from the GPS blocks (type 3) of the slow data
- * (src/protocol/dstar/dstar_slow_data.c): from "$$CRC" through the CR that ends it (JARL STD 6.0 section 6.8.1). It
- * spans superframes, so it is bound (dstar_sd_binding) from its first byte, the hunt for "$$CRC" included. A record
- * that grows past DSTAR_DPRS_RECORD_MAX bytes is dropped, and one whose CR was lost gives way to the next "$$CRC". A
- * changed binding, an RF header or the carrier's end (dstar_confirm_reset()) clears it.
- */
-typedef struct dstar_dprs_assembly {
-    uint8_t text[DSTAR_DPRS_RECORD_MAX]; /* until "$$CRC" matched: the last bytes seen, at most five */
-    uint16_t len;
-    uint8_t collecting;    /* 1 once "$$CRC" began a record */
-    dstar_sd_binding bind; /* captured with the first byte (len 0 -> 1) */
-} dstar_dprs_assembly;
-
-/** The D-STAR text message being assembled from the slow data's text blocks (dsd_state::dstar_txt holds its text): the
- * blocks held (bit n: the block at place n) and what they are bound to (dstar_sd_binding), captured with the first. */
-typedef struct dstar_text_assembly {
-    uint8_t places;
-    dstar_sd_binding bind;
-} dstar_text_assembly;
-
 /**
  * The M17 LSF being assembled from LICH chunks (src/protocol/m17/m17.c, issue #800): which chunks it holds (bit n: chunk
  * n of six) and what its first chunk was heard under -- the transmission (the slot 0 ACTIVE M17 call's epoch, 0 none;
@@ -3018,14 +2979,9 @@ struct dsd_state {
     uint8_t dstar_confirmed;
     uint8_t dstar_confirm_weak_streak;
     uint8_t dstar_confirm_frame_evidence;
-    /* The D-PRS record being collected from slow data; only a complete one whose CRC-16/X.25 matches is evidence or a
-     * position (issue #800 2.10). */
-    dstar_dprs_assembly dstar_dprs;
-    /* The text message being assembled (issue #800): only one whose blocks all came under one binding, its first
-     * block among them, while the transmission was confirmed, reaches the transmission's call. */
-    dstar_text_assembly dstar_text;
     /* The D-STAR transmission (issue #800). dstar_tx_seq advances at every transmission boundary: an RF header, decoded
-     * or not, and the carrier's end (dstar_confirm_reset()). dstar_tx_call_epoch is the slot 0 call a header of this
+     * or not, and the carrier's end (dstar_confirm_reset(), noCarrier()); the slow-data assemblies, in their protocol
+     * extension (src/protocol/dstar/dstar_sd_state.h), are bound to it and reset when it moves. dstar_tx_call_epoch is the slot 0 call a header of this
      * transmission whose CRC passed named with a MY callsign; 0 until one has, after an RF header (the call left ACTIVE,
      * its terminator missed, may be another radio's), and after a checked header whose MY field is blank. Slow data
      * reaches a call (its text, a D-PRS source, a D-PRS position) only when that call is the one named here.
@@ -3096,26 +3052,6 @@ struct dsd_state {
     int m17_vox;     //vox enabled via PWR value
 
     uint8_t m17_meta[16]; //packed meta
-    /* The last GNSS META admitted as a position (issue #800): a transmission repeats its LSF META (RF: every LICH
-     * superframe; IP: every stream frame), and the repeats are one report. Admitted again only for another
-     * transmission (m17_gnss_tx_kind/m17_gnss_tx_id: 1 = RF, the slot 0 call epoch; 2 = network, the stream ID; and
-     * for both m17_gnss_tx_epoch, the slot 0 call epoch, so any end of the call -- a stream EOT, EOTX, DISC, an MPKT's
-     * end, a timeout or a lost sync -- makes the next call another transmission; m17_gnss_tx_src, the checked LSF's
-     * sender, and with it m17_gnss_tx_dst and m17_gnss_tx_type, the rest of the checked LSF, so another station, or
-     * the same one sending to another destination, reusing a stream ID with no call to tell them apart is another
-     * transmission; m17_gnss_tx_fn, an IP stream frame's number, the last one heard, so a stream that starts again at
-     * or below it (its EOT missed) is another transmission; and m17_gnss_tx_gen, the reception) or changed META bytes;
-     * kind 0 = none yet. One left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
-    uint8_t m17_gnss_meta_admitted[14];
-    uint8_t m17_gnss_tx_kind;
-    uint64_t m17_gnss_tx_id;
-    uint64_t m17_gnss_tx_epoch;
-    uint64_t m17_gnss_tx_src;   /* the checked LSF's source address: another sender is another transmission */
-    uint64_t m17_gnss_tx_dst;   /* the checked LSF's destination address */
-    uint16_t m17_gnss_tx_type;  /* the checked LSF's type word */
-    uint16_t m17_gnss_tx_fn;    /* the IP stream frame number last heard with it (m17_gnss_tx_has_fn) */
-    uint8_t m17_gnss_tx_has_fn; /* 1 when it came in an IP stream frame */
-    uint64_t m17_gnss_tx_gen;   /* the reception generation (dsd_position_origin::gen) it was heard under */
     uint8_t m17_text_meta_control_or;
     uint8_t m17_text_meta_expected_bitmap;
     uint8_t m17_text_meta_received_bitmap;

@@ -2497,7 +2497,9 @@ suite runs under this compiler.
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these seven.
+  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -2756,7 +2758,12 @@ suite runs under this compiler.
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
     transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
     number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
-    transmission) and the reception generation, so two stations, or one station sending to another destination,
+    transmission) and the reception generation, except that a byte-identical copy of any of the last 16 network frames
+    (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
+    from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
+    `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
+    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_gnss_state`, freed
+    with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
     reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
     the published target stays unknown). The epoch is the call
     the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
@@ -2768,14 +2775,16 @@ suite runs under this compiler.
     the rest). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
     its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
     position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
-    `dstar_dprs_assembly`) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
-    its own mini-header, wherever it sits in the superframe, a rebroadcast header's superframe included (the header's
-    nine blocks first, then the block after them like any other): only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    `dstar_dprs_assembly`; both slow-data assemblies live in the D-STAR state extension, slot 30, `dstar_sd_st()`,
+    created at first use, never in public `dsd_state`; if it cannot be created no record or message is assembled) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
+    its own mini-header, except a rebroadcast header's own nine blocks (`dstar_sd_first_block()`): the header CRC covers
+    their octets but not their mini-headers, so none of them is ever text or GPS data, whatever type its mini-header
+    names; the block after them is read like any other. Only GPS blocks (0x3n) feed the record and the `GPS DATA:`
     display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
     of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
     position), only text blocks
     (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
-    rule (fail closed, `dstar_sd_binding` in `state.h`): from its first byte or block an assembly is bound to the
+    rule (fail closed, `dstar_sd_binding` in `dstar_sd_state.h`): from its first byte or block an assembly is bound to the
     transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
     `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
     (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
@@ -2787,13 +2796,20 @@ suite runs under this compiler.
     starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
     evidence. What an assembly
     produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
-    the row takes its position only through it (otherwise the feed takes the record anonymous), and the message reaches
+    the row takes its position only through it, and only when the record's own CRC-covered APRS source, its -SSID
+    aside, is that callsign too (`dstar_dprs_source_is()`: another station's record, heard while a call whose
+    boundaries were missed stays ACTIVE, is not the call's; otherwise the feed takes the record anonymous), and the message reaches
     the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
     Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
     header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
     suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
     field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
-    voice call) is read from the bytes its CRC covered, never from the printable display copy. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked RF header with DATA
+    set opens its data call but names no call for slow data; a checked slow-data
+    header with DATA set names no call and opens none, and revokes what a header heard before named
+    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared; the record and message assembled under that naming drop at
+    their next use by the binding rule, while an anonymous one, assembled while nothing was named, goes on), so a voice
+    call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
     on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
     concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
     sender's own MCC/MNC as the sender scope when sent.
@@ -2823,8 +2839,8 @@ suite runs under this compiler.
     Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
     bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
     from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
-    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, a D-PRS record begun in a
-    call, the last admitted M17 META) stay in their protocols, and the call state knows none of them: it never gives out
+    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, the call a D-STAR header
+    named, `dstar_tx_call_epoch`) stay in their protocols, and the call state knows none of them: it never gives out
     an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
     reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
     A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
@@ -13742,14 +13758,17 @@ single "current call".
   not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
   PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
   reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
-  so a message sent again whole completes), its parts addressed to one SSI (parts addressed by an event label alone name
-  no party, so their message's position is refused as `recipient unknown`). A repeated part 1 is a duplicate only with
+  so a message sent again whole completes), its parts addressed to one party, by value and identity space
+  (`tetra_calls_addressed_party()`: an SSI, an SMI and a USSI of one value are three parties, so their parts never
+  join; parts addressed by an event label alone name no party, so their message's position is refused as `recipient
+  unknown`). A repeated part 1 is a duplicate only with
   the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
   position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
   one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
   party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
-  learned for its network. The destination's group or individual kind is not known, so the record never sets
-  `TARGET_GROUP`. Test: `TETRA_LIP`.
+  learned for its network. The destination's group or individual kind is not known (the MAC address does not say),
+  so the record names no target (`target_id` 0, never `TARGET_GROUP`; the notice still shows the address). Test:
+  `TETRA_LIP`.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,

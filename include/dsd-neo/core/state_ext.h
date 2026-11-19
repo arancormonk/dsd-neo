@@ -102,6 +102,12 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* P25 Phase 2 scrambling code recovery: the candidate waiting for its confirmation
      * (src/protocol/p25/phase2/p25p2_seed_recover.c). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER = 29,
+    /* D-STAR slow-data assemblies: the D-PRS record and the text message being collected
+     * (src/protocol/dstar/dstar_sd_state.h, issue #800). Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA = 30,
+    /* M17 GNSS META repeat rule: the last admitted report's transmission and the network frames that carried it
+     * (src/protocol/m17/m17.c m17_gnss_state, issue #800). Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_M17_GNSS = 31,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);

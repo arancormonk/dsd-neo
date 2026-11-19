@@ -888,12 +888,13 @@ typedef struct {
     uint8_t type;     /* 1 for an SSI or TSI calling party; the reserved type identifier otherwise */
 } sds_concat_sender;
 
-/* The party a concatenation part is addressed to: the SSI its MAC PDU names in the clear (tetra_calls_addressed_ssi()),
- * or none known (an event label alone, an encrypted short identity). A message's parts are its sender's to one party:
- * parts of two messages that share a sender and reference but go to two parties are never assembled into one. */
+/* The party a concatenation part is addressed to: the identity its MAC PDU names in the clear and its identity space
+ * (tetra_calls_addressed_party(): an SSI, an SMI, or none known: an event label alone, an encrypted short identity). A
+ * message's parts are its sender's to one party: parts of two messages that share a sender and reference but go to two
+ * parties -- an SMI and an SSI of one value among them -- are never assembled into one. */
 typedef struct {
-    uint32_t ssi;
-    uint8_t known;
+    uint32_t value;
+    uint8_t space; /* tetra_calls_party */
 } sds_concat_party;
 
 /* One message being reassembled; the parts are stored packed, MSB first. */
@@ -957,7 +958,7 @@ sds_concat_same_sender(const sds_concat_sender* a, const sds_concat_sender* b) {
 
 static int
 sds_concat_same_party(const sds_concat_party* a, const sds_concat_party* b) {
-    return a->known == b->known && a->ssi == b->ssi;
+    return a->space == b->space && a->value == b->value;
 }
 
 /* The context collecting @p part's message (the same sender, addressed party, reference and transport): the matching
@@ -1341,7 +1342,7 @@ sds_reassemble(const mle_ctx* ctx, tetra_sds_data* d, sds_concat_status* concat)
     DSD_MEMSET(&part, 0, sizeof part);
     part.data = tetra_bits_reader(ctx->bits, d->concat.data_pos + d->concat.data_bits, d->concat.data_pos);
     part.src = sds_concat_sender_of(ctx->ts, &d->calling);
-    part.dst.known = (uint8_t)tetra_calls_addressed_ssi_known(ctx->sdu, &part.dst.ssi);
+    part.dst.space = (uint8_t)tetra_calls_addressed_party(ctx->sdu, &part.dst.value);
     part.payload_pid = d->concat.payload_pid;
     part.reference = d->concat.reference;
     part.with_transport = d->concat.with_transport;
@@ -1420,15 +1421,16 @@ sds_lip_pdu(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status
     return 1;
 }
 
-/* Admit a short location report as the SDS sender's, to the addressed party @p dst. The MAC block CRC passed before
- * the MLE was reached, and the LLC FCS too when the PDU carried one (tetra_mac.c llc_deliver()); like the notice that
- * goes with it, the report is published only once an earlier CRC-passed block proved the carrier. The sender and its
- * network come from the same checked SDS: a calling party of type 2 sends its own MCC and MNC (table 14.44), which
- * names the sender's network; type 1 is the network the decoder is on. Whether @p dst is a group the MAC address does
- * not say, so the report is not marked as sent to one. */
+/* Admit a short location report as the SDS sender's. The MAC block CRC passed before the MLE was reached, and the LLC
+ * FCS too when the PDU carried one (tetra_mac.c llc_deliver()); like the notice that goes with it, the report is
+ * published only once an earlier CRC-passed block proved the carrier. The sender and its network come from the same
+ * checked SDS: a calling party of type 2 sends its own MCC and MNC (table 14.44), which names the sender's network;
+ * type 1 is the network the decoder is on. The record names no target: the MAC address the SDS came with does not say
+ * whether its SSI is a radio or a group, and a record's target is a radio unless marked a talkgroup (issue #800, fail
+ * closed: the notice still shows the address). */
 static int
-sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const lip_short_report* r,
-              const dsd_position_origin* origin, sds_lip* out) {
+sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, const lip_short_report* r, const dsd_position_origin* origin,
+              sds_lip* out) {
     dsd_position_fix* const fix = &out->fix;
     if (!d->calling.ssi_valid) {
         /* A reserved calling party type (table 14.43) has no address of known length: nothing after it, the report
@@ -1444,7 +1446,7 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
         DSD_SNPRINTF(out->position, sizeof out->position, "%s", "carrier not proven");
         return 0;
     }
-    if (d->concat_present && !tetra_calls_addressed_ssi_known(ctx->sdu, NULL)) {
+    if (d->concat_present && tetra_calls_addressed_party(ctx->sdu, NULL) == TETRA_CALLS_PARTY_NONE) {
         /* Parts are assembled per addressed party (sds_concat_find()); with none named, nothing shows that the parts
            of the message went to one party, so they may be two reports' halves. */
         DSD_SNPRINTF(out->position, sizeof out->position, "%s", "recipient unknown");
@@ -1456,7 +1458,6 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
     fix->protocol = (uint8_t)tetra_calls_protocol(ctx->state);
     fix->slot = 0U;
     fix->source_id = d->calling.ssi;
-    fix->target_id = dst;
     if (d->calling.type == 2U && d->calling.extension_valid) {
         fix->sender_scope.kind = DSD_POS_SCOPE_TETRA;
         fix->sender_scope.a = d->calling.extension >> 14;     /* MCC, 10 bits */
@@ -1473,7 +1474,7 @@ sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const l
 /* Decode the LIP PDU @p bits: a short location report (table 6.1) is admitted; a long one, and the other PDU types,
  * are named and left undecoded. */
 static void
-sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const uint8_t* bits, int nbits,
+sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits, int nbits,
                const dsd_position_origin* origin, sds_lip* out) {
     tetra_bit_reader rd = tetra_bits_reader(bits, nbits, 0);
     const uint32_t type = tetra_bits_read(&rd, 2); /* table 6.91 */
@@ -1487,7 +1488,7 @@ sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, uint32_t dst, const 
         }
         DSD_SNPRINTF(out->what, sizeof out->what, "%s", "short location report");
         out->short_report = 1;
-        out->admitted = (uint8_t)sds_lip_admit(ctx, d, dst, &r, origin, out);
+        out->admitted = (uint8_t)sds_lip_admit(ctx, d, &r, origin, out);
     } else if (type == 1u) {
         /* Table 6.92: PDU type extension 0011 is the long location report (table 6.2). */
         const uint32_t extension = tetra_bits_read(&rd, 4);
@@ -1518,7 +1519,7 @@ sds_lip_report(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits,
     }
     sds_lip lip;
     DSD_MEMSET(&lip, 0, sizeof lip);
-    sds_lip_decode(ctx, d, dst, bits, nbits, origin, &lip);
+    sds_lip_decode(ctx, d, bits, nbits, origin, &lip);
     if (lip.admitted) {
         DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u %s; %s\n", ctx->cc, d->calling.ssi,
                     (unsigned)dst, lip.what, lip.text);

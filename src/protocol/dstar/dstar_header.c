@@ -129,10 +129,13 @@ dstar_header_observe(dsd_state* state, int protocol, int data, const char* rpt2,
     DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", rpt2);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     /* The transmission's own callsign is on the call now: slow data of this transmission may reach that call. A blank
-       MY field names no one, and the call may still carry the last transmission's callsign (its terminator missed). */
+       MY field names no one, and the call may still carry the last transmission's callsign (its terminator missed). A
+       data header names no call for slow data, as a slow-data header with DATA set does not (dstar_tx_unname()): one
+       rule for both header paths. */
     dsd_call_snapshot call;
     state->dstar_tx_call_epoch =
-        (named && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch : 0U;
+        (named && !data && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) ? call.epoch
+                                                                                                            : 0U;
     /* The naming holds on this reception only (dstar_tx_named_call()). */
     dsd_position_origin_capture(NULL, state, &state->dstar_tx_call_origin);
 }
