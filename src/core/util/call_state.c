@@ -708,6 +708,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // must not execute under the canonical lock. Every read is dominated by the begins_epoch
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
+    /* A call heard, begun or going on, for the -Y no-check status of the stay it is heard on (issue #834): a step the
+       radio refused begins a stay without moving the carrier, and the call left going on explains it. */
+    state->scan_y_call_seq++;
     if (begins_epoch) {
         call_state_reset_voice_errors(state, slot);
         previous = *snapshot;
@@ -715,7 +718,6 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         ext->epoch_sequence[slot] = call_state_next_nonzero(ext->epoch_sequence[slot]);
         snapshot->epoch = ext->epoch_sequence[slot];
         snapshot->transmission_epoch = snapshot->epoch;
-        state->scan_y_call_seq++; /* a call heard, for the -Y no-check status (issue #834) */
         snapshot->slot = slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;

@@ -743,8 +743,9 @@ Generated (do not edit/commit):
       -Y's HANGTIME; a raw sync no longer ends the check (R1), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on -Y
       only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_call_seq`, a call
-      heard: one the call store began, which `dsd_call_state_observe()` moves as it begins a call epoch, from checked
-      content only; checked content that is no call, an idle control channel's traffic, moves nothing
+      heard: one the call store began or saw go on, which `dsd_call_state_observe()` moves on every observation, from
+      checked content only, so a call a refused step left going on explains the new stay
+      (`test_y_continuing_call_explains_a_new_stay()`); checked content that is no call, an idle control channel's traffic, moves nothing
       (`test_y_quiet_no_check_outlasts_checked_control_traffic()`); an analog call admitted, which
       `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
       a tone check rejected, or a ProVoice frame its decoder took, which `processFrame()` moves after the handler only

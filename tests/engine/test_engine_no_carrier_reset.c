@@ -15668,6 +15668,40 @@ test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
     return rc;
 }
 
+/* Issue #834: a call heard on a stay explains it, a call going on as much as one begun. A step the radio refused
+   moved no carrier but began a new stay; the call it left going on is heard on it through its checked observations
+   (CONTINUE, no new call), and the stay shows no "No check". */
+static int
+test_y_continuing_call_explains_a_new_stay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 1000U,
+    };
+    int rc = expect_true("the call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    (void)dsd_call_state_get(state, 0U, &before);
+    dsd_engine_scan_y_stay_begin(state); /* the refused step's new stay */
+    (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_call_snapshot after;
+    (void)dsd_call_state_get(state, 0U, &after);
+    rc |= expect_true("the same call goes on", after.epoch == before.epoch);
+    rc |= expect_true("and is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
+    free_test_runtime(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y continuing call\n");
+    }
+    return rc;
+}
+
 /* Issue #834: a -Y stay's frame evidence is its own. A row that lands, and a stay that begins (the -Y scan's start, a
    landing forgotten), clear what the frames before them noted: the time of the last checked or unchecked frame, and
    checked content no frame boundary has read yet (with -Y off nothing reads it). Either left would hold the new stay's
@@ -16969,6 +17003,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_zero_hangtime_keeps_a_proven_call();
     rc |= test_y_one_hangtime_deadline();
     rc |= test_y_stay_starts_without_the_last_stays_frames();
+    rc |= test_y_continuing_call_explains_a_new_stay();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);

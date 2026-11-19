@@ -501,9 +501,8 @@ quiet_input_detail(const dsd_opts* opts) {
 }
 
 /* Whether the -Y stay on air has carried no call (issue #834 R8, "unsynced HANGTIME"), so its no-check status is shown:
-   no call heard since its baseline (dsd_state::scan_y_call_seq: a call the call store began from checked content, an
-   admitted analog call, or a frame a decoder of a protocol with no content check took, X2-TDMA voice, ProVoice once
-   confirmed, TETRA once a burst's CRC passed). On a landed row that is the landing (dsd_engine_scan_landing::
+   no call heard since its baseline (dsd_state::scan_y_call_seq: a call the call store began or saw go on, from checked
+   content, an admitted analog call, or a ProVoice frame of a confirmed transmission). On a landed row that is the landing (dsd_engine_scan_landing::
    y_call_seq); with no row landing in force (the start frequency before the first step, a step that forgot the landing
    and then failed, an input switch) the stay's own start (dsd_state::scan_y_stay_call_seq). A call explains the stay,
    so no no-check status is shown on it; a check under way still is (R1). Checked content that is no call (an idle
