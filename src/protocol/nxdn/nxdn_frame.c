@@ -122,6 +122,9 @@ typedef struct {
     /* Whether the transmission was confirmed before this frame began: the frame's spacing may confirm a check the frame
        before left pending (nxdn_confirm_note_frame_start()), which then starts the scanner's hold here. */
     int confirmed_before;
+    /* The cipher, and whether its scalar key was present, when the frame began (nxdn_apply_data_frame_lfsr_at_entry()). */
+    uint32_t cipher_at_entry;
+    int key_at_entry;
 } nxdn_frame_ctx;
 
 typedef struct {
@@ -515,6 +518,22 @@ nxdn_apply_data_frame_lfsr(dsd_state* state) {
     }
 }
 
+/* nxdn_apply_data_frame_lfsr() for the cipher @p cipher and key presence @p key the frame began with: the four slots of
+   a standalone Type-D frame are accounted as they were before its signalling decoded, so a VCALL it carries that
+   selects Scramble or loads a key takes none of them (main stepped data frames before their channels decoded). */
+static void
+nxdn_apply_data_frame_lfsr_at_entry(dsd_state* state, uint32_t cipher, int key) {
+    if (cipher == 0x1 && key) {
+        if (state->nxdn_payload_mi == 0) {
+            state->nxdn_payload_mi = state->R;
+        }
+        nxdn_roll_voice_lfsr(state, 4);
+    }
+    if (cipher == 0x2 || cipher == 0x3) {
+        state->bit_counterL += 49L * 4;
+    }
+}
+
 static void
 nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
@@ -588,9 +607,13 @@ nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
        its slots still run the register on. Only the absolute placement needs a checked position. A Type-D frame of the
        non-superframe structure (its LICH's USC 0x, TS 1-E Table 5.2-1: a standalone FACCH1, UDCH2 or FACCH3 frame) is
        no frame of the voice superframe: its single SCCH (structure 00, Table 6.3-1) places nothing, it selects nothing,
-       and its slots run the register on only for a cipher already selected, as they always did (a superframe SACCH's
-       frame always is one). */
+       and its slots run the register on only for the cipher and key the frame began with, as they always did: a VCALL
+       it carries that selects Scramble takes none of them (a superframe SACCH's frame always is one). */
     const int superframe_frame = !ctx->scch || (ctx->lich & 0x10U) != 0U;
+    if (!superframe_frame && ctx->voice == 0) {
+        nxdn_apply_data_frame_lfsr_at_entry(state, ctx->cipher_at_entry, ctx->key_at_entry);
+        return;
+    }
     const uint8_t part = superframe_frame ? ctx->result->seed_part : 0U;
     if ((ctx->voice || superframe_frame) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
@@ -958,6 +981,8 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
     ctx.confirmed_before = nxdn_confirm_is_confirmed(state);
+    ctx.cipher_at_entry = state->nxdn_cipher_type;
+    ctx.key_at_entry = dsd_key_scalar_present(state, 0);
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_frame_before_channels(opts, state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);

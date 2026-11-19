@@ -122,6 +122,8 @@ static uint8_t g_stub_scch_part;
 static int g_stub_sacch_selects_scramble;
 /* The FACCH1 is a control channel's CCH_INFO: a Type-C site (as dsd_nxdn_note_type_c() notes it). */
 static int g_stub_facch_notes_type_c;
+/* The FACCH1 is a VCALL selecting Scramble (nxdn_cipher_observe() as a checked VCALL applies it). */
+static int g_stub_facch_selects_scramble;
 /* The DCR SACCH2 is a first block, which resets the scrambler register (nxdn_update_sacch2_identity_state()). */
 static int g_stub_sacch2_resets_register;
 /* The location category the FACCH1 decoder read. */
@@ -179,6 +181,7 @@ reset_state(void) {
     g_stub_scch_part = 1U;
     g_stub_sacch_selects_scramble = 0;
     g_stub_facch_notes_type_c = 0;
+    g_stub_facch_selects_scramble = 0;
     g_stub_sacch2_resets_register = 0;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
@@ -376,6 +379,9 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     g_facch_frame_channel = state->nxdn_frame_channel;
     DSD_SNPRINTF(g_facch_category, sizeof(g_facch_category), "%s", state->nxdn_location_category);
     g_facch_part_mask |= 1 << part;
+    if (g_stub_facch_ok && g_stub_facch_selects_scramble) {
+        state->nxdn_cipher_type = 1U;
+    }
     if (g_stub_facch_ok && g_stub_facch_notes_type_c) {
         /* dsd_nxdn_note_type_c(): the site is Type-C, and the SCCH's "Type-D" layout goes. */
         state->nxdn_site.type_c = 1U;
@@ -1296,6 +1302,25 @@ test_unconfirmed_frame_keeps_the_shared_register(void) {
     return rc;
 }
 
+/* A standalone Type-D header (LICH 0x61) arriving with a key loaded and the cipher clear, whose own FACCH1 VCALL selects
+   Scramble: its slots are accounted with the cipher it began with, as they always were (main stepped data frames
+   before their channels decoded), so it takes none of the PN sequence and the first voice frame starts at the key. */
+static int
+test_standalone_header_steps_with_its_entry_cipher(void) {
+    reset_state();
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_state.nxdn_payload_mi = 0ULL;
+    g_stub_scch_ok = 0;
+    g_stub_facch_selects_scramble = 1;
+    (void)route_frame(0x61U);
+    int rc = 0;
+    rc |= expect_int("header vcall: scramble selected", (int)g_state.nxdn_cipher_type, 1);
+    rc |= expect_int("header vcall: no PN slot stepped", g_lfsr_calls, 0);
+    rc |= expect_u64("header vcall: the register untouched", g_state.nxdn_payload_mi, 0ULL);
+    return rc;
+}
+
 /* A Japanese DCR SB0/PICH header (LICH 0x08) has no SCCH or superframe SACCH: its slots are stepped before its SACCH2
    decodes, as they always were, so the SACCH2's first-block reset (the register reloads from the key) stands for the
    voice after it. */
@@ -1368,11 +1393,11 @@ test_forced_scramble_skips_a_standalone_header(void) {
     /* Its single SCCH, valid, reads as structure 00 (4/4 or single, TS 1-E Table 6.3-1): it places nothing, forced
        Scramble or not. With Scramble already running, the header's slots run the register on as they always did
        (origin/main's nxdn_apply_data_frame_lfsr() for every data frame). */
-    for (int running = 0; running < 2; running++) {
+    for (int running = 0; running < 3; running++) {
         reset_state();
-        g_state.M = 1;
+        g_state.M = running == 2 ? 0 : 1; /* the running case once more without a forced scrambler */
         g_state.R = 0x5A5AULL;
-        g_state.nxdn_cipher_type = running ? 1U : 0U;
+        g_state.nxdn_cipher_type = running != 0 ? 1U : 0U;
         g_state.nxdn_payload_mi = 777ULL;
         g_stub_scch_ok = 1;
         g_stub_scch_part = 4U;
@@ -1492,6 +1517,7 @@ main(void) {
     rc |= test_diagnostic_only_frame_holds_no_scan();
     rc |= test_forced_scramble_steps_a_fully_stolen_frame_without_position();
     rc |= test_forced_scramble_skips_a_standalone_header();
+    rc |= test_standalone_header_steps_with_its_entry_cipher();
     rc |= test_spacing_confirmation_starts_the_scan_hold();
     rc |= test_withheld_voice_steps_the_scrambler();
     rc |= test_dcr_header_keeps_its_scrambler_reset();
