@@ -25831,6 +25831,14 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_legal_inventory.py
     )
+    # The macOS DMG's dependency check, with a fake otool: every staged file is
+    # built for the triplet's deployment target and loads only staged libraries.
+    add_test(
+        NAME TOOLS_CHECK_MACOS_PORTABLE_DEPS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
+    )
     # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
     # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS).
     add_test(

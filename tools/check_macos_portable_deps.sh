@@ -2,7 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 
+# Usage: tools/check_macos_portable_deps.sh [stage-dir] [deployment-target]
+# With a deployment target (the triplet's VCPKG_OSX_DEPLOYMENT_TARGET), every
+# staged Mach-O file must be built for exactly that macOS: one built for a newer
+# macOS would stop the DMG from loading on the oldest one it claims to support.
 stage=${1:-dist/dsd-neo-macos}
+deployment_target=${2:-}
 exe="$stage/bin/dsd-neo"
 lib_dir="$stage/lib"
 manifest="$stage/dylibs-manifest.txt"
@@ -37,6 +42,18 @@ fi
 
 list_deps() {
   "$otool_bin" -L "$1" | tail -n +2 | awk '{print $1}'
+}
+
+# The oldest macOS a Mach-O file runs on: LC_BUILD_VERSION's minos, or the
+# version of an older LC_VERSION_MIN_MACOSX.
+min_os() {
+  "$otool_bin" -l "$1" | awk '
+    /cmd LC_BUILD_VERSION/ { build = 1; legacy = 0; next }
+    /cmd LC_VERSION_MIN_MACOSX/ { legacy = 1; build = 0; next }
+    /cmd / { build = 0; legacy = 0 }
+    build && /^[[:space:]]*minos / { print $2; exit }
+    legacy && /^[[:space:]]*version / { print $2; exit }
+  '
 }
 
 list_rpaths() {
@@ -142,6 +159,13 @@ done < <(find "$lib_dir" -maxdepth 1 -type f -name '*.dylib' -print0)
 for file in "${macho_files[@]}"; do
   rel=${file#"$stage"/}
   verify_code_signature "$file" "$rel"
+
+  if [[ -n "$deployment_target" ]]; then
+    built_for=$(min_os "$file")
+    if [[ "$built_for" != "$deployment_target" ]]; then
+      report_error "$rel is built for macOS ${built_for:-<unknown>}, not the deployment target $deployment_target"
+    fi
+  fi
 
   while IFS= read -r rpath; do
     [[ -z "$rpath" ]] && continue

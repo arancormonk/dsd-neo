@@ -83,7 +83,8 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   - `tools/check_install_runtime_destinations.sh` (install rules with library destinations also name a RUNTIME
     destination, for Windows DLLs).
 - Packaging checks: `tools/check_patched_usb_libs.sh` (libairspy and librtlsdr binaries carry DSD-neo's patches),
-  `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies) and
+  `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies and that every staged file
+  is built for the triplet's deployment target) and
   `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
 - Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
