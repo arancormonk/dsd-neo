@@ -11,7 +11,6 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
-#include <QIODevice>
 #include <QLatin1Char>
 #include <QLatin1String>
 #include <QString>
@@ -19,6 +18,8 @@
 #include <QTemporaryDir>
 #include <QtGlobal>
 #include <cstdio>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/file_compat.h>
 
 #include "decoder_host.h"
 
@@ -30,7 +31,7 @@ void
 check_at(bool ok, int line, const char* why) {
     if (!ok) {
         ++failures;
-        std::fprintf(stderr, "test_ui_qt_license_notices.cpp:%d: %s\n", line, why);
+        DSD_FPRINTF(stderr, "test_ui_qt_license_notices.cpp:%d: %s\n", line, why);
     }
 }
 
@@ -70,8 +71,13 @@ class NoticeHost : public dsd_qt::DecoderHost {
 bool
 write_file(const QString& path, const QByteArray& bytes) {
     QDir().mkpath(path.left(path.lastIndexOf(QLatin1Char('/'))));
-    QFile file(path);
-    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    FILE* file = dsd_fopen_private(QFile::encodeName(path).constData(), "wb");
+    if (file == nullptr) {
+        return false;
+    }
+    const size_t size = static_cast<size_t>(bytes.size());
+    const bool written = std::fwrite(bytes.constData(), 1, size, file) == size;
+    return std::fclose(file) == 0 && written;
 }
 
 QString
