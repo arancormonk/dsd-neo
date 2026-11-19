@@ -46,12 +46,42 @@ Item {
     readonly property var record: locationFeed.record || ({})
     // The feed's record is the device's live fix whoever's lease runs it; the
     // map reads it only while it holds its own (following on a shown map).
-    readonly property bool live: leaseWanted && locationFeed.active && record.state === "ok" && record.hasFix === true
+    readonly property bool streamFix: leaseWanted && locationFeed.active && record.state === "ok" && record.hasFix === true
+    // A fix stops being live once it is older than roaming's limit (60 s):
+    // the platform keeps handing back its last measurement, however old, and
+    // sends nothing new while it has nothing new (review r1). Aged on the
+    // clock fixAtMs is on (locationFeed.nowMs()), read once a second while
+    // the stream runs and at every record.
+    property int maxFixAgeMs: 60000
+    property double clockMs: 0
+    readonly property double fixAgeMs: streamFix && record.fixAtMs !== undefined ? clockMs - record.fixAtMs : -1
+    readonly property bool live: streamFix && fixAgeMs >= 0 && fixAgeMs <= maxFixAgeMs
+    // The stream's last fix, gone stale: the dot stays on it (it is the
+    // newest position known), but it is no longer called "you".
+    readonly property bool lastKnown: streamFix && !live
     readonly property bool saved: supported && prefs.lastFixAt > 0
-    readonly property bool deviceValid: supported && (live || saved)
-    readonly property double deviceLatitude: live ? record.lat : prefs.lastLat
-    readonly property double deviceLongitude: live ? record.lon : prefs.lastLon
-    readonly property double deviceAccuracyM: live ? (record.accuracyM || 0) : prefs.lastAccuracyM
+    readonly property bool deviceValid: supported && (streamFix || saved)
+    readonly property double deviceLatitude: streamFix ? record.lat : prefs.lastLat
+    readonly property double deviceLongitude: streamFix ? record.lon : prefs.lastLon
+    readonly property double deviceAccuracyM: streamFix ? (record.accuracyM || 0) : prefs.lastAccuracyM
+    function tick() {
+        clockMs = locationFeed.nowMs();
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: locator.streamFix
+        onTriggered: locator.tick()
+    }
+    // A live fix going stale says so while following; a fresh one clears it.
+    onLiveChanged: {
+        if (!followMe)
+            return;
+        if (streamFix && !live && notice.length === 0)
+            notice = qsTr("Finding your position…");
+        else if (live && notice === qsTr("Finding your position…"))
+            notice = "";
+    }
     readonly property string actionName: followMe ? qsTr("Stop following my position") : readyToFollow ? qsTr("Follow my position") : qsTr("Locate me")
 
     function act() {
@@ -113,8 +143,15 @@ Item {
     function syncLease() {
         if (leaseWanted) {
             locationFeed.acquire("map");
+            tick();
             if (!live)
                 notice = qsTr("Finding your position…");
+            // Joining a feed another lease (roaming) already runs: its record
+            // stands, and nothing new comes while it stays the same (the host
+            // sends only changes), so it is read now, a coarse-only answer
+            // included (review r1). Just after this change, not inside it: an
+            // answer that ends follow changes leaseWanted again.
+            Qt.callLater(locator.readFeed);
         } else {
             locationFeed.release("map");
         }
@@ -133,6 +170,7 @@ Item {
     Connections {
         target: locationFeed
         function onRecordChanged() {
+            locator.tick();
             locator.readFeed();
         }
         function onLeasesDropped() {
@@ -146,7 +184,7 @@ Item {
         if (state === undefined)
             return;
         if (state === "ok") {
-            if (record.hasFix === true && notice === qsTr("Finding your position…"))
+            if (live && notice === qsTr("Finding your position…"))
                 notice = "";
             return;
         }

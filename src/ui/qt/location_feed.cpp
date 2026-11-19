@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <dsd-neo/runtime/decode_clock.h>
 #include "decoder_host.h"
 
 namespace dsd_qt {
@@ -84,6 +85,11 @@ LocationFeed::release(const QString& name) {
 bool
 LocationFeed::holds(const QString& name) const {
     return m_leases.contains(name);
+}
+
+qint64
+LocationFeed::nowMs() const {
+    return static_cast<qint64>(dsd_realtime_mono_ms());
 }
 
 void

@@ -123,7 +123,8 @@ class PositionModel : public QAbstractListModel {
         ShownRole,             /**< The age filter shows one of the track's fixes (the gap row: always). */
         PointCountRole,        /**< Points in the trail. */
         /** The current position's own report, the one its marker is drawn from (spec 4.6: the sheet and the List
-         *  describe the fix shown): {latitude, longitude, kindText, weakCheck, provisional, sourceHashed,
+         *  describe the fix shown): {latitude, longitude, kindText, targetId and targetGroup (who this report was sent
+         *  to; a track's reports can each name another), weakCheck, provisional, sourceHashed,
          *  sourceUnverified, errorM, errorLowerBound, speedDkmh, speedLowerBound, headingDdeg, headingAmbiguous,
          *  altitudeDm, sats, freqHz, fixTime, receivedTime, timeText, newest}; unknown values left out; {} when none. */
         CurrentFixRole,

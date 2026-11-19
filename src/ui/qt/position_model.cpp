@@ -264,6 +264,8 @@ fix_record(const dsd_position_fix& fix, bool newest) {
     out.insert(QStringLiteral("latitude"), degrees(fix.lat_e7));
     out.insert(QStringLiteral("longitude"), degrees(fix.lon_e7));
     out.insert(QStringLiteral("kindText"), position_kind_text(fix.kind));
+    put_known(out, "targetId", fix.target_id != 0U, static_cast<double>(fix.target_id));
+    out.insert(QStringLiteral("targetGroup"), flag(DSD_POS_FLAG_TARGET_GROUP));
     out.insert(QStringLiteral("weakCheck"), flag(DSD_POS_FLAG_WEAK_CHECK));
     out.insert(QStringLiteral("provisional"), flag(DSD_POS_FLAG_FORMAT_PROVISIONAL));
     out.insert(QStringLiteral("validityUnknown"), flag(DSD_POS_FLAG_VALIDITY_UNKNOWN));

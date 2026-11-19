@@ -84,6 +84,11 @@ class LocationFeed : public QObject {
     /** @brief Whether the lease @p name is held. */
     Q_INVOKABLE bool holds(const QString& name) const;
     /**
+     * @brief Now on the clock a record's @c fixAtMs is on (dsd_realtime_mono_ms()), so a consumer can age a fix that
+     *        no new record replaces: the platform keeps handing back its last measurement, however old (#800).
+     */
+    Q_INVOKABLE qint64 nowMs() const;
+    /**
      * @brief Read the host's foreground epoch: when it moved since the feed last started and a lease is held, emit
      * foregroundMoved() and start the feed again (once for all leases). An unreadable epoch changes nothing.
      */

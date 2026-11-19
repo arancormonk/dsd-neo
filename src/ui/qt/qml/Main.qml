@@ -1100,8 +1100,14 @@ Window {
             return;
         }
         var host = back.sheet.parent;
-        if (callHistory.rowForUid(back.uid) >= 0 && host && Navigation.presented(host) && Navigation.allows(host))
+        if (callHistory.rowForUid(back.uid) >= 0 && host && Navigation.presented(host) && Navigation.allows(host)) {
             back.sheet.open(callHistory.recordFor(back.uid));
+            // Its close returns to the row, found again by uid: the item the
+            // sheet first opened from may be gone (review r1).
+            var row = typeof host.rowFocusFor === "function" ? host.rowFocusFor(back.uid) : null;
+            if (row)
+                back.sheet.previousFocus = row;
+        }
         // The row gone (or its screen covered): the list it was in, else what
         // opened the sheet, else the sheet's screen.
         else if (!(host && typeof host.focusList === "function" && host.focusList()) && !focusBack(back.focus))

@@ -157,6 +157,44 @@ Item {
                       "the row gone, the focus goes to the History list");
         }
 
+        // Review r1: from the keyboard, a History row's details, Show on map, then Back twice: the first Back opens
+        // the row's sheet again, the second gives the focus back to that row, found by uid (the row the sheet was
+        // first opened from is gone: the covered list held no rows).
+        function test_back_twice_returns_to_the_row() {
+            testContext.setLifecyclePhase(0);
+            app.currentTab = 1;
+            callHistory.push("TODAY");
+            var uid = callWithFix();
+            callHistory.push("TODAY");
+            var history = findChild(app, "idleHistoryScreen");
+            var list = findChild(history, "callLogList");
+            var sheet = findChild(history, "historyDetailSheet");
+            var rowOf = function () {
+                for (var i = 0; i < list.count; ++i) {
+                    var r = list.itemAtIndex(i);
+                    if (r && r.rowUid === uid)
+                        return r;
+                }
+                return null;
+            };
+            tryVerify(function () { return rowOf() !== null; }, 1000, "the row is listed");
+            var first = rowOf();
+            first.node.forceActiveFocus();
+            verify(first.node.activeFocus);
+            keyClick(Qt.Key_Return);
+            tryVerify(function () { return sheet.visible; }, 1000, "the row's sheet opens from the keyboard");
+            findChild(sheet, "historyShowOnMap").activate();
+            verify(app.mapOpen);
+            app.requestBack();
+            tryVerify(function () { return sheet.visible; }, 1000, "the first Back opens the sheet again");
+            compare(sheet.record.uid, uid);
+            sheet.requestDismiss();
+            tryVerify(function () {
+                var row = rowOf();
+                return row !== null && row.node.activeFocus;
+            }, 1000, "the second Back focuses the row: " + app.activeFocusItem);
+        }
+
         // A close the app makes (a file another app opened) opens no sheet again.
         function test_an_app_close_does_not_reopen_the_sheet() {
             testContext.setLifecyclePhase(0);

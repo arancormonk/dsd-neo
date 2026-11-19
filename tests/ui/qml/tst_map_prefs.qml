@@ -247,7 +247,7 @@ Item {
             item("mapLocate").activate();
             verify(canvas().followDevice, "following the device");
             testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 2000,
-                                                  lat: 25.0, lon: 47.0, accuracyM: 5, fixAtMs: savedSystems.realtimeNowMs()});
+                                                  lat: 25.0, lon: 47.0, accuracyM: 5, fixAtMs: locationFeed.nowMs()});
             tryVerify(function () { return item("mapLocator").live; }, 2000, "the live fix is in use");
             tryVerify(function () { return near(canvas().centerLatitude, 25.0, 0.5); }, 2000, "the camera follows it");
             close();

@@ -716,16 +716,18 @@ detail sheet and the List say the same in words:
 - A double outline and a dashed trail mean the report's format is not confirmed by a published specification.
 - An emergency is in the alert colour with the word **Emergency** in its label. The radio you picked is in cyan.
 
-**List** shows the same radios as rows, with every state in words. A screen reader uses the List; the map itself is not
-read. Every map action has a button: zoom in and out, **Show every radio**, **Locate me**.
+**List** shows the same radios as rows, with every state in words, and your own dot as a row of its own (where it is
+and how accurate). A screen reader uses the List; the map itself is not read. Every map action has a button: zoom in
+and out, **Show every radio**, **Locate me**.
 
 ### Map tiles
 
 Until you turn tiles on, the map is a plain grid and the app sends nothing. **Load map tiles** (on the empty map, or in
 the prompt on the map) or the switch in **Map settings** (the menu at the top right) turns them on. The prompt and the
 settings name the server first: OpenStreetMap's (`tile.openstreetmap.org`) unless you enter another `https://` address
-for PNG tiles with `{z}`, `{x}` and `{y}` in it once each, and the attribution that server asks for. The attribution
-stays at the bottom of the map, above any open sheet, and for OpenStreetMap it opens its copyright page.
+for PNG tiles with `{z}`, `{x}` and `{y}` in it once each, and the attribution that server asks for. OpenStreetMap's
+own tiles always need **© OpenStreetMap contributors** in the attribution. The attribution stays at the bottom of the
+map, above any open sheet, and for OpenStreetMap it opens its copyright page.
 
 With tiles on, the app asks the server only for the tiles of the area on screen, over HTTPS, with the User-Agent
 `dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`. The server sees which area you look at, your IP address
@@ -747,7 +749,9 @@ dropped after 24 hours. Press the button again while the map is still on the dot
 then moves with you, using precise location, only while the map is on screen. Leaving the map, moving it by hand or
 pressing the button a third time stops it, and those live positions are never saved. Nor are the map tiles fetched
 around you: they stay in memory (see "Map tiles"). Without precise location the map says **Live position needs precise
-location.**
+location.** When the phone has had no new fix for a minute (a tunnel), the dot stays where it last was, distances say
+**from your last known position**, and the map says **Finding your position…** until a new fix comes. Showing another
+radio, a History row's position or your located dot stops any follow first, so the map stays where you asked.
 
 ### What the map keeps
 

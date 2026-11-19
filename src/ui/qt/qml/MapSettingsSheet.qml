@@ -2,12 +2,14 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "MapText.js" as MapText
 
 // Issue #800: where the map's tiles come from. Tiles stay off until turned on
 // here or from the map, and turning them on names the server the viewed area
 // is sent to. The address is a URL template (https only, with {z}, {x} and
 // {y}), checked by the tile source itself; the attribution is what the map
-// shows at all times. A form sheet: Save applies, Cancel, Back or Escape ask
+// shows at all times, and OpenStreetMap's own server needs its credit in it
+// (defaultAttribution), whatever else it says. A form sheet: Save applies, Cancel, Back or Escape ask
 // before an edit goes.
 ModalSheet {
     id: sheet
@@ -35,6 +37,7 @@ ModalSheet {
     readonly property bool urlValid: !!tileSource && tileSource.isValidTemplate(trimmedUrl)
     readonly property string host: urlValid ? tileSource.templateHost(trimmedUrl) : ""
     readonly property string trimmedAttribution: attributionField.text.trim()
+    readonly property bool creditGiven: MapText.creditGiven(host, trimmedAttribution, defaultAttribution)
     readonly property bool changed: draftEnabled !== savedEnabled || trimmedUrl !== savedUrl || trimmedAttribution !== savedAttribution
 
     function openEditor() {
@@ -54,7 +57,7 @@ ModalSheet {
             closeEditor();
     }
     function save() {
-        if (!urlValid || trimmedAttribution.length === 0)
+        if (!urlValid || !creditGiven)
             return;
         saved(draftEnabled && available, trimmedUrl, trimmedAttribution);
         closeEditor();
@@ -109,7 +112,8 @@ ModalSheet {
         width: parent.width
         label: qsTr("Attribution")
         hint: qsTr("Shown on the map at all times, as the tile server's terms ask.")
-        error: sheet.trimmedAttribution.length === 0 ? qsTr("Enter the attribution the tile server asks for.") : ""
+        error: sheet.trimmedAttribution.length === 0 ? qsTr("Enter the attribution the tile server asks for.")
+            : !sheet.creditGiven ? qsTr("OpenStreetMap's tiles need “%1” in the attribution.").arg(sheet.defaultAttribution) : ""
     }
 
     OutlineButton {
@@ -127,7 +131,7 @@ ModalSheet {
         objectName: "mapSettingsSave"
         width: parent.width
         text: qsTr("Save")
-        inputValid: sheet.urlValid && sheet.trimmedAttribution.length > 0
+        inputValid: sheet.urlValid && sheet.creditGiven
         onClicked: sheet.save()
     }
     OutlineButton {

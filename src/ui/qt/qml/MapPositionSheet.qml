@@ -40,9 +40,11 @@ ModalSheet {
     // attribution, which stays readable above any sheet (spec 4.4).
     property real bottomReserve: 0
     // The device's position for "N km from you", when known, and whether it is
-    // the live one (following) rather than the saved one-shot fix.
+    // the live one (following) rather than the saved one-shot fix, or the
+    // live feed's last fix gone stale (no longer "you").
     property bool deviceKnown: false
     property bool deviceLive: false
+    property bool deviceLastKnown: false
     property double deviceLatitude: 0
     property double deviceLongitude: 0
 
@@ -135,8 +137,15 @@ ModalSheet {
         return [t.emergency ? qsTr("Emergency") : "", t.anonymous ? qsTr("Radio not confirmed") : ""];
     }
 
+    // Who a report was sent to: each report names its own (review r1), so
+    // the one said is the shown report's, never the track's newest.
+    function recipientOf(fix) {
+        if (!fix || !(fix.targetId > 0))
+            return "";
+        return fix.targetGroup ? qsTr("Talkgroup %1").arg(Util.idText(fix.targetId)) : qsTr("Sent to radio %1").arg(Util.idText(fix.targetId));
+    }
     // Who sent it, in fixed slots, "" for one not known: label or the row's
-    // name, callsign, radio ID, talkgroup or target.
+    // name, callsign, radio ID, and who the shown report was sent to.
     function identitySlots() {
         if (pin)
             return [pin.sourceName && pin.sourceName !== title ? pin.sourceName : "", "",
@@ -147,7 +156,7 @@ ModalSheet {
         return [track.label && track.label.length > 0 && track.label !== title ? qsTr("Label %1").arg(track.label) : "",
                 track.sourceText && track.sourceText.length > 0 && track.sourceText !== title ? qsTr("Callsign %1").arg(track.sourceText) : "",
                 track.sourceId > 0 ? qsTr("Radio ID %1").arg(Util.idText(track.sourceId)) : "",
-                track.targetId > 0 ? (track.targetGroup ? qsTr("Talkgroup %1").arg(Util.idText(track.targetId)) : qsTr("Sent to radio %1").arg(Util.idText(track.targetId))) : ""];
+                recipientOf(shownFix)];
     }
     readonly property var identityLines: identitySlots()
 
@@ -214,6 +223,8 @@ ModalSheet {
         visible: !sheet.pin && sheet.hasCurrent && sheet.hasRing
         heading: sheet.ring.newest ? qsTr("Newer report") : qsTr("Earlier report")
         fix: sheet.hasCurrent ? sheet.ring : ({})
+        // Its own recipient, when it is not the one the shown report names.
+        recipient: sheet.recipientOf(sheet.ring) !== sheet.recipientOf(sheet.shownFix) ? sheet.recipientOf(sheet.ring) : ""
         ageSeconds: Number(sheet.ages.unknownAgeSeconds) >= 0 ? sheet.ages.unknownAgeSeconds : -1
         reportAgeSeconds: sheet.ring.newest ? (Number(sheet.ages.reportAgeSeconds) >= 0 ? sheet.ages.reportAgeSeconds : -1) : -1
         stepKey: String(sheet.trackId) + ":ring:" + (sheet.ring.receivedTime || 0)
@@ -230,15 +241,20 @@ ModalSheet {
         property double ageSeconds: -1
         property double reportAgeSeconds: -1
         property string stepKey: ""
+        // Who this report was sent to, when the identity lines above do not
+        // already say it.
+        property string recipient: ""
         // A History pin's receive time (Unix s): said as a date; -1 for a live fix.
         property double receivedWhen: -1
         readonly property bool hasFix: fix.latitude !== undefined
         readonly property var states: MapText.fixWords(fix)
         readonly property string away: hasFix && sheet.deviceKnown ? MapText.lengthText(MapText.distanceMetres(sheet.deviceLatitude, sheet.deviceLongitude, fix.latitude, fix.longitude), sheet.metric) : ""
         readonly property var lines: [fix.kindText && fix.kindText.length > 0 ? qsTr("Report type %1").arg(fix.kindText) : "",
+            hasFix ? recipient : "",
             hasFix ? qsTr("Position %1").arg(MapText.coordinateText(fix.latitude, fix.longitude)) : "",
             // Final review M5: the live position while following, else the saved one.
-            away.length > 0 ? (sheet.deviceLive ? qsTr("%1 from you").arg(away) : qsTr("%1 from your saved location").arg(away)) : "",
+            away.length > 0 ? (sheet.deviceLive ? qsTr("%1 from you").arg(away) : sheet.deviceLastKnown ? qsTr("%1 from your last known position").arg(away)
+                : qsTr("%1 from your saved location").arg(away)) : "",
             MapText.accuracyText(fix.errorM, fix.errorLowerBound, sheet.metric),
             MapText.speedText(fix.speedDkmh, fix.speedLowerBound, sheet.metric),
             MapText.headingText(fix.headingDdeg, fix.headingAmbiguous),
@@ -301,7 +317,7 @@ ModalSheet {
             color: Theme.textPrimary
         }
         Repeater {
-            model: 9
+            model: 10
             ReadableText {
                 required property int index
                 objectName: block.objectName + "Line" + index

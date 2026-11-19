@@ -51,6 +51,18 @@ Item {
     signal startPin(string kind, string uid)
     // Issue #800: a recent call's "Show on map", with the sheet to return to.
     signal showOnMap(var record, var sheet)
+    // The keyboard stop of the call row logged under @p uid, brought into
+    // view: where a sheet opened again by uid (Back from the map) returns the
+    // focus. The row it was opened from can be gone by then: a covered list
+    // holds no rows (issue #782) and builds new ones. Null when not listed.
+    function rowFocusFor(uid) {
+        var row = callHistory.rowForUid(uid);
+        if (row < 0 || !recentList.model)
+            return null;
+        recentList.positionViewAtIndex(row, ListView.Contain);
+        var item = recentList.itemAtIndex(row);
+        return item ? item.node : null;
+    }
     // The receiver a tap on the Explore card starts on. Main binds it to the
     // remembered radio resolved against what is plugged in, so the card states
     // what the tap will do.

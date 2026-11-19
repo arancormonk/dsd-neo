@@ -80,6 +80,10 @@ Item {
     readonly property bool tilesAvailable: tiles.available
     readonly property string tilesHost: tiles.templateHost(tileUrl)
     readonly property bool attributionLinked: tileUrl === defaultTileUrl
+    // The credit shown: OpenStreetMap's own tiles always with theirs, even
+    // under a saved attribution that leaves it out (review: the default
+    // source's credit is owed, whatever the field says).
+    readonly property string shownAttribution: MapText.shownCredit(tilesHost, tileAttribution, defaultAttribution)
 
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
@@ -103,6 +107,9 @@ Item {
         } else {
             positionSheet.visible = false;
             locator.stopFollow();
+            // Leaving puts back a view the device did not shape (the keeper),
+            // so the next press locates again rather than following.
+            locator.cameraMoved();
         }
     }
 
@@ -126,6 +133,9 @@ Item {
         mapShown = true;
         cameraPlaced = true;
         map.selectedTrackId = 0;
+        // A one-shot move: a follow left on would take the camera back on its
+        // next fix.
+        endFollows();
         // The pin's chip laid out first, so the pin lands below it.
         status.forceLayout();
         map.centerOn(record.position.latitude, record.position.longitude, Math.max(map.zoom, 14));
@@ -155,21 +165,33 @@ Item {
         map.selectedTrackId = id;
         map.followTrackId = id;
     }
+    // Every follow ends: the radio's and the device's. Before an explicit
+    // one-shot camera move, which a follow would otherwise undo on its next
+    // fix (review r1). The view leaves the found dot too, so the next press
+    // locates again rather than following.
+    function endFollows() {
+        map.followTrackId = 0;
+        locator.stopFollow();
+        locator.cameraMoved();
+    }
     function showOnMap(id) {
+        // Showing the radio already followed keeps following it.
+        if (map.followTrackId !== id)
+            endFollows();
         mapShown = true;
         map.selectedTrackId = id;
         map.centerOnTrack(id);
     }
-    // A tap on the canvas: a marker opens its sheet, the pin its own, empty
-    // map clears the selection.
+    // A tap on the canvas: the pin first (it is drawn over the marks), then a
+    // marker opens its sheet; empty map clears the selection.
     function tapAt(x, y) {
+        if (pin && pinMark.visible && Math.abs(x - pinMark.tipX) <= map.hitRadius && y <= pinMark.tipY + 6 && y >= pinMark.tipY - pinMark.height) {
+            openPinDetails();
+            return;
+        }
         var id = map.trackAt(x, y);
         if (id > 0) {
             openTrack(id, false);
-            return;
-        }
-        if (pin && pinMark.visible && Math.abs(x - pinMark.tipX) <= map.hitRadius && y <= pinMark.tipY + 6 && y >= pinMark.tipY - 34) {
-            openPinDetails();
             return;
         }
         selectTrack(0);
@@ -425,8 +447,12 @@ Item {
                     locator.stopFollow();
             }
 
+            // Drags, pinches and the wheel are not taps (GatedTapHandler):
+            // like Spectrum's, they stand down while a sheet covers the map,
+            // or a drag on its backdrop would move the view under it.
             DragHandler {
                 id: drag
+                enabled: Navigation.allows(map)
                 target: null
                 maximumPointCount: 1
                 onActiveChanged: {
@@ -439,6 +465,7 @@ Item {
             }
             PinchHandler {
                 id: pinch
+                enabled: Navigation.allows(map)
                 target: null
                 property real startZoom: 0
                 onActiveChanged: {
@@ -454,6 +481,7 @@ Item {
             }
             WheelHandler {
                 id: wheel
+                enabled: Navigation.allows(map)
                 target: null
                 onWheel: function (event) {
                     screen.userMovedCamera();
@@ -468,50 +496,59 @@ Item {
         }
 
         // The pin a History row drops: a drawn map pin, a shape no live mark
-        // uses, its tip on the row's saved fix.
+        // uses, its tip on the row's saved fix. Clipped to the canvas, as the
+        // marks are: a pin panned off the map leaves it, never painting over
+        // the chips' row or the top bar.
         Item {
-            id: pinMark
-            objectName: "mapPin"
-            readonly property var at: {
-                var lat = map.centerLatitude, lon = map.centerLongitude, z = map.zoom, w = map.width, h = map.height;
-                return screen.pin ? map.pointFor(screen.pin.position.latitude, screen.pin.position.longitude) : undefined;
-            }
-            readonly property real tipX: at ? at.x : 0
-            readonly property real tipY: at ? at.y : 0
-            visible: screen.mapShown && at !== undefined
-            x: tipX - width / 2
-            y: tipY - height
-            width: 26
-            height: 34
-            Accessible.ignored: true
+            id: pinLayer
+            anchors.fill: map
+            visible: screen.mapShown
+            clip: true
 
-            Canvas {
-                id: pinCanvas
-                anchors.fill: parent
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    var w = width, h = height, c = w / 2, r = 10, cy = r + 2;
-                    ctx.beginPath();
-                    ctx.moveTo(c, h - 1);
-                    ctx.bezierCurveTo(c - 4, h - 10, c - r - 1, cy + 6, c - r, cy);
-                    ctx.arc(c, cy, r, Math.PI, 0, false);
-                    ctx.bezierCurveTo(c + r + 1, cy + 6, c + 4, h - 10, c, h - 1);
-                    ctx.closePath();
-                    ctx.lineWidth = 2.5;
-                    ctx.strokeStyle = String(Theme.bg);
-                    ctx.stroke();
-                    ctx.fillStyle = String(Theme.textPrimary);
-                    ctx.fill();
-                    ctx.beginPath();
-                    ctx.arc(c, cy, 3.5, 0, 2 * Math.PI);
-                    ctx.fillStyle = String(Theme.bg);
-                    ctx.fill();
+            Item {
+                id: pinMark
+                objectName: "mapPin"
+                readonly property var at: {
+                    var lat = map.centerLatitude, lon = map.centerLongitude, z = map.zoom, w = map.width, h = map.height;
+                    return screen.pin ? map.pointFor(screen.pin.position.latitude, screen.pin.position.longitude) : undefined;
                 }
-                Connections {
-                    target: Theme
-                    function onDarkChanged() {
-                        pinCanvas.requestPaint();
+                readonly property real tipX: at ? at.x : 0
+                readonly property real tipY: at ? at.y : 0
+                visible: screen.mapShown && at !== undefined
+                x: tipX - width / 2
+                y: tipY - height
+                width: 26
+                height: 34
+                Accessible.ignored: true
+
+                Canvas {
+                    id: pinCanvas
+                    anchors.fill: parent
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.reset();
+                        var w = width, h = height, c = w / 2, r = 10, cy = r + 2;
+                        ctx.beginPath();
+                        ctx.moveTo(c, h - 1);
+                        ctx.bezierCurveTo(c - 4, h - 10, c - r - 1, cy + 6, c - r, cy);
+                        ctx.arc(c, cy, r, Math.PI, 0, false);
+                        ctx.bezierCurveTo(c + r + 1, cy + 6, c + 4, h - 10, c, h - 1);
+                        ctx.closePath();
+                        ctx.lineWidth = 2.5;
+                        ctx.strokeStyle = String(Theme.bg);
+                        ctx.stroke();
+                        ctx.fillStyle = String(Theme.textPrimary);
+                        ctx.fill();
+                        ctx.beginPath();
+                        ctx.arc(c, cy, 3.5, 0, 2 * Math.PI);
+                        ctx.fillStyle = String(Theme.bg);
+                        ctx.fill();
+                    }
+                    Connections {
+                        target: Theme
+                        function onDarkChanged() {
+                            pinCanvas.requestPaint();
+                        }
                     }
                 }
             }
@@ -653,18 +690,31 @@ Item {
             objectName: "mapPositionList"
             anchors.fill: parent
             // Shown when filtered empty too: its gap row still says where
-            // positions may be missing, above the empty state's Show all.
-            visible: !screen.mapShown && !screen.emptyLog
+            // positions may be missing, above the empty state's Show all. The
+            // device's own dot is a row of its own (review r1: the canvas's
+            // mark and its accuracy, in words), so a located device shows the
+            // List even before any radio is heard. The List holds no live
+            // lease (follow runs only on a shown map): it is the saved fix.
+            visible: !screen.mapShown && (!screen.emptyLog || locator.deviceValid)
             selectedTrackId: map.selectedTrackId
             followTrackId: map.followTrackId
             deviceKnown: locator.deviceValid
+            deviceLive: locator.live
             deviceLatitude: locator.deviceLatitude
             deviceLongitude: locator.deviceLongitude
+            deviceAccuracyM: locator.deviceAccuracyM
+            deviceSavedAtMs: prefs.lastFixAt
             pin: screen.pin
             onActivated: function (trackId) {
                 screen.openTrack(trackId, true);
             }
             onPinActivated: screen.openPinDetails()
+            onDeviceActivated: {
+                screen.endFollows();
+                screen.mapShown = true;
+                screen.userMovedCamera();
+                map.centerOnDevice();
+            }
         }
 
         // ---- Empty ----
@@ -682,23 +732,53 @@ Item {
             // keeps that row; this offers Show all below it).
             z: 1
             anchors.top: parent.top
-            anchors.topMargin: !screen.mapShown ? (screen.emptyFilter ? positionList.view.contentHeight + 4 : 0)
+            anchors.topMargin: !screen.mapShown ? (positionList.visible ? positionList.usedHeight + 4 : 0)
                 : status.visible && status.height > 0 ? status.height + 12 : 0
             anchors.left: parent.left
             anchors.right: screen.mapShown ? controls.left : parent.right
             anchors.bottom: parent.bottom
             anchors.bottomMargin: screen.mapShown ? attribution.height : 0
             contentWidth: width
-            contentHeight: Math.max(height, emptyState.height + 2 * 12)
+            contentHeight: Math.max(height, emptyState.y + emptyState.height + 12)
             clip: true
-            interactive: emptyState.height + 2 * 12 > height
+            interactive: contentHeight > height
+
+            // The device's dot on the map, in this scroll's coordinates, while
+            // it is drawn: the card keeps clear of it (review r1), since a
+            // Locate me with no radio heard centres the dot right where a
+            // centred card would hide it.
+            readonly property var dot: {
+                var lat = map.centerLatitude, lon = map.centerLongitude, z = map.zoom, w = map.width, h = map.height, top = emptyScroll.y;
+                if (!screen.mapShown || !locator.deviceValid)
+                    return undefined;
+                var p = map.pointFor(locator.deviceLatitude, locator.deviceLongitude);
+                return p ? Qt.point(p.x - emptyScroll.x, p.y - emptyScroll.y) : undefined;
+            }
+            // Centred while that clears the dot (with room for its accuracy
+            // ring's edge and a finger), else in the larger room above or
+            // below it, else below it, scrolling.
+            function cardY(cardHeight) {
+                var margin = 12, gap = 28;
+                var centred = Math.max(margin, (height - cardHeight) / 2);
+                var p = dot;
+                if (!p || p.x < emptyState.x - gap || p.x > emptyState.x + emptyState.width + gap
+                        || p.y < centred - gap || p.y > centred + cardHeight + gap)
+                    return centred;
+                var above = p.y - gap - margin;
+                var below = height - margin - (p.y + gap);
+                if (cardHeight <= below && (below >= above || cardHeight > above))
+                    return p.y + gap + (below - cardHeight) / 2;
+                if (cardHeight <= above)
+                    return margin + (above - cardHeight) / 2;
+                return Math.max(margin, p.y + gap);
+            }
             boundsBehavior: Flickable.StopAtBounds
 
             MapEmptyState {
                 id: emptyState
                 objectName: "mapEmptyState"
                 x: (emptyScroll.width - width) / 2
-                y: Math.max(12, (emptyScroll.height - height) / 2)
+                y: emptyScroll.cardY(height)
                 width: Math.max(0, Math.min(400, emptyScroll.width - 2 * 12))
                 filtered: screen.emptyFilter
                 hiddenCount: positions.count
@@ -730,7 +810,7 @@ Item {
         readonly property real chipHeight: chip.height + chip.anchors.bottomMargin + anchors.bottomMargin
 
         Accessible.role: screen.attributionLinked ? Accessible.Link : Accessible.StaticText
-        Accessible.name: navigationAllowed && visible ? screen.tileAttribution : ""
+        Accessible.name: navigationAllowed && visible ? screen.shownAttribution : ""
         Accessible.description: screen.attributionLinked && navigationAllowed ? qsTr("Opens the map data copyright page") : ""
         readonly property bool navigationAllowed: Navigation.allows(attribution)
         Accessible.focusable: navigationAllowed && visible
@@ -769,7 +849,7 @@ Item {
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 width: Math.min(implicitWidth, parent.width - 16)
-                text: screen.tileAttribution
+                text: screen.shownAttribution
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 maximumLineCount: 3
@@ -792,6 +872,8 @@ Item {
         foreground: screen.appForeground
         onLocated: {
             screen.userMovedCamera();
+            // A radio followed would take the camera back from the dot.
+            map.followTrackId = 0;
             locator.readyToFollow = true;
             map.centerOnDevice();
         }
@@ -819,6 +901,7 @@ Item {
         bottomReserve: screen.mapShown ? attribution.chipHeight + 8 : 0
         deviceKnown: locator.deviceValid
         deviceLive: locator.live
+        deviceLastKnown: locator.lastKnown
         deviceLatitude: locator.deviceLatitude
         deviceLongitude: locator.deviceLongitude
         onFollowRequested: function (trackId) {

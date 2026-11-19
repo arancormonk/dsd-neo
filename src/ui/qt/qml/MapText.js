@@ -145,14 +145,16 @@ function speedText(dkmh, lowerBound, metric) {
     return lowerBound ? qsTr("Speed at least %1").arg(value) : qsTr("Speed %1").arg(value)
 }
 
-// 0.1 degree; a heading that could be the opposite way says so.
+// 0.1 degree. An ambiguous heading is LIP's direction of travel 15, which
+// means 337.5° or that the direction is not known: both are said, and no
+// other bearing is.
 function headingText(ddeg, ambiguous) {
     if (typeof ddeg !== "number" || !isFinite(ddeg) || ddeg < 0)
         return ""
     var deg = Math.round(ddeg / 10) % 360
     var names = [qsTr("north"), qsTr("northeast"), qsTr("east"), qsTr("southeast"), qsTr("south"), qsTr("southwest"), qsTr("west"), qsTr("northwest")]
     var text = qsTr("Heading %1° (%2)").arg(deg).arg(names[Math.round(deg / 45) % 8])
-    return ambiguous ? qsTr("%1, or the opposite way").arg(text) : text
+    return ambiguous ? qsTr("%1, or the direction is not known").arg(text) : text
 }
 
 // Decimetres in the unit shown.
@@ -170,4 +172,30 @@ function distanceMetres(lat1, lon1, lat2, lon2) {
     var dLon = (lon2 - lon1) * r
     var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
     return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// Whether @p host is OpenStreetMap's own tile server (tile.openstreetmap.org,
+// or one of its lettered names), whose tiles may be shown only with its credit.
+function isOsmTileHost(host) {
+    var h = String(host || "").toLowerCase()
+    return h === "tile.openstreetmap.org" || /\.tile\.openstreetmap\.org$/.test(h)
+}
+
+// Whether @p attribution gives what the tile server at @p host asks for:
+// OpenStreetMap's tiles need @p osmCredit in it (more may follow); any other
+// server, any credit that is not empty.
+function creditGiven(host, attribution, osmCredit) {
+    var text = String(attribution || "").trim()
+    if (text.length === 0)
+        return false
+    return !isOsmTileHost(host) || text.indexOf(osmCredit) >= 0
+}
+
+// The credit the map shows for @p host: the saved one, or @p osmCredit in
+// front of it when OpenStreetMap's tiles show and the saved one leaves it out.
+function shownCredit(host, attribution, osmCredit) {
+    var text = String(attribution || "").trim()
+    if (!isOsmTileHost(host) || text.indexOf(osmCredit) >= 0)
+        return text
+    return text.length > 0 ? osmCredit + " · " + text : osmCredit
 }

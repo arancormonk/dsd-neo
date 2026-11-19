@@ -486,7 +486,7 @@ Item {
             // A live fix moves the dot; it is never saved.
             var savedAt = prefs.lastFixAt;
             testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 1,
-                                                  lat: 10.25, lon: 20.25, accuracyM: 8, fixAtMs: 1000});
+                                                  lat: 10.25, lon: 20.25, accuracyM: 8, fixAtMs: locationFeed.nowMs()});
             verify(locator.live);
             tryVerify(function () { return Math.abs(canvas().deviceLatitude - 10.25) < 1e-9; });
             compare(prefs.lastFixAt, savedAt, "a live fix is not saved");
@@ -690,6 +690,270 @@ Item {
             tryVerify(function () { return c.labelObstacles[1].height > 0; });
             compare(c.labelObstacles[1].y, c.mapFromItem(status, 0, 0).y);
             compare(c.labelObstacles[1].height, status.height);
+        }
+
+        // ---- PR2 review round 1 ----
+
+        // A modal over the map owns navigation: a drag or the wheel on the sheet's backdrop moves nothing under it.
+        function test_17a_gestures_stand_down_under_a_sheet() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7"});
+            var c = canvas();
+            c.centerOn(10.0, 20.0, 12);
+            screen.openTrack(trackNamed("Engine 7"), false);
+            verify(sheet().visible);
+            var lon = c.centerLongitude, zoom = c.zoom;
+            mouseDrag(c, 60, 120, 140, 0);
+            mouseWheel(c, 120, 140, 0, 480);
+            waitForRendering(screen);
+            verify(Math.abs(c.centerLongitude - lon) < 1e-9, "a drag on the backdrop moved the map: " + lon + " -> " + c.centerLongitude);
+            verify(Math.abs(c.zoom - zoom) < 1e-9, "the wheel on the backdrop zoomed the map: " + zoom + " -> " + c.zoom);
+            sheet().visible = false;
+            mouseDrag(c, 60, 300, 140, 0);
+            verify(Math.abs(c.centerLongitude - lon) > 1e-6, "uncovered, a drag pans");
+        }
+
+        // Roaming already holds the feed and it stands at "approximate only": following joins it and says at once
+        // that precise location is needed, rather than "Finding your position…" for ever (the host sends no repeat).
+        function test_17b_follow_reads_the_standing_record() {
+            testContext.setLifecycleLocationSupported(true);
+            testContext.useLifecycleHost(true);
+            var locator = item("mapLocator");
+            verify(locationFeed.acquire("roaming"));
+            testContext.emitLocationStreamUpdate({generation: 1, state: "approximateOnly", hasFix: false});
+            compare(locationFeed.record.state, "approximateOnly");
+            locator.readyToFollow = true;
+            item("mapLocate").activate();
+            tryVerify(function () { return !locator.followMe; }, 1000, "follow ends on the standing answer");
+            verify(!locationFeed.holds("map"));
+            compare(item("mapLocationNotice").text, "Live position needs precise location.");
+            locationFeed.release("roaming");
+            locator.clearNotice();
+            testContext.useLifecycleHost(false);
+            testContext.setLifecycleLocationSupported(false);
+            testContext.setLocationSupported(true);
+            testContext.useAppPrefs(true);
+        }
+
+        // A live fix that no new record replaces goes stale: the dot stays on it, but it is the last known
+        // position, not "you", and following says it is finding the position again. One already old when it comes
+        // is never live.
+        function test_17c_an_old_device_fix_is_not_live() {
+            testContext.setLifecycleLocationSupported(true);
+            testContext.useLifecycleHost(true);
+            var locator = item("mapLocator");
+            locator.maxFixAgeMs = 400;
+            locator.readyToFollow = true;
+            item("mapLocate").activate();
+            verify(locator.followMe);
+            testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 1,
+                                                  lat: 10.25, lon: 20.25, accuracyM: 8, fixAtMs: locationFeed.nowMs()});
+            verify(locator.live);
+            compare(item("mapLocationNotice").text, "");
+            push({source: 1001, lat: 10.3, lon: 20.3, label: "Engine 7"});
+            screen.openTrack(trackNamed("Engine 7"), false);
+            verify(/ from you\b/.test(sheetWords()), sheetWords());
+            tryVerify(function () { return !locator.live; }, 3000, "the fix ages out with no new record");
+            verify(locator.lastKnown);
+            verify(Math.abs(canvas().deviceLatitude - 10.25) < 1e-9, "the dot stays on the last fix");
+            var words = sheetWords();
+            verify(words.indexOf("from your last known position") >= 0 && !/ from you\b/.test(words), words);
+            compare(item("mapLocationNotice").text, "Finding your position…");
+            sheet().visible = false;
+            // Already old when it comes.
+            testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 2,
+                                                  lat: 10.26, lon: 20.26, accuracyM: 8, fixAtMs: locationFeed.nowMs() - 120000});
+            verify(!locator.live, "a fix two minutes old on arrival is not live");
+            // A fresh one is live again, and the notice goes.
+            testContext.emitLocationStreamUpdate({generation: 1, state: "ok", hasFix: true, provider: "gps", measurementNs: 3,
+                                                  lat: 10.27, lon: 20.27, accuracyM: 8, fixAtMs: locationFeed.nowMs()});
+            verify(locator.live);
+            compare(item("mapLocationNotice").text, "");
+            locator.stopFollow();
+            locator.maxFixAgeMs = 60000;
+            locator.clearNotice();
+            testContext.useLifecycleHost(false);
+            testContext.setLifecycleLocationSupported(false);
+            testContext.setLocationSupported(true);
+            testContext.useAppPrefs(true);
+        }
+
+        // Showing another radio, a History pin or a located dot is a one-shot move: it ends a follow that would
+        // otherwise take the camera back on its next fix (even a fix from a third radio).
+        function test_17d_showing_another_position_ends_the_follow() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7"});
+            push({source: 1002, lat: 11.0, lon: 21.0, label: "Medic 3"});
+            var a = trackNamed("Engine 7"), b = trackNamed("Medic 3");
+            var c = canvas();
+            screen.follow(a);
+            compare(c.followTrackId, a);
+            screen.mapShown = false;
+            screen.showOnMap(b);
+            compare(c.followTrackId, 0, "Show on map for another radio ends the follow");
+            push({source: 1003, lat: 12.0, lon: 22.0, label: "Unit 9"});
+            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7"});
+            verify(Math.abs(c.centerLatitude - 11.0) < 0.01, "the camera stays on the radio shown: " + c.centerLatitude);
+            // Showing the radio followed keeps following it.
+            screen.follow(a);
+            screen.showOnMap(a);
+            compare(c.followTrackId, a);
+            // A History pin.
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 13.0, longitude: 23.0, kindText: "LIP"}});
+            compare(c.followTrackId, 0, "a pin ends the follow");
+            screen.clearPin();
+            // Locate me.
+            screen.follow(a);
+            item("mapLocate").activate();
+            var id = item("mapLocator").requestId;
+            verify(id > 0);
+            decoderHost.locationResult(id, true, 14.0, 24.0, 12, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return !locationRequests.busy; });
+            compare(c.followTrackId, 0, "a located dot ends the radio's follow");
+            verify(Math.abs(c.centerLatitude - 14.0) < 0.01, "on the dot: " + c.centerLatitude);
+            // Showing a radio then takes the view off the dot: the next press locates again.
+            compare(item("mapLocate").Accessible.name, "Follow my position");
+            screen.showOnMap(b);
+            compare(item("mapLocate").Accessible.name, "Locate me", "the view left the dot");
+        }
+
+        // A Locate me arms Follow only while the view is on the dot it found: leaving the map puts the saved view
+        // back, so the next visit's press locates again.
+        function test_17e_leaving_resets_locate() {
+            item("mapLocate").activate();
+            var id = item("mapLocator").requestId;
+            decoderHost.locationResult(id, true, 10.5, 20.5, 12, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return !locationRequests.busy; });
+            compare(item("mapLocate").Accessible.name, "Follow my position");
+            screen.visible = false;
+            screen.visible = true;
+            compare(item("mapLocate").Accessible.name, "Locate me", "a restored view locates again");
+        }
+
+        // Each report names who it was sent to: a valid fix to TG 1, then a newer validity-unknown one to TG 2. The
+        // List row and the sheet's identity say TG 1 (the marker's); the ring's block says its own, TG 2.
+        function test_17f_the_shown_report_names_its_recipient() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", targetId: 1, group: true, ageSeconds: 30});
+            push({source: 1001, lat: 10.01, lon: 20.01, label: "Engine 7", targetId: 2, group: true, validityUnknown: true});
+            var id = trackNamed("Engine 7");
+            screen.openTrack(id, false);
+            var identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
+            verify(identity.indexOf("Talkgroup 1") >= 0 && identity.indexOf("Talkgroup 2") < 0, JSON.stringify(identity));
+            var ring = [];
+            for (var i = 0; i < 10; ++i) {
+                if (item("mapRingFixLine" + i).visible)
+                    ring.push(item("mapRingFixLine" + i).text);
+            }
+            verify(ring.indexOf("Talkgroup 2") >= 0, "the ring's own recipient: " + JSON.stringify(ring));
+            sheet().visible = false;
+            screen.mapShown = false;
+            var list = item("mapList");
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(id)) !== null; });
+            var said = list.itemAtIndex(positionView.rowForTrack(id)).node.Accessible.description;
+            verify(said.indexOf("TG 1") >= 0 && said.indexOf("TG 2") < 0, said);
+        }
+
+        // With nothing heard, Locate me centres the dot where the "No positions yet" card would sit: the card moves
+        // clear of it.
+        function test_17g_the_empty_card_keeps_off_the_dot() {
+            verify(screen.emptyLog);
+            item("mapLocate").activate();
+            var id = item("mapLocator").requestId;
+            decoderHost.locationResult(id, true, 10.5, 20.5, 12, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return !locationRequests.busy; });
+            waitForRendering(screen);
+            var c = canvas();
+            var dot = c.pointFor(10.5, 20.5);
+            var card = item("mapEmptyState");
+            verify(card.visible);
+            var at = c.mapFromItem(card, 0, 0);
+            var inside = dot.x >= at.x - 8 && dot.x <= at.x + card.width + 8 && dot.y >= at.y - 8 && dot.y <= at.y + card.height + 8;
+            verify(!inside, "the dot " + dot + " is under the card at " + at + " " + card.width + "x" + card.height);
+            item("mapLocator").cameraMoved();
+        }
+
+        // The device's dot is in the List in words, with no radio heard: where it is and how sure.
+        function test_17h_the_list_has_the_device_dot() {
+            prefs.setLocationFix(10.5, 20.5, savedSystems.realtimeNowMs(), 30);
+            verify(screen.emptyLog);
+            screen.mapShown = false;
+            var listItem = item("mapPositionList");
+            verify(listItem.visible, "the List shows for the device's dot alone");
+            var row = item("mapDeviceRow");
+            verify(row.visible);
+            compare(row.Accessible.name, "Your saved location");
+            var said = row.Accessible.description;
+            verify(said.indexOf("Position 10.50000° N, 20.50000° E") >= 0 && said.indexOf("Accurate to") >= 0, said);
+            verify(!locationFeed.holds("map"), "the List takes no live lease");
+            row.activate();
+            verify(screen.mapShown, "the row shows the dot on the map");
+            // A radio followed: the row's one-shot move ends that follow, as Show on map's does.
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            screen.follow(trackNamed("Engine 7"));
+            screen.mapShown = false;
+            row.activate();
+            compare(canvas().followTrackId, 0, "showing the dot ends the radio's follow");
+            item("mapLocator").cameraMoved();
+        }
+
+        // LIP's direction of travel 15 is 337.5° or not known: the sheet says both, and no opposite bearing.
+        function test_17i_lip_heading_15_may_be_unknown() {
+            sheet().pin = null;
+            sheet().trackId = 0;
+            sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: 5,
+                          currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, headingDdeg: 3375,
+                                       headingAmbiguous: true}});
+            sheet().visible = true;
+            var words = sheetWords();
+            verify(words.indexOf("Heading 338° (north), or the direction is not known") >= 0, words);
+            verify(words.indexOf("opposite") < 0, words);
+            sheet().visible = false;
+        }
+
+        // The pin is drawn over a radio's marker at the same place: a tap on the pin opens the pin's sheet.
+        function test_17j_the_pin_is_tapped_first() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7"});
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
+            waitForRendering(screen);
+            var pin = item("mapPin");
+            verify(canvas().trackAt(pin.tipX, pin.tipY - 20) > 0, "the marker is under the pin's head");
+            mouseClick(canvas(), pin.tipX, pin.tipY - 20);
+            verify(sheet().visible);
+            verify(sheet().pin !== null, "the pin's sheet, not the radio's");
+            sheet().visible = false;
+        }
+
+        // OpenStreetMap's own tiles need its credit: the form does not save their address without it, and a credit
+        // saved without it is shown with it. Another server takes any credit.
+        function test_17k_the_osm_credit_stays() {
+            var settings = item("mapSettingsSheet");
+            settings.openEditor();
+            var attribution = item("mapSettingsAttribution");
+            attribution.text = "My own credit";
+            verify(!item("mapSettingsSave").inputValid, "the default tiles without their credit do not save");
+            verify(attribution.error.indexOf("© OpenStreetMap contributors") >= 0, attribution.error);
+            attribution.text = "© OpenStreetMap contributors, styled locally";
+            verify(item("mapSettingsSave").inputValid);
+            item("mapSettingsUrl").text = "https://tiles.example/{z}/{x}/{y}.png";
+            attribution.text = "My own credit";
+            verify(item("mapSettingsSave").inputValid, "another server takes any credit");
+            settings.closeEditor();
+            screen.tileAttribution = "My own credit";
+            verify(item("mapAttributionText").text.indexOf("© OpenStreetMap contributors") >= 0, item("mapAttributionText").text);
+            screen.tileUrl = "https://tiles.example/{z}/{x}/{y}.png";
+            compare(item("mapAttributionText").text, "My own credit");
+        }
+
+        // The pin leaves the map as the marks do: its layer is clipped to the canvas.
+        function test_17l_the_pin_is_clipped_to_the_canvas() {
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
+            var pin = item("mapPin");
+            var layer = pin.parent;
+            var c = canvas();
+            verify(layer.clip, "the pin's layer clips");
+            var at = c.mapFromItem(layer, 0, 0);
+            verify(at.x === 0 && at.y === 0 && layer.width === c.width && layer.height === c.height, "to the canvas");
         }
     }
 }

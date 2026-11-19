@@ -14,6 +14,18 @@ Item {
     // row's "Show on map" with the sheet to return to.
     signal openMap
     signal showOnMap(var record, var sheet)
+    // The keyboard stop of the call row logged under @p uid, brought into
+    // view: where a sheet opened again by uid (Back from the map) returns the
+    // focus. The row it was opened from can be gone by then: a covered list
+    // holds no rows (issue #782) and builds new ones. Null when not listed.
+    function rowFocusFor(uid) {
+        var row = logPlace.rowOf(uid);
+        if (row < 0 || !logList.model)
+            return null;
+        logList.positionViewAtIndex(row, ListView.Contain);
+        var item = logList.itemAtIndex(row);
+        return item ? item.node : null;
+    }
     // Back from the map when the row it showed has left the log: the focus
     // goes to the list, where the row was.
     function focusList() {

@@ -18152,19 +18152,22 @@ Qt Quick frontend (`src/ui/qt`):
     List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
     The flat roles (flags, readings, `kindText`, `fixTime`) describe a track's newest report; `currentFix` and
     `unknownFix` (maps, `{}` when none) describe the filled marker's own report and the open ring's, each with its
-    flags, readings, times and `newest` (and `ageAtSendMaxSeconds`, LIP's time elapsed: under 5 s, 5 min or 30 min old
-    when sent, for a report with no time of its own). `clear()` is a boundary at the published head
-    (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
-    published after it repopulate the map. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
-    announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and
-    the List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report,
-    else the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn
-    marker gets a "Newer report"/"Earlier report" block; a List row says the shown report's states, format, distance
-    and age, and "Newer report may be old or invalid" (with its format and weak check) only for a drawn ring beside
-    the marker. The distance line says "from you" while the live position is followed, "from your saved location"
-    for the saved fix. `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions
-    in …", Show all) shows after a loss too, on the map and below the List's gap row (declared after the List, so
-    the gap row is read and tabbed first).
+    flags, readings, times, `newest`, its own recipient (`targetId`, `targetGroup`: a track's reports can each name
+    another, and the sheet's identity line and a List row name the shown report's) and `ageAtSendMaxSeconds` (LIP's
+    time elapsed: under 5 s, 5 min or 30 min old when sent, for a report with no time of its own). `clear()` is a
+    boundary at the published head (`position_skip_to_head()`): a report published after the last poll but before
+    Clear is never read; only reports published after it repopulate the map. `currentShown`/`unknownShown` (age roles,
+    so a filter change or an age tick announces them) say whether the canvas draws the marker and the ring under the
+    age filter. The detail sheet and the List describe only what is drawn (final review M1): the sheet's "Position"
+    block is the drawn marker's report, else the drawn ring's (else a History pin), with its own states, readings and
+    age; a drawn ring beside a drawn marker gets a "Newer report"/"Earlier report" block; a List row says the shown
+    report's states, format, distance and age, and "Newer report may be old or invalid" (with its format and weak
+    check) only for a drawn ring beside the marker. The sheet's ring block names its own recipient when it is not the
+    shown report's. The distance line says "from you" while a live fix is followed, "from your last known position"
+    once that fix is a minute old with nothing newer, "from your saved location" for the saved fix.
+    `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions in …", Show all) shows
+    after a loss too, on the map and below the List's gap row (declared after the List, so the gap row is read and
+    tabbed first).
   - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
     Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
     a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
@@ -18177,7 +18180,10 @@ Qt Quick frontend (`src/ui/qt`):
     fix from before can read as live); Active runs `noteForeground()`, which on a moved foreground epoch emits
     `foregroundMoved()` first and then starts the stream once for every lease, so roaming still sees the notice before
     the first new fix. `setHost()` drops every lease (`leasesDropped()`). `record.fixAtMs` is monotonic
-    (`dsd_realtime_mono_ms()`), never epoch time, and a stream fix is never saved. Test: `UI_QT_LOCATION_FEED`.
+    (`dsd_realtime_mono_ms()`), never epoch time, and a stream fix is never saved; `nowMs()` reads that clock for a
+    consumer that ages a fix no new record replaces (the platform repeats its last measurement, however old, and the
+    host sends only changes). A lease taken on a running feed changes nothing: its consumer reads the standing
+    `record` itself. Test: `UI_QT_LOCATION_FEED`.
   - `location_requests.{h,cpp}` (`LocationRequests`, context property `locationRequests`): the one-shot broker over
     `DecoderHost::requestSiteLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
     one on every new request (`LocationSupport.kt`), so the broker owns the single request in flight: the newest
@@ -18246,7 +18252,10 @@ Qt Quick frontend (`src/ui/qt`):
     tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
     what is followed, tile trouble, location notices) that `topInset` follows, the control column of 48 px buttons,
     the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
-    `ModalSheet.bottomInset`), `MapList.qml` (the List), `MapPositionSheet.qml`
+    `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it,
+    else in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own
+    row, the saved fix in words, which also shows the List with no radio heard; the List holds no live lease),
+    `MapPositionSheet.qml`
     (a marker's, row's or pin's detail sheet), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
     and Follow my position), `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and
     `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has
@@ -18257,12 +18266,22 @@ Qt Quick frontend (`src/ui/qt`):
     settings switch, and the prompt and the settings name the host the viewed area goes to. The prompt's × sets it
     aside for the app's run (`tilesPromptDismissed`, in memory, not a pref: the screen is kept between visits). The
     attribution ("© OpenStreetMap contributors") is always
-    visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`). Tile
-    trouble is a quiet chip, never a modal.
+    visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`).
+    OpenStreetMap's own server (`MapText.isOsmTileHost()`: tile.openstreetmap.org and its lettered names) needs that
+    credit in the attribution: the settings form does not save it without, and the map shows it in front of a saved
+    credit that leaves it out (`MapText.shownCredit()`); another server takes any credit. Tile trouble is a quiet
+    chip, never a modal. The canvas's drag, pinch and wheel handlers stand down while anything covers the map
+    (`Navigation.allows(map)`, as Spectrum's do); taps go through `GatedTapHandler`. The History pin is hit-tested
+    before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
     refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
     still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow
-    on, precise only ("Live position needs precise location." otherwise). On Android an Item stays visible while the
+    on, precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it
+    stands when the lease is taken, since the host repeats nothing). A stream fix is live while at most
+    `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
+    stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
+    Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
+    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). On Android an Item stays visible while the
     app is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended is away, Inactive is
     not, as the feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`: the lease goes while
     the app is away and comes back on return with follow on; the feed's own state slot runs first and finds no lease
@@ -18275,7 +18294,9 @@ Qt Quick frontend (`src/ui/qt`):
     session, so kept tracks stay reachable after Stop) and "Show on map" in the History/Listen/Monitor detail sheet
     (`historyShowOnMap`, `HistoryDetailSheet.showMap`, false in Signal search; only for a row with a position). "Show on
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
-    row is still logged and its screen shows; when the row has left the log the focus goes to the History list
+    row is still logged and its screen shows, its close then returning to that row found again by uid
+    (`rowFocusFor(uid)` on History, Listen and the monitor: the row it first opened from is gone, as a covered list
+    holds no rows); when the row has left the log the focus goes to the History list
     (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
     past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
     `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
