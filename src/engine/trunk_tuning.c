@@ -1003,6 +1003,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
         dsd_input_cut mark;
         if (!dsd_engine_tune_rigctl(opts, state, freq, &mark)) {
+            /* Unknown (0) when the peer may have moved: the next tune counts as a move. */
+            opts->rigctl_sent_freq_hz = RigctlConfirmedFreq(opts->rigctl_sockfd);
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_backend_rigctl_moved = 1;

@@ -2635,8 +2635,10 @@ channel is delayed.
     tune asked for while TCP input reconnects drops what the new connection held when it was asked for. It also starts
     its timing over, so nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence,
     the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream. A
-    tune to the frequency the radio software is already on, one it refuses, and one it does not answer drop nothing. A
-    file, or stdin read from a file, is never dropped.
+    tune to the frequency the radio software is already on, one it refuses, and one it does not answer drop nothing.
+    When the radio software's answer to a tune is lost or cannot be read, DSD-neo no longer knows where the radio is,
+    since it may have moved: the next tune is always sent, and it drops what the input held, even a tune back to the
+    frequency it had before. A file, or stdin read from a file, is never dropped.
   - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
     DSD-neo, when it asks for the tune. It arrives after the retune and is read as the new channel's. So for the
     first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just

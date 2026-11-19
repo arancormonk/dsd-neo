@@ -10,6 +10,7 @@
 
 #ifndef __cplusplus
 #include <stdbool.h>
+#include <stdint.h>
 #endif
 
 #ifdef __cplusplus
@@ -50,6 +51,13 @@ dsd_socket_t ConnectBounded(const char* hostname, int portno, int resolve, dsd_s
 void ConnectKeepTcpAudioAddress(const char* hostname, int portno);
 long int GetCurrentFreq(dsd_socket_t sockfd);
 bool SetFreq(dsd_socket_t sockfd, long int freq);
+/**
+ * @brief The frequency the peer on @p sockfd last confirmed (a complete "RPRT 0"), or 0 when it is not known: nothing
+ * confirmed on the connection yet, or a frequency request since got no complete numeric RPRT (lost, garbled, cut
+ * short), after which the peer may have moved (issue #834). A complete refusal leaves the frequency known. A tune leg
+ * whose request failed takes this as dsd_opts::rigctl_sent_freq_hz, so an unknown frequency counts as a move.
+ */
+uint32_t RigctlConfirmedFreq(dsd_socket_t sockfd);
 bool SetModulation(dsd_socket_t sockfd, int bandwidth);
 /**
  * @brief Ask the rigctl peer to demodulate @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or DSD_ANALOG_DEMOD_AM) at

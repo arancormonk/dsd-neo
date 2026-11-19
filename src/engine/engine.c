@@ -1458,6 +1458,9 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
         dsd_input_cut mark;
         dsd_input_backlog_mark(&mark);
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
+            /* Unknown (0) when the peer may have moved: the next tune goes out and counts as a move. */
+            s_last_rigctl_freq = -1;
+            opts->rigctl_sent_freq_hz = RigctlConfirmedFreq(opts->rigctl_sockfd);
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_last_rigctl_freq = freq;

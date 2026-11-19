@@ -1306,7 +1306,8 @@ test_rebind_forgets_the_frequency_a_reused_number_would_match(void) {
 }
 
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
- * query, the frequency set and the modulation set each read one. */
+ * query, the frequency set and the modulation set each read one. The frequency set's is no single RPRT line (its status
+ * line has more after it), so it confirms nothing (issue #834). */
 static int
 test_full_size_replies_stay_in_bounds(void) {
     static char freq_reply[1100];
@@ -1322,10 +1323,50 @@ test_full_size_replies_stay_in_bounds(void) {
     push_response(freq_reply);
     assert(GetCurrentFreq(123) == 851037500L);
     push_response(ok_reply);
-    assert(SetFreq(123, 851050000L));
+    assert(!SetFreq(123, 851050000L));
     push_response(ok_reply);
     assert(SetModulationKind(123, DSD_ANALOG_DEMOD_AM, 8333));
     assert(g_command_count == 3);
+    return 0;
+}
+
+/* Issue #834: only a complete numeric RPRT line says what a frequency request did. One read can return it in pieces;
+ * "RPRT 0" confirms, a non-zero status refuses and leaves the peer where it last confirmed, and anything else (a
+ * garbled or malformed line, a line cut short, more than one line, no reply) leaves where the peer is unknown: it may
+ * have moved, so the next request goes out whatever it asks for. */
+static int
+test_set_freq_takes_only_a_complete_rprt(void) {
+    reset_stubs();
+    push_response("RPRT ");
+    push_response("0\n");
+    assert(SetFreq(130, 851012500L));
+    assert(RigctlConfirmedFreq(130) == 851012500U);
+    push_response("RPRT 0\r\n");
+    assert(SetFreq(130, 851025000L));
+    assert(RigctlConfirmedFreq(130) == 851025000U);
+
+    /* A complete refusal: still on the frequency confirmed, which a request for it does not send again. */
+    push_response("RPRT -1\n");
+    assert(!SetFreq(130, 851037500L));
+    assert(RigctlConfirmedFreq(130) == 851025000U);
+    const size_t sent = g_command_count;
+    assert(SetFreq(130, 851025000L) && g_command_count == sent);
+
+    static const char* const k_unknown[] = {"?\n",    "RPRT x\n", "RPRT 0", "RPRT 0 1\n", "RPRT 0\nRPRT 0\n",
+                                            "RPRT\n", ""};
+    for (size_t i = 0; i < sizeof k_unknown / sizeof k_unknown[0]; i++) {
+        push_response("RPRT 0\n");
+        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)));
+        if (k_unknown[i][0] != '\0') {
+            push_response(k_unknown[i]);
+        }
+        assert(!SetFreq(130, 851500000L));
+        assert(RigctlConfirmedFreq(130) == 0U);
+        /* A request for the frequency confirmed before goes out again. */
+        push_response("RPRT 0\n");
+        const size_t before = g_command_count;
+        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)) && g_command_count == before + 1);
+    }
     return 0;
 }
 
@@ -3077,6 +3118,7 @@ main(void) {
     rc |= test_rebind_opens_a_fresh_record_where_no_am_is_left_behind();
     rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
+    rc |= test_set_freq_takes_only_a_complete_rprt();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();

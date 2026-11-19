@@ -7381,7 +7381,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`test_old_audio_while_the_passband_is_set()`), and a peer may move and send the new channel's audio before its
   reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
-  refused request or a lost reply installs nothing. The queue the decoder reads attaches itself while it exists
+  refused request or a lost reply installs nothing. Only a complete numeric RPRT line says what a frequency request
+  did (`rigctl_read_freq_reply()` reads through the newline): `RPRT 0` confirms and a non-zero status refuses, which
+  leaves the peer where it last confirmed. Any other reply, or none, leaves the frequency unknown, since the peer may
+  have moved: the client forgets its no-op cache, so the next request goes out, and every leg takes
+  `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so the next
+  tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed before
+  (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()`, `ENGINE_RIGCTL_RETUNE`
+  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

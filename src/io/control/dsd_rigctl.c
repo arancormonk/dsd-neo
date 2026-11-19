@@ -331,29 +331,72 @@ rigctl_response_ok(const char* response) {
     return end != response + 5 && code == 0;
 }
 
-/* The frequency the peer last accepted, and the socket it went out on (RigctlRebindPeer() forgets it); 0 is none, as
+/* The frequency the peer last confirmed, and the socket it went out on (RigctlRebindPeer() forgets it); 0 is none, as
    no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
 static uint32_t s_last_freq = 0U;
 
-/* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last accepted on this socket. The request is
+/* What a frequency request's reply says (issue #834): only a complete numeric RPRT line ("RPRT 0", or a non-zero
+   status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
+enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED = 2 };
+
+/* Read one reply line into @p buf (BUFSIZE + 1 bytes), through its newline: one read can return a line in pieces.
+   Returns the outcome it states. */
+static int
+rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
+    size_t len = 0U;
+    while (len == 0U || buf[len - 1U] != '\n') {
+        if (len >= BUFSIZE) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
+        if (n <= 0) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        len += (size_t)n;
+    }
+    buf[len] = '\0';
+    if (strncmp(buf, "RPRT ", 5) != 0) {
+        return RIGCTL_FREQ_UNKNOWN;
+    }
+    char* end = NULL;
+    errno = 0;
+    const long code = strtol(buf + 5, &end, 10);
+    if (end == buf + 5 || errno != 0 || (*end == '\r' ? end + 1 : end) != buf + len - 1U) {
+        return RIGCTL_FREQ_UNKNOWN;
+    }
+    return code == 0 ? RIGCTL_FREQ_CONFIRMED : RIGCTL_FREQ_REFUSED;
+}
+
+/* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last confirmed on this socket. The request is
  * formatted from the uint32_t the tuner path carries, so a frequency past 2147.483647 MHz goes out as it is where long
- * is 32-bit (issue #671). */
+ * is 32-bit (issue #671). A request with no complete reply (lost, garbled, cut short) may have moved the peer: where it
+ * is is not known until it confirms a request, so the next one goes out whatever it asks for (RigctlConfirmedFreq()).
+ * A complete refusal leaves the peer where it was, as known. */
 static bool
 rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     if (sockfd == s_last_sockfd && freq_hz == s_last_freq) {
         return true; // no change; skip I/O
     }
-    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
+    char buf[BUFSIZE + 1];
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
-    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
-        return false;
+    const int outcome = Send(sockfd, buf) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    if (outcome == RIGCTL_FREQ_CONFIRMED) {
+        s_last_sockfd = sockfd;
+        s_last_freq = freq_hz;
+        return true;
     }
+    if (outcome == RIGCTL_FREQ_UNKNOWN && sockfd == s_last_sockfd) {
+        s_last_sockfd = DSD_INVALID_SOCKET;
+        s_last_freq = 0U;
+    }
+    return false;
+}
 
-    s_last_sockfd = sockfd;
-    s_last_freq = freq_hz;
-    return true;
+uint32_t
+RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    return sockfd != DSD_INVALID_SOCKET && sockfd == s_last_sockfd ? s_last_freq : 0U;
 }
 
 /**
@@ -1107,9 +1150,8 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
     int rc = -1;
     if (opts->use_rigctl == 1) {
         rc = set_rigctl_frequency(opts, state, freq_hz, rigctl_mark);
-        if (rc == 0) {
-            opts->rigctl_sent_freq_hz = freq_hz;
-        }
+        /* A failed request leaves what the peer last confirmed: unknown (0) when it may have moved. */
+        opts->rigctl_sent_freq_hz = rc == 0 ? freq_hz : RigctlConfirmedFreq(opts->rigctl_sockfd);
 #ifdef USE_RADIO
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
         rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq, out_pending_id);

@@ -467,12 +467,24 @@ dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
     return g_trunk_scan_active_p25_class || g_trunk_scan_active_p25_target;
 }
 
+/* The frequency the stand-in peer last confirmed: every stand-in failure is a complete refusal, which leaves it. */
+static uint32_t g_setfreq_confirmed_hz;
+
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_setfreq_calls++;
     g_last_setfreq_hz = freq;
+    if (g_setfreq_result) {
+        g_setfreq_confirmed_hz = (uint32_t)freq;
+    }
     return g_setfreq_result;
+}
+
+uint32_t
+RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    (void)sockfd;
+    return g_setfreq_confirmed_hz;
 }
 
 /* Records the demodulator and passband each tune asks the rigctl peer for, and through which call (issue #526). */

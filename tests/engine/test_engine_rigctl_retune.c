@@ -115,8 +115,20 @@ start_producer(dsd_thread_t* th,
 
 /* ---- A rigctl peer on a loopback socket ---- */
 
-/* What the peer does with a frequency request (F). */
-enum { RIG_TAKES = 0, RIG_REFUSES = 1, RIG_DROPS = 2 };
+/* What the peer does with a frequency request (F). The RIG_MOVES_* modes apply the frequency, then answer once with a
+   reply the client cannot take as a complete RPRT (a garbled line, a malformed status), or with a complete RPRT 0 in two
+   pieces; the next request is taken. */
+enum {
+    RIG_TAKES = 0,
+    RIG_REFUSES = 1,
+    RIG_DROPS = 2,
+    RIG_MOVES_GARBLED = 3,
+    RIG_MOVES_MALFORMED = 4,
+    RIG_MOVES_SPLIT = 5,
+};
+
+/* The reply fake_rig_reply() hands back for RIG_MOVES_SPLIT: fake_rig_main() sends "RPRT " and "0\n" apart. */
+static const char k_split_reply[] = "RPRT 0\n";
 
 typedef struct {
     dsd_socket_t listener;
@@ -169,6 +181,18 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
         }
         (void)atomic_fetch_add(&rig->f_taken, 1);
         fake_rig_send_audio(rig, &rig->f_audio_value);
+        if (mode >= RIG_MOVES_GARBLED) {
+            atomic_store(&rig->f_mode, RIG_TAKES);
+        }
+        if (mode == RIG_MOVES_GARBLED) {
+            return "?\n";
+        }
+        if (mode == RIG_MOVES_MALFORMED) {
+            return "RPRT x\n";
+        }
+        if (mode == RIG_MOVES_SPLIT) {
+            return k_split_reply;
+        }
         return "RPRT 0\n";
     }
     if (line[0] == 'M') {
@@ -211,6 +235,14 @@ static DSD_THREAD_RETURN_TYPE
         line[len] = '\0';
         len = 0U;
         const char* reply = fake_rig_reply(rig, line, &freq, buf, sizeof buf);
+        if (reply == k_split_reply) {
+            /* The reply's first piece, then the rest once the client has had time to read the first alone. */
+            if (dsd_socket_send(rig->conn, "RPRT ", 5U, 0) < 0) {
+                break;
+            }
+            dsd_sleep_ms(50U);
+            reply = "0\n";
+        }
         if (reply == NULL || dsd_socket_send(rig->conn, reply, strlen(reply), 0) < 0) {
             break;
         }
@@ -1736,6 +1768,97 @@ test_new_audio_before_the_reply(void) {
     return rc;
 }
 
+/* Issue #834: a reply that is not a complete numeric RPRT (garbled, malformed, cut short) leaves the peer's frequency
+   unknown: it may have moved. The next tune goes out whatever the frequency last confirmed, and counts as a move: what
+   the input held is dropped, even for a tune back to that frequency. A complete RPRT refusal leaves the peer where it
+   was, as known: a tune back there sends nothing and drops nothing. A complete RPRT 0 that arrives in pieces confirms.
+   On the trunk, watchdog, io_control and scan legs. */
+static int
+unknown_frequency_case(rig_leg_fn leg, const char* what) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("unknown frequency: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("unknown frequency: pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("unknown frequency: stdin reader", 0);
+    }
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    char label[200];
+    rc |= expect_true("unknown frequency: on A", leg(opts, state, VC1_HZ));
+    take_at_the_next_read(opts, state);
+    static const int k_ambiguous[] = {RIG_MOVES_GARBLED, RIG_MOVES_MALFORMED};
+    for (size_t i = 0; i < sizeof k_ambiguous / sizeof k_ambiguous[0]; i++) {
+        atomic_store(&c.rig.f_mode, k_ambiguous[i]);
+        DSD_SNPRINTF(label, sizeof label, "%s, reply %d: the tune to B is not confirmed", what, k_ambiguous[i]);
+        rc |= expect_true(label, !leg(opts, state, VC2_HZ));
+        take_at_the_next_read(opts, state);
+        rc |= expect_true("unknown frequency: queued audio", pipe_put(fds[1], (int16_t)(31 + i)));
+        const int taken = atomic_load(&c.rig.f_taken);
+        const uint32_t e = state->symbol_clock_epoch;
+        DSD_SNPRINTF(label, sizeof label, "%s, reply %d: the tune back to A is taken", what, k_ambiguous[i]);
+        rc |= expect_true(label, leg(opts, state, VC1_HZ));
+        take_at_the_next_read(opts, state);
+        rc |= expect_true("unknown frequency: audio after the tune", pipe_put(fds[1], 41));
+        const int16_t next = pipe_next(opts);
+        DSD_SNPRINTF(
+            label, sizeof label,
+            "%s, reply %d: the tune back to A goes out and counts as a move (sent %d, epoch moved %u, read %d)", what,
+            k_ambiguous[i], atomic_load(&c.rig.f_taken) - taken, state->symbol_clock_epoch - e, (int)next);
+        rc |= expect_true(label,
+                          atomic_load(&c.rig.f_taken) == taken + 1 && state->symbol_clock_epoch != e && next == 41);
+    }
+    /* A complete refusal: the peer stayed on A, as known. */
+    atomic_store(&c.rig.f_mode, RIG_REFUSES);
+    rc |= expect_true("unknown frequency: B refused", !leg(opts, state, VC2_HZ));
+    take_at_the_next_read(opts, state);
+    atomic_store(&c.rig.f_mode, RIG_TAKES);
+    rc |= expect_true("unknown frequency: queued audio after the refusal", pipe_put(fds[1], 51));
+    int taken = atomic_load(&c.rig.f_taken);
+    uint32_t e = state->symbol_clock_epoch;
+    rc |= expect_true("unknown frequency: A after the refusal", leg(opts, state, VC1_HZ));
+    take_at_the_next_read(opts, state);
+    int16_t next = pipe_next(opts);
+    DSD_SNPRINTF(
+        label, sizeof label,
+        "%s: after a refusal the peer is on A as known: nothing sent, nothing dropped (sent %d, epoch moved %u, "
+        "read %d)",
+        what, atomic_load(&c.rig.f_taken) - taken, state->symbol_clock_epoch - e, (int)next);
+    rc |= expect_true(label, atomic_load(&c.rig.f_taken) == taken && state->symbol_clock_epoch == e && next == 51);
+    /* A complete RPRT 0 in two pieces confirms. */
+    atomic_store(&c.rig.f_mode, RIG_MOVES_SPLIT);
+    taken = atomic_load(&c.rig.f_taken);
+    DSD_SNPRINTF(label, sizeof label, "%s: an RPRT 0 that comes in two pieces confirms the tune", what);
+    rc |= expect_true(label, leg(opts, state, VC2_HZ) && atomic_load(&c.rig.f_taken) == taken + 1);
+    take_at_the_next_read(opts, state);
+    atomic_store(&c.rig.f_mode, RIG_TAKES);
+    taken = atomic_load(&c.rig.f_taken);
+    rc |= expect_true("unknown frequency: B again", leg(opts, state, VC2_HZ));
+    take_at_the_next_read(opts, state);
+    DSD_SNPRINTF(label, sizeof label, "%s: and the peer is on B as known: a tune to B sends nothing (sent %d)", what,
+                 atomic_load(&c.rig.f_taken) - taken);
+    rc |= expect_true(label, atomic_load(&c.rig.f_taken) == taken);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
+static int
+test_an_unreadable_tune_reply_leaves_the_frequency_unknown(void) {
+    return unknown_frequency_case(leg_trunk, "trunk") | unknown_frequency_case(leg_watchdog, "watchdog")
+           | unknown_frequency_case(leg_io_control, "io_control") | unknown_frequency_case(leg_scan, "scan");
+}
+
 /* A peer that is slow to answer a passband request (M) is still on the old frequency while it does: the old channel's
    audio that reaches the input then goes at the next read with what was queued before the tune, and the new channel's,
    which reached it before the frequency's reply, is read. Every rigctl leg asks for a passband here (a -B on audio
@@ -2171,6 +2294,7 @@ main(void) {
     rc |= test_a_producer_that_cannot_start_ends_its_case();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
+    rc |= test_an_unreadable_tune_reply_leaves_the_frequency_unknown();
     dsd_socket_cleanup();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "ENGINE_RIGCTL_RETUNE: OK\n");
