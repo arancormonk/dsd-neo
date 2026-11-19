@@ -7388,7 +7388,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so the next
   tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed before
   (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()`, `ENGINE_RIGCTL_RETUNE`
-  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). The queue the decoder reads attaches itself while it exists
+  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). On an RTL input whose carrier the rigctl peer
+  moved with no RTL leg after it (a trunk leg outside conventional scan, the io_control leg), the stream has no retune
+  of its own to flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
+  (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, and the output ring clears under
+  a new output generation, which drops the decoder's cached symbols), on any thread under the reconfigure gate; the
+  samples after the move go with it, since the stream cannot tell them apart (`ENGINE_TRUNK_RETUNE_REGRESSION`
+  `check_rigctl_move_drops_the_rtl_stream()`, `IO_RTL_RETUNE_PREPARE`). The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

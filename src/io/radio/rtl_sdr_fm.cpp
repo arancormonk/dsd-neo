@@ -14160,6 +14160,16 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     rtl_stream_leave_demod_family_switch_gate(gate);
 }
 
+extern "C" void
+rtl_stream_discard_after_external_move(void) {
+    const int gate = rtl_stream_enter_demod_family_switch_gate();
+    if (g_stream) {
+        controller_request_input_purge();
+    }
+    rtl_stream_clear_output_ring(rtl_stream_active_output(), 1);
+    rtl_stream_leave_demod_family_switch_gate(gate);
+}
+
 extern "C" int
 rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
     /* Main-thread hook: use the published mirrors, not demod fields. */
@@ -16174,6 +16184,37 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
     rtl_stream_publish_demod_profile_snapshot();
     test_stream_set(prev_stream);
     g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
+    fsk_reacquire_test_reset_output_state();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_external_move_discard(size_t queued_samples, int cached_symbols,
+                                      rtl_stream_test_external_move_result* out_result) {
+    if (!out_result || cached_symbols < 0) {
+        return -1;
+    }
+    *out_result = {};
+    int initialized_output = 0;
+    const int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+    struct RtlSdrInternals* prev_stream = g_stream;
+    test_stream_set(NULL);
+    ring_clear(&output);
+    output.tail.store(0, std::memory_order_release);
+    output.head.store(queued_samples, std::memory_order_release);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+    out_result->generation_before = rtl_stream_output_generation();
+    rtl_stream_discard_after_external_move();
+    out_result->generation_after = rtl_stream_output_generation();
+    out_result->used_after = ring_used(&output);
+    out_result->cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    test_stream_set(prev_stream);
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;

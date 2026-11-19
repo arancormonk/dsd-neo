@@ -2876,6 +2876,16 @@ main(void) {
     failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
 
+    /* Issue #834: a rigctl peer moved the carrier with no retune of the stream's own: what the output ring and the
+       decoder's cache held goes, under a new output generation. */
+    rtl_stream_test_external_move_result external_move = {};
+    rc = rtl_stream_test_external_move_discard(13U, 6, &external_move);
+    failed |= expect_int_eq("external move discard helper rc", rc, 0);
+    failed |= expect_generation_changed("external move bumps generation", external_move.generation_before,
+                                        external_move.generation_after);
+    failed |= expect_size_eq("external move clears queued ring", external_move.used_after, 0U);
+    failed |= expect_int_eq("external move resets cached symbols", external_move.cache_pending_after, 0);
+
     rtl_stream_test_cqpsk_reacquire_result cqpsk_reacquire = {};
     rc = rtl_stream_test_cqpsk_reacquire(1, 4800, 10, 11U, 5, &cqpsk_reacquire);
     failed |= expect_int_eq("cqpsk reacquire helper rc", rc, 0);

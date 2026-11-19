@@ -782,6 +782,14 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     apply_pending_retune_profile(target_freq_hz);
 }
 
+/* How many times a rigctl move the RTL stream had no retune of its own for dropped what the stream held. */
+static int g_rtl_external_discards = 0;
+
+void
+rtl_stream_discard_after_external_move(void) {
+    g_rtl_external_discards++;
+}
+
 void
 rtl_stream_clear_pending_retune_profile(void) {
     g_rtl_pending_active = 0;
@@ -2944,6 +2952,34 @@ check_dmr_leave_waits_for_a_pending_tune(dsd_opts* opts, dsd_state* state) {
 }
 #endif
 
+#ifdef USE_RADIO
+/* Issue #834: on an RTL input whose carrier a rigctl peer moves (no RTL leg follows the rigctl leg), the stream still
+   holds the frequency left's samples: its I/Q, its output ring and the decoder's symbols of it. A move drops them all,
+   on every rigctl leg that moved the peer; a tune to the frequency the peer is on moves nothing and drops nothing. */
+static void
+check_rigctl_move_drops_the_rtl_stream(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 1;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_setfreq_result = true;
+    g_rtl_external_discards = 0;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853100000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    if (g_rtl_external_discards != 1) {
+        DSD_FPRINTF(stderr, "a rigctl move on RTL input dropped the stream %d times (want 1)\n",
+                    g_rtl_external_discards);
+    }
+    assert(g_rtl_external_discards == 1);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853100000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_external_discards == 1);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852100000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_external_discards == 2);
+    g_rtl_external_discards = 0;
+}
+#endif
+
 /* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
 static void
 auto_probe_session(dsd_opts* opts, dsd_state* state) {
@@ -3315,6 +3351,7 @@ main(void) {
     check_dmr_leave_waits_for_the_decoder(opts, state);
 #ifdef USE_RADIO
     check_dmr_leave_waits_for_a_pending_tune(opts, state);
+    check_rigctl_move_drops_the_rtl_stream(opts, state);
 #endif
 
     /* RTL input driven by rigctl still needs the generic output drain because
