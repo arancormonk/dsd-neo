@@ -15,6 +15,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -3399,6 +3400,43 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The keys file keys talkgroups 123 (Basic Privacy 51) and 202 (68); slot 1's call on talkgroup 123 is keyed with 51.
+   Its embedded LC whose checksum failed reads talkgroup 202 with the privacy bit: that is no check of the call's
+   identity, so the key line shows the key the call is keyed with (51), never the one talkgroup 202 would select. A
+   checked LC naming talkgroup 202 is that call's word, and shows 68. */
+static void
+test_failed_lc_prints_no_talkgroup_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char out[4096];
+    for (uint32_t crc = 0U; crc <= 1U; crc++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.show_keys = 1;
+        state.currentslot = 0;
+        state.keyloader = 1;
+        state.rkey_array[123] = 51ULL;
+        state.rkey_array_loaded[123] = 1U;
+        state.rkey_array[202] = 68ULL;
+        state.rkey_array_loaded[202] = 1U;
+        uint32_t keyed_from = 0U;
+        (void)keyring_dmr_tg_autoload_apply(&state, 0U, 123U, &keyed_from);
+        assert(state.K == 51ULL);
+        uint8_t bits[80];
+        uint32_t irr = 0;
+        build_regular_flco(bits, 0x00U, 0x10U, 0x40U, 202U, 2002U);
+        dsd_test_capture_stderr cap;
+        assert(dsd_test_capture_stderr_begin(&cap, "dmr_failed_lc_key") == 0);
+        dmr_flco(&opts, &state, bits, crc, &irr, 3U);
+        assert(dsd_test_capture_stderr_end(&cap) == 0);
+        assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+        (void)remove(cap.path);
+        assert(strstr(out, crc ? "Key 68 " : "Key 51 ") != NULL);
+        assert(strstr(out, crc ? "Key 51 " : "Key 68 ") == NULL);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 #define MAPPED_TG_TARGET       123U
 #define MAPPED_TG_SOURCE       4567U
 #define MAPPED_TG_KID          0x7B
@@ -4172,6 +4210,7 @@ main(void) {
     InitAllFecFunction();
 
     test_repeated_voice_lc_header_keeps_one_epoch();
+    test_failed_lc_prints_no_talkgroup_key();
     test_voice_lc_holds_the_channel_only_when_admitted();
     test_stale_headerless_epoch_does_not_absorb_next_header();
     test_repeated_voice_lc_headers_commit_one_history_row();

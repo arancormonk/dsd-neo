@@ -140,12 +140,13 @@ typedef struct {
 
 /* The key the LC's call on its slot is keyed with. Where the talkgroup key autoload keys its voice (no forced key, no
    ALG ID), that is the key its own talkgroup leaves (keyring_dmr_tg_autoload_preview()), never the working key another
-   talkgroup's call loaded; otherwise the working key. */
+   talkgroup's call loaded; otherwise the working key. Only an LC whose check passed names its call's talkgroup: one
+   whose checksum failed shows the working key the voice is keyed with. */
 static void
 dmr_flco_call_key_of(const dmr_flco_ctx* ctx, dmr_flco_call_key* key) {
     const dsd_state* state = ctx->state;
     const int live_algid = ctx->slot == 0U ? state->payload_algid : state->payload_algidR;
-    if (state->M == 0 && live_algid == 0 && ctx->slot < DSD_CALL_STATE_SLOT_COUNT) {
+    if (ctx->CRCCorrect == 1U && state->M == 0 && live_algid == 0 && ctx->slot < DSD_CALL_STATE_SLOT_COUNT) {
         keyring_dmr_tg_autoload_preview(state, ctx->slot, ctx->target, key->words, key->flags);
         return;
     }
