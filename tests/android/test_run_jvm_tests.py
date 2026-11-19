@@ -136,6 +136,14 @@ class CollectorChoice(unittest.TestCase):
                 self.assertNotIn(self.SERIAL, self.cached_argv(environ))
                 self.assertNotIn(self.SERIAL, runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ))
 
+    def test_quoted_collector_is_kept_alone(self):
+        # The JVM takes JAVA_TOOL_OPTIONS='"-XX:+UseG1GC"' (its options may be quoted), and two collectors stop it.
+        for quoted in ('"-XX:+UseG1GC"', "'-XX:+UseG1GC'", '-Xss1M "-XX:+UseZGC" -Xmx1G'):
+            with self.subTest(quoted=quoted):
+                environ = {"JAVA_TOOL_OPTIONS": quoted}
+                self.assertNotIn(self.SERIAL, self.cached_argv(environ))
+                self.assertNotIn(self.SERIAL, runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ))
+
     def test_serial_by_default(self):
         self.assertIn(self.SERIAL, self.kotlinc_options({}))
         self.assertIn(self.SERIAL, self.cached_argv({"JAVA_OPTS": "-XX:+UseG1GC"}))  # java itself never reads JAVA_OPTS
