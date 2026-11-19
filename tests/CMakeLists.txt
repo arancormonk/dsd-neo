@@ -5538,6 +5538,38 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_import_transport
     )
 
+    # The licences screen's text: where the source code of the Qt version built with is, then every file the
+    # package's notice index names, in its order (missing ones shown as missing).
+    add_executable(
+        dsd-neo_test_ui_qt_license_notices
+        ui/test_ui_qt_license_notices.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_license_notices
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LICENSE_NOTICES
+        COMMAND dsd-neo_test_ui_qt_license_notices
+    )
+
     # Closing the app so a drive opens after a restart (#830): refused while a copy runs, the session stopped and
     # awaited before the quit, a stop that never settles and a refused quit.
     add_executable(
@@ -6419,11 +6451,21 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
         )
+        # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
+        # an index naming it, as the APK staging writes one.
+        set(_dsd_test_notice_dir "${CMAKE_CURRENT_BINARY_DIR}/qml-notices")
+        file(WRITE "${_dsd_test_notice_dir}/notice-index.txt" "LICENSE\n")
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
-            PREFIX "/dsdneo/notices"
+            PREFIX "/dsdneo/test-notices"
             BASE "${PROJECT_SOURCE_DIR}"
             FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+        )
+        qt_add_resources(
+            dsd-neo_test_ui_qt_qml "test_license_notice_index"
+            PREFIX "/dsdneo/test-notices"
+            BASE "${_dsd_test_notice_dir}"
+            FILES "${_dsd_test_notice_dir}/notice-index.txt"
         )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS

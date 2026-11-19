@@ -931,6 +931,9 @@ every other release asset. `cmake/stage_android_package.cmake` copies
 notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 `android/package/` reach the APK without re-running CMake. Add new package files
 to `android/package/` as usual — never to the staged copy, which is overwritten.
+The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
+file in that folder; the app's "Open source licenses" screen shows the files it
+names, after the location of the Qt source code.
 
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.

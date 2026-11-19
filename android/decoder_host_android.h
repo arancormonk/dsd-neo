@@ -435,6 +435,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief IncomingDocuments.take() (#831): a document that reached it since refresh() last polled. */
     QString newerIncomingDocument() override;
 
+    /** @brief The APK's documentation assets, which cmake/stage_android_package.cmake stages with their index. */
+    QString
+    noticeDirectory() const override {
+        return QStringLiteral("assets:/doc/dsd-neo");
+    }
+
   private:
     /**
      * @brief Makes its host one postSignInFill() can reach, from construction until it goes

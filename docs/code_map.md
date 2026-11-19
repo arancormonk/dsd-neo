@@ -13782,11 +13782,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
   (option `DSD_ENABLE_QT_UI`, default OFF)
-- Legal resources: `DecoderHost::licenseNotices()` reads the retained project and
-  dependency notices, including `legal/status.md` and the selected mbelib installation's
-  unresolved disclosures. `cmake/MbelibNotices.cmake` requires those dependency records;
-  the root CMake `legal` install component and `cmake/stage_android_package.cmake` carry
-  them into portable packages and Android assets. Each record in `legal/components.json`
+- Legal resources: `DecoderHost::licenseNotices()` (the licences screen) first names where
+  the source code of the Qt version the app is built with is (Qt's archive URLs for qtbase,
+  qtdeclarative and qtsvg, from `QT_VERSION_*`), then shows every file that the package's
+  notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo` in the APK, none in the base
+  host) lists in its `notice-index.txt`, in that order; a listed file the package lacks
+  shows as missing. `cmake/stage_android_package.cmake` writes the index from the folder as
+  staged (LICENSE, COPYRIGHT and THIRD_PARTY.md first, then the rest sorted), so a notice an
+  `android_release` map adds reaches the screen with no app change. The UI library compiles
+  in no notices. `cmake/MbelibNotices.cmake` requires the selected mbelib installation's
+  records; the root CMake `legal` install component and `cmake/stage_android_package.cmake`
+  carry them into portable packages and Android assets. Each record in `legal/components.json`
   names the notices a package carries for it in a per-platform map (`windows_release`,
   `android_release`, `macos_release`); `cmake/stage_release_notices.cmake` stages a
   platform's map (the APK and the macOS DMG), `tools/legal_inventory.py --release-notices

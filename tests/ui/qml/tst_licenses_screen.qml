@@ -28,6 +28,10 @@ Item {
             verify(text !== null);
             verify(text.text.indexOf("GNU GENERAL PUBLIC LICENSE") >= 0);
             compare(text.text, decoderHost.licenseNotices());
+            // Where Qt's source code is comes first, then each file the package's notice index names.
+            compare(text.text.indexOf("Qt source code\n"), 0);
+            verify(text.text.indexOf("https://download.qt.io/archive/qt/") > 0);
+            verify(text.text.indexOf("LICENSE\n\n") > text.text.indexOf("qtsvg-everywhere-src-"));
             verify(text.readOnly && text.selectByMouse);
             compare(text.wrapMode, TextEdit.Wrap);
             var scroll = findChild(screen, "licensesScroll");

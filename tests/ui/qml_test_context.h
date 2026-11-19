@@ -568,6 +568,12 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
     }
 
+    /* The project's LICENSE and the index naming it, compiled in by tests/CMakeLists.txt. */
+    QString
+    noticeDirectory() const override {
+        return QStringLiteral(":/dsdneo/test-notices");
+    }
+
   public:
     /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
     static QVariantMap

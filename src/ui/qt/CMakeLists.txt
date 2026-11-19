@@ -249,59 +249,6 @@ target_include_directories(
     PUBLIC ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${PROJECT_SOURCE_DIR}"
-    FILES
-        "${PROJECT_SOURCE_DIR}/LICENSE"
-        "${PROJECT_SOURCE_DIR}/COPYRIGHT"
-        "${PROJECT_SOURCE_DIR}/THIRD_PARTY.md"
-        "${PROJECT_SOURCE_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
-        "${PROJECT_SOURCE_DIR}/src/third_party/ezpwd/lesser.txt"
-)
-
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_pffft_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${DSD_PFFFT_LICENSE_DIR}"
-    FILES
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
-)
-
-file(
-    GLOB_RECURSE _dsd_legal_notices
-    CONFIGURE_DEPENDS
-    "${PROJECT_SOURCE_DIR}/LICENSES/*.txt"
-    "${PROJECT_SOURCE_DIR}/legal/*.md"
-    "${PROJECT_SOURCE_DIR}/legal/*.json"
-)
-qt_add_resources(dsd-neo_ui_qt "dsd_neo_legal_notices"
-    PREFIX "/dsdneo/notices" BASE "${PROJECT_SOURCE_DIR}" FILES ${_dsd_legal_notices}
-)
-file(
-    GLOB_RECURSE _mbe_legal_notices
-    CONFIGURE_DEPENDS
-    "${DSD_MBELIB_NOTICE_DIR}/*.txt"
-    "${DSD_MBELIB_NOTICE_DIR}/*.md"
-    "${DSD_MBELIB_NOTICE_DIR}/*.json"
-)
-qt_add_resources(dsd-neo_ui_qt "dsd_neo_mbelib_notices"
-    PREFIX "/dsdneo/notices/mbelib-neo" BASE "${DSD_MBELIB_NOTICE_DIR}"
-    FILES "${DSD_MBELIB_NOTICE_DIR}/LICENSE" ${_mbe_legal_notices}
-)
-
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_tetra_crypto_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${DSD_TETRA_CRYPTO_LICENSE_DIR}"
-    FILES "${DSD_TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
-)
-
 # Qt's unprefixed `signals`/`slots`/`emit` macros collide with project C headers
 # (dsd_call_state_snapshot has a `slots` member). Use the Q_-prefixed spellings.
 target_compile_definitions(dsd-neo_ui_qt PUBLIC QT_NO_KEYWORDS)
