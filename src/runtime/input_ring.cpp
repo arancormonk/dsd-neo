@@ -8,6 +8,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
+#include <mutex>
 #include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
