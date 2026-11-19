@@ -1090,6 +1090,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.toolset = self.toolset_folder(self.work / "vs", "14.51.36231")
         self.version_files(self.work / "vs", "14.51.36231", "14.50.35719")
         self.shell = {"VCToolsInstallDir": f"{self.toolset}/", "VCToolsRedistDir": f"{self.crt.parent.parent}/"}
+        self.installed = installed
         self.write_cache(build, self.toolset)
         return tools, build, installed, windows
 
@@ -1108,13 +1109,17 @@ class SoapyReleaseScripts(unittest.TestCase):
         (folder / f"Microsoft.VCToolsVersion.{name}.txt").write_text(tools_version + "\r\n")
         (folder / f"Microsoft.VCRedistVersion.{name}.txt").write_text(redist_version + "\r\n")
 
-    def write_cache(self, build, toolset, compiler=None):
-        """The CMakeCache.txt of a build whose compilers are toolset's cl.exe, as CMake records the preset's cl."""
+    def write_cache(self, build, toolset, installed=None, compiler=None):
+        """The CMakeCache.txt of a build whose compilers are toolset's cl.exe, as CMake records the preset's cl, and
+        whose vcpkg tree is installed: its VCPKG_INSTALLED_DIR and its triplet."""
         compiler = compiler or f"{toolset}/bin/Hostx64/x64/cl.exe"
+        installed = installed or self.installed
         (build / "CMakeCache.txt").write_text(
             "# This is the CMakeCache file.\r\n"
             f"CMAKE_CXX_COMPILER:STRING={compiler}\r\nCMAKE_CXX_COMPILER_LAUNCHER:STRING=sccache\r\n"
-            f"CMAKE_C_COMPILER:STRING={compiler}\r\nCMAKE_LINKER:FILEPATH={toolset}/bin/Hostx64/x64/link.exe\r\n")
+            f"CMAKE_C_COMPILER:STRING={compiler}\r\nCMAKE_LINKER:FILEPATH={toolset}/bin/Hostx64/x64/link.exe\r\n"
+            f"VCPKG_INSTALLED_DIR:PATH={installed.parent}\r\nVCPKG_TARGET_TRIPLET:STRING={installed.name}\r\n"
+            "VCPKG_TARGET_TRIPLET-ADVANCED:INTERNAL=1\r\n")
 
     def stage(self, tools, build, installed, windows, repo=ROOT):
         stage = self.work / "dist/dsd-neo-msvc"
@@ -1361,6 +1366,50 @@ class SoapyReleaseScripts(unittest.TestCase):
         self.shell = {"VCToolsInstallDir": f"{alias}/VC/Tools/MSVC/14.51.36231/",
                       "VCToolsRedistDir": f"{alias}/VC/Redist/MSVC/14.50.35719/"}
         rc, output, _ = self.stage(tools, build, installed, windows)
+        self.assertEqual(rc, 0, output)
+
+    def test_stage_release_tree_takes_the_vcpkg_tree_of_the_build(self):
+        # The vcpkg tree must be the one the build was configured with (VCPKG_INSTALLED_DIR and VCPKG_TARGET_TRIPLET in
+        # its CMakeCache.txt): another workspace's tree of the same triplet, or another triplet's, would pair this
+        # build's dsd-neo.exe with another build's modules and DLLs. Nothing is staged then.
+        tools, build, installed, windows = self.fake_tree()
+        other_workspace = self.work / "other-workspace/vcpkg_installed" / installed.name
+        other_triplet = installed.parent / "x64-windows-dynamic"
+        for copy in (other_workspace, other_triplet):
+            shutil.copytree(installed, copy, symlinks=True)
+        cache = build / "CMakeCache.txt"
+        cases = (
+            ("another workspace's tree", other_workspace, lambda: None,
+             [f"{other_workspace} is not the vcpkg tree {build} was built against ({installed}, from VCPKG_INSTALLED_DIR and VCPKG_TARGET_TRIPLET"]),
+            ("another triplet's tree", other_triplet, lambda: None,
+             [f"{other_triplet} is not the vcpkg tree {build} was built against ({installed}, from VCPKG_INSTALLED_DIR and VCPKG_TARGET_TRIPLET"]),
+            ("a build of another triplet", installed, lambda: self.write_cache(build, self.toolset, other_triplet),
+             [f"{installed} is not the vcpkg tree {build} was built against ({other_triplet}, from VCPKG_INSTALLED_DIR and VCPKG_TARGET_TRIPLET"]),
+            ("no VCPKG_INSTALLED_DIR", installed,
+             lambda: cache.write_text(re.sub(r"VCPKG_INSTALLED_DIR:PATH=[^\n]*\n", "", cache.read_text())),
+             ["names 0 VCPKG_INSTALLED_DIR entries"]),
+            ("no VCPKG_TARGET_TRIPLET", installed,
+             lambda: cache.write_text(re.sub(r"VCPKG_TARGET_TRIPLET:STRING=[^\n]*\n", "", cache.read_text())),
+             ["names 0 VCPKG_TARGET_TRIPLET entries"]),
+        )
+        for label, tree, break_cache, words in cases:
+            with self.subTest(case=label):
+                break_cache()
+                try:
+                    rc, output, stage = self.stage(tools, build, tree, windows)
+                    self.assertEqual(rc, 1, output)
+                    for word in words:
+                        self.assertIn(word, output)
+                    self.assertFalse(stage.exists(), output)
+                finally:
+                    self.write_cache(build, self.toolset)
+                    shutil.rmtree(self.work / "dist", ignore_errors=True)
+        # The build's own tree through another path to it, and a cache that spells its folder with backslashes.
+        alias = self.work / "vcpkg-alias"
+        alias.symlink_to(installed.parent, target_is_directory=True)
+        cache.write_text(cache.read_text().replace(f"VCPKG_INSTALLED_DIR:PATH={installed.parent}",
+                                                   f"VCPKG_INSTALLED_DIR:PATH={installed.parent}\\".replace("/", "\\")))
+        rc, output, _ = self.stage(tools, build, alias / installed.name, windows)
         self.assertEqual(rc, 0, output)
 
     def test_stage_release_tree_sees_hidden_modules(self):

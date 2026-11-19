@@ -71,7 +71,37 @@ function Assert-BuildToolset {
     Assert-ToolsetRedistributable -ToolsInstallDir $env:VCToolsInstallDir -RedistDir $env:VCToolsRedistDir | Out-Null
 }
 
+# The vcpkg tree must be the one the build was configured with: the triplet folder of
+# VCPKG_INSTALLED_DIR named by VCPKG_TARGET_TRIPLET in the build's CMakeCache.txt. Another
+# workspace's tree of the same triplet would pair this build's dsd-neo.exe with another
+# build's modules and DLLs.
+function Assert-BuildInstalledTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Build,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Installed
+    )
+
+    $root = Get-CMakeCacheValue -Build $Build -Name 'VCPKG_INSTALLED_DIR'
+    $triplet = Get-CMakeCacheValue -Build $Build -Name 'VCPKG_TARGET_TRIPLET'
+    if ($triplet -notmatch '^[A-Za-z0-9_-]+$' -or -not [System.IO.Path]::IsPathRooted($root.Replace('\', '/'))) {
+        throw "The CMakeCache.txt of $Build names VCPKG_INSTALLED_DIR '$root' and VCPKG_TARGET_TRIPLET '$triplet', not a vcpkg tree"
+    }
+    $expected = $root.TrimEnd('/', '\') + '/' + $triplet
+    try {
+        $built = Resolve-CanonicalPath $expected
+    } catch {
+        throw "$Build was built against the vcpkg tree $expected, which is not on this machine"
+    }
+    if (-not (Test-SamePath -Path (Resolve-CanonicalPath $Installed) -Other $built)) {
+        throw "$Installed is not the vcpkg tree $Build was built against ($expected, from VCPKG_INSTALLED_DIR and VCPKG_TARGET_TRIPLET in its CMakeCache.txt): the release would pair its dsd-neo.exe with another build's modules and DLLs"
+    }
+}
+
 Assert-BuildToolset -Build $build
+Assert-BuildInstalledTree -Build $build -Installed $installed
 
 # A used folder would mix two builds: stage_runtime_dlls.ps1 keeps a DLL already in
 # bin\ rather than copy the one vcpkg installed, so a new module could ship beside an

@@ -676,7 +676,7 @@ function Get-CMakeCacheValue {
 
     $cache = Join-Path $Build 'CMakeCache.txt'
     if (!(Test-Path -LiteralPath $cache -PathType Leaf)) {
-        throw "No CMakeCache.txt in $Build, so the toolset that built it is unknown"
+        throw "No CMakeCache.txt in $Build, so the toolset and the vcpkg tree that built it are unknown"
     }
     $entries = @(Get-Content -LiteralPath $cache | Where-Object { $_ -cmatch "^$([regex]::Escape($Name)):[A-Z]+=" })
     if ($entries.Count -ne 1) {
