@@ -20,6 +20,7 @@
 #include "curl_common_test_hooks.h"
 
 #include <curl/curl.h>
+#include <curl/curlver.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdio.h>
