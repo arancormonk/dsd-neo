@@ -844,6 +844,8 @@ test_lookup_stall_cancelled(void) {
     (void)DSD_SNPRINTF(url, sizeof(url), "https://%s/7/64/42.png", DSD_FAKE_RESOLVER_HOST);
     req.url = url;
     req.cancel = arg.cancel;
+    dsd_tile_fetch_session* session = dsd_tile_fetch_session_create();
+    req.session = session; /* as the tile worker fetches: the share's DNS cache is in play */
     dsd_tile_fetch_response resp;
     const uint64_t started = dsd_realtime_mono_ms();
     const dsd_tile_fetch_status st = dsd_tile_fetch(&req, &resp);
@@ -860,6 +862,7 @@ test_lookup_stall_cancelled(void) {
         expect("the fetch did not wait for the lookup to be answered", atomic_load(&arg.released_early) == 0);
     }
     dsd_tile_fetch_response_free(&resp);
+    dsd_tile_fetch_session_destroy(session);
     dsd_tile_fetch_cancel_destroy(arg.cancel);
     /* Let the abandoned resolver thread see the release and end before exit. */
     for (int i = 0; i < 200 && dsd_fake_resolver_held() > 0; i++) {

@@ -31,7 +31,19 @@
 #endif
 #endif
 
-#define TF_UA_SUFFIX      " (+https://github.com/arancormonk/dsd-neo)"
+#define TF_UA_SUFFIX " (+https://github.com/arancormonk/dsd-neo)"
+
+#ifdef DSD_TILE_FETCH_TEST_PLAIN_HTTP
+/* Test builds only (RUNTIME_TILE_FETCH_PLAIN_HTTP): the same transport over plain http to a loopback server, so a real
+ * libcurl's header and size handling can be driven without TLS. The shipped library is https only. */
+#define TF_SCHEME       "http://"
+#define TF_PROTOCOL     "http"
+#define TF_PROTOCOL_BIT CURLPROTO_HTTP
+#else
+#define TF_SCHEME       "https://"
+#define TF_PROTOCOL     "https"
+#define TF_PROTOCOL_BIT CURLPROTO_HTTPS
+#endif
 #define TF_UA_VERSION_MAX 64U
 #define TF_UNAVAILABLE    "online map tiles are not available in this build"
 
@@ -279,7 +291,7 @@ tf_cancel_requested(const void* ctx) {
 static int
 tf_lists_https(const char* const* protocols) {
     for (const char* const* p = protocols; p != NULL && *p != NULL; p++) {
-        if (strcmp(*p, "https") == 0) {
+        if (strcmp(*p, TF_PROTOCOL) == 0) {
             return 1;
         }
     }
@@ -373,9 +385,9 @@ tf_apply_options(CURL* curl, tf_transfer* t) {
         TF_OPT_L(CURLOPT_NOSIGNAL, 1L),
         TF_OPT_L(CURLOPT_FOLLOWLOCATION, 0L),
 #if TF_CURL_VERSION_NUM >= 0x075500 /* CURLOPT_PROTOCOLS_STR landed in 7.85.0 */
-        TF_OPT_P(CURLOPT_PROTOCOLS_STR, "https"),
+        TF_OPT_P(CURLOPT_PROTOCOLS_STR, TF_PROTOCOL),
 #else
-        TF_OPT_L(CURLOPT_PROTOCOLS, CURLPROTO_HTTPS),
+        TF_OPT_L(CURLOPT_PROTOCOLS, TF_PROTOCOL_BIT),
 #endif
         TF_OPT_P(CURLOPT_USERAGENT, t->user_agent),
         TF_OPT_L(CURLOPT_SSL_VERIFYPEER, 1L),
@@ -612,8 +624,13 @@ tf_curl_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exc
     exchange->http_status = http_status;
     if (code != CURLE_OK) {
         exchange->status = tf_status_from_curl(code);
-        if (exchange->status == DSD_TILE_FETCH_ERR_TOO_LARGE && tf_head_complete(&t.head)) {
-            /* Only the body was over its cap: the headers (status, Retry-After) still say what answer it was. */
+        if (exchange->status == DSD_TILE_FETCH_ERR_TOO_LARGE
+            && (code == CURLE_FILESIZE_EXCEEDED || tf_head_complete(&t.head)) && t.head.data != NULL) {
+            /* Only the body was over its cap: the headers (status, Retry-After) still say what answer it was. A
+             * declared Content-Length over the cap (CURLE_FILESIZE_EXCEEDED, never the header cap) stops older libcurl
+             * before the closing blank line reaches the callback (8.5, 7.81: every line but it), so the lines seen so
+             * far are kept as they are. A write refusal (CURLE_WRITE_ERROR) can be the header cap, so there the block
+             * must be whole. */
             exchange->headers = t.head.data;
             exchange->headers_len = t.head.len;
             t.head.data = NULL;
@@ -924,7 +941,7 @@ tf_parse_headers(dsd_tile_fetch_response* resp, const char* block, size_t len) {
  */
 static const char*
 tf_validate_url(const char* url) {
-    static const char k_scheme[] = "https://";
+    static const char k_scheme[] = TF_SCHEME;
     const size_t scheme_len = sizeof(k_scheme) - 1U;
     size_t len = 0;
     for (; url[len] != '\0'; len++) {

@@ -483,6 +483,27 @@ test_caps(void) {
            (resp.header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U && strcmp(resp.retry_after, "120") == 0);
     dsd_tile_fetch_response_free(&resp);
 
+    /* A declared Content-Length over the cap: libcurl 8.5 and older stop before the closing blank line reaches the
+     * header callback, so the lines seen so far are kept as they are. */
+    fake_reset();
+    g_fake.response_code = 503;
+    g_fake.headers = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 600000\r\nRetry-After: 30\r\n";
+    g_fake.perform_result = CURLE_FILESIZE_EXCEEDED;
+    expect_ll("a declared length over the cap is too large", (long long)fetch_plain(&resp),
+              DSD_TILE_FETCH_ERR_TOO_LARGE);
+    expect_ll("with its status", resp.http_status, 503);
+    expect("and the Retry-After seen before libcurl stopped", strcmp(resp.retry_after, "30") == 0);
+    dsd_tile_fetch_response_free(&resp);
+
+    /* A write refusal can be the header cap: a block without its blank line is not read then. */
+    fake_reset();
+    g_fake.response_code = 503;
+    g_fake.headers = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\n";
+    g_fake.perform_result = CURLE_WRITE_ERROR;
+    expect_ll("a cut header block is too large", (long long)fetch_plain(&resp), DSD_TILE_FETCH_ERR_TOO_LARGE);
+    expect("and is not read", resp.header_present == 0U);
+    dsd_tile_fetch_response_free(&resp);
+
     /* 33 lines of 1 KiB: over the 32 KiB header cap. */
     const size_t line = 1024U;
     const size_t lines = DSD_TILE_FETCH_HEADER_CAP_BYTES / line + 1U;

@@ -494,8 +494,9 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
         network.push_back(job);
     }
     if (pending.empty() && network.empty() && lastPosted == State::Retrying) {
-        /* The whole view came from the cache: nothing is waiting on the server, so the notice goes. The backoff
-         * deadline stays for whatever the next view needs to fetch. */
+        /* The whole view came from the cache: nothing waits on the server, so the notice goes; the backoff deadline
+         * stays for the next fetch. No fetch can be in flight here: lookups and fetches run on this one thread, and a
+         * failed fetch's retry is back in `network` before the next lookup. */
         postState(State::Ready);
     }
 }

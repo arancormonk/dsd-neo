@@ -1763,6 +1763,34 @@ test_cached_view_clears_retrying(const QString& root) {
     expect("a view served from the cache alone is Ready again",
            wait_for([&h] { return h.worker->state() == MapTileWorker::State::Ready; }));
     expect("while the server's backoff still stands", h.worker->backoffRemainingMsForTest() > 0);
+
+    /* r2 review M1: a retry still in flight that the new view keeps is what the notice is about: it stays. */
+    const MapTileKey k = key(20, 3, 1);
+    FakeReply failing;
+    failing.status = 503;
+    h.server.script(k, failing);
+    FakeReply slow;
+    slow.stall = true;
+    slow.headers = {"Cache-Control: max-age=600"};
+    slow.body = make_png(256, 256, Qt::green);
+    h.server.script(k, slow);
+    g_mono += 600000; /* past any earlier wait */
+    h.worker->wakeForTest();
+    h.worker->requestTiles({k}, kByHand);
+    expect("the tile fails: Retrying", wait_for([&h, k] {
+               return h.worker->state() == MapTileWorker::State::Retrying && h.server.seenCount() >= 3U
+                      && h.server.seenAt(h.server.seenCount() - 1U).url == MapTileWorker::tileUrl(kTemplate, k);
+           }));
+    const int stalledBefore = h.server.stalledCount();
+    g_mono += 600000; /* past the doubled wait */
+    h.worker->wakeForTest();
+    expect("its retry is in flight",
+           wait_for([&h, stalledBefore] { return h.server.stalledCount() == stalledBefore + 1; }));
+    h.worker->requestTiles({k, cached}, kByHand); /* keeps the retry, the rest from the cache */
+    settle(100);
+    expect("the notice stays while the retry is out", h.worker->state() == MapTileWorker::State::Retrying);
+    h.server.releaseStall();
+    expect("and goes once it succeeds", wait_for([&h] { return h.worker->state() == MapTileWorker::State::Ready; }));
 }
 
 /* PR2 r2: every fetch of a worker passes its one session, so the built-in transport can reuse connections. */

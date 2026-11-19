@@ -7324,6 +7324,38 @@ if(DSD_HAS_CURL)
         add_test(NAME ${_cc_test} COMMAND dsd-neo_test_runtime_${_cc_target})
     endforeach()
 
+    # The built-in transport with the real libcurl against a loopback server, over
+    # plain http (DSD_TILE_FETCH_TEST_PLAIN_HTTP; the shipped library is https
+    # only): an answer over the body cap keeps its status and the header lines
+    # libcurl delivered (Retry-After), with a declared length and without.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            runtime/test_runtime_tile_fetch_plain_http.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+                ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME RUNTIME_TILE_FETCH_PLAIN_HTTP
+            COMMAND dsd-neo_test_runtime_tile_fetch_plain_http
+        )
+    endif()
+
     # Build checks, no test: curl_common.c as shipped (no hooks) with the curl
     # version forced below 8.20 (no CURLMOPT_QUICK_EXIT) and below 7.66
     # (curl_multi_wait), so warnings-as-errors catches code that only compiles

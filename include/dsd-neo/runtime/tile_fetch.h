@@ -62,7 +62,10 @@ typedef enum {
     DSD_TILE_FETCH_ERR_NETWORK = 4,     /**< Connect, TLS, DNS, timeout or other transfer failure. */
     DSD_TILE_FETCH_ERR_CANCELLED = 5,   /**< The cancel token was set before or during the transfer. */
     DSD_TILE_FETCH_ERR_TOO_LARGE = 6,   /**< Body or header block over its cap. When only the body was, http_status
-                                             and the header fields (Retry-After) are still filled. */
+                                             and the header fields libcurl delivered (Retry-After) are still filled.
+                                             With a declared Content-Length over the cap, libcurl 8.5 and older stop
+                                             before the closing blank line (7.65 after the status line), so the lines
+                                             seen so far are used. */
     DSD_TILE_FETCH_ERR_BAD_HEADER = 7,  /**< Cache-Control or Vary too long or malformed: cannot be cached safely. */
     DSD_TILE_FETCH_ERR_INVALID = 8,     /**< Bad request: not an https URL, bad conditional value, bad timeout, or
                                              a URL libcurl rejects as malformed (a bad host or port). */

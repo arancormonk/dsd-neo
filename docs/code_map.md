@@ -4859,8 +4859,13 @@ suite runs under this compiler.
     - Every `curl_easy_setopt` result is checked, and any failure fails the fetch closed (`ERR_SETUP`, nothing sent).
     - Redirects are never followed: any 3xx but 304 is `ERR_REDIRECT`, a failure the worker backs off from.
     - Caps: body 512 KiB (`DSD_TILE_FETCH_BODY_CAP_BYTES`), header block 32 KiB; over either is `ERR_TOO_LARGE`.
-      When only the body was over, `http_status` and the header fields (Retry-After) are still filled, so the worker
-      can tell an oversized 429/5xx page (backoff) from an oversized tile (a miss). A URL libcurl rejects as malformed
+      When only the body was over, `http_status` and the header fields (Retry-After) libcurl delivered are still
+      filled, so the worker can tell an oversized 429/5xx page (backoff) from an oversized tile (a miss). With a
+      declared `Content-Length` over the cap (`CURLE_FILESIZE_EXCEEDED`, never the header cap) libcurl 8.5 and older
+      stop before the closing blank line (7.81 and 8.5: every line but it; 7.65: the status line only), so the lines
+      seen so far are kept; a write refusal can be the header cap, so there the block must be whole.
+      `RUNTIME_TILE_FETCH_PLAIN_HTTP` drives the real libcurl against a loopback server (plain http via the
+      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`). A URL libcurl rejects as malformed
       (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
     - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
       for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
