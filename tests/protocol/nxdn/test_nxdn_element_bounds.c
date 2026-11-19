@@ -3962,6 +3962,11 @@ test_type_d_scch_diagnostics_name_the_field(void) {
     NXDN_decode_scch(opts, state, message, 1U);
     write_scch_identity(message, 0U, 4U, 31U, 2044U, 0U); /* free repeater message: Free Repeater 2 is 31 */
     NXDN_decode_scch(opts, state, message, 1U);
+    write_scch_call_option(message, 1U,
+                           0x2DU); /* an INFO1 with its Spare bit set and Free Repeater 2 the reserved 31 */
+    write_bits_u64(message, 8U, 31U, 5U);
+    message[24] = 1U;
+    NXDN_decode_scch(opts, state, message, 1U);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     rc |= expect_contains("scch-field-free-repeater", out, "Not valid: Free Repeater 1 reserved (ID 31)");
@@ -3969,6 +3974,9 @@ test_type_d_scch_diagnostics_name_the_field(void) {
     rc |= expect_contains("scch-field-site-type", out, "Site Code: 17; (not valid: Site Type reserved)");
     rc |= expect_contains("scch-field-free-repeater-2", out,
                           "Free Repeater 2: 31; (not valid: Free Repeater 2 reserved)");
+    rc |= expect_contains("scch-field-spare-info1", out,
+                          "(call option not taken); Fields: [redacted]; (not valid: Free "
+                          "Repeater 2 reserved)");
     type_d_scch_free(opts, state);
     return rc;
 }

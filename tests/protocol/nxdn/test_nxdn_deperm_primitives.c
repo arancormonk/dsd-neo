@@ -1406,6 +1406,9 @@ static const scch_content_case k_scch_content_cases[] = {
     {"scch-inbound-info1-confirms", 0U, 0xFFFFU, 3U, 2U, 31U, 0U, 1U, 1U},
     {"scch-inbound-info3-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 1U, 0U, 3U, 0U, 0U, 1U},
     {"scch-inbound-info3-confirms", 1234U, 0xFFFFU, 1U, 2U, 3U, 0U, 1U, 1U},
+    {"scch-inbound-info4-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 0U, 0U, 3U, 0U, 0U, 1U},
+    {"scch-inbound-info2-repeater-in-use-0-confirms-nothing", 1234U, 0xFFFFU, 2U, 0U, 3U, 0U, 0U, 1U},
+    {"scch-inbound-info4-eot-confirms", 1234U, 0xFFFFU, 0U, 31U, 3U, 0U, 1U, 1U},
 };
 
 static void
@@ -1629,7 +1632,14 @@ test_sacch_superframe_position_stays_with_the_frame(void) {
     dsd_state* state = NULL;
     uint8_t trellis[32];
     int rc = 0;
-    for (int bad = 0; bad < 2; bad++) {
+
+    static const struct {
+        uint8_t structure;
+        uint8_t seed_part;                                     /* expected for a verified segment */
+    } k_segments[] = {{3U, 1U}, {2U, 2U}, {1U, 3U}, {0U, 4U}}; /* 1/4 .. 4/4 (TS 1-D) */
+
+    for (size_t k = 0; k < sizeof(k_segments) / sizeof(k_segments[0]) * 2U; k++) {
+        const int bad = (int)(k & 1U);
         if (alloc_fixture(&opts, &state) != 0) {
             return 1;
         }
@@ -1637,10 +1647,10 @@ test_sacch_superframe_position_stays_with_the_frame(void) {
         state->nxdn_cipher_type = 1U; /* a scrambled call, partway through its superframe */
         state->R = 0x3039ULL;
         state->nxdn_payload_mi = 0x1234ULL;
-        make_sacch_trellis(trellis, 3U, 0x15U); /* structure 11: the first segment */
+        make_sacch_trellis(trellis, k_segments[k / 2U].structure, 0x15U);
         const nxdn_channel_result result = nxdn_handle_sacch(opts, state, trellis, m_data, 0x2AU, bad ? 0x2BU : 0x2AU);
         rc |= expect_int(bad ? "sacch-sf-bad-crc-no-position" : "sacch-sf-position-for-the-frame", result.seed_part,
-                         bad ? 0 : state->nxdn_part_of_frame + 1);
+                         bad ? 0 : (int)k_segments[k / 2U].seed_part);
         /* The segment decoder never places the register itself: a failed one places nothing, and the frame places a
            verified one once, after its signalling. */
         rc |= expect_int(bad ? "sacch-sf-bad-crc-register-runs-on" : "sacch-sf-register-placed-by-the-frame",

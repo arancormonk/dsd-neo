@@ -115,6 +115,7 @@ static int g_stub_scch_invalid;
 static unsigned long long g_stub_scch_places_register;
 static int g_positioned_part = -1;
 static unsigned g_positioned_cipher;
+static int g_placements; /* nxdn_prepare_sacch_payload_seed() calls */
 /* A checked superframe SACCH's VCALL selects Scramble after the SACCH placed the register (its last segment). */
 static int g_stub_sacch_selects_scramble;
 /* The FACCH1 is a control channel's CCH_INFO: a Type-C site (as dsd_nxdn_note_type_c() notes it). */
@@ -172,6 +173,7 @@ reset_state(void) {
     g_stub_scch_places_register = 0ULL;
     g_positioned_part = -1;
     g_positioned_cipher = 0U;
+    g_placements = 0;
     g_stub_sacch_selects_scramble = 0;
     g_stub_facch_notes_type_c = 0;
     g_stub_sacch2_resets_register = 0;
@@ -299,11 +301,10 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     nxdn_channel_result result = {0U, 0U};
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
-        /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) places the register and gives its position to the
-           frame: the first segment, or the fourth, which completes a VCALL selecting Scramble after that placement. */
+        /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) gives its position to the frame, placing nothing
+           itself: the first segment, or the fourth, which completes a VCALL selecting Scramble. */
         const int part = g_stub_sacch_selects_scramble ? 3 : 0;
-        nxdn_prepare_sacch_payload_seed(state, part);
-        result.seed_part = (uint8_t)(part + 1);
+        result.seed_part = (uint8_t)(part + 1); /* the position only: the frame places the register */
         if (g_stub_sacch_selects_scramble) {
             state->nxdn_cipher_type = 1U;
         }
@@ -347,6 +348,7 @@ void
 nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame) {
     g_positioned_part = part_of_frame;
     g_positioned_cipher = state->nxdn_cipher_type;
+    g_placements++;
     state->nxdn_payload_mi = g_stub_scch_places_register;
 }
 
@@ -1152,6 +1154,7 @@ test_stolen_slots_step_after_the_scch_places_the_register(void) {
     g_stub_sacch_ok = 1;
     g_stub_scch_places_register = 1000ULL;
     (void)route_frame(0x32U);
+    rc |= expect_int("stolen slots step after the sacch: placed once, by the frame", g_placements, 1);
     rc |= expect_u64("stolen slots step after the sacch", g_state.nxdn_payload_mi, 1002ULL);
     return rc;
 }
@@ -1235,6 +1238,7 @@ test_type_c_scramble_placed_after_its_vcall(void) {
     g_stub_scch_places_register = 1000ULL;
     (void)route_frame(0x32U);
     int rc = 0;
+    rc |= expect_int("type-c late scramble: placed once, by the frame", g_placements, 1);
     rc |= expect_int("type-c late scramble: placed at the completing segment", g_positioned_part, 3);
     rc |= expect_int("type-c late scramble: placed with the vcall's cipher", (int)g_positioned_cipher, 1);
     rc |= expect_u64("type-c late scramble: stolen slots after the placement", g_state.nxdn_payload_mi, 1002ULL);
@@ -1342,6 +1346,49 @@ test_forced_scramble_steps_a_fully_stolen_frame_without_position(void) {
     return rc;
 }
 
+/* A Type-D frame of the non-superframe structure (LICH 0x61: FACCH1 in both halves, USC 00, TS 1-E Table 5.2-1) is no
+   frame of the voice superframe. Under a forced scrambler with a key and a cipher still clear, one whose SCCH failed
+   selects nothing and takes no PN slots: the first voice frame starts at the key. */
+static int
+test_forced_scramble_skips_a_standalone_header(void) {
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_state.nxdn_payload_mi = 0ULL;
+    g_stub_scch_ok = 0;
+    (void)route_frame(0x61U);
+    int rc = 0;
+    rc |= expect_int("standalone header: no PN slot stepped", g_lfsr_calls, 0);
+    rc |= expect_int("standalone header: no scrambler selected", (int)g_state.nxdn_cipher_type, 0);
+    return rc;
+}
+
+/* An NXDN48 transmission whose first frame's FACCH1 passed on its own (isolated: the check waits) is confirmed by the
+   next frame's spacing. That second frame, data only with an SCCH TS 1-E does not define and a failed FACCH1, starts the
+   scanner's hold for the transmission it confirmed; a later such frame does not extend it. */
+static int
+test_spacing_confirmation_starts_the_scan_hold(void) {
+    reset_state();
+    g_opts.scanner_mode = 1;
+    g_state.last_cc_sync_time = 1000;
+    g_stub_scch_ok = 0;
+    g_stub_facch_ok = 1;
+    (void)route_nxdn48_frame_at(0x62U, 30000U);
+    int rc = expect_int("pending facch: not yet confirmed", nxdn_confirm_is_confirmed(&g_state), 0);
+    g_stub_scch_ok = 1;
+    g_stub_scch_names_type_d = 1;
+    g_stub_scch_invalid = 1;
+    g_stub_facch_ok = 0;
+    (void)route_nxdn48_frame_at(0x62U, 30192U);
+    rc |= expect_int("spacing confirmed the transmission", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("spacing confirmation: the scan hold starts", g_state.last_cc_sync_time > 1000, 1);
+    g_state.last_cc_sync_time = 1000;
+    (void)route_nxdn48_frame_at(0x62U, 30384U);
+    rc |= expect_int("later diagnostic frame: the scan hold not extended", (int)g_state.last_cc_sync_time, 1000);
+    return rc;
+}
+
 /* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a
    control channel's CCH_INFO, which verifies a Type-C site: the rollback undoes only the SCCH's layout, never the
    Type-C correction, so later VCALLs and IVs are not read with Type-D's 11-bit IDs. */
@@ -1419,6 +1466,8 @@ main(void) {
     rc |= test_rollback_keeps_a_verified_type_c();
     rc |= test_diagnostic_only_frame_holds_no_scan();
     rc |= test_forced_scramble_steps_a_fully_stolen_frame_without_position();
+    rc |= test_forced_scramble_skips_a_standalone_header();
+    rc |= test_spacing_confirmation_starts_the_scan_hold();
     rc |= test_withheld_voice_steps_the_scrambler();
     rc |= test_dcr_header_keeps_its_scrambler_reset();
     rc |= test_unconfirmed_frame_keeps_the_shared_register();

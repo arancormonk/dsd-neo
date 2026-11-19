@@ -3931,6 +3931,10 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         const unsigned long long fields = ((unsigned long long)info->rep2 << 6) | info->key_id;
         DSD_FPRINTF(stderr, "\n%s  Spare Bit Set (call option not taken); Fields: %s; ", KYEL,
                     dsd_secret_format_hex(text, sizeof text, opts->show_keys, fields, 3U, 0));
+        if (info->diagnostic_only) {
+            /* Another field refuses the whole message (nxdn_scch_content_problem()), not just its call option. */
+            DSD_FPRINTF(stderr, "(not valid: %s) ", info->problem);
+        }
         return;
     }
     DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Free Repeater 2" : "Pass Character", info->rep2);

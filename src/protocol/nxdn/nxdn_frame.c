@@ -119,6 +119,9 @@ typedef struct {
 
     /* What the frame's SCCH or superframe SACCH told the rest of the frame (nxdn_frame()'s own, frame-local). */
     nxdn_channel_result* result;
+    /* Whether the transmission was confirmed before this frame began: the frame's spacing may confirm a check the frame
+       before left pending (nxdn_confirm_note_frame_start()), which then starts the scanner's hold here. */
+    int confirmed_before;
 } nxdn_frame_ctx;
 
 typedef struct {
@@ -583,8 +586,12 @@ nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
     }
     const uint8_t part = ctx->result->seed_part;
     /* A forced scrambler (-4) covers every frame of the voice superframe, a fully stolen one with no position included:
-       its slots still run the register on. Only the absolute placement needs a checked position. */
-    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
+       its slots still run the register on. Only the absolute placement needs a checked position. A Type-D frame of the
+       non-superframe structure (its LICH's USC 0x, TS 1-E Table 5.2-1: a standalone FACCH1, UDCH2 or FACCH3 frame) is
+       no frame of the voice superframe: without a position it selects nothing, and with a cipher still clear its slots
+       take nothing (a superframe SACCH's frame always is one). */
+    const int superframe_frame = !ctx->scch || (ctx->lich & 0x10U) != 0U;
+    if ((ctx->voice || part != 0U || superframe_frame) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
     if (part != 0U && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
@@ -822,9 +829,10 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
     }
     nxdn_step_cipher_after_signalling(state, ctx);
     /* A data frame whose only checked content was an SCCH TS 1-E does not define (nxdn_channel_result::scch_invalid)
-       shows nothing about the carrier: it neither stamps it active nor holds the scanner on it. */
-    const int diagnostic_only_frame =
-        !ctx->voice && ctx->result->scch_invalid != 0U && state->nxdn_confirm_frame_evidence == 0U;
+       shows nothing more about a carrier already confirmed: it neither stamps it active nor extends the scanner's hold.
+       A transmission this frame's spacing confirmed (a check the frame before left pending) starts its hold here. */
+    const int diagnostic_only_frame = ctx->confirmed_before && !ctx->voice && ctx->result->scch_invalid != 0U
+                                      && state->nxdn_confirm_frame_evidence == 0U;
     if (nxdn_confirm_is_confirmed(state) && !diagnostic_only_frame) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
@@ -948,6 +956,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_rf_channel_type(&ctx);
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
+    ctx.confirmed_before = nxdn_confirm_is_confirmed(state);
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_frame_before_channels(opts, state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);

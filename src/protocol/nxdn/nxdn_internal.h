@@ -144,7 +144,8 @@ nxdn_scch_id_problem(unsigned sf, unsigned id, unsigned prefix) {
  * What content of an SCCH's 25 bits NXDN TS 1-E does not define (§6.5; Table 9.1-1: a reserved value is not valid), the
  * field at fault named, or NULL when it is all defined:
  * - an INFO1 that nxdn_scch_info1_problem() refuses;
- * - an inbound INFO3 whose Repeater in Use (bits 3-7) is 0 or 31, no repeater (Table 6.6-9);
+ * - an inbound INFO4, INFO2 or INFO3 whose Repeater in Use (bits 3-7) is 0, or an inbound INFO3's 31: no repeater
+ *   (Table 6.6-9; 31 in an INFO4 or INFO2 is the end of transmission);
  * - an INFO4 or INFO2 naming a status code inbound (only the outbound layouts carry those messages, Figs 6.5-5..6.5-8),
  *   or an outbound status message whose own fields are reserved (nxdn_scch_status_fields_problem());
  * - the ID of an INFO2, INFO3 or busy INFO4 that nxdn_scch_id_problem() refuses;
@@ -171,8 +172,14 @@ nxdn_scch_content_problem(const uint8_t* bits, uint8_t direction) {
     if (sf == 1U && direction == 1U && nxdn_scch_field(bits, 3U, 5U) == 31U) {
         return "Free Repeater 1 reserved";
     }
-    if (sf == 1U && direction != 1U && (nxdn_scch_field(bits, 3U, 5U) == 0U || nxdn_scch_field(bits, 3U, 5U) == 31U)) {
-        return "Repeater in Use not a repeater"; /* Table 6.6-9, as for an inbound INFO1 */
+    if (direction != 1U) {
+        /* Repeater in Use (bits 3-7, TS 1-E §6.6.11 Table 6.6-9): 0 is the outbound registration command, no repeater
+           an inbound sender is on; 31 is the end of transmission, which only an INFO4 or INFO2 carries (TS 2-E Table
+           5.1-5), so an inbound INFO3's 31 is no repeater either. */
+        const unsigned repeater = nxdn_scch_field(bits, 3U, 5U);
+        if (repeater == 0U || (sf == 1U && repeater == 31U)) {
+            return "Repeater in Use not a repeater";
+        }
     }
     return prefix == 31U ? "Prefix 31 reserved" : NULL;
 }
