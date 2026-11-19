@@ -62,8 +62,8 @@ hardware, and serves the loopback interface only.
 """
 
 import argparse
-import csv
 import collections
+import csv
 import json
 import math
 import os
