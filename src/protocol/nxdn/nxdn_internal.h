@@ -100,15 +100,19 @@ nxdn_scch_status_fields_problem(const uint8_t* bits, unsigned id) {
     return NULL;
 }
 
-/* An INFO1 (Figs 6.5-3, 6.5-10): its Spare bit clear (D2: the one Spare bit taken into account; every other Spare bit
-   is ignored on reception, Table 9.1-1); inbound, Pass Character 31 at bits 8-12 (TS 2-E Table 5.1-12); outbound, Free
-   Repeater 1 and 2 at bits 3-7 and 8-12, neither the reserved 31 (Table 6.6-8). Returns the field at fault, or NULL. */
+/* An INFO1 (Figs 6.5-3, 6.5-10): inbound, Repeater in Use 1-30 at bits 3-7 (Table 6.6-9: 0 is the outbound
+   registration command, 31 an INFO4 or INFO2 end of transmission, never a repeater the sender is on) and Pass Character
+   31 at bits 8-12 (TS 2-E Table 5.1-12); outbound, Free Repeater 1 and 2 at bits 3-7 and 8-12, neither the reserved 31
+   (Table 6.6-8). Its Spare bit is ignored here as every Spare bit is (Table 9.1-1): the frame's structure and position
+   stand, and only the Call Option, Cipher Type and Key ID of an INFO1 with it set are not taken (D2,
+   nxdn_scch_handle_info1()). Returns the field at fault, or NULL. */
 static inline const char*
 nxdn_scch_info1_problem(const uint8_t* bits, uint8_t direction) {
-    if (bits[24] != 0U) {
-        return "Spare bit set";
-    }
     if (direction != 1U) {
+        const unsigned repeater = nxdn_scch_field(bits, 3U, 5U);
+        if (repeater == 0U || repeater == 31U) {
+            return "Repeater in Use not a repeater";
+        }
         return nxdn_scch_field(bits, 8U, 5U) == 31U ? NULL : "Pass Character not 31";
     }
     if (nxdn_scch_field(bits, 3U, 5U) == 31U) {
@@ -140,6 +144,7 @@ nxdn_scch_id_problem(unsigned sf, unsigned id, unsigned prefix) {
  * What content of an SCCH's 25 bits NXDN TS 1-E does not define (§6.5; Table 9.1-1: a reserved value is not valid), the
  * field at fault named, or NULL when it is all defined:
  * - an INFO1 that nxdn_scch_info1_problem() refuses;
+ * - an inbound INFO3 whose Repeater in Use (bits 3-7) is 0 or 31, no repeater (Table 6.6-9);
  * - an INFO4 or INFO2 naming a status code inbound (only the outbound layouts carry those messages, Figs 6.5-5..6.5-8),
  *   or an outbound status message whose own fields are reserved (nxdn_scch_status_fields_problem());
  * - the ID of an INFO2, INFO3 or busy INFO4 that nxdn_scch_id_problem() refuses;
@@ -165,6 +170,9 @@ nxdn_scch_content_problem(const uint8_t* bits, uint8_t direction) {
     }
     if (sf == 1U && direction == 1U && nxdn_scch_field(bits, 3U, 5U) == 31U) {
         return "Free Repeater 1 reserved";
+    }
+    if (sf == 1U && direction != 1U && (nxdn_scch_field(bits, 3U, 5U) == 0U || nxdn_scch_field(bits, 3U, 5U) == 31U)) {
+        return "Repeater in Use not a repeater"; /* Table 6.6-9, as for an inbound INFO1 */
     }
     return prefix == 31U ? "Prefix 31 reserved" : NULL;
 }

@@ -3773,6 +3773,10 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Free Repeater 2: %d; ", info->rep2);
+        if (info->diagnostic_only) {
+            /* A reserved Free Repeater (Table 6.6-8): no repeater is free. */
+            DSD_FPRINTF(stderr, "(not valid: %s) ", info->problem);
+        }
     } else if (info->id == 2041U) {
         nxdn_scch_handle_site_id(state, info);
     } else {
@@ -3873,11 +3877,10 @@ nxdn_scch_handle_info2(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     }
     if (info->rep1 == 31U) {
         /* Repeater in Use / Go to Repeater 31 ends the sending (TS 1-E §6.5.2.1, §6.5.3.1), in an INFO2 as in an
-         * INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4 (EOT)": structure 00b or 10b), and is taken as an INFO4 EOT is:
-         * the call ends whatever repeater the receiver is on, and the tuner returns as that termination's policy
-         * says. */
+         * INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4 (EOT)": structure 00b or 10b): the call ends whatever repeater
+         * the receiver is on. An INFO2 EOT retunes nothing, as on main, so the release the frame's FACCH1 carries
+         * still runs and the receiver is never marked as following a voice channel; the hangtime return stands. */
         nxdn_scch_update_busy_display(opts, state, info);
-        nxdn_scch_apply_busy_tune(opts, state, info);
         return;
     }
     DSD_FPRINTF(stderr, "\n%s ", KGRN);
@@ -3910,11 +3913,11 @@ nxdn_scch_print_call_option(uint8_t call_opt) {
 
 /*
  * INFO1 (NXDN TS 1-E Figs 6.5-3 and 6.5-10): Pass Character 31 (inbound) or Free Repeater 2 (outbound), Call Option,
- * Cipher Type and Key ID, and a Spare bit sent as 0 (Table 9.1-1). An INFO1 with the Spare bit set is not defined; some
- * decoders read part of an encryption IV in its bits 8-12 and 18-23, but no NXDN specification defines one there or
- * how its parts would join, so it acts on nothing (nxdn_scch_info::diagnostic_only: no area, control channel sync or
- * hunt either), never touches the decoder's working scrambler register or IV, and what it carries is printed only
- * through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
+ * Cipher Type and Key ID, and a Spare bit sent as 0 (Table 9.1-1). A receiver ignores a Spare bit, so an INFO1 with it
+ * set still places its frame and is evidence like any (nxdn_scch_content_problem()), but its Call Option, Cipher Type
+ * and Key ID are not taken (D2): some decoders read part of an encryption IV in its bits 8-12 and 18-23, which no NXDN
+ * specification defines, nor how its parts would join. It never touches the decoder's working scrambler register or
+ * IV, and those fields are printed only through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
  * decoder names them, are Type-C's, TS 1-A): a call option naming one is kept like any other. Its published MI is
  * only an IV received over the air (nxdn_published_mi()), never the scrambler register an earlier Scramble call left.
  */
@@ -3926,7 +3929,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     if (info->spare != 0U) {
         char text[8];
         const unsigned long long fields = ((unsigned long long)info->rep2 << 6) | info->key_id;
-        DSD_FPRINTF(stderr, "\n%s  Spare Bit Set (not defined); Fields: %s; ", KYEL,
+        DSD_FPRINTF(stderr, "\n%s  Spare Bit Set (call option not taken); Fields: %s; ", KYEL,
                     dsd_secret_format_hex(text, sizeof text, opts->show_keys, fields, 3U, 0));
         return;
     }

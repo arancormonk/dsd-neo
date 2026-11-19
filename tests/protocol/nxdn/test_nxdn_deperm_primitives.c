@@ -1375,31 +1375,37 @@ typedef struct {
     uint8_t bit_24;    /* G/U or Spare */
     uint16_t site;     /* a site ID message: Site Type (2) and Site Code (8) over bits 3-12, else 0xFFFF */
     int valid;
+    int inbound; /* decoded as an inbound SCCH (the rest outbound) */
 } scch_content_case;
 
 static const scch_content_case k_scch_content_cases[] = {
-    {"scch-reserved-prefix-confirms-nothing", 1U, 2U, 31U, 1234U, 0U, 0xFFFFU, 0},
-    {"scch-valid-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1},
-    {"scch-spare-info1-confirms-nothing", 3U, 0U, 0U, 0U, 1U, 0xFFFFU, 0},
-    {"scch-spare-info3-confirms", 1U, 2U, 3U, 1234U, 1U, 0xFFFFU, 1},
-    {"scch-site-code-0-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 0U, 0},
-    {"scch-site-code-251-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 251U, 0},
-    {"scch-site-type-00-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (0U << 8) | 17U, 0},
-    {"scch-site-id-confirms", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 17U, 1},
-    {"scch-info1-free-repeater-1-31-confirms-nothing", 3U, 31U, 3U, 0U, 0U, 0xFFFFU, 0},
-    {"scch-info1-free-repeater-2-31-confirms-nothing", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 0},
-    {"scch-info1-confirms", 3U, 2U, 3U, 0U, 0U, 0xFFFFU, 1},
-    {"scch-free-repeater-31-confirms-nothing", 0U, 31U, 3U, 2044U, 0U, 0xFFFFU, 0},
-    {"scch-info3-free-repeater-31-confirms-nothing", 1U, 31U, 3U, 1234U, 0U, 0xFFFFU, 0},
-    {"scch-info3-idle-code-confirms-nothing", 1U, 2U, 3U, 2046U, 0U, 0xFFFFU, 0},
-    {"scch-info3-all-units-confirms-nothing", 1U, 2U, 3U, 2047U, 0U, 0xFFFFU, 0},
-    {"scch-info2-reserved-id-confirms-nothing", 2U, 5U, 3U, 2001U, 0U, 0xFFFFU, 0},
-    {"scch-info4-reserved-id-confirms-nothing", 0U, 5U, 3U, 2040U, 1U, 0xFFFFU, 0},
-    {"scch-info2-id-31-confirms", 2U, 5U, 3U, 31U, 0U, 0xFFFFU, 1},
-    {"scch-info4-all-group-confirms", 0U, 5U, 3U, 2047U, 0U, 0xFFFFU, 1},
-    {"scch-info2-special-id-nonzero-prefix-confirms-nothing", 2U, 5U, 6U, 2043U, 0U, 0xFFFFU, 0},
-    {"scch-info4-special-id-nonzero-prefix-confirms-nothing", 0U, 5U, 6U, 2042U, 0U, 0xFFFFU, 0},
-    {"scch-info4-special-id-prefix-0-confirms", 0U, 5U, 0U, 2043U, 0U, 0xFFFFU, 1},
+    {"scch-reserved-prefix-confirms-nothing", 1U, 2U, 31U, 1234U, 0U, 0xFFFFU, 0, 0},
+    {"scch-valid-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1, 0},
+    {"scch-spare-info1-confirms", 3U, 0U, 0U, 0U, 1U, 0xFFFFU, 1, 0},
+    {"scch-spare-info3-confirms", 1U, 2U, 3U, 1234U, 1U, 0xFFFFU, 1, 0},
+    {"scch-site-code-0-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 0U, 0, 0},
+    {"scch-site-code-251-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 251U, 0, 0},
+    {"scch-site-type-00-confirms-nothing", 0U, 0U, 0U, 2041U, 0U, (0U << 8) | 17U, 0, 0},
+    {"scch-site-id-confirms", 0U, 0U, 0U, 2041U, 0U, (1U << 8) | 17U, 1, 0},
+    {"scch-info1-free-repeater-1-31-confirms-nothing", 3U, 31U, 3U, 0U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info1-free-repeater-2-31-confirms-nothing", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info1-confirms", 3U, 2U, 3U, 0U, 0U, 0xFFFFU, 1, 0},
+    {"scch-free-repeater-31-confirms-nothing", 0U, 31U, 3U, 2044U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info3-free-repeater-31-confirms-nothing", 1U, 31U, 3U, 1234U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info3-idle-code-confirms-nothing", 1U, 2U, 3U, 2046U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info3-all-units-confirms-nothing", 1U, 2U, 3U, 2047U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info2-reserved-id-confirms-nothing", 2U, 5U, 3U, 2001U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info4-reserved-id-confirms-nothing", 0U, 5U, 3U, 2040U, 1U, 0xFFFFU, 0, 0},
+    {"scch-info2-id-31-confirms", 2U, 5U, 3U, 31U, 0U, 0xFFFFU, 1, 0},
+    {"scch-info4-all-group-confirms", 0U, 5U, 3U, 2047U, 0U, 0xFFFFU, 1, 0},
+    {"scch-info2-special-id-nonzero-prefix-confirms-nothing", 2U, 5U, 6U, 2043U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info4-special-id-nonzero-prefix-confirms-nothing", 0U, 5U, 6U, 2042U, 0U, 0xFFFFU, 0, 0},
+    {"scch-info4-special-id-prefix-0-confirms", 0U, 5U, 0U, 2043U, 0U, 0xFFFFU, 1, 0},
+    {"scch-inbound-info1-repeater-in-use-0-confirms-nothing", 3U, 0U, 31U, 0U, 0U, 0xFFFFU, 0, 1},
+    {"scch-inbound-info1-repeater-in-use-31-confirms-nothing", 3U, 31U, 31U, 0U, 0U, 0xFFFFU, 0, 1},
+    {"scch-inbound-info1-confirms", 3U, 2U, 31U, 0U, 0U, 0xFFFFU, 1, 1},
+    {"scch-inbound-info3-repeater-in-use-0-confirms-nothing", 1U, 0U, 3U, 1234U, 0U, 0xFFFFU, 0, 1},
+    {"scch-inbound-info3-confirms", 1U, 2U, 3U, 1234U, 0U, 0xFFFFU, 1, 1},
 };
 
 static void
@@ -1420,10 +1426,11 @@ make_scch_content_case(uint8_t payload[25], const scch_content_case* c) {
 /*
  * An outbound SCCH whose content NXDN TS 1-E does not define passes its CRC-7 but is no evidence of a transmission
  * (Table 9.1-1: a reserved value is not valid): frames of them alone never confirm one. The cases: the reserved prefix
- * 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2); a site ID message's reserved Site Type 00 or Site Code 0, 251
+ * 31 (Table 6.6-4); an inbound INFO1 or INFO3 whose Repeater in Use is 0 or 31 (Table 6.6-9); a site ID message's reserved Site Type 00 or Site Code 0, 251
  * (§6.6.4, §6.6.5); a reserved Free Repeater 31 (Table 6.6-8) in an INFO1, an INFO3 or the free repeater message; an
  * INFO3 sender naming a status code or All Units; a reserved ID 2001-2040 (Tables 6.6-5, 6.6-6); the special IDs 2042
- * and 2043 under a prefix other than 0 (§6.6.7, §6.6.8). Valid SCCHs confirm,
+ * and 2043 under a prefix other than 0 (§6.6.7, §6.6.8). Valid SCCHs confirm, an INFO1 with its Spare bit set included
+ * (a receiver ignores a Spare bit; D2 refuses only its call option),
  * among them an INFO3 with its Spare bit set, which a receiver ignores, and the standard ID 31.
  */
 static int
@@ -1447,7 +1454,7 @@ test_scch_undefined_content_confirms_nothing(void) {
         for (uint32_t frame = 0U; frame < 3U; frame++) {
             nxdn_confirm_note_frame_start(state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
             nxdn_confirm_begin_frame(state);
-            (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+            (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, c->inbound ? 0U : 1U);
             nxdn_confirm_end_frame(state);
         }
         rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), c->valid);
@@ -1611,9 +1618,9 @@ test_nxdn_keeps_the_shared_register(void) {
 }
 
 /*
- * A Type-C superframe SACCH places the scrambler register before the messages it completes are decoded
- * (nxdn_prepare_sacch_payload_seed()). A verified segment also keeps its position for the frame, which places the
- * register again once those messages chose the cipher and key (nxdn_frame()); a failed one keeps none.
+ * A Type-C superframe SACCH segment places nothing itself. A verified one gives its position to the frame, which places
+ * the register once those messages chose the cipher and key (nxdn_frame()); a failed one gives none, and the register
+ * runs on.
  */
 static int
 test_sacch_superframe_position_stays_with_the_frame(void) {
@@ -1627,10 +1634,17 @@ test_sacch_superframe_position_stays_with_the_frame(void) {
             return 1;
         }
         state->nxdn_sacch_non_superframe = 0;
-        make_sacch_trellis(trellis, 2U, 0x15U); /* the second segment of four */
+        state->nxdn_cipher_type = 1U; /* a scrambled call, partway through its superframe */
+        state->R = 0x3039ULL;
+        state->nxdn_payload_mi = 0x1234ULL;
+        make_sacch_trellis(trellis, 3U, 0x15U); /* structure 11: the first segment */
         const nxdn_channel_result result = nxdn_handle_sacch(opts, state, trellis, m_data, 0x2AU, bad ? 0x2BU : 0x2AU);
         rc |= expect_int(bad ? "sacch-sf-bad-crc-no-position" : "sacch-sf-position-for-the-frame", result.seed_part,
                          bad ? 0 : state->nxdn_part_of_frame + 1);
+        /* The segment decoder never places the register itself: a failed one places nothing, and the frame places a
+           verified one once, after its signalling. */
+        rc |= expect_int(bad ? "sacch-sf-bad-crc-register-runs-on" : "sacch-sf-register-placed-by-the-frame",
+                         state->nxdn_payload_mi == 0x1234ULL ? 1 : 0, 1);
         free_fixture(opts, state);
     }
     return rc;

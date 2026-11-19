@@ -12212,19 +12212,23 @@ Private per-protocol modules worth knowing about:
   Content TS 1-E does not define (`nxdn_scch_content_problem()`; a reserved value is not valid, Table 9.1-1) is printed,
   the field at fault named, and nothing else: no confirmation evidence or SCCH streak, no frame position, no area,
   control channel sync, hunt, activity, identity, site, tune, cipher or key. That is: the reserved Home Repeater / Prefix
-  31 in an INFO2, INFO3 or busy INFO4 (Table 6.6-4); an INFO1 with its Spare bit set, the one Spare bit taken into
-  account (every other Spare bit is ignored on reception, Table 9.1-1); an inbound INFO1 whose Pass Character is not 31
-  (Fig 6.5-3); the reserved Free Repeater 31 (Table 6.6-8) in an outbound INFO1, an outbound INFO3 or the free repeater
+  31 in an INFO2, INFO3 or busy INFO4 (Table 6.6-4); an inbound INFO1 whose Pass Character is not 31 (Fig 6.5-3); an
+  inbound INFO1 or INFO3 whose Repeater in Use is 0 or 31, no repeater (Table 6.6-9); the reserved Free Repeater 31 (Table 6.6-8) in an outbound INFO1, an outbound INFO3 or the free repeater
   message; an ID the Unit and Group ID tables reserve, 2001-2040 (Tables 6.6-5, 6.6-6); the special IDs 2042 and 2043
   under a prefix other than 0 (§6.6.7, §6.6.8); an INFO3 sender naming a status code (2041, 2044-2046) or All Units
   (2047), a sender being one unit (§6.6.7.2); an INFO4 or INFO2 naming a status code inbound; a site ID message with the
   reserved Site Type 00 or a reserved Site Code, 0 or 251-255 (§6.6.4, §6.6.5: `nxdn_scch_site_valid()`, which the site
-  ID message's writes read too). The standard ID 31 is valid. The "Type-D" layout such an SCCH names stays with its
+  ID message's writes read too); the free repeater and site ID messages print the field at fault. The standard ID 31 is
+  valid. Every Spare bit is ignored on reception (Table 9.1-1): an INFO1 with its Spare bit set still places its frame
+  and is evidence, and only its Call Option, Cipher Type and Key ID are not taken (D2; some decoders read IV parts
+  there). A data frame whose only checked content is such an SCCH neither stamps the carrier active nor extends the
+  scanner's hold (`nxdn_finish_decoded_frame()`). The "Type-D" layout such an SCCH names stays with its
   frame even on a confirmed transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later
   channel of that frame verified (`dsd_nxdn_note_type_c()`). An End of Transmission (Repeater in Use / Go to Repeater
-  31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5), and both take the INFO4's busy
-  message path (`nxdn_scch_update_busy_display()`, `nxdn_scch_apply_busy_tune()`): its tuner return is the busy
-  message's policy and tune, as before. A DISC's return to the control channel (`nxdn_element_handle_disc()`) is as it
+  31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, `nxdn_scch_update_busy_display()`).
+  An INFO4 EOT's tuner return is the busy message's policy and tune, as before (`nxdn_scch_apply_busy_tune()`); an
+  INFO2 EOT retunes nothing, as before, so the release the frame's FACCH1 carries still runs and the receiver is never
+  marked as following a voice channel by it. A DISC's return to the control channel (`nxdn_element_handle_disc()`) is as it
   was: documented limit, the return's tune request is not kept, `trunk_is_tuned` and the follow are cleared as soon as
   the tune is asked, a PENDING one included, so a return that is still in flight or fails later is neither tracked nor
   retried (NXDN's control-channel hunt, `nxdn_cc_hunt.c`, and the DMR, P25, TETRA and EDACS returns keep and settle
@@ -12236,13 +12240,14 @@ Private per-protocol modules worth knowing about:
   CRC-verified, valid SCCH, or a CRC-verified superframe SACCH segment, hands its frame position to the rest of the
   frame (`nxdn_channel_result::seed_part`, returned by `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()`, kept in
   `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
-  carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on a voice frame or a
-  frame so placed (all four slots stolen included), places the register at the frame's start with the cipher and key
-  this frame chose (a scalar key loaded only; a VCALL the SACCH completed may have chosen them after the SACCH's own
-  placement), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH places
-  nothing, and the register runs on. Every other frame (a DCR SB0/PICH header, a non-superframe SACCH's, a control
-  channel's) steps them before its signalling, as before, so a reset that signalling makes (the DCR SACCH2's first
-  block) stands for the voice after it. Voice withheld before the transmission is confirmed still runs the Scramble
+  carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on every frame of the
+  superframe (a fully stolen one with no position included: its slots still run the register on), places the register
+  at the frame's start with the cipher and key this frame chose, only from a checked position and only once (a scalar
+  key loaded only; the SACCH segment decoder places nothing itself, so a VCALL the SACCH completed may choose them
+  first), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH or SACCH
+  places nothing, and the register runs on. Every other frame (a DCR SB0/PICH header, a non-superframe SACCH's, a
+  control channel's) steps them before its signalling, as before, so a reset that signalling makes (the DCR SACCH2's
+  first block) stands for the voice after it. Voice withheld before the transmission is confirmed still runs the Scramble
   register across its words (`nxdn_step_withheld_voice()`), nothing playing.
   Register and MI provenance: NXDN (and dPMR's scrambler) works in its own register, `dsd_state::nxdn_payload_mi`, the
   Scramble LFSR or the DES/AES IV. P25 Phase 2 and DMR keep slot 2's MI in `payload_miN`, which P25 publishes, and NXDN

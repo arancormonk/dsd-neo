@@ -320,7 +320,8 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     (void)bits;
     (void)reliab;
     nxdn_channel_result result = {0U, 0U};
-    nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
+    /* Content TS 1-E does not define is no evidence (nxdn_deperm_scch_soft()). */
+    nxdn_stub_note_crc(state, g_stub_scch_ok && !g_stub_scch_invalid, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
     if (g_stub_scch_ok && g_stub_scch_names_type_d) {
         DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
@@ -1302,6 +1303,45 @@ test_dcr_header_keeps_its_scrambler_reset(void) {
     return expect_u64("dcr header: reset kept", g_state.nxdn_payload_mi, 0ULL);
 }
 
+/* On a confirmed carrier, a data frame whose only checked content is an SCCH TS 1-E does not define shows nothing about
+   the carrier: it neither stamps it active nor extends the scanner's hold. A valid one does (the control). */
+static int
+test_diagnostic_only_frame_holds_no_scan(void) {
+    int rc = 0;
+    for (int valid = 0; valid < 2; valid++) {
+        reset_state();
+        g_opts.scanner_mode = 1;
+        g_state.nxdn_confirmed = 1;
+        g_stub_facch_ok = 0;
+        g_stub_scch_ok = 1;
+        g_stub_scch_names_type_d = 1;
+        g_stub_scch_invalid = valid ? 0 : 1;
+        g_state.last_cc_sync_time = 1000;
+        (void)route_frame(0x70U); /* data only: SCCH and two FACCH1 halves */
+        rc |= expect_int(valid ? "valid scch: scanner hold extended" : "diagnostic scch: scanner hold kept",
+                         g_state.last_cc_sync_time > 1000, valid);
+    }
+    return rc;
+}
+
+/* Under a forced scrambler (-4) with its key, a fully stolen Type-D frame whose SCCH failed (no position) still takes
+   its four PN slots: the register runs on across them, only the absolute placement waiting for a checked position. */
+static int
+test_forced_scramble_steps_a_fully_stolen_frame_without_position(void) {
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_state.nxdn_payload_mi = 777ULL;
+    g_stub_scch_ok = 0;
+    (void)route_frame(0x70U);
+    int rc = 0;
+    rc |= expect_int("forced, no position: nothing placed", g_positioned_part, -1);
+    rc |= expect_int("forced, no position: four slots stepped", g_lfsr_calls, 4);
+    rc |= expect_u64("forced, no position: the register ran on", g_state.nxdn_payload_mi, 781ULL);
+    return rc;
+}
+
 /* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a
    control channel's CCH_INFO, which verifies a Type-C site: the rollback undoes only the SCCH's layout, never the
    Type-C correction, so later VCALLs and IVs are not read with Type-D's 11-bit IDs. */
@@ -1377,6 +1417,8 @@ main(void) {
     rc |= test_forced_scramble_on_a_fully_stolen_frame();
     rc |= test_type_c_scramble_placed_after_its_vcall();
     rc |= test_rollback_keeps_a_verified_type_c();
+    rc |= test_diagnostic_only_frame_holds_no_scan();
+    rc |= test_forced_scramble_steps_a_fully_stolen_frame_without_position();
     rc |= test_withheld_voice_steps_the_scrambler();
     rc |= test_dcr_header_keeps_its_scrambler_reset();
     rc |= test_unconfirmed_frame_keeps_the_shared_register();

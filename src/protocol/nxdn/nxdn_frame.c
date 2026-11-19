@@ -582,7 +582,9 @@ nxdn_step_cipher_after_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
         return;
     }
     const uint8_t part = ctx->result->seed_part;
-    if ((ctx->voice || part != 0U) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
+    /* A forced scrambler (-4) covers every frame of the voice superframe, a fully stolen one with no position included:
+       its slots still run the register on. Only the absolute placement needs a checked position. */
+    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
     if (part != 0U && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
@@ -819,7 +821,11 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
         return;
     }
     nxdn_step_cipher_after_signalling(state, ctx);
-    if (nxdn_confirm_is_confirmed(state)) {
+    /* A data frame whose only checked content was an SCCH TS 1-E does not define (nxdn_channel_result::scch_invalid)
+       shows nothing about the carrier: it neither stamps it active nor holds the scanner on it. */
+    const int diagnostic_only_frame =
+        !ctx->voice && ctx->result->scch_invalid != 0U && state->nxdn_confirm_frame_evidence == 0U;
+    if (nxdn_confirm_is_confirmed(state) && !diagnostic_only_frame) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
             /* Hold the scanner a little past this frame so the gap to the next one does

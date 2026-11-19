@@ -335,11 +335,10 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
     } else {
         DSD_FPRINTF(stderr, "PF X/4");
     }
-    nxdn_prepare_sacch_payload_seed(state, part_of_frame);
-
     if (crc == check) {
-        /* A verified segment's position stays with the frame too: a VCALL this segment completes may select Scramble or
-           its key only after the placing above, and the frame places the register again with them (nxdn_frame()). */
+        /* Only a verified segment places the register, and only once, by the frame (nxdn_frame()), after its
+           signalling chose the cipher and key: a VCALL this segment completes may select Scramble or its key. A failed
+           segment places nothing, and the register runs on. */
         seed_part = (uint8_t)(part_of_frame + 1);
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         if (nxdn_confirm_is_confirmed(state)) {

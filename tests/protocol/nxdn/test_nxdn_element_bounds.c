@@ -3881,11 +3881,11 @@ test_type_d_scch_reserved_cipher_mi_is_received(void) {
 }
 
 /*
- * An INFO1 with its Spare bit set is not defined (NXDN TS 1-E Figs 6.5-3/6.5-10, Table 9.1-1): it changes nothing past
- * its frame -- not the area the terminal and the received identity keep, not the control channel sync clock.
+ * A receiver ignores a Spare bit (NXDN TS 1-E Table 9.1-1), so an INFO1 with it set is the frame's SCCH like any: its
+ * area is taken. Only its Call Option, Cipher Type and Key ID are not (D2: some decoders read IV parts there).
  */
 static int
-test_type_d_scch_spare_info1_keeps_no_state(void) {
+test_type_d_scch_spare_info1_takes_no_call_option(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (type_d_scch_live_call(&opts, &state) != 0) {
@@ -3900,13 +3900,14 @@ test_type_d_scch_spare_info1_keeps_no_state(void) {
     message[2] = 1U;  /* area 1 */
     message[24] = 1U; /* Spare */
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("scch-spare-area-kept", (int)state->nxdn_last_ran, 0);
-    rc |= expect_int("scch-spare-rxid-area-kept", state->rx_id.nxdn_idas_area, 0);
-    rc |= expect_int("scch-spare-cc-sync-kept", (int)state->last_cc_sync_time, 5);
-    /* The control: the same call option without the Spare bit takes the area. */
+    rc |= expect_int("scch-spare-area-taken", (int)state->nxdn_last_ran, 1);
+    rc |= expect_int("scch-spare-rxid-area-taken", state->rx_id.nxdn_idas_area, 1);
+    rc |= expect_int("scch-spare-key-not-taken", (int)state->nxdn_key, 0);
+    rc |= expect_int("scch-spare-cipher-not-taken", (int)state->nxdn_cipher_type, 0);
+    /* The control: the same call option without the Spare bit takes its key too. */
     message[24] = 0U;
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("scch-call-option-area", (int)state->nxdn_last_ran, 1);
+    rc |= expect_int("scch-call-option-key", (int)state->nxdn_key, 0x2D);
     type_d_scch_free(opts, state);
     return rc;
 }
@@ -3959,11 +3960,15 @@ test_type_d_scch_diagnostics_name_the_field(void) {
     NXDN_decode_scch(opts, state, message, 1U);
     write_scch_site_id(message, 0U, 0U, 0U, 17U);
     NXDN_decode_scch(opts, state, message, 1U);
+    write_scch_identity(message, 0U, 4U, 31U, 2044U, 0U); /* free repeater message: Free Repeater 2 is 31 */
+    NXDN_decode_scch(opts, state, message, 1U);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     rc |= expect_contains("scch-field-free-repeater", out, "Not valid: Free Repeater 1 reserved (ID 31)");
     rc |= expect_not_contains("scch-field-no-id-blamed", out, "ID 31 (not valid");
     rc |= expect_contains("scch-field-site-type", out, "Site Code: 17; (not valid: Site Type reserved)");
+    rc |= expect_contains("scch-field-free-repeater-2", out,
+                          "Free Repeater 2: 31; (not valid: Free Repeater 2 reserved)");
     type_d_scch_free(opts, state);
     return rc;
 }
@@ -4204,7 +4209,7 @@ main(void) {
     rc |= test_type_d_scch_info2_classifies_its_target();
     rc |= test_type_d_scch_publishes_no_register_mi();
     rc |= test_type_d_scch_reserved_cipher_mi_is_received();
-    rc |= test_type_d_scch_spare_info1_keeps_no_state();
+    rc |= test_type_d_scch_spare_info1_takes_no_call_option();
     rc |= test_type_d_null_id_names_no_destination();
     rc |= test_type_d_info3_sender_must_be_a_unit();
     rc |= test_type_d_scch_diagnostics_name_the_field();

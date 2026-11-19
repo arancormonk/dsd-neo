@@ -638,16 +638,15 @@ nxdn_run_scch_termination_case(void) {
 }
 
 /* Repeater in Use / Go to Repeater 31 ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4
- * (EOT)": structure 00b or 10b). Once the voice window has run out, an INFO4 EOT returns the tuner to the control
- * channel repeater 31 maps to; an INFO2 EOT, which may be the only one received, does the same under the same policy. */
+ * (EOT)": structure 00b or 10b): the call ends either way. Once the voice window has run out, an INFO4 EOT returns the
+ * tuner to the frequency repeater 31 maps to, as on main. An INFO2 EOT retunes nothing, as on main: the receiver is not
+ * marked as following a voice channel, and the release the frame's FACCH1 carries still runs. */
 static int
 nxdn_run_scch_info2_termination_returns_case(void) {
     const nxdn_case termination = {
         "type-d-scch-info2-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
     };
     int rc = 0;
-    int tunes[2] = {0, 0};
-    long freqs[2] = {0, 0};
     for (int info2 = 0; info2 < 2; info2++) {
         g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
         nxdn_setup_fixture(&termination);
@@ -666,13 +665,14 @@ nxdn_run_scch_info2_termination_returns_case(void) {
         dsd_call_snapshot call;
         rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED,
                           termination.name, info2 ? "info2" : "info4", "the call ended");
-        tunes[info2] = g_tune_count;
-        freqs[info2] = g_last_tune_freq;
+        if (info2) {
+            rc |= nxdn_expect(g_tune_count == 0 && g_tune_cc_count == 0 && g_opts.trunk_is_tuned == 0, termination.name,
+                              "info2", "an INFO2 EOT retunes nothing and follows no voice channel");
+        } else {
+            rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == termination.expected_freq, termination.name,
+                              "info4", "an INFO4 EOT returns the tuner, as on main");
+        }
     }
-    rc |= nxdn_expect(tunes[0] == 1 && freqs[0] == termination.expected_freq, termination.name, "info4",
-                      "an INFO4 EOT returns the tuner");
-    rc |= nxdn_expect(tunes[1] == tunes[0] && freqs[1] == freqs[0], termination.name, "info2",
-                      "an INFO2 EOT returns it as an INFO4 EOT does");
     return rc;
 }
 
