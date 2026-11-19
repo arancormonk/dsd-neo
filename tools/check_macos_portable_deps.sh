@@ -6,6 +6,11 @@ set -euo pipefail
 # With a deployment target (the triplet's VCPKG_OSX_DEPLOYMENT_TARGET), every
 # staged Mach-O file must be built for exactly that macOS: one built for a newer
 # macOS would stop the DMG from loading on the oldest one it claims to support.
+#
+# The bundled terminal database is read with the infocmp that DSD_MACOS_INFOCMP
+# names, or infocmp on PATH. Name the one built with the bundled ncurses
+# (vcpkg's tools/ncurses/bin/infocmp): macOS's own is older and may not read
+# the entries a newer tic writes.
 stage=${1:-dist/dsd-neo-macos}
 deployment_target=${2:-}
 exe="$stage/bin/dsd-neo"
@@ -30,6 +35,12 @@ otool_bin=$(find_otool) || {
   echo "otool or llvm-otool is required for macOS portable dependency checks." >&2
   exit 2
 }
+
+infocmp_bin=${DSD_MACOS_INFOCMP:-$(command -v infocmp || true)}
+if [[ -z "$infocmp_bin" ]]; then
+  echo "infocmp is required for macOS portable terminal database checks; set DSD_MACOS_INFOCMP." >&2
+  exit 2
+fi
 
 if [[ ! -f "$exe" ]]; then
   echo "macOS portable executable not found: $exe" >&2
@@ -221,10 +232,18 @@ else
   report_error "missing dylibs manifest: $manifest"
 fi
 
+# infocmp -A reads <dir>/<first letter in hex>/<name> and nothing else, so an
+# entry the bundle lacks cannot be found in TERMINFO_DIRS or macOS's database,
+# and a file that holds no entry fails. The launcher keeps macOS's database as
+# its fallback; this check does not.
 if [[ ! -d "$terminfo_dir" ]]; then
   report_error "missing bundled terminfo directory: $terminfo_dir"
-elif ! find "$terminfo_dir" -type f -name xterm-256color -print -quit | grep -q .; then
-  report_error "bundled terminfo directory is missing xterm-256color"
+else
+  for term in xterm-256color tmux-256color; do
+    if ! "$infocmp_bin" -A "$terminfo_dir" "$term" > /dev/null; then
+      report_error "bundled terminfo database has no readable $term entry"
+    fi
+  done
 fi
 
 if [[ ! -f "$launcher" ]]; then

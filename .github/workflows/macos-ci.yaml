@@ -374,6 +374,9 @@ jobs:
             echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
             echo "VCPKG_TRIPLET=$triplet"
             echo "VCPKG_TRIPLET_DIR=${GITHUB_WORKSPACE}/vcpkg_installed/$triplet"
+            # The infocmp built with the ncurses the DMG bundles, which reads the
+            # terminal database exactly as the bundled library does.
+            echo "DSD_MACOS_INFOCMP=${GITHUB_WORKSPACE}/vcpkg_installed/$triplet/tools/ncurses/bin/infocmp"
             echo "VCPKG_DEFAULT_BINARY_CACHE=${GITHUB_WORKSPACE}/.vcpkg-archives"
             echo "DSD_MACOS_DEPLOYMENT_TARGET=$target"
             echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig"
@@ -504,7 +507,11 @@ jobs:
             --x-manifest-root "$GITHUB_WORKSPACE" \
             --x-install-root "$GITHUB_WORKSPACE/vcpkg_installed"
           test -f "$VCPKG_TRIPLET_DIR/lib/libusb-1.0.0.dylib"
-          test -d "$VCPKG_TRIPLET_DIR/share/ncurses/terminfo"
+          # -A reads only the named database, never macOS's own: an entry the
+          # overlay did not install, or installed empty, fails here.
+          for term in xterm-256color tmux-256color; do
+            "$DSD_MACOS_INFOCMP" -A "$VCPKG_TRIPLET_DIR/share/ncurses/terminfo" "$term" > /dev/null
+          done
 
       # Pull requests restore the archives main saved and never save their own,
       # for the reason given at "Save ccache".
@@ -680,10 +687,13 @@ jobs:
           rm -rf "$STAGE/share/terminfo"
           mkdir -p "$STAGE/share/terminfo"
           cp -a "$TERMINFO_SRC"/. "$STAGE/share/terminfo"/
-          if [ ! -f "$STAGE/share/terminfo/78/xterm-256color" ]; then
-            echo "ERROR: staged terminfo database is missing 78/xterm-256color" >&2
-            exit 1
-          fi
+          # -A reads only the staged database, with no fallback to macOS's own.
+          for term in xterm-256color tmux-256color; do
+            if ! "$DSD_MACOS_INFOCMP" -A "$STAGE/share/terminfo" "$term" > /dev/null; then
+              echo "ERROR: the staged terminfo database has no readable $term entry" >&2
+              exit 1
+            fi
+          done
 
           # Bundle license/notice files
           cmake --install "$BUILD" --prefix dist/dsd-neo-macos --component legal
@@ -937,17 +947,6 @@ jobs:
           set -euo pipefail
           STAGE="dist/dsd-neo-macos"
           "$STAGE/dsd-neo.sh" -h
-
-      - name: Verify bundled terminfo
-        shell: bash
-        run: |
-          set -euo pipefail
-          STAGE="dist/dsd-neo-macos"
-          if command -v infocmp > /dev/null 2>&1; then
-            TERMINFO_DIRS="$STAGE/share/terminfo:/usr/share/terminfo" infocmp xterm-256color > /dev/null
-          else
-            echo "infocmp not available; terminfo payload checked by tools/check_macos_portable_deps.sh"
-          fi
 
       - name: Create DMG
         id: dmg

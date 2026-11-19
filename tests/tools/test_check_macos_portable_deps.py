@@ -6,8 +6,9 @@ A fake otool on PATH reads each "Mach-O" file as text: "dep <install name>",
 "rpath <path>" and "minos <version>" lines stand for its load commands. A fake
 uname reports Darwin, so every host runs the checker's macOS path, and a fake
 codesign accepts every file but one with a "bad-signature" line, so the tree
-needs no real binaries. The fakes are written with LF line ends, which their
-shebang lines need.
+needs no real binaries. A fake infocmp, which DSD_MACOS_INFOCMP names, reads
+the terminal database's entries. The fakes are written with LF line ends,
+which their shebang lines need.
 """
 
 import os
@@ -72,6 +73,20 @@ FAKE_UNAME = """#!/bin/sh
 echo Darwin
 """
 
+# infocmp -A <dir> <name>, as the checker calls it: like the real one, it reads
+# <dir>/<first letter in hex>/<name> and nothing else, and refuses a file that
+# holds no entry (here, an empty one).
+FAKE_INFOCMP = r"""#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 3 && "$1" == -A ]] || exit 2
+entry="$2/$(printf '%02x' "'${3:0:1}")/$3"
+if [[ ! -s "$entry" ]]; then
+  echo "infocmp: couldn't open terminfo file $entry." >&2
+  exit 1
+fi
+echo "$3|fake entry,"
+"""
+
 
 class CheckMacosPortableDeps(unittest.TestCase):
     def setUp(self):
@@ -79,17 +94,18 @@ class CheckMacosPortableDeps(unittest.TestCase):
         self.work = Path(self.tmp.name)
         tools = self.work / "tools"
         tools.mkdir()
-        for name, script in (("otool", FAKE_OTOOL), ("codesign", FAKE_CODESIGN), ("uname", FAKE_UNAME)):
+        for name, script in (("otool", FAKE_OTOOL), ("codesign", FAKE_CODESIGN), ("uname", FAKE_UNAME),
+                             ("fake-infocmp", FAKE_INFOCMP)):
             tool = tools / name
             tool.write_bytes(script.encode("utf-8"))
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
-        self.env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}")
+        self.env = dict(os.environ, PATH=f"{tools}{os.pathsep}{os.environ['PATH']}",
+                        DSD_MACOS_INFOCMP=str(tools / "fake-infocmp"))
         self.stage = self.work / "dsd-neo-macos"
         (self.stage / "bin").mkdir(parents=True)
         (self.stage / "lib").mkdir()
-        terminfo = self.stage / "share/terminfo/78"
-        terminfo.mkdir(parents=True)
-        (terminfo / "xterm-256color").write_bytes(b"entry\n")
+        for entry in ("78/xterm-256color", "74/tmux-256color"):
+            self.write(f"share/terminfo/{entry}", "compiled entry")
         (self.stage / "dsd-neo.sh").write_bytes(
             b'export TERMINFO_DIRS="$DIR/share/terminfo:/usr/share/terminfo"\n')
         self.write("bin/dsd-neo", "dep @rpath/libusb-1.0.0.dylib", "dep /usr/lib/libSystem.B.dylib",
@@ -101,6 +117,7 @@ class CheckMacosPortableDeps(unittest.TestCase):
         self.tmp.cleanup()
 
     def write(self, rel, *lines):
+        (self.stage / rel).parent.mkdir(parents=True, exist_ok=True)
         (self.stage / rel).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
     def run_check(self, *args):
@@ -139,6 +156,18 @@ class CheckMacosPortableDeps(unittest.TestCase):
         result = self.run_check("26.0")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("lib/libusb-1.0.0.dylib has an invalid code signature", result.stderr)
+
+    def test_empty_terminfo_entry_fails(self):
+        (self.stage / "share/terminfo/78/xterm-256color").write_bytes(b"")
+        result = self.run_check("26.0")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("bundled terminfo database has no readable xterm-256color entry", result.stderr)
+
+    def test_missing_tmux_terminfo_entry_fails(self):
+        (self.stage / "share/terminfo/74/tmux-256color").unlink()
+        result = self.run_check("26.0")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("bundled terminfo database has no readable tmux-256color entry", result.stderr)
 
     def test_missing_dependency_still_fails(self):
         self.write("bin/dsd-neo", "dep @rpath/libssl.3.dylib", "rpath @executable_path/../lib", "minos 26.0")
