@@ -47,43 +47,87 @@ nxdn_live_call_is_nxdn(const dsd_state* state) {
     return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
 }
 
-/* Record an IV a CRC-verified VCALL_IV carried: for the active NXDN call's transmission, or, with no call open yet
-   (late entry), for the call that opens next (nxdn_live_call_received_mi()). */
-static inline void
-nxdn_received_iv_note(dsd_state* state, unsigned long long iv) {
+/* Record an IV a CRC-verified VCALL_IV carried, for the active NXDN call's transmission on this carrier: it fails
+   closed, so with no call open it is dropped, not kept for one. @p aes_iv is the IV expanded for AES. Returns whether it
+   was recorded. */
+static inline int
+nxdn_received_iv_note(dsd_state* state, unsigned long long iv, const uint8_t aes_iv[16]) {
+    const uint64_t transmission = dsd_nxdn_active_call_transmission(state);
+    if (transmission == 0U) {
+        dsd_nxdn_received_iv_clear(state);
+        return 0;
+    }
+    if (state->nxdn_rx_iv_valid == 0U || transmission != state->nxdn_rx_iv_transmission
+        || state->nxdn_rx_iv_carrier != state->carrier_seq) {
+        state->nxdn_ks_session_transmission = 0U; /* another call's session is not this one's */
+    }
     state->nxdn_rx_iv = iv;
     state->nxdn_rx_iv_valid = 1U;
-    state->nxdn_rx_iv_transmission = dsd_nxdn_active_call_transmission(state);
+    state->nxdn_rx_iv_transmission = transmission;
+    state->nxdn_rx_iv_carrier = state->carrier_seq;
+    for (size_t i = 0U; i < sizeof(state->nxdn_rx_iv_aes); i++) {
+        state->nxdn_rx_iv_aes[i] = aes_iv[i];
+    }
+    return 1;
 }
 
 /* The IV the active NXDN call on slot 0 received over the air (<dsd-neo/core/nxdn_received_iv.h>), 0 when none: the
-   only MI an NXDN crypto publication carries. One received just before the call opened binds to it here. The
-   decoder's working register (dsd_state::payload_miN) is never one: on a scrambled call it is loaded from the key. */
+   only MI an NXDN crypto publication carries. The decoder's working register (dsd_state::payload_miN) is never one: on
+   a scrambled call it is loaded from the key. */
 static inline unsigned long long
-nxdn_live_call_received_mi(dsd_state* state) {
+nxdn_live_call_received_mi(const dsd_state* state) {
     unsigned long long iv = 0ULL;
-    if (!dsd_nxdn_received_iv_for_active_call(state, &iv)) {
-        return 0ULL;
-    }
-    if (state->nxdn_rx_iv_transmission == 0U) {
-        state->nxdn_rx_iv_transmission = dsd_nxdn_active_call_transmission(state);
-    }
-    return iv;
+    return dsd_nxdn_received_iv_for_active_call(state, &iv) ? iv : 0ULL;
 }
 
 /* The active call moved from transmission @p before to @p after while staying the same call (an INFO3 source update,
-   a target message naming the call's own target): its received IV follows it. Another call's never does. */
+   a target message naming the call's own target and prefix): its received IV, its running keystream session and its
+   known destination prefix follow it. Another call's never do. */
 static inline void
 nxdn_received_iv_follow(dsd_state* state, uint64_t before, uint64_t after) {
-    if (state->nxdn_rx_iv_valid != 0U && before != 0U && state->nxdn_rx_iv_transmission == before) {
+    if (before == 0U || after == 0U) {
+        return;
+    }
+    if (state->nxdn_rx_iv_valid != 0U && state->nxdn_rx_iv_transmission == before) {
         state->nxdn_rx_iv_transmission = after;
+    }
+    if (state->nxdn_ks_session_transmission == before) {
+        state->nxdn_ks_session_transmission = after;
+    }
+    if (state->nxdn_dest_prefix_transmission == before) {
+        state->nxdn_dest_prefix_transmission = after;
     }
 }
 
-/* Whether an SCCH's 25 bits carry content NXDN TS 1-E defines (§6.5; Table 9.1-1): not an INFO2, INFO3 or busy INFO4
-   with the reserved prefix 31 (Table 6.6-4), not an INFO1 with its Spare bit set. Such an SCCH is printed but is no
-   evidence of a transmission and changes nothing past its frame. The outbound status messages (idle, halt, free
-   repeater, site ID: IDs 2041, 2044-2046 in an outbound INFO4 or INFO2) have no prefix at bits 8-12. */
+/* Type-D signalling named the active call's destination under home repeater / prefix @p prefix (TS 1-E §6.6.6). An ID
+   is unique only within its prefix (§6.6.7, §6.6.8): the first prefix named is the call's, and another one names
+   another destination, whose call takes no IV of this one (it is dropped). Returns whether the prefix changed. */
+static inline int
+nxdn_received_iv_note_prefix(dsd_state* state, uint8_t prefix) {
+    const uint64_t transmission = dsd_nxdn_active_call_transmission(state);
+    const uint8_t plus_one = (uint8_t)(prefix + 1U);
+    if (transmission == 0U) {
+        return 0;
+    }
+    if (state->nxdn_dest_prefix_transmission != transmission || state->nxdn_dest_prefix == 0U) {
+        state->nxdn_dest_prefix_transmission = transmission;
+        state->nxdn_dest_prefix = plus_one;
+        return 0;
+    }
+    if (state->nxdn_dest_prefix == plus_one) {
+        return 0;
+    }
+    state->nxdn_dest_prefix = plus_one;
+    dsd_nxdn_received_iv_clear(state);
+    return 1;
+}
+
+/* Whether an SCCH's 25 bits carry content NXDN TS 1-E defines (§6.5; Table 9.1-1). Not: an INFO2, INFO3 or busy INFO4
+   with the reserved prefix 31 (Table 6.6-4); an INFO1 with its Spare bit set (D2), or an inbound INFO1 whose Pass
+   Character is not 31 (Fig 6.5-3; TS 2-E Table 5.1-12); an inbound INFO4 or INFO2 naming a status ID (2041, 2044-2046:
+   site ID, free, halt, idle repeater), which only the outbound layouts carry (Figs 6.5-5..6.5-8) and which name no
+   destination (Tables 6.6-5, 6.6-6). Such an SCCH is printed but is no evidence of a transmission and changes nothing
+   past its frame. The outbound status messages have no prefix at bits 8-12. */
 static inline int
 nxdn_scch_content_valid(const uint8_t* bits, uint8_t direction) {
     const unsigned sf = ((unsigned)bits[0] << 1) | bits[1];
@@ -96,11 +140,15 @@ nxdn_scch_content_valid(const uint8_t* bits, uint8_t direction) {
         id = (id << 1) | bits[i];
     }
     if (sf == 3U) {
-        return bits[24] == 0U;
+        return bits[24] == 0U && (direction == 1U || prefix == 31U);
     }
-    const int status =
-        direction == 1U && (sf == 0U || sf == 2U) && (id == 2041U || id == 2044U || id == 2045U || id == 2046U);
-    return status || prefix != 31U;
+    const int status_id = id == 2041U || id == 2044U || id == 2045U || id == 2046U;
+    if (sf == 0U || sf == 2U) {
+        if (status_id) {
+            return direction == 1U;
+        }
+    }
+    return prefix != 31U;
 }
 
 /* End the canonical call on slot 0 for NXDN end signalling, an NXDN call only, and sync its event row; returns whether

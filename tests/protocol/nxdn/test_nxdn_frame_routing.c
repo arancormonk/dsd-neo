@@ -112,6 +112,8 @@ static int g_stub_scch_names_type_d;
 static int g_stub_scch_invalid;
 /* The SCCH stub places the scrambler register at this frame's start, as a verified SCCH does (0: no). */
 static unsigned long long g_stub_scch_places_register;
+static int g_positioned_part = -1;
+static unsigned g_positioned_cipher;
 /* The location category the FACCH1 decoder read. */
 static char g_facch_category[32];
 
@@ -161,6 +163,8 @@ reset_state(void) {
     g_stub_scch_names_type_d = 0;
     g_stub_scch_invalid = 0;
     g_stub_scch_places_register = 0ULL;
+    g_positioned_part = -1;
+    g_positioned_cipher = 0U;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
@@ -305,7 +309,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         }
     }
     if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
-        state->payload_miN = g_stub_scch_places_register;
+        state->nxdn_scch_frame_part = 1U; /* a verified SCCH at the superframe's first frame */
     }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
@@ -313,6 +317,17 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     }
     g_facch_part_mask |= (int)direction << 8;
+}
+
+void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
+
+/* The positioning a verified SCCH's frame position asks for (nxdn_deperm.c): here the register value the test names,
+   recorded with the frame position and the cipher the frame chose by then. */
+void
+nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame) {
+    g_positioned_part = part_of_frame;
+    g_positioned_cipher = state->nxdn_cipher_type;
+    state->payload_miN = g_stub_scch_places_register;
 }
 
 void
@@ -1112,6 +1127,54 @@ test_stolen_slots_step_after_the_scch_places_the_register(void) {
     return rc;
 }
 
+/* A frame whose signalling retuned the receiver (here its SCCH followed a busy message): the rest of it was read on the
+   carrier left, so its cipher slots are not stepped on the next carrier's key (a data frame's four, here), and the IV
+   the carrier left's call received is dropped. */
+static int
+test_retuned_frame_steps_no_cipher(void) {
+    reset_state();
+    g_state.nxdn_cipher_type = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.payload_miN = 777ULL;
+    g_state.nxdn_rx_iv_valid = 1U;
+    g_stub_scch_tune = DSD_TRUNK_TUNE_RESULT_OK;
+    (void)route_frame(0x62U); /* Type-D RTCH2: SCCH, no voice */
+    int rc = 0;
+    rc |= expect_int("retuned frame: no cipher step", g_lfsr_calls, 0);
+    rc |= expect_u64("retuned frame: register kept", g_state.payload_miN, 777ULL);
+    rc |= expect_int("retuned frame: IV dropped", g_state.nxdn_rx_iv_valid, 0);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* A verified SCCH's position is applied with the cipher this frame chose: under a forced scrambler (-4) with its key,
+   the frame selects Scramble before placing the register, then steps the leading FACCH1's two slots. With no key there
+   is no register to place. */
+static int
+test_scch_position_uses_the_frames_cipher(void) {
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_stub_scch_ok = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x72U);
+    int rc = 0;
+    rc |= expect_int("forced scrambler: placed at the first frame", g_positioned_part, 0);
+    rc |= expect_int("forced scrambler: placed as Scramble", (int)g_positioned_cipher, 1);
+    rc |= expect_u64("forced scrambler: stolen slots after the placement", g_state.payload_miN, 1002ULL);
+
+    reset_state();
+    g_state.nxdn_cipher_type = 1;
+    g_state.payload_miN = 0x234567ULL;
+    g_stub_scch_ok = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x72U);
+    rc |= expect_int("no key: nothing placed", g_positioned_part, -1);
+    rc |= expect_u64("no key: the working value kept", g_state.payload_miN, 0x234567ULL);
+    return rc;
+}
+
 /* Issue #834: every frame names the FSW the hunt accepted it on (from its second symbol, at the polarity it was
    accepted at), and a frame read whole arms the recording for the next frame's FSW where it ends, so the hunt reads
    that FSW on the grid this frame was read on; one a LICH refused, read 8 dibits in, arms nothing. */
@@ -1162,6 +1225,8 @@ main(void) {
     rc |= test_type_d_category_outlives_only_a_confirmed_frame();
     rc |= test_undefined_scch_layout_stays_with_its_frame();
     rc |= test_stolen_slots_step_after_the_scch_places_the_register();
+    rc |= test_retuned_frame_steps_no_cipher();
+    rc |= test_scch_position_uses_the_frames_cipher();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 

@@ -65,14 +65,13 @@ dsd_nxdn_voice_crypto_class(const dsd_state* state) {
     if (!state || state->nxdn_cipher_type == 0) {
         return DSD_VOICE_CRYPTO_CLEAR;
     }
-    // The keystream mbe_process_nxdn() applies: cipher 1 (and forced privacy) and cipher 2 with a scalar key,
-    // cipher 3 with an AES key. A DES or AES keystream starts from the IV the call received (a VCALL_IV): before
-    // one came for this call there is nothing to decrypt with, so its voice stays undecryptable.
+    // The keystream mbe_process_nxdn() applies: cipher 1 (and forced privacy) with a scalar key; cipher 2 or 3 with
+    // its key, only within a keystream session started from the IV the active call received (a VCALL_IV, TS 1-D
+    // §5.4.4.2(4)): before that session starts -- the IV, cipher or key missing, or an IV that came mid-session and is
+    // the next session's -- there is nothing to decrypt with, so the voice stays undecryptable.
     const int scalar = dsd_key_scalar_present(state, 0);
-    const int iv = dsd_nxdn_received_iv_for_active_call(state, NULL);
     const int applied = (state->nxdn_cipher_type == 0x01 && scalar) || (state->M == 1 && scalar)
-                        || (state->nxdn_cipher_type == 0x02 && scalar && iv)
-                        || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U) && iv);
+                        || (dsd_nxdn_cipher_key_present(state) && dsd_nxdn_keystream_session_for_active_call(state));
     return applied ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
 }
 

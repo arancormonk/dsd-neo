@@ -1845,6 +1845,7 @@ test_vcall_des_keyloader_and_iv_signal(void) {
     }
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(iv_bits, 0, sizeof(iv_bits));
+    state->nxdn_confirmed = 1; /* the VCALL opens the call its VCALL_IV is kept for */
 
     state->keyloader = 1;
     state->rkey_array[key_id] = des_key;
@@ -2916,7 +2917,16 @@ test_short_buffers_never_read_past_their_length(void) {
         dsd_state_ext_free_all(state);
     }
 
-    /* VCALL_IV: 64 IV bits after the type on Type-C, 22 on Type-D. */
+    /* VCALL_IV: 64 IV bits after the type on Type-C, 22 on Type-D, for the NXDN call open (an IV is kept for no
+       other). */
+    const dsd_call_observation iv_call = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x0456U,
+        .policy_target_id = 0x0456U,
+    };
+    (void)dsd_call_state_observe(state, &iv_call, DSD_CALL_BOUNDARY_BEGIN);
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_vcall_iv_fields(bits, 0x0102030405060708ULL);
     state->payload_miN = 0x55ULL;
@@ -3710,10 +3720,19 @@ test_type_d_scch_status_messages_are_outbound(void) {
     write_scch_identity(message, 0U, 16U, 31U, 2041U, 0U);
     NXDN_decode_scch(opts, state, message, 0U);
     rc |= expect_int("scch-inbound-2041-no-site", state->nxdn_idas_site_code, 200);
-    /* Inbound INFO4: Repeater in Use 16, prefix 3, ID 2046 -- read as an idle message, it clears repeater 16. */
+    /* Inbound INFO4: Repeater in Use 16, prefix 3, ID 2046 -- not an idle message, and no group 3-2046 either (a status
+       ID names no destination, TS 1-E Tables 6.6-5, 6.6-6): the original entry itself survives. */
     write_scch_identity(message, 0U, 16U, 3U, 2046U, 0U);
     NXDN_decode_scch(opts, state, message, 0U);
-    rc |= expect_int("scch-inbound-2046-keeps-activity", recent_activity_entries(state) >= 1 ? 1 : 0, 1);
+    rc |= expect_int("scch-inbound-2046-one-entry", recent_activity_entries(state), 1);
+    dsd_recent_activity_snapshot recent;
+    int original = 0;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) == 1) {
+        for (size_t i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
+            original += recent.entries[i].updated_m_ms != 0U && recent.entries[i].observation.ota_target_id == 0x0777U;
+        }
+    }
+    rc |= expect_int("scch-inbound-2046-keeps-the-entry", original, 1);
 
     /* Outbound site ID, site type 01, site code 63 (bits 8-12 all 1). */
     write_scch_site_id(message, 0U, 0U, 1U, 63U);
@@ -3896,9 +3915,9 @@ decode_type_c_vcall_iv(dsd_opts* opts, dsd_state* state, uint64_t iv) {
 }
 
 /*
- * The MI an NXDN call publishes is the IV it received, for that call only: one received just before the call opened
- * (late entry: the VCALL_IV before the VCALL) is the call's; a source update of the same call keeps it; an INFO2 naming
- * another target (another call) takes none of it; and once the call ended, a new call has none until its own comes.
+ * The received IV fails closed: it counts only if it came while its call was open on the current carrier, and only for
+ * that call. A VCALL_IV before the call opened (late entry) is not kept for it; one in the call is its MI; a source
+ * update of the same call keeps it; after the call ended the next call has none until its own comes.
  */
 static int
 test_nxdn_received_iv_belongs_to_its_call(void) {
@@ -3913,14 +3932,20 @@ test_nxdn_received_iv_belongs_to_its_call(void) {
     dsd_call_snapshot call;
     uint8_t bits[96];
     state->nxdn_confirmed = 1;
-    /* Late entry: the VCALL_IV, then the VCALL that opens the call. */
+    /* Before the call: the VCALL_IV, then the VCALL that opens the call. Not kept. */
     decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
     rc |= expect_int("rx-iv-no-call-yet", dsd_call_state_get(state, 0U, &call), 0);
+    rc |= expect_int("rx-iv-no-call-not-kept", state->nxdn_rx_iv_valid, 0);
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x0123U, 0x0456U, 2U, 0x2AU);
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     rc |= expect_int("rx-iv-late-entry-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_u64("rx-iv-late-entry-mi", call.mi, 0x1122334455667788ULL);
+    rc |= expect_u64("rx-iv-late-entry-no-mi", call.mi, 0U);
+
+    /* In the call: kept, the call's MI. */
+    decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
+    rc |= expect_int("rx-iv-in-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("rx-iv-in-call-mi", call.mi, 0x1122334455667788ULL);
 
     /* The same call's source update (a new epoch for the same target) keeps it. */
     state->last_vc_sync_time = dsd_decode_time();
@@ -3952,51 +3977,217 @@ test_nxdn_received_iv_belongs_to_its_call(void) {
     rc |= expect_u64("rx-iv-next-call-target", call.ota_target_id, 0x0789U);
     rc |= expect_u64("rx-iv-next-call-no-mi", call.mi, 0U);
 
+    /* The carrier changes (any path moves the carrier count): the IV a call of the old carrier held counts for nothing. */
+    decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
+    rc |= expect_int("rx-iv-carrier-held", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("rx-iv-carrier-held-mi", call.mi, 0x1122334455667788ULL);
+    state->carrier_seq++;
+    write_scch_call_option(message, 1U, 3U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("rx-iv-carrier-left", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("rx-iv-carrier-left-no-mi", call.mi, 0U);
+
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
 }
 
-/* An INFO2 on the receiver's repeater naming another target is another call: it takes no IV the previous call
- * received. */
+/*
+ * A DES or AES call's keystream arms the moment its cipher, a key for it and an IV of the open call are all present,
+ * whatever order they come in (here: the IV first, then a DES VCALL whose key the loader holds). The key is reported
+ * available even while the IV is missing; the call is decryptable only once all three are present.
+ */
 static int
-test_type_d_info2_new_target_takes_no_iv(void) {
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (type_d_scch_live_call(&opts, &state) != 0) {
+test_nxdn_keystream_arms_whatever_order(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(state);
+        free(opts);
         return 1;
     }
     int rc = 0;
     dsd_call_snapshot call;
-    uint8_t message[32];
+    uint8_t bits[96];
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array[0x2AU] = 0x0123456789ABCDEFULL;
+
+    /* Key and cipher first, no IV: the key is there, the call not decryptable, nothing armed. */
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x0123U, 0x0456U, 2U, 0x2AU);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("arm-key-first-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("arm-key-first-key-available", call.key_selection.available, 1);
+    rc |= expect_int("arm-key-first-pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("arm-key-first-not-armed", state->nxdn_new_iv, 0);
+    /* The IV comes: armed, decryptable. */
     decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
-    rc |= expect_int("info2-iv-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_u64("info2-iv-received", call.mi, 0x1122334455667788ULL);
+    rc |= expect_int("arm-iv-last-armed", state->nxdn_new_iv, 1);
+    rc |= expect_u64("arm-iv-last-working-iv", state->payload_miN, 0x1122334455667788ULL);
+    rc |= expect_int("arm-iv-last-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("arm-iv-last-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    dsd_state_ext_free_all(state);
+
+    /* The IV first (a clear-looking call open), then the DES VCALL with its key: armed by the VCALL. */
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array[0x2AU] = 0x0123456789ABCDEFULL;
+    const dsd_call_observation open = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x0456U,
+        .policy_target_id = 0x0456U,
+        .ota_source_id = 0x0123U,
+    };
+    (void)dsd_call_state_observe(state, &open, DSD_CALL_BOUNDARY_BEGIN);
+    decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
+    rc |= expect_int("arm-iv-first-not-armed", state->nxdn_new_iv, 0);
+    state->payload_miN = 0x5A5AULL; /* whatever the working register holds meanwhile */
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("arm-iv-first-armed", state->nxdn_new_iv, 1);
+    rc |= expect_u64("arm-iv-first-working-iv", state->payload_miN, 0x1122334455667788ULL);
+    rc |= expect_int("arm-iv-first-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("arm-iv-first-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A decryptable DES call (cipher, key and an IV of the open call) on the receiver's repeater 5, target 0x456, its
+ * destination prefix 1 named by a busy message. */
+static int
+type_d_decryptable_des_call(dsd_opts** opts_out, dsd_state** state_out) {
+    if (type_d_scch_live_call(opts_out, state_out) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = *opts_out;
+    dsd_state* state = *state_out;
     opts->use_rigctl = 1;
     g_mapped_channel = 5U;
     g_mapped_channel_freq = 852512500L;
     g_current_rigctl_freq = 852512500L;
-    write_scch_identity(message, 2U, 5U, 1U, 31U, 0U);
+    state->R = 0x0123456789ABCDEFULL;
+    uint8_t message[32];
+    write_scch_identity(message, 0U, 5U, 1U, 0x0456U, 0U); /* busy: prefix 1, the call's own target */
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("info2-new-target-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_u64("info2-new-target", call.ota_target_id, 31U);
-    rc |= expect_u64("info2-new-target-no-mi", call.mi, 0U);
-    write_scch_call_option(message, 1U, 3U);
-    NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("info2-new-target-republished", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_u64("info2-new-target-republished-no-mi", call.mi, 0U);
+    write_scch_call_option(message, 2U, 0x2AU);
+    for (int repeat = 0; repeat < 3; repeat++) {
+        NXDN_decode_scch(opts, state, message, 1U);
+    }
+    decode_type_c_vcall_iv(opts, state, 0x1122334455667788ULL);
+    return 0;
+}
 
-    /* An INFO2 with ID 0 (the Null ID) names no destination: its G/U bit classifies nothing. */
-    write_scch_identity(message, 2U, 5U, 1U, 0U, 1U);
-    NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_int("info2-null-id-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_u64("info2-null-id-target", call.ota_target_id, 31U);
-    rc |= expect_int("info2-null-id-kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
+static void
+type_d_decryptable_des_call_free(dsd_opts* opts, dsd_state* state) {
     g_mapped_channel = 0U;
     g_mapped_channel_freq = 0L;
     g_current_rigctl_freq = 0;
     type_d_scch_free(opts, state);
+}
+
+/*
+ * An INFO2 on the receiver's repeater naming another destination is another call: another target, or the same ID under
+ * another Type-D prefix (TS 1-E §6.6.7, §6.6.8: an ID is unique only within its prefix). It takes no IV of the previous
+ * call, and a DES call is pending and muted again until its own comes; an INFO2 with ID 0 (the Null ID) names no
+ * destination and classifies nothing.
+ */
+static int
+test_type_d_info2_new_target_takes_no_iv(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = 0;
+    dsd_call_snapshot call;
+    uint8_t message[32];
+    for (int variant = 0; variant < 2; variant++) {
+        if (type_d_decryptable_des_call(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= expect_int("info2-iv-call", dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_u64("info2-iv-received", call.mi, 0x1122334455667788ULL);
+        rc |= expect_int("info2-iv-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+        /* Variant 0: target 31; variant 1: the same target 0x456 under prefix 2. */
+        write_scch_identity(message, 2U, 5U, variant == 0 ? 1U : 2U, variant == 0 ? 31U : 0x0456U, 0U);
+        NXDN_decode_scch(opts, state, message, 1U);
+        const char* tag = variant == 0 ? "info2-new-target" : "info2-new-prefix";
+        rc |= expect_int(tag, dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_u64(tag, call.mi, 0U);
+        rc |= expect_int(tag, call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_int(tag, call.audio_permitted, 0);
+        rc |= expect_int(tag, state->nxdn_rx_iv_valid, 0);
+        write_scch_call_option(message, 2U, 0x2AU);
+        NXDN_decode_scch(opts, state, message, 1U);
+        rc |= expect_int("info2-republished-call", dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_u64("info2-republished-no-mi", call.mi, 0U);
+        rc |= expect_int("info2-republished-pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+        type_d_decryptable_des_call_free(opts, state);
+    }
+
+    /* An INFO2 with ID 0 (the Null ID) names no destination: its G/U bit classifies nothing. */
+    if (type_d_decryptable_des_call(&opts, &state) != 0) {
+        return 1;
+    }
+    write_scch_identity(message, 2U, 5U, 1U, 0U, 1U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("info2-null-id-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("info2-null-id-target", call.ota_target_id, 0x0456U);
+    rc |= expect_int("info2-null-id-kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_u64("info2-null-id-keeps-mi", call.mi, 0x1122334455667788ULL);
+    type_d_decryptable_des_call_free(opts, state);
+    return rc;
+}
+
+/* An INFO2 with Repeater in Use / Go to Repeater 31 ends the sending, as an INFO4 does (TS 2-E Table 5.1-5: structure
+ * 00b or 10b), whatever repeater the receiver is on: the call ends and its IV with it. */
+static int
+test_type_d_info2_eot_ends_the_call(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = 0;
+    dsd_call_snapshot call;
+    uint8_t message[32];
+    if (type_d_decryptable_des_call(&opts, &state) != 0) {
+        return 1;
+    }
+    write_scch_identity(message, 2U, 31U, 1U, 0x0456U, 0U);
+    NXDN_decode_scch(opts, state, message, 1U);
+    rc |= expect_int("info2-eot-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("info2-eot-ended", call.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("info2-eot-iv-dropped", state->nxdn_rx_iv_valid, 0);
+    type_d_decryptable_des_call_free(opts, state);
+    return rc;
+}
+
+/* An inbound INFO1's Pass Character is fixed at 31 (TS 1-E Fig 6.5-3; TS 2-E Table 5.1-12): one with another value is
+ * not that message, and its cipher and key are not taken. */
+static int
+test_type_d_inbound_info1_needs_its_pass_character(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = 0;
+    uint8_t message[32];
+    for (int pass = 0; pass < 2; pass++) {
+        if (type_d_scch_live_call(&opts, &state) != 0) {
+            return 1;
+        }
+        scch_from_ts2b(message, 0xC1F8000U); /* ISM INFO1: Repeater in Use 1, Pass Character 31 */
+        if (pass == 0) {
+            write_bits_u64(message, 8U, 3U, 5U);
+        }
+        write_bits_u64(message, 16U, 1U, 2U);
+        write_bits_u64(message, 18U, 0x2AU, 6U);
+        NXDN_decode_scch(opts, state, message, 0U);
+        rc |= expect_int(pass == 0 ? "inbound-info1-pass-3-key" : "inbound-info1-pass-31-key", state->nxdn_key,
+                         pass == 0 ? 0 : 0x2A);
+        type_d_scch_free(opts, state);
+    }
     return rc;
 }
 
@@ -4132,7 +4323,10 @@ main(void) {
     rc |= test_type_d_scch_reserved_cipher_needs_an_iv();
     rc |= test_type_d_scch_spare_info1_keeps_no_state();
     rc |= test_nxdn_received_iv_belongs_to_its_call();
+    rc |= test_nxdn_keystream_arms_whatever_order();
     rc |= test_type_d_info2_new_target_takes_no_iv();
+    rc |= test_type_d_info2_eot_ends_the_call();
+    rc |= test_type_d_inbound_info1_needs_its_pass_character();
     rc |= test_type_d_scch_info1_fields_print();
     dsd_decode_clock_use_system();
 

@@ -1520,12 +1520,12 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         const int valid = nxdn_scch_content_valid(trellis_buf, direction);
         /* The scrambler register is loaded from the key at each superframe's first SCCH and runs on across its four
            frames, four 49-bit VCH slots each, a FACCH1-stolen slot included (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a
-           verified SCCH's structure places the frame: the register is set to the frame's start, as a SACCH sets it
-           (nxdn_handle_sacch_superframe()), before the frame's voice or stolen slots step it (nxdn_frame()). A
-           failed SCCH places nothing, and the register runs on. With no key there is no register to place. */
-        if (valid && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
+           verified SCCH's structure places the frame. The position is kept for the frame, which sets the register
+           there once this frame's signalling chose the cipher and key (nxdn_frame()); a failed SCCH places nothing,
+           and the register runs on. */
+        if (valid) {
             const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
-            nxdn_prepare_sacch_payload_seed(state, nxdn_sacch_part_of_frame(sf));
+            state->nxdn_scch_frame_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
         }
         if (valid) {
             nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);

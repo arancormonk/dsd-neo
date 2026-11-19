@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -1280,23 +1281,48 @@ make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc
     }
 }
 
+/* A heap-allocated decoder fixture (AGENTS.md: dsd_state and dsd_opts live on the heap). */
+static int
+alloc_fixture(dsd_opts** opts, dsd_state** state) {
+    *opts = (dsd_opts*)calloc(1, sizeof(**opts));
+    *state = (dsd_state*)calloc(1, sizeof(**state));
+    if (*opts == NULL || *state == NULL) {
+        free(*state);
+        free(*opts);
+        *opts = NULL;
+        *state = NULL;
+        return 1;
+    }
+    return 0;
+}
+
+static void
+free_fixture(dsd_opts* opts, dsd_state* state) {
+    if (state != NULL) {
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    free(opts);
+}
+
 /*
  * A scrambled Type-D call's register is loaded from the key at each superframe's first SCCH and runs on across its four
  * frames (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only an SCCH whose CRC-7 passed may say where in the superframe the frame
- * is: a damaged one that reads as the first (Structure 11) mid-superframe leaves the register running, where a reload
- * would garble the rest of the superframe. A verified SCCH sets the register to its frame's position.
+ * is: a damaged one that reads as the first (Structure 11) records no position. A verified one records its frame's
+ * position, which the frame applies once its signalling chose the cipher and key (nxdn_frame()); the channel decoder
+ * itself never touches the register. The placement the frame applies (nxdn_prepare_sacch_payload_seed()) puts the
+ * register at the frame's start: the third frame two frames (eight VCH slots) on from the key.
  */
 static int
 test_scch_crc_gates_scrambler_reload(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
     uint8_t payload[25];
     uint8_t bits[60];
     uint8_t reliab[60];
     int rc = 0;
     const unsigned long long key = 0x5A5AULL;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(reliab, 255, sizeof(reliab));
     DSD_MEMSET(payload, 0, sizeof(payload));
     payload[0] = 1U; /* Structure 11: INFO1, the superframe's first SCCH */
@@ -1305,38 +1331,36 @@ test_scch_crc_gates_scrambler_reload(void) {
     write_bits_msb(payload, 8U, 5U, 3U);
 
     for (int corrupt = 1; corrupt >= 0; corrupt--) {
-        DSD_MEMSET(&state, 0, sizeof(state));
-        state.R = key;
-        state.nxdn_cipher_type = 1U;
-        state.payload_miN = 0x1234ULL; /* partway through the superframe */
+        if (alloc_fixture(&opts, &state) != 0) {
+            return 1;
+        }
+        state->R = key;
+        state->nxdn_cipher_type = 1U;
+        state->payload_miN = 0x1234ULL; /* partway through the superframe */
         make_scch_soft_bits(bits, payload, corrupt);
-        nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
-        rc |= expect_int(corrupt ? "scch-bad-crc-keeps-register" : "scch-good-crc-reloads-register",
-                         state.payload_miN == (corrupt ? 0x1234ULL : key) ? 1 : 0, 1);
-        dsd_state_ext_free_all(&state);
+        nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+        rc |= expect_int(corrupt ? "scch-bad-crc-no-position" : "scch-good-crc-first-frame",
+                         state->nxdn_scch_frame_part, corrupt ? 0 : 1);
+        rc |= expect_int("scch-decoder-leaves-register", state->payload_miN == 0x1234ULL ? 1 : 0, 1);
+        free_fixture(opts, state);
     }
 
-    /* A verified third SCCH (Structure 01, 3/4) puts the register two frames on from the key. */
+    /* A verified third SCCH (Structure 01, 3/4). */
     payload[0] = 0U;
     payload[1] = 1U;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.R = key;
-    state.nxdn_cipher_type = 1U;
-    state.payload_miN = 0x1234ULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    state->R = key;
+    state->nxdn_cipher_type = 1U;
+    state->payload_miN = 0x1234ULL;
     make_scch_soft_bits(bits, payload, 0);
-    nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
+    nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+    rc |= expect_int("scch-good-crc-third-frame", state->nxdn_scch_frame_part, 3);
+    nxdn_prepare_sacch_payload_seed(state, state->nxdn_scch_frame_part - 1);
     rc |=
-        expect_int("scch-good-crc-places-register", state.payload_miN == advance_nxdn_lfsr_seed(key, 2 * 4) ? 1 : 0, 1);
-    dsd_state_ext_free_all(&state);
-
-    /* No key: there is no register to place, so a working IV left in it is never stepped. */
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.nxdn_cipher_type = 1U;
-    state.payload_miN = 0x234567ULL;
-    make_scch_soft_bits(bits, payload, 0);
-    nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
-    rc |= expect_int("scch-no-key-leaves-register", state.payload_miN == 0x234567ULL ? 1 : 0, 1);
-    dsd_state_ext_free_all(&state);
+        expect_int("scch-placement-two-frames-on", state->payload_miN == advance_nxdn_lfsr_seed(key, 2 * 4) ? 1 : 0, 1);
+    free_fixture(opts, state);
     return rc;
 }
 
@@ -1347,13 +1371,12 @@ test_scch_crc_gates_scrambler_reload(void) {
  */
 static int
 test_scch_undefined_content_confirms_nothing(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
     uint8_t payload[25];
     uint8_t bits[60];
     uint8_t reliab[60];
     int rc = 0;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(reliab, 255, sizeof(reliab));
     for (int kind = 0; kind < 3; kind++) {
         DSD_MEMSET(payload, 0, sizeof(payload));
@@ -1366,21 +1389,23 @@ test_scch_undefined_content_confirms_nothing(void) {
             write_bits_msb(payload, 8U, 5U, kind == 0 ? 31U : 3U);
             write_bits_msb(payload, 13U, 11U, 1234U);
         }
-        DSD_MEMSET(&state, 0, sizeof(state));
-        state.synctype = DSD_SYNC_NXDN_POS;
-        nxdn_confirm_reset(&state);
+        if (alloc_fixture(&opts, &state) != 0) {
+            return 1;
+        }
+        state->synctype = DSD_SYNC_NXDN_POS;
+        nxdn_confirm_reset(state);
         make_scch_soft_bits(bits, payload, 0);
         for (uint32_t frame = 0U; frame < 3U; frame++) {
-            nxdn_confirm_note_frame_start(&state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
-            nxdn_confirm_begin_frame(&state);
-            nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
-            nxdn_confirm_end_frame(&state);
+            nxdn_confirm_note_frame_start(state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
+            nxdn_confirm_begin_frame(state);
+            nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+            nxdn_confirm_end_frame(state);
         }
         const char* tag = kind == 0   ? "scch-reserved-prefix-confirms-nothing"
                           : kind == 2 ? "scch-spare-info1-confirms-nothing"
                                       : "scch-valid-confirms";
-        rc |= expect_int(tag, nxdn_confirm_is_confirmed(&state), kind == 1 ? 1 : 0);
-        dsd_state_ext_free_all(&state);
+        rc |= expect_int(tag, nxdn_confirm_is_confirmed(state), kind == 1 ? 1 : 0);
+        free_fixture(opts, state);
     }
     return rc;
 }
@@ -1408,49 +1433,57 @@ make_vcall_elements(uint8_t bits[96], uint8_t message_type, uint16_t source, uin
 static int
 test_nxdn_history_mi_only_from_received_iv(void) {
     static Event_History_I histories[2];
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
     uint8_t bits[96];
     int rc = 0;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-
-    init_sacch2_state(&state, histories);
-    state.nxdn_confirmed = 1;
-    state.synctype = DSD_SYNC_NXDN_POS;
-    state.R = 0x3039ULL;
-    state.payload_miN = state.R;
-    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 0x01U);
-    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     dsd_call_snapshot call;
-    rc |= expect_int("history-mi-scramble-call", dsd_call_state_get(&state, 0U, &call), 1);
+
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->R = 0x3039ULL;
+    state->payload_miN = state->R;
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 0x01U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-scramble-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("history-mi-scramble-call-mi", call.mi == 0ULL ? 1 : 0, 1);
     rc |= expect_int("history-mi-scramble-event-mi", histories[0].Event_History_Items[0].mi == 0ULL ? 1 : 0, 1);
-    dsd_state_ext_free_all(&state);
+    free_fixture(opts, state);
 
-    init_sacch2_state(&state, histories);
-    state.nxdn_confirmed = 1;
-    state.synctype = DSD_SYNC_NXDN_POS;
-    state.R = 0x3039ULL; /* the DES key a followed assignment loaded, also in the working register */
-    state.payload_miN = state.R;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->R = 0x3039ULL; /* the DES key a followed assignment loaded, also in the working register */
+    state->payload_miN = state->R;
     make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 0x01U);
-    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-    rc |= expect_int("history-mi-des-call", dsd_call_state_get(&state, 0U, &call), 1);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-des-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("history-mi-des-call-mi", call.mi == 0ULL ? 1 : 0, 1);
     rc |= expect_int("history-mi-des-event-mi", histories[0].Event_History_Items[0].mi == 0ULL ? 1 : 0, 1);
     rc |=
-        expect_int("history-mi-des-undecryptable", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+        expect_int("history-mi-des-undecryptable", dsd_nxdn_voice_crypto_class(state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     DSD_MEMSET(bits, 0, sizeof(bits));
-    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV, in the open call */
     write_bits_msb(bits, 8U, 32U, 0x11223344U);
     write_bits_msb(bits, 40U, 32U, 0x55667788U);
-    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-    rc |= expect_int("history-mi-des-iv-call", dsd_call_state_get(&state, 0U, &call), 1);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-des-iv-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("history-mi-des-iv-mi", call.mi == 0x1122334455667788ULL ? 1 : 0, 1);
     rc |= expect_int("history-mi-des-iv-event-mi",
                      histories[0].Event_History_Items[0].mi == 0x1122334455667788ULL ? 1 : 0, 1);
-    rc |=
-        expect_int("history-mi-des-iv-decryptable", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
-    dsd_state_ext_free_all(&state);
+    rc |= expect_int("history-mi-des-iv-published-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("history-mi-des-iv-armed", state->nxdn_new_iv, 1);
+    /* The voice itself plays from the session its IV starts (the vocoder, at the next session start). */
+    rc |= expect_int("history-mi-des-iv-voice-waits-for-its-session", dsd_nxdn_voice_crypto_class(state),
+                     DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    free_fixture(opts, state);
     return rc;
 }
 

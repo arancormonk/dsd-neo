@@ -451,9 +451,22 @@ test_p25_decrypt_gate_helpers(void) {
         .policy_target_id = 100U,
     };
     rc |= expect_int("nxdn call", dsd_call_state_observe(&state, &nxdn_call, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    rc |= expect_int("nxdn call snapshot", dsd_call_state_get(&state, 0U, &call), 1);
     state.nxdn_rx_iv = 0x1122334455667788ULL;
     state.nxdn_rx_iv_valid = 1U;
+    state.nxdn_rx_iv_transmission = dsd_call_snapshot_transmission(&call);
+    state.nxdn_rx_iv_carrier = state.carrier_seq;
+    /* The IV came for this call, but its keystream session has not started: nothing to decrypt with yet. */
+    rc |= expect_int("nxdn DES with zero key, session not started", dsd_nxdn_voice_crypto_class(&state),
+                     DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    state.nxdn_ks_session_transmission = state.nxdn_rx_iv_transmission;
     rc |= expect_int("nxdn DES with zero key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
+    /* An IV of another carrier counts for nothing. */
+    state.carrier_seq++;
+    rc |= expect_int("nxdn DES, IV of the carrier left", dsd_nxdn_voice_crypto_class(&state),
+                     DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    state.carrier_seq--;
     state.scalar_key_present[0] = 0;
     state.nxdn_cipher_type = 0x3;
     rc |= expect_int("nxdn AES without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
