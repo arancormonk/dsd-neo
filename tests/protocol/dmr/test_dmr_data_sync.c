@@ -1047,56 +1047,44 @@ open_lane_call(dsd_state* state, uint8_t lane_slot, int algid) {
     state->payload_algid = algid;
 }
 
-/* One slot 1 burst of type @p burst on the single-slot decoder, as the burst decoder dispatches it. */
-static void
-slot1_burst(dsd_opts* opts, dsd_state* state, uint8_t burst) {
+/* One burst of type @p burst on over-the-air slot @p slot (0: slot 1) on the single-slot decoder, as the burst decoder
+   dispatches it: 1 when it reached the burst handler. */
+static int
+mono_data_burst(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t burst) {
     const uint8_t lane_proof = state->dmr_mono_rx_slot;
     reset_fixture();
     g_handler_data_crypto = 1;
-    g_decoded_slot = 0;
+    g_decoded_slot = slot;
     g_decoded_burst = burst;
     state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
     dmr_data_sync(opts, state);
-    assert(g_handler_calls == 1 && g_handler_burst == burst && g_handler_slot == 0);
     state->dmr_mono_rx_slot = lane_proof;
+    return g_handler_calls == 1 && g_handler_burst == burst && g_handler_slot == (int)slot;
 }
 
-/* Without trunking the single-slot decoder's lane 0 carries one slot's call, and a slot 1 data packet stays on index 0,
-   its over-the-air slot, from its header to its last block, whatever call lane 0 carries meanwhile. Index 0's live
-   crypto is the lane's call's while that call is slot 2's: the packet runs with its own (its header's ALG ID 0x24) and
-   the call keeps its (0x21), when the slot 2 call starts after the packet's header and when it ends before the
-   packet's last block. With lane 0 idle or on a slot 1 call a data burst runs on index 0 as before. */
+/* Without trunking the single-slot decoder's lane carries one call. While it carries a slot 2 call, a slot 1 data
+   packet, which would run on index 0, the lane's, is the other slot's: its header and blocks are not decoded, so they
+   touch none of the call's crypto (ALG ID 0x21) or packet state. A slot 2 one runs on index 1 as before. With the lane
+   idle or on a slot 1 call a slot 1 data header runs on index 0 as before. */
 static void
-test_mono_slot1_data_packet_keeps_its_slot(void) {
+test_mono_other_slots_data_leaves_the_lane(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
     static dsd_dibit_soft_t reliab[90];
-    for (int order = 0; order < 2; order++) {
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        prepare_state(&state, payload, reliab);
-        opts.dmr_mono = 1;
-        state.dmr_stereo = 0;
-        if (order == 1) {
-            open_lane_call(&state, 2U, 0x21); /* The header comes during the slot 2 call. */
-        }
-        slot1_burst(&opts, &state, 6U);
-        if (order == 1) {
-            assert(state.payload_algid == 0x21); /* The slot 2 call keeps its crypto. */
-            dsd_call_state_end(&state, 0U, 0.0); /* It ends before the packet's blocks. */
-            state.payload_algid = 0;
-        } else {
-            open_lane_call(&state, 2U, 0x21); /* The slot 2 call starts after the header. */
-        }
-        slot1_burst(&opts, &state, 7U);
-        assert(g_handler_algid_seen == 0x24);
-        assert(state.payload_algid == (order == 1 ? 0 : 0x21));
-        slot1_burst(&opts, &state, 10U);
-        assert(g_handler_algid_seen == 0x24);
-        assert(state.payload_algid == (order == 1 ? 0 : 0x21));
-        dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    opts.dmr_mono = 1;
+    state.dmr_stereo = 0;
+    open_lane_call(&state, 2U, 0x21);
+    static const uint8_t packet[] = {6U, 7U, 10U};
+    for (size_t i = 0; i < sizeof packet; i++) {
+        assert(!mono_data_burst(&opts, &state, 0U, packet[i]));
+        assert(state.payload_algid == 0x21 && state.data_header_valid[0] == 0);
     }
-    /* Lane 0 on a slot 1 call, or idle: a slot 1 data header writes index 0 as before. */
+    assert(mono_data_burst(&opts, &state, 1U, 6U));
+    assert(state.payload_algid == 0x21 && state.payload_algidR == 0x24);
+    dsd_state_ext_free_all(&state);
     for (int lane = 0; lane <= 1; lane++) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         prepare_state(&state, payload, reliab);
@@ -1105,11 +1093,41 @@ test_mono_slot1_data_packet_keeps_its_slot(void) {
         if (lane) {
             open_lane_call(&state, 1U, 0x21);
         }
-        slot1_burst(&opts, &state, 6U);
+        assert(mono_data_burst(&opts, &state, 0U, 6U));
         assert(state.payload_algid == 0x24);
         dsd_state_ext_free_all(&state);
     }
     g_handler_data_crypto = 0;
+}
+
+/* On the MS path (direct mode) a burst's slot is the one its sync word names. While the lane carries a direct-mode slot
+   2 call keyed with ALG ID 0x21, a slot 1 data header (which runs on index 0, the lane's) is the other slot's: it is
+   not decoded, and the call keeps its crypto. */
+static void
+test_ms_other_slots_data_leaves_the_lane(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+    fill_sync_payload(payload, DMR_DIRECT_MODE_TS1_DATA_SYNC);
+    for (size_t i = 0; i < 24U; i++) {
+        state.dmr_stereo_payload[66U + i] = payload[66U + i];
+    }
+    opts.dmr_mono = 1;
+    open_lane_call(&state, 2U, 0x21);
+    state.dmr_ms_mode = 1;
+    state.dmr_dm_sync_slot = 1U;
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    g_handler_data_crypto = 1;
+    g_decoded_burst = 6U;
+    dmr_data_sync(&opts, &state);
+    g_handler_data_crypto = 0;
+    assert(g_handler_calls == 0);
+    assert(state.payload_algid == 0x21);
+    dsd_state_ext_free_all(&state);
 }
 
 /* A slot 2 burst the receive policy rejects (--slot-block 2) leaves no position in slot 2's cache on the single-slot
@@ -1186,7 +1204,8 @@ main(void) {
     test_data_burst_receive_slot();
     test_mono_burst_copies_no_call_but_a_headers();
     test_mono_rejected_burst_clears_its_own_slots_position();
-    test_mono_slot1_data_packet_keeps_its_slot();
+    test_ms_other_slots_data_leaves_the_lane();
+    test_mono_other_slots_data_leaves_the_lane();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();

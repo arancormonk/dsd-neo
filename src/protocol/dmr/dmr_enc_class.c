@@ -164,7 +164,6 @@ dmr_forget_call_decryption(dsd_state* state) {
     state->dmr_soR = 0;
     state->dmr_heal_valid[0] = 0;
     state->dmr_heal_valid[1] = 0;
-    DSD_MEMSET(&state->dmr_mono_slot1_data_crypto, 0, sizeof(state->dmr_mono_slot1_data_crypto));
     for (uint8_t slot = 0U; slot < 2U; slot++) {
         dmr_enc_class_reset(state, slot);
         dmr_le_vendor_reset(state, slot);

@@ -5148,9 +5148,8 @@ test_dmr_mono_data_terminator_resets_its_own_packet(void) {
     return rc;
 }
 
-/* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: lane 0's
-   voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL), which the single-slot decoder's lane carrying a slot 2 AES
-   call is keyed by while a slot 1 packet runs on index 0, stay as they were. */
+/* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: the
+   voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL) an AES call on slot 1 is keyed by stay as they were. */
 static int
 test_dmr_packet_aes_keeps_the_voice_iv(void) {
     dsd_opts* opts = NULL;
