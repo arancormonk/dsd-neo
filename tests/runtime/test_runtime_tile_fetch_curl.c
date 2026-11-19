@@ -472,6 +472,17 @@ test_caps(void) {
     expect("no body over the cap", resp.body == NULL);
     dsd_tile_fetch_response_free(&resp);
 
+    /* A body over the cap after whole headers: the status and Retry-After still say it was a rate limit. */
+    fake_reset();
+    g_fake.response_code = 429;
+    g_fake.headers = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\n\r\n";
+    g_fake.body_len = DSD_TILE_FETCH_BODY_CAP_BYTES + 1U;
+    expect_ll("an oversized 429 is too large", (long long)fetch_plain(&resp), DSD_TILE_FETCH_ERR_TOO_LARGE);
+    expect_ll("with its status", resp.http_status, 429);
+    expect("and its Retry-After",
+           (resp.header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U && strcmp(resp.retry_after, "120") == 0);
+    dsd_tile_fetch_response_free(&resp);
+
     /* 33 lines of 1 KiB: over the 32 KiB header cap. */
     const size_t line = 1024U;
     const size_t lines = DSD_TILE_FETCH_HEADER_CAP_BYTES / line + 1U;
@@ -492,6 +503,7 @@ test_caps(void) {
         expect_ll("headers over the cap abort the transfer", (long long)fetch_plain(&resp),
                   DSD_TILE_FETCH_ERR_TOO_LARGE);
         expect("the header sink itself stops at the cap", g_fake.sink_refused == 1);
+        expect("headers cut by their cap are not read", resp.header_present == 0U);
         dsd_tile_fetch_response_free(&resp);
 
         /* One line fewer fits. */
@@ -540,6 +552,7 @@ test_result_mapping(void) {
         {CURLE_WRITE_ERROR, DSD_TILE_FETCH_ERR_TOO_LARGE},
         {CURLE_ABORTED_BY_CALLBACK, DSD_TILE_FETCH_ERR_CANCELLED},
         {CURLE_OUT_OF_MEMORY, DSD_TILE_FETCH_ERR_NOMEM},
+        {CURLE_URL_MALFORMAT, DSD_TILE_FETCH_ERR_INVALID}, /* a bad host or port: a settings problem, not an outage */
     };
 
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
@@ -598,6 +611,48 @@ test_capability(void) {
     dsd_tile_fetch_response_free(&resp);
 }
 
+/* A session's share handle goes on every fetch that names it, the same one each time; without one, none. */
+static void
+test_session_share(void) {
+    dsd_tile_fetch_session* session = dsd_tile_fetch_session_create();
+    expect("session created", session != NULL);
+    dsd_tile_fetch_request req;
+    DSD_MEMSET(&req, 0, sizeof(req));
+    req.url = TEST_URL;
+    req.session = session;
+    dsd_tile_fetch_response resp;
+
+    fake_reset();
+    g_fake.body_len = 100U;
+    expect_ll("first fetch in a session", (long long)dsd_tile_fetch(&req, &resp), DSD_TILE_FETCH_OK);
+    dsd_tile_fetch_response_free(&resp);
+    const recorded_opt* first = find_opt(CURLOPT_SHARE);
+    void* share = first != NULL ? first->pval : NULL;
+    expect("the session's share handle is set", share != NULL);
+
+    fake_reset();
+    g_fake.body_len = 100U;
+    expect_ll("second fetch in the session", (long long)dsd_tile_fetch(&req, &resp), DSD_TILE_FETCH_OK);
+    dsd_tile_fetch_response_free(&resp);
+    const recorded_opt* second = find_opt(CURLOPT_SHARE);
+    expect("the same share handle again, so its connections are reused", second != NULL && second->pval == share);
+
+    fake_reset();
+    g_fake.body_len = 100U;
+    expect_ll("a fetch without a session", (long long)fetch_plain(&resp), DSD_TILE_FETCH_OK);
+    dsd_tile_fetch_response_free(&resp);
+    expect("no share handle without a session", find_opt(CURLOPT_SHARE) == NULL);
+
+    fake_reset();
+    g_fake.body_len = 100U;
+    g_fake.refuse_call = 1; /* the share option is the first one set */
+    expect_ll("a refused share option fails closed", (long long)dsd_tile_fetch(&req, &resp), DSD_TILE_FETCH_ERR_SETUP);
+    expect("nothing performed", g_fake.perform_calls == 0);
+    dsd_tile_fetch_response_free(&resp);
+    dsd_tile_fetch_session_destroy(session);
+    dsd_tile_fetch_session_destroy(NULL);
+}
+
 int
 main(void) {
     test_options_set();
@@ -606,6 +661,7 @@ main(void) {
     test_stalled_transfer_cancelled();
     test_result_mapping();
     test_capability();
+    test_session_share();
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d assertion(s) failed\n", g_failures);

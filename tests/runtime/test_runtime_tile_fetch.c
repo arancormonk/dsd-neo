@@ -33,7 +33,9 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <netinet/in.h>
+
 #include <sys/socket.h>
+#include "test_env.h"
 #ifdef DSD_TILE_FETCH_TEST_FAKE_RESOLVER
 #include "fake_getaddrinfo.h"
 #endif
@@ -392,6 +394,14 @@ test_caps(void) {
     expect("refused body is not handed out", resp.body == NULL);
     dsd_tile_fetch_response_free(&resp);
 
+    /* An outage page over the cap is still an outage: its status and Retry-After are kept. */
+    fake_init(&f, &t, 503, "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\n\r\n",
+              DSD_TILE_FETCH_BODY_CAP_BYTES + 1U);
+    expect_ll("an oversized 503 is too large", (long long)fetch_with(&t, &resp), DSD_TILE_FETCH_ERR_TOO_LARGE);
+    expect("with its status and Retry-After", resp.http_status == 503 && strcmp(resp.retry_after, "30") == 0
+                                                  && (resp.header_present & DSD_TILE_FETCH_HDR_RETRY_AFTER) != 0U);
+    dsd_tile_fetch_response_free(&resp);
+
     const size_t big = DSD_TILE_FETCH_HEADER_CAP_BYTES + 1U;
     char* headers = (char*)malloc(big + 1U);
     expect("header buffer", headers != NULL);
@@ -402,6 +412,7 @@ test_caps(void) {
         fake_init(&f, &t, 200, headers, 10U);
         expect_ll("header block over the cap is refused", (long long)fetch_with(&t, &resp),
                   DSD_TILE_FETCH_ERR_TOO_LARGE);
+        expect("and none of it is read", resp.header_present == 0U);
         dsd_tile_fetch_response_free(&resp);
         free(headers);
     }
@@ -562,7 +573,12 @@ test_transport_failures(void) {
         expect_ll("transport failure class", (long long)fetch_with(&t, &resp), (long long)k_cases[i].want);
         expect_str("transport message kept", resp.error, "connection reset");
         expect("failed exchange hands out no body", resp.body == NULL);
-        expect("failed exchange parses no headers", resp.header_present == 0U);
+        if (k_cases[i].want == DSD_TILE_FETCH_ERR_TOO_LARGE) {
+            /* Only the body was over its cap: the whole header block is still read (status, Retry-After). */
+            expect("an oversized body keeps its headers", resp.header_present == DSD_TILE_FETCH_HDR_ETAG);
+        } else {
+            expect("failed exchange parses no headers", resp.header_present == 0U);
+        }
         dsd_tile_fetch_response_free(&resp);
     }
 }
@@ -711,7 +727,15 @@ test_loopback_stalled_transfer_cancelled(void) {
     dsd_tile_fetch_cancel* cancel = dsd_tile_fetch_cancel_create();
     canceller_arg carg = {cancel, &server};
     dsd_thread_t canceller;
-    expect("canceller started", dsd_thread_create(&canceller, canceller_thread, &carg) == 0);
+    const int canceller_ok = dsd_thread_create(&canceller, canceller_thread, &carg) == 0;
+    expect("canceller started", canceller_ok);
+    if (!canceller_ok) {
+        /* Nothing would cancel the 30 s transfer, and there is no thread to join. */
+        dsd_tile_fetch_cancel_destroy(cancel);
+        stall_server_stop(&server);
+        return;
+    }
+    dsd_tile_fetch_session* session = dsd_tile_fetch_session_create();
 
     dsd_tile_fetch_request req;
     DSD_MEMSET(&req, 0, sizeof(req));
@@ -719,6 +743,7 @@ test_loopback_stalled_transfer_cancelled(void) {
     req.connect_timeout_ms = 30000; /* Long, so a timeout cannot pass for a cancel. */
     req.total_timeout_ms = 30000;
     req.cancel = cancel;
+    req.session = session; /* the reused-connection path cancels the same way */
     dsd_tile_fetch_response resp;
     const uint64_t started = dsd_realtime_mono_ms();
     const dsd_tile_fetch_status st = dsd_tile_fetch(&req, &resp);
@@ -731,12 +756,14 @@ test_loopback_stalled_transfer_cancelled(void) {
     dsd_tile_fetch_response_free(&resp);
 
     (void)dsd_thread_join(canceller);
+    dsd_tile_fetch_session_destroy(session);
     dsd_tile_fetch_cancel_destroy(cancel);
     stall_server_stop(&server);
 }
 
 #ifdef DSD_TILE_FETCH_TEST_FAKE_RESOLVER
 
+#if LIBCURL_VERSION_NUM >= 0x081400
 typedef struct {
     dsd_tile_fetch_cancel* cancel;
     atomic_int saw_held;
@@ -839,6 +866,14 @@ test_lookup_stall_cancelled(void) {
     }
     dsd_sleep_ms(50U);
 }
+#else
+/* dsd_curl_multi_quick_exit() was compiled without CURLMOPT_QUICK_EXIT (the same compile-time gate as production), so
+ * a newer loaded library changes nothing: cleanup still joins the held lookup, and the case cannot apply. */
+static void
+test_lookup_stall_cancelled(void) {
+    DSD_FPRINTF(stderr, "SKIP: lookup-stall cancel (built with libcurl headers older than 8.20)\n");
+}
+#endif
 
 #endif /* DSD_TILE_FETCH_TEST_FAKE_RESOLVER */
 
@@ -898,9 +933,61 @@ test_first_use_concurrent(void) {
 }
 #endif
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+typedef struct {
+    int refused; /* fetches that ended as a network failure, as a refused connect should */
+} session_thread_arg;
+
+/* Two fetches through one session, each refused at once (nothing listens on port 1). */
+static DSD_THREAD_RETURN_TYPE
+session_thread(void* arg) {
+    session_thread_arg* a = (session_thread_arg*)arg;
+    dsd_tile_fetch_session* session = dsd_tile_fetch_session_create();
+    for (int i = 0; i < 2; i++) {
+        dsd_tile_fetch_request req;
+        DSD_MEMSET(&req, 0, sizeof(req));
+        req.url = "https://127.0.0.1:1/7/64/42.png";
+        req.session = session;
+        req.connect_timeout_ms = 2000;
+        dsd_tile_fetch_response resp;
+        a->refused += dsd_tile_fetch(&req, &resp) == DSD_TILE_FETCH_ERR_NETWORK ? 1 : 0;
+        dsd_tile_fetch_response_free(&resp);
+    }
+    dsd_tile_fetch_session_destroy(session);
+    DSD_THREAD_RETURN;
+}
+
+/* Sessions are per thread: two workers fetching at once, each with its own, share nothing (run under tsan-debug). */
+static void
+test_sessions_on_two_threads(void) {
+    if (!dsd_tile_fetch_available()) {
+        DSD_FPRINTF(stderr, "SKIP: sessions on two threads (the built-in transport is unavailable)\n");
+        return;
+    }
+    session_thread_arg args[2] = {{0}, {0}};
+    dsd_thread_t threads[2];
+    int started = 0;
+    for (int i = 0; i < 2; i++) {
+        if (dsd_thread_create(&threads[i], session_thread, &args[i]) != 0) {
+            break;
+        }
+        started++;
+    }
+    for (int i = 0; i < started; i++) {
+        (void)dsd_thread_join(threads[i]);
+    }
+    expect("session threads started", started == 2);
+    expect("every fetch in each session ended as refused", args[0].refused == 2 && args[1].refused == 2);
+}
+#endif
+
 int
 main(void) {
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+    /* The loopback and fake-resolver cases talk to this process: a proxy the runner exports (HTTPS_PROXY) must not
+     * take them elsewhere. Set before any thread starts and before libcurl reads the environment. */
+    (void)dsd_test_setenv("no_proxy", "*", 1);
+    (void)dsd_test_setenv("NO_PROXY", "*", 1);
     test_first_use_concurrent(); /* first: no libcurl use may come before it */
 #endif
     test_user_agent();
@@ -917,6 +1004,9 @@ main(void) {
     test_status_names();
     test_availability();
     run_loopback_cases();
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+    test_sessions_on_two_threads();
+#endif
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d assertion(s) failed\n", g_failures);

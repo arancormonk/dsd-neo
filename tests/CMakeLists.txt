@@ -7198,16 +7198,17 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(dsd-neo_test_runtime_tile_fetch PRIVATE dsd-neo_runtime)
+# test_env.h: the loopback cases clear any proxy the runner exports.
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+)
 # On POSIX the executable answers its own getaddrinfo() (and can hold it), so the
 # test can cancel a fetch while its name lookup hangs.
 if(NOT WIN32)
     target_sources(
         dsd-neo_test_runtime_tile_fetch
         PRIVATE test_support/fake_getaddrinfo.c
-    )
-    target_include_directories(
-        dsd-neo_test_runtime_tile_fetch
-        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_compile_definitions(
         dsd-neo_test_runtime_tile_fetch

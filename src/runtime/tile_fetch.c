@@ -39,6 +39,12 @@ struct dsd_tile_fetch_cancel {
     atomic_int flag;
 };
 
+/* The share handle is made on first use, on the fetching thread, after libcurl's global init. */
+struct dsd_tile_fetch_session {
+    void* share;     /* CURLSH*, kept opaque here so the struct compiles without curl */
+    int share_tried; /* creation was attempted (once; a failure means no reuse, never a failed fetch) */
+};
+
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                              */
 /* ------------------------------------------------------------------------- */
@@ -127,6 +133,25 @@ dsd_tile_fetch_cancel_create(void) {
 void
 dsd_tile_fetch_cancel_destroy(dsd_tile_fetch_cancel* cancel) {
     free(cancel);
+}
+
+dsd_tile_fetch_session*
+dsd_tile_fetch_session_create(void) {
+    return (dsd_tile_fetch_session*)calloc(1U, sizeof(dsd_tile_fetch_session));
+}
+
+void
+dsd_tile_fetch_session_destroy(dsd_tile_fetch_session* session) {
+    if (session == NULL) {
+        return;
+    }
+#ifdef USE_CURL
+    if (session->share != NULL) {
+        /* Every per-fetch handle is cleaned up before its fetch returns, so the share is not in use. */
+        (void)curl_share_cleanup((CURLSH*)session->share);
+    }
+#endif
+    free(session);
 }
 
 void
@@ -309,6 +334,7 @@ typedef struct {
     struct curl_slist* headers;
     dsd_curl_body_buf body;
     dsd_curl_body_buf head;
+    CURLSH* share; /* the session's caches, or NULL */
 } tf_transfer;
 
 #define TF_OPT_L(o, v)  {(o), TF_OPT_LONG, (long)(v), NULL, NULL, NULL}
@@ -368,6 +394,9 @@ tf_apply_options(CURL* curl, tf_transfer* t) {
         TF_OPT_P(CURLOPT_XFERINFODATA, (dsd_tile_fetch_cancel*)req->cancel),
     };
 
+    if (t->share != NULL && TF_SETOPT_PTR(curl, CURLOPT_SHARE, t->share) != CURLE_OK) {
+        return -1;
+    }
     for (size_t i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
         const tf_opt* o = &opts[i];
         CURLcode rc = CURLE_OK;
@@ -424,6 +453,10 @@ tf_status_from_curl(CURLcode code) {
     if (code == CURLE_OUT_OF_MEMORY) {
         return DSD_TILE_FETCH_ERR_NOMEM;
     }
+    if (code == CURLE_URL_MALFORMAT) {
+        /* The address itself cannot work (a bad host or port): a settings problem, never retried as an outage. */
+        return DSD_TILE_FETCH_ERR_INVALID;
+    }
     if (code == CURLE_WRITE_ERROR || code == CURLE_FILESIZE_EXCEEDED) {
         /* A write or header callback hit its cap and returned 0, or the declared
          * length was already over the body cap. */
@@ -479,6 +512,51 @@ tf_transfer_free(tf_transfer* t) {
     dsd_curl_body_buf_free(&t->head);
 }
 
+/** @return 1 when @p head ends with the blank line that closes a header block (it was not cut by its cap). */
+static int
+tf_head_complete(const dsd_curl_body_buf* head) {
+    const size_t n = head->len;
+    if (head->data == NULL || n < 2U) {
+        return 0;
+    }
+    const char* d = head->data;
+    return (d[n - 1U] == '\n' && (d[n - 2U] == '\n' || (n >= 3U && d[n - 2U] == '\r' && d[n - 3U] == '\n'))) ? 1 : 0;
+}
+
+/**
+ * @brief The session's share handle, made on first use: connections (7.57+), DNS and TLS sessions.
+ *
+ * Only the session's own thread uses it, so it needs no lock callbacks. A failure
+ * leaves the session without a share for good: fetches go on without reuse.
+ *
+ * @param session Session, or NULL.
+ * @return The share handle, or NULL.
+ */
+static CURLSH*
+tf_session_share(dsd_tile_fetch_session* session) {
+    if (session == NULL) {
+        return NULL;
+    }
+    if (!session->share_tried) {
+        session->share_tried = 1;
+        CURLSH* share = curl_share_init();
+        int shared = 0; /* each cache the library can share; one that it cannot (no TLS backend) is skipped */
+        if (share != NULL) {
+#if LIBCURL_VERSION_NUM >= 0x073900 /* CURL_LOCK_DATA_CONNECT landed in 7.57.0 */
+            shared += curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT) == CURLSHE_OK;
+#endif
+            shared += curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS) == CURLSHE_OK;
+            shared += curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION) == CURLSHE_OK;
+        }
+        if (shared == 0 && share != NULL) {
+            (void)curl_share_cleanup(share);
+            share = NULL;
+        }
+        session->share = share;
+    }
+    return (CURLSH*)session->share;
+}
+
 /**
  * @brief The built-in transport: one HTTPS GET through libcurl.
  *
@@ -505,6 +583,7 @@ tf_curl_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exc
     CURL* curl = curl_easy_init();
     tf_transfer t;
     DSD_MEMSET(&t, 0, sizeof(t));
+    t.share = tf_session_share(req->session);
     if (curl == NULL || tf_transfer_init(&t, req) != 0) {
         tf_transfer_free(&t);
         if (curl != NULL) {
@@ -532,8 +611,14 @@ tf_curl_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exc
 
     exchange->http_status = http_status;
     if (code != CURLE_OK) {
-        tf_transfer_free(&t);
         exchange->status = tf_status_from_curl(code);
+        if (exchange->status == DSD_TILE_FETCH_ERR_TOO_LARGE && tf_head_complete(&t.head)) {
+            /* Only the body was over its cap: the headers (status, Retry-After) still say what answer it was. */
+            exchange->headers = t.head.data;
+            exchange->headers_len = t.head.len;
+            t.head.data = NULL;
+        }
+        tf_transfer_free(&t);
         tf_copy_text(exchange->error, sizeof(exchange->error), tf_curl_error_text(exchange->status, code));
         return -1;
     }
@@ -922,6 +1007,23 @@ tf_classify(dsd_tile_fetch_response* resp, dsd_tile_fetch_exchange* exchange) {
     }
 }
 
+/**
+ * @brief For a response whose body was over its cap: keep the header fields when the header block itself was within
+ *        its cap, so the caller can tell a 429 or 503 (back off, honour Retry-After) from an oversized tile.
+ *
+ * @param resp     Response; its status stays ERR_TOO_LARGE.
+ * @param exchange Exchange with the header block, if any.
+ */
+static void
+tf_keep_headers(dsd_tile_fetch_response* resp, const dsd_tile_fetch_exchange* exchange) {
+    if (exchange->headers == NULL || exchange->headers_len > DSD_TILE_FETCH_HEADER_CAP_BYTES) {
+        return;
+    }
+    if (tf_parse_headers(resp, exchange->headers, exchange->headers_len) != 0) {
+        tf_reset_fields(resp);
+    }
+}
+
 /** @return 1 when @p status is a class a transport may report for a failed exchange. */
 static int
 tf_is_transport_failure(dsd_tile_fetch_status status) {
@@ -943,6 +1045,7 @@ tf_finish(dsd_tile_fetch_response* resp, dsd_tile_fetch_exchange* exchange) {
     if (exchange->body_len > DSD_TILE_FETCH_BODY_CAP_BYTES || exchange->headers_len > DSD_TILE_FETCH_HEADER_CAP_BYTES) {
         resp->status = DSD_TILE_FETCH_ERR_TOO_LARGE;
         tf_copy_text(resp->error, sizeof(resp->error), "response too large");
+        tf_keep_headers(resp, exchange);
         return;
     }
     if (tf_parse_headers(resp, exchange->headers, exchange->headers_len) != 0) {
@@ -985,6 +1088,9 @@ dsd_tile_fetch(const dsd_tile_fetch_request* req, dsd_tile_fetch_response* resp)
         resp->http_status = exchange.http_status;
         exchange.error[sizeof(exchange.error) - 1U] = '\0';
         tf_copy_text(resp->error, sizeof(resp->error), exchange.error[0] != '\0' ? exchange.error : "transfer failed");
+        if (resp->status == DSD_TILE_FETCH_ERR_TOO_LARGE) {
+            tf_keep_headers(resp, &exchange);
+        }
     } else {
         tf_finish(resp, &exchange);
     }

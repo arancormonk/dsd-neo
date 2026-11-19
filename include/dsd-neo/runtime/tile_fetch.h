@@ -61,9 +61,11 @@ typedef enum {
     DSD_TILE_FETCH_ERR_HTTP = 3,        /**< Any other status, or a 200 with no body. Headers are filled. */
     DSD_TILE_FETCH_ERR_NETWORK = 4,     /**< Connect, TLS, DNS, timeout or other transfer failure. */
     DSD_TILE_FETCH_ERR_CANCELLED = 5,   /**< The cancel token was set before or during the transfer. */
-    DSD_TILE_FETCH_ERR_TOO_LARGE = 6,   /**< Body or header block over its cap. */
+    DSD_TILE_FETCH_ERR_TOO_LARGE = 6,   /**< Body or header block over its cap. When only the body was, http_status
+                                             and the header fields (Retry-After) are still filled. */
     DSD_TILE_FETCH_ERR_BAD_HEADER = 7,  /**< Cache-Control or Vary too long or malformed: cannot be cached safely. */
-    DSD_TILE_FETCH_ERR_INVALID = 8,     /**< Bad request: not an https URL, bad conditional value, bad timeout. */
+    DSD_TILE_FETCH_ERR_INVALID = 8,     /**< Bad request: not an https URL, bad conditional value, bad timeout, or
+                                             a URL libcurl rejects as malformed (a bad host or port). */
     DSD_TILE_FETCH_ERR_UNSUPPORTED = 9, /**< Built-in transport absent: no libcurl, or no asynchronous resolver. */
     DSD_TILE_FETCH_ERR_SETUP = 10,      /**< libcurl failed to start or refused an option; nothing was sent. */
     DSD_TILE_FETCH_ERR_NOMEM = 11,      /**< Allocation failure. */
@@ -115,6 +117,27 @@ void dsd_tile_fetch_cancel_clear(dsd_tile_fetch_cancel* cancel);
  */
 int dsd_tile_fetch_cancel_requested(const dsd_tile_fetch_cancel* cancel);
 
+/**
+ * @brief Opaque connection-reuse context for one fetching thread.
+ *
+ * Successive fetches that pass the same session can reuse an open HTTPS
+ * connection to the same host (and its TLS session) instead of a new connect and
+ * handshake per tile: libcurl's connection cache, DNS cache and TLS session cache
+ * live in the session (a curl share handle) rather than in the per-fetch handles.
+ * Connection reuse needs libcurl 7.57 or later; older libcurl still shares the DNS
+ * and TLS session caches. Caps, cancel and every option are unchanged.
+ *
+ * One thread at a time: a session has no locking, so only the thread that owns it
+ * may fetch with it (the tile worker's thread). An injected transport ignores it.
+ */
+typedef struct dsd_tile_fetch_session dsd_tile_fetch_session;
+
+/** @return A new session, or NULL on allocation failure (fetches then simply do not reuse connections). */
+dsd_tile_fetch_session* dsd_tile_fetch_session_create(void);
+
+/** @brief Close the session's connections and free it. NULL is a no-op. No fetch may still be using it. */
+void dsd_tile_fetch_session_destroy(dsd_tile_fetch_session* session);
+
 typedef struct dsd_tile_fetch_request dsd_tile_fetch_request;
 
 /**
@@ -158,6 +181,7 @@ struct dsd_tile_fetch_request {
     int total_timeout_ms;                /**< 0 for the default; at most DSD_TILE_FETCH_TIMEOUT_MS_MAX. */
     const dsd_tile_fetch_cancel* cancel; /**< Optional. */
     const dsd_tile_fetch_transport* transport; /**< NULL for the built-in libcurl transport. */
+    dsd_tile_fetch_session* session;           /**< Optional: reuse connections across fetches (one thread). */
 };
 
 /**
