@@ -28,6 +28,10 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_MAPS = {"windows": "windows_release", "android": "android_release", "macos": "macos_release"}
+# What QString::trimmed() removes from an index line (QChar::isSpace()): the Unicode space, line and paragraph
+# separators, and TAB, LF, VT, FF, CR and NEL.
+QT_SPACE = ("\t\n\v\f\r\x85 \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+            "\u2028\u2029\u202f\u205f\u3000")
 
 
 def inside(path):
@@ -100,6 +104,8 @@ def check(records, platform, doc, repo, build=None, share=None, required=(), mbe
             if origin is not None and (not origin.is_file() or normalized(origin) != normalized(path)):
                 problems.append(f"{notice} differs from {source} ({ident})")
     for name in required:
+        if name in notices:
+            continue  # checked above, against the source its record maps it to
         if not inside(name) or not (doc / name).is_file():
             problems.append(f"missing {name} (required)")
             continue
@@ -113,7 +119,9 @@ def check_index(doc, index):
     """Return the problems of the folder's index of its files: missing, or not naming exactly the other files."""
     if not inside(index) or not (doc / index).is_file():
         return [f"missing {index}"]
-    listed = {line.strip() for line in (doc / index).read_text(encoding="utf-8").splitlines() if line.strip()}
+    # As DecoderHost::licenseFiles() reads it: the raw bytes as UTF-8, split on LF alone, each line trimmed.
+    lines = (doc / index).read_bytes().decode("utf-8", errors="replace").split("\n")
+    listed = {line.strip(QT_SPACE) for line in lines if line.strip(QT_SPACE)}
     present = {path.relative_to(doc).as_posix() for path in doc.rglob("*") if path.is_file()} - {index}
     problems = [f"{name} is in the folder but not in {index}" for name in sorted(present - listed)]
     problems += [f"{index} names {name}, which the folder lacks" for name in sorted(listed - present)]

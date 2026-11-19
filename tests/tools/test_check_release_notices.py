@@ -166,6 +166,31 @@ class CheckReleaseNotices(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stdout)
                     self.assertIn(needle, result.stderr)
 
+    def test_required_notice_keeps_its_mapped_source(self):
+        # A required name the records already map is compared with its mapped source only, not with a second one.
+        result = self.run_check("--require", "licenses/x-LICENSE.txt", "licenses/port-copyright.txt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write(self.doc / "licenses/x-LICENSE.txt", "something else\n")
+        result = self.run_check("--require", "licenses/x-LICENSE.txt")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("licenses/x-LICENSE.txt differs from build:x-licenses/x-LICENSE.txt", result.stderr)
+
+    def test_notice_index_is_read_as_the_licences_screen_reads_it(self):
+        # The screen splits the raw UTF-8 text on LF alone and trims each line: CRLF lines are listed, CR-only or
+        # other line separators make one entry no file has.
+        files = sorted(p.relative_to(self.doc).as_posix() for p in self.doc.rglob("*") if p.is_file())
+        index = self.doc / "notice-index.txt"
+        for label, separator, ok in (("LF", "\n", True), ("CRLF", "\r\n", True), ("CR", "\r", False),
+                                     ("line separator", "\u2028", False), ("form feed", "\f\x1c", False)):
+            with self.subTest(case=label):
+                index.write_bytes((separator.join(files) + separator).encode("utf-8"))
+                result = self.run_check("--index", "notice-index.txt")
+                if ok:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn(f"{files[0]} is in the folder but not in notice-index.txt", result.stderr)
+
     def test_missing_required_file_fails(self):
         result = self.run_check("--require", "legal/components.json")
         self.assertEqual(result.returncode, 1, result.stdout)
