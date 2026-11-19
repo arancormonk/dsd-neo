@@ -749,6 +749,20 @@ dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
     dmr_enc_class_release_hold(ctx->state, ctx->burst_slot);
 }
 
+/* The --dmr-force-algid value the voice path installed as a fallback while the slot was held
+   (dsd_dmr_apply_forced_algid(): that ALG ID with key ID 0xFF) came from a privacy bit no check passed: the checked LC
+   that ends the hold drops it with the classification, and the voice path installs it again if that LC's own privacy
+   bit asks. */
+static void
+dmr_flco_drop_forced_fallback(const dmr_flco_ctx* ctx) {
+    const int forced = dsd_dmr_forced_algid(ctx->state);
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    if (forced != 0 && *live.algid == forced && *live.keyid == 0xFF) {
+        *live.algid = 0;
+        *live.keyid = 0;
+    }
+}
+
 /* A voice LC that passed its check in a shape the decoder reads no privacy from (Tait FID 0x58, an unknown FID, the
    Motorola and Hytera FLCOs it does not parse: dmr_flco_handle_motorola_or_tait(),
    dmr_flco_handle_hytera_unknown_or_fid()) says as much as such a call ever says: its voice is judged from then on as
@@ -763,6 +777,7 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
     }
     if (dmr_flco_ends_voice_hold(ctx) && dmr_flco_voice_held(ctx)) {
         dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+        dmr_flco_drop_forced_fallback(ctx);
         unsigned int fid = 0U;
         unsigned int so = 0U;
         if (ctx->fid == 0x0AU) {
@@ -793,9 +808,10 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
         // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
-        // heal restoring what one wrote) or from a PI header naming no cipher.
+        // heal restoring what one wrote) or from a PI header naming no cipher, and so did a forced ALG ID fallback.
         if (ctx->CRCCorrect == 1U && dmr_flco_voice_held(ctx)) {
             dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+            dmr_flco_drop_forced_fallback(ctx);
         }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
         ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, strong);

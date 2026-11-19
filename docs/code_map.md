@@ -3419,8 +3419,10 @@ suite runs under this compiler.
   A checked LC that ends a hold does so on its own word (`dmr_flco_sync_active_call_state()`): what the slot
   classified while held, all of it from data no check of the call's passed or from a PI header naming no cipher, is
   forgotten first, so embedded LCs whose checksum failed (or a heal restoring what they wrote) cannot have the
-  classification hysteresis quarantine its privacy bit as a lone contradiction. From then on the hysteresis runs as
-  before.
+  classification hysteresis quarantine its privacy bit as a lone contradiction. A `--dmr-force-algid` fallback the voice
+  path installed while held (that ALG ID with key ID 0xFF, `dsd_dmr_apply_forced_algid()`) came from such a privacy bit
+  too and goes with it (`dmr_flco_drop_forced_fallback()`); the voice path installs it again if the LC's own privacy bit
+  asks. From then on the hysteresis runs as before.
 
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live
