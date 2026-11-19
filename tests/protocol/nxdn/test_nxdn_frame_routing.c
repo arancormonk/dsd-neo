@@ -108,6 +108,10 @@ static int g_stub_cac_resets_sync;
 static int g_stub_scch_tune = -1;
 /* The SCCH names the Type-D layout, as nxdn_scch_prepare_type_d() does for every SCCH that passes its CRC. */
 static int g_stub_scch_names_type_d;
+/* The SCCH stub's content is not defined by TS 1-E (nxdn_scch_content_valid(): it marks the frame's SCCH invalid). */
+static int g_stub_scch_invalid;
+/* The SCCH stub places the scrambler register at this frame's start, as a verified SCCH does (0: no). */
+static unsigned long long g_stub_scch_places_register;
 /* The location category the FACCH1 decoder read. */
 static char g_facch_category[32];
 
@@ -155,6 +159,8 @@ reset_state(void) {
     g_stub_cac_resets_sync = 0;
     g_stub_scch_tune = -1;
     g_stub_scch_names_type_d = 0;
+    g_stub_scch_invalid = 0;
+    g_stub_scch_places_register = 0ULL;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
@@ -277,6 +283,9 @@ void
 nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     (void)opts;
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
+    if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
+        state->payload_miN = g_stub_scch_places_register; /* a checked SACCH places it as a checked SCCH does */
+    }
     g_sacch_calls++;
     g_sacch_frame_channel = state->nxdn_frame_channel;
     g_last_sacch_bit = bits[0];
@@ -291,6 +300,12 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     g_scch_calls++;
     if (g_stub_scch_ok && g_stub_scch_names_type_d) {
         DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+        if (g_stub_scch_invalid) {
+            state->nxdn_scch_frame_invalid = 1U;
+        }
+    }
+    if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
+        state->payload_miN = g_stub_scch_places_register;
     }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
@@ -1053,6 +1068,50 @@ test_type_d_category_outlives_only_a_confirmed_frame(void) {
     return rc;
 }
 
+/* An SCCH whose content TS 1-E does not define names the Type-D layout for its own frame's channels only: the
+   category never outlives the frame, even when another check (the FACCH1) confirmed the transmission. */
+static int
+test_undefined_scch_layout_stays_with_its_frame(void) {
+    reset_state();
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
+    g_stub_scch_ok = 1;
+    g_stub_scch_names_type_d = 1;
+    g_stub_scch_invalid = 1;
+    g_stub_facch_ok = 1;
+    (void)route_frame(0x73U);
+    int rc = 0;
+    rc |= expect_string("undefined scch: FACCH1 read the Type-D layout", g_facch_category, "Type-D");
+    rc |= expect_string("undefined scch: category after the frame", g_state.nxdn_location_category, " ");
+    return rc;
+}
+
+/* A scrambled Type-D frame with FACCH1 in its first half and voice in its second (LICH 0x72): the FACCH1 takes the
+   first two 49-bit VCH slots of the PN sequence (NXDN TS 1-F Fig 16.4-1). A verified SCCH places the register at the
+   frame's start, so the two-slot step must come after it, not before: the voice then starts two slots in. */
+static int
+test_stolen_slots_step_after_the_scch_places_the_register(void) {
+    reset_state();
+    g_state.nxdn_cipher_type = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.payload_miN = 5ULL;
+    g_stub_scch_ok = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x72U);
+    int rc = expect_u64("stolen slots step after the scch", g_state.payload_miN, 1002ULL);
+
+    /* The Type-C twin (TS 1-D Fig 5.4-2): a scrambled RTCH frame with FACCH1 then voice (LICH 0x32), placed by its
+       SACCH. */
+    reset_state();
+    g_state.nxdn_cipher_type = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.payload_miN = 5ULL;
+    g_stub_sacch_ok = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x32U);
+    rc |= expect_u64("stolen slots step after the sacch", g_state.payload_miN, 1002ULL);
+    return rc;
+}
+
 /* Issue #834: every frame names the FSW the hunt accepted it on (from its second symbol, at the polarity it was
    accepted at), and a frame read whole arms the recording for the next frame's FSW where it ends, so the hunt reads
    that FSW on the grid this frame was read on; one a LICH refused, read 8 dibits in, arms nothing. */
@@ -1101,6 +1160,8 @@ main(void) {
     rc |= test_composite_control_channel_lich();
     rc |= test_frame_retuned_by_its_scch_stops();
     rc |= test_type_d_category_outlives_only_a_confirmed_frame();
+    rc |= test_undefined_scch_layout_stays_with_its_frame();
+    rc |= test_stolen_slots_step_after_the_scch_places_the_register();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 

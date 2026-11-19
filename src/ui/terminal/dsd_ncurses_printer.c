@@ -42,6 +42,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
@@ -3091,16 +3092,17 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-/* The IV the live NXDN call received over the air (a VCALL_IV's, published as the call's MI), 0 when none. The decoder's
-   working register is not shown as one: on a scrambled call it is loaded from the key, and it may still hold that
-   state when the cipher changes. */
-static unsigned long long
-ui_nxdn_received_iv(const dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol)) {
-        return call.mi;
+/* The NXDN "IV:" field: the IV the active NXDN call received over the air (<dsd-neo/core/nxdn_received_iv.h>), or
+   "none" before one came. Never the decoder's working register, which on a scrambled call is loaded from the key and
+   may still hold that state when the cipher changes, and never an ended or another protocol's call's MI. */
+static void
+ui_print_nxdn_received_iv(const dsd_state* state) {
+    unsigned long long iv = 0ULL;
+    if (dsd_nxdn_received_iv_for_active_call(state, &iv)) {
+        printw("IV: %016llX ", iv);
+    } else {
+        printw("IV: none ");
     }
-    return 0ULL;
 }
 
 static void
@@ -3135,7 +3137,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x2:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", ui_nxdn_received_iv(state));
+            ui_print_nxdn_received_iv(state);
             attron(COLOR_PAIR(2));
             printw("DES1 ");
             if (state->R != 0) {
@@ -3147,7 +3149,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x3:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", ui_nxdn_received_iv(state));
+            ui_print_nxdn_received_iv(state);
             attron(COLOR_PAIR(2));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] == 1) {

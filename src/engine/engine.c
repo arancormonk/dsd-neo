@@ -18,6 +18,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
+#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
@@ -3117,6 +3118,7 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->bit_counterR = 0;
     state->xl_is_hdu = 0;
     state->nxdn_new_iv = 0;
+    dsd_nxdn_received_iv_clear(state);
 }
 
 static void

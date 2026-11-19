@@ -2157,6 +2157,17 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
+    /* The IV an NXDN VCALL_IV carried over the air (<dsd-neo/core/nxdn_received_iv.h>), never the working register
+       payload_miN, which a scrambled call loads from the key. Valid while nxdn_rx_iv_valid, for the call transmission
+       nxdn_rx_iv_transmission names (dsd_call_snapshot_transmission()); 0 while it waits for the call it came just
+       before. Cleared with the carrier, at a call's end and when a tuned call is released. */
+    unsigned long long nxdn_rx_iv;
+    uint64_t nxdn_rx_iv_transmission;
+    uint8_t nxdn_rx_iv_valid;
+    /* Set while the frame being decoded carried an SCCH whose CRC-7 passed with content NXDN TS 1-E does not define
+       (a reserved prefix, an INFO1 with its Spare bit set): the Type-D layout it names stays with the frame
+       (nxdn_decode_frame_channels()). */
+    uint8_t nxdn_scch_frame_invalid;
     uint16_t nxdn_pn95_seed;
 
     /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,

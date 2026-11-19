@@ -1515,16 +1515,22 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     }
 
     if (crc == check) {
+        /* Content TS 1-E does not define (a reserved prefix, an INFO1 with its Spare bit set) is printed, but is no
+           evidence of a transmission and changes nothing past its frame (nxdn_scch_content_valid()). */
+        const int valid = nxdn_scch_content_valid(trellis_buf, direction);
         /* The scrambler register is loaded from the key at each superframe's first SCCH and runs on across its four
-           frames (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a verified SCCH's structure places the frame: the register
-           is set to that frame's position, as a SACCH's sets it (nxdn_handle_sacch_superframe()). A failed SCCH
-           places nothing, and the register runs on. */
-        if (state->nxdn_cipher_type == 0x1) {
+           frames, four 49-bit VCH slots each, a FACCH1-stolen slot included (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a
+           verified SCCH's structure places the frame: the register is set to the frame's start, as a SACCH sets it
+           (nxdn_handle_sacch_superframe()), before the frame's voice or stolen slots step it (nxdn_frame()). A
+           failed SCCH places nothing, and the register runs on. With no key there is no register to place. */
+        if (valid && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
             const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
             nxdn_prepare_sacch_payload_seed(state, nxdn_sacch_part_of_frame(sf));
         }
-        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        nxdn_confirm_note_scch(state);
+        if (valid) {
+            nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+            nxdn_confirm_note_scch(state);
+        }
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
 

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -63,11 +64,13 @@ dsd_nxdn_voice_crypto_class(const dsd_state* state) {
         return DSD_VOICE_CRYPTO_CLEAR;
     }
     // The keystream mbe_process_nxdn() applies: cipher 1 (and forced privacy) and cipher 2 with a scalar key,
-    // cipher 3 with an AES key.
+    // cipher 3 with an AES key. A DES or AES keystream starts from the IV the call received (a VCALL_IV): before
+    // one came for this call there is nothing to decrypt with, so its voice stays undecryptable.
     const int scalar = dsd_key_scalar_present(state, 0);
-    const int applied = ((state->nxdn_cipher_type == 0x01 || state->nxdn_cipher_type == 0x02) && scalar)
-                        || (state->M == 1 && scalar)
-                        || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U));
+    const int iv = dsd_nxdn_received_iv_for_active_call(state, NULL);
+    const int applied = (state->nxdn_cipher_type == 0x01 && scalar) || (state->M == 1 && scalar)
+                        || (state->nxdn_cipher_type == 0x02 && scalar && iv)
+                        || (state->nxdn_cipher_type == 0x03 && dsd_key_aes_slot_complete(state, 0, 4U) && iv);
     return applied ? DSD_VOICE_CRYPTO_DECRYPTABLE : DSD_VOICE_CRYPTO_UNDECRYPTABLE;
 }
 

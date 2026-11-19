@@ -847,9 +847,11 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
                           && call.priority == 5U,
                       context.name, "target-fragment", "service metadata preserved");
+    /* Another target is another call: its crypto class carries over, the previous call's MI (an IV that call
+       received) does not. */
     rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
-                      context.name, "target-fragment", "crypto preserved");
+                          && call.mi == 0U && call.audio_permitted == 0U,
+                      context.name, "target-fragment", "crypto preserved, the previous call's MI not");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "target-fragment", "media state preserved");
     rc |= nxdn_expect(strcmp(call.source_text, "SOURCE 1100") == 0, context.name, "target-fragment",
                       "counterpart text preserved");
@@ -871,7 +873,7 @@ nxdn_run_scch_identity_context_case(void) {
                           && call.priority == 5U,
                       context.name, "source-fragment", "service metadata preserved");
     rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
+                          && call.mi == 0U && call.audio_permitted == 0U,
                       context.name, "source-fragment", "crypto preserved");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "source-fragment", "media state preserved");
     return rc;

@@ -3058,15 +3058,18 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 }
 
 // @p received: the DSD_CALL_CRYPTO_RX_* fields this publication carries from a checked VCALL (0 for a republish).
-// @p mi: an IV the air carried (a VCALL_IV's), else the call's own (nxdn_live_call_received_mi()) -- never the working
-// register, which a scrambled call loads from the key.
+// The MI is the IV the call received over the air (nxdn_live_call_received_mi()), never the working register, which
+// a scrambled call loads from the key; and a DES or AES call is decryptable only once that IV came: its keystream
+// starts from it (dsd_nxdn_voice_crypto_class() mutes it until then).
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id, uint8_t received,
-                          uint8_t contradicted, uint8_t enc_observed, unsigned long long mi) {
+                          uint8_t contradicted, uint8_t enc_observed) {
     if (!nxdn_live_call_is_nxdn(state)) {
         return; // another protocol's call on slot 0 takes no NXDN cipher
     }
-    const int has_key = nxdn_vcall_has_key(state, cipher_type);
+    const unsigned long long mi = nxdn_live_call_received_mi(state);
+    const int has_key = nxdn_vcall_has_key(state, cipher_type)
+                        && (cipher_type < 2U || dsd_nxdn_received_iv_for_active_call(state, NULL));
     const dsd_call_crypto_update update = {
         .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR
                           : has_key         ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -3151,8 +3154,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     // held) cipher is.
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, received,
                               contradicted,
-                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
-                              nxdn_live_call_received_mi(state));
+                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -3310,15 +3312,19 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
     }
 }
 
+/* A VCALL_IV's IV is the working IV (the keystream starts from it) and the call's received IV: the one MI an NXDN
+   call publishes (nxdn_received_iv_note()). The keystream is armed (nxdn_vcall_iv_prepare_cipher()) before the call is
+   published decryptable. */
 static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     state->payload_miN = nxdn_vcall_iv_extract(state, Message);
+    nxdn_received_iv_note(state, state->payload_miN);
     DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
-                              DSD_CALL_ENC_OBSERVED_NONE, nxdn_vcall_iv_extract(state, Message));
+                              DSD_CALL_ENC_OBSERVED_NONE);
 }
 
 struct nxdn_scch_info {
@@ -3343,8 +3349,11 @@ struct nxdn_scch_info {
     uint8_t cipher;
     uint16_t id;
     /* An INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (nxdn_scch_names_reserved_prefix()): it names no
-       unit and changes nothing past its own frame. */
+       unit. */
     uint8_t reserved_prefix;
+    /* Content TS 1-E does not define (nxdn_scch_content_valid(): a reserved prefix, an INFO1 with its Spare bit set):
+       printed, and changes nothing past its own frame -- no area, control channel sync, hunt, activity or crypto. */
+    uint8_t diagnostic_only;
 };
 
 /*
@@ -3427,10 +3436,10 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
        confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()). */
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
-    if (!info->acts || info->reserved_prefix) {
+    if (!info->acts || info->diagnostic_only) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
-         * hold cannot rest on one (issue #398). A message with the reserved prefix is not valid content: its area,
-         * like the rest of it, is kept by nothing. */
+         * hold cannot rest on one (issue #398). Content TS 1-E does not define is not valid either: its area, like
+         * the rest of it, is kept by nothing. */
         return;
     }
     /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). The received
@@ -3698,12 +3707,22 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
 
+    /* The same call: a message naming the call's own target (or none) and not contradicting its class. Its received
+       IV, the call's MI, follows it into the epoch the canonical layer may open (a source change); a message naming
+       another target or class describes another call, which takes no IV of this one. */
+    const int unclassified = call.kind == DSD_CALL_KIND_UNKNOWN || call.kind == DSD_CALL_KIND_VOICE;
+    const int same_call = (target_id == 0U || target_id == call.policy_target_id)
+                          && (kind == DSD_CALL_KIND_UNKNOWN || unclassified || observation.kind == call.kind);
+    const uint64_t before = dsd_call_snapshot_transmission(&call);
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        if (same_call) {
+            nxdn_received_iv_follow(state, before, dsd_nxdn_active_call_transmission(state));
+        }
         const dsd_call_crypto_update crypto = {
             .classification = call.crypto,
             .algid = call.algid,
             .kid = call.kid,
-            .mi = call.mi,
+            .mi = same_call ? call.mi : 0U,
             .audio_permitted = call.audio_permitted,
         };
         (void)dsd_call_state_update_crypto(state, 0U, &crypto);
@@ -3855,8 +3874,9 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
                 info->id);
     /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater, its G/U bit
      * (INFO2 has INFO4's format, NXDN TS 1-E §6.5.2.3, §6.5.3.3) classifying the target. */
-    if (info->acts && info->now - state->last_vc_sync_time < 1
+    if (info->acts && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
+        /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
         nxdn_scch_enrich_identity(state, 0U, info->id,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
         nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
@@ -3878,26 +3898,15 @@ nxdn_scch_print_call_option(uint8_t call_opt) {
 }
 
 /*
- * Cipher Types 10 and 11 are reserved on Type-D (NXDN TS 1-E Table 6.6-31; DES and AES, as every known decoder names
- * them, are Type-C's, TS 1-A). An INFO1 naming one may select it for the audio, or publish the call, only when it cannot
- * make the call decryptable without an IV: with no key for it (the call is then encrypted and muted, as before), or once
- * the call has received an IV (a VCALL_IV). With a key and no IV, it acts on nothing.
- */
-static int
-nxdn_scch_info1_cipher_usable(const dsd_state* state, const struct nxdn_scch_info* info) {
-    if (info->cipher < 2U || !nxdn_vcall_has_key(state, info->cipher) || nxdn_live_call_received_mi(state) != 0ULL) {
-        return 1;
-    }
-    DSD_FPRINTF(stderr, "(Reserved on Type-D; no IV received) ");
-    return 0;
-}
-
-/*
  * INFO1 (NXDN TS 1-E Figs 6.5-3 and 6.5-10): Pass Character 31 (inbound) or Free Repeater 2 (outbound), Call Option,
  * Cipher Type and Key ID, and a Spare bit sent as 0 (Table 9.1-1). An INFO1 with the Spare bit set is not defined; some
  * decoders read part of an encryption IV in its bits 8-12 and 18-23, but no NXDN specification defines one there or
- * how its parts would join, so it acts on nothing -- not the cipher or key, and never the decoder's working scrambler
- * register or IV -- and what it carries is printed only through the key redaction.
+ * how its parts would join, so it acts on nothing (nxdn_scch_info::diagnostic_only: no area, control channel sync or
+ * hunt either), never touches the decoder's working scrambler register or IV, and what it carries is printed only
+ * through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
+ * decoder names them, are Type-C's, TS 1-A): a call option naming one is kept like any other, the call encrypted and
+ * undecryptable until it receives an IV, from which its keystream starts (nxdn_vcall_publish_crypto(),
+ * dsd_nxdn_voice_crypto_class()).
  */
 static void
 nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
@@ -3918,7 +3927,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
         DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
     }
-    if (!info->acts || !nxdn_scch_info1_cipher_usable(state, info)) {
+    if (!info->acts) {
         return;
     }
     // One SCCH observation must not flip the classification the VCALLs established -- in
@@ -3927,7 +3936,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
     state->nxdn_key = info->key_id;
     nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
-                              DSD_CALL_ENC_OBSERVED_NONE, nxdn_live_call_received_mi(state));
+                              DSD_CALL_ENC_OBSERVED_NONE);
 }
 
 /* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
@@ -3938,6 +3947,10 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     nxdn_scch_parse(Message, direction, now, &info);
     info.acts = nxdn_confirm_is_confirmed(state);
     info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
+    info.diagnostic_only = (uint8_t)!nxdn_scch_content_valid(Message, direction);
+    if (info.diagnostic_only) {
+        state->nxdn_scch_frame_invalid = 1U;
+    }
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);

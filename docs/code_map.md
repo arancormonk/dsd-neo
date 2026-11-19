@@ -11107,9 +11107,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     reconciled from the canonical call after a verified VCALL publication and after an SCCH identity that belongs to
     the receiver's repeater (`nxdn_call_identity_reconcile()`), so a new call on the followed carrier is what a
     candidate is compared against. Its private/group class is the naming message's own (a VCALL's call type, 4 =
-    private, as admission judges it; a busy message's G/U bit), else the canonical call's group or private kind, else,
-    for a generic voice call (late entry, an INFO2 target message), the held call's when it names that target; a generic
-    voice call is never read as group, and one of no known class leaves the held call unknown (only Hold displaces it).
+    private, as admission judges it; a busy message's or an INFO2 target message's G/U bit), else the canonical call's
+    group or private kind, else, for a generic voice call (late entry), the held call's when it names that target; a
+    generic voice call is never read as group, and one of no known class leaves the held call unknown (only Hold
+    displaces it).
     Its `follow_m` moves only when the identity changes (target, kind, or frequency
     when both are known); one heard on another frequency than the receiver's is not known here. A follow replaces the
     previous record outright unless it re-follows the call the receiver still holds (`NXDN_FOLLOW_HELD`, a Type-D busy
@@ -11160,11 +11161,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     refuse.
   - Type-D association (`nxdn_idas_assoc()`): a busy repeater message's or INFO2 target message's go-to repeater is
     MATCH (its mapped frequency is the receiver's), OTHER, or UNKNOWN (no repeater 1-30, unmapped, or the receiver's
-    frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and a
-    busy message's G/U bit sets the canonical call's group or private kind, so a later INFO2 for that target never reads
-    a previous call's class; an INFO2 naming another target than the live call's names another call, which takes no
-    class from it (`nxdn_scch_named_kind()`: a generic voice call, so the held call is unknown and yields only to Hold
-    until a classified message names it); UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
+    frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and the
+    message's G/U bit (INFO2 has INFO4's format, TS 1-E §6.5.2.3, §6.5.3.3) sets the canonical call's group or private
+    kind, so a later message for that target never reads a previous call's class: an INFO2 naming another target than
+    the live call's names another call, of its own G/U class, held and judged for preemption as that class, and it takes
+    no IV of the previous call; an INFO2 with ID 0 (the Null ID) names no destination and changes nothing; UNKNOWN never
+    relabels. While voice is live a busy message for OTHER takes the receiver for
     the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
     enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy. A
@@ -12206,19 +12208,28 @@ Private per-protocol modules worth knowing about:
   publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
   frame, 80 ms, later). `nxdn_scch_parse()` reads the field layout of NXDN TS 1-E §6.5 (its comment has the bit table;
   TS 2-B §5.1.2's test vectors pin it): the ID of an INFO2, INFO3 or INFO4 is always a unit or group ID (31 is a
-  standard ID); the idle, halt, free repeater and site ID messages are outbound only (`nxdn_scch_is_status()`); an
-  INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (Table 6.6-4) names no unit and changes nothing past its
-  frame, not even the area or the control channel sync clock (`nxdn_scch_info::reserved_prefix`); an INFO1 with its
-  Spare bit set is not defined and acts on nothing; and an INFO1 naming a cipher Type-D reserves (10, 11; shown as
-  DES/AES) selects it only with no key for it or once the call received an IV. No SCCH carries an IV or writes the
-  decoder's scrambler register or IV (`payload_miN`): Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F §16).
-  The SCCH channel decoder sets the register to its frame's position only from a CRC-verified SCCH
-  (`nxdn_deperm_scch_soft()`, as a SACCH sets it), and no NXDN crypto publication sources its MI from the register,
-  which a scrambled call loads from the key: the call's MI is an IV the air carried (`nxdn_live_call_received_mi()`),
-  and the terminal shows the scrambler seed only through the key redaction (`test_type_d_scch_never_rewrites_cipher_state`,
-  `test_type_d_scch_publishes_no_register_mi`, `test_scch_crc_gates_scrambler_reload`). The parsed SCCH diagnostics
-  print the bits some decoders read as IV parts only through the key redaction; the `-Z` raw payload dump after them
-  prints all four decoded bytes, which are on-air bits, not key material. The "Type-D" category it names stays with its
+  standard ID); the idle, halt, free repeater and site ID messages are outbound only (`nxdn_scch_is_status()`).
+  Content TS 1-E does not define (`nxdn_scch_content_valid()`: an INFO2, INFO3 or busy INFO4 with the reserved prefix 31,
+  Table 6.6-4; an INFO1 with its Spare bit set) is printed and nothing else: no confirmation evidence or SCCH streak, no
+  area, control channel sync, hunt, activity, identity, tune, cipher or key, and the "Type-D" layout it names stays with
+  its frame even on a confirmed transmission (`dsd_state::nxdn_scch_frame_invalid`). A call option naming a cipher
+  Type-D reserves (10, 11; shown as DES/AES) is kept like any other: the call encrypted, undecryptable and muted until it
+  receives an IV. No SCCH carries an IV or writes the decoder's scrambler register or IV (`payload_miN`): Type-D defines
+  only Scramble (TS 1-E Table 6.6-31, TS 1-F §16), whose register the key loads at a superframe's start and which runs
+  on four 49-bit VCH slots a frame, a FACCH1-stolen slot included (Fig 16.4-1). A CRC-verified, valid SCCH sets the
+  register to its frame's start, with a scalar key loaded only (`nxdn_deperm_scch_soft()`, as a SACCH sets it), and
+  `nxdn_frame()` steps the frame's stolen slots after the frame's signalling decoded, so the voice after a leading
+  FACCH1 starts two slots in; a failed SCCH places nothing. The received IV (`dsd_state::nxdn_rx_iv`,
+  `<dsd-neo/core/nxdn_received_iv.h>`) is the only NXDN MI: a VCALL_IV's, bound to the active NXDN call's transmission
+  (one received before the call opened binds to the next call), following the same call through a source update
+  (`nxdn_received_iv_follow()`), never another target's, cleared with the carrier, at an NXDN end and when a tuned call
+  is released. Crypto publications, event history, the API feed and the terminal's NXDN "IV" take it and nothing else;
+  a DES or AES call is decryptable (`dsd_nxdn_voice_crypto_class()`) and published so only once it came, and the
+  terminal shows the scrambler seed only through the key redaction (`test_nxdn_received_iv_belongs_to_its_call`,
+  `test_nxdn_history_mi_only_from_received_iv`, `test_scch_crc_gates_scrambler_reload`,
+  `test_stolen_slots_step_after_the_scch_places_the_register`). The parsed SCCH diagnostics print the bits some
+  decoders read as IV parts only through the key redaction; the `-Z` raw payload dump after them prints all four
+  decoded bytes, which are on-air bits, not key material. The "Type-D" category a valid SCCH names stays with its
   own frame only,
   the frame's FACCH1 reading it
   (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's

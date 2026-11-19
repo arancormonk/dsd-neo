@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -1327,6 +1328,129 @@ test_scch_crc_gates_scrambler_reload(void) {
     rc |=
         expect_int("scch-good-crc-places-register", state.payload_miN == advance_nxdn_lfsr_seed(key, 2 * 4) ? 1 : 0, 1);
     dsd_state_ext_free_all(&state);
+
+    /* No key: there is no register to place, so a working IV left in it is never stepped. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.nxdn_cipher_type = 1U;
+    state.payload_miN = 0x234567ULL;
+    make_scch_soft_bits(bits, payload, 0);
+    nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
+    rc |= expect_int("scch-no-key-leaves-register", state.payload_miN == 0x234567ULL ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
+ * An SCCH whose content NXDN TS 1-E does not define -- an INFO3 with the reserved prefix 31 (Table 6.6-4), an INFO1 with
+ * its Spare bit set -- passes its CRC-7 but is no evidence of a transmission (Table 9.1-1): frames of them alone never
+ * confirm one. Valid SCCHs (the control) do.
+ */
+static int
+test_scch_undefined_content_confirms_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t payload[25];
+    uint8_t bits[60];
+    uint8_t reliab[60];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(reliab, 255, sizeof(reliab));
+    for (int kind = 0; kind < 3; kind++) {
+        DSD_MEMSET(payload, 0, sizeof(payload));
+        if (kind == 2) {
+            write_bits_msb(payload, 0U, 2U, 3U); /* INFO1 */
+            payload[24] = 1U;                    /* Spare */
+        } else {
+            write_bits_msb(payload, 0U, 2U, 1U); /* INFO3 */
+            write_bits_msb(payload, 3U, 5U, 2U);
+            write_bits_msb(payload, 8U, 5U, kind == 0 ? 31U : 3U);
+            write_bits_msb(payload, 13U, 11U, 1234U);
+        }
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.synctype = DSD_SYNC_NXDN_POS;
+        nxdn_confirm_reset(&state);
+        make_scch_soft_bits(bits, payload, 0);
+        for (uint32_t frame = 0U; frame < 3U; frame++) {
+            nxdn_confirm_note_frame_start(&state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
+            nxdn_confirm_begin_frame(&state);
+            nxdn_deperm_scch_soft(&opts, &state, bits, reliab, 1U);
+            nxdn_confirm_end_frame(&state);
+        }
+        const char* tag = kind == 0   ? "scch-reserved-prefix-confirms-nothing"
+                          : kind == 2 ? "scch-spare-info1-confirms-nothing"
+                                      : "scch-valid-confirms";
+        rc |= expect_int(tag, nxdn_confirm_is_confirmed(&state), kind == 1 ? 1 : 0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+/* A VCALL's 80 elements: type, CC option, call type, voice call option, source, destination, cipher and key. */
+static void
+make_vcall_elements(uint8_t bits[96], uint8_t message_type, uint16_t source, uint16_t destination, uint8_t cipher,
+                    uint8_t key_id) {
+    DSD_MEMSET(bits, 0, 96U);
+    write_bits_msb(bits, 2U, 6U, message_type);
+    write_bits_msb(bits, 16U, 3U, 1U);
+    write_bits_msb(bits, 19U, 5U, 2U);
+    write_bits_msb(bits, 24U, 16U, source);
+    write_bits_msb(bits, 40U, 16U, destination);
+    write_bits_msb(bits, 56U, 2U, cipher);
+    write_bits_msb(bits, 58U, 6U, key_id);
+}
+
+/*
+ * The MI a call publishes reaches the canonical call, event history and from there the API feed. An NXDN call's MI is
+ * only an IV it received over the air: a scrambled call's (whose working register is the key itself, then key stream,
+ * NXDN TS 1-F §16.4.2) is none; a DES call's is none until its VCALL_IV comes (here the working register holds the
+ * key an assignment loaded), and its voice is undecryptable until then.
+ */
+static int
+test_nxdn_history_mi_only_from_received_iv(void) {
+    static Event_History_I histories[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[96];
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    init_sacch2_state(&state, histories);
+    state.nxdn_confirmed = 1;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.R = 0x3039ULL;
+    state.payload_miN = state.R;
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 0x01U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    rc |= expect_int("history-mi-scramble-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("history-mi-scramble-call-mi", call.mi == 0ULL ? 1 : 0, 1);
+    rc |= expect_int("history-mi-scramble-event-mi", histories[0].Event_History_Items[0].mi == 0ULL ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+
+    init_sacch2_state(&state, histories);
+    state.nxdn_confirmed = 1;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.R = 0x3039ULL; /* the DES key a followed assignment loaded, also in the working register */
+    state.payload_miN = state.R;
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 0x01U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-des-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("history-mi-des-call-mi", call.mi == 0ULL ? 1 : 0, 1);
+    rc |= expect_int("history-mi-des-event-mi", histories[0].Event_History_Items[0].mi == 0ULL ? 1 : 0, 1);
+    rc |=
+        expect_int("history-mi-des-undecryptable", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-des-iv-call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("history-mi-des-iv-mi", call.mi == 0x1122334455667788ULL ? 1 : 0, 1);
+    rc |= expect_int("history-mi-des-iv-event-mi",
+                     histories[0].Event_History_Items[0].mi == 0x1122334455667788ULL ? 1 : 0, 1);
+    rc |=
+        expect_int("history-mi-des-iv-decryptable", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1353,6 +1477,8 @@ main(void) {
     rc |= test_facch3_udch2_crc_state_update();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
     rc |= test_scch_crc_gates_scrambler_reload();
+    rc |= test_scch_undefined_content_confirms_nothing();
+    rc |= test_nxdn_history_mi_only_from_received_iv();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
