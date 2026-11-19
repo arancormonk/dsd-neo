@@ -2639,9 +2639,9 @@ channel is delayed.
     second at 48 kHz), and on PortAudio and AAudio input about 2 seconds; no drop spends more than a quarter of a second reading at a time, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
     tune asked for while TCP input reconnects drops what the new connection held when it was asked for. It also starts
     its timing over, so nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence,
-    the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream;
-    when rigctl moves the radio an RTL-family input listens to, without DSD-neo retuning the stream itself, DSD-neo
-    clears the stream the same way, losing a few of the new channel's first samples with it. A
+    the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream.
+    Rigctl tuning while reading an RTL-family input is not a supported mix: DSD-neo tunes that input itself, and a
+    rigctl move clears nothing in it. A
     tune to the frequency the radio software is already on, one it refuses, and one it does not answer drop nothing.
     When the radio software's answer to a tune is lost or cannot be read, DSD-neo no longer knows where the radio is,
     since it may have moved, and a late answer could be taken for the next one: it connects to the radio software

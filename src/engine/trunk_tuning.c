@@ -192,15 +192,6 @@ dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t s
         || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
         return;
     }
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        /* An RTL stream whose carrier the peer moved, with no retune of its own to flush it: everything it holds goes
-           now, the I/Q, the output ring and the decoder's symbols of it (a new output generation). That includes what
-           arrived after the mark, which the stream cannot tell apart: a few of the new carrier's samples, never the
-           old carrier's. */
-        rtl_stream_discard_after_external_move();
-    }
-#endif
     if (!s_decoder_thread) {
         /* The decoder thread moves the epoch and asks for the drop at its next input read, or at this tune's notice
            if no read comes first. */

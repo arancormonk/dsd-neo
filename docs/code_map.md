@@ -7385,13 +7385,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   it (`Send()` refuses, so every request on it fails at once), and the control pump makes it again to the same host
   and port (`svc_rigctl_resync()`, through `svc_rigctl_connect()`, at most once a second while the peer cannot be
   reached); the rebind clears it (`test_set_freq_resyncs_after_a_late_reply()`,
-  `test_set_freq_reply_has_one_deadline()`, `UI_RIGCTL_CONNECT` `test_resync_reconnects_a_connection_out_of_step()`). On an RTL input whose carrier the rigctl peer
-  moved with no RTL leg after it (a trunk leg outside conventional scan, the io_control leg), the stream has no retune
-  of its own to flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
-  (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, and the output ring clears under
-  a new output generation, which drops the decoder's cached symbols), on any thread under the reconfigure gate; the
-  samples after the move go with it, since the stream cannot tell them apart (`ENGINE_TRUNK_RETUNE_REGRESSION`
-  `check_rigctl_move_drops_the_rtl_stream()`, `IO_RTL_RETUNE_PREPARE`). The queue the decoder reads attaches itself while it exists
+  `test_set_freq_reply_has_one_deadline()`, `UI_RIGCTL_CONNECT` `test_resync_reconnects_a_connection_out_of_step()`). Rigctl tuning while reading an RTL input is not a
+  supported mix: the RTL input is tuned natively (`-i rtl`, `-i rtltcp`), so a rigctl move does nothing to the RTL
+  stream, whose queued samples are the old carrier's until the stream's own retune flushes them. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

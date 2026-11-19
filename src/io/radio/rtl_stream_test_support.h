@@ -1010,18 +1010,6 @@ typedef struct rtl_stream_test_cqpsk_reacquire_result {
 int rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sps, size_t queued_samples,
                                     int cached_symbols, rtl_stream_test_cqpsk_reacquire_result* out_result);
 
-/* rtl_stream_discard_after_external_move() on an output ring holding @p queued_samples and @p cached_symbols the
-   decoder cached from it (issue #834). */
-typedef struct rtl_stream_test_external_move_result {
-    uint32_t generation_before;
-    uint32_t generation_after;
-    size_t used_after;
-    int cache_pending_after;
-} rtl_stream_test_external_move_result;
-
-int rtl_stream_test_external_move_discard(size_t queued_samples, int cached_symbols,
-                                          rtl_stream_test_external_move_result* out_result);
-
 typedef struct rtl_stream_test_fll_retune_result {
     float fll_freq_before;
     float fll_freq_after;
