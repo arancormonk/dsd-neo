@@ -12238,22 +12238,22 @@ Private per-protocol modules worth knowing about:
   theirs). A call option naming a cipher Type-D reserves (10, 11; shown as DES/AES) is kept like any other. No SCCH
   carries an IV or writes the scrambler register or IV: Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F §16),
   whose register the key loads at a superframe's start and which runs on four 49-bit VCH slots a frame, a
-  FACCH1-stolen slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). A frame that can carry its own position (an SCCH
-  or a superframe SACCH, `nxdn_frame_steps_after_signalling()`) steps its stolen slots after its signalling: a
+  FACCH1-stolen slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). A frame of the voice superframe that can carry its
+  own position (an SCCH on an RTCH2 whose LICH names the superframe structure, USC 1x, TS 1-E Table 5.2-1, or a
+  superframe SACCH: `nxdn_frame_steps_after_signalling()`) steps its stolen slots after its signalling: a
   CRC-verified, valid SCCH, or a CRC-verified superframe SACCH segment, hands its frame position to the rest of the
   frame (`nxdn_channel_result::seed_part`, returned by `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()`, kept in
   `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
   carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on every frame of the
-  voice superframe (a fully stolen one with no position included: its slots still run the register on; a Type-D frame
-  of the non-superframe structure, LICH USC 0x, TS 1-E Table 5.2-1, is none: its single SCCH, structure 00, places
-  nothing, and its slots run the register on only for the cipher and key the frame began with, as before: a VCALL it
-  carries that selects Scramble takes none of them), places the register
-  at the frame's start with the cipher and key this frame chose, only from a checked position and only once (a scalar
+  voice superframe (a fully stolen one with no position included: its slots still run the register on), places the
+  register at the frame's start with the cipher and key this frame chose, only from a checked position and only once (a scalar
   key loaded only; the SACCH segment decoder places nothing itself, so a VCALL the SACCH completed may choose them
   first), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH or SACCH
-  places nothing, and the register runs on. Every other frame (a DCR SB0/PICH header, a non-superframe SACCH's, a
-  control channel's) steps them before its signalling, as before, so a reset that signalling makes (the DCR SACCH2's
-  first block) stands for the voice after it. Voice withheld before the transmission is confirmed still runs the Scramble
+  places nothing, and the register runs on. Every other frame steps them before its signalling, exactly as before: a
+  DCR SB0/PICH header, a non-superframe SACCH's, a control channel's, and a standalone Type-D frame of the
+  non-superframe structure (USC 0x), whose single SCCH (structure 00 means "single", not 4/4, Table 6.3-1) places
+  nothing. So a reset or an IV that signalling delivers (the DCR SACCH2's first block, a header's VCALL_IV) stands for
+  the voice after it, and a VCALL it carries that selects Scramble or loads a key takes none of its slots. Voice withheld before the transmission is confirmed still runs the Scramble
   register across its words (`nxdn_step_withheld_voice()`), nothing playing.
   Register and MI provenance: NXDN (and dPMR's scrambler) works in its own register, `dsd_state::nxdn_payload_mi`, the
   Scramble LFSR or the DES/AES IV. P25 Phase 2 and DMR keep slot 2's MI in `payload_miN`, which P25 publishes, and NXDN

@@ -124,6 +124,10 @@ static int g_stub_sacch_selects_scramble;
 static int g_stub_facch_notes_type_c;
 /* The FACCH1 is a VCALL selecting Scramble (nxdn_cipher_observe() as a checked VCALL applies it). */
 static int g_stub_facch_selects_scramble;
+/* The FACCH1 is a VCALL selecting DES and its VCALL_IV (NXDN_decode_VCALL_IV(): the IV in the working register). */
+static unsigned long long g_stub_facch_delivers_iv;
+/* The FACCH1 is a VCALL whose key ID loads another Scramble key (R). */
+static unsigned long long g_stub_facch_loads_key;
 /* The DCR SACCH2 is a first block, which resets the scrambler register (nxdn_update_sacch2_identity_state()). */
 static int g_stub_sacch2_resets_register;
 /* The location category the FACCH1 decoder read. */
@@ -182,6 +186,8 @@ reset_state(void) {
     g_stub_sacch_selects_scramble = 0;
     g_stub_facch_notes_type_c = 0;
     g_stub_facch_selects_scramble = 0;
+    g_stub_facch_delivers_iv = 0ULL;
+    g_stub_facch_loads_key = 0ULL;
     g_stub_sacch2_resets_register = 0;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
@@ -381,6 +387,14 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     g_facch_part_mask |= 1 << part;
     if (g_stub_facch_ok && g_stub_facch_selects_scramble) {
         state->nxdn_cipher_type = 1U;
+    }
+    if (g_stub_facch_ok && g_stub_facch_delivers_iv != 0ULL) {
+        state->nxdn_cipher_type = 2U;
+        state->nxdn_payload_mi = g_stub_facch_delivers_iv;
+        state->nxdn_iv_on_air = 1U;
+    }
+    if (g_stub_facch_ok && g_stub_facch_loads_key != 0ULL) {
+        state->R = g_stub_facch_loads_key;
     }
     if (g_stub_facch_ok && g_stub_facch_notes_type_c) {
         /* dsd_nxdn_note_type_c(): the site is Type-C, and the SCCH's "Type-D" layout goes. */
@@ -1168,8 +1182,9 @@ test_stolen_slots_step_after_the_scch_places_the_register(void) {
     return rc;
 }
 
-/* A frame whose signalling retuned the receiver (here its SCCH followed a busy message): the rest of it was read on the
-   carrier left, so its cipher slots are not stepped on the next carrier's key (a data frame's four, here). */
+/* A superframe frame whose signalling retuned the receiver (here its SCCH followed a busy message): the rest of it was
+   read on the carrier left, so its cipher slots are not stepped on the next carrier's key (a fully stolen frame's four,
+   here). A standalone header (0x62, the non-superframe structure) steps before its signalling, as main does. */
 static int
 test_retuned_frame_steps_no_cipher(void) {
     reset_state();
@@ -1177,7 +1192,7 @@ test_retuned_frame_steps_no_cipher(void) {
     g_state.R = 0x5A5AULL;
     g_state.nxdn_payload_mi = 777ULL;
     g_stub_scch_tune = DSD_TRUNK_TUNE_RESULT_OK;
-    (void)route_frame(0x62U); /* Type-D RTCH2: SCCH, no voice */
+    (void)route_frame(0x70U); /* Type-D RTCH2 superframe: SCCH, FACCH1 in both halves */
     int rc = 0;
     rc |= expect_int("retuned frame: no cipher step", g_lfsr_calls, 0);
     rc |= expect_u64("retuned frame: register kept", g_state.nxdn_payload_mi, 777ULL);
@@ -1303,8 +1318,8 @@ test_unconfirmed_frame_keeps_the_shared_register(void) {
 }
 
 /* A standalone Type-D header (LICH 0x61) arriving with a key loaded and the cipher clear, whose own FACCH1 VCALL selects
-   Scramble: its slots are accounted with the cipher it began with, as they always were (main stepped data frames
-   before their channels decoded), so it takes none of the PN sequence and the first voice frame starts at the key. */
+   Scramble: its slots are stepped before its signalling, as main steps them, with the cipher still clear, so it takes
+   none of the PN sequence and the first voice frame starts at the key. */
 static int
 test_standalone_header_steps_with_its_entry_cipher(void) {
     reset_state();
@@ -1318,6 +1333,44 @@ test_standalone_header_steps_with_its_entry_cipher(void) {
     rc |= expect_int("header vcall: scramble selected", (int)g_state.nxdn_cipher_type, 1);
     rc |= expect_int("header vcall: no PN slot stepped", g_lfsr_calls, 0);
     rc |= expect_u64("header vcall: the register untouched", g_state.nxdn_payload_mi, 0ULL);
+    return rc;
+}
+
+/* A standalone header (0x61) on a running Scramble call whose FACCH1 selects DES and delivers its VCALL_IV: the header's
+   slots were stepped before its signalling, as main steps them, so the IV it delivered is the working IV after the
+   frame, not a scrambler step over it. */
+static int
+test_standalone_header_keeps_its_iv(void) {
+    reset_state();
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 1;
+    g_state.nxdn_payload_mi = 777ULL;
+    g_stub_scch_ok = 0;
+    g_stub_facch_delivers_iv = 0x1122334455667788ULL;
+    (void)route_frame(0x61U);
+    int rc = 0;
+    rc |= expect_int("header iv: the scrambler's slots stepped first", g_lfsr_calls, 4);
+    rc |= expect_u64("header iv: the received IV kept", g_state.nxdn_payload_mi, 0x1122334455667788ULL);
+    rc |= expect_int("header iv: still on air", g_state.nxdn_iv_on_air, 1);
+    return rc;
+}
+
+/* A standalone header (0x61) opening a Scramble call (the register not yet loaded) whose FACCH1 VCALL loads another
+   key: as main, its four slots run the register before its signalling, loaded from the key it had; the new key reloads
+   it only where a position says. */
+static int
+test_standalone_header_rekey_as_main(void) {
+    reset_state();
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 1;
+    g_state.nxdn_payload_mi = 0ULL;
+    g_stub_scch_ok = 0;
+    g_stub_facch_loads_key = 0x1234ULL;
+    (void)route_frame(0x61U);
+    int rc = 0;
+    rc |= expect_int("header rekey: four slots stepped", g_lfsr_calls, 4);
+    rc |= expect_u64("header rekey: loaded from the key it had, then run on", g_state.nxdn_payload_mi, 0x5A5EULL);
+    rc |= expect_u64("header rekey: the new key loaded", g_state.R, 0x1234ULL);
     return rc;
 }
 
@@ -1518,6 +1571,8 @@ main(void) {
     rc |= test_forced_scramble_steps_a_fully_stolen_frame_without_position();
     rc |= test_forced_scramble_skips_a_standalone_header();
     rc |= test_standalone_header_steps_with_its_entry_cipher();
+    rc |= test_standalone_header_keeps_its_iv();
+    rc |= test_standalone_header_rekey_as_main();
     rc |= test_spacing_confirmation_starts_the_scan_hold();
     rc |= test_withheld_voice_steps_the_scrambler();
     rc |= test_dcr_header_keeps_its_scrambler_reset();
