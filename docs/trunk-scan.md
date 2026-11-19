@@ -398,7 +398,8 @@ During scanning:
   lasts but is not activity, so the dwell keeps running through it.
   The dwell runs from the instant the target's retune lands, or, on an RTL-SDR, SoapySDR or Airspy input, from when
   the first samples on the new frequency arrive if that is later: after a retune dsd-neo throws away what the radio
-  still delivers from the old frequency, which takes over half a second on a HackRF at its lowest rates. On a silent frequency the decoder checks it every 300
+  still delivers from the old frequency, which takes over half a second on a HackRF at its lowest rates. A `-Y` row's
+  `-t` hangtime counts the same way: it does not run out before those first samples, and then runs from them. On a silent frequency the decoder checks it every 300
   symbols of its sync search (62.5 ms at 4800 symbols/s, 125 ms at the 2400 symbols/s of NXDN48 and dPMR), so a
   target rotates up to that much after its dwell ends, not at the end of the search's 1800-symbol pass (375 ms or
   750 ms) as before. While frames keep arriving, the dwell is checked after every frame.
