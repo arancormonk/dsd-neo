@@ -3426,9 +3426,8 @@ suite runs under this compiler.
   a slot 2 encrypted call's ALG ID, key ID and MI reach that voice (`dmr_pi()`). While lane 0 carries an active call
   of the other slot (its receive slot known and not the burst's, `dmr_mono_lane_call_is_other_slot()`), either way
   round, a standalone burst does not act on it: its PI header and terminator act on index 1 (`dmr_pi()`,
-  `dmr_flco_ctx_init()`), as the other slot's do on the dual-slot decoder, and a slot 1 data header or data block is
-  dispatched on index 1 (`dmr_data_route_off_lane()`; a slot 2 one is there already), so the lane's call is neither
-  ended nor re-keyed and its live crypto is not reset. A voice LC header still opens the call the lane carries next:
+  `dmr_flco_ctx_init()`), as the other slot's do on the dual-slot decoder, so the lane's call is neither ended nor
+  re-keyed. A voice LC header still opens the call the lane carries next:
   it names its own call, and the lane's voice follows it. Under trunking nothing is folded.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set

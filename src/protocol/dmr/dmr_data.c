@@ -441,23 +441,6 @@ dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
     ctx->header_marked = 1U;
 }
 
-/* A slot 1 data header or data block the single-slot decoder dispatches on its own while lane 0 carries a slot 2 call
-   (dmr_mono_lane_call_is_other_slot()): it acts on the other index (1), never on lane 0, whose live ALG ID, key ID, MI
-   and service options a data header otherwise resets or replaces under the call the lane's voice decrypts with. A
-   slot 2 one already acts on index 1 (its CACH slot), and an LC or PI header picks its own index
-   (dmr_flco_ctx_init(), dmr_pi()). */
-static void
-dmr_data_route_off_lane(dmr_data_sync_ctx* ctx) {
-    const uint8_t burst = ctx->burst;
-    const int data = burst == 6U || burst == 7U || burst == 8U || burst == 10U;
-    if (!data || ctx->folded_slot != DSD_DMR_MONO_RX_TS1 || ctx->state->dmr_ms_mode != 0
-        || !dmr_mono_folds_standalone_burst(ctx->opts, ctx->state)
-        || !dmr_mono_lane_call_is_other_slot(ctx->state, 0U)) {
-        return;
-    }
-    ctx->state->currentslot = 1;
-}
-
 /* Whether the burst was a voice LC header that the call it names took (issue #637): the call on the lane the header
    landed on (dmr_data_mark_header_lane()) is active on the header's slot and this dispatch observed it (a new epoch, or
    the epoch marked for that lane moved on). That call is the one the lane carries next, so the proof the previous call
@@ -546,7 +529,6 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                     (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
                 }
                 if (standalone) {
-                    dmr_data_route_off_lane(&ctx);
                     dmr_data_mark_header_lane(&ctx);
                 }
                 dmr_data_dispatch_burst(&ctx);

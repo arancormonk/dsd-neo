@@ -999,56 +999,6 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
     assert(state.last_vc_sync_time_m == 0.0);
 }
 
-/* Without trunking the single-slot decoder's lane 0 carries one slot's call. A slot 1 data header or data block heard
-   while it carries a slot 2 call acts on index 1, never on lane 0, whose live crypto a data header resets; while the
-   lane carries a slot 1 call (or none) it acts on lane 0 as before. A slot 1 voice LC or PI header is dispatched on its
-   own CACH slot either way (its handler picks its index). */
-static void
-test_mono_slot1_data_stays_off_a_slot2_lane_call(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static int payload[90];
-    static dsd_dibit_soft_t reliab[90];
-
-    static const struct {
-        uint8_t lane;  /* the slot of the lane's active call: 0 none, 1, 2 */
-        uint8_t burst; /* the slot 1 burst */
-        uint8_t index; /* the index it is dispatched on */
-    } cases[] = {
-        {2U, 6U, 1U}, {2U, 7U, 1U}, {2U, 8U, 1U}, {2U, 10U, 1U}, {2U, 1U, 0U},
-        {2U, 0U, 0U}, {1U, 6U, 0U}, {0U, 6U, 0U}, {0U, 10U, 0U},
-    };
-
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        prepare_state(&state, payload, reliab);
-        reset_fixture();
-        opts.dmr_mono = 1;
-        state.dmr_stereo = 0;
-        state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
-        if (cases[i].lane != 0U) {
-            state.dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + cases[i].lane - 1U);
-            const dsd_call_observation voice = {
-                .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
-                .slot = 0U,
-                .kind = DSD_CALL_KIND_GROUP_VOICE,
-                .ota_target_id = 101U,
-                .policy_target_id = 101U,
-                .ota_source_id = 1001U,
-            };
-            assert(dsd_call_state_observe(&state, &voice, DSD_CALL_BOUNDARY_BEGIN) >= 0);
-            dsd_call_snapshot call;
-            assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.receive_identity.slot == cases[i].lane);
-        }
-        g_decoded_slot = 0;
-        g_decoded_burst = cases[i].burst;
-        dmr_data_sync(&opts, &state);
-        assert(g_handler_calls == 1 && g_handler_burst == cases[i].burst);
-        assert(g_handler_slot == cases[i].index);
-        dsd_state_ext_free_all(&state);
-    }
-}
-
 /* A standalone burst on the single-slot decoder copies no call unless it is a voice LC header: a PI header, a data
    header or an idle burst costs no call copy, and a header reads its lane's call once, after its dispatch (its mark
    before it is the lane's epoch and revision alone). */
@@ -1090,7 +1040,6 @@ main(void) {
     test_ms_colour_change_resets_ras();
     test_data_burst_receive_slot();
     test_mono_burst_copies_no_call_but_a_headers();
-    test_mono_slot1_data_stays_off_a_slot2_lane_call();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();
