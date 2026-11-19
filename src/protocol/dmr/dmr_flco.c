@@ -764,6 +764,28 @@ dmr_flco_drop_forced_fallback(const dmr_flco_ctx* ctx) {
     }
 }
 
+/* A checked LC that ends a hold and declares clear voice (no privacy bit) says the call is clear: the ALG ID, key ID and
+   MI the slot took while held (a PI header naming no cipher the decoder has, which kept the hold, or a forced fallback)
+   go with the held classification, so its voice plays as clear. A forced key plays as before. One that declares
+   encryption drops a forced fallback only (dmr_flco_drop_forced_fallback()). The privacy bit read is the standard one,
+   or a Kirisun LC's (FID 0x0A), which sits in the same place; no other unread shape's is read. */
+static void
+dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
+    if ((ctx->lc_so & 0x40U) != 0U) {
+        dmr_flco_drop_forced_fallback(ctx);
+        return;
+    }
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    *live.algid = 0;
+    *live.keyid = 0;
+    *live.mi = 0ULL;
+    // A Kirisun PI header's encrypted late-entry mode went with that cipher (dmr_pi_handle_kirisun()): left, it would
+    // key the clear call again from its next single burst. A Kirisun LC's own clear mode stays.
+    if (ctx->state->dmr_le_vendor[ctx->voice_slot] == DMR_LE_VENDOR_KIRISUN_ENC) {
+        dmr_le_vendor_reset(ctx->state, ctx->voice_slot);
+    }
+}
+
 /* A voice LC that passed its check in a shape the decoder reads no privacy from (Tait FID 0x58, an unknown FID, the
    Motorola and Hytera FLCOs it does not parse: dmr_flco_handle_motorola_or_tait(),
    dmr_flco_handle_hytera_unknown_or_fid()) says as much as such a call ever says: its voice is judged from then on as
@@ -778,7 +800,11 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
     }
     if (dmr_flco_ends_voice_hold(ctx) && dmr_flco_voice_held(ctx)) {
         dmr_enc_class_reset(ctx->state, ctx->voice_slot);
-        dmr_flco_drop_forced_fallback(ctx);
+        if (ctx->fid == 0x0AU) {
+            dmr_flco_drop_held_crypto(ctx); // a Kirisun LC's privacy bit is read
+        } else {
+            dmr_flco_drop_forced_fallback(ctx); // no privacy bit is read: nothing says the call is clear
+        }
         unsigned int fid = 0U;
         unsigned int so = 0U;
         if (ctx->fid == 0x0AU) {
@@ -794,22 +820,6 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
         }
     }
     dmr_flco_release_voice_hold(ctx);
-}
-
-/* A checked LC that ends a hold and declares clear voice (no privacy bit) says the call is clear: the ALG ID, key ID and
-   MI the slot took while held (a PI header naming no cipher the decoder has, which kept the hold, or a forced fallback)
-   go with the held classification, so its voice plays as clear. A forced key plays as before. One that declares
-   encryption drops a forced fallback only (dmr_flco_drop_forced_fallback()). */
-static void
-dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
-    if ((ctx->lc_so & 0x40U) != 0U) {
-        dmr_flco_drop_forced_fallback(ctx);
-        return;
-    }
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
-    *live.algid = 0;
-    *live.keyid = 0;
-    *live.mi = 0ULL;
 }
 
 static void

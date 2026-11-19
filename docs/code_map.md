@@ -3434,7 +3434,10 @@ suite runs under this compiler.
   too and goes with it (`dmr_flco_drop_forced_fallback()`); the voice path installs it again if the LC's own privacy bit
   asks. A checked LC that ends the hold declaring clear voice (no privacy bit) also drops the ALG ID, key ID and MI the
   slot took while held, such as those of a PI header naming no cipher the decoder has (`dmr_flco_drop_held_crypto()`),
-  so the call plays as clear; a forced key still plays. From then on the hysteresis runs as before.
+  so the call plays as clear; a forced key still plays. A checked Kirisun LC (FID 0x0A), whose privacy bit the decoder
+  reads, does the same on its unread-shape path, and either LC also drops the Kirisun encrypted late-entry mode such a
+  PI header set (`DMR_LE_VENDOR_KIRISUN_ENC`), which would key the clear call again from its next single burst. No
+  other unread shape's privacy bit is read, so its LC drops only a forced fallback. From then on the hysteresis runs as before.
 
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's
   rule below, whatever class its privacy bit or ALG ID reads: an embedded LC whose checksum failed still sets the live

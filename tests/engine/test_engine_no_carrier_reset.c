@@ -4694,6 +4694,63 @@ test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(char frame[4][24]) {
     return rc;
 }
 
+/* After a carrier boundary held slot 1, a checked Kirisun PI header naming ALG ID @p alg, a cipher the decoder has
+   none of, keeps the hold, takes that ALG ID and sets the Kirisun encrypted late-entry mode. The call's checked clear
+   voice LC header, in Kirisun shape (FID 0x0A, whose privacy bit the decoder reads) or standard, then ends the hold on
+   its own word: the ALG ID, key ID and MI go, and so does the Kirisun encrypted mode, so the clear call plays as it
+   came. A checked Kirisun LC declaring encryption keeps them. */
+static int
+test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("unusable Kirisun cipher: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int kirisun_lc = 0; kirisun_lc <= 1; kirisun_lc++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_hold_no_key(opts, state);
+        dmr_enc_class_hold(state);
+        uint8_t pi[10] = {kirisun_lc ? 0x23U : 0x80U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+        state->currentslot = 0;
+        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        dmr_pi(opts, state, pi, 1U, 0U);
+        const char* lc = kirisun_lc ? "Kirisun" : "standard";
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "unusable Kirisun cipher (%s LC): the PI keeps the hold, its ALG ID and mode",
+                     lc);
+        rc |= expect_true(what, state->payload_algid != 0 && state->dmr_enc_class_held[0] == 1U
+                                    && state->dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+        dmr_hop_lc_on(opts, state, 0, 1U, 1U, kirisun_lc ? 0x0AU : 0x00U, 0x00U, 101U);
+        DSD_SNPRINTF(what, sizeof what,
+                     "unusable Kirisun cipher (%s LC): the checked clear header drops it and its mode", lc);
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_mi == 0ULL
+                                    && state->dmr_le_vendor[0] != DMR_LE_VENDOR_KIRISUN_ENC);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "unusable Kirisun cipher (%s LC): the clear call's frame plays as it came", lc);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        free_test_runtime(opts, state);
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    uint8_t pi[10] = {0x23U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x0AU, 0x40U, 101U);
+    rc |= expect_true("unusable Kirisun cipher: a checked Kirisun LC declaring encryption keeps it and its mode",
+                      state->payload_algid == 0x23 && state->dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The dual-slot decoder hearing direct mode (an MS sync: both slots' voice and LCs on lane 0) behaves as main: no voice
    hold, as on -fr. After a carrier boundary held both slots, a direct-mode frame plays as it came before any LC, burst A
    included (decoded before dmrMS() marks dsd_state::dmr_ms_mode); a repeater frame is still held. */
@@ -4836,6 +4893,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(frame);
     rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(frame);
     rc |= test_dmr_direct_mode_has_no_voice_hold(frame);
+    rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(frame);
     rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
