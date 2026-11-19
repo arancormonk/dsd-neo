@@ -1947,13 +1947,16 @@ test_staged_low_rate_pcm_late_confirmation(void) {
     }
     dsd_frame_sync_off_thread_tunes_reset(state);
     state->symbol_clock_input = opts->pcm_input_generation;
-    rc |= expect_true("late staged: the old channel",
-                      pipe_put(fds[1], 1000) && pipe_put(fds[1], 1000) && pipe_put(fds[1], 1000));
     for (int i = 0; i < 3; i++) {
-        rc |= expect_true("late staged: an old sample read", staged_after_read(opts, 1000) || i > 0);
+        rc |= expect_true("late staged: an old sample", pipe_put(fds[1], 1000));
+    }
+    for (int i = 0; i < 3; i++) {
+        rc |= expect_true("late staged: an old sample read", staged_after_read(opts, 1000));
     }
     rc |= expect_true("late staged: the watchdog's hop", leg_watchdog(opts, state, VC2_HZ));
-    rc |= expect_true("late staged: the new channel", pipe_put(fds[1], 0) && pipe_put(fds[1], 0));
+    for (int i = 0; i < 2; i++) {
+        rc |= expect_true("late staged: a new sample", pipe_put(fds[1], 0));
+    }
     const int16_t s = pipe_next(opts);
     dsd_pcm_input_stage_resample(opts, (float)s);
     opts->input_upsample_pos = 1; /* the decoder took the first of the staged outputs */
