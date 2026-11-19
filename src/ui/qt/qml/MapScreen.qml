@@ -210,6 +210,23 @@ Item {
         locator.cameraMoved();
     }
 
+    // The control that takes the focus (Tab, a screen reader's step) inside
+    // one of the scrolling bands, the tiles prompt's or the chips', scrolls
+    // into its view, as on the other scrolling screens.
+    function revealBandFocus() {
+        var window = screen.Window.window;
+        if (!window || !visible)
+            return;
+        Theme.revealFocus(promptScroll, tilesPrompt, window.activeFocusItem);
+        Theme.revealFocus(status, statusColumn, window.activeFocusItem);
+    }
+    Connections {
+        target: screen.Window.window
+        function onActiveFocusItemChanged() {
+            screen.revealBandFocus();
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Theme.bg

@@ -18304,14 +18304,16 @@ Qt Quick frontend (`src/ui/qt`):
     (natural to flat) that leaves them the most room; the credit stays beside the controls while that room holds its
     longest word (`attribution.minimumWidth`), else stacks above them across the canvas (`attribution.stacked`), so it
     wraps whole and is never cut in any arrangement; a chip stack taller than its room scrolls (`status` is a
-    PlexFlickable whose band holds a chip's 48 px action whole), and `topInset` follows that band, the attribution chip,
-    which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through `ModalSheet.bottomInset`; the
-    empty-state card keeps clear of the device's dot: centred while that clears it, else in the larger room above or
-    below), `MapList.qml` (the List: the History pin's row, then the device's own row, the saved fix in words, which
-    also shows the List with no radio heard, both in the ListView's header so every row scrolls on one surface, their
-    heights keyed on a pin or a dot existing, not on the List showing, so a List opened from the map starts at its start
-    with both in view (a reader who scrolled further keeps their place, `KeepPlace`); the List holds no live lease),
-    `MapPositionSheet.qml` (a marker's, row's or pin's detail sheet: Follow only for a confirmed radio, since an
+    PlexFlickable whose band holds a chip's 48 px action whole), and `topInset` follows that band; the focus moving into
+    a band (Tab, a screen reader's step) scrolls the focused control into it (`revealBandFocus()`, `Theme.revealFocus`),
+    the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
+    `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it, else
+    in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own row, the
+    saved fix in words, which also shows the List with no radio heard, both in the ListView's header so every row
+    scrolls on one surface, their heights keyed on a pin or a dot existing, not on the List showing, so a List opened
+    from the map starts at its start with both in view (a reader who scrolled further keeps their place, `KeepPlace`); a
+    row's time, and the gap row's, carry their date when not today (`MapText.clockText()`); the List holds no live
+    lease), `MapPositionSheet.qml` (a marker's, row's or pin's detail sheet: Follow only for a confirmed radio, since an
     anonymous report is a single point no later report moves; Show on map and starting a Follow only while the map draws
     a mark for the track, with a line saying the age filter hides it; a satellite count of 0 is said, unlike none; an
     evicted track's last details say their times, the frozen ages dropped; "Measured at" carries its date when not today

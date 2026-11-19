@@ -1359,6 +1359,80 @@ Item {
             sheet().visible = false;
         }
 
+        // Re-review 2 s1: Tab into a scrolling band (the chips', the tiles prompt's) brings the focused action into
+        // its view, as the other scrolling screens do, where the band clips it.
+        function test_18m_tab_reveals_a_clipped_action_data() {
+            return [{tag: "320x420 1.6", w: 320, h: 420, s: 1.6}, {tag: "320x480 1.3", w: 320, h: 480, s: 1.3}];
+        }
+        function test_18m_tab_reveals_a_clipped_action(data) {
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            screen.tilesPromptDismissed = true;
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
+            screen.follow(trackNamed("Engine 7"));
+            item("mapLocator").notice = "Location unavailable. The dot shows your saved location.";
+            Ui.Theme.fontScale = data.s;
+            resize(data.w, data.h);
+            var status = item("mapStatus");
+            verify(status.contentHeight > status.height, "the chips band clips here");
+            // Wholly in the band, or filling it where the band is shorter than the action (the tightest canvas).
+            var inBand = function (band, it) {
+                var at = band.mapFromItem(it, 0, 0);
+                var shown = Math.min(at.y + it.height, band.height) - Math.max(at.y, 0);
+                return shown >= Math.min(it.height, band.height) - 0.5;
+            };
+            var last = item("mapLocationNoticeAction");
+            verify(!inBand(status, last), "the last action starts clipped");
+            item("mapPinChipAction").forceActiveFocus();
+            for (var i = 0; i < 6 && !last.activeFocus; ++i)
+                keyClick(Qt.Key_Tab);
+            verify(last.activeFocus, "Tab reaches the notice's action");
+            tryVerify(function () { return inBand(status, last); }, 1000, "the focused action scrolls into the band");
+            item("mapLocator").clearNotice();
+            // The tiles prompt's band.
+            screen.clearPin();
+            canvas().followTrackId = 0;
+            screen.tilesPromptDismissed = false;
+            var prompt = item("mapTilesPromptScroll");
+            var load = item("mapLoadTiles");
+            verify(prompt.contentHeight > prompt.height, "the prompt clips here");
+            verify(!inBand(prompt, load), "Load map tiles starts clipped");
+            item("mapTilesNotNow").forceActiveFocus();
+            for (i = 0; i < 4 && !load.activeFocus; ++i)
+                keyClick(Qt.Key_Tab, Qt.ShiftModifier);
+            if (!load.activeFocus) {
+                item("mapTilesNotNow").forceActiveFocus();
+                for (i = 0; i < 4 && !load.activeFocus; ++i)
+                    keyClick(Qt.Key_Tab);
+            }
+            verify(load.activeFocus, "Tab reaches Load map tiles");
+            tryVerify(function () { return inBand(prompt, load); }, 1000, "the focused button scrolls into the prompt's band");
+            Ui.Theme.resetFontScale();
+            resize(360, 780);
+        }
+
+        // Re-review 2 s2: a List row's time, and the gap row's, carry the date when not today.
+        function test_18n_list_times_have_their_date() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", ageSeconds: 30});
+            testContext.startNewPositionStream();
+            screen.mapShown = false;
+            var list = item("mapList");
+            var expected = function (seconds) {
+                var at = new Date(seconds * 1000), now = new Date(savedSystems.realtimeNowMs());
+                var same = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+                return Qt.formatDateTime(at, same ? "hh:mm:ss" : "yyyy-MM-dd hh:mm:ss");
+            };
+            var id = trackNamed("Engine 7");
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(id)) !== null; });
+            var row = list.itemAtIndex(positionView.rowForTrack(id));
+            compare(row.clock, expected(positions.trackFor(id).currentFix.receivedTime));
+            var gapRow = list.itemAtIndex(positionView.rowForTrack(0));
+            verify(gapRow !== null && gapRow.gap);
+            var gapTime = positions.trackFor(0).receivedTime;
+            if (gapTime > 0)
+                compare(gapRow.gapTitle, "Positions may be missing from " + expected(gapTime));
+        }
+
         // A sheet whose radio is evicted keeps its last details, its times said as times, not frozen ages.
         function test_18j_a_gone_track_says_times() {
             push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", ageSeconds: 5});
