@@ -882,23 +882,126 @@ test_follow_moves_when_the_filter_hides_the_marker() {
     f.model.setAgeFilterSeconds(0);
 }
 
-/* PR2 review 2: the chips above the canvas change after a follow started (the Following chip lays out): the
- * followed mark moves to where centring now puts it, which is also where the zoom buttons zoom about. */
+/* PR2 review 2, independent review I2: the chips above the canvas (the Following chip laying out, tile trouble coming
+ * and going) never move the camera. A camera that followed them would change the tiles in view, and the tile chip
+ * with them: modelled here as a chip that toggles whenever the camera moves, which with a camera that re-anchors on
+ * the inset bounces for as long as it is allowed to. A followed mark stays where it was centred, zooms keep it
+ * there, and its next step is centred below the chips as they are then. */
 void
-test_follow_moves_when_the_inset_changes() {
+test_chips_never_move_the_camera() {
     Fixture f;
     push(4002U, 10.0, 20.0);
     f.model.poll();
     const qulonglong id = f.map->trackAt(200.0, 150.0);
     f.map->setFollowTrackId(id);
+    int moves = 0;
+    QObject::connect(f.map, &MapViewItem::viewportChanged, f.map, [&f, &moves] {
+        if (++moves < 20) {
+            f.map->setTopInset(f.map->topInset() > 0.0 ? 0.0 : 52.0); /* the tile chip, after the view changed */
+        }
+    });
+    for (int flip = 0; flip < 6; flip++) {
+        f.map->setTopInset(flip % 2 == 0 ? 52.0 : 0.0);
+    }
+    assert(moves == 0);
+    QObject::disconnect(f.map, &MapViewItem::viewportChanged, f.map, nullptr);
     f.map->setTopInset(52.0);
     QPointF at = f.map->markerPoint(id).toPointF();
-    assert(std::fabs(at.y() - 176.0) < 1.0e-6);
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6); /* where it was centred */
     for (int i = 0; i < 5; i++) {
         f.map->zoomIn();
     }
     at = f.map->markerPoint(id).toPointF();
-    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 176.0) < 1.0e-6);
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6); /* zooms keep it put */
+    push(4002U, 10.0, 20.00001);
+    f.model.poll();
+    at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 176.0) < 1.0e-6); /* next step: below the chip */
+}
+
+/* Independent review I1: a pinch or wheel step during a follow's camera move (a new fix, or the follow's start)
+ * zooms from where the follow is taking the camera and about the followed mark, so the mark ends centred and stays
+ * so, the same with the camera animated as with reduced motion. */
+void
+follow_pinch_case(int duration_ms) {
+    Fixture f;
+    f.map->setCameraDurationMs(duration_ms);
+    push(4004U, 10.0, 20.0);
+    f.model.poll();
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    f.map->setFollowTrackId(id);
+    assert(spin_until([&f] { return !f.map->testCameraMoving(); }));
+    const double px = 360.0 / (256.0 * 4096.0);
+    push(4004U, 10.0, 20.0 + (145.0 * px)); /* 145 px east: the follow starts its step */
+    f.model.poll();
+    f.map->zoomAbout(f.map->zoom() + 0.5, 10.0, 10.0); /* a pinch at once, fingers anywhere */
+    assert(spin_until([&f] { return !f.map->testCameraMoving(); }));
+    QPointF at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-3 && std::fabs(at.y() - 150.0) < 1.0e-3);
+    push(4005U, 10.1, 20.1); /* another radio heard */
+    f.model.poll();
+    f.map->zoomAbout(f.map->zoom() + 3.0, 390.0, 290.0);
+    assert(spin_until([&f] { return !f.map->testCameraMoving(); }));
+    at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-3 && std::fabs(at.y() - 150.0) < 1.0e-3);
+    assert(f.map->followTrackId() == id);
+}
+
+void
+test_pinch_during_a_follow_step() {
+    follow_pinch_case(250);
+    follow_pinch_case(0);
+}
+
+/* Independent review M1: a follow's later steps keep the zoom the user chose; only its first centring raises one too
+ * low to centre the mark. */
+void
+test_follow_keeps_a_pinched_out_zoom() {
+    Fixture f;
+    push(4006U, 51.5, 20.0);
+    f.model.poll();
+    f.map->centerOn(51.5, 20.0, 12.0);
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    assert(id != 0U);
+    f.map->setFollowTrackId(id);
+    f.map->zoomAbout(f.map->minimumZoom(), 200.0, 150.0); /* pinched right out */
+    const double zoom = f.map->zoom();
+    assert(zoom < 0.7);
+    push(4006U, 51.5, 20.01);
+    f.model.poll();
+    assert(std::fabs(f.map->zoom() - zoom) < 1.0e-9);
+}
+
+/* Independent review M2/M3: a new canvas size, or a view restored through the camera properties, re-centres a running
+ * follow at once rather than leaving the mark where those put it until it moves. */
+void
+test_follow_recentres_after_resize_and_restore() {
+    Fixture f;
+    push(4007U, 10.0, 20.0);
+    f.model.poll();
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    f.map->setFollowTrackId(id);
+    f.map->setCenterLatitude(40.0);
+    f.map->setCenterLongitude(-70.0);
+    QPointF at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6);
+    f.map->setFollowTrackId(0U);
+
+    /* Following the device at 51.5 N from the world's zoom: the first centring raised the zoom for a 300 px canvas;
+     * on an 800 px one (a rotation) that zoom pins the centre again, and the follow centres the dot anew. */
+    f.map->setZoom(0.0);
+    f.map->setDeviceLatitude(51.5);
+    f.map->setDeviceLongitude(20.0);
+    f.map->setDeviceValid(true);
+    f.map->setFollowDevice(true);
+    f.map->setSize(QSizeF(400.0, 800.0));
+    const mm::Viewport vp = mm::clamp_viewport(mm::Viewport{
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).x,
+        mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 800.0});
+    const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
+    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 400.0) < 1.0e-6);
+    f.map->setFollowDevice(false);
+    f.map->setSize(QSizeF(400.0, 300.0));
 }
 
 /* PR2 review 2: centring a point the current zoom cannot put in the middle (at the world's zoom the whole world is
@@ -999,7 +1102,10 @@ main(int argc, char** argv) {
     test_label_by_the_visible_ring();
     test_overlay_follows_a_wrapping_camera();
     test_follow_moves_when_the_filter_hides_the_marker();
-    test_follow_moves_when_the_inset_changes();
+    test_chips_never_move_the_camera();
+    test_pinch_during_a_follow_step();
+    test_follow_keeps_a_pinched_out_zoom();
+    test_follow_recentres_after_resize_and_restore();
     test_centring_raises_a_zoom_that_cannot();
     test_fit_takes_the_dot_left_after_follow();
     test_ring_label_ranks_by_its_own_age();

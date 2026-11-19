@@ -103,16 +103,21 @@ age_since(const dsd_position_fix& fix, qint64 at, const dsd_app_position_sample&
     return now > at ? now - at : 0;
 }
 
+/* How far a measurement may lie ahead of the receive clock and still be "now": a radio stamping GPS time against a
+ * phone clock a fraction of a second behind rounds to a second ahead now and then. */
+constexpr qint64 kMeasuredSkewS = 2;
+
 /* Seconds since the report's own measurement time (fix_time_s, the radio's UTC), or -1. Unlike a receive stamp it
- * comes from another clock: one ahead of the receive clock (a radio clock ahead, a replay whose clock has no UTC
- * anchor and starts in 2000) cannot be compared, and is never "just now": no age, so the time itself is shown. */
+ * comes from another clock: one clearly ahead of the receive clock (a radio clock well ahead, a replay whose clock
+ * has no UTC anchor and starts in 2000) cannot be compared, and is never "just now": no age, so the time itself is
+ * shown. Within kMeasuredSkewS ahead it is age 0. */
 qint64
 measured_age(const dsd_position_fix& fix, const dsd_app_position_sample& sample, qint64 wall_now) {
     qint64 now = 0;
-    if (fix.fix_time_s == 0 || !clock_now(fix, sample, wall_now, &now) || now < fix.fix_time_s) {
+    if (fix.fix_time_s == 0 || !clock_now(fix, sample, wall_now, &now) || now < fix.fix_time_s - kMeasuredSkewS) {
         return -1;
     }
-    return now - fix.fix_time_s;
+    return now > fix.fix_time_s ? now - fix.fix_time_s : 0;
 }
 
 QVariant

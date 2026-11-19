@@ -18178,7 +18178,8 @@ Qt Quick frontend (`src/ui/qt`):
     it was sent", and a List row from 5 min up). `clear()` is a boundary at the published head
     (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
     published after it repopulate the map. `reportAgeSeconds` (the measurement's own time, `fixTime`,
-    the radio's UTC) is -1 when that time is ahead of the receive clock (a radio clock ahead, a replay with no UTC
+    the radio's UTC) is -1 when that time is more than 2 s ahead of the receive clock (a radio clock ahead, a replay
+    with no UTC
     anchor): it cannot be compared, so the sheet shows the time, never "just now". `currentShown`/`unknownShown`
     (age roles, so a filter change or an age tick
     announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and the
@@ -18258,17 +18259,22 @@ Qt Quick frontend (`src/ui/qt`):
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
-    puts its target in the middle of the part below it (`belowTopInset()`); the zoom buttons, and any zoom while
-    following, zoom about that same point (`focusPoint()`), so a followed radio stays put. `fitPadding` is label
+    puts its target in the middle of the part below it (`belowTopInset()`); the zoom buttons zoom about that same point
+    (`focusPoint()`), or about the followed mark while following. `fitPadding` is label
     room at the text size
     (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId` and `followDevice` are
     tracked in one place (`followNow()`): the target is the followed track's drawn mark (its current position, else
-    its open ring when the age filter hid the position) or the device dot, and the camera moves whenever that target,
-    or `topInset` (where centring puts it), changes: a new fix, an age tick that hides or shows a mark, a new device
-    fix, the Following chip laying out. A pan ends either; a fit ends either before it takes in the device dot, so it
-    fits the dot that remains once live follow lets go. Every centring (one-shot or followed, `centredOn()`) raises a
-    zoom too low to put its point in the middle (the whole world shorter than the canvas) just enough, and keeps one
-    that can. `cameraUsedDevicePosition` turns true once the
+    its open ring when the age filter hid the position) or the device dot, and the camera moves whenever that target
+    changes (a new fix, an age tick that hides or shows a mark, a new device fix), centring it below the chips as they
+    are then. The chips (`topInset`) never move the camera themselves: they come and go with tile trouble, and a camera
+    that followed them would change the tiles in view and so the chips again. A camera put elsewhere by other means (a
+    restored view through `centerLatitude`/`centerLongitude`/`zoom`, a new canvas size) re-centres a running follow at
+    once (`rearmFollow()`). A pan ends either follow; a pinch, wheel or zoom-button step keeps it, starting from where
+    the follow is taking the camera and zooming about the followed mark (`followAnchor()`), the same with the camera
+    animated as with reduced motion. A fit ends either before it takes in the device dot, so it fits the dot that
+    remains once live follow lets go. Every one-shot centring (`centredOn()`) and a follow's first raise a zoom too low
+    to put the point in the middle (the whole world shorter than the canvas) just enough; a follow's later steps keep
+    the zoom the user chose. `cameraUsedDevicePosition` turns true once the
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
     saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
     `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks

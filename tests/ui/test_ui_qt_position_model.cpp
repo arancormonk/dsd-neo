@@ -958,6 +958,29 @@ test_future_measurement_has_no_age() {
     CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 7U)->id), "reportAgeSeconds").toLongLong() == -1);
     CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 8U)->id), "reportAgeSeconds").toLongLong() == 40);
     CHECK(role(f.model, f.model.rowForTrack(track_of(f.model, 7U)->id), "ageSeconds").toLongLong() == 0);
+
+    /* A second or two ahead is clock skew (GPS time against a phone clock a little behind): "now", age 0. */
+    Fresh g;
+    const uint64_t s2 = 34U;
+    dsd_position_fix skewed = fix_of(9U, 0, kT0);
+    skewed.fix_time_s = kT0 + 1;
+    g_wall = kT0;
+    publish(s2, {skewed}, sample_of(s2, DSD_DECODE_CLOCK_SYSTEM, kT0, true));
+    g.model.poll();
+    CHECK(role(g.model, g.model.rowForTrack(track_of(g.model, 9U)->id), "reportAgeSeconds").toLongLong() == 0);
+
+    /* A replay whose clock has no UTC anchor (it starts in 2000) against a measurement stamped years later: no age,
+     * while the receive age runs on the replay clock. */
+    Fresh h;
+    const uint64_t s3 = 35U;
+    const int64_t replay_now = 946684800 + 600; /* 2000-01-01, ten minutes in */
+    dsd_position_fix replayed = fix_of(10U, 0, replay_now - 30, DSD_DECODE_CLOCK_REPLAY);
+    replayed.fix_time_s = kT0;
+    publish(s3, {replayed}, sample_of(s3, DSD_DECODE_CLOCK_REPLAY, replay_now, true));
+    h.model.poll();
+    const int row = h.model.rowForTrack(track_of(h.model, 10U)->id);
+    CHECK(role(h.model, row, "reportAgeSeconds").toLongLong() == -1);
+    CHECK(role(h.model, row, "ageSeconds").toLongLong() == 30);
 }
 
 } // namespace

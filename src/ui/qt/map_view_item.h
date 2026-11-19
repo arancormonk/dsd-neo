@@ -365,6 +365,9 @@ class MapViewItem : public QQuickItem {
         return m_sceneRebuilds;
     }
 
+    /** @brief Whether the camera's animation is running. */
+    bool testCameraMoving() const;
+
     /** @brief End the zoom in progress now, as its settle timer would. */
     void
     testSettleZoom() {
@@ -521,7 +524,11 @@ class MapViewItem : public QQuickItem {
     bool fitPoints(std::vector<map_math::WorldPoint> points);
     /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
     map_math::Viewport belowTopInset(map_math::Viewport vp) const;
-    map_math::Viewport centredOn(map_math::Viewport vp, map_math::WorldPoint at) const;
+    map_math::Viewport centredOn(map_math::Viewport vp, map_math::WorldPoint at, bool raiseZoom = true) const;
+    bool following() const;
+    QPointF followAnchor(const map_math::Viewport& base) const;
+    void zoomStep(double steps);
+    void rearmFollow();
     bool followTarget(map_math::WorldPoint* at);
     /** @brief Where belowTopInset() puts a centred point on screen: the zoom buttons' and a followed zoom's anchor. */
     QPointF focusPoint() const;
@@ -566,10 +573,9 @@ class MapViewItem : public QQuickItem {
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;
-    /* What followNow() last centred, and with which topInset: it moves the camera only when one changes. */
+    /* What followNow() last centred: it moves the camera only when the target changes (or rearmFollow()). */
     bool m_followedSet = false;
     map_math::WorldPoint m_followedAt;
-    double m_followedInset = 0.0;
     bool m_deviceValid = false;
     double m_deviceLat = 0.0;
     double m_deviceLon = 0.0;

@@ -463,6 +463,7 @@ MapViewItem::setCenterLatitude(double lat) {
     mm::Viewport vp = m_vp;
     vp.center_y = mm::world_from_lat_lon(lat, centerLongitude()).y;
     setViewport(vp);
+    rearmFollow();
 }
 
 void
@@ -474,6 +475,7 @@ MapViewItem::setCenterLongitude(double lon) {
     mm::Viewport vp = m_vp;
     vp.center_x = mm::world_from_lat_lon(centerLatitude(), lon).x;
     setViewport(vp);
+    rearmFollow();
 }
 
 void
@@ -485,6 +487,7 @@ MapViewItem::setZoom(double level) {
     mm::Viewport vp = m_vp;
     vp.zoom = level;
     setViewport(vp);
+    rearmFollow();
 }
 
 double
@@ -496,8 +499,10 @@ void
 MapViewItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
     QQuickItem::geometryChange(new_geometry, old_geometry);
     if (new_geometry.size() != old_geometry.size()) {
-        /* The centre stays where it was; the zoom floor may rise with the width. */
+        /* The centre stays where it was; the zoom floor may rise with the width. A followed mark is centred again: where
+         * centring puts it depends on the canvas's size. */
         setViewport(m_vp);
+        rearmFollow();
         polish();
         update();
     }
@@ -558,14 +563,41 @@ MapViewItem::zoomAbout(double level, double x, double y) {
     if (!std::isfinite(level)) {
         return;
     }
-    stopCamera();
-    if (m_followTrack != 0U || m_followDevice) {
-        /* About the followed point, where centring put it (below the chips), so it stays put. */
-        const QPointF focus = focusPoint();
-        x = focus.x();
-        y = focus.y();
+    if (following()) {
+        /* A pinch or wheel step while following keeps the follow (a pan ends it): the step starts from where the
+         * follow is taking the camera, not from a frame half way there, and zooms about the followed mark, so the
+         * mark stays put with or without the camera's animation. */
+        const mm::Viewport base = cameraBase();
+        const QPointF anchor = followAnchor(base);
+        stopCamera();
+        setViewport(mm::zoom_about(base, level, anchor.x(), anchor.y()));
+        return;
     }
+    stopCamera();
     setViewport(mm::zoom_about(m_vp, level, x, y));
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+bool
+MapViewItem::testCameraMoving() const {
+    return m_camera->state() == QAbstractAnimation::Running;
+}
+#endif
+
+bool
+MapViewItem::following() const {
+    return m_followTrack != 0U || m_followDevice;
+}
+
+QPointF
+MapViewItem::followAnchor(const mm::Viewport& base) const {
+    /* The followed mark where @p base puts it: where centring put it, below the chips as they were then. A change of
+     * the chips since (they come and go with tile trouble) moves neither the camera nor this point. */
+    if (m_followedSet) {
+        const mm::ScreenPoint s = mm::screen_from_world(base, m_followedAt);
+        return QPointF(s.x, s.y);
+    }
+    return focusPoint();
 }
 
 mm::Viewport
@@ -584,16 +616,21 @@ MapViewItem::focusPoint() const {
 
 void
 MapViewItem::zoomIn() {
-    const mm::Viewport base = cameraBase();
-    const QPointF focus = focusPoint();
-    moveCamera(mm::zoom_about(base, base.zoom + 1.0, focus.x(), focus.y()));
+    zoomStep(1.0);
 }
 
 void
 MapViewItem::zoomOut() {
+    zoomStep(-1.0);
+}
+
+void
+MapViewItem::zoomStep(double steps) {
+    /* The buttons: animated, from where the camera is going, about the followed mark while following, else about the
+     * middle below the chips. */
     const mm::Viewport base = cameraBase();
-    const QPointF focus = focusPoint();
-    moveCamera(mm::zoom_about(base, base.zoom - 1.0, focus.x(), focus.y()));
+    const QPointF anchor = following() ? followAnchor(base) : focusPoint();
+    moveCamera(mm::zoom_about(base, base.zoom + steps, anchor.x(), anchor.y()));
 }
 
 std::vector<mm::WorldPoint>
@@ -689,7 +726,7 @@ MapViewItem::centerOn(double lat, double lon, double level) {
 }
 
 mm::Viewport
-MapViewItem::centredOn(mm::Viewport vp, mm::WorldPoint at) const {
+MapViewItem::centredOn(mm::Viewport vp, mm::WorldPoint at, bool raiseZoom) const {
     /* The one way a point is centred (one-shot or followed): at focusPoint(), below the chips. At a zoom too low to
      * put it there (the whole world shorter than the canvas pins the centre to the equator; near a pole the edge stops
      * it) the zoom is raised just enough; a zoom that can is kept. */
@@ -704,7 +741,9 @@ MapViewItem::centredOn(mm::Viewport vp, mm::WorldPoint at) const {
     if (at.y < 1.0 && south / (1.0 - at.y) > world) {
         world = south / (1.0 - at.y);
     }
-    vp.zoom = std::min(mm::kMaxZoom, std::max(vp.zoom, std::log2(world / mm::kTileSize)));
+    if (raiseZoom) {
+        vp.zoom = std::min(mm::kMaxZoom, std::max(vp.zoom, std::log2(world / mm::kTileSize)));
+    }
     vp.center_x = at.x;
     vp.center_y = at.y;
     return belowTopInset(vp);
@@ -830,17 +869,29 @@ MapViewItem::followNow() {
     if (!followTarget(&at)) {
         return;
     }
-    if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)
-        && !differs(m_topInset, m_followedInset)) {
+    if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
         return;
     }
+    /* A follow's first centring may raise a zoom too low to centre the mark; its later steps keep the zoom the user
+     * chose (a pinch out to see where the radio is stays out). */
+    const bool first = !m_followedSet;
     m_followedSet = true;
     m_followedAt = at;
-    m_followedInset = m_topInset;
     if (m_followDevice) {
         markUsedDevice();
     }
-    moveCamera(centredOn(cameraBase(), at));
+    moveCamera(centredOn(cameraBase(), at, first));
+}
+
+void
+MapViewItem::rearmFollow() {
+    /* The camera was put somewhere by other means (a restored view, a new canvas size): the follow centres its mark
+     * again now, as at its start. */
+    if (!following()) {
+        return;
+    }
+    m_followedSet = false;
+    followNow();
 }
 
 bool
@@ -1078,9 +1129,11 @@ MapViewItem::setFitMaxZoom(double level) {
 
 void
 MapViewItem::setTopInset(double inset) {
+    /* Never a camera move: the chips come and go with tile trouble, and a camera that followed them would change the
+     * tiles in view, and so the chips again. A followed mark stays where it was centred (zooms keep it there,
+     * followAnchor()); its next step is centred below the chips as they are then. */
     if (assignSize(m_topInset, inset)) {
         Q_EMIT behaviourChanged();
-        followNow(); /* a followed mark moves to where centring now puts it */
     }
 }
 
