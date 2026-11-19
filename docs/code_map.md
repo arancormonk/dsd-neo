@@ -13816,8 +13816,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   and retained notice hashes and supplements release SBOMs without asserting legal clearance.
   `legal/android-runtime-lock.json` holds what the `qt`, `ndk-runtime`, `androidx`, `kotlin` and `project` records
   were reviewed for (Qt version and kit SBOM namespaces, NDK revision, the Gradle release runtime classpath, the SHA-256
-  of the Qt Java libraries in the generated Gradle project's `libs/`, the APK's `lib/arm64-v8a/` files, each Qt one
-  the file the kit's build SBOMs record by SHA-1); `tools/check_android_runtime_lock.py` fails android-ci's APK job
+  of the Qt Java libraries in the generated Gradle project's `libs/`, the APK's `lib/arm64-v8a/` files, and the SHA-256
+  of each Qt one in the reviewed kit, whose files matched the SHA-1 the kit's build SBOMs record); `tools/check_android_runtime_lock.py` fails android-ci's APK job
   when the build differs, so a Qt, NDK or Gradle dependency update lands only with the records and the lock reviewed
   together.
 - Responsibilities:

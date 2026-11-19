@@ -67,11 +67,14 @@ def jar_bytes(name):
 
 
 def fake_lock():
-    """The lock with the SHA-256 of each fake Gradle libs/ file, which a test cannot give the locked content."""
+    """The lock with the SHA-256 of each fake Gradle libs/ file and fake Qt library, whose locked content a test cannot
+    give."""
     lock = copy.deepcopy(LOCK)
     for facts in lock["records"].values():
         for name in facts.get("gradle_libs", {}):
             facts["gradle_libs"][name] = hashlib.sha256(jar_bytes(name)).hexdigest()
+    qt = lock["records"]["qt"]
+    qt["library_sha256"] = {name: hashlib.sha256(library_bytes(name)).hexdigest() for name in qt["libraries"]}
     return lock
 
 
@@ -134,17 +137,9 @@ class FakeBuild:
             f"QT_VERSION = {version}\n"
             "QT_MAJOR_VERSION = 6\n", encoding="utf-8")
 
-    def set_namespace(self, module, namespace, version, files=None):
-        # Every locked Qt library is a file of the fake qtbase build SBOM, under its kit path, with its SHA-1.
-        if files is None:
-            files = {f"./lib/{name}": library_bytes(name)
-                     for name in LOCK["records"]["qt"]["libraries"]} if module == "qtbase" else {}
-        records = [{"fileName": path, "checksums": [{"algorithm": "SHA1",
-                                                       "checksumValue": hashlib.sha1(content).hexdigest()}]}
-                   for path, content in files.items()]
+    def set_namespace(self, module, namespace, version):
         (self.kit / "sbom" / f"{module}-{version}.spdx.json").write_text(
-            json.dumps({"spdxVersion": "SPDX-2.3", "documentNamespace": namespace, "files": records}),
-            encoding="utf-8")
+            json.dumps({"spdxVersion": "SPDX-2.3", "documentNamespace": namespace, "files": []}), encoding="utf-8")
 
     def set_ndk(self, revision, release):
         (self.ndk / "source.properties").write_text(
@@ -271,17 +266,24 @@ class AndroidRuntimeLockTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_qt_library_from_another_build_fails(self):
-        # A Qt library of the locked name that is not the file the locked kit's SBOM records.
+        # A Qt library of the locked name that is not the reviewed kit's file.
         stale = "libQt6Core_arm64-v8a.so"
         self.fake.set_apk_libraries(libraries(), content=lambda n: b"stale " + n.encode() if n == stale
                                     else library_bytes(n))
         self.assert_fails(stale)
-        # A Qt library the kit's SBOMs do not record at all.
+
+    def test_lock_gives_the_sha256_of_every_qt_library(self):
+        # A lock that leaves a locked Qt library without its SHA-256 is refused before anything is compared.
+        lock = fake_lock()
+        del lock["records"]["qt"]["library_sha256"]["libQt6Core_arm64-v8a.so"]
+        self.fake.lock.write_text(json.dumps(lock), encoding="utf-8")
+        self.assert_fails("SHA-256 of each locked Qt library")
+
+    def test_real_lock_matches_its_qt_libraries(self):
+        # The lock in the tree gives a SHA-256 for exactly the Qt libraries it locks.
         qt = LOCK["records"]["qt"]
-        files = {f"./lib/{name}": library_bytes(name) for name in qt["libraries"] if name != stale}
-        self.fake.set_namespace("qtbase", qt["sbom_namespaces"]["qtbase"], qt["version"], files=files)
-        self.fake.set_apk_libraries(libraries())
-        self.assert_fails(stale)
+        self.assertEqual(set(qt["library_sha256"]), set(qt["libraries"]))
+        self.assertTrue(all(len(digest) == 64 for digest in qt["library_sha256"].values()))
 
     def test_lock_must_name_known_android_records(self):
         lock = copy.deepcopy(LOCK)
