@@ -4646,6 +4646,22 @@ trunk_scan_refresh_activity(const dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
 }
 
+/* An idle dwell start @p start_m held to the input: a retune's mute discards what the device still delivers from before
+   it (a HackRF's bounded queue, over half a second at its lowest rates), so the dwell, which times listening on the
+   target, starts no earlier than the first samples after it (dsd_engine_scan_input_listening_since_m()). -1 while the
+   input is still muted, as for a dwell not armed. */
+static double
+trunk_scan_listening_dwell_start(const dsd_opts* opts, const dsd_state* state, double start_m) {
+    if (start_m < 0.0) {
+        return start_m;
+    }
+    const double listening_m = dsd_engine_scan_input_listening_since_m(opts, state);
+    if (listening_m < 0.0) {
+        return -1.0;
+    }
+    return listening_m > start_m ? listening_m : start_m;
+}
+
 /* Pick the reason the row on air is staying, and the window it runs for when the coordinator
  * owns one. Split out of trunk_scan_publish_timing() so both stay small; the report arrives
  * with no timer armed and its effective dwell/hold already resolved. */
@@ -4692,9 +4708,11 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
         return;
     }
     report->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
-    if (rt->idle_since_m >= 0.0) {
-        report->started_m = rt->idle_since_m;
-        report->deadline_m = rt->idle_since_m + (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
+    /* A dwell waiting for the input after a retune's mute names no window until it starts. */
+    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt->idle_since_m);
+    if (start_m >= 0.0) {
+        report->started_m = start_m;
+        report->deadline_m = start_m + (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
         report->span_ms = report->dwell_ms;
     }
 }
@@ -5098,12 +5116,14 @@ trunk_scan_end_entry_waiting_on_nothing(dsd_state* state, const dsd_trunk_scan_c
    over once the dwell has passed too advances in it (issue #834 B4); after any other stay it is a fresh full dwell from
    here. */
 static int
-trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, dsd_trunk_scan_target_runtime* rt, double now_m) {
+trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                              double now_m) {
     if (rt->idle_since_m < 0.0 && !trunk_scan_rearm_dwell(opts, rt, now_m)) {
         return 0;
     }
+    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt->idle_since_m);
     const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
-    return (now_m - rt->idle_since_m) >= dwell_s;
+    return start_m >= 0.0 && (now_m - start_m) >= dwell_s;
 }
 
 /* The width classes a conventional target is judged in by the scan quiet check (issue #834): its mode's, and for an
@@ -5243,7 +5263,7 @@ trunk_scan_tick_idle_decision(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_c
         trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_OPERATOR);
         return;
     }
-    if (trunk_scan_idle_dwell_ran_out(opts, rt, now_m) || trunk_scan_quiet_skip(opts, state, coord, now_m)) {
+    if (trunk_scan_idle_dwell_ran_out(opts, state, rt, now_m) || trunk_scan_quiet_skip(opts, state, coord, now_m)) {
         trunk_scan_advance(opts, state, coord);
     }
 }
@@ -5305,8 +5325,9 @@ trunk_scan_idle_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_ru
 
 /* The start of the idle dwell of the target on air when it has run out by @p now_m, else -1. */
 static double
-trunk_scan_due_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt, double now_m) {
-    const double start_m = trunk_scan_idle_dwell_start(opts, rt, now_m);
+trunk_scan_due_dwell_start(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                           double now_m) {
+    const double start_m = trunk_scan_listening_dwell_start(opts, state, trunk_scan_idle_dwell_start(opts, rt, now_m));
     const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
     return (start_m >= 0.0 && (now_m - start_m) >= dwell_s) ? start_m : -1.0;
 }
@@ -5323,7 +5344,7 @@ dsd_engine_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const double now_m = trunk_scan_now_m();
-    const double start_m = trunk_scan_due_dwell_start(opts, rt, now_m);
+    const double start_m = trunk_scan_due_dwell_start(opts, state, rt, now_m);
     if (start_m < 0.0) {
         return 0;
     }
@@ -5350,7 +5371,7 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
     if (rt->tune_pending || rt->retry_released_park) {
         return;
     }
-    const double start_m = trunk_scan_due_dwell_start(opts, rt, now_m);
+    const double start_m = trunk_scan_due_dwell_start(opts, state, rt, now_m);
     if (start_m < 0.0) {
         return;
     }

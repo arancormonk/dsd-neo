@@ -2512,6 +2512,7 @@ static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
 static void snr_ema_reset(void);
 static void controller_arm_retune_mute(const char* phase, int post_retune);
+static void retune_listening_note_input(uint64_t first, size_t count);
 
 namespace {
 
@@ -4001,6 +4002,7 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
         return 0;
     }
     span->reserved_count = (size_t)span->got;
+    retune_listening_note_input(input_ring.consumed_total.load(std::memory_order_acquire), span->reserved_count);
     demod_input_span_stop_at_gap(span);
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
@@ -6300,6 +6302,81 @@ retune_mute_bytes_for_rate(uint32_t sample_rate_hz, int post_retune) {
     return retune_mute_bytes(sample_rate_hz, post_retune, retune_mute_backend_is_buffered());
 }
 
+/* When the input comes back from a retune's mute (rtl_stream_input_listening_since_ns()). The controller arms it with
+ * each post-retune mute: the input ring's stream position then (a sample the reader commits past it came through the
+ * mute, from the new capture) and the latest time the mute should have ended, a second past what the mute discards at
+ * the rate. The demodulator stamps the time the first such sample reaches it. Guarded by its mutex, which the
+ * demodulator takes only while a retune waits for that sample. */
+namespace {
+struct RetuneListening {
+    std::mutex mutex;
+    std::atomic<int> waiting{0};
+    uint64_t mark = 0U;         /* the input ring's produced_total when the mute was armed */
+    uint64_t latest_ns = 0U;    /* when listening counts as begun if no sample has come by then */
+    uint64_t listening_ns = 0U; /* when it began (0: no retune armed a mute) */
+};
+
+RetuneListening g_retune_listening;
+/* How long past the end of a mute's discard the input may stay silent before listening counts as begun anyway: a
+   stalled device must not hold a scan's dwell for ever. */
+constexpr uint64_t kRetuneListeningGraceNs = 1000000000ULL;
+} // namespace
+
+static void
+retune_listening_reset(void) {
+    std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
+    g_retune_listening.waiting.store(0, std::memory_order_release);
+    g_retune_listening.mark = 0U;
+    g_retune_listening.latest_ns = 0U;
+    g_retune_listening.listening_ns = 0U;
+}
+
+/* A post-retune mute of @p mute_bytes at @p sample_rate_hz was armed: listening waits for a sample past it. */
+static void
+retune_listening_arm(int mute_bytes, uint32_t sample_rate_hz) {
+    /* Two bytes per complex sample, as the mute counts them (rtl_device_mute()). */
+    const uint64_t mute_ns = (uint64_t)(mute_bytes > 0 ? mute_bytes : 0) * 500000000ULL / (uint64_t)sample_rate_hz;
+    std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
+    g_retune_listening.mark = input_ring.produced_total.load(std::memory_order_acquire);
+    g_retune_listening.latest_ns = dsd_decode_now_mono_ns() + mute_ns + kRetuneListeningGraceNs;
+    g_retune_listening.listening_ns = 0U;
+    g_retune_listening.waiting.store(1, std::memory_order_release);
+}
+
+/* The demodulator took @p count floats of input from stream position @p first: the first past a waiting retune's
+ * mute starts listening now. */
+static void
+retune_listening_note_input(uint64_t first, size_t count) {
+    if (count == 0U || !g_retune_listening.waiting.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
+    if (g_retune_listening.waiting.load(std::memory_order_relaxed) && first + count > g_retune_listening.mark) {
+        g_retune_listening.listening_ns = dsd_decode_now_mono_ns();
+        g_retune_listening.waiting.store(0, std::memory_order_release);
+    }
+}
+
+extern "C" int
+rtl_stream_input_listening_since_ns(uint64_t* out_ns) {
+    if (!out_ns) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
+    if (g_retune_listening.waiting.load(std::memory_order_relaxed)) {
+        if (dsd_decode_now_mono_ns() < g_retune_listening.latest_ns) {
+            return -1;
+        }
+        g_retune_listening.listening_ns = g_retune_listening.latest_ns;
+        g_retune_listening.waiting.store(0, std::memory_order_release);
+    }
+    if (g_retune_listening.listening_ns == 0U) {
+        return 0;
+    }
+    *out_ns = g_retune_listening.listening_ns;
+    return 1;
+}
+
 static void
 controller_arm_retune_mute(const char* phase, int post_retune) {
     uint32_t sample_rate_hz = load_dongle_rate();
@@ -6308,6 +6385,14 @@ controller_arm_retune_mute(const char* phase, int post_retune) {
     }
     int mute_bytes = retune_mute_bytes_for_rate(sample_rate_hz, post_retune);
     rtl_device_mute(rtl_device_handle, mute_bytes);
+    /* A replay or a raw I/Q stream discards nothing on a retune (rtl_device_mute()), so its input has nothing to come
+       back from. */
+    const dsd_rate_plan_backend backend = rtl_device_rate_plan_backend(rtl_device_handle);
+    const int live_device = backend == DSD_RATE_PLAN_BACKEND_RTL_USB || backend == DSD_RATE_PLAN_BACKEND_RTL_TCP
+                            || backend == DSD_RATE_PLAN_BACKEND_AIRSPY || backend == DSD_RATE_PLAN_BACKEND_SOAPY;
+    if (post_retune && live_device) {
+        retune_listening_arm(mute_bytes, sample_rate_hz);
+    }
     if (debug_cqpsk_enabled()) {
         DSD_FPRINTF(stderr, "[RETUNE-MUTE] phase=%s settle=%d rate=%u bytes=%d\n", phase ? phase : "unknown",
                     post_retune ? 1 : 0, sample_rate_hz, mute_bytes);
@@ -9490,6 +9575,7 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         LOG_ERROR("Failed to initialize input ring buffer.\n");
         return -1;
     }
+    retune_listening_reset();
     g_input_ring_rate_hz = input_ring_rate_for_capacity(input_ring.capacity);
     g_demod_input_reserve_floats.store((size_t)MAXIMUM_BUF_LENGTH, std::memory_order_relaxed);
     /* A purge requested and never taken belongs to the stream that requested it: a stop can land between a RESET's or
@@ -10780,6 +10866,7 @@ dsd_rtl_stream_soft_stop(void) {
     controller_cleanup(&controller);
 
     input_ring_destroy(&input_ring);
+    retune_listening_reset();
     /* The reader is joined: where it stood is what a run-time re-plan resumes from (issue #701). */
     if (replay_stream && rtl_device_replay_checkpoint(rtl_device_handle, &g_replay_last_checkpoint) == 0) {
         g_replay_last_checkpoint_valid = 1;
@@ -13775,6 +13862,17 @@ rtl_stream_test_fail_step_designs(int ok, int failing) {
     return seen;
 }
 
+extern "C" void
+rtl_stream_test_input_produced(size_t floats) {
+    input_ring.produced_total.fetch_add(floats, std::memory_order_acq_rel);
+}
+
+extern "C" void
+rtl_stream_test_demod_took_input(size_t floats) {
+    retune_listening_note_input(input_ring.consumed_total.load(std::memory_order_acquire), floats);
+    input_ring.consumed_total.fetch_add(floats, std::memory_order_acq_rel);
+}
+
 extern "C" dsd_iq_capture_writer*
 rtl_stream_test_capture_session_open_capture(const dsd_opts* opts) {
     if (!g_test_capture_session.open || !opts || g_iq_capture_writer) {
@@ -13794,6 +13892,8 @@ rtl_stream_test_capture_session_end(void) {
         return;
     }
     test_capture_program_leave(&g_test_capture_session.saved);
+    retune_listening_reset();
+    input_ring_reset_positions(&input_ring);
     dongle.gain = g_test_capture_session.gain;
     g_squelch_tuner_gain.store(g_test_capture_session.squelch_gain, std::memory_order_relaxed);
     store_dongle_ppm_error(g_test_capture_session.ppm_error);

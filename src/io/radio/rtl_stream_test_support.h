@@ -671,6 +671,11 @@ enum {
     RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE = 6,
 };
 
+/* The input a session's stream reader committed (@p floats past what it had) and its demodulator then took (the next
+ * @p floats from where it stood), for rtl_stream_input_listening_since_ns(); the session's end forgets both. */
+void rtl_stream_test_input_produced(size_t floats);
+void rtl_stream_test_demod_took_input(size_t floats);
+
 /* Run one step; @p out (optional) holds the capture after it, with its rc. Returns -1 with no session, else 0. */
 int rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out);
 /* Open the session's I/Q capture as a stream start does (stream_open_capture_writer(), @p opts naming it), attached to

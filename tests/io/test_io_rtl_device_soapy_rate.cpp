@@ -35,6 +35,7 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "rtl_finite.h"
@@ -994,6 +995,56 @@ test_airspy_write_query_is_the_request(void) {
     expect_eq("the write programs the rate asked for", (double)written_hz, 2500000.0);
 }
 
+/* A retune's mute discards what the device still delivers from before it, so the stream says it listens on the new
+ * capture only once the demodulator takes a sample the reader committed after the mute was armed; samples from before
+ * it still in the input ring do not count. A device that delivers nothing counts as listening a second after its mute
+ * should have ended, so a scan's dwell is never held for ever. */
+void
+test_listening_waits_for_input_past_the_retune_mute(void) {
+    rtl_device_test_soapy_gain_fake fake = hackrf_fake();
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    dsd_decode_clock_use_test(1000000000ULL);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    rtl_stream_test_input_produced(4096U);
+    expect_true("the retune runs",
+                rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, kCenterHz + 25000U, 0, &got)
+                    == 0);
+    expect_true("the retune lands", got.completion == RTL_STREAM_TUNE_OK);
+    uint64_t since_ns = 0U;
+    expect_eq("muted after the retune", (double)rtl_stream_input_listening_since_ns(&since_ns), -1.0);
+    rtl_stream_test_demod_took_input(4096U);
+    expect_eq("the samples from before it do not count", (double)rtl_stream_input_listening_since_ns(&since_ns), -1.0);
+    dsd_decode_clock_test_set_ns(1200000000ULL);
+    rtl_stream_test_input_produced(1024U);
+    rtl_stream_test_demod_took_input(1024U);
+    expect_eq("the first sample after it does", (double)rtl_stream_input_listening_since_ns(&since_ns), 1.0);
+    expect_eq("listening from when the demodulator took it", (double)since_ns, 1200000000.0);
+
+    /* Another retune, after which the device delivers nothing. */
+    expect_true("the second retune runs",
+                rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, kCenterHz, 0, &got) == 0);
+    expect_eq("muted after the second retune", (double)rtl_stream_input_listening_since_ns(&since_ns), -1.0);
+    dsd_decode_clock_test_set_ns(2100000000ULL);
+    expect_eq("still muted within a second", (double)rtl_stream_input_listening_since_ns(&since_ns), -1.0);
+    dsd_decode_clock_test_set_ns(60000000000ULL);
+    expect_eq("listening once the wait is over", (double)rtl_stream_input_listening_since_ns(&since_ns), 1.0);
+    expect_true("from a second past the mute's end", since_ns > 2200000000ULL && since_ns < 60000000000ULL);
+    rtl_stream_test_capture_session_end();
+    expect_eq("no stream, no retune", (double)rtl_stream_input_listening_since_ns(&since_ns), 0.0);
+    dsd_decode_clock_use_system();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 /* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
  * read back, and the ring is sized for it. */
 void
@@ -1223,6 +1274,7 @@ main(int argc, char** argv) {
         {"offset_judged_on_the_readback_near_the_top", test_offset_judged_on_the_readback_near_the_top},
         {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
+        {"listening_waits_for_input_past_the_retune_mute", test_listening_waits_for_input_past_the_retune_mute},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
         {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},

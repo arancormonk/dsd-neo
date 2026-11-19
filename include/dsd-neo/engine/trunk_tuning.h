@@ -64,6 +64,10 @@ int dsd_engine_scan_tune_moved(void);
  * stream holds an analog request to (rtl_stream_get_request_rate_hz()), published from its start; 0 when no RTL stream
  * runs. */
 int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
+/** @brief When an RTL-family stream's input came back from its last retune's mute (rtl_stream_input_listening_since_ns()),
+ * on the decode clock in seconds: -1 while the input is still muted, 0 when no retune armed a mute or no RTL stream
+ * runs. A window timed as listening on a landed frequency (the trunk scan's idle dwell) starts no earlier. */
+double dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state);
 /** @brief The live receive-family requests an RTL-family front end has accepted (rtl_stream_live_family_request_count()),
  * or 0 on any other input. A scanner row's retune queued before this number moved no longer lands the receive family,
  * or the symbol profile, that dsd_engine_scan_tune_to_freq() attached to it (issue #526). */

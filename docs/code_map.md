@@ -4598,7 +4598,12 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
-  after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
+  after it. On an RTL-family input the dwell starts no earlier than the input's return from the retune's mute
+  (`trunk_scan_listening_dwell_start()`, `dsd_engine_scan_input_listening_since_m()`, `rtl_stream_input_listening_since_ns()`:
+  when the demodulator first takes a sample the reader committed after the post-retune mute was armed, or a second
+  past the mute's end at the rate if none comes), and every reader of the dwell (the tick, the hunt's
+  `dsd_engine_trunk_scan_dwell_due()`, the timing report) holds it unstarted while the input is muted: a HackRF's
+  backlog mute is over half a second at 2 MS/s. A dwell disarmed in between stays disarmed, and every disarm records its cause
   (`trunk_scan_disarm_dwell()`, `trunk_scan_dwell_disarm`): a conventional activity hold (the activity callback, and
   the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
   the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
