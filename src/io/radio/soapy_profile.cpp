@@ -606,18 +606,14 @@ soapy_nearest_sample_rate_within(double requested, double max_rate, const std::v
         return *out_found ? requested : 0.0;
     }
     std::vector<double> listed;
-    for (double rate : listed_rates) {
-        if (rate <= max_rate) {
-            listed.push_back(rate);
-        }
-    }
+    std::copy_if(listed_rates.begin(), listed_rates.end(), std::back_inserter(listed),
+                 [max_rate](double rate) { return rate <= max_rate; });
     std::vector<SoapyRange> within;
     for (const SoapyRange& range : ranges) {
         if (range.maximum < range.minimum || range.minimum > max_rate) {
             continue;
         }
-        SoapyRange cut = range;
-        cut.maximum = std::min(range.maximum, max_rate);
+        SoapyRange cut{range.minimum, std::min(range.maximum, max_rate), range.step};
         cut.maximum = range_last_point(cut);
         within.push_back(cut);
     }
