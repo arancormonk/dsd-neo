@@ -805,7 +805,9 @@ Generated (do not edit/commit):
       (`dsd_engine_analog_call_block()`, `found_carrier`, `dsd_engine_scan_quiet_note_activity()`: a carrier that ends
       while its tone check is pending counts). A raw sync is no activity: NXDN48 and dPMR pass their sync words on
       noise several times a second. The PROVEN sites: a validated P25p1 NID (`dsd_dispatch_handle_p25p1()`, the BCH
-      verdict under the NID's own NAC); a P25p2 FACCH, SACCH or LCCH whose real checksum passed
+      verdict under the NID's own NAC) and, whatever the NID made of the NAC, a TSBK block or an MPDU header whose
+      own CRC passed (`tsbk_update_fec_counters()`, `processMPDU()`, noted before the message is dispatched, which may
+      retune); a P25p2 FACCH, SACCH or LCCH whose real checksum passed
       (`p25p2_acch_note_evidence()`) and a decoded I-ISCH (`p25p2_process_isch()`); the DMR colour-code gate's
       evidence (`dmr_confidence_note_evidence()`: a lock, a burst matching it, a voice slot opening) and every data
       burst whose own 16- or 24-bit check proves it or whose RAS signature `-F` accepts (`dmr_dburst_proves_content()`

@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -206,6 +207,9 @@ static void
 tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
         p25_sm_note_validated_cc(opts, state);
+        /* Activity to a scan quiet check (issue #834), by the block's own CRC whatever its NID made of the NAC, and
+           before its message is dispatched, which may retune. */
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         state->p25_p1_fec_ok++;
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);

@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -709,6 +710,9 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     p25_mpdu_finalize_header(state, &ctx);
     /* The PDU's length on air, when its header passed its CRC: the header and the data blocks it announces. */
     if (ctx.err[0] == 0) {
+        /* Activity to a scan quiet check (issue #834), by the header's own CRC whatever the NID made of the NAC, and
+           before the PDU is dispatched, which may retune. */
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         state->p25_p1_unit_dibits = p25p1_block_unit_dibits(1 + (ctx.mpdu_byte[6] & 0x7F));
     }
     p25_mpdu_decode_header_if_usable(opts, state, &ctx);
