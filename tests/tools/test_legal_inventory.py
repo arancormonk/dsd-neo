@@ -535,8 +535,11 @@ class InventoryTests(unittest.TestCase):
         for words in ("This software is based in part on the work of the Independent JPEG Group.",
                       "This software is based in part on the work of the FreeType Team.",
                       "46de0710b594945a5d446ae44354daa386141c6903c53781b2ca547bc62f8f8f",
-                      "https://publicsuffix.org/list/public_suffix_list.dat"):
+                      "https://publicsuffix.org/list/public_suffix_list.dat",
+                      # Qt 6.11.3's qunicodetables_p.h: generated from the Unicode 17.0 database.
+                      "Unicode Character Database (Unicode 17.0) and Unicode CLDR v48.2"):
             self.assertIn(words, qt)
+        self.assertIn("Unicode Character Database (Unicode 17.0) and CLDR 48.2 data", components["qt"]["assessment"])
         self.assertIn("kotlinx.coroutines library.", (ROOT / "packaging/android/Kotlin-NOTICES.txt").read_text(
             encoding="utf-8"))
         # What the records do not settle stays visible in the findings.

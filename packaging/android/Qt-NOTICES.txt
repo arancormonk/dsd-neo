@@ -272,7 +272,7 @@ Reproduces qtbase-everywhere-src-6.11.3/src/3rdparty/pcre2/LICENSE-SLJIT.
  */
 
 ==============================================================================
-5. Unicode Character Database 36 and Unicode CLDR v48.2
+5. Unicode Character Database (Unicode 17.0) and Unicode CLDR v48.2
 In: libQt6Core. Licence: Unicode-3.0 (licenses/Unicode-3.0.txt).
 Copyright as recorded in the component's qt_attribution.json; licence text as named.
 ------------------------------------------------------------------------------
