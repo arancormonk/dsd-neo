@@ -2305,6 +2305,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel
   heartbeat included. While a scan row sets its own, the row decides until it leaves; the toggle edits the configured
   value beneath it and says so.
+  - DMR encryption lockout acts only on a voice LC whose check passed, or one `-F` accepted as RAS: a RAS system
+    needs `-F` for it.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
