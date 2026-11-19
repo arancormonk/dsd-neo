@@ -136,7 +136,10 @@ replacement that works (a refused one keeps the block).
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
 A private call has no talkgroup to avoid, so both are off for it; its **Hold** holds
-calls with that radio, and a radio is blocked from the radio ID list.
+calls with that radio, and a radio is blocked from the radio ID list. History and the
+recent calls say who each call was to the same way: **TG** for a talkgroup, **TO RADIO**
+for a private call (its details say "Sent to radio" and offer **Hold radio**), and just
+the number when the decoder did not say which.
 **Skip** is unaffected by this setting and never saves. Avoids and unexpired call
 skips survive scan-target revisits; **Clear temporary avoids and call skips — current
 list** clears both in the active list. List reload/replacement or stopping the decoder

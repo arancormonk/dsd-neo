@@ -157,6 +157,18 @@ function headingText(ddeg, ambiguous) {
     return ambiguous ? qsTr("%1, or the direction is not known").arg(text) : text
 }
 
+// A report's own time (Unix seconds) as a clock time, with its date when it
+// is not on the day of @p nowMs (the app's real clock, Unix ms): a fix
+// measured yesterday, or a replay's, is never read as today's.
+function clockText(seconds, nowMs) {
+    if (typeof seconds !== "number" || !isFinite(seconds) || seconds <= 0)
+        return ""
+    var at = new Date(seconds * 1000)
+    var now = new Date(nowMs)
+    var sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate()
+    return Qt.formatDateTime(at, sameDay ? "hh:mm:ss" : "yyyy-MM-dd hh:mm:ss")
+}
+
 // LIP's time elapsed, for a report with no time of its own: the most the
 // position can have aged before the radio sent it (5 s, 5 min or 30 min),
 // said beside "Received", which is only when it arrived.

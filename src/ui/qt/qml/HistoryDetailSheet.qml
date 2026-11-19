@@ -7,6 +7,9 @@ ModalSheet {
     property var record: ({})
     readonly property string rowUid: record.systemUid || ""
     readonly property double rowTg: record.tg || 0
+    // Who the call was to (CallHistoryModel "gi"): 0 a talkgroup, 1 a radio
+    // (a private call), -1 not known (issue #800).
+    readonly property int rowGi: record.gi === 0 || record.gi === 1 ? record.gi : -1
     // The session is the single saved system it was started as: no scan, running
     // or paused, and the operator never took the tuner off it (issue #671) -- an
     // Explore or a manual tune keeps the session's UID for the calls heard
@@ -37,7 +40,7 @@ ModalSheet {
     // call was heard on, in the Monitor site row's words ("DMR · LPCN 12").
     // Every line keeps its place, shown or not, so the site's is fixed.
     readonly property int siteLineIndex: 9
-    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", sheet.record.tg > 0 ? qsTr("Talkgroup %1").arg(Util.idText(sheet.record.tg)) : "", sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.codeLine, sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.siteText || "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.kindLine, sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || ""]
+    readonly property var detailLines: [sheet.record.name || "", sheet.record.when > 0 ? Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm:ss") : "", sheet.record.systemName || "", sheet.record.channel || "", Util.targetLine(sheet.record.tg, sheet.rowGi), sheet.record.sourceName || "", sheet.record.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(sheet.record.src)) : "", sheet.codeLine, sheet.record.freqHz > 0 ? qsTr("Frequency %1").arg(Util.fmtMhz(sheet.record.freqHz)) : "", sheet.record.siteText || "", sheet.record.emergency ? qsTr("Emergency") : "", sheet.kindLine, sheet.record.durationSecs === 1 ? qsTr("Duration: 1 second") : sheet.record.durationSecs >= 0 ? qsTr("Duration: %1 seconds").arg(sheet.record.durationSecs) : "", sheet.record.detail || ""]
     // Issue #708: the row's call recordings, read again by its uid whenever the
     // log changes, so a part folded into the call or a recording deleted shows
     // while the sheet is open.
@@ -126,7 +129,9 @@ ModalSheet {
         objectName: "historyHoldButton"
         width: parent.width
         visible: sheet.showHold && sheet.rowTg > 0
-        text: sheet.heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(sheet.rowTg))
+        // A private call holds its radio, as the monitor's does; never called a talkgroup.
+        text: sheet.heldHere ? qsTr("Release hold") : sheet.rowGi === 1 ? qsTr("Hold radio %1").arg(Util.idText(sheet.rowTg))
+            : sheet.rowGi === 0 ? qsTr("Hold TG %1").arg(Util.idText(sheet.rowTg)) : qsTr("Hold %1").arg(Util.idText(sheet.rowTg))
         enabled: decoderHost.running && (sheet.canHold || sheet.heldHere)
         onClicked: {
             if (commands.holdTalkgroup(sheet.heldHere ? 0 : sheet.rowTg))

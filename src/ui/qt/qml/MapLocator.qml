@@ -31,6 +31,10 @@ Item {
     property bool followMe: false
     // Set once a Locate me centred the view on the dot, until the view moves.
     property bool readyToFollow: false
+    // Whether the answer to the Locate me in flight may still move the view:
+    // an explicit camera choice made meanwhile (a follow, Show on map, a fit,
+    // a drag) keeps it (review r2). The answer still saves the dot.
+    property bool moveOnAnswer: false
     property double requestId: 0
     // A line for the screen's status column, and what its action opens
     // ("appSettings", "locationSettings" or "" for none).
@@ -99,6 +103,7 @@ Item {
         noticeAction = "";
         if (requestId)
             locationRequests.cancel(requestId);
+        moveOnAnswer = true;
         requestId = locationRequests.requestSite("map");
     }
     function cancelLocate() {
@@ -124,6 +129,12 @@ Item {
     }
     // The view moved by hand: the next press locates again.
     function cameraMoved() {
+        readyToFollow = false;
+    }
+    // The view was placed on purpose while a Locate me runs: its answer
+    // saves the dot and leaves the view (and the Follow step) alone.
+    function keepView() {
+        moveOnAnswer = false;
         readyToFollow = false;
     }
     function clearNotice() {
@@ -207,8 +218,11 @@ Item {
                 prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
                 locator.notice = "";
                 locator.noticeAction = "";
-                locator.readyToFollow = true;
-                locator.located();
+                if (locator.moveOnAnswer) {
+                    locator.readyToFollow = true;
+                    locator.located();
+                }
+                locator.moveOnAnswer = false;
             } else {
                 locator.notice = prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.") : qsTr("Location unavailable. Check location access in your device settings.");
                 locator.noticeAction = prefs.lastFixAt > 0 ? "" : "appSettings";

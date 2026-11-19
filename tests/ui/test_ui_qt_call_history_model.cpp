@@ -3265,7 +3265,8 @@ test_record_for_uid(void) {
                 {"siteText", CallHistoryModel::SiteTextRole},
                 {"analog", CallHistoryModel::AnalogRole},
                 {"analogMode", CallHistoryModel::AnalogModeRole},
-                {"position", CallHistoryModel::PositionRole}};
+                {"position", CallHistoryModel::PositionRole},
+                {"gi", CallHistoryModel::GiRole}};
 
     expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
     for (const auto& key : keys) {
@@ -5372,6 +5373,83 @@ test_position_role_feeds_the_map_pin(void) {
     const QString uid = model.data(model.index(withFix), CallHistoryModel::UidRole).toString();
     expect("P7: the detail sheet's record carries it",
            model.recordFor(uid).value(QStringLiteral("position")).toMap() == pos);
+}
+
+/* Review r2 (issue #800): who a call was to (Event_History::gi: 0 a talkgroup, 1 a radio, -1 not known) is the row's:
+ * a role and a record key, the name a row with no other gets, part of the call's identity (a group call and a private
+ * call to the same number from the same radio are two rows, a fragment that only learns the kind folds in), and kept
+ * across a save and a reload (only when known: a row an older build stored reads -1). */
+void
+test_call_kind_is_kept_and_parts_calls(void) {
+    const time_t when = 1754702000;
+    {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 42U, 7U, when, when + 3)->gi = 1;
+        ring.commit(1, 43U, 8U, when + 20, when + 23)->gi = -1;
+        ring.commit(0, 44U, 9U, when + 40, when + 43)->gi = 0;
+        model.refresh(ring.state);
+        const int priv = row_with_tg(model, 42U), unknown = row_with_tg(model, 43U), group = row_with_tg(model, 44U);
+        expect("r2: three rows", priv >= 0 && unknown >= 0 && group >= 0);
+        expect("r2: the role names the kind",
+               model.roleNames().value(CallHistoryModel::GiRole) == "gi"
+                   && model.data(model.index(priv), CallHistoryModel::GiRole).toInt() == 1
+                   && model.data(model.index(unknown), CallHistoryModel::GiRole).toInt() == -1
+                   && model.data(model.index(group), CallHistoryModel::GiRole).toInt() == 0);
+        expect("r2: a private call is named for its radio",
+               model.data(model.index(priv), CallHistoryModel::NameRole).toString() == QStringLiteral("Radio 42"));
+        expect("r2: not knowing the kind, for the number",
+               model.data(model.index(unknown), CallHistoryModel::NameRole).toString() == QStringLiteral("Call to 43"));
+        expect("r2: a group call for its talkgroup",
+               model.data(model.index(group), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 44"));
+        const QString uid = model.data(model.index(priv), CallHistoryModel::UidRole).toString();
+        expect("r2: the record carries it", model.recordFor(uid).value(QStringLiteral("gi")).toInt() == 1);
+    }
+    {
+        const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        expect("r2: a known kind is stored, an unknown one is not",
+               stored_row_with_tg(rows, 42U).value(QLatin1String("gi")).toInt(-9) == 1
+                   && stored_row_with_tg(rows, 44U).value(QLatin1String("gi")).toInt(-9) == 0
+                   && !stored_row_with_tg(rows, 43U).contains(QLatin1String("gi")));
+        RingFixture ring;
+        CallHistoryModel reloaded;
+        expect("r2: a reload keeps it",
+               reloaded.data(reloaded.index(row_with_tg(reloaded, 42U)), CallHistoryModel::GiRole).toInt() == 1
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 44U)), CallHistoryModel::GiRole).toInt() == 0
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 43U)), CallHistoryModel::GiRole).toInt()
+                          == -1);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 50U, 9U, when, when + 3)->gi = 0;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 50U, 9U, when + 5, when + 8)->gi = 1;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a group call and a private call to one number are two rows (incremental)"
+                           : "r2: a group call and a private call to one number are two rows (batched)",
+               model.count() == 2);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 51U, 9U, when, when + 3)->gi = -1;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 51U, 9U, when + 5, when + 8)->gi = 0;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a fragment that learns the kind folds in (incremental)"
+                           : "r2: a fragment that learns the kind folds in (batched)",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::GiRole).toInt() == 0
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                          == QStringLiteral("Talkgroup 51"));
+    }
 }
 
 /* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen
@@ -7760,6 +7838,7 @@ main(int argc, char** argv) {
     test_row_without_start_time_reads_unknown();
     test_voice_row_keeps_gps_and_message();
     test_position_role_feeds_the_map_pin();
+    test_call_kind_is_kept_and_parts_calls();
     test_texts_and_position_survive_save_reload_and_spill();
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();

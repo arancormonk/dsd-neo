@@ -530,7 +530,7 @@ Item {
                 if (model.kind === 1) {
                     var parts = [];
                     if (model.tg > 0)
-                        parts.push("TG " + model.tg);
+                        parts.push(Util.targetMeta(model.tg, model.gi));
                     if (model.src > 0 || model.srcName)
                         parts.push("SRC " + Util.sourceText(model.src, model.srcName));
                     if (model.accessCode.length > 0)
@@ -555,7 +555,7 @@ Item {
                 if (model.emergency)
                     meta.push(qsTr("EMERGENCY"));
                 if (model.tg > 0)
-                    meta.push("TG " + model.tg);
+                    meta.push(Util.targetMeta(model.tg, model.gi));
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 // The code the call's carrier was confirmed on ("CC 1", "NAC 293"),

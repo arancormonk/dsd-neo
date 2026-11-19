@@ -124,6 +124,11 @@ void take_reception(CallHistoryModel::Row& to, const CallHistoryModel::Row& from
 /** @brief Whether two rows' known identities agree: protocol family, reception and sender system, source and target
  * text. */
 bool rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row);
+/** @brief Whether two calls' kinds (Row::gi: 0 group, 1 private, -1 not known) are both known and differ: a group call
+ *         and a private call to the same number are two calls (issue #800). */
+bool call_kinds_differ(int a, int b);
+/** @brief A stored `gi` as Row::gi: 0 or 1, anything else (absent, an older file) -1. */
+qint8 stored_gi(qint64 value);
 
 /** @brief Whether a row has a GPS unit: GPS text, a position, or both. */
 bool row_gps_known(const CallHistoryModel::Row& row);

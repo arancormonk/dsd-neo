@@ -16042,6 +16042,13 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
   - Call history texts, position and identity (issue #800; `call_history_model.{h,cpp}`, `call_history_merge.h`,
     `call_history_payload.{h,cpp}`).
+    - Call kind: `Row::gi` and `FragmentPart::gi` (`Event_History::gi`: 0 a talkgroup, 1 a radio, a private call, -1
+      not known), the `gi` role and record key, persisted when known (`gi`; absent reads -1). A group call and a
+      private call to the same number are two calls (`call_kinds_differ()` in `fragment_call_compatible()` and
+      `rows_identity_compatible()`); a fold adopts a known kind, and a row named only "Call to N" for not knowing it
+      takes the name the kind gives ("Talkgroup N", "Radio N"). The lists' meta line (`Util.targetMeta()`: "TG N",
+      "TO RADIO N", "TO N"), the detail sheet (`Util.targetLine()`) and Hold ("Hold TG N", "Hold radio N", "Hold N")
+      say it the same way.
     - Payload: every row, voice and notice alike, keeps its message text (`messageText`, with its provenance) and its
       GPS text with the structured position (`gpsText`, `Row::Position`: lat/lon x 1e7, error, flags, kind, rev,
       process instance, receive time), read from `Event_History::text_message`, `gps_s` and `pos`; the ring's position
@@ -18286,24 +18293,31 @@ Qt Quick frontend (`src/ui/qt`):
     `BoxGrid`, `view_transform()`), `tst_map_view.qml` (labels clear of markers and keep-outs, the emergency label never
     dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
   - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
-    tiles prompt laid out between the bar and the canvas, never over a radio, the status column of chips (the pin,
-    what is followed, tile trouble, location notices) that `topInset` follows, the controls of 48 px buttons (a
-    column at the bottom right while the canvas holds it, else a row, else a row with the zoom pair flat:
-    `controls.arrangement`, so none reaches above a short landscape canvas over the tiles prompt),
-    the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
-    `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it,
-    else in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own
-    row, the saved fix in words, which also shows the List with no radio heard, both in the ListView's header so
-    every row scrolls on one surface; the List holds no live lease), `MapPositionSheet.qml` (a marker's, row's or
-    pin's detail sheet: Follow only for a confirmed radio, since an anonymous report is a single point no later
-    report moves; Show on map only while the map draws a mark for the track, with a line saying the age filter
-    hides it; a satellite count of 0 is said, unlike none; an evicted track's last details say their times, the
-    frozen ages dropped; a History pin's target is "Talkgroup N" only when its saved position says
-    `targetGroup`, else "Sent to N"), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
+    tiles prompt laid out between the bar and the canvas, never over a radio (it scrolls in a band that leaves the
+    canvas room for the flat controls, `promptScroll`), the status column of chips (the pin, what is followed, tile
+    trouble, location notices) and the controls of 48 px buttons, kept apart by one rule: the controls' arrangement
+    comes from the canvas height (`controls.naturalArrangement`: a column at the bottom right, else a row, else a row
+    with the zoom pair flat); the chips take the room left of the controls while it is at least 240 px (`status.beside`,
+    centred in it, down to just above the attribution), else span the canvas above the controls, which then lie flat
+    while the credit beside them keeps room for its longest word (it wraps, never cut); a chip stack taller than its
+    room scrolls (`status` is a PlexFlickable whose band holds a chip's 48 px action whole), and `topInset` follows that
+    band, the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
+    `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it, else
+    in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own row, the
+    saved fix in words, which also shows the List with no radio heard, both in the ListView's header so every row
+    scrolls on one surface, their heights keyed on a pin or a dot existing, not on the List showing, so a List opened
+    from the map starts at its start with both in view (a reader who scrolled further keeps their place, `KeepPlace`);
+    the List holds no live lease), `MapPositionSheet.qml` (a marker's, row's or pin's detail sheet: Follow only for a
+    confirmed radio, since an anonymous report is a single point no later report moves; Show on map and starting a
+    Follow only while the map draws a mark for the track, with a line saying the age filter hides it; a satellite count
+    of 0 is said, unlike none; an evicted track's last details say their times, the frozen ages dropped; "Measured at"
+    carries its date when not today (`MapText.clockText()` on `savedSystems.realtimeNowMs()`); a History pin's target
+    follows the row's `gi` (`Util.targetLine()`: "Talkgroup N", "Sent to radio N", "Sent to N"), the saved position's
+    `targetGroup` only when `gi` is not known), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me
     and Follow my position), `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and
-    `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has
-    `mapPaper`, `mapTileInk`, `mapGrid`, `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable
-    `reducedMotion`, fed by `DecoderHost::reducedMotion` (Android: `ValueAnimator.areAnimatorsEnabled()`, read in
+    `MapGlyph.qml` (drawn glyphs, no icon font), `MapText.js` (every word a fix is described in). Theme has `mapPaper`,
+    `mapTileInk`, `mapGrid`, `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable `reducedMotion`,
+    fed by `DecoderHost::reducedMotion` (Android: `ValueAnimator.areAnimatorsEnabled()`, read in
     `refreshPresentation()`; desktop false): with it the camera jumps (`cameraDurationMs` 0, else 250 ms).
   - Tiles: off until "Load map tiles" (the prompt's, or the empty state's once the prompt is set aside) or the Map
     settings switch, and the prompt and the settings name the host the viewed area goes to. The prompt's × sets it
@@ -18326,7 +18340,10 @@ Qt Quick frontend (`src/ui/qt`):
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
     stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
     Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
-    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). On Android an
+    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me
+    still running when the view is placed on purpose (a follow, Show on map, a pin, the device row, a fit, a drag or
+    pinch) keeps the view: its answer saves the dot but neither centres it nor arms Follow
+    (`MapLocator.keepView()`, `moveOnAnswer`). On Android an
     Item stays visible while the app is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended
     is away, Inactive is not, as the feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`:
     the lease goes while the app is away and comes back on return with follow on; the feed's own state slot runs first

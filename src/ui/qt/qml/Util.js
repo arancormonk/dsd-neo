@@ -628,6 +628,23 @@ function monitorMeta(sys) {
     return parts.join(" · ").toUpperCase()
 }
 
+// A call row's target in the lists' meta line, by who the call was to
+// (gi: 0 a talkgroup, 1 a radio, a private call, else not known): "TG 100",
+// "TO RADIO 42", "TO 42". Empty without a target.
+function targetMeta(tg, gi) {
+    if (!(tg > 0))
+        return ""
+    return gi === 0 ? "TG " + tg : gi === 1 ? "TO RADIO " + tg : "TO " + tg
+}
+
+// The same in words, for a detail line: "Talkgroup 100", "Sent to radio 42",
+// "Sent to 42".
+function targetLine(tg, gi) {
+    if (!(tg > 0))
+        return ""
+    return gi === 0 ? qsTr("Talkgroup %1").arg(idText(tg)) : gi === 1 ? qsTr("Sent to radio %1").arg(idText(tg)) : qsTr("Sent to %1").arg(idText(tg))
+}
+
 // Keep source labels and numeric IDs together in both call lists.
 function sourceText(id, name) {
     if (!name || name === String(id))

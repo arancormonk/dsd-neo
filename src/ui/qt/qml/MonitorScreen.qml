@@ -1643,7 +1643,7 @@ Item {
                 // first thing a narrow phone elides.
                 var meta = [];
                 if (model.tg > 0)
-                    meta.push("TG " + model.tg);
+                    meta.push(Util.targetMeta(model.tg, model.gi));
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 var code = model.analog ? model.receivedTone : model.accessCode;

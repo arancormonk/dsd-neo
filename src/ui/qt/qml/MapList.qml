@@ -47,7 +47,6 @@ Item {
     // (the list's header), then the radios'.
     readonly property real usedHeight: rows.contentHeight
 
-
     ListView {
         id: rows
         objectName: "mapList"
@@ -67,9 +66,13 @@ Item {
         // The History pin's row and the device's own row lead the list and
         // scroll with it: one scroll surface for every row, so a short
         // landscape List at a large text size still reaches every radio
-        // (review r2).
-        header: Column {
+        // (review r2). Their heights follow whether there is a pin or a dot,
+        // not whether the List shows: a hidden List keeps its header's size,
+        // so it opens at its start with both rows in view (a header that grew
+        // only once shown left the view below them).
+        header: Item {
             width: rows.width
+            height: pinRow.height + deviceRow.height
 
             // The pin's row: what it is, whose, and its states, in the rows' grammar.
             Item {
@@ -87,7 +90,7 @@ Item {
 
                 visible: list.pin !== null
                 width: parent.width
-                height: visible ? Math.max(Theme.rowHeight, pinLabels.implicitHeight + 24) : 0
+                height: list.pin !== null ? Math.max(Theme.rowHeight, pinLabels.implicitHeight + 24) : 0
 
                 activeFocusOnTab: (navigationAllowed && visible) || activeFocus
                 Accessible.role: Accessible.Button
@@ -196,8 +199,9 @@ Item {
                 readonly property string accuracy: MapText.accuracyText(list.deviceAccuracyM, false, list.metric)
 
                 visible: list.deviceKnown
+                y: pinRow.height
                 width: parent.width
-                height: visible ? Math.max(Theme.rowHeight, deviceLabels.implicitHeight + 24) : 0
+                height: list.deviceKnown ? Math.max(Theme.rowHeight, deviceLabels.implicitHeight + 24) : 0
 
                 activeFocusOnTab: (navigationAllowed && visible) || activeFocus
                 Accessible.role: Accessible.Button

@@ -168,8 +168,9 @@ Item {
             return;
         locator.stopFollow();
         // The camera goes to the radio, off the found dot: the next press
-        // locates again (review r2).
-        locator.cameraMoved();
+        // locates again, and a Locate me in flight leaves the view alone
+        // (review r2).
+        locator.keepView();
         mapShown = true;
         map.selectedTrackId = id;
         map.followTrackId = id;
@@ -181,7 +182,7 @@ Item {
     function endFollows() {
         map.followTrackId = 0;
         locator.stopFollow();
-        locator.cameraMoved();
+        locator.keepView();
     }
     function showOnMap(id) {
         // Showing the radio already followed keeps following it.
@@ -355,16 +356,34 @@ Item {
     // radio and a fit ("Show every radio") has the whole canvas to show them
     // in. Set aside, it stays away for the app's run; the empty state and
     // Map settings still offer tiles.
-    MapTilesPrompt {
-        id: tilesPrompt
-        objectName: "mapTilesPrompt"
+    // The prompt scrolls inside a band that leaves the canvas room for its
+    // controls lying flat (one button high and its margins): on the shortest
+    // screens at a large text size no control is pushed over it (review r2).
+    PlexFlickable {
+        id: promptScroll
+        objectName: "mapTilesPromptScroll"
+        accessibleName: qsTr("Map tiles prompt")
         x: Theme.screenPadding
         y: chrome.y + chrome.height + 10
         width: Math.max(0, screen.width - 2 * Theme.screenPadding)
-        visible: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && !screen.tilesPromptDismissed
-        host: screen.tilesHost
-        onLoad: screen.tilesEnabled = true
-        onDismiss: screen.tilesPromptDismissed = true
+        readonly property real maximumHeight: Math.max(Theme.minimumTouchSize, screen.height - y - 10 - (Theme.minimumTouchSize + 2 * 12))
+        height: Math.min(tilesPrompt.height, maximumHeight)
+        contentWidth: width
+        contentHeight: tilesPrompt.height
+        clip: true
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.StopAtBounds
+        visible: tilesPrompt.shown
+
+        MapTilesPrompt {
+            id: tilesPrompt
+            objectName: "mapTilesPrompt"
+            readonly property bool shown: screen.mapShown && !screen.tilesEnabled && screen.tilesAvailable && !screen.tilesPromptDismissed
+            width: promptScroll.width
+            host: screen.tilesHost
+            onLoad: screen.tilesEnabled = true
+            onDismiss: screen.tilesPromptDismissed = true
+        }
     }
 
     // ---- The canvas and the List ----
@@ -372,7 +391,7 @@ Item {
         id: area
         objectName: "mapArea"
 
-        anchors.top: tilesPrompt.visible ? tilesPrompt.bottom : chrome.bottom
+        anchors.top: promptScroll.visible ? promptScroll.bottom : chrome.bottom
         anchors.topMargin: 10
         anchors.left: parent.left
         anchors.right: parent.right
@@ -465,8 +484,10 @@ Item {
                 target: null
                 maximumPointCount: 1
                 onActiveChanged: {
-                    if (active)
+                    if (active) {
                         screen.userMovedCamera();
+                        locator.keepView();
+                    }
                 }
                 onTranslationChanged: function (delta) {
                     map.panBy(delta.x, delta.y);
@@ -481,6 +502,7 @@ Item {
                     if (active) {
                         startZoom = map.zoom;
                         screen.userMovedCamera();
+                        locator.keepView();
                     }
                 }
                 onActiveScaleChanged: {
@@ -564,60 +586,89 @@ Item {
         }
 
         // ---- Status: tile trouble, what is followed, what location says ----
-        Column {
+        // One rule keeps the chips and the controls apart at every size
+        // (review r2): the chips take the room left of the controls while it
+        // is at least chipMinimum wide (centred in it), down to just above
+        // the attribution; else they span the canvas above the controls,
+        // which then lie flat along the bottom. A stack taller than its room
+        // scrolls (the band `topInset` follows is the room it shows in).
+        PlexFlickable {
             id: status
             objectName: "mapStatus"
+            accessibleName: qsTr("Map status")
             visible: screen.mapShown
-            anchors.top: parent.top
-            anchors.topMargin: 12
-            // Centred over the canvas; on a short one, where the controls lie
-            // in a row along the bottom, the chips keep to the room left of
-            // them, so a stack of chips never runs into a control (review r2).
-            readonly property real room: controls.arrangement === 0 ? parent.width - 2 * 12 : parent.width - controls.width - 3 * 12
-            x: controls.arrangement === 0 ? (parent.width - width) / 2 : 12
+            readonly property real chipMinimum: 240
+            readonly property real besideRoom: parent.width - controls.widthFor(controls.naturalArrangement) - 3 * 12
+            readonly property bool beside: besideRoom >= chipMinimum
+            readonly property real room: beside ? besideRoom : parent.width - 2 * 12
+            // A chip's action button (a 48 px target) stands out of its 40 px
+            // chip by this much above and below; the band holds it whole.
+            readonly property real overhang: Math.max(0, (Theme.minimumTouchSize - 40) / 2)
+            readonly property real maximumHeight: Math.max(0, beside ? parent.height - 2 * 12 - attribution.height + overhang
+                : parent.height - 3 * 12 - Math.max(attribution.height, controls.height) + overhang)
+            y: 12 - overhang
+            x: beside ? 12 + (room - width) / 2 : (parent.width - width) / 2
             width: Math.max(0, Math.min(parent.width >= 640 ? 600 : 420, room))
-            spacing: 8
+            readonly property bool chipsShown: statusColumn.height > statusColumn.topPadding + statusColumn.bottomPadding + 0.5
+            height: chipsShown ? Math.min(statusColumn.height, maximumHeight) : 0
+            contentWidth: width
+            contentHeight: statusColumn.height
+            clip: true
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            function forceLayout() {
+                statusColumn.forceLayout();
+            }
 
-            MapChip {
-                objectName: "mapTilesState"
-                visible: screen.tilesEnabled && (tiles.state === MapTileSource.Retrying || tiles.state === MapTileSource.Unavailable || tiles.state === MapTileSource.InvalidSource || tiles.state === MapTileSource.NoPngTiles)
-                text: tiles.state === MapTileSource.Retrying ? qsTr("Map tiles unavailable — retrying")
-                    : tiles.state === MapTileSource.Unavailable ? qsTr("Online map tiles are not available in this build")
-                    : tiles.state === MapTileSource.NoPngTiles ? qsTr("The tile server sent no PNG tiles the map can use. Check Map settings.")
-                    : qsTr("The tile address is not valid. Check Map settings.")
-            }
-            // The pin's words and its button: the drawn pin is not a node,
-            // so this is how a screen reader or keyboard reaches its sheet.
-            MapChip {
-                objectName: "mapPinChip"
-                visible: screen.pin !== null
-                text: screen.pin ? qsTr("Saved position from History: %1").arg(screen.pin.name || screen.pin.sourceName || qsTr("unnamed")) : ""
-                actionText: qsTr("Details")
-                actionName: qsTr("Details of the saved position")
-                onAction: screen.openPinDetails()
-            }
-            MapChip {
-                objectName: "mapFollowing"
-                visible: map.followTrackId > 0 || locator.followMe
-                text: locator.followMe ? qsTr("Following your position") : qsTr("Following %1").arg(MapText.trackName(screen.tracksRevision >= 0 ? positions.trackFor(map.followTrackId) : null))
-                actionText: qsTr("Stop")
-                actionName: qsTr("Stop following")
-                onAction: {
-                    if (locator.followMe)
-                        locator.stopFollow();
-                    map.followTrackId = 0;
-                    map.followDevice = false;
+            Column {
+                id: statusColumn
+                objectName: "mapStatusColumn"
+                width: status.width
+                topPadding: status.overhang
+                bottomPadding: status.overhang
+                spacing: 8
+
+                MapChip {
+                    objectName: "mapTilesState"
+                    visible: screen.tilesEnabled && (tiles.state === MapTileSource.Retrying || tiles.state === MapTileSource.Unavailable || tiles.state === MapTileSource.InvalidSource || tiles.state === MapTileSource.NoPngTiles)
+                    text: tiles.state === MapTileSource.Retrying ? qsTr("Map tiles unavailable — retrying")
+                        : tiles.state === MapTileSource.Unavailable ? qsTr("Online map tiles are not available in this build")
+                        : tiles.state === MapTileSource.NoPngTiles ? qsTr("The tile server sent no PNG tiles the map can use. Check Map settings.")
+                        : qsTr("The tile address is not valid. Check Map settings.")
                 }
-            }
-            MapChip {
-                objectName: "mapLocationNotice"
-                visible: locator.notice.length > 0
-                text: locator.notice
-                actionText: locator.noticeAction.length > 0 ? qsTr("Settings") : qsTr("OK")
-                actionName: locator.noticeAction.length > 0 ? qsTr("Open location settings") : qsTr("Dismiss")
-                onAction: {
-                    locator.openNoticeAction();
-                    locator.clearNotice();
+                // The pin's words and its button: the drawn pin is not a node,
+                // so this is how a screen reader or keyboard reaches its sheet.
+                MapChip {
+                    objectName: "mapPinChip"
+                    visible: screen.pin !== null
+                    text: screen.pin ? qsTr("Saved position from History: %1").arg(screen.pin.name || screen.pin.sourceName || qsTr("unnamed")) : ""
+                    actionText: qsTr("Details")
+                    actionName: qsTr("Details of the saved position")
+                    onAction: screen.openPinDetails()
+                }
+                MapChip {
+                    objectName: "mapFollowing"
+                    visible: map.followTrackId > 0 || locator.followMe
+                    text: locator.followMe ? qsTr("Following your position") : qsTr("Following %1").arg(MapText.trackName(screen.tracksRevision >= 0 ? positions.trackFor(map.followTrackId) : null))
+                    actionText: qsTr("Stop")
+                    actionName: qsTr("Stop following")
+                    onAction: {
+                        if (locator.followMe)
+                            locator.stopFollow();
+                        map.followTrackId = 0;
+                        map.followDevice = false;
+                    }
+                }
+                MapChip {
+                    objectName: "mapLocationNotice"
+                    visible: locator.notice.length > 0
+                    text: locator.notice
+                    actionText: locator.noticeAction.length > 0 ? qsTr("Settings") : qsTr("OK")
+                    actionName: locator.noticeAction.length > 0 ? qsTr("Open location settings") : qsTr("Dismiss")
+                    onAction: {
+                        locator.openNoticeAction();
+                        locator.clearNotice();
+                    }
                 }
             }
         }
@@ -637,11 +688,23 @@ Item {
             rowSpacing: 10
             columnSpacing: 10
             verticalItemAlignment: Grid.AlignBottom
-            // 0: a column; 1: a row; 2: a row with the zoom pair flat.
-            readonly property int arrangement: {
+            // 0: a column; 1: a row; 2: a row with the zoom pair flat. The
+            // canvas height decides (naturalArrangement); chips spanning the
+            // canvas above the controls lay them flat, to leave the chips the
+            // most room.
+            readonly property int naturalArrangement: {
                 var t = Theme.minimumTouchSize, room = parent.height - 2 * anchors.margins;
                 var column = 2 * t + 1 + 10 + t + (locator.supported ? 10 + t : 0);
                 return column <= room ? 0 : 2 * t + 1 <= room ? 1 : 2;
+            }
+            // Flat only while the credit beside it keeps room for its longest
+            // word: it wraps, it is never cut (`attribution.minimumWidth`).
+            readonly property int arrangement: !status.beside && status.chipsShown
+                && parent.width - widthFor(2) - 3 * 12 >= attribution.minimumWidth ? 2 : naturalArrangement
+            // The width an arrangement takes (the zoom pair, fit, locate).
+            function widthFor(a) {
+                var t = Theme.minimumTouchSize, rest = 10 + t + (locator.supported ? 10 + t : 0);
+                return a === 0 ? t : a === 1 ? t + rest : 2 * t + 1 + rest;
             }
             columns: arrangement === 0 ? 1 : 3
 
@@ -694,6 +757,7 @@ Item {
                 enabled: map.markerCount > 0 || locator.deviceValid || screen.pin !== null
                 onClicked: {
                     screen.userMovedCamera();
+                    locator.keepView();
                     if (screen.pin)
                         map.fitAllWith(screen.pin.position.latitude, screen.pin.position.longitude);
                     else
@@ -763,9 +827,11 @@ Item {
             anchors.topMargin: !screen.mapShown ? (positionList.visible ? positionList.usedHeight + 4 : 0)
                 : status.visible && status.height > 0 ? status.height + 12 : 0
             anchors.left: parent.left
-            anchors.right: screen.mapShown ? controls.left : parent.right
+            // Beside a column of controls; above a row (it spans the canvas).
+            anchors.right: screen.mapShown && controls.arrangement === 0 ? controls.left : parent.right
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: screen.mapShown ? attribution.height : 0
+            anchors.bottomMargin: !screen.mapShown ? 0 : controls.arrangement === 0 ? attribution.height
+                : Math.max(attribution.height, controls.height + 2 * controls.anchors.margins)
             contentWidth: width
             contentHeight: Math.max(height, emptyState.y + emptyState.height + 12)
             clip: true
@@ -834,6 +900,15 @@ Item {
         anchors.bottomMargin: 4
         width: Math.min(chip.implicitWidth, area.width - controls.width - 3 * 12)
         height: Math.max(Theme.minimumTouchSize, chip.height + 8)
+        // The narrowest it may be: its longest word on a line, so the credit
+        // wraps whole (three lines at most) and is never cut.
+        readonly property real minimumWidth: longestWord.advanceWidth + 16 + 8
+        TextMetrics {
+            id: longestWord
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(11)
+            text: screen.shownAttribution.split(/\s+/).reduce(function (a, b) { return b.length > a.length ? b : a; }, "")
+        }
         // What the detail sheet leaves clear: the chip as drawn, not its touch area.
         readonly property real chipHeight: chip.height + chip.anchors.bottomMargin + anchors.bottomMargin
 

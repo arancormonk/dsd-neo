@@ -154,12 +154,12 @@ ModalSheet {
     // Who sent it, in fixed slots, "" for one not known: label or the row's
     // name, callsign, radio ID, and who the shown report was sent to.
     function identitySlots() {
-        // A History row's target is its call's, a talkgroup or a radio: it is
-        // called a talkgroup only when the saved position says so.
+        // A History row's target is its call's, a talkgroup or a radio: the
+        // row's own kind says which (gi), else the saved position's flag.
         if (pin)
             return [pin.sourceName && pin.sourceName !== title ? pin.sourceName : "", "",
                     pin.src > 0 ? qsTr("Radio ID %1").arg(Util.idText(pin.src)) : "",
-                    !(pin.tg > 0) ? "" : pinPosition.targetGroup === true ? qsTr("Talkgroup %1").arg(Util.idText(pin.tg)) : qsTr("Sent to %1").arg(Util.idText(pin.tg))];
+                    Util.targetLine(pin.tg, pin.gi === 0 || pin.gi === 1 ? pin.gi : pinPosition.targetGroup === true ? 0 : -1)];
         if (track.anonymous)
             return [qsTr("The radio that sent this could not be confirmed, so it has no name or trail."), "", "", recipientOf(shownFix)];
         return [track.label && track.label.length > 0 && track.label !== title ? qsTr("Label %1").arg(track.label) : "",
@@ -319,7 +319,8 @@ ModalSheet {
             width: parent.width
             visible: text.length > 0
             step: block.stepKey + ":" + (block.fix.fixTime || 0)
-            readonly property string at: block.fix.fixTime > 0 ? Qt.formatDateTime(new Date(block.fix.fixTime * 1000), "hh:mm:ss") : ""
+            // With its date when not today (MapText.clockText()).
+            readonly property string at: block.fix.fixTime > 0 ? MapText.clockText(block.fix.fixTime, savedSystems.realtimeNowMs()) : ""
             // A report with no time of its own (LIP) may still say how old the
             // position was when sent: that bound, not nothing.
             text: at.length === 0 ? MapText.sentAgeText(block.fix.ageAtSendMaxSeconds) : block.reportAgeSeconds >= 0 ? qsTr("Measured %1").arg(MapText.agoText(block.reportAgeSeconds, at)) : qsTr("Measured at %1").arg(at)
@@ -369,7 +370,7 @@ ModalSheet {
         objectName: "mapPositionFiltered"
         width: parent.width
         visible: !sheet.pin && !sheet.trackGone && !sheet.drawnNow
-        text: qsTr("The age filter hides this radio on the map now. Choose All to see it there.")
+        text: qsTr("The age filter hides this radio on the map now. Choose All to see or follow it there.")
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
@@ -382,7 +383,9 @@ ModalSheet {
         objectName: "mapPositionFollow"
         width: parent.width
         visible: !sheet.pin && !sheet.track.anonymous
-        enabled: !sheet.trackGone
+        // Starting a follow needs a mark on the map (as Show on map); one
+        // already running stays stoppable while the filter hides it.
+        enabled: !sheet.trackGone && (sheet.following || sheet.drawnNow)
         checkable: true
         checked: sheet.following
         text: sheet.following ? qsTr("Stop following") : qsTr("Follow")

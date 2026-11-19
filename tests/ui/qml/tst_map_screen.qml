@@ -96,6 +96,9 @@ Item {
             Ui.Theme.resetReducedMotion();
         }
         function init() {
+            Ui.Theme.resetFontScale();
+            root.width = 360;
+            root.height = 780;
             testContext.setMapTilesFailing(false);
             testContext.setMapTilesNotPng(false);
             testContext.resetPositions();
@@ -1017,28 +1020,72 @@ Item {
             compare(item("mapControls").arrangement, 0, "a column on a phone in portrait");
         }
 
-        // On a short canvas the chips at the top keep clear of the controls in a row along the bottom, however many
-        // there are and at a large text size.
-        function test_18a2_chips_keep_clear_of_the_controls() {
+        // Review r2 I2: one rule keeps the chips at the top and the controls at the bottom apart at every size: with
+        // three chips (the pin, a follow, a location notice) the chip band stays on the canvas, never under a control,
+        // and never squeezed into a tall narrow column; the pin's Details button scrolls into the band and is never
+        // under a control. Phone and split-screen sizes at 1.0 and 1.6, landscape, a tablet.
+        function test_18a2_chips_and_controls_never_collide_data() {
+            return [{tag: "360x420 1.0", w: 360, h: 420, s: 1.0}, {tag: "360x420 1.6", w: 360, h: 420, s: 1.6},
+                    {tag: "500x440 1.0", w: 500, h: 440, s: 1.0}, {tag: "500x440 1.6", w: 500, h: 440, s: 1.6},
+                    {tag: "640x320 1.6", w: 640, h: 320, s: 1.6}, {tag: "360x780 1.6", w: 360, h: 780, s: 1.6},
+                    {tag: "1280x720 1.0", w: 1280, h: 720, s: 1.0}];
+        }
+        function test_18a2_chips_and_controls_never_collide(data) {
             push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
             screen.tilesPromptDismissed = true;
-            screen.tilesEnabled = true;
-            testContext.setMapTilesFailing(true);
+            item("mapLocator").notice = "Location unavailable. The dot shows your saved location.";
             screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
                             position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
             screen.follow(trackNamed("Engine 7"));
-            Ui.Theme.fontScale = 1.6;
-            resize(640, 320);
-            tryVerify(function () { return item("mapTilesState").visible; }, 5000);
+            Ui.Theme.fontScale = data.s;
+            resize(data.w, data.h);
+            verify(item("mapLocationNotice").visible && item("mapPinChip").visible && item("mapFollowing").visible);
+            waitForRendering(screen);
             var status = item("mapStatus"), controls = item("mapControls"), c = canvas();
             var a = c.mapFromItem(status, 0, 0), b = c.mapFromItem(controls, 0, 0);
-            verify(controls.arrangement > 0);
-            verify(!overlaps(Qt.rect(a.x, a.y, status.width, status.height), Qt.rect(b.x, b.y, controls.width, controls.height)),
-                   "chips " + a + " " + status.width + "x" + status.height + " over controls " + b + " " + controls.width + "x" + controls.height);
+            var band = Qt.rect(a.x, a.y, status.width, status.height), ctl = Qt.rect(b.x, b.y, controls.width, controls.height);
+            verify(!overlaps(band, ctl), "chips " + band + " over controls " + ctl);
+            verify(a.y >= 0 && a.y + status.height <= c.height && b.y >= 0 && b.y + controls.height <= c.height + 0.5,
+                   "both on the canvas: chips " + band + ", controls " + ctl + ", canvas " + c.height);
+            verify(status.width >= Math.min(240, c.width - 24), "not a tall narrow column: " + status.width);
+            verify(c.topInset <= c.height, "the centring aims inside the canvas: " + c.topInset + " of " + c.height);
+            verify(!item("mapAttributionText").truncated, "the credit is never cut: " + item("mapAttribution").width);
+            // The pin's Details, scrolled into the band if it has to be, is never under a control.
+            var pinChip = item("mapPinChip");
+            var details = item("mapPinChipAction");
+            verify(details !== null && details.visible);
+            var inContent = status.contentItem.mapFromItem(details, 0, 0);
+            status.contentY = Math.max(0, Math.min(status.contentHeight - status.height, inContent.y + details.height - status.height));
+            var d = c.mapFromItem(details, 0, 0);
+            // Wholly when the band is that tall; on the tightest canvas (a split-screen phone at 1.6x) the band is
+            // a little shorter than the button and the button fills it.
+            var top = Math.max(d.y, a.y), bottom = Math.min(d.y + details.height, a.y + status.height);
+            verify(bottom - top >= Math.min(details.height, status.height) - 0.5, "Details scrolls into the band: " + d + " in " + band);
+            verify(!overlaps(Qt.rect(d.x, d.y, details.width, details.height), ctl), "Details " + d + " under a control " + ctl);
+            status.contentY = 0;
+            item("mapLocator").clearNotice();
             Ui.Theme.resetFontScale();
             resize(360, 780);
-            testContext.setMapTilesFailing(false);
-            screen.tilesEnabled = false;
+        }
+
+        // Review r2 M3: on the shortest screens at a large text size the tiles prompt scrolls in its band, so the
+        // canvas keeps room for the controls lying flat and none reaches over the prompt.
+        function test_18a3_the_prompt_leaves_room_for_the_controls_data() {
+            return [{tag: "568x320", w: 568, h: 320}, {tag: "600x280", w: 600, h: 280}];
+        }
+        function test_18a3_the_prompt_leaves_room_for_the_controls(data) {
+            Ui.Theme.fontScale = 1.6;
+            resize(data.w, data.h);
+            verify(item("mapTilesPrompt").visible);
+            var c = canvas(), controls = item("mapControls");
+            var b = c.mapFromItem(controls, 0, 0);
+            verify(b.y >= 0, "the controls reach above the canvas: " + b.y);
+            var band = item("mapTilesPromptScroll");
+            var p = screen.mapFromItem(band, 0, 0), q = screen.mapFromItem(controls, 0, 0);
+            verify(!overlaps(Qt.rect(p.x, p.y, band.width, band.height), Qt.rect(q.x, q.y, controls.width, controls.height)));
+            verify(band.contentHeight > band.height, "the prompt scrolls here: " + band.contentHeight + " in " + band.height);
+            Ui.Theme.resetFontScale();
+            resize(360, 780);
         }
 
         // Following a radio takes the view off the found dot: the next press locates again.
@@ -1051,6 +1098,38 @@ Item {
             compare(item("mapLocate").Accessible.name, "Follow my position");
             screen.follow(trackNamed("Engine 7"));
             compare(item("mapLocate").Accessible.name, "Locate me");
+        }
+
+        // Review r2 I3: a Locate me still running does not undo a later explicit camera choice: its answer saves the
+        // dot, but the follow (or Show on map, or a pin) stays and the button still locates.
+        function test_18k_a_late_locate_answer_keeps_the_choice() {
+            push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
+            push({source: 1002, lat: 12.0, lon: 22.0, label: "Medic 3"});
+            var c = canvas();
+            var answer = function (lat) {
+                var id = item("mapLocator").requestId;
+                verify(id > 0, "a request in flight");
+                decoderHost.locationResult(id, true, lat, 20.5, 12, savedSystems.realtimeNowMs(), false, "", "", "");
+                tryVerify(function () { return !locationRequests.busy; });
+            };
+            item("mapLocate").activate();
+            screen.follow(trackNamed("Engine 7"));
+            answer(10.5);
+            compare(c.followTrackId, trackNamed("Engine 7"), "the follow chosen meanwhile stays");
+            compare(item("mapLocate").Accessible.name, "Locate me");
+            verify(Math.abs(prefs.lastLat - 10.5) < 1e-6, "the answer still saves the dot");
+            c.followTrackId = 0;
+            item("mapLocate").activate();
+            screen.showOnMap(trackNamed("Medic 3"));
+            answer(10.6);
+            verify(Math.abs(c.centerLatitude - 12.0) < 0.01, "Show on map's view stays: " + c.centerLatitude);
+            compare(item("mapLocate").Accessible.name, "Locate me");
+            // Uninterrupted, it still centres and arms Follow.
+            item("mapLocate").activate();
+            answer(10.7);
+            verify(Math.abs(c.centerLatitude - 10.7) < 0.01, "a plain Locate centres: " + c.centerLatitude);
+            compare(item("mapLocate").Accessible.name, "Follow my position");
+            item("mapLocator").cameraMoved();
         }
 
         // The pin's and the device's rows scroll with the radios: a short landscape List at a large text size still
@@ -1071,7 +1150,6 @@ Item {
             verify(radio !== null);
             var at = list.mapFromItem(radio, 0, 0);
             verify(at.y >= 0 && at.y + radio.height <= list.height + 1, "the radio scrolls into view: " + at.y + " in " + list.height);
-            list.positionViewAtBeginning();
             verify(item("mapPinRow").visible && item("mapDeviceRow").visible);
             Ui.Theme.resetFontScale();
             resize(360, 780);
@@ -1119,6 +1197,44 @@ Item {
             verify(identity[0].indexOf("could not be confirmed") >= 0, "still not confirmed");
         }
 
+        // Review r2 I1: the List opens at its start, the pin's and the device's rows in view, on the first switch to
+        // it (a freshly built screen) and on every later one, with more radios than fit.
+        function test_18c2_the_list_opens_at_its_start() {
+            loader.active = false;
+            loader.active = true;
+            tryVerify(function () { return loader.item !== null; });
+            prefs.setLocationFix(10.5, 20.5, savedSystems.realtimeNowMs(), 30);
+            for (var i = 0; i < 15; ++i)
+                push({source: 2001 + i, lat: 10.0 + i * 0.01, lon: 20.0, label: "Unit " + (i + 1)});
+            screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
+                            position: {latitude: 10.0, longitude: 20.0, kindText: "LIP"}});
+            var check = function (when) {
+                var list = item("mapList");
+                tryVerify(function () { return list.headerItem !== null && list.headerItem.height > 0; }, 1000, when);
+                waitForRendering(screen);
+                verify(Math.abs(list.contentY - list.originY) < 0.5, when + ": at the start, contentY " + list.contentY + " origin " + list.originY);
+                for (var name of ["mapPinRow", "mapDeviceRow"]) {
+                    var row = item(name);
+                    var at = list.mapFromItem(row, 0, 0);
+                    verify(row.visible && at.y >= -0.5 && at.y + row.height <= list.height + 0.5, when + ": " + name + " in view at " + at.y);
+                }
+            };
+            screen.mapShown = false;
+            check("first switch");
+            screen.mapShown = true;
+            push({source: 3001, lat: 10.2, lon: 20.2, label: "Unit 99"});
+            screen.mapShown = false;
+            check("Map then List again, a radio heard meanwhile");
+            // A reader who scrolled further back keeps their place (issue #782's rule), as every list does.
+            var list = item("mapList");
+            list.positionViewAtEnd();
+            var y = list.contentY;
+            screen.mapShown = true;
+            screen.mapShown = false;
+            waitForRendering(screen);
+            verify(Math.abs(list.contentY - y) < Ui.Theme.rowHeight, "a scrolled reader keeps their place: " + list.contentY + " vs " + y);
+        }
+
         // A History row's target is its call's: a talkgroup only on the saved report's word.
         function test_18g_a_pin_says_talkgroup_only_when_it_is_one() {
             screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 42, src: 2001, sourceName: "",
@@ -1132,6 +1248,17 @@ Item {
             screen.openPinDetails();
             identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
             verify(identity.indexOf("Talkgroup 42") >= 0, JSON.stringify(identity));
+            sheet().visible = false;
+            // The row's own kind (gi) comes first: a private call is a radio whatever the position's flag, a group
+            // call a talkgroup even where the position's flag was cleared (an unverified report).
+            for (var c of [[1, true, "Sent to radio 42"], [0, false, "Talkgroup 42"]]) {
+                screen.showPin({uid: 43, name: "CALL 043", when: 1700000000, tg: 42, gi: c[0], src: 2001, sourceName: "",
+                                position: {latitude: 10.0, longitude: 20.0, kindText: "LRRP", targetGroup: c[1]}});
+                screen.openPinDetails();
+                identity = [0, 1, 2, 3].map(function (i) { return item("mapIdentityLine" + i).text; });
+                verify(identity.indexOf(c[2]) >= 0, c[2] + ": " + JSON.stringify(identity));
+                sheet().visible = false;
+            }
         }
 
         // Zero satellites is a reported count, said as such; none reported says nothing.
@@ -1165,8 +1292,29 @@ Item {
             testContext.refreshPositionAges();
             tryVerify(function () { return !item("mapPositionShowOnMap").enabled; }, 3000, "no mark to show");
             verify(item("mapPositionFiltered").visible);
+            verify(!item("mapPositionFollow").enabled, "nothing drawn to start following");
             sheet().visible = false;
             positions.ageFilterSeconds = 0;
+        }
+
+        // A report's own time with no age to say it by reads as a time, with its date when it is not today.
+        function test_18l_measured_at_has_its_date_when_not_today() {
+            sheet().pin = null;
+            sheet().trackId = 0;
+            var now = Math.floor(savedSystems.realtimeNowMs() / 1000);
+            var take = function (fixTime) {
+                sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: -1,
+                              currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, fixTime: fixTime}});
+                sheet().visible = true;
+                return item("mapShownFixMeasured").text;
+            };
+            var old = now - 3 * 86400;
+            compare(take(old), "Measured at " + Qt.formatDateTime(new Date(old * 1000), "yyyy-MM-dd hh:mm:ss"));
+            sheet().visible = false;
+            var d = new Date(now * 1000);
+            var noon = Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0).getTime() / 1000);
+            compare(take(noon), "Measured at 12:00:00");
+            sheet().visible = false;
         }
 
         // A sheet whose radio is evicted keeps its last details, its times said as times, not frozen ages.

@@ -2524,6 +2524,8 @@ class CallLogStore : public QAbstractListModel {
     struct StoreRow {
         QString name;
         qulonglong tg = 0;
+        // Who the call was to (CallHistoryModel::GiRole): a group call unless a test says otherwise.
+        int gi = 0;
         qulonglong src = 0;
         bool enc = false;
         bool emergency = false;
@@ -2672,6 +2674,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::RecordingsRole: return row.recordings;
             case CallHistoryModel::HasRecordingRole: return !row.recordings.isEmpty();
             case CallHistoryModel::PositionRole: return row.position;
+            case CallHistoryModel::GiRole: return row.gi;
             default: return {};
         }
     }
@@ -2705,7 +2708,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::UidRole, "uid"},
                 {CallHistoryModel::RecordingsRole, "recordings"},
                 {CallHistoryModel::HasRecordingRole, "hasRecording"},
-                {CallHistoryModel::PositionRole, "position"}};
+                {CallHistoryModel::PositionRole, "position"},
+                {CallHistoryModel::GiRole, "gi"}};
     }
 
     /** @brief CallHistoryModel::rowForUid(): where the row with @p uid is now, or -1. */
@@ -2796,6 +2800,7 @@ class CallLogStore : public QAbstractListModel {
             {"analog", CallHistoryModel::AnalogRole},
             {"analogMode", CallHistoryModel::AnalogModeRole},
             {"position", CallHistoryModel::PositionRole},
+            {"gi", CallHistoryModel::GiRole},
         };
 
         bool parsed = false;
@@ -2922,6 +2927,19 @@ class CallLogStore : public QAbstractListModel {
         Q_EMIT countChanged();
         Q_EMIT rowPositionsChanged();
         return row.name;
+    }
+
+    /** @brief Give the row with @p uid the call kind @p gi (0 group, 1 private, -1 not known; issue #800). */
+    Q_INVOKABLE bool
+    setRowGi(qint64 uid, int gi) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        m_rows[row].gi = gi;
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::GiRole});
+        return true;
     }
 
     Q_INVOKABLE QString
