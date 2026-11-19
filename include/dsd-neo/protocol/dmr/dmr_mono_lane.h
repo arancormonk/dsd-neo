@@ -8,8 +8,8 @@
  * @brief Which over-the-air slot the single-slot DMR decoder's one lane is judged for.
  *
  * The single-slot decoder (-fr/-nm without trunking, and MS mode) decodes both over-the-air slots' voice on one lane
- * (index 0), whose voice hold and encryption classification belong to the slot whose own word set them
- * (dsd_state::dmr_mono_lane_owner). The vocoder's judge and the DMR decoder read them here.
+ * (index 0), which carries one call: the slot of its last checked LC (dsd_state::dmr_mono_lane_slot). The vocoder's
+ * judge holds the other slot's voice there.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_MONO_LANE_H
@@ -38,11 +38,12 @@ dmr_mono_lane_voice_slot(const dsd_state* state) {
     return (uint8_t)(rx - DSD_DMR_MONO_RX_TS1 + 1U);
 }
 
-/* Whether the lane's hold and classification belong to another over-the-air slot than @p slot (1 or 2; 0 when not
-   known): its voice, or a word of its call, says nothing of them until its own checked LC or accepted PI header. */
+/* Whether the voice the lane decodes now is the other over-the-air slot's than the lane's call
+   (dsd_state::dmr_mono_lane_slot): held, as on a held slot, until that slot's own checked LC makes it the lane's call. */
 static inline int
-dmr_mono_lane_owned_by_other_slot(const dsd_state* state, uint8_t slot) {
-    return state->dmr_mono_lane_owner != 0U && slot != 0U && slot != state->dmr_mono_lane_owner;
+dmr_mono_lane_voice_is_other_call(const dsd_state* state) {
+    const uint8_t voice = dmr_mono_lane_voice_slot(state);
+    return state->dmr_mono_lane_slot != 0U && voice != 0U && voice != state->dmr_mono_lane_slot;
 }
 
 #ifdef __cplusplus

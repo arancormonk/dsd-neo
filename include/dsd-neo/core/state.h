@@ -2058,15 +2058,13 @@ struct dsd_state {
      * PI header says (dmr_enc_class_release_hold()). 0 when a run starts, whatever an earlier run on the same state
      * left (a host may run one state more than once). */
     uint8_t dmr_enc_class_held[2];
-    /* The single-slot DMR decoder (dmr_mono_folds_standalone_burst()) judges both over-the-air slots' voice on one lane
-       (index 0). dmr_mono_lane_owner is the over-the-air slot (1 or 2) whose own word ended lane 0's hold, and so whose
-       call lane 0's classification describes: voice or an unchecked word of the other slot is judged as held
-       (dmr_mono_lane_owned_by_other_slot()) until that slot's own checked LC or accepted PI header takes the lane. 0
-       when that slot is not known, while lane 0 is held, and on every other decoder. dmr_mono_lane_word_slot is the
-       over-the-air slot of the LC or PI header being decoded onto lane 0 now (0 outside one, or not known), which ending
-       lane 0's hold makes the owner (dmr_enc_class_release_hold()). */
-    uint8_t dmr_mono_lane_owner;
-    uint8_t dmr_mono_lane_word_slot;
+    /* The single-slot DMR decoder without trunking (dmr_mono_folds_standalone_burst()) carries one call on one lane
+       (index 0): this is the over-the-air slot (1 or 2) of the call its last checked LC of a known slot named, whose
+       cipher state the lane holds; 0 before one. A checked LC of the other slot is a new call: the lane's cipher state
+       is wiped and its voice held again (dmr_flco()); the other slot's voice on the lane is held
+       (dmr_mono_lane_voice_is_other_call()); its unchecked LCs, terminators and rekeys are ignored. Owned by
+       src/protocol/dmr. */
+    uint8_t dmr_mono_lane_slot;
     /* Whether the receiver has landed on a carrier yet in this run (any landing: the run's first stream, a tune, a scan
        row or park; dsd_engine_note_run_start()). The run's first landing holds no DMR slot's voice; every later one,
        any carrier boundary or trunk-scan park, does. A run starts landed unless a trunk scan configured for it

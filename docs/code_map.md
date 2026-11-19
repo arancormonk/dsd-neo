@@ -3422,24 +3422,25 @@ suite runs under this compiler.
   carries it (a forced key still plays). So a slot 2 encrypted call's ALG ID, key ID and MI reach its voice, and never
   another slot's call. A rejected standalone burst clears the position cache of its own CACH slot, whatever index a
   fold left in `currentslot` (`dmr_data_restore_voice_lane()`). A burst's slot is known from its repeater CACH, or on the MS path only where its direct-mode sync word named
-  it (`dmr_mono_burst_slot_known()`, `dsd_state::dmr_dm_sync_slot`); one of no known slot is folded as before. While
-  lane 0 carries an active call of the other slot (`dmr_mono_lane_call_is_other_slot()`), either way round, a
-  terminator acts on index 1 (`dmr_flco_ctx_init()`), as the other slot's does on the dual-slot decoder, so the lane's
-  call is not ended. A data packet stays on its over-the-air slot's index from header to last block (the block assembler keys
+  it (`dmr_mono_burst_slot_known()`, `dsd_state::dmr_dm_sync_slot`); one of no known slot is folded as before. The lane
+  carries one call, fail closed: the over-the-air slot of its last checked LC of a known slot
+  (`dsd_state::dmr_mono_lane_slot`; an embedded LC's slot is the one its lane's voice is proven on, never one a single
+  TACT named). A checked LC of the other slot is a call boundary (`dmr_flco()`, `dmr_flco_lane_boundary()`): the lane's
+  cipher state (ALG ID, key ID, MI and superframe chain, vendor late-entry mode, the autoload's talkgroup key, a heal's
+  stash) is wiped as at a terminator and its voice held again, which that LC's own word then ends; the user's keys,
+  forced ones included, stay. The other slot's LC whose check failed, its terminator and its Hytera Enhanced rekey are
+  shown and not acted on: they end no call (another protocol's on index 1 included) and touch no crypto, hold or
+  packet state. The other slot's voice on the lane, once the lane moved there (proven, or Checking after a checked
+  TACT named it), is held as on a held slot until that slot's checked LC (`dmr_mono_lane_voice_is_other_call()` in
+  `mbe_dmr_slot_judge()`). A PI header counts a lane call only when it is a DMR call (`dmr_mono_lane_call_slot()`). A
+  data packet stays on its over-the-air slot's index from header to last block (the block assembler keys
   on it; a slot 2 one is on index 1): a slot 1 one runs on index 0 with its own live crypto swapped in while lane 0
   carries a slot 2 call or the packet is in progress, and the call's is put back after each burst
   (`dsd_state::dmr_mono_slot1_data_crypto`, `dmr_data_swap_in_slot1_data_crypto()`), so a data header neither resets
   nor replaces the lane call's crypto; its AES IV is expanded apart from the voice IV, MI and frame counter
   (`dmr_block_crypto_prepare_aes_iv()`), and its data terminator resets the packet on its own slot. A voice LC header
-  still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Lane 0's hold
-  and classification belong to the over-the-air slot whose own word ended the hold (`dsd_state::dmr_mono_lane_owner`,
-  set by `dmr_enc_class_release_hold()` from `dsd_state::dmr_mono_lane_word_slot`: a standalone burst's CACH slot, an
-  embedded LC's the lane's, `dmr_mono_lane_voice_slot()`). The other slot's voice on the lane, once the lane moved
-  there without a retune (proven, or Checking after a checked TACT named it), is held as on a held slot
-  (`dmr_mono_lane_owned_by_other_slot()` in `mbe_dmr_slot_judge()`); that slot's LC whose check failed classifies
-  nothing, and its checked LC forgets the lane's classification, classifies it by its own word and makes the lane its
-  slot's. A word of the other slot that sets the classification without a check of the call's (`dmr_enc_class_force()`)
-  holds the lane again. Under trunking nothing is folded.
+  still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Under trunking
+  nothing is folded.
 
   The exemption, the run's first landing, keyed on nothing having landed yet in the run (`dsd_state::run_landed`, set
   by any landing: the run's first stream, a tune, a scan's row entry or park):
@@ -12497,7 +12498,7 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
-  `<dsd-neo/protocol/dmr/dmr_mono_lane.h>` (which over-the-air slot the single-slot lane's hold belongs to; the
+  `<dsd-neo/protocol/dmr/dmr_mono_lane.h>` (whether the single-slot lane's voice is another slot's than its call; the
   vocoder's judge reads it)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
