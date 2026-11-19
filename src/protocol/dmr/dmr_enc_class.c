@@ -24,6 +24,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
