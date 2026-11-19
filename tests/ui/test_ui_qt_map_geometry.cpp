@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <limits>
+#include <numeric>
 #include <vector>
 
 #include <dsd-neo/core/safe_api.h>
@@ -848,6 +849,71 @@ test_interpolate_viewport() {
     assert(std::fabs(nan.center_x - 0.98) < 1.0e-12);
 }
 
+/* PR2 review: a dash or gap used up exactly at a joint toggles there; the next segment starts the next part instead of
+ * being skipped as if hidden. */
+void
+test_dash_boundary_at_a_joint() {
+    const mg::TrailStyle style = pen(6.0F, 4.0F); /* half width 1: a 2 px pen, a 4 px centre-line dash */
+    const auto reach = [](const std::vector<mg::StrokeVertex>& v) {
+        return std::accumulate(v.begin(), v.end(), -1.0e9F,
+                               [](float right, const mg::StrokeVertex& p) { return std::fmax(right, p.x); });
+    };
+    /* A 100 px line, and the same line with a joint where the first dash ends (x = 4). */
+    const float plain_x[2] = {0.0F, 100.0F};
+    const float plain_y[2] = {0.0F, 0.0F};
+    std::vector<mg::StrokeVertex> plain;
+    (void)mg::append_trail(plain_x, plain_y, 2, style, nullptr, plain);
+    const float joint_x[3] = {0.0F, 4.0F, 100.0F};
+    const float joint_y[3] = {0.0F, 0.0F, 0.0F};
+    std::vector<mg::StrokeVertex> joint;
+    (void)mg::append_trail(joint_x, joint_y, 3, style, nullptr, joint);
+    assert(reach(joint) > 90.0F && std::fabs(reach(joint) - reach(plain)) < 0.5F);
+    /* With a clip too (the hidden-stretch path), and with the default style's three points 30, 34, 134. */
+    const mg::ClipRect clip{-10.0F, -10.0F, 400.0F, 300.0F};
+    std::vector<mg::StrokeVertex> clipped;
+    (void)mg::append_trail(joint_x, joint_y, 3, style, &clip, clipped);
+    assert(std::fabs(reach(clipped) - reach(plain)) < 0.5F);
+    const float far_x[3] = {30.0F, 34.0F, 134.0F};
+    const float far_y[3] = {50.0F, 50.0F, 50.0F};
+    std::vector<mg::StrokeVertex> far;
+    (void)mg::append_trail(far_x, far_y, 3, style, &clip, far);
+    assert(reach(far) > 120.0F);
+    /* A hidden stretch that ends exactly where a part does: the next shown segment still draws. */
+    const mg::ClipRect right_part{50.0F, -10.0F, 400.0F, 300.0F};
+    const float hidden_x[3] = {0.0F, 4.0F, 120.0F};
+    std::vector<mg::StrokeVertex> hidden;
+    (void)mg::append_trail(hidden_x, joint_y, 3, style, &right_part, hidden);
+    assert(reach(hidden) > 110.0F);
+    /* A hidden stretch that ends exactly at the clip's edge (50 less the pen's reach, 48.5) and exactly where a part
+     * ends (a 4 px centre-line dash): the shown segment from there draws on. */
+    const float edge_x[3] = {44.5F, 48.5F, 140.0F};
+    std::vector<mg::StrokeVertex> at_edge;
+    (void)mg::append_trail(edge_x, joint_y, 3, style, &right_part, at_edge);
+    assert(reach(at_edge) > 130.0F);
+}
+
+/* PR2 review: copies are counted against the camera carried on the short way, as view_transform() moves content. */
+void
+test_continued_viewport() {
+    mm::Viewport built;
+    built.width = 256.0;
+    built.height = 256.0;
+    built.zoom = 0.0;
+    built.center_x = 0.99;
+    mm::Viewport now = built;
+    now.center_x = 0.01;
+    const mm::WorldPoint radio{0.5, 0.5};
+    assert(ms::wrap_copy(built, radio) == ms::wrap_copy(now, radio)); /* the wrapped camera hides the jump */
+    const mm::Viewport carried = ms::continued_viewport(built, now);
+    assert(std::fabs(carried.center_x - 1.01) < 1.0e-12);
+    assert(ms::wrap_copy(built, radio) != ms::wrap_copy(carried, radio));
+    /* An ordinary pan keeps every copy. */
+    mm::Viewport panned = built;
+    panned.center_x = 0.97;
+    const mm::Viewport panned_on = ms::continued_viewport(built, panned);
+    assert(ms::wrap_copy(built, radio) == ms::wrap_copy(panned_on, radio));
+}
+
 } // namespace
 
 int
@@ -864,6 +930,8 @@ main(void) {
     test_slices_bound_the_chord_error();
     test_atlas_cells();
     test_marker_quads();
+    test_dash_boundary_at_a_joint();
+    test_continued_viewport();
     test_fill_levels();
     test_marker_cells();
     test_split_trail();

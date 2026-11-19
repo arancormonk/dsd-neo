@@ -682,6 +682,19 @@ reusable_scaled(const map_math::Viewport& built, const map_math::Viewport& now, 
 }
 
 /**
+ * @brief @p now with its centre carried on from @p built the shortest way round, not wrapped back into [0, 1).
+ *
+ * view_transform() moves content the short way; wrap_copy() must count copies against the same camera, or a camera
+ * that crossed its own wrap (0.99 to 0.01) would look as if every point kept its copy.
+ */
+inline map_math::Viewport
+continued_viewport(const map_math::Viewport& built, const map_math::Viewport& now) {
+    map_math::Viewport v = now;
+    v.center_x = built.center_x + map_math::nearest_wrap_delta(now.center_x - built.center_x);
+    return v;
+}
+
+/**
  * @brief Which copy of the world @p p is drawn on in @p vp (screen_from_world()): whole worlds from the raw one.
  *
  * Content built for one view may be moved to show a pan only while every point it was placed by is still drawn on

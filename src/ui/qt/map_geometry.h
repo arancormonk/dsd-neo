@@ -135,11 +135,19 @@ dash_toggle(DashWalk& walk, float x, float y, const TrailStyle& style, std::vect
     return added;
 }
 
+/** @brief Below this a dash or gap is used up: the pattern toggles there rather than carry an empty part on. */
+constexpr float kDashUsedUp = 1.0e-4F;
+
 /** @brief Move the dash pattern @p length along without drawing: whole periods are skipped in one step. */
 inline void
 dash_skip(DashWalk& walk, float length) {
     if (length <= walk.remaining) {
         walk.remaining -= length;
+        if (!(walk.remaining > kDashUsedUp)) {
+            /* Used up exactly where the stretch ends: the next part begins there. */
+            walk.on = !walk.on;
+            walk.remaining = walk.on ? walk.dash : walk.gap;
+        }
         return;
     }
     length -= walk.remaining;
@@ -152,6 +160,10 @@ dash_skip(DashWalk& walk, float length) {
         walk.remaining = walk.on ? walk.dash : walk.gap;
     }
     walk.remaining -= length;
+    if (!(walk.remaining > kDashUsedUp)) {
+        walk.on = !walk.on;
+        walk.remaining = walk.on ? walk.dash : walk.gap;
+    }
 }
 
 /** @brief The part of a segment inside a rectangle, as fractions of its length; empty when @c t1 < @c t0. */
@@ -236,6 +248,11 @@ dash_shown_segment(DashWalk& walk, float px, float py, float qx, float qy, float
         added += dash_toggle(walk, mx, my, style, out);
     }
     walk.remaining -= static_cast<float>(length - t);
+    if (!(walk.remaining > kDashUsedUp)) {
+        /* The dash or gap ends exactly at this joint: toggle here, so the next segment starts the next part rather
+         * than meet an empty one (which it would take for a step too small to move, and skip). */
+        return added + dash_toggle(walk, qx, qy, style, out);
+    }
     if (walk.on) {
         walk.xs.push_back(qx);
         walk.ys.push_back(qy);

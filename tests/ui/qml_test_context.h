@@ -4593,7 +4593,7 @@ class Setup : public QObject {
      *
      * @p fix: `source` (a radio ID; 0 or absent with `anonymous`: no checked source), `lat`/`lon` (degrees; made-up
      * places only), `ageSeconds` (received that long before the canned wall clock; default 0), `errM` (position
-     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`, `weakCheck`, `group` (the
+     * error, metres), `label`, and the flags `anonymous`, `provisional`, `validityUnknown`, `emergency`, `weakCheck`, `errorLowerBound` (errM is only a lower bound), `group` (the
      * target is a talkgroup), with pushPositionDetails()'s fields. Heard on a made-up DMR system on the system clock.
      */
     Q_INVOKABLE void
@@ -4622,7 +4622,8 @@ class Setup : public QObject {
         } named[] = {{"provisional", DSD_POS_FLAG_FORMAT_PROVISIONAL},
                      {"validityUnknown", DSD_POS_FLAG_VALIDITY_UNKNOWN},
                      {"emergency", DSD_POS_FLAG_EMERGENCY},
-                     {"weakCheck", DSD_POS_FLAG_WEAK_CHECK}};
+                     {"weakCheck", DSD_POS_FLAG_WEAK_CHECK},
+                     {"errorLowerBound", DSD_POS_FLAG_ERR_LOWER_BOUND}};
 
         for (const auto& n : named) {
             if (fix.value(QString::fromLatin1(n.name)).toBool()) {

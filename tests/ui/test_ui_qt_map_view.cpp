@@ -735,6 +735,117 @@ test_covering_label_has_a_plate() {
     delete root;
 }
 
+/* PR2 review: while the canvas is hidden (the List shown, the map closed with its screen kept) the model goes on, but
+ * the scene is not rebuilt for each batch; it is built once when the canvas shows again. */
+void
+test_hidden_canvas_defers_the_scene() {
+    Fixture f;
+    f.map->setActive(false);
+    const quint64 before = f.map->testSceneRebuilds();
+    push(3001U, 10.0, 20.0);
+    f.model.poll();
+    push(3001U, 10.0, 20.001);
+    f.model.poll();
+    f.model.refreshAges();
+    assert(f.map->testSceneRebuilds() == before && f.map->markerCount() == 0);
+    f.map->setActive(true);
+    assert(f.map->testSceneRebuilds() == before + 1U && f.map->markerCount() == 1);
+    /* Hidden by visibility too, and a camera call while hidden builds what it needs. */
+    f.map->setVisible(false);
+    push(3002U, 10.01, 20.0);
+    f.model.poll();
+    assert(f.map->markerCount() == 1);
+    const bool fitted = f.map->fitAll();
+    assert(fitted && f.map->markerCount() == 2);
+    f.map->setVisible(true);
+}
+
+/* PR2 review: a followed radio sits below the status chips (topInset); zooming (the buttons, a pinch) keeps it there
+ * rather than about the geometric centre, which walked it down the screen. */
+void
+test_follow_zoom_keeps_the_point() {
+    Fixture f;
+    f.map->setTopInset(52.0);
+    push(3003U, 10.0, 20.0);
+    f.model.poll();
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    assert(id != 0U);
+    f.map->setFollowTrackId(id);
+    const QPointF at = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - (150.0 + 26.0)) < 1.0e-6);
+    f.map->zoomIn();
+    QPointF now = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(now.x() - at.x()) < 1.0e-6 && std::fabs(now.y() - at.y()) < 1.0e-6);
+    f.map->zoomOut();
+    f.map->zoomOut();
+    now = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(now.y() - at.y()) < 1.0e-6);
+    f.map->zoomAbout(f.map->zoom() + 0.7, 0.0, 0.0);
+    now = f.map->markerPoint(id).toPointF();
+    assert(std::fabs(now.x() - at.x()) < 1.0e-6 && std::fabs(now.y() - at.y()) < 1.0e-6);
+    assert(f.map->followTrackId() == id);
+}
+
+/* PR2 review: an error that is only a lower bound ("more than 200 km") draws no accuracy disc: a disc would say the
+ * radio is within it. */
+void
+test_lower_bound_error_has_no_disc() {
+    Fixture f;
+    push(3004U, 10.0, 20.0, 500U, DSD_POS_FLAG_ERR_LOWER_BOUND);
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(f.map->markerCount() == 1 && now.circles->geometry()->vertexCount() == 0);
+    }
+    push(3005U, 10.0, 20.0, 500U);
+    f.model.poll();
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.circles->geometry()->vertexCount() > 0);
+    }
+    delete root;
+}
+
+/* PR2 review: a radio whose current fix is far off but whose newer emergency report (position validity unknown) is in
+ * view: the label, with its word, stands by the ring that is seen. */
+void
+test_label_by_the_visible_ring() {
+    Fixture f;
+    push(3006U, 10.0, 25.0);                                                             /* far east of the view */
+    push(3006U, 10.0, 20.0, 0U, DSD_POS_FLAG_VALIDITY_UNKNOWN | DSD_POS_FLAG_EMERGENCY); /* at the centre */
+    f.model.poll();
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.labels->childCount() == 1);
+        const QRectF label = static_cast<QSGImageNode*>(now.labels->firstChild())->rect();
+        assert(label.intersects(QRectF(150.0, 120.0, 100.0, 60.0))); /* beside the centre */
+    }
+    delete root;
+}
+
+/* PR2 review: a camera that wraps across its own date line (0.99 to 0.01, a short step east) moves every point on the
+ * near side a world further; the overlay is built again rather than translated off its markers. */
+void
+test_overlay_follows_a_wrapping_camera() {
+    Fixture f;
+    f.map->setZoom(0.0); /* the floor: the world just fills the 400 px view */
+    push(3007U, 0.0, 0.0, 2000000U);
+    f.model.poll();
+    f.map->setCenterLongitude(176.4); /* world x 0.99 */
+    assert(spin_until([&] { return !f.map->testZooming(); }));
+    QSGNode* root = f.map->testUpdateGpuTree(nullptr, 1.0);
+    f.map->setCenterLongitude(-176.4); /* world x 0.01: 0.02 east */
+    root = f.map->testUpdateGpuTree(root, 1.0);
+    {
+        const Layers now = layers(root);
+        assert(now.overlay->matrix().isIdentity());
+    }
+    delete root;
+}
+
 } // namespace
 
 int
@@ -752,6 +863,11 @@ main(int argc, char** argv) {
     test_label_priority();
     test_zoom_settles_by_itself();
     test_covering_label_has_a_plate();
+    test_hidden_canvas_defers_the_scene();
+    test_follow_zoom_keeps_the_point();
+    test_lower_bound_error_has_no_disc();
+    test_label_by_the_visible_ring();
+    test_overlay_follows_a_wrapping_camera();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);
     (void)DSD_FPRINTF(stdout, "UI_QT_MAP_VIEW: ok\n");
     return 0;

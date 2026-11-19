@@ -35,6 +35,12 @@
 #include <mutex>
 #include <utility>
 #include <vector>
+#if defined(__linux__)
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #include "position_model.h"
 #include "position_ring.h"
 #include "position_tap.h"
@@ -43,6 +49,8 @@ namespace {
 
 using dsd_qt::PositionFilterModel;
 using dsd_qt::PositionModel;
+using dsd_qt::PositionReadState;
+using dsd_qt::PositionTap;
 
 void
 check_at(bool condition, const char* what, int line) {
@@ -857,6 +865,82 @@ test_read_page_marks() {
     CHECK(dsd_qt::position_read_page(nullptr, state, page, 8).count == -1);
 }
 
+/* PR2 review: a clear is a boundary at what is published now. A report published after the last poll but before the
+ * clear belongs to before it, and never reappears; one published after it does. */
+void
+test_clear_boundary() {
+    Fresh f;
+    const uint64_t s = 31U;
+    publish(s, {fix_of(7U, 0, kT0)}, sample_of(s, 0, kT0, true));
+    f.model.poll();
+    CHECK(f.model.count() == 1);
+    publish(s, {fix_of(8U, 0, kT0 + 1)}, sample_of(s, 0, kT0 + 1, true)); /* not polled yet */
+    f.model.clear();
+    f.model.poll();
+    CHECK(f.model.count() == 0);
+    publish(s, {fix_of(9U, 0, kT0 + 2)}, sample_of(s, 0, kT0 + 2, true));
+    f.model.poll();
+    CHECK(f.model.count() == 1 && track_of(f.model, 9U) != nullptr && track_of(f.model, 8U) == nullptr);
+    /* Nothing published at all: a clear moves nothing and breaks nothing. */
+    Fresh g;
+    g.model.clear();
+    g.model.poll();
+    CHECK(g.model.count() == 0 && gap_rows(g.model) == 0);
+}
+
+/* PR2 review: LIP's time elapsed (how old the position was when sent) reaches the fix record, so the sheet can say it
+ * when the report has no time of its own. */
+void
+test_age_at_send() {
+    Fresh f;
+    const uint64_t s = 32U;
+    dsd_position_fix lip = fix_of(7U, 0, kT0);
+    lip.kind = DSD_POS_LIP;
+    lip.age_class = 2U; /* under 30 minutes */
+    dsd_position_fix unknown_age = fix_of(8U, 0, kT0);
+    unknown_age.kind = DSD_POS_LIP;
+    unknown_age.age_class = 3U;                 /* not known */
+    dsd_position_fix none = fix_of(9U, 0, kT0); /* none sent (DSD_POSITION_AGE_CLASS_NONE) */
+    dsd_position_fix fresh = fix_of(10U, 0, kT0);
+    fresh.age_class = 0U; /* under 5 seconds */
+    publish(s, {lip, unknown_age, none, fresh}, sample_of(s, 0, kT0, true));
+    f.model.poll();
+    const auto record = [&f](uint32_t source) {
+        return f.model.trackFor(track_of(f.model, source)->id).value(QStringLiteral("currentFix")).toMap();
+    };
+    CHECK(record(7U).value(QStringLiteral("ageAtSendMaxSeconds")).toInt() == 1800);
+    CHECK(!record(8U).contains(QStringLiteral("ageAtSendMaxSeconds")));
+    CHECK(!record(9U).contains(QStringLiteral("ageAtSendMaxSeconds")));
+    CHECK(record(10U).value(QStringLiteral("ageAtSendMaxSeconds")).toInt() == 5);
+}
+
+/* PR2 review: a background tap whose thread cannot be had (a process out of threads) reports that it did not start,
+ * rather than throwing through the application-state handler. Run in a child process held to one process by
+ * RLIMIT_NPROC, so no thread can be made there. */
+void
+test_tap_without_a_thread() {
+#if defined(__linux__)
+    if (geteuid() == 0) {
+        return; /* root is not held by RLIMIT_NPROC */
+    }
+    std::fflush(stdout);
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        rlimit one{1, 1};
+        if (setrlimit(RLIMIT_NPROC, &one) != 0) {
+            _exit(3);
+        }
+        PositionTap tap(&ring_source);
+        const bool started = tap.start(PositionReadState{});
+        _exit((!started && !tap.running()) ? 0 : 2);
+    }
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
+}
+
 } // namespace
 
 int
@@ -872,6 +956,9 @@ main(int argc, char** argv) {
     test_caps();
     test_loss_breaks_trails_and_one_gap_row();
     test_clear();
+    test_clear_boundary();
+    test_age_at_send();
+    test_tap_without_a_thread();
     test_system_ages_and_filter();
     test_replay_ages();
     test_live_to_replay_retention();

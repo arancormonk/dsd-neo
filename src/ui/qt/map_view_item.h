@@ -46,6 +46,7 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
+#include <QPointF>
 #include <QPointer>
 #include <QQuickItem>
 #include <QSet>
@@ -358,6 +359,12 @@ class MapViewItem : public QQuickItem {
         updatePolish();
     }
 
+    /** @brief Scene rebuilds so far (a hidden canvas defers them). */
+    quint64
+    testSceneRebuilds() const {
+        return m_sceneRebuilds;
+    }
+
     /** @brief End the zoom in progress now, as its settle timer would. */
     void
     testSettleZoom() {
@@ -417,7 +424,7 @@ class MapViewItem : public QQuickItem {
         bool hasMarker = false;
         map_math::WorldPoint marker;
         map_scene::MarkerStyle markerStyle;
-        double errM = 0.0; /**< accuracy circle radius, metres; 0: none */
+        double errM = 0.0; /**< accuracy circle radius, metres; 0: none (unknown, or only a lower bound) */
         double latDeg = 0.0;
         bool hasRing = false;
         map_math::WorldPoint ring;
@@ -479,6 +486,9 @@ class MapViewItem : public QQuickItem {
     void onTileSettingsChanged();
     void onApplicationStateChanged(Qt::ApplicationState state);
     void rebuildScene();
+    bool canvasShown() const;
+    void ensureScene();
+    void catchUpScene();
     void orderLabels();
     void sceneChanged();
     bool assignColor(QColor& member, const QColor& next);
@@ -507,6 +517,8 @@ class MapViewItem : public QQuickItem {
     bool fitPoints(std::vector<map_math::WorldPoint> points);
     /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
     map_math::Viewport belowTopInset(map_math::Viewport vp) const;
+    /** @brief Where belowTopInset() puts a centred point on screen: the zoom buttons' and a followed zoom's anchor. */
+    QPointF focusPoint() const;
     const TrackDraw* findTrack(qulonglong trackId) const;
     std::vector<TileDraw> tileDraws(double ratio) const;
     const std::vector<SpriteQuad>& spriteQuads();
@@ -516,6 +528,7 @@ class MapViewItem : public QQuickItem {
     void forEachTrail(Visit&& visit);
     void buildAtlas(double ratio);
     void buildLabels(double ratio);
+    map_math::ScreenPoint labelAnchor(const TrackDraw& t) const;
     void prepareLabels();
     void ensureLabelCache(double ratio);
     const QImage& labelImage(const TrackDraw& t, double ratio);
@@ -573,9 +586,11 @@ class MapViewItem : public QQuickItem {
     /* The scene, in world coordinates: rebuilt when the model's tracks, ages or the selection change. */
     std::vector<TrackDraw> m_scene;
     std::vector<MarkerDraw> m_markers; /* draw order: last on top */
-    quint64 m_sceneSerial = 1;         /* bumped by every change that alters trails, circles or colours */
-    quint64 m_atlasSerial = 1;         /* bumped by every change to the sprites' look */
-    quint64 m_labelSerial = 1;         /* bumped by every change to the labels' look */
+    quint64 m_sceneSerial = 1;
+    bool m_sceneStale = false; /* tracks or style changed while the canvas was hidden: build at the next show */
+    quint64 m_sceneRebuilds = 0; /* for tests */ /* bumped by every change that alters trails, circles or colours */
+    quint64 m_atlasSerial = 1;                   /* bumped by every change to the sprites' look */
+    quint64 m_labelSerial = 1;                   /* bumped by every change to the labels' look */
 
     /* The camera's animation, from m_animFrom to m_animTo. */
     QVariantAnimation* m_camera = nullptr;

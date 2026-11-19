@@ -74,6 +74,17 @@ struct PositionPage {
 PositionPage position_read_page(PositionSource source, PositionReadState& state, dsd_position_fix* out, size_t cap);
 
 /**
+ * @brief Move @p state to the newest record @p source has published (its head), reading nothing before it: the
+ *        boundary a Clear sets, so only reports published after it reach the map again.
+ *
+ * @param newest Receives the head record itself when there is one (@p have_newest set), for the reader's
+ *               last-receive time.
+ * @return false when the view could not be read (@p state unchanged).
+ */
+bool position_skip_to_head(PositionSource source, PositionReadState& state, dsd_position_fix* newest,
+                           bool* have_newest);
+
+/**
  * @brief Reads the position view once a second while the app is in the background.
  *
  * Started and stopped from the GUI thread only. The queue (kCapacity records, about 3.7 MB with its marks) and one read

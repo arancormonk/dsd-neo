@@ -9,6 +9,8 @@
 #include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/core/position.h>
 #include <new>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 namespace dsd_qt {
@@ -63,6 +65,34 @@ position_read_page(PositionSource source, PositionReadState& state, dsd_position
     return page;
 }
 
+bool
+position_skip_to_head(PositionSource source, PositionReadState& state, dsd_position_fix* newest, bool* have_newest) {
+    if (have_newest != nullptr) {
+        *have_newest = false;
+    }
+    if (source == nullptr) {
+        return false;
+    }
+    dsd_app_position_cursor head{};
+    if (source(state.stream, state.seq, nullptr, 0U, &head) < 0) {
+        return false;
+    }
+    if (head.stream_id == 0U) {
+        return true; /* nothing published yet */
+    }
+    if (newest != nullptr && have_newest != nullptr && head.newest_seq > 0U) {
+        dsd_app_position_cursor at{};
+        *have_newest = source(head.stream_id, head.newest_seq - 1U, newest, 1U, &at) == 1;
+    }
+    state.stream = head.stream_id;
+    state.seq = head.newest_seq;
+    head.last_seq = head.newest_seq;
+    head.more = 0U;
+    state.ended = stream_read_to_end(head);
+    state.sample = head.sample;
+    return true;
+}
+
 PositionTap::PositionTap(PositionSource source) : m_source(source) {}
 
 PositionTap::~PositionTap() { (void)stop(); }
@@ -92,7 +122,15 @@ PositionTap::start(const PositionReadState& from) {
         m_pollNow = false;
         m_polling = false;
     }
-    m_thread = std::thread(&PositionTap::run, this);
+    try {
+        m_thread = std::thread(&PositionTap::run, this);
+    } catch (const std::system_error&) {
+        // No thread to be had (Android out of thread stacks, a process limit): no background capture, as when the
+        // buffers could not be had, rather than an exception through the application-state handler.
+        m_result = Result();
+        m_page.reset();
+        return false;
+    }
     m_running = true;
     return true;
 }

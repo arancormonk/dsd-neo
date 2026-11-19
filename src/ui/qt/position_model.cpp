@@ -279,6 +279,10 @@ fix_record(const dsd_position_fix& fix, bool newest) {
     put_known(out, "sats", fix.sats != DSD_POSITION_SATS_NONE, fix.sats);
     put_known(out, "freqHz", fix.freq_hz > 0, static_cast<double>(fix.freq_hz));
     put_known(out, "fixTime", fix.fix_time_s != 0, static_cast<double>(fix.fix_time_s));
+    // LIP's time elapsed (TS 100 392-18-1 Table 6.111): how old the position was when sent, at most, when the report
+    // carries no time of its own. Codes 0..2: under 5 s, 5 min, 30 min; 3 (not known) and none: absent.
+    static const int kAgeAtSendMaxS[3] = {5, 300, 1800};
+    put_known(out, "ageAtSendMaxSeconds", fix.age_class < 3U, fix.age_class < 3U ? kAgeAtSendMaxS[fix.age_class] : 0);
     out.insert(QStringLiteral("receivedTime"), static_cast<double>(fix.rx_time_s));
     out.insert(QStringLiteral("timeText"), time_text(fix.rx_time_s));
     out.insert(QStringLiteral("newest"), newest);
@@ -725,8 +729,10 @@ PositionModel::poll() {
 
 void
 PositionModel::clear() {
-    // The read position stays: what was published up to now is not read again. A tap still running (a desktop window
-    // hidden) gives up what it holds, and goes on from where it read.
+    // The read position moves to what is published now (the clear's boundary): a report published since the last
+    // poll belongs to before the clear, and is not read. A tap still running (a desktop window hidden) gives up what
+    // it holds, and goes on from that boundary.
+    bool restartTap = false;
     if (m_tap && m_tap->running()) {
         const PositionTap::Result tapped = m_tap->stop();
         if (tapped.ran) {
@@ -736,9 +742,15 @@ PositionModel::clear() {
             // Read, then dropped by the clear: a later gap's "missing from" time starts after the last of them.
             noteReceived(tapped.fixAt(tapped.count - 1));
         }
-        if (!m_handoffOwed && !m_tap->start(m_read)) {
-            qWarning("positions: the background capture could not start");
-        }
+        restartTap = !m_handoffOwed;
+    }
+    dsd_position_fix head{};
+    bool haveHead = false;
+    if (position_skip_to_head(m_source, m_read, &head, &haveHead) && haveHead) {
+        noteReceived(head);
+    }
+    if (restartTap && !m_tap->start(m_read)) {
+        qWarning("positions: the background capture could not start");
     }
     if (!m_rows.isEmpty()) {
         beginResetModel();

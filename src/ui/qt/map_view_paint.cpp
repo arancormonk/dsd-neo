@@ -491,6 +491,23 @@ MapViewItem::prepareLabels() {
     prune_label_images(m_labelImages, m_labelKeys);
 }
 
+mm::ScreenPoint
+MapViewItem::labelAnchor(const TrackDraw& t) const {
+    /* The label stands by a mark that is on screen: the current position when it shows, else the open ring when
+     * that shows (a track can have one in view and the other far off; an emergency's word must stay with what is
+     * seen). Neither on screen: the current position, whose label place_labels() then leaves out. */
+    const double half = m_markerSize / 2.0;
+    const auto shows = [&](const mm::ScreenPoint& p) {
+        return p.x >= -half && p.x <= m_vp.width + half && p.y >= -half && p.y <= m_vp.height + half;
+    };
+    const mm::ScreenPoint marker = mm::screen_from_world(m_vp, t.marker);
+    const mm::ScreenPoint ring = mm::screen_from_world(m_vp, t.ring);
+    if (t.hasMarker && (shows(marker) || !t.hasRing || !shows(ring))) {
+        return marker;
+    }
+    return ring;
+}
+
 void
 MapViewItem::buildLabels(double ratio) {
     ensureLabelCache(ratio);
@@ -520,7 +537,7 @@ MapViewItem::buildLabels(double ratio) {
     for (const int i : m_labelOrder) {
         const TrackDraw& t = m_scene[static_cast<size_t>(i)];
         const QSizeF size = labelImage(t, ratio).deviceIndependentSize();
-        const mm::ScreenPoint at = mm::screen_from_world(m_vp, t.hasMarker ? t.marker : t.ring);
+        const mm::ScreenPoint at = labelAnchor(t);
         ms::LabelRequest request{static_cast<float>(at.x), static_cast<float>(at.y), static_cast<float>(size.width()),
                                  static_cast<float>(size.height())};
         request.urgent = t.emergency;
@@ -723,7 +740,10 @@ MapViewItem::gpuTiles(GpuRoot* root, QQuickWindow* win, double ratio) {
 void
 MapViewItem::gpuOverlay(GpuRoot* root, double ratio) {
     const double margin = kPanMarginFraction * std::max(m_vp.width, m_vp.height);
-    wrapCopies(m_vp, m_copies);
+    /* The copies are counted against the camera carried on from the built one the short way round (the way
+     * view_transform() moves the content): a camera that wrapped from 0.99 to 0.01 moved 0.02 east, so a point that
+     * was west of it is now drawn a world further east, and must be built again. */
+    wrapCopies(ms::continued_viewport(root->overlayVp, m_vp), m_copies);
     /* A pan within the margin only moves the trails and circles. While a zoom is in progress (a pinch, the camera)
      * they are scaled as well, up to half a zoom step each way, and built again once it settles: rebuilding 200
      * trails of 100 points for every pinch frame cost a phone about 30 ms a frame. */
@@ -744,6 +764,7 @@ MapViewItem::gpuOverlay(GpuRoot* root, double ratio) {
     root->overlaySerial = m_sceneSerial;
     root->overlayVp = m_vp;
     root->overlayRatio = ratio;
+    wrapCopies(m_vp, m_copies); /* the copies as built, against this very camera */
     root->overlayCopies = m_copies;
     root->overlay->setMatrix(QMatrix4x4());
     const auto m = static_cast<float>(margin);

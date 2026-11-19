@@ -18152,7 +18152,10 @@ Qt Quick frontend (`src/ui/qt`):
     List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
     The flat roles (flags, readings, `kindText`, `fixTime`) describe a track's newest report; `currentFix` and
     `unknownFix` (maps, `{}` when none) describe the filled marker's own report and the open ring's, each with its
-    flags, readings, times and `newest`. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
+    flags, readings, times and `newest` (and `ageAtSendMaxSeconds`, LIP's time elapsed: under 5 s, 5 min or 30 min old
+    when sent, for a report with no time of its own). `clear()` is a boundary at the published head
+    (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
+    published after it repopulate the map. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
     announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and
     the List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report,
     else the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn
@@ -18165,7 +18168,8 @@ Qt Quick frontend (`src/ui/qt`):
   - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
     Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
     a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
-    and gap rule both share. Test: `UI_QT_POSITION_MODEL`.
+    and gap rule both share. A thread that cannot be started (`std::system_error`) is a tap that did not start, as
+    when its buffers cannot be had. Test: `UI_QT_POSITION_MODEL`.
   - `location_feed.{h,cpp}` (`LocationFeed`, context property `locationFeed`): the one owner of the host's continuous
     location stream (`DecoderHost::startLocationStream()`/`stopLocationStream()`/`locationStreamUpdate`), through
     idempotent named leases ("roaming" for `SiteRoaming`, "map" for live follow). The first lease starts the stream,
@@ -18191,7 +18195,10 @@ Qt Quick frontend (`src/ui/qt`):
     `QImage` instead. One visual variable per state: freshness is fill strength over a halo base (4 levels, ages from
     the model), an unconfirmed source a dashed outline, validity unknown an open ring at its own fix (no freshness: it
     has no fill), a provisional format a double outline and a dashed trail, emergency the alert colour with the word
-    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). Labels
+    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). An
+    accuracy disc is drawn only for a bounded error: a lower
+    bound (`DSD_POS_FLAG_ERR_LOWER_BOUND`, "more than 200 km") draws none, the sheet and List say "more than". A
+    label stands by the track's mark that is on screen: its current position, else its open ring. Labels
     (`map_scene.h` `place_labels()`) try each side of their marker (right, left, above, below) and take the first one
     inside the view that covers no marker (the device dot included), no `labelObstacles` keep-out and no label already
     placed. Order: the selected track, then emergencies, then the most recently heard (`map_view_detail.h`). An
@@ -18206,7 +18213,10 @@ Qt Quick frontend (`src/ui/qt`):
     settle timer, `m_zooming`) they are also scaled (`map_scene.h` `view_transform()`, `reusable_scaled()`: same view
     size, within half a zoom step, the built area still covering the view) and built again once the zoom has held still,
     so a pinch no longer rebuilds 200 × 100 trails per frame. New data, a colour, a wrap-copy flip or a resize rebuilds
-    at once. While a new
+    at once; copies are counted against the camera carried on the short way (`continued_viewport()`), so a camera
+    crossing its own wrap (0.99 to 0.01) rebuilds too. While the canvas is hidden (`active` false, invisible, or no
+    window: the List, or the map closed with its screen kept) the model goes on but the scene is not rebuilt; it is
+    built once when the canvas shows again (or when a camera call such as `fitAll()` needs it). While a new
     zoom's tiles load, earlier zooms' tiles in view stand in (at most 64), except an image the cache rules do not let
     be shown again (`reusable` false), which goes as soon as its key leaves the view's tiles. A null `tileReady` image
     withdraws its key at once, and the same image delivered again (a memory hit for a re-requested view) keeps its
@@ -18217,7 +18227,9 @@ Qt Quick frontend (`src/ui/qt`):
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
-    puts its target in the middle of the part below it (`belowTopInset()`). `fitPadding` is label room at the text size
+    puts its target in the middle of the part below it (`belowTopInset()`); the zoom buttons, and any zoom while
+    following, zoom about that same point (`focusPoint()`), so a followed radio stays put. `fitPadding` is label
+    room at the text size
     (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId`
     and `followDevice` re-centre on every change; a pan ends either. `cameraUsedDevicePosition` turns true once the
     camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the

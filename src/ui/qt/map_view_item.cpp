@@ -209,6 +209,7 @@ MapViewItem::setActive(bool on) {
     if (!on) {
         releaseTiles();
     }
+    catchUpScene();
     polish();
     update();
 }
@@ -241,8 +242,17 @@ MapViewItem::releaseTiles() {
 
 // --------------------------------------------------------------- scene ----
 
+bool
+MapViewItem::canvasShown() const {
+    return m_active && isVisible() && window() != nullptr;
+}
+
 void
-MapViewItem::onTracksChanged() {
+MapViewItem::ensureScene() {
+    if (!m_sceneStale) {
+        return;
+    }
+    m_sceneStale = false;
     rebuildScene();
     m_sceneSerial++;
     followNow();
@@ -250,7 +260,26 @@ MapViewItem::onTracksChanged() {
 }
 
 void
+MapViewItem::catchUpScene() {
+    if (canvasShown()) {
+        ensureScene();
+    }
+}
+
+void
+MapViewItem::onTracksChanged() {
+    /* Hidden (the List shown, or the map closed with its screen kept): the model goes on ingesting, but the scene is
+     * built once, when the canvas is shown again (catchUpScene()), not for every batch on another screen. */
+    m_sceneStale = true;
+    catchUpScene();
+}
+
+void
 MapViewItem::onAgesChanged() {
+    if (m_sceneStale || !canvasShown()) {
+        m_sceneStale = true;
+        return;
+    }
     /* Ages move fill strengths (sprites only) and what the filter shows; trails and circles are rebuilt only when
      * the set drawn with them changed. */
     const auto drawn = [](const TrackDraw& t) { return (t.id << 1U) | (t.hasMarker ? 1U : 0U); };
@@ -267,9 +296,8 @@ MapViewItem::onAgesChanged() {
 
 void
 MapViewItem::sceneChanged() {
-    rebuildScene();
-    m_sceneSerial++;
-    update();
+    m_sceneStale = true;
+    catchUpScene();
 }
 
 namespace {
@@ -285,7 +313,10 @@ track_draw(const PositionModel::Row& row, int fresh_s, int faded_s, MapViewItem:
         t.markerStyle.double_outline = (row.current.flags & DSD_POS_FLAG_FORMAT_PROVISIONAL) != 0U;
         t.markerStyle.alert = t.emergency;
         t.markerStyle.fill_level = ms::fill_level(row.ageS, fresh_s, faded_s);
-        t.errM = static_cast<double>(row.current.err_m);
+        /* A lower-bound error ("more than 200 km") has no bound to draw: a disc of that radius would say the radio is
+         * within it. No disc; the sheet and the List say "more than". */
+        const bool lowerBound = (row.current.flags & DSD_POS_FLAG_ERR_LOWER_BOUND) != 0U;
+        t.errM = lowerBound ? 0.0 : static_cast<double>(row.current.err_m);
         t.latDeg = static_cast<double>(row.current.lat_e7) / 1.0e7;
         t.ageS = row.ageS;
         /* An anonymous row holds one point (the model never extends it), so it has no trail. */
@@ -329,6 +360,7 @@ MapViewItem::orderLabels() {
 
 void
 MapViewItem::rebuildScene() {
+    m_sceneRebuilds++;
     m_scene.clear();
     m_markers.clear();
     const QVector<PositionModel::Row> empty;
@@ -479,6 +511,9 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
     if (gone) {
         releaseTiles();
     }
+    if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
+        catchUpScene();
+    }
     if (change == ItemDevicePixelRatioHasChanged || change == ItemVisibleHasChanged || change == ItemSceneChange) {
         polish();
         update();
@@ -523,8 +558,10 @@ MapViewItem::zoomAbout(double level, double x, double y) {
     }
     stopCamera();
     if (m_followTrack != 0U || m_followDevice) {
-        x = width() / 2.0;
-        y = height() / 2.0;
+        /* About the followed point, where centring put it (below the chips), so it stays put. */
+        const QPointF focus = focusPoint();
+        x = focus.x();
+        y = focus.y();
     }
     setViewport(mm::zoom_about(m_vp, level, x, y));
 }
@@ -536,16 +573,25 @@ MapViewItem::cameraBase() const {
     return (m_camera->state() == QAbstractAnimation::Running) ? m_animTo : m_vp;
 }
 
+QPointF
+MapViewItem::focusPoint() const {
+    /* The middle of the part of the canvas below topInset: where every centring puts its target (belowTopInset()). */
+    const double inset = std::min(m_topInset, std::max(0.0, height() / 2.0));
+    return QPointF(width() / 2.0, (height() / 2.0) + (inset / 2.0));
+}
+
 void
 MapViewItem::zoomIn() {
     const mm::Viewport base = cameraBase();
-    moveCamera(mm::zoom_about(base, base.zoom + 1.0, width() / 2.0, height() / 2.0));
+    const QPointF focus = focusPoint();
+    moveCamera(mm::zoom_about(base, base.zoom + 1.0, focus.x(), focus.y()));
 }
 
 void
 MapViewItem::zoomOut() {
     const mm::Viewport base = cameraBase();
-    moveCamera(mm::zoom_about(base, base.zoom - 1.0, width() / 2.0, height() / 2.0));
+    const QPointF focus = focusPoint();
+    moveCamera(mm::zoom_about(base, base.zoom - 1.0, focus.x(), focus.y()));
 }
 
 std::vector<mm::WorldPoint>
@@ -564,11 +610,13 @@ MapViewItem::findTrack(qulonglong trackId) const {
 
 bool
 MapViewItem::fitAll() {
+    ensureScene();
     return fitPoints(markerPoints());
 }
 
 bool
 MapViewItem::fitAllWith(double lat, double lon) {
+    ensureScene();
     std::vector<mm::WorldPoint> points = markerPoints();
     if (std::isfinite(lat) && std::isfinite(lon) && std::fabs(lat) <= 90.0 && std::fabs(lon) <= 180.0) {
         points.push_back(mm::world_from_lat_lon(lat, lon));
@@ -603,6 +651,7 @@ MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
 
 bool
 MapViewItem::centerOnTrack(qulonglong trackId) {
+    ensureScene();
     const TrackDraw* t = findTrack(trackId);
     if (t == nullptr) {
         return false;
