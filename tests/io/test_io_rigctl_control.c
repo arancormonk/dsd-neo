@@ -1411,8 +1411,8 @@ test_set_freq_resyncs_after_a_late_reply(void) {
     const size_t sent = g_command_count;
     const int confirmed = SetFreq(150, 851012500L);
     if (confirmed || g_command_count != sent) {
-        DSD_FPRINTF(stderr, "a late reply confirmed the next request (confirmed %d, sent %zu)\n", confirmed,
-                    g_command_count - sent);
+        DSD_FPRINTF(stderr, "a late reply confirmed the next request (confirmed %d, sent %llu)\n", confirmed,
+                    (unsigned long long)(g_command_count - sent));
     }
     assert(!confirmed && g_command_count == sent && RigctlNeedsResync(150));
     return 0;
