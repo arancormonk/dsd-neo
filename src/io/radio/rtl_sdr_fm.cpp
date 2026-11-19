@@ -6590,7 +6590,11 @@ controller_restore_refused_capture(const CaptureSettingsSnapshot* previous, uint
     uint32_t capture_rate_hz = previous->dongle_rate_hz;
     int correction_rc = 0;
     int refusal = kCaptureRefusalNone;
-    if (actual > 0 && (uint32_t)actual != capture_rate_hz) {
+    /* Planned again when the device runs another rate than the capture had, or was written another rate than the
+       capture's plan counts (it took the rate it delivered, say, where it had snapped the one asked for): the restored
+       plan would otherwise judge the read-back, and the forced flag, against a write the device no longer has. */
+    if (actual > 0
+        && ((uint32_t)actual != capture_rate_hz || programmed_hz != capture_snapshot_programmed_rate_hz(previous))) {
         const CaptureReadback rb = {center_freq_hz, previous->dongle_frequency_hz, capture_rate_hz, programmed_hz,
                                     (uint32_t)actual};
         correction_rc = apply_actual_capture_rate(&rb, &capture_rate_hz, &refusal);

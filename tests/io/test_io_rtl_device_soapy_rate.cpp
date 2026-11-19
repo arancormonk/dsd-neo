@@ -872,6 +872,49 @@ test_preference_out_of_tuning_range(void) {
     expect_eq("the capture sits a quarter of it above the centre", got.capture_freq_hz, (double)center_hz + 500000.0);
 }
 
+/* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
+ * and asked on the rollback for the 1,536,000 Hz it delivered, which it now lists and takes as written: request, write
+ * and read-back agree, so the restored plan is made again and no longer counts the rate as forced. */
+void
+test_rollback_replans_a_changed_write(void) {
+    static const double before[] = {2e6, 9e6};
+    static const double after[] = {1536000.0, 2e6, 9e6};
+    static const double delivered[] = {1536000.0, 9e6, 0.0};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = before;
+    fake.listed_rate_count = 2U;
+    fake.delivered_by_write = delivered;
+    fake.delivered_by_write_count = 3U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    expect_eq("the start runs the 1,536,000 Hz delivered", got.capture_rate_hz, 1536000.0);
+    expect_eq("the start counts the rate as forced", (double)got.rate_forced, 1.0);
+    fake.listed_rates = after;
+    fake.listed_rate_count = 3U;
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        kCenterHz + 25000U, 72000, &got)
+                                       == 0);
+    expect_true("the hop is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("the device is given 1,536,000 Hz", fake.rate_hz, 1536000.0);
+    expect_eq("the stream runs 1,536,000 Hz", got.capture_rate_hz, 1536000.0);
+    expect_eq("the rate is no longer counted as forced", (double)got.rate_forced, 0.0);
+    expect_eq("nor published as forced", (double)got.published_forced, 0.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 /* A device that advertises a rate above the ceiling but delivers one within it starts: the ceiling holds on the rate
  * read back, and the ring is sized for it. */
 void
@@ -1098,6 +1141,7 @@ main(int argc, char** argv) {
         {"rate_written_judges_the_readback", test_rate_written_judges_the_readback},
         {"oversized_rate_written_refused", test_oversized_rate_written_refused},
         {"preference_out_of_tuning_range", test_preference_out_of_tuning_range},
+        {"rollback_replans_a_changed_write", test_rollback_replans_a_changed_write},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
         {"bandwidth_notices_follow_readback", test_bandwidth_notices_follow_readback},
