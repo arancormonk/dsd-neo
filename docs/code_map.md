@@ -4607,7 +4607,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   armed dwell (`trunk_scan_latch_listening()`, before the state machine runs), so a later retune on the same target (a
   control channel probe) neither moves nor pauses the dwell. The -Y hangtime rule does the same
   (`no_carrier_hangtime_ran_out()` in `engine.c`): not run out while the input is muted, and, when the input came back
-  after the hangtime anchor, `-t` counts from then as well. A dwell disarmed in between stays disarmed, and every disarm records its cause
+  after the hangtime anchor, `-t` counts from then as well. The -Y countdown
+  (`scan_y_timing_fill_hangtime()`) publishes the same deadline: no window while the input is muted, and `-t` from
+  its return when that ends later than the wall-clock rule. A dwell disarmed in between stays disarmed, and every disarm records its cause
   (`trunk_scan_disarm_dwell()`, `trunk_scan_dwell_disarm`): a conventional activity hold (the activity callback, and
   the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
   the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
