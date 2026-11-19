@@ -404,8 +404,11 @@ int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
  *  where the receiver was before the tune (dmr_sm_receiver_frequency(); 0 unknown): a follow that leaves that carrier
  *  ends its calls (EXPLICIT) there, one that stays on it keeps the calls on the air and their identities. @p slot is the
- *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
-void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz);
+ *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. @p result and
+ *  @p request_id are the follow tune's: one still in flight (PENDING under a request) ends the left calls now but
+ *  judges their decryption once it lands, and a tune that fails takes nothing from them, as for a grant's follow. */
+void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz,
+                               dsd_trunk_tune_result result, uint64_t request_id);
 
 /* ----------------------------------------------------------------------------
  * Talkgroup priority and preemption

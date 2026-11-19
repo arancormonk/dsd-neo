@@ -3068,15 +3068,20 @@ dmr_sm_receiver_frequency(const dsd_opts* opts) {
 }
 
 void
-dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz) {
+dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz,
+                          dsd_trunk_tune_result result, uint64_t request_id) {
     if (!opts || !state || freq_hz <= 0) {
         return;
     }
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     /* As dmr_sm_follow_grant(): the carrier left behind keeps no active call, and a status follow of the carrier the
-       receiver is on (the rest channel it parks on) keeps that carrier's calls and their identities. */
+       receiver is on (the rest channel it parks on) keeps that carrier's calls and their identities. A tune still in
+       flight ends them now and leaves the rest of the judgement to its landing. */
     const int leaves = dmr_sm_follow_leaves(receiver_hz, freq_hz);
-    if (leaves) {
+    const int in_flight = leaves && dmr_sm_follow_tune_in_flight(result, request_id);
+    if (in_flight) {
+        dmr_sm_end_left_calls(opts, state);
+    } else if (leaves) {
         dmr_sm_leave_carrier(opts, state);
     }
     /* As handle_grant() after its tune: the call's voice deadlines and its return are the machine's. Its identity is
@@ -3099,6 +3104,9 @@ dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int sl
     dmr_sm_leave_judgement_abandon(ctx, state);
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_superseded = 0; // a call followed since an operator move ends that move's listening window
+    if (in_flight) {
+        dmr_sm_leave_carrier_once_landed(ctx, request_id, receiver_hz, freq_hz);
+    }
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
     ctx->vc_data_call = 0;

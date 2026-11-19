@@ -12759,7 +12759,10 @@ Private per-protocol modules worth knowing about:
     still in flight (`dmr_sm_follow_grant()`, `dmr_sm_follow_move()` take its request): the left calls end at once, as
     the machine moves on, and their decryption is judged once the request lands
     (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY` `dmr_grant_follow_judges_its_carrier_once_landed()`,
-    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
+    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
+    (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data channel follow
+    (`dmr_cspdu_con_plus_tune_data()`, through `dmr_sm_note_tracked_carrier_tune()`):
+    `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
     reading of the tuner (`dsd_engine_receiver_hz()`): the machine's own tunes go through `dmr_sm_tune_to_freq()` and
     `dmr_sm_tune_to_cc()`, which mark them as judged by their caller for the engine's hook
     (`dsd_trunk_tuning_caller_judges()`, the marker a trunk-scan park, a return to the control channel and an operator's

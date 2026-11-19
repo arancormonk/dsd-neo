@@ -3507,7 +3507,7 @@ dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
         rc |= expect_true("the status follow's tune",
                           dsd_trunk_tuning_hook_tune_to_freq(opts, state, DMR_HOP_VC2, 0, NULL)
                               == DSD_TRUNK_TUNE_RESULT_OK);
-        dmr_sm_note_status_follow(opts, state, DMR_HOP_VC2, 0, receiver);
+        dmr_sm_note_status_follow(opts, state, DMR_HOP_VC2, 0, receiver, DSD_TRUNK_TUNE_RESULT_OK, 0U);
     }
     rc |= expect_true("the machine leaves VC1 for VC2", state->trunk_vc_freq[0] == DMR_HOP_VC2);
     return rc;

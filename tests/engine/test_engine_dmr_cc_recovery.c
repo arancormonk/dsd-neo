@@ -2022,6 +2022,77 @@ cap_plus_map(void) {
     g_state.trunk_chan_map[4] = 453000000L;
 }
 
+/* A Connect Plus data channel grant (FID 0x06, opcode 0x06) to @p target on LCN @p lcn, slot 1. */
+static void
+con_plus_data_grant(uint32_t target, uint8_t lcn) {
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    bytes[0] = 0x06;
+    bytes[1] = 0x06;
+    bytes[2] = (uint8_t)(target >> 16);
+    bytes[3] = (uint8_t)(target >> 8);
+    bytes[4] = (uint8_t)target;
+    bytes[5] = (uint8_t)(lcn << 4);
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+/* Issue #834: a Capacity Plus status follow, and a Connect Plus data channel follow, whose tune is still pending (an
+   RTL tune past the controller's wait) have not left the carrier yet, and one that then fails never does: the calls
+   there keep their ALG, key ID, MI and privacy, and their voice is not held, until the tune lands, as for a grant's
+   follow. One that lands is judged then. */
+static int
+dmr_status_and_data_follows_judge_their_carrier_once_landed(void) {
+    int rc = 0;
+    for (int data = 0; data <= 1; data++) {
+        for (int lands = 0; lands <= 1; lands++) {
+            if (setup(0.0f)) {
+                cleanup();
+                return 1;
+            }
+            dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+            if (data) {
+                aloha(1);
+                dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+                g_opts.trunk_tune_data_calls = 1;
+                g_state.trunk_chan_map[4] = 453000000L;
+            } else {
+                cap_plus_map();
+                cap_plus_idle(3U);
+            }
+            g_state.last_vc_sync_time = 0;
+            seed_call_crypto(&g_state);
+            g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            g_vc_request = 0U;
+            if (data) {
+                con_plus_data_grant(3003U, 4U);
+            } else {
+                cap_plus_two_calls(3U);
+            }
+            const uint64_t request = g_vc_request;
+            const char* what = data ? "a Connect Plus data follow" : "a Capacity Plus status follow";
+            char label[160];
+            DSD_SNPRINTF(label, sizeof label, "%s is pending, under its own request", what);
+            rc |= expect(request != 0U, label);
+            DSD_SNPRINTF(label, sizeof label, "%s pending leaves the calls' decryption alone", what);
+            rc |= expect(call_crypto_kept(&g_state), label);
+            dsd_trunk_tuning_request_publish(request, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+            dmr_sm_resolve_tracked_tune(&g_opts, &g_state);
+            DSD_SNPRINTF(label, sizeof label,
+                         lands ? "%s that landed forgets the calls' decryption and holds"
+                               : "%s that failed keeps the calls' decryption",
+                         what);
+            rc |= expect(lands ? call_crypto_left(&g_state) : call_crypto_kept(&g_state), label);
+            g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+            cleanup();
+        }
+    }
+    return rc;
+}
+
 static int
 close_to(double a, double b) {
     return fabs(a - b) < 1e-6;
@@ -2711,6 +2782,7 @@ main(void) {
     rc |= pending_and_failed_probes();
     rc |= dmr_probe_judges_its_carrier_once_landed();
     rc |= dmr_grant_follow_judges_its_carrier_once_landed();
+    rc |= dmr_status_and_data_follows_judge_their_carrier_once_landed();
     rc |= dmr_rigctl_probe_judged_from_the_confirmed_frequency();
     rc |= dmr_deferred_mapped_probe_is_retried();
     rc |= dmr_probe_drops_the_back_retry();
