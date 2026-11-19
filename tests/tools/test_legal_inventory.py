@@ -24,6 +24,10 @@ MBE_NOTICES = (
     "legal/status.md", "legal/patents.md",
 )
 
+# The libraries vcpkg links statically into the Android app.
+VCPKG_ANDROID_PORTS = ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus",
+                       "mp3lame", "mpg123")
+
 
 def mbelib_notice_fixture(directory):
     for name in MBE_NOTICES:
@@ -163,12 +167,14 @@ class InventoryTests(unittest.TestCase):
                                   packages["msvc-runtime"]["licenseConcluded"]), (runtime, runtime))
                 self.assertNotIn("licenseComments", packages["msvc-runtime"])
                 self.assertIn("Do not modify them.", notices[runtime])
-            # The custom texts of the Windows libraries come from their retained files. codec2's varicode grant is
-            # read as the LGPL 2.1: its note file (LICENSES/LicenseRef-codec2-varicode.txt) records that reading and
-            # adds no license to any SBOM.
-            for custom in ("LicenseRef-PDCurses-Public-Domain", "LicenseRef-OpenSSL-KISA-SEED", "LicenseRef-Sun-G72x"):
-                self.assertEqual(custom in notices, platform == "windows")
-                if platform == "windows":
+            # The custom texts of the vcpkg libraries come from their retained files: PDCurses ships in the ZIP only,
+            # OpenSSL and libsndfile in the ZIP and the APK. codec2's varicode grant is read as the LGPL 2.1: its note
+            # file (LICENSES/LicenseRef-codec2-varicode.txt) records that reading and adds no license to any SBOM.
+            for custom, platforms in (("LicenseRef-PDCurses-Public-Domain", ("windows",)),
+                                      ("LicenseRef-OpenSSL-KISA-SEED", ("windows", "android")),
+                                      ("LicenseRef-Sun-G72x", ("windows", "android"))):
+                self.assertEqual(custom in notices, platform in platforms)
+                if platform in platforms:
                     self.assertEqual(notices[custom], (ROOT / "LICENSES" / (custom + ".txt")).read_text(encoding="utf-8"))
             self.assertFalse(any("codec2" in name for name in notices))
             with self.assertRaises(ValueError):
@@ -315,6 +321,38 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(openssl["windows_release"]["notices"]["licenses/OpenSSL-NOTICES.txt"], "repo:" + notice)
         self.assertFalse((ROOT / "packaging/windows/OpenSSL-NOTICES.txt").exists())
 
+    def test_android_records_name_the_vcpkg_libraries_the_app_links(self):
+        # The APK links vcpkg's static builds of these libraries into libdsd-neo-app_arm64-v8a.so, from the same
+        # baseline as the Windows ZIP: its SBOM names each with the expression and version of the reviewed sources, and
+        # the notices the records retain are shared files every package can carry.
+        ports = ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus", "mp3lame",
+                 "mpg123")
+        document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
+        legal.add_spdx(document, self.inventory, self.pins, "android")
+        packages = {p["SPDXID"].removeprefix("SPDXRef-dsd-reviewed-"): p for p in document["packages"]}
+        components = {c["id"]: c for c in self.inventory["components"]}
+        for ident in ports:
+            component = components[ident]
+            with self.subTest(component=ident):
+                self.assertIn(ident, packages)
+                self.assertEqual(packages[ident]["licenseConcluded"], component["license_concluded"])
+                self.assertIn("Android app", component["assessment"])
+                self.assertIn("vcpkg-triplets/arm64-android-static.cmake", component["paths"])
+                for notice in component["notices"]:
+                    self.assertFalse(notice.startswith("packaging/windows/"), notice)
+        self.assertEqual(packages["openssl"]["name"], "OpenSSL")
+        self.assertIn("libssl", components["openssl"]["assessment"])
+        self.assertIn("CURL_USE_OPENSSL=ON", components["curl"]["assessment"])
+        # The APK carries each port's copyright file from the Android build's vcpkg tree and the LGPL 2.1 text LAME's
+        # gain_analysis.c needs, beside LICENSES/, which it copies whole.
+        stage = (ROOT / "cmake/stage_android_package.cmake").read_text(encoding="utf-8")
+        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
+        for port in ports:
+            self.assertIn(f"licenses/{port}-copyright.txt", android)
+            self.assertIn(port, stage)
+        for name in ("licenses/mp3lame-LGPL-2.1.txt", "licenses/OpenSSL-NOTICES.txt", "licenses/opus-NOTICES.txt"):
+            self.assertIn(name, android)
+
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
         # SoapySDRUtil.exe, so only its SBOM names it.
@@ -384,19 +422,35 @@ class NoticeStagingTests(unittest.TestCase):
         notices.mkdir()
         for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt", "tetra_crypto-LICENSE.txt"):
             (notices / name).write_text(name + "\n", encoding="utf-8")
+        share = self.work / "vcpkg_installed/arm64-android-static/share"
+        for port in VCPKG_ANDROID_PORTS:
+            (share / port).mkdir(parents=True)
+            (share / port / "copyright").write_text("Port copyright fixture: " + port + "\n", encoding="utf-8")
         stage = self.work / "stage"
         args = [f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={package}", f"-DSTAGE_DIR={stage}",
                 f"-DPFFFT_LICENSE_DIR={notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={notices}",
-                f"-DMBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/stage_android_package.cmake"]
+                f"-DMBELIB_NOTICE_DIR={self.mbe}", f"-DVCPKG_SHARE_DIR={share}", "-P",
+                ROOT / "cmake/stage_android_package.cmake"]
         result = self.run_cmake(*args)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         docs = stage / "assets/doc/dsd-neo"
+        for port in VCPKG_ANDROID_PORTS:
+            self.assertEqual((docs / f"licenses/{port}-copyright.txt").read_bytes(),
+                             (share / port / "copyright").read_bytes())
+        self.assertEqual((docs / "licenses/mp3lame-LGPL-2.1.txt").read_bytes(),
+                         (ROOT / "android/third_party/libusb/COPYING").read_bytes())
+        self.assertEqual((docs / "licenses/OpenSSL-NOTICES.txt").read_bytes(),
+                         (ROOT / "LICENSES/OpenSSL-NOTICES.txt").read_bytes())
         for name in MBE_NOTICES:
             self.assertEqual((docs / "licenses/mbelib-neo" / name).read_bytes(), (self.mbe / name).read_bytes())
         for name in ("status.md", "source-delivery.md", "components.json"):
             self.assertEqual((docs / "legal" / name).read_bytes(), (ROOT / "legal" / name).read_bytes())
         self.assertEqual((docs / "licenses/ISC.txt").read_bytes(), (ROOT / "LICENSES/ISC.txt").read_bytes())
         # A stale destination must not hide an incomplete new dependency install.
+        (share / "mpg123/copyright").unlink()
+        self.assertNotEqual(self.run_cmake(*args).returncode, 0)
+        (share / "mpg123/copyright").write_text("restored\n", encoding="utf-8")
+        self.assertEqual(self.run_cmake(*args).returncode, 0)
         (self.mbe / "legal/status.md").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
 

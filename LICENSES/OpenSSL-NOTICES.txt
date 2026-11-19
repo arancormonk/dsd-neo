@@ -7,9 +7,9 @@ as vcpkg's openssl port builds it at dsd-neo's manifest baseline: libcrypto for 
 provider and libssl, linked statically into the Android app (android-arm64, no-shared no-module,
 enable-ec_nistp_64_gcc_128). The holder list below is the union of the sources these builds compile;
 a file one build does not compile (the x86_64 assembly on Android, libssl and the arm64 files on
-Windows) stays listed. OpenSSL is under the Apache License 2.0 (in the Windows ZIP
-openssl-copyright.txt, in other packages the copyright file the package names for OpenSSL);
-OpenSSL-AUTHORS.md lists The OpenSSL Project Authors. README.md names the project's holders:
+Windows) stays listed. OpenSSL is under the Apache License 2.0, openssl-copyright.txt (the
+copyright file vcpkg's port installs, LICENSE.txt); OpenSSL-AUTHORS.md lists The OpenSSL Project
+Authors. README.md names the project's holders:
 
 Copyright (c) 1998-2026 The OpenSSL Project Authors
 

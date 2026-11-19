@@ -91,7 +91,16 @@ resource bundle, so they travel with the binary rather than as a separate file.
         `licenses/codec2-NOTICES.txt` and
         `licenses/LicenseRef-codec2-varicode.txt` for the codec2 library it links, and
         `licenses/ibm-plex-OFL-1.1.txt` for the fonts compiled into the Qt
-        resource bundle
+        resource bundle, and for the vcpkg libraries linked into the app the
+        same notices the Windows ZIP carries for them: `licenses/<port>-copyright.txt`
+        for `openssl`, `curl`, `zlib`, `expat`, `libsndfile`, `libflac`, `libogg`,
+        `libvorbis`, `opus`, `mp3lame` and `mpg123`, and `OpenSSL-AUTHORS.md`,
+        `OpenSSL-NOTICES.txt`, `LicenseRef-OpenSSL-KISA-SEED.txt`, `curl-NOTICES.txt`,
+        `expat-NOTICES.txt`, `libsndfile-GSM610-COPYRIGHT.txt`,
+        `libsndfile-ALAC-Apache-2.0.txt`, `LicenseRef-Sun-G72x.txt`,
+        `libsndfile-NOTICES.txt`, `libvorbis-lpc-NOTICE.txt`, `opus-NOTICES.txt`,
+        `mp3lame-LGPL-2.1.txt`, `mp3lame-README.txt`, `mp3lame-LICENSE.txt`,
+        `mp3lame-NOTICES.txt`, `mpg123-AUTHORS.txt` and `mpg123-NOTICES.txt`
         (`cmake/stage_android_package.cmake` stages them; `android-ci` fails the
         build if any are missing).
   - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty

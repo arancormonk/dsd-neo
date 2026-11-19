@@ -282,8 +282,14 @@ class AirspyPackaging(unittest.TestCase):
         tea_notices = self.work / "tetra_crypto-licenses"
         tea_notices.mkdir()
         (tea_notices / "tetra_crypto-LICENSE.txt").write_text("TEA notice fixture\n")
+        share = self.work / "vcpkg-share"
+        for port in ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus",
+                     "mp3lame", "mpg123"):
+            (share / port).mkdir(parents=True)
+            (share / port / "copyright").write_text("Port copyright fixture\n")
         result = run(["cmake", f"-DPFFFT_LICENSE_DIR={fft_notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={tea_notices}",
                       f"-DMBELIB_NOTICE_DIR={mbelib_notice_fixture(self.work / 'mbelib-notices')}",
+                      f"-DVCPKG_SHARE_DIR={share}",
                       f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",
                       f"-DSTAGE_DIR={stage}", "-P", str(ROOT / "cmake/stage_android_package.cmake")])
         self.assert_success(result)

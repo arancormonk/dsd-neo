@@ -1,10 +1,14 @@
-Expat (https://github.com/libexpat/libexpat) copyright notices for the Windows libexpat.dll: release
-2.9.0, tag R_2_9_0 (archive https://github.com/libexpat/libexpat/archive/R_2_9_0.tar.gz, SHA512
+Expat (https://github.com/libexpat/libexpat) copyright notices for the Expat library dsd-neo's
+packages carry: release 2.9.0, tag R_2_9_0 (archive
+https://github.com/libexpat/libexpat/archive/R_2_9_0.tar.gz, SHA512
 b4820866070eb2b6ea910ac7737cdc6bdec36462d4cf056dd1d84615a81cbafa88e4060c3c496207e60adc180086125f4aee5be8da5184867a1b40ae4e182d78),
-as vcpkg's expat port builds it: expat/lib/xcs.c, xmlparse.c, xmlrole.c, xmltok.c (with
-xmltok_impl.c and xmltok_ns.c) and random_rand_s.c, and the headers they include. Each file is under
-the MIT license of expat-copyright.txt (siphash.h: CC0-1.0, also in that file); its holder lines
-follow, paths relative to expat/.
+as vcpkg's expat port builds it for the Windows ZIP (libexpat.dll) and the Android app (linked
+statically): expat/lib/xcs.c, xmlparse.c, xmlrole.c, xmltok.c (with xmltok_impl.c and xmltok_ns.c),
+the entropy source the platform selects (random_rand_s.c on Windows; on other platforms one or more
+of random_arc4random.c, random_arc4random_buf.c, random_dev_urandom.c, random_getentropy.c and
+random_getrandom.c), and the headers they include. Each file is under the MIT license of
+expat-copyright.txt, the copyright file vcpkg's port installs (siphash.h: CC0-1.0, also in that
+file); its holder lines follow, paths relative to expat/.
 
 lib/ascii.h
     Copyright (c) 1999-2000 Thai Open Source Software Center Ltd
@@ -84,16 +88,53 @@ lib/nametab.h
     Copyright (c) 2000 Clark Cooper <coopercc@users.sourceforge.net>
     Copyright (c) 2017 Sebastian Pipping <sebastian@pipping.org>
 
+lib/random_arc4random.c
+    Copyright (c) 2017-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2026      Matthew Fernandez <matthew.fernandez@gmail.com>
+
 lib/random_arc4random.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_arc4random.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_arc4random_buf.c
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2026 Matthew Fernandez <matthew.fernandez@gmail.com>
+
+lib/random_arc4random_buf.h
     Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
 
 lib/random_arc4random_buf.h
     Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
 
+lib/random_dev_urandom.c
+    Copyright (c) 2017-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2026      Matthew Fernandez <matthew.fernandez@gmail.com>
+
 lib/random_dev_urandom.h
     Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
 
+lib/random_dev_urandom.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_getentropy.c
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2026 Matthew Fernandez <matthew.fernandez@gmail.com>
+
 lib/random_getentropy.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_getentropy.h
+    Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
+
+lib/random_getrandom.c
+    Copyright (c) 2017-2026 Sebastian Pipping <sebastian@pipping.org>
+    Copyright (c) 2017      Chanho Park <chanho61.park@samsung.com>
+    Copyright (c) 2022      Sean McBride <sean@rogue-research.com>
+    Copyright (c) 2026      Matthew Fernandez <matthew.fernandez@gmail.com>
+
+lib/random_getrandom.h
     Copyright (c) 2026 Sebastian Pipping <sebastian@pipping.org>
 
 lib/random_getrandom.h

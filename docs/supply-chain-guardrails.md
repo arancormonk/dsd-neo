@@ -102,8 +102,9 @@ tag ref for a lightweight tag) and hash that commit's archive with the recipe ab
 library with its own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update the `LIBRARY_VERSION`
 and `LIBRARY_RELEASE` values in `vcpkg-ports/hackrf/CMakeLists.txt` as well, and recheck the library's source list and
 the notices in each overlay's `copyright`, which the Windows ZIP ships. When `CODEC2_SHA` or `PORTAUDIO_SHA` moves,
-or the vcpkg baseline moves a library the ZIP carries, recheck the notices `legal/components.json` names for it
-against the new sources (`LICENSES/codec2-NOTICES.txt`, `packaging/windows/*-NOTICES.txt` and the like).
+or the vcpkg baseline moves a library the ZIP or the APK carries, recheck the notices `legal/components.json` names
+for it against the new sources (`LICENSES/codec2-NOTICES.txt`, `LICENSES/*-NOTICES.txt`,
+`packaging/windows/*-NOTICES.txt` and the like), for every platform the record lists.
 
 ### Patched USB libraries
 

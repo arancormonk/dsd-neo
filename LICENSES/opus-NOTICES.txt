@@ -1,13 +1,47 @@
-Opus (https://opus-codec.org/, https://github.com/xiph/opus) copyright notices for the Windows
-opus.dll: release 1.6.1, tag v1.6.1 (archive https://github.com/xiph/opus/archive/v1.6.1.tar.gz,
-SHA512
+Opus (https://opus-codec.org/, https://github.com/xiph/opus) copyright notices for the Opus library
+dsd-neo's packages carry: release 1.6.1, tag v1.6.1 (archive
+https://github.com/xiph/opus/archive/v1.6.1.tar.gz, SHA512
 b9a504f8576c977df57caee808412ab95e7424e9a64e3dd4045f05616c3ed58706bc3549195b61e25721e299547509d15206d246d96f1a307b82562b703b412c),
-as vcpkg's opus port builds it for x64 (floating point, no deep-learning code). opus-copyright.txt,
-Opus's COPYING, carries the BSD-3-Clause license and its holders. These sources compiled into the
-library also name holders COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo,
-Parrot and John Ridges); each file's header is reproduced up to its license text. Of these,
-silk/LPC_fit.c, silk/NSQ.h and silk/x86/NSQ_del_dec_avx2.c carry COPYING's three-clause license; the
-others carry its first two clauses, as celt/x86/pitch_sse.c words them after the list, unmodified.
+as vcpkg's opus port builds it, floating point and with no deep-learning code: opus.dll in the
+Windows ZIP, built for x64 (the celt/x86 and silk/x86 files), and the static library in the Android
+app, built for arm64 (the celt/arm and silk/arm files). opus-copyright.txt, Opus's COPYING, carries
+the BSD-3-Clause license and its holders. These sources compiled into the library also name holders
+COPYING does not (Cisco Systems, Google, Arm Limited, Koen Vos, Vidyo, Parrot and John Ridges); each
+file's header is reproduced up to its license text. Of these, silk/LPC_fit.c, silk/NSQ.h,
+silk/x86/NSQ_del_dec_avx2.c, celt/arm/pitch_neon_intr.c and the silk/arm files carry COPYING's
+three-clause license; the others carry its first two clauses, as celt/x86/pitch_sse.c words them
+after the list, unmodified.
+
+celt/arm/arm_celt_map.c
+    Copyright (c) 2010 Xiph.Org Foundation
+    Copyright (c) 2013 Parrot
+    Copyright (c) 2024 Arm Limited
+
+celt/arm/armcpu.c
+    Copyright (c) 2010 Xiph.Org Foundation
+    Copyright (c) 2013 Parrot
+
+celt/arm/armcpu.h
+    Copyright (c) 2010 Xiph.Org Foundation
+    Copyright (c) 2013 Parrot
+
+celt/arm/celt_neon_intr.c
+    Copyright (c) 2014-2015 Xiph.Org Foundation
+    Copyright (c) 2024 Arm Limited
+    Written by Viswanath Puttagunta
+
+celt/arm/fixed_arm64.h
+    Copyright (C) 2015 Vidyo
+
+celt/arm/mathops_arm.h
+    Copyright (c) 2024 Arm Limited
+
+celt/arm/pitch_arm.h
+    Copyright (c) 2010 Xiph.Org Foundation
+    Copyright (c) 2013 Parrot
+
+celt/arm/pitch_neon_intr.c
+    Copyright (c) 2017 Google Inc.
 
 celt/cpu_support.h
     Copyright (c) 2010 Xiph.Org Foundation
@@ -73,6 +107,36 @@ silk/LPC_fit.c
 silk/NSQ.h
     Copyright (c) 2014 Vidyo.
     Copyright (c) 2006-2011, Skype Limited. All rights reserved.
+
+silk/arm/LPC_inv_pred_gain_arm.h
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/LPC_inv_pred_gain_neon_intr.c
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/NSQ_del_dec_arm.h
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/NSQ_del_dec_neon_intr.c
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/NSQ_neon.c
+    Copyright (C) 2014 Vidyo
+
+silk/arm/NSQ_neon.h
+    Copyright (C) 2014 Vidyo
+
+silk/arm/arm_silk_map.c
+    Copyright (C) 2014 Vidyo
+
+silk/arm/biquad_alt_arm.h
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/biquad_alt_neon_intr.c
+    Copyright (c) 2017 Google Inc.
+
+silk/arm/macros_arm64.h
+    Copyright (C) 2015 Vidyo
 
 silk/x86/NSQ_del_dec_avx2.c
     Copyright (c) 2021 Google Inc.

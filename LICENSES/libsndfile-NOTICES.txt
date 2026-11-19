@@ -1,10 +1,11 @@
-libsndfile (https://github.com/libsndfile/libsndfile) copyright notices for the Windows sndfile.dll:
-release 1.2.2 (archive https://github.com/libsndfile/libsndfile/archive/1.2.2.tar.gz, SHA512
+libsndfile (https://github.com/libsndfile/libsndfile) copyright notices for the libsndfile dsd-neo's
+packages carry, sndfile.dll in the Windows ZIP and the static library in the Android app: release
+1.2.2 (archive https://github.com/libsndfile/libsndfile/archive/1.2.2.tar.gz, SHA512
 fb8b4d367240a8ac9d55be6f053cb19419890691c56a8552d1600d666257992b6e8e41a413a444c9f2d6c5d71406013222c92a3bfa67228944a26475444240a1),
 as vcpkg's libsndfile port builds it: the sources of the sndfile target in CMakeLists.txt, including
 the bundled GSM 06.10 (src/GSM610), G.72x (src/G72x) and ALAC (src/ALAC) codecs, and the headers
 they include. Most files are under the GNU Lesser General Public License 2.1 or later, the text of
-libsndfile-copyright.txt; src/ima_oki_adpcm.c and .h under version 2 or later of that license;
+libsndfile-copyright.txt (the copyright file the port installs); src/ima_oki_adpcm.c and .h under version 2 or later of that license;
 src/GSM610 under the notice of libsndfile-GSM610-COPYRIGHT.txt; src/G72x/g72x.c and the other Sun
 files under LicenseRef-Sun-G72x.txt; src/ALAC under the Apache License 2.0 of
 libsndfile-ALAC-Apache-2.0.txt. The holder lines of each file follow, then the BSD-3-Clause notices

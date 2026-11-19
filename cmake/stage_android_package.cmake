@@ -9,6 +9,7 @@
 #         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses \
 #         -DTETRA_CRYPTO_LICENSE_DIR=<build>/tetra_crypto-licenses \
 #         -DMBELIB_NOTICE_DIR=<prefix>/share/doc/mbelib-neo \
+#         -DVCPKG_SHARE_DIR=<vcpkg_installed>/<triplet>/share \
 #         -P cmake/stage_android_package.cmake
 #
 # Run as a build step rather than at configure time so edits to android/package/ reach the
@@ -25,6 +26,7 @@ foreach(
         PFFFT_LICENSE_DIR
         TETRA_CRYPTO_LICENSE_DIR
         MBELIB_NOTICE_DIR
+        VCPKG_SHARE_DIR
 )
     if(NOT DEFINED ${_required})
         message(
@@ -89,5 +91,42 @@ configure_file(
 configure_file(
     "${REPO_DIR}/android/third_party/libairspy/LICENSE"
     "${_doc_dir}/licenses/libairspy-LICENSE.txt"
+    COPYONLY
+)
+
+# The libraries vcpkg links statically into the app: the copyright file each port installs,
+# under the name the Windows ZIP gives it. Their other notices are in LICENSES/, copied above.
+foreach(
+    _port
+    IN
+    ITEMS
+        openssl
+        curl
+        zlib
+        expat
+        libsndfile
+        libflac
+        libogg
+        libvorbis
+        opus
+        mp3lame
+        mpg123
+)
+    if(NOT EXISTS "${VCPKG_SHARE_DIR}/${_port}/copyright")
+        message(
+            FATAL_ERROR
+            "Missing ${VCPKG_SHARE_DIR}/${_port}/copyright, the notice of a library the app links"
+        )
+    endif()
+    configure_file(
+        "${VCPKG_SHARE_DIR}/${_port}/copyright"
+        "${_doc_dir}/licenses/${_port}-copyright.txt"
+        COPYONLY
+    )
+endforeach()
+# LAME's gain_analysis.c is under the LGPL 2.1; the port's copyright file is the LGPL 2.0.
+configure_file(
+    "${REPO_DIR}/android/third_party/libusb/COPYING"
+    "${_doc_dir}/licenses/mp3lame-LGPL-2.1.txt"
     COPYONLY
 )

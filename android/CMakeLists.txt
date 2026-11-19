@@ -67,6 +67,18 @@ target_link_options(dsd-neo-app PRIVATE "-Wl,-z,max-page-size=16384")
 # edits to android/package/ still reach the APK without re-running CMake.
 set(dsd_neo_android_package_dir "${CMAKE_CURRENT_BINARY_DIR}/package")
 
+# The app links vcpkg's static libraries (vcpkg-triplets/arm64-android-static.cmake), so the
+# package carries the copyright file each port installs.
+if(NOT DEFINED VCPKG_INSTALLED_DIR OR NOT DEFINED VCPKG_TARGET_TRIPLET)
+    message(
+        FATAL_ERROR
+        "The Android app is built with vcpkg (the android-app preset): its package carries the notices of the libraries vcpkg installs"
+    )
+endif()
+set(dsd_neo_vcpkg_share_dir
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share"
+)
+
 # Stage once at configure time as well, so the directory androiddeployqt is pointed at
 # already exists when Qt writes the deployment settings.
 execute_process(
@@ -76,6 +88,7 @@ execute_process(
         -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
         -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
+        -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMAND_ERROR_IS_FATAL ANY
@@ -89,6 +102,7 @@ add_custom_target(
         -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
         -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
+        -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMENT "Staging the Android package source with license files"

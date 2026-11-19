@@ -245,15 +245,23 @@ in `tools/ci-dependency-pins.env`; `legal/components.json` records each one.
   `packaging/windows/` and shipped as `licenses/PThreads4W-Apache-2.0.txt`, `licenses/PThreads4W-NOTICE.txt` and
   `licenses/PThreads4W-CONTRIBUTORS.txt`.
 
-## Windows Libraries Built by vcpkg
+## Libraries Built by vcpkg
 
 The Windows release ZIP also carries in `bin\` the libraries vcpkg builds at the manifest baseline in `vcpkg.json`,
 or from the project's overlays in `vcpkg-ports/`. For each one the ZIP carries the copyright file its port installs
 (`share/<port>/copyright` in vcpkg's tree) as `licenses/<port>-copyright.txt`, except PDCurses, whose port installs
 vcpkg's own paraphrase. Each library was reviewed against the sources its DLL is compiled from, in the archive its
 port downloads; where the port's file lacks a holder or a license those sources carry, the ZIP also carries the
-notices named below, kept in `LICENSES/` and `packaging/windows/` and installed under `licenses/`. The licenses are
-the ones those sources carry; where a port's `vcpkg.json` declares another, `legal/components.json` says so.
+notices named below, kept in `LICENSES/` (`packaging/windows/` for PortAudio, which only the ZIP carries) and
+installed under `licenses/`. The licenses are the ones those sources carry; where a port's `vcpkg.json` declares
+another, `legal/components.json` says so.
+
+The Android app links the same baseline's static builds of OpenSSL (libcrypto and libssl, with the legacy provider),
+libcurl (with OpenSSL instead of Schannel), zlib, Expat, libsndfile, libFLAC, libogg, libvorbis, Opus, LAME and
+mpg123 into `libdsd-neo-app_arm64-v8a.so` (`vcpkg-triplets/arm64-android-static.cmake`). The APK carries the same
+notices as the ZIP under the same names in `assets/doc/dsd-neo/licenses/`, each port's copyright file taken from the
+Android build's vcpkg tree (`cmake/stage_android_package.cmake`). The shared notice files name the holders of the
+sources both builds compile, the arm64 files of OpenSSL and Opus included.
 
 - **codec2** (`codec2.dll`; https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2, the
   commit `CODEC2_SHA` in `tools/ci-dependency-pins.env`) - LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND

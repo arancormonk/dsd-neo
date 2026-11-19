@@ -1,7 +1,8 @@
 libvorbis (https://github.com/xiph/vorbis) release 1.3.7 (archive
 https://github.com/xiph/vorbis/archive/v1.3.7.tar.gz, SHA512
 bfb6f5dbfd49ed38b2b08b3667c06d02e68f649068a050f21a3cc7e1e56b27afd546aaa3199c4f6448f03f6e66a82f9a9dc2241c826d3d1d4acbd38339b9e9fb):
-lib/lpc.c, compiled into vorbis.dll, preserves this notice of Jutta Degener and Carsten Bormann,
+lib/lpc.c, compiled into the libvorbis dsd-neo's packages carry (vorbis.dll in the Windows ZIP, and
+the static library in the Android app), preserves this notice of Jutta Degener and Carsten Bormann,
 Technische Universitaet Berlin, besides the Xiph.Org BSD license of libvorbis-copyright.txt.
 Reproduced unmodified from lib/lpc.c lines 17-43:
 

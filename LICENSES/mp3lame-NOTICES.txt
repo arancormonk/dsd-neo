@@ -1,12 +1,15 @@
-LAME (https://lame.sourceforge.io/) copyright notices for the Windows libmp3lame.dll: release 3.100
-(archive https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz, SHA512
+LAME (https://lame.sourceforge.io/) copyright notices for the LAME library dsd-neo's packages carry:
+release 3.100 (archive https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz,
+SHA512
 0844b9eadb4aacf8000444621451277de365041cc1d97b7f7a589da0b7a23899310afd4e4d81114b9912aa97832621d20588034715573d417b2923948c08634b),
-as vcpkg's mp3lame port builds it with MSVC: libmp3lame and the mpglib decoder it links, and the
-headers they include. Most files are under the GNU Library General Public License version 2 or later
-(mp3lame-copyright.txt, the upstream COPYING); libmp3lame/gain_analysis.c and .h are under the GNU
-Lesser General Public License version 2.1 or later (mp3lame-LGPL-2.1.txt). The upstream README and
-LICENSE are mp3lame-README.txt and mp3lame-LICENSE.txt. The holder lines of the compiled files
-follow, then mpglib/README and the header of libmp3lame/fft.c, unmodified.
+as vcpkg's mp3lame port builds it: with MSVC for the Windows ZIP (libmp3lame.dll), and with LAME's
+configure script, linked statically, for the Android app. Each build compiles libmp3lame and the
+mpglib decoder it links, and the headers they include; the SSE file
+libmp3lame/vector/xmm_quantize_sub.c is compiled for Windows only. Most files are under the GNU
+Library General Public License version 2 or later (mp3lame-copyright.txt, the upstream COPYING); libmp3lame/gain_analysis.c
+and .h are under the GNU Lesser General Public License version 2.1 or later (mp3lame-LGPL-2.1.txt).
+The upstream README and LICENSE are mp3lame-README.txt and mp3lame-LICENSE.txt. The holder lines of
+the compiled files follow, then mpglib/README and the header of libmp3lame/fft.c, unmodified.
 
 Copyright (c) 1999 A.L. Faber
     libmp3lame/VbrTag.c
