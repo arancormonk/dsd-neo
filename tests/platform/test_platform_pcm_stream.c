@@ -284,6 +284,39 @@ test_socket_discard_through(void) {
     socket_pair_close(&pair);
 }
 
+/* Issue #834: a drop that finds the bytes the mark counted not ready yet (a socket's low-water mark, an interrupted
+   wait) keeps them owed: they were queued at the mark, so they are the old channel's when they come, and go before any
+   sample after them is returned. Simulated on a pipe: the counted bytes leave it underneath and come back later. */
+static void
+test_fd_discard_keeps_a_debt_not_ready(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the owed drop");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the owed drop");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    put_bytes(fds[1], old_audio, sizeof old_audio);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    uint8_t hidden[sizeof old_audio];
+    check(dsd_read(fds[0], hidden, sizeof hidden) == (ssize_t)sizeof hidden, "the counted bytes not ready yet");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing ready to drop yet");
+    put_bytes(fds[1], old_audio, sizeof old_audio);
+    const uint8_t new_audio[] = {0x09U, 0x00U};
+    put_bytes(fds[1], new_audio, sizeof new_audio);
+    int16_t s = 0;
+    int got = DSD_PCM_STREAM_TIMEOUT;
+    for (int i = 0; i < 8 && got == DSD_PCM_STREAM_TIMEOUT; i++) {
+        got = dsd_pcm_stream_read_wait(stream, &s, 100U);
+    }
+    check(got == DSD_PCM_STREAM_SAMPLE && s == 9, "the old bytes go when they come; the first sample is the new one");
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+}
+
 /* Issue #834: stdin from another program (a pipe) drops what it held at the mark; a regular file, which nothing feeds,
    drops nothing; and a mark made on another input drops nothing of this one. */
 static void
@@ -750,6 +783,7 @@ main(void) {
     test_socket_idle_then_close();
     test_socket_discard_through();
     test_fd_discard_through();
+    test_fd_discard_keeps_a_debt_not_ready();
 #ifdef F_SETPIPE_SZ
     test_fd_discard_past_its_bound();
 #endif

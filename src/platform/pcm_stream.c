@@ -254,9 +254,9 @@ pcm_stream_used(const dsd_pcm_stream* stream) {
 
 /* One bounded pass of the drop the stream owes (dsd_pcm_stream::drop_through): from the buffer, then from the
    descriptor or socket, read without waiting, at most the buffer and DSD_PCM_STREAM_DISCARD_MAX_FILLS refills and no
-   refill but the first after DSD_PCM_STREAM_DISCARD_MAX_MS. What a bound leaves stays owed. A pass that finds the
-   bytes owed neither held nor ready gives the rest up: what comes later is newer than the mark. Returns the samples
-   dropped. */
+   refill but the first after DSD_PCM_STREAM_DISCARD_MAX_MS. What a bound leaves stays owed, and so does what a pass
+   finds not ready yet: the mark counted those bytes queued, so they come before anything newer (a zero-time readiness
+   check is no proof they are gone: a socket's low-water mark, an interrupted wait). Returns the samples dropped. */
 static long
 pcm_stream_pay_owed(dsd_pcm_stream* stream) {
     const uint64_t used = pcm_stream_used(stream);
@@ -283,6 +283,7 @@ pcm_stream_pay_owed(dsd_pcm_stream* stream) {
             break;
         }
         if (pcm_stream_wait(stream, 0U) <= 0 || pcm_stream_fill(stream) <= 0) {
+            bounded = 1; /* not ready yet, or the stream ended (which owes nothing) */
             break;
         }
     }
@@ -335,6 +336,12 @@ dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int time
             return DSD_PCM_STREAM_END;
         }
         if (stream->owing) {
+            /* The bytes owed are not ready yet: wait for input, as a read with nothing owed does, and pay on the next
+               read. */
+            if (pcm_stream_wait(stream, timeout_ms) < 0) {
+                stream->ended = PCM_STREAM_FAILED;
+                return DSD_PCM_STREAM_END;
+            }
             return DSD_PCM_STREAM_TIMEOUT;
         }
     }

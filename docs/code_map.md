@@ -1815,7 +1815,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     keeps a part sample so the next is whole (the TCP and stdin inputs). What a pass's bound leaves stays owed on the
     reader (`dsd_pcm_stream::drop_through`, `owing`): the reader pays it, a bounded pass per read, at its refills, before
     it returns a sample, so no old audio past the bound is read on the new channel (`test_fd_discard_past_its_bound()`);
-    a later cut keeps the larger cutoff, and a pass that finds the owed bytes neither held nor ready gives them up. A mark made on another input or attachment, and a descriptor that is not a
+    a later cut keeps the larger cutoff, and a pass that finds the owed bytes not ready yet keeps them owed (they were queued at the mark; a zero-time
+    readiness check is no proof they are gone), and the reader waits for input before paying again
+    (`test_fd_discard_keeps_a_debt_not_ready()`). A mark made on another input or attachment, and a descriptor that is not a
     pipe, FIFO or socket (`dsd_fd_is_stream()`: a regular file, a console), drop nothing.
     `PLATFORM_PCM_STREAM` drives real pipes, sockets and files.
   - Fast-math-proof value checks: `dsd_fp_opaque_f()`/`dsd_fp_opaque_d()` in
