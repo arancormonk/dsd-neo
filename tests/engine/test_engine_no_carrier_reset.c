@@ -15932,6 +15932,40 @@ test_y_quiet_refusal_keeps_the_refused_capture_generation(void) {
     return rc;
 }
 
+/* issue #834 R10: a capture refused on one stream generation is checked again once the stream runs another (the radio
+   worker applied a supported rate or rotation just after the refusal), even with no revision moved: under syncs that
+   keep the frame loop running, the frame boundary owes one republication per new generation, and the republication
+   measures the row. */
+static int
+test_y_quiet_refused_row_republished_on_a_new_generation(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_refused = 1;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 514012500L) == 0);
+    rc |= expect_true("the capture's rate is refused",
+                      scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 0);
+    rc |= expect_true("nothing owed on the same generation", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    g_yq.rate_refused = 0;
+    g_yq.gen_base++; /* the radio worker applied a supported rate */
+    const int first_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    const int second_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the new generation owes one republication (takes %d, %d)", first_take,
+                 second_take);
+    rc |= expect_true(label, first_take == 1 && second_take == 0);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    rc |= expect_true("the republication measures the row", g_yq.requests == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refused row republished on a new generation\n");
+    }
+    return rc;
+}
+
 /* issue #834 R10: a -Y row refused for its width starts again on the same visit once the width is edited, through the
    frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
    once per change. */
@@ -16981,6 +17015,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_analog_call_explains_the_stay();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();
     rc |= test_y_quiet_refusal_keeps_the_refused_capture_generation();
+    rc |= test_y_quiet_refused_row_republished_on_a_new_generation();
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();

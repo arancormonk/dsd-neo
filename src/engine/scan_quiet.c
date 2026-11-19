@@ -607,6 +607,9 @@ typedef struct {
        moves) starts nothing: one compare, no capture read. */
     int refused;
     uint32_t refused_generation;
+    /* The stream generation a refusal's republication was last owed for (dsd_engine_scan_quiet_take_republish()): a
+       generation other than the refused one owes one, once, whatever the revisions say. */
+    uint32_t refused_republish_generation;
     /* Why the visit gets no check (dsd_scan_quiet_reason), with the check SUSPENDED (issue #834 R6): its session's or
        its facts' reason at its publication, or its capture's (a refusal). NONE for any other phase or suspension, but a
        suspension that activity ended (suspension_kept). */
@@ -864,6 +867,7 @@ quiet_refuse(scan_quiet_check* c, uint8_t reason, uint32_t generation) {
     c->reason = reason;
     c->refused = 1;
     c->refused_generation = generation;
+    c->refused_republish_generation = generation;
     c->republish_owed = 0;
 }
 
@@ -1361,6 +1365,15 @@ dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int
     if (c->republish_owed) {
         c->republish_owed = 0;
         return 1;
+    }
+    if (c->refused) {
+        /* The stream may run a generation the refusal never saw (the radio worker applied a supported rate or rotation
+           just after it) with no revision moved: one republication, so the visit is checked again on it. */
+        const uint32_t generation = dsd_rtl_stream_metrics_hook_stream_generation();
+        if (generation != c->refused_generation && generation != c->refused_republish_generation) {
+            c->refused_republish_generation = generation;
+            return 1;
+        }
     }
     return quiet_no_check_facts_moved(opts, state, c);
 }
