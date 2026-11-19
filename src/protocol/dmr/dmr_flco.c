@@ -796,6 +796,22 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
     dmr_flco_release_voice_hold(ctx);
 }
 
+/* A checked LC that ends a hold and declares clear voice (no privacy bit) says the call is clear: the ALG ID, key ID and
+   MI the slot took while held (a PI header naming no cipher the decoder has, which kept the hold, or a forced fallback)
+   go with the held classification, so its voice plays as clear. A forced key plays as before. One that declares
+   encryption drops a forced fallback only (dmr_flco_drop_forced_fallback()). */
+static void
+dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
+    if ((ctx->lc_so & 0x40U) != 0U) {
+        dmr_flco_drop_forced_fallback(ctx);
+        return;
+    }
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    *live.algid = 0;
+    *live.keyid = 0;
+    *live.mi = 0ULL;
+}
+
 static void
 dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // The privacy bit is filtered through the per-slot classification hysteresis before it can
@@ -812,7 +828,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
         // heal restoring what one wrote) or from a PI header naming no cipher, and so did a forced ALG ID fallback.
         if (ctx->CRCCorrect == 1U && dmr_flco_voice_held(ctx)) {
             dmr_enc_class_reset(ctx->state, ctx->voice_slot);
-            dmr_flco_drop_forced_fallback(ctx);
+            dmr_flco_drop_held_crypto(ctx);
         }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
         ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, strong);

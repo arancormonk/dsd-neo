@@ -4665,6 +4665,35 @@ test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(char frame[4][24]) {
     return rc;
 }
 
+/* After a carrier boundary held slot 1, a checked DMRA PI header naming ALG ID 0x23 (no cipher the decoder has) keeps
+   the hold but takes the ALG ID, key ID and MI. The call's checked voice LC header then says the voice is clear: it
+   ends the hold on its own word, and that unusable cipher with it, so the frame plays as it came. */
+static int
+test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("unusable PI cipher: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    dmr_hop_pi_header_on(opts, state, 0, 0x23U);
+    rc |= expect_true("unusable PI cipher: the PI keeps the hold and takes its ALG ID",
+                      state->payload_algid == 0x23 && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 101U);
+    rc |= expect_true("unusable PI cipher: the checked clear header drops its ALG ID, key ID and MI",
+                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_mi == 0ULL);
+    char recorded[49] = {0};
+    rc |= expect_true("unusable PI cipher: the clear call's frame plays as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Without trunking the single-slot decoder (-fr) decodes both slots on one lane, where crypto and call state can mix
    across slots, as on main: the DMR voice hold does not apply there, so after a carrier boundary held both slots, lane
    0's frame plays as it came before any LC says. A slot 2 PI header stays on slot 2's fields (index 1), as on main: only
@@ -4757,6 +4786,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_has_no_voice_hold(frame);
     rc |= test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(frame);
+    rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(frame);
     rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
