@@ -7,7 +7,6 @@
 #ifndef DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 #define DSD_NEO_PROTOCOL_DMR_MONO_SLOT_H
 
-#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -77,21 +76,6 @@ dmr_mono_slot_forget(dsd_state* state) {
 static inline int
 dmr_mono_folds_standalone_burst(const dsd_opts* opts, const dsd_state* state) {
     return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && opts->trunk_enable == 0 && state->dmr_stereo == 0);
-}
-
-/* Whether lane 0 carries an active call known to be of the other over-the-air slot than @p burst_slot (0: slot 1,
-   1: slot 2): its receive slot is known and is not the burst's. A standalone burst the single-slot decoder would fold
-   onto lane 0 (dmr_mono_folds_standalone_burst()) says nothing of that call: its terminator and PI header act on the
-   other index (1), as the other slot's do on the dual-slot decoder, and neither end it nor re-key it. One whose slot
-   is not known (an MS-sourced burst on slot 1's index, dmr_mono_slot_begin()) is taken for the lane's, as before. */
-static inline int
-dmr_mono_lane_call_is_other_slot(const dsd_state* state, uint8_t burst_slot) {
-    if (state->dmr_ms_mode == 1 && burst_slot == 0U) {
-        return 0;
-    }
-    dsd_call_snapshot call;
-    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-           && call.receive_identity.slot != 0U && call.receive_identity.slot != (uint8_t)(burst_slot + 1U);
 }
 
 #endif

@@ -4701,76 +4701,6 @@ test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(char frame[4][24]) {
     return rc;
 }
 
-/* The single-slot decoder (-fr, no trunking) with lane 0 set to carry @p lane_slot's (0: slot 1, 1: slot 2) call:
-   that slot's checked voice LC header opens it (talkgroup 101), as the burst decoder dispatches it, by its own CACH slot
-   (dmr_data_sync()). */
-static void
-dmr_mono_lane_call_on(dsd_opts* opts, dsd_state* state, int lane_slot) {
-    opts->dmr_mono = 1;
-    opts->trunk_enable = 0;
-    state->dmr_stereo = 0;
-    state->dmr_ms_mode = 0;
-    state->dmr_mono_slot = 0;
-    state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + lane_slot);
-    dmr_hop_lc_on(opts, state, lane_slot, 1U, 1U, 0x00U, 0x00U, 101U);
-}
-
-/* A standalone burst of over-the-air slot @p slot (0: slot 1), dispatched as the burst decoder does: judged by its own
-   CACH slot while it runs, the lane's proof (@p lane_slot) put back after. */
-static void
-dmr_mono_standalone_terminator(dsd_opts* opts, dsd_state* state, int slot, int lane_slot) {
-    state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
-    dmr_hop_lc_on(opts, state, slot, 2U, 1U, 0x00U, 0x00U, 202U);
-    state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + lane_slot);
-}
-
-/* Without trunking the single-slot decoder's lane 0 carries one slot's call. A checked terminator of the other slot
-   ends that slot's transmission, not the lane's call: the lane's call stays active, as the dual-slot decoder keeps one
-   slot's call through the other's terminator, either way round. So does its crypto through the other slot's PI header.
-   The lane's own slot's terminator still ends it. */
-static int
-test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator(void) {
-    int rc = 0;
-    for (int lane_slot = 0; lane_slot <= 1; lane_slot++) {
-        for (int own = 0; own <= 1; own++) {
-            dsd_opts* opts = NULL;
-            dsd_state* state = NULL;
-            if (init_test_runtime(&opts, &state) != 0) {
-                return 1;
-            }
-            dmr_mono_lane_call_on(opts, state, lane_slot);
-            dsd_call_snapshot before;
-            char what[192];
-            DSD_SNPRINTF(what, sizeof what, "-fr slot %d call: its header opened it on lane 0", lane_slot + 1);
-            rc |= expect_true(what, dsd_call_state_get(state, 0U, &before) > 0 && before.phase == DSD_CALL_PHASE_ACTIVE
-                                        && before.receive_identity.slot == (uint8_t)(lane_slot + 1));
-            const int slot = own ? lane_slot : 1 - lane_slot;
-            if (!own) {
-                state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
-                dmr_hop_pi_header_on(opts, state, slot, 0x21U);
-                state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + lane_slot);
-            }
-            dmr_mono_standalone_terminator(opts, state, slot, lane_slot);
-            dsd_call_snapshot after;
-            const int got = dsd_call_state_get(state, 0U, &after) > 0;
-            if (own) {
-                DSD_SNPRINTF(what, sizeof what, "-fr slot %d call: its own terminator ends it", lane_slot + 1);
-                rc |= expect_true(what, got && after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ENDED);
-            } else {
-                DSD_SNPRINTF(what, sizeof what, "-fr slot %d call: a slot %d terminator leaves it active",
-                             lane_slot + 1, slot + 1);
-                rc |= expect_true(what, got && after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ACTIVE
-                                            && after.ota_target_id == 101U);
-                DSD_SNPRINTF(what, sizeof what, "-fr slot %d call: a slot %d PI header leaves its crypto",
-                             lane_slot + 1, slot + 1);
-                rc |= expect_true(what, after.algid == 0U && state->payload_algid == 0);
-            }
-            free_test_runtime(opts, state);
-        }
-    }
-    return rc;
-}
-
 /* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: lane 0's
    voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL), which the single-slot decoder's lane carrying a slot 2 AES
    call is keyed by while a slot 1 packet runs on index 0, stay as they were. */
@@ -4832,7 +4762,6 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_ends_on_the_checked_word(frame);
     rc |= test_dmr_mono_folds_slot2_pi_onto_lane0(frame);
     rc |= test_dmr_mono_keeps_slot2_pi_off_a_slot1_call(frame);
-    rc |= test_dmr_mono_keeps_the_lane_call_through_the_other_slots_terminator();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
 }

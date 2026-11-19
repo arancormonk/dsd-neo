@@ -371,6 +371,15 @@ dmr_pi_run(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorr
     }
 }
 
+/* Whether lane 0 carries a call of over-the-air slot 1: active, its slot known and not slot 2. A slot 2 PI header
+   says nothing of that call, whose voice the lane decodes. */
+static int
+dmr_pi_lane0_carries_slot1_call(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.receive_identity.slot == 1U;
+}
+
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     if (IrrecoverableErrors != 0) {
@@ -378,23 +387,19 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     }
     /* Where the single-slot decoder folds a slot 2 burst onto lane 0 (dmr_mono_folds_standalone_burst()), its PI header
        is folded with its LC (dmr_flco_ctx_init()): the ALG ID, key ID and MI go where the lane's voice decrypts from,
-       and the burst's CRC verdict, indexed by its own slot, follows it. Not while the lane carries the other slot's
-       call (dmr_mono_lane_call_is_other_slot()), either way round: the header then acts on the other index (1), as on
-       the dual-slot decoder, so it neither changes that call's crypto nor ends its hold (AGENTS.md, CRC/FEC
-       provenance). */
-    const uint8_t burst_slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);
-    uint8_t target = burst_slot;
-    if (dmr_mono_folds_standalone_burst(opts, state)) {
-        target = dmr_mono_lane_call_is_other_slot(state, burst_slot) ? 1U : 0U;
-    }
-    const uint8_t saved_crc = state->event_crc_invalid[target];
-    if (target != burst_slot) {
-        state->event_crc_invalid[target] |= state->event_crc_invalid[burst_slot];
-        state->currentslot = target;
+       and the burst's CRC verdict, indexed by its own slot, follows it. Not while the lane carries a slot 1 call: the
+       header is slot 2's and stays there, as on the dual-slot decoder, so it neither changes that call's crypto nor
+       ends its hold (AGENTS.md, CRC/FEC provenance). */
+    const uint8_t saved_crc = state->event_crc_invalid[0];
+    const int folded = dmr_mono_folds_standalone_burst(opts, state) && state->currentslot == 1
+                       && !dmr_pi_lane0_carries_slot1_call(state);
+    if (folded) {
+        state->event_crc_invalid[0] |= state->event_crc_invalid[1];
+        state->currentslot = 0;
     }
     dmr_pi_run(opts, state, PI_BYTE, CRCCorrect);
-    if (target != burst_slot) {
-        state->event_crc_invalid[target] = saved_crc;
+    if (folded) {
+        state->event_crc_invalid[0] = saved_crc;
     }
 }
 
