@@ -703,8 +703,10 @@ Generated (do not edit/commit):
       and the judgement, so with `-t 0` the frame that just proved a call holds the row
       (`test_y_zero_hangtime_keeps_a_proven_call()`). A landing
       (`dsd_engine_scan_landing_note_row()`, `dsd_engine_scan_landing_forget_y_notes()`) forgets the notes no boundary
-      read yet (checked content, an open verdict, an unchecked frame) and the hold's end, so the row left neither
-      counts for the next row nor delays its step. A real dPMR,
+      read yet (checked content, an open verdict, an unchecked frame), the hold's end and the last checked and
+      unchecked frames' times, so the row left neither counts for the next row nor delays its step; a stay's beginning
+      (`dsd_engine_scan_y_stay_begin()`) does the same, so content noted while `-Y` was off is not the scan's
+      (`test_y_stay_starts_without_the_last_stays_frames()`). A real dPMR,
       D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only checked ones) keeps the row through those
       checks, encrypted or locked out alike. NXDN on a conventional -Y scan stamps the anchor, with its 2 s scanner
       hold (#406), only on a frame whose own CRCs proved its content (`nxdn_finish_decoded_frame()`,

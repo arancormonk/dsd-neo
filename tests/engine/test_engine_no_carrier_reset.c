@@ -15668,6 +15668,47 @@ test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
     return rc;
 }
 
+/* Issue #834: a -Y stay's frame evidence is its own. A row that lands, and a stay that begins (the -Y scan's start, a
+   landing forgotten), clear what the frames before them noted: the time of the last checked or unchecked frame, and
+   checked content no frame boundary has read yet (with -Y off nothing reads it). Either left would hold the new stay's
+   row for -t after frames that carry nothing on it. */
+static int
+test_y_stay_starts_without_the_last_stays_frames(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 523012500L) == 0);
+    opts->trunk_hangtime = 1;
+    char label[160];
+    /* Row 0's last frame was checked content just now; row 1 lands. */
+    state->scan_y_content_m = dsd_decode_now_mono_s();
+    state->scan_y_unchecked_m = dsd_decode_now_mono_s();
+    dsd_engine_scan_landing_note_row(state, 1, 523025000L, 0U);
+    state->last_cc_sync_time = dsd_decode_time() - 2;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 2.0;
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "a landed row's empty frames yield past -t (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    /* Checked content no frame boundary read, then a new stay begins. */
+    state->scan_y_content_seq += 3U;
+    state->scan_y_unchecked_seq += 2U;
+    dsd_engine_scan_y_stay_begin(state);
+    /* An anchor of its own: a stay's frame boundary yields once per anchor. */
+    state->last_cc_sync_time = dsd_decode_time() - 3;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 3.0;
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "a new stay's empty frames yield past -t (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y stay frame evidence\n");
+    }
+    return rc;
+}
+
 /* Issue #834: one hangtime deadline for the frame boundary, noCarrier() and the countdown: the anchor's whole-second
    rule (-t 1.8 lets a row go at the second wall-clock tick after it landed), never a second, sub-second count on the
    monotonic clock that only the frame boundary added. A row that landed late in a second (here 0.6 s before its
@@ -16927,6 +16968,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
     rc |= test_y_zero_hangtime_keeps_a_proven_call();
     rc |= test_y_one_hangtime_deadline();
+    rc |= test_y_stay_starts_without_the_last_stays_frames();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);

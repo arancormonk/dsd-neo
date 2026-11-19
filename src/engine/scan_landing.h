@@ -59,13 +59,28 @@
 
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
+/* A landing, or a stay's beginning, starts the -Y content window afresh (issue #834): checked content, an open verdict
+   or an unchecked frame noted before it, read at a frame boundary or not (with -Y off none reads them), is not the new
+   stay's, and neither counts for it nor delays its step. */
+static inline void
+dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
+    state->scan_y_content_seen = state->scan_y_content_seq;
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+    state->scan_y_content_m = -1.0;
+    state->scan_y_unchecked_m = -1.0;
+}
+
 /** A receiver's stay with no -Y row landing in force begins (issue #834): the run's start, a -Y scan's start, a
  * landing forgotten. The call count now is the baseline its no-check status is judged against
- * (dsd_state::scan_y_stay_call_seq): shown until a call is heard on the stay. */
+ * (dsd_state::scan_y_stay_call_seq): shown until a call is heard on the stay. Its frame evidence starts afresh too. */
 static inline void
 dsd_engine_scan_y_stay_begin(dsd_state* state) {
     if (state) {
         state->scan_y_stay_call_seq = state->scan_y_call_seq;
+        dsd_engine_scan_landing_forget_y_notes(state);
     }
 }
 
@@ -130,18 +145,6 @@ dsd_engine_scan_y_frames_hold_until_m(const dsd_state* state, double hangtime_s)
         state->scan_y_content_m > state->scan_y_unchecked_m ? state->scan_y_content_m : state->scan_y_unchecked_m;
     const double until_m = last_m + hangtime_s;
     return state->scan_y_partial_until_m > until_m ? state->scan_y_partial_until_m : until_m;
-}
-
-/* A landing starts the row's -Y content window afresh (issue #834): checked content, an open verdict or an unchecked
-   frame noted on the row left and not yet read at a frame boundary is not this row's, and neither counts for it nor
-   delays its step. */
-static inline void
-dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
-    state->scan_y_content_seen = state->scan_y_content_seq;
-    state->scan_y_partial_seen = state->scan_y_partial_seq;
-    state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
-    state->scan_y_partial_hold_ms = 0U;
-    state->scan_y_partial_until_m = -1.0;
 }
 
 /** The -Y scan committed @p row, on @p freq_hz, after a tune that landed, from the trunk-tuning request @p request (0
