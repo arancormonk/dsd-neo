@@ -3790,6 +3790,8 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     state->dmr_leave_request = 0U;
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
+    /* Nor does the slot an earlier run's checked LC proved for the single-slot lane: no slot's voice is held for it. */
+    state->dmr_mono_lane_slot = 0U;
     /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once
        the start frequency its stream opens on has gone quiet, so that start is the run's first landing. */
     state->run_landed = opts->trunk_scan_enabled == 1 ? 0U : 1U;
