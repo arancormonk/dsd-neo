@@ -1492,11 +1492,18 @@ watchdog_tick_effect(void) {
                                                    : DSD_TRUNK_TUNE_RESULT_DEFERRED);
 }
 
+/* Stamps the checkpoint's tick writes during the hunt, as a grace after a tune does (0: none). */
+static time_t g_watchdog_tick_wall_stamp = 0;
+static double g_watchdog_tick_mono_stamp = 0.0;
+
 static int
 fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
     watchdog_tick_effect();
+    if (g_watchdog_tick_wall_stamp != 0) {
+        state->last_cc_sync_time = g_watchdog_tick_wall_stamp;
+        state->last_cc_sync_time_m = g_watchdog_tick_mono_stamp;
+    }
     return 1;
 }
 
@@ -1546,6 +1553,8 @@ watchdog_case_done(dsd_opts* opts, dsd_state* state) {
     free_state_buffers(state);
     g_marker_count = 0;
     g_watchdog_tick_kind = 0;
+    g_watchdog_tick_wall_stamp = 0;
+    g_watchdog_tick_mono_stamp = 0.0;
     free(state);
     free(opts);
 }
@@ -1596,53 +1605,78 @@ test_a_refused_checkpoint_tune_keeps_the_window(void) {
     watchdog_case_done(opts, state);
 }
 
-/* A newer control-channel sync stamp (a tick's grace after a tune, set while this call hunted) is never put back to the
-   time the call started. */
+/* A tick's grace at the checkpoint, during this call (no tune: the hunt goes on), stamps the control channel's sync later
+   than the call began; the word after the checkpoint never puts either stamp back. */
 static void
 test_a_sync_never_moves_the_control_channel_stamp_back(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
-    watchdog_case_init(&opts, &state, 100, 0);
-    state->last_cc_sync_time_m = (double)k_watchdog_t1_ns / 1e9;
-    state->last_cc_sync_time = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    watchdog_case_init(&opts, &state, 340, 0);
+    g_watchdog_tick_wall_stamp = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    g_watchdog_tick_mono_stamp = (double)k_watchdog_t1_ns / 1e9;
     const int sync = getFrameSync(opts, state);
-    if (!DSD_SYNC_IS_P25P1(sync)) {
-        DSD_FPRINTF(stderr, "FAIL: the word was not found (sync %d)\n", sync);
+    if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the word after the stamping tick was not found (sync %d, ticks %d)\n", sync,
+                    g_watchdog_ticks);
         g_watchdog_failures++;
     }
-    if (state->last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t1_ns / 1e9
-        || state->last_cc_sync_time < (time_t)(k_watchdog_t1_ns / 1000000000ULL)) {
-        DSD_FPRINTF(stderr, "FAIL: the sync moved the control channel's stamp back to %.3f s\n",
-                    state->last_cc_sync_time_m);
+    if (state->last_cc_sync_time_m + 1e-6 < g_watchdog_tick_mono_stamp
+        || state->last_cc_sync_time != g_watchdog_tick_wall_stamp) {
+        DSD_FPRINTF(stderr, "FAIL: the sync moved the control channel's stamps back to %lld / %.3f s\n",
+                    (long long)state->last_cc_sync_time, state->last_cc_sync_time_m);
         g_watchdog_failures++;
     }
     watchdog_case_done(opts, state);
 }
 
-/* Each control-channel stamp moves forward on its own clock: a grace after a tune stamps the wall clock as the tick saw
-   it and the monotonic one as the tune completed, so one can be newer than the call's start while the other is older.
-   A sync accept never moves either back. */
+/* Each control-channel stamp by its own clock's rule: a grace during this call stamps the wall clock as the tick saw it
+   (later than the call's start) and the monotonic one as the tune completed (earlier). The sync keeps the grace's wall
+   stamp and moves the monotonic one forward to the call's time. */
 static void
 test_a_sync_moves_neither_control_channel_stamp_back(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
-    watchdog_case_init(&opts, &state, 100, 0);
-    const time_t wall_newer = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
-    const double mono_older = (double)k_watchdog_t0_ns / 1e9 - 5.0;
-    state->last_cc_sync_time = wall_newer;
-    state->last_cc_sync_time_m = mono_older;
+    watchdog_case_init(&opts, &state, 340, 0);
+    g_watchdog_tick_wall_stamp = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    g_watchdog_tick_mono_stamp = (double)k_watchdog_t0_ns / 1e9 - 5.0;
     const int sync = getFrameSync(opts, state);
     if (!DSD_SYNC_IS_P25P1(sync)) {
         DSD_FPRINTF(stderr, "FAIL: the word was not found (sync %d)\n", sync);
         g_watchdog_failures++;
     }
-    if (state->last_cc_sync_time < wall_newer) {
-        DSD_FPRINTF(stderr, "FAIL: the sync moved the control channel's wall stamp back from %lld to %lld\n",
-                    (long long)wall_newer, (long long)state->last_cc_sync_time);
+    if (state->last_cc_sync_time != g_watchdog_tick_wall_stamp) {
+        DSD_FPRINTF(stderr, "FAIL: the sync moved the grace's wall stamp back from %lld to %lld\n",
+                    (long long)g_watchdog_tick_wall_stamp, (long long)state->last_cc_sync_time);
         g_watchdog_failures++;
     }
     if (state->last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t0_ns / 1e9) {
         DSD_FPRINTF(stderr, "FAIL: the sync left the older monotonic stamp at %.3f s\n", state->last_cc_sync_time_m);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
+/* A wall stamp from before this call that lies ahead of the call's time (the wall clock was set back since) is not a
+   grace of this call: the sync writes the call's time, so an age computed from it is never negative. The monotonic
+   stamp, older, moves forward. */
+static void
+test_a_sync_follows_a_wall_clock_set_back(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 100, 0);
+    state->last_cc_sync_time = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    state->last_cc_sync_time_m = (double)k_watchdog_t0_ns / 1e9 - 5.0;
+    const int sync = getFrameSync(opts, state);
+    const time_t now_wall = (time_t)(k_watchdog_t0_ns / 1000000000ULL);
+    if (!DSD_SYNC_IS_P25P1(sync)) {
+        DSD_FPRINTF(stderr, "FAIL: the word was not found (sync %d)\n", sync);
+        g_watchdog_failures++;
+    }
+    if (state->last_cc_sync_time != now_wall || state->last_cc_sync_time_m + 1e-6 < (double)k_watchdog_t0_ns / 1e9) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the sync kept a wall stamp from before a clock set back (wall %lld, want %lld; mono %.3f "
+                    "s)\n",
+                    (long long)state->last_cc_sync_time, (long long)now_wall, state->last_cc_sync_time_m);
         g_watchdog_failures++;
     }
     watchdog_case_done(opts, state);
@@ -1705,6 +1739,7 @@ main(void) {
     test_a_refused_checkpoint_tune_keeps_the_window();
     test_a_sync_never_moves_the_control_channel_stamp_back();
     test_a_sync_moves_neither_control_channel_stamp_back();
+    test_a_sync_follows_a_wall_clock_set_back();
     test_an_entry_tick_retune_hands_back();
     assert(g_watchdog_failures == 0);
     return 0;
