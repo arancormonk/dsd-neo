@@ -908,16 +908,6 @@ __wrap_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
     return 0;
 }
 
-/* How often a rigctl move had the RTL stream drop what it holds (issue #834). */
-static int g_rtl_external_discards = 0;
-
-void __wrap_rtl_stream_discard_after_external_move(void);
-
-void
-__wrap_rtl_stream_discard_after_external_move(void) {
-    g_rtl_external_discards++;
-}
-
 int
 __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
@@ -15671,38 +15661,6 @@ test_y_hangtime_publishes_the_deadline_the_step_keeps(void) {
     return rc;
 }
 
-/* Issue #834: an untyped -Y step on rigctl and RTL whose rigctl leg the peer confirmed, and whose RTL leg then failed:
-   the receiver moved all the same, so the stream drops what it holds of the row left. */
-static int
-test_y_untyped_rigctl_move_flushes_when_the_rtl_leg_fails(void) {
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    yq_start(0);
-    const long int base_hz = 517012500L;
-    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, base_hz) == 0);
-    opts->use_rigctl = 1;
-    g_rigctl_setfreq_ok = 1;
-    g_rtl_external_discards = 0;
-    g_rtl_fail_once_hz = (uint32_t)(base_hz + 1000000L); /* row 1's RTL leg fails */
-    state->last_cc_sync_time = dsd_decode_time() - 11;
-    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 11.0;
-    noCarrier(opts, state);
-    char label[160];
-    DSD_SNPRINTF(label, sizeof label, "the rigctl leg moved, the RTL leg failed: the stream dropped %d times (want 1)",
-                 g_rtl_external_discards);
-    rc |= expect_true(label, g_rigctl_setfreq_calls > 0 && g_rtl_external_discards == 1);
-    g_rigctl_setfreq_ok = 0;
-    opts->use_rigctl = 0;
-    yq_finish(opts, state);
-    if (rc) {
-        DSD_FPRINTF(stderr, "FAIL #834: -Y untyped rigctl move with a failed RTL leg\n");
-    }
-    return rc;
-}
-
 /* issue #834 R10: a refusal of a capture is cached against that capture's stream generation, never the one the stream
    reads when the refusal is stored: the RTL thread may open a new generation (Fs/4 rotation back on) between the
    check's validation of a capture and its refusal (here of its rate). A publication on that new generation, whose
@@ -16863,7 +16821,6 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
     rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
-    rc |= test_y_untyped_rigctl_move_flushes_when_the_rtl_leg_fails();
     rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);

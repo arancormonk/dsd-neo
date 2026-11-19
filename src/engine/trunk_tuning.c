@@ -1030,11 +1030,9 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
     }
 #endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
-    uint32_t sent_before_hz = 0U;
-    dsd_input_cut mark;
-    DSD_MEMSET(&mark, 0, sizeof mark);
     if (opts->use_rigctl == 1) {
-        sent_before_hz = opts->rigctl_sent_freq_hz;
+        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        dsd_input_cut mark;
         if (!dsd_engine_tune_rigctl(opts, state, freq, &mark)) {
             /* Unknown (0) when the peer may have moved: the next tune counts as a move. */
             opts->rigctl_sent_freq_hz = RigctlConfirmedFreq(opts->rigctl_sockfd);
@@ -1049,8 +1047,7 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
-            /* No RTL leg follows, so no stream flush says the radio moved (one that follows and does not land is
-               noted below). */
+            /* No RTL leg follows, so no stream flush says the radio moved. */
             dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
@@ -1059,18 +1056,10 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 #ifdef USE_RADIO
-    const dsd_trunk_tune_result rtl_result = dsd_engine_tune_rtl(opts, state, freq, request_id);
-    if (s_backend_rigctl_moved && rtl_result != DSD_TRUNK_TUNE_RESULT_OK) {
-        /* The rigctl leg moved the receiver, and the RTL leg flushed nothing (deferred, failed, or still in flight):
-           the stream drops the old carrier's samples itself (issue #834). */
-        dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
-    }
-    return rtl_result;
+    return dsd_engine_tune_rtl(opts, state, freq, request_id);
 #else
     (void)state;
     (void)request_id;
-    (void)sent_before_hz;
-    (void)mark;
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 #endif
 }
@@ -1271,15 +1260,6 @@ dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_h
     }
 }
 
-/* A tune that failed after its rigctl leg moved the receiver (an RTL leg deferred or refused behind it, issue #834):
-   the receiver left its carrier all the same, so what a move leaves behind goes as for a tune that succeeded. */
-static void
-dsd_engine_tune_failure_keeps_rigctl_move(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
-    if (s_backend_rigctl_moved) {
-        dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq, 0U);
-    }
-}
-
 /* The request a tune's DMR leave waits for (dsd_engine_dmr_leave_after()): an RTL tune still in flight that no rigctl
    leg moved first, else 0, a move made. */
 static uint64_t
@@ -1444,7 +1424,6 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
         dsd_engine_restore_p25p1_compare(state, &compare_snapshot);
-        dsd_engine_tune_failure_keeps_rigctl_move(opts, state, from_hz, freq);
         return result;
     }
 
@@ -1534,7 +1513,6 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
         dsd_engine_restore_p25p1_compare(state, &compare_snapshot);
-        dsd_engine_tune_failure_keeps_rigctl_move(opts, state, from_hz, freq);
         return result;
     }
     // Reset modulation auto-detect state for fresh acquisition after a confirmed tune.
