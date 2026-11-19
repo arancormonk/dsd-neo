@@ -1105,6 +1105,41 @@ test_offset_refusal_waits_for_the_readback(void) {
     }
 }
 
+/* The same check when the read-back equals the rate staged: a device advertising and delivering only 10 MS/s opens at
+ * 10 MS/s (its input buffer sized for that, so the buffer cannot refuse the hop), and a retune 500 kHz below the top,
+ * where no rate's offset fits, stages it on the centre, writes 10 MS/s and reads back 10 MS/s. The capture there is
+ * out of range, so the retune is refused and the stream goes back on the capture it left. */
+void
+test_offset_refusal_when_the_readback_equals_the_staged_rate(void) {
+    static const double only_10m[] = {10e6};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = only_10m;
+    fake.listed_rate_count = 1U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    dsd_opts* opts = make_soapy_opts(-1);
+    if (!dev || !opts) {
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+        return;
+    }
+    dsd_exitflag_store(0);
+    rtl_stream_test_capture_result got{};
+    expect_true("session begins", rtl_stream_test_capture_session_begin(dev, opts, kCenterHz, &got) == 0);
+    expect_eq("the session starts at 10 MS/s", got.capture_rate_hz, 10000000.0);
+    expect_true("the retune runs", rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE,
+                                                                        UINT32_MAX - 500000U, 0, &got)
+                                       == 0);
+    expect_true("a retune reading back the 10 MS/s staged there is refused", got.completion == RTL_STREAM_TUNE_FAILED);
+    expect_eq("the stream is back on the old capture", got.capture_freq_hz, (double)kCenterHz + 2500000.0);
+    expect_eq("at 10 MS/s", got.capture_rate_hz, 10000000.0);
+    expect_true("the stream keeps running", dsd_exitflag_load() == 0);
+    rtl_stream_test_capture_session_end();
+    dsd_exitflag_store(0);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
 /* A device that delivered 1,536,000 Hz for the 2 MS/s written (the stream counts the rate as forced), refused on a hop,
  * and asked on the rollback for the 1,536,000 Hz it delivered, which it now lists and takes as written: request, write
  * and read-back agree, so the restored plan is made again and no longer counts the rate as forced. */
@@ -1458,6 +1493,8 @@ main(int argc, char** argv) {
         {"airspy_write_query_is_the_request", test_airspy_write_query_is_the_request},
         {"write_query_follows_the_setter", test_write_query_follows_the_setter},
         {"offset_refusal_waits_for_the_readback", test_offset_refusal_waits_for_the_readback},
+        {"offset_refusal_when_the_readback_equals_the_staged_rate",
+         test_offset_refusal_when_the_readback_equals_the_staged_rate},
         {"listening_waits_for_input_past_the_retune_mute", test_listening_waits_for_input_past_the_retune_mute},
         {"oversized_readback_refused", test_oversized_readback_refused},
         {"failed_ring_sizing_keeps_ring", test_failed_ring_sizing_keeps_ring},
