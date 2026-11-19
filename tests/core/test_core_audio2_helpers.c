@@ -440,12 +440,27 @@ test_p25_decrypt_gate_helpers(void) {
     state.nxdn_cipher_type = 0x2;
     rc |= expect_int("nxdn DES without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     state.scalar_key_present[0] = 1;
+    /* A DES or AES keystream starts from the IV the active NXDN call received: none yet, nothing to decrypt with. */
+    rc |= expect_int("nxdn DES with zero key, no IV", dsd_nxdn_voice_crypto_class(&state),
+                     DSD_VOICE_CRYPTO_UNDECRYPTABLE);
+    const dsd_call_observation nxdn_call = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+    };
+    rc |= expect_int("nxdn call", dsd_call_state_observe(&state, &nxdn_call, DSD_CALL_BOUNDARY_BEGIN), 1);
+    state.nxdn_rx_iv = 0x1122334455667788ULL;
+    state.nxdn_rx_iv_valid = 1U;
     rc |= expect_int("nxdn DES with zero key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
     state.scalar_key_present[0] = 0;
     state.nxdn_cipher_type = 0x3;
     rc |= expect_int("nxdn AES without key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     state.aes_key_loaded[0] = 1;
     rc |= expect_int("nxdn AES with key", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_DECRYPTABLE);
+    state.nxdn_rx_iv_valid = 0U;
+    rc |= expect_int("nxdn AES with key, no IV", dsd_nxdn_voice_crypto_class(&state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     state.aes_key_loaded[0] = 0;
     // Forced privacy (-4) runs the cipher 1 scrambler with the scalar key whatever cipher was signalled.
     state.R = 0x44;
@@ -478,6 +493,7 @@ test_p25_decrypt_gate_helpers(void) {
                      dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_DECRYPTABLE), 1);
     rc |= expect_int("rule -q plays undecryptable",
                      dsd_voice_crypto_class_audible(&opts, 0, DSD_VOICE_CRYPTO_UNDECRYPTABLE), 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
