@@ -887,65 +887,25 @@ jobs:
         run: |
           set -euo pipefail
           docdir="assets/doc/dsd-neo"
+          # The project's legal files and mbelib's records, then every notice the
+          # android_release maps in legal/components.json name.
           required=(
             LICENSE
             COPYRIGHT
             THIRD_PARTY.md
             legal/status.md
             legal/components.json
-            licenses/ISC.txt
-            licenses/Unlicense.txt
-            licenses/gqrx-scanner-MIT.txt
-            licenses/LicenseRef-BCH3-Noncommercial.txt
-            licenses/LicenseRef-Simon-Rockliff.txt
-            licenses/mbelib-neo/ISC.txt
-            licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt
             licenses/mbelib-neo/legal/status.md
             licenses/mbelib-neo/legal/patents.md
-            licenses/ezpwd-LGPL-2.1-or-later.txt
-            licenses/pffft-LICENSE.txt
-            licenses/pffft-NOTICES.txt
-            licenses/tetra_crypto-LICENSE.txt
-            licenses/libusb-LGPL-2.1-or-later.txt
-            licenses/librtlsdr-GPL-2.0-or-later.txt
-            licenses/libusb-android-NOTICES.txt
-            licenses/librtlsdr-NOTICES.txt
-            licenses/ibm-plex-OFL-1.1.txt
-            licenses/codec2-LGPL-2.1.txt
-            licenses/codec2-NOTICES.txt
-            licenses/LicenseRef-codec2-varicode.txt
-            licenses/openssl-copyright.txt
-            licenses/OpenSSL-AUTHORS.md
-            licenses/OpenSSL-NOTICES.txt
-            licenses/LicenseRef-OpenSSL-KISA-SEED.txt
-            licenses/curl-copyright.txt
-            licenses/curl-NOTICES.txt
-            licenses/zlib-copyright.txt
-            licenses/expat-copyright.txt
-            licenses/expat-NOTICES.txt
-            licenses/libsndfile-copyright.txt
-            licenses/libsndfile-GSM610-COPYRIGHT.txt
-            licenses/libsndfile-ALAC-Apache-2.0.txt
-            licenses/LicenseRef-Sun-G72x.txt
-            licenses/libsndfile-NOTICES.txt
-            licenses/libflac-copyright.txt
-            licenses/libogg-copyright.txt
-            licenses/libvorbis-copyright.txt
-            licenses/libvorbis-lpc-NOTICE.txt
-            licenses/opus-copyright.txt
-            licenses/opus-NOTICES.txt
-            licenses/mp3lame-copyright.txt
-            licenses/mp3lame-LGPL-2.1.txt
-            licenses/mp3lame-README.txt
-            licenses/mp3lame-LICENSE.txt
-            licenses/mp3lame-NOTICES.txt
-            licenses/mpg123-copyright.txt
-            licenses/mpg123-AUTHORS.txt
-            licenses/mpg123-NOTICES.txt
           )
-          for f in "${required[@]}"; do
-            # unzip exits 11 when the pattern matches no entry.
-            if ! unzip -l "$APK_PATH" "$docdir/$f" > /dev/null 2>&1; then
+          mapfile -t from_records < <(python3 tools/legal_inventory.py --release-notices android)
+          if [ "${#from_records[@]}" -eq 0 ]; then
+            echo "ERROR: legal/components.json names no notice for the APK" >&2
+            exit 1
+          fi
+          entries=$(unzip -Z1 "$APK_PATH")
+          for f in "${required[@]}" "${from_records[@]}"; do
+            if ! grep -qxF "$docdir/$f" <<< "$entries"; then
               echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
               exit 1
             fi

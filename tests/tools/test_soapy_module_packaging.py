@@ -416,7 +416,8 @@ class SoapyModulePackaging(unittest.TestCase):
     def test_codec2_notices_ship_with_every_package_that_carries_codec2(self):
         # The Windows ZIP, the APK and the AppImage carry codec2 from the pinned commit, and each carries its LGPL 2.1
         # text and its holders' and BSD notices: LICENSES/ is installed whole by the desktop packages' legal component
-        # and copied whole into the APK, and each package's check requires both files.
+        # and copied whole into the APK; the AppImage's check requires them, and the APK's every notice the record's
+        # android_release map names.
         component = next(c for c in json.loads(read("legal/components.json"))["components"] if c["id"] == "codec2")
         self.assertEqual(sorted(component["platforms"]), ["android", "linux", "windows"])
         self.assertEqual(component["notices"], ["LICENSES/codec2-LGPL-2.1.txt", "LICENSES/codec2-NOTICES.txt",
@@ -426,7 +427,8 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertIn('file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_doc_dir}/licenses")',
                       read("cmake/stage_android_package.cmake"))
         appimage = re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split()
-        android = re.search(r"required=\(\n(.*?)\n\s*\)", read(".github/workflows/android-ci.yaml"), re.S).group(1).split()
+        android = list(component["android_release"]["notices"])
+        self.assertIn("tools/legal_inventory.py --release-notices android", read(".github/workflows/android-ci.yaml"))
         checklist = read("docs/release-assets-checklist.md")
         for name in ("licenses/codec2-LGPL-2.1.txt", "licenses/codec2-NOTICES.txt",
                      "licenses/LicenseRef-codec2-varicode.txt"):

@@ -47,6 +47,11 @@
         "notices": {
           "LICENSE": "repo:LICENSE"
         }
+      },
+      "android_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE"
+        }
       }
     },
     {
@@ -87,6 +92,11 @@
         "notices": {
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
       }
     },
     {
@@ -124,6 +134,12 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {
+          "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/LicenseRef-BCH3-Noncommercial.txt": "repo:LICENSES/LicenseRef-BCH3-Noncommercial.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
@@ -170,6 +186,12 @@
           "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/LicenseRef-Simon-Rockliff.txt": "repo:LICENSES/LicenseRef-Simon-Rockliff.txt",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
       }
     },
     {
@@ -201,6 +223,9 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {}
+      },
+      "android_release": {
         "notices": {}
       },
       "finding": "GOLAY-PERMISSION"
@@ -249,6 +274,12 @@
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
         }
       },
+      "android_release": {
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt"
+        }
+      },
       "finding": "MIXED-PROVENANCE"
     },
     {
@@ -286,6 +317,12 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {
+          "LICENSE": "repo:LICENSE",
+          "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "LICENSE": "repo:LICENSE",
           "licenses/ezpwd-LGPL-2.1-or-later.txt": "repo:src/third_party/ezpwd/lesser.txt"
@@ -328,6 +365,11 @@
         "notices": {
           "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/Unlicense.txt": "repo:LICENSES/Unlicense.txt"
+        }
       }
     },
     {
@@ -359,6 +401,12 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {
+          "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
+          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
@@ -396,6 +444,11 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {
+          "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/tetra_crypto-LICENSE.txt": "build:tetra_crypto-licenses/tetra_crypto-LICENSE.txt"
         }
@@ -443,6 +496,21 @@
           "licenses/mbelib-neo/legal/patents.md": "legal-component"
         }
       },
+      "android_release": {
+        "notices": {
+          "licenses/mbelib-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/GPL-2.0-or-later.txt": "legal-component",
+          "licenses/mbelib-neo/ISC.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
+          "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
+          "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
+          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/legal/components.json": "legal-component",
+          "licenses/mbelib-neo/legal/status.md": "legal-component",
+          "licenses/mbelib-neo/legal/patents.md": "legal-component"
+        }
+      },
       "finding": "MBELIB-ETSI",
       "pin": "MBELIB_NEO_SHA"
     },
@@ -474,6 +542,12 @@
       "notice_sha256": {
         "android/third_party/libusb/COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a",
         "LICENSES/libusb-android-NOTICES.txt": "3a187fff08d93c75c5acdd9cf1f6883e4ee8fd1f7d07a6fe422555a2d7eacab0"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/libusb-LGPL-2.1-or-later.txt": "repo:android/third_party/libusb/COPYING",
+          "licenses/libusb-android-NOTICES.txt": "repo:LICENSES/libusb-android-NOTICES.txt"
+        }
       }
     },
     {
@@ -507,6 +581,12 @@
       "notice_sha256": {
         "android/third_party/librtlsdr/COPYING": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6",
         "LICENSES/librtlsdr-NOTICES.txt": "e78e85b444c0528624bccf368480145f432e26da649e0d584132ceb0f167863f"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/librtlsdr-GPL-2.0-or-later.txt": "repo:android/third_party/librtlsdr/COPYING",
+          "licenses/librtlsdr-NOTICES.txt": "repo:LICENSES/librtlsdr-NOTICES.txt"
+        }
       }
     },
     {
@@ -596,6 +676,11 @@
           "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
         }
       },
+      "android_release": {
+        "notices": {
+          "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"
+        }
+      },
       "pin": "AIRSPY_SHA"
     },
     {
@@ -623,6 +708,11 @@
       "review_date": "2026-10-17",
       "notice_sha256": {
         "src/ui/qt/fonts/IBMPlex-LICENSE.txt": "37784b44044a4ffd9256702b7c0982c37e5c8887ba90c6dca0479aea93dc898d"
+      },
+      "android_release": {
+        "notices": {
+          "licenses/ibm-plex-OFL-1.1.txt": "repo:src/ui/qt/fonts/IBMPlex-LICENSE.txt"
+        }
       }
     },
     {
@@ -682,6 +772,12 @@
         "binaries": [
           "dsd-neo.exe"
         ],
+        "notices": {
+          "licenses/ISC.txt": "repo:LICENSES/ISC.txt",
+          "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/ISC.txt": "repo:LICENSES/ISC.txt",
           "licenses/gqrx-scanner-MIT.txt": "repo:LICENSES/gqrx-scanner-MIT.txt"
@@ -1007,6 +1103,13 @@
           "licenses/LicenseRef-codec2-varicode.txt": "repo:LICENSES/LicenseRef-codec2-varicode.txt"
         }
       },
+      "android_release": {
+        "notices": {
+          "licenses/codec2-LGPL-2.1.txt": "repo:LICENSES/codec2-LGPL-2.1.txt",
+          "licenses/codec2-NOTICES.txt": "repo:LICENSES/codec2-NOTICES.txt",
+          "licenses/LicenseRef-codec2-varicode.txt": "repo:LICENSES/LicenseRef-codec2-varicode.txt"
+        }
+      },
       "pin": "CODEC2_SHA"
     },
     {
@@ -1127,6 +1230,14 @@
           "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
           "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/openssl-copyright.txt": "vcpkg:openssl",
+          "licenses/OpenSSL-AUTHORS.md": "repo:LICENSES/OpenSSL-AUTHORS.md",
+          "licenses/OpenSSL-NOTICES.txt": "repo:LICENSES/OpenSSL-NOTICES.txt",
+          "licenses/LicenseRef-OpenSSL-KISA-SEED.txt": "repo:LICENSES/LicenseRef-OpenSSL-KISA-SEED.txt"
+        }
       }
     },
     {
@@ -1162,6 +1273,12 @@
         "binaries": [
           "libcurl.dll"
         ],
+        "notices": {
+          "licenses/curl-copyright.txt": "vcpkg:curl",
+          "licenses/curl-NOTICES.txt": "repo:LICENSES/curl-NOTICES.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/curl-copyright.txt": "vcpkg:curl",
           "licenses/curl-NOTICES.txt": "repo:LICENSES/curl-NOTICES.txt"
@@ -1205,6 +1322,12 @@
           "licenses/expat-copyright.txt": "vcpkg:expat",
           "licenses/expat-NOTICES.txt": "repo:LICENSES/expat-NOTICES.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/expat-copyright.txt": "vcpkg:expat",
+          "licenses/expat-NOTICES.txt": "repo:LICENSES/expat-NOTICES.txt"
+        }
       }
     },
     {
@@ -1235,6 +1358,11 @@
         "binaries": [
           "z.dll"
         ],
+        "notices": {
+          "licenses/zlib-copyright.txt": "vcpkg:zlib"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/zlib-copyright.txt": "vcpkg:zlib"
         }
@@ -1289,6 +1417,15 @@
           "licenses/LicenseRef-Sun-G72x.txt": "repo:LICENSES/LicenseRef-Sun-G72x.txt",
           "licenses/libsndfile-NOTICES.txt": "repo:LICENSES/libsndfile-NOTICES.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/libsndfile-copyright.txt": "vcpkg:libsndfile",
+          "licenses/libsndfile-GSM610-COPYRIGHT.txt": "repo:LICENSES/libsndfile-GSM610-COPYRIGHT.txt",
+          "licenses/libsndfile-ALAC-Apache-2.0.txt": "repo:LICENSES/libsndfile-ALAC-Apache-2.0.txt",
+          "licenses/LicenseRef-Sun-G72x.txt": "repo:LICENSES/LicenseRef-Sun-G72x.txt",
+          "licenses/libsndfile-NOTICES.txt": "repo:LICENSES/libsndfile-NOTICES.txt"
+        }
       }
     },
     {
@@ -1322,6 +1459,11 @@
         "notices": {
           "licenses/libflac-copyright.txt": "vcpkg:libflac"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/libflac-copyright.txt": "vcpkg:libflac"
+        }
       }
     },
     {
@@ -1352,6 +1494,11 @@
         "binaries": [
           "ogg.dll"
         ],
+        "notices": {
+          "licenses/libogg-copyright.txt": "vcpkg:libogg"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/libogg-copyright.txt": "vcpkg:libogg"
         }
@@ -1395,6 +1542,12 @@
           "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis",
           "licenses/libvorbis-lpc-NOTICE.txt": "repo:LICENSES/libvorbis-lpc-NOTICE.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/libvorbis-copyright.txt": "vcpkg:libvorbis",
+          "licenses/libvorbis-lpc-NOTICE.txt": "repo:LICENSES/libvorbis-lpc-NOTICE.txt"
+        }
       }
     },
     {
@@ -1430,6 +1583,12 @@
         "binaries": [
           "opus.dll"
         ],
+        "notices": {
+          "licenses/opus-copyright.txt": "vcpkg:opus",
+          "licenses/opus-NOTICES.txt": "repo:LICENSES/opus-NOTICES.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/opus-copyright.txt": "vcpkg:opus",
           "licenses/opus-NOTICES.txt": "repo:LICENSES/opus-NOTICES.txt"
@@ -1485,6 +1644,15 @@
           "licenses/mp3lame-LICENSE.txt": "repo:LICENSES/mp3lame-LICENSE.txt",
           "licenses/mp3lame-NOTICES.txt": "repo:LICENSES/mp3lame-NOTICES.txt"
         }
+      },
+      "android_release": {
+        "notices": {
+          "licenses/mp3lame-copyright.txt": "vcpkg:mp3lame",
+          "licenses/mp3lame-LGPL-2.1.txt": "repo:android/third_party/libusb/COPYING",
+          "licenses/mp3lame-README.txt": "repo:LICENSES/mp3lame-README.txt",
+          "licenses/mp3lame-LICENSE.txt": "repo:LICENSES/mp3lame-LICENSE.txt",
+          "licenses/mp3lame-NOTICES.txt": "repo:LICENSES/mp3lame-NOTICES.txt"
+        }
       }
     },
     {
@@ -1523,6 +1691,13 @@
         "binaries": [
           "mpg123.dll"
         ],
+        "notices": {
+          "licenses/mpg123-copyright.txt": "vcpkg:mpg123",
+          "licenses/mpg123-AUTHORS.txt": "repo:LICENSES/mpg123-AUTHORS.txt",
+          "licenses/mpg123-NOTICES.txt": "repo:LICENSES/mpg123-NOTICES.txt"
+        }
+      },
+      "android_release": {
         "notices": {
           "licenses/mpg123-copyright.txt": "vcpkg:mpg123",
           "licenses/mpg123-AUTHORS.txt": "repo:LICENSES/mpg123-AUTHORS.txt",

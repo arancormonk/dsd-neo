@@ -69,6 +69,11 @@ rights and distribution issues before claiming GPL-compliant redistribution.
   takes each one from (`windows_release` in the component inventory). The
   staging copies the notices of every file it stages, and the release job
   refuses a file no record lists or a tree without its notices.
+- Give every component the APK carries the same kind of map
+  (`android_release`): the APK staging (`cmake/stage_release_notices.cmake`)
+  copies each notice from where the map says, and the APK check requires
+  every one of them (`tools/legal_inventory.py --release-notices android`).
+  The records accept a `macos_release` map of the same shape for the DMG.
 - Review each library vcpkg builds for the Windows ZIP against the sources in
   the archive its port pins, record the license expression those sources
   carry, and ship, beside the copyright file the port installs, the notices

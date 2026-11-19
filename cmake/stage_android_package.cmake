@@ -2,12 +2,14 @@
 # Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 #
 # Stages the directory androiddeployqt packages into the APK: android/package plus the
-# license/notice set every shipped asset carries (docs/release-assets-checklist.md).
+# license/notice set every shipped asset carries (docs/release-assets-checklist.md): the
+# project's legal files, LICENSES/, the selected mbelib's notices, and the notices the
+# android_release map of each record in legal/components.json names
+# (cmake/stage_release_notices.cmake).
 #
 # Usage:
 #   cmake -DREPO_DIR=<repo> -DSOURCE_DIR=<android/package> -DSTAGE_DIR=<out> \
-#         -DPFFFT_LICENSE_DIR=<build>/pffft-licenses \
-#         -DTETRA_CRYPTO_LICENSE_DIR=<build>/tetra_crypto-licenses \
+#         -DBUILD_DIR=<build> \
 #         -DMBELIB_NOTICE_DIR=<prefix>/share/doc/mbelib-neo \
 #         -DVCPKG_SHARE_DIR=<vcpkg_installed>/<triplet>/share \
 #         -P cmake/stage_android_package.cmake
@@ -23,8 +25,7 @@ foreach(
         REPO_DIR
         SOURCE_DIR
         STAGE_DIR
-        PFFFT_LICENSE_DIR
-        TETRA_CRYPTO_LICENSE_DIR
+        BUILD_DIR
         MBELIB_NOTICE_DIR
         VCPKG_SHARE_DIR
 )
@@ -53,80 +54,9 @@ file(
     DESTINATION "${_doc_dir}"
 )
 
-# Renamed so the notice names the project it belongs to, matching the layout the desktop
-# packages install to share/doc/dsd-neo/licenses.
-configure_file(
-    "${REPO_DIR}/src/third_party/ezpwd/lesser.txt"
-    "${_doc_dir}/licenses/ezpwd-LGPL-2.1-or-later.txt"
-    COPYONLY
-)
-file(
-    COPY
-        "${PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
-        "${TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
-    DESTINATION "${_doc_dir}/licenses"
-)
-
-# Compiled into the Qt resource bundle (src/ui/qt/CMakeLists.txt), so every APK
-# redistributes the fonts and has to carry their notice.
-configure_file(
-    "${REPO_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
-    "${_doc_dir}/licenses/ibm-plex-OFL-1.1.txt"
-    COPYONLY
-)
-
-# Only the Android build links these two, so only this asset ships their notices.
-configure_file(
-    "${REPO_DIR}/android/third_party/libusb/COPYING"
-    "${_doc_dir}/licenses/libusb-LGPL-2.1-or-later.txt"
-    COPYONLY
-)
-configure_file(
-    "${REPO_DIR}/android/third_party/librtlsdr/COPYING"
-    "${_doc_dir}/licenses/librtlsdr-GPL-2.0-or-later.txt"
-    COPYONLY
-)
-
-configure_file(
-    "${REPO_DIR}/android/third_party/libairspy/LICENSE"
-    "${_doc_dir}/licenses/libairspy-LICENSE.txt"
-    COPYONLY
-)
-
-# The libraries vcpkg links statically into the app: the copyright file each port installs,
-# under the name the Windows ZIP gives it. Their other notices are in LICENSES/, copied above.
-foreach(
-    _port
-    IN
-    ITEMS
-        openssl
-        curl
-        zlib
-        expat
-        libsndfile
-        libflac
-        libogg
-        libvorbis
-        opus
-        mp3lame
-        mpg123
-)
-    if(NOT EXISTS "${VCPKG_SHARE_DIR}/${_port}/copyright")
-        message(
-            FATAL_ERROR
-            "Missing ${VCPKG_SHARE_DIR}/${_port}/copyright, the notice of a library the app links"
-        )
-    endif()
-    configure_file(
-        "${VCPKG_SHARE_DIR}/${_port}/copyright"
-        "${_doc_dir}/licenses/${_port}-copyright.txt"
-        COPYONLY
-    )
-endforeach()
-# LAME's gain_analysis.c is under the LGPL 2.1; the port's copyright file is the LGPL 2.0.
-configure_file(
-    "${REPO_DIR}/android/third_party/libusb/COPYING"
-    "${_doc_dir}/licenses/mp3lame-LGPL-2.1.txt"
-    COPYONLY
-)
+# The notices of every component the APK carries, under the names its record gives them:
+# the vendored USB libraries, the fonts compiled into the Qt resource bundle, the
+# downloaded PFFFT and TETRA_crypto, and the libraries vcpkg links into the app.
+set(PLATFORM android)
+set(DOC_DIR "${_doc_dir}")
+include("${REPO_DIR}/cmake/stage_release_notices.cmake")

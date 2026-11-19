@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -123,6 +124,69 @@ class InventoryTests(unittest.TestCase):
         for label, inventory in cases.items():
             with self.subTest(case=label), self.assertRaises(ValueError):
                 legal.validate(inventory, ROOT)
+
+    def test_android_release_records_are_checked(self):
+        # Every component the APK carries names the notices the APK carries for it and where staging takes each one
+        # from (android_release), checked as windows_release is; the macOS map has the same shape.
+        def edit(ident, change):
+            inventory = copy.deepcopy(self.inventory)
+            change(next(c for c in inventory["components"] if c["id"] == ident))
+            return inventory
+
+        for component in self.inventory["components"]:
+            shipped = "android" in component["platforms"] and "binary" in component["distribution"]
+            with self.subTest(component=component["id"]):
+                self.assertEqual("android_release" in component, shipped)
+        cases = {
+            "no release record": edit("opus", lambda c: c.pop("android_release")),
+            "no notice": edit("opus", lambda c: c["android_release"].update(notices={})),
+            "notices that are not a map": edit("opus", lambda c: c["android_release"].update(notices=["x"])),
+            "an unknown source": edit(
+                "opus", lambda c: c["android_release"]["notices"].update({"licenses/p.txt": "web:opus"})),
+            "a notice outside the documentation": edit(
+                "opus", lambda c: c["android_release"]["notices"].update({"../opus.txt": "vcpkg:opus"})),
+            "a repository notice the record does not retain": edit(
+                "opus", lambda c: c["android_release"]["notices"].update({"licenses/x.txt": "repo:LICENSES/ISC.txt"})),
+            "a repository notice above the repository": edit(
+                "opus", lambda c: c["android_release"]["notices"].update({"licenses/x.txt": "repo:../COPYRIGHT"})),
+            "a component the APK does not carry": edit(
+                "portaudio", lambda c: c.update(android_release={"notices": {"licenses/p.txt": "vcpkg:portaudio"}})),
+            "a source-only component": edit(
+                "recordings", lambda c: c.update(android_release={"notices": {"LICENSE": "repo:LICENSE"}})),
+            "binaries in a map that has none": edit(
+                "opus", lambda c: c["android_release"].update(binaries=["libopus.so"])),
+            "a macOS map for a component the DMG does not carry": edit(
+                "opus", lambda c: c.update(macos_release={"notices": {"licenses/opus-copyright.txt": "vcpkg:opus"}})),
+            "an empty macOS map": edit("airspy", lambda c: c.update(macos_release={"notices": {}})),
+        }
+        for label, inventory in cases.items():
+            with self.subTest(case=label), self.assertRaises(ValueError):
+                legal.validate(inventory, ROOT)
+        # The macOS map has the shape of the others; the DMG requires a map of every component once its staging
+        # reads them (COMPLETE_RELEASE_MAPS).
+        inventory = edit("airspy", lambda c: c.update(macos_release={"notices": {
+            "licenses/libairspy-LICENSE.txt": "repo:android/third_party/libairspy/LICENSE"}}))
+        legal.validate(inventory, ROOT)
+        self.assertEqual(legal.COMPLETE_RELEASE_MAPS, {"windows", "android"})
+
+    def test_release_notice_listing_follows_the_maps(self):
+        # The package checks read the notices each package must carry from the records.
+        result = subprocess.run([sys.executable, str(ROOT / "tools/legal_inventory.py"), "--release-notices", "android"],
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        listed = result.stdout.splitlines()
+        expected = sorted({notice for c in self.inventory["components"]
+                           for notice in c.get("android_release", {}).get("notices", {})})
+        self.assertEqual(listed, expected)
+        self.assertIn("licenses/OpenSSL-NOTICES.txt", listed)
+        self.assertIn("licenses/mbelib-neo/legal/status.md", listed)
+        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
+        self.assertIn("tools/legal_inventory.py --release-notices android", android)
+        self.assertNotIn("licenses/opus-NOTICES.txt", android)
+        for platform in legal.RELEASE_MAPS:
+            result = subprocess.run([sys.executable, str(ROOT / "tools/legal_inventory.py"), "--release-notices",
+                                     platform], text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_release_files_may_be_any_name_windows_loads(self):
         # The release scripts follow imports whatever their suffix and stage names with spaces (Test-ImportName in
@@ -278,9 +342,9 @@ class InventoryTests(unittest.TestCase):
                          "repo:LICENSES/librtlsdr-NOTICES.txt")
         self.assertIn("licenses/librtlsdr-NOTICES.txt",
                       (ROOT / ".github/workflows/linux-appimage.yaml").read_text(encoding="utf-8"))
-        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
-        for name in ("licenses/librtlsdr-NOTICES.txt", "licenses/libusb-android-NOTICES.txt"):
-            self.assertIn(name, android)
+        for ident, name in (("android-rtl", "licenses/librtlsdr-NOTICES.txt"),
+                            ("android-libusb", "licenses/libusb-android-NOTICES.txt")):
+            self.assertEqual(components[ident]["android_release"]["notices"][name], "repo:LICENSES/" + name[9:])
 
     def test_openssl_notice_names_the_holders_of_every_build(self):
         # One notice serves every package that carries vcpkg's OpenSSL 3.6.5: it names the holders of the CMP, CRMF and
@@ -343,15 +407,14 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(packages["openssl"]["name"], "OpenSSL")
         self.assertIn("libssl", components["openssl"]["assessment"])
         self.assertIn("CURL_USE_OPENSSL=ON", components["curl"]["assessment"])
-        # The APK carries each port's copyright file from the Android build's vcpkg tree and the LGPL 2.1 text LAME's
-        # gain_analysis.c needs, beside LICENSES/, which it copies whole.
-        stage = (ROOT / "cmake/stage_android_package.cmake").read_text(encoding="utf-8")
-        android = (ROOT / ".github/workflows/android-ci.yaml").read_text(encoding="utf-8")
+        # The APK carries the notices the ZIP carries for these libraries, each port's copyright file from the Android
+        # build's vcpkg tree.
         for port in ports:
-            self.assertIn(f"licenses/{port}-copyright.txt", android)
-            self.assertIn(port, stage)
-        for name in ("licenses/mp3lame-LGPL-2.1.txt", "licenses/OpenSSL-NOTICES.txt", "licenses/opus-NOTICES.txt"):
-            self.assertIn(name, android)
+            with self.subTest(port=port):
+                self.assertEqual(components[port]["android_release"], {"notices": components[port]["windows_release"]
+                                                                       ["notices"]})
+                self.assertEqual(components[port]["android_release"]["notices"][f"licenses/{port}-copyright.txt"],
+                                 "vcpkg:" + port)
 
     def test_sboms_name_only_the_soapysdr_programs_each_package_carries(self):
         # The AppImage builds SoapySDR without its programs (ENABLE_APPS=OFF); only the Windows ZIP carries
@@ -415,32 +478,42 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(notice.name, result.stderr)
 
-    def test_android_assets_retain_full_notice_tree_and_fail_on_missing_dependency_text(self):
+    def android_fixture(self):
         package = self.work / "package"
         package.mkdir()
-        notices = self.work / "notices"
-        notices.mkdir()
-        for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt", "tetra_crypto-LICENSE.txt"):
-            (notices / name).write_text(name + "\n", encoding="utf-8")
+        build = self.work / "build"
+        for name in ("pffft-licenses/pffft-LICENSE.txt", "pffft-licenses/pffft-NOTICES.txt",
+                     "tetra_crypto-licenses/tetra_crypto-LICENSE.txt"):
+            (build / name).parent.mkdir(parents=True, exist_ok=True)
+            (build / name).write_text(name + "\n", encoding="utf-8")
         share = self.work / "vcpkg_installed/arm64-android-static/share"
         for port in VCPKG_ANDROID_PORTS:
             (share / port).mkdir(parents=True)
             (share / port / "copyright").write_text("Port copyright fixture: " + port + "\n", encoding="utf-8")
         stage = self.work / "stage"
-        args = [f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={package}", f"-DSTAGE_DIR={stage}",
-                f"-DPFFFT_LICENSE_DIR={notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={notices}",
+        args = [f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={package}", f"-DSTAGE_DIR={stage}", f"-DBUILD_DIR={build}",
                 f"-DMBELIB_NOTICE_DIR={self.mbe}", f"-DVCPKG_SHARE_DIR={share}", "-P",
                 ROOT / "cmake/stage_android_package.cmake"]
+        return build, share, stage / "assets/doc/dsd-neo", args
+
+    def test_android_assets_retain_full_notice_tree_and_fail_on_missing_dependency_text(self):
+        build, share, docs, args = self.android_fixture()
         result = self.run_cmake(*args)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        docs = stage / "assets/doc/dsd-neo"
-        for port in VCPKG_ANDROID_PORTS:
-            self.assertEqual((docs / f"licenses/{port}-copyright.txt").read_bytes(),
-                             (share / port / "copyright").read_bytes())
-        self.assertEqual((docs / "licenses/mp3lame-LGPL-2.1.txt").read_bytes(),
-                         (ROOT / "android/third_party/libusb/COPYING").read_bytes())
-        self.assertEqual((docs / "licenses/OpenSSL-NOTICES.txt").read_bytes(),
-                         (ROOT / "LICENSES/OpenSSL-NOTICES.txt").read_bytes())
+        # Every notice an android_release map names, from where the map says.
+        inventory = legal.read_inventory(ROOT)
+        staged = 0
+        for component in inventory["components"]:
+            for notice, source in component.get("android_release", {}).get("notices", {}).items():
+                kind, _, rest = source.partition(":")
+                expected = {"repo": lambda: ROOT / rest, "build": lambda: build / rest,
+                            "vcpkg": lambda: share / rest / "copyright"}.get(kind)
+                with self.subTest(notice=notice):
+                    self.assertTrue((docs / notice).is_file())
+                    if expected is not None:
+                        self.assertEqual((docs / notice).read_bytes(), expected().read_bytes())
+                    staged += 1
+        self.assertGreater(staged, 40)
         for name in MBE_NOTICES:
             self.assertEqual((docs / "licenses/mbelib-neo" / name).read_bytes(), (self.mbe / name).read_bytes())
         for name in ("status.md", "source-delivery.md", "components.json"):
@@ -451,8 +524,55 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
         (share / "mpg123/copyright").write_text("restored\n", encoding="utf-8")
         self.assertEqual(self.run_cmake(*args).returncode, 0)
+        (build / "pffft-licenses/pffft-NOTICES.txt").unlink()
+        self.assertNotEqual(self.run_cmake(*args).returncode, 0)
+        (build / "pffft-licenses/pffft-NOTICES.txt").write_text("restored\n", encoding="utf-8")
         (self.mbe / "legal/status.md").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
+
+    def test_release_notice_staging_follows_any_platform_map(self):
+        # The staging the APK uses takes any platform's map, so the DMG can use it as well; it refuses a source it does
+        # not know, a path outside its root and a legal-component notice the package lacks.
+        build = self.work / "build"
+        (build / "notices").mkdir(parents=True)
+        (build / "notices/b.txt").write_text("build notice\n", encoding="utf-8")
+        share = self.work / "share"
+        (share / "port").mkdir(parents=True)
+        (share / "port/copyright").write_text("port notice\n", encoding="utf-8")
+        docs = self.work / "docs"
+        (docs / "licenses").mkdir(parents=True)
+        (docs / "licenses/installed.txt").write_text("installed\n", encoding="utf-8")
+
+        def stage(notices, platform="macos"):
+            components = self.work / "components.json"
+            components.write_text(json.dumps({"components": [
+                {"id": "a", "macos_release": {"notices": notices}},
+                {"id": "b", "android_release": {"notices": {"licenses/other.txt": "repo:LICENSE"}}}]}),
+                encoding="utf-8")
+            return self.run_cmake(f"-DPLATFORM={platform}", f"-DREPO_DIR={ROOT}", f"-DBUILD_DIR={build}",
+                                  f"-DVCPKG_SHARE_DIR={share}", f"-DDOC_DIR={docs}", f"-DCOMPONENTS={components}",
+                                  "-P", ROOT / "cmake/stage_release_notices.cmake")
+
+        result = stage({"licenses/r.txt": "repo:LICENSES/ISC.txt", "licenses/b.txt": "build:notices/b.txt",
+                        "licenses/p-copyright.txt": "vcpkg:port", "licenses/installed.txt": "legal-component"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((docs / "licenses/r.txt").read_bytes(), (ROOT / "LICENSES/ISC.txt").read_bytes())
+        self.assertEqual((docs / "licenses/b.txt").read_text(encoding="utf-8"), "build notice\n")
+        self.assertEqual((docs / "licenses/p-copyright.txt").read_text(encoding="utf-8"), "port notice\n")
+        self.assertFalse((docs / "licenses/other.txt").exists())
+        for label, notices in {
+            "an unknown source": {"licenses/x.txt": "web:x"},
+            "a repository path above the repository": {"licenses/x.txt": "repo:../x"},
+            "a build path through a parent folder": {"licenses/x.txt": "build:notices/../../x"},
+            "an absolute build path": {"licenses/x.txt": "build:/etc/hostname"},
+            "a destination outside the documentation": {"../x.txt": "repo:LICENSE"},
+            "a missing source": {"licenses/x.txt": "build:notices/missing.txt"},
+            "a missing port": {"licenses/x.txt": "vcpkg:missing"},
+            "a legal-component notice the package lacks": {"licenses/missing.txt": "legal-component"},
+        }.items():
+            with self.subTest(case=label):
+                self.assertNotEqual(stage(notices).returncode, 0)
+        self.assertNotEqual(stage({"licenses/r.txt": "repo:LICENSE"}, platform="solaris").returncode, 0)
 
 
 if __name__ == "__main__":

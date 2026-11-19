@@ -85,8 +85,7 @@ execute_process(
     COMMAND
         ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
-        -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
-        -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
         -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
@@ -99,8 +98,7 @@ add_custom_target(
     COMMAND
         ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
-        -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
-        -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
         -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P

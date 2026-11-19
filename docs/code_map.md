@@ -13781,8 +13781,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   dependency notices, including `legal/status.md` and the selected mbelib installation's
   unresolved disclosures. `cmake/MbelibNotices.cmake` requires those dependency records;
   the root CMake `legal` install component and `cmake/stage_android_package.cmake` carry
-  them into portable packages and Android assets. `tools/legal_inventory.py` checks
-  retained notice hashes and supplements release SBOMs without asserting legal clearance.
+  them into portable packages and Android assets. Each record in `legal/components.json`
+  names the notices a package carries for it in a per-platform map (`windows_release`,
+  `android_release`, `macos_release`); `cmake/stage_release_notices.cmake` stages a
+  platform's map (the APK today), and `tools/legal_inventory.py --release-notices
+  <platform>` lists it for the package checks. `tools/legal_inventory.py` checks the maps
+  and retained notice hashes and supplements release SBOMs without asserting legal clearance.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Status rows that never wrap (issue #669): `ui_row.{h,c}` builds a row from atomic fields and draws it whole, or cut

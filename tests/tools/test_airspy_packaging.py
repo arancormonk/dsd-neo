@@ -275,11 +275,12 @@ class AirspyPackaging(unittest.TestCase):
         source = self.work / "package"
         source.mkdir()
         stage = self.work / "stage"
-        fft_notices = self.work / "pffft-licenses"
-        fft_notices.mkdir()
+        build = self.work / "build"
+        fft_notices = build / "pffft-licenses"
+        fft_notices.mkdir(parents=True)
         for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt"):
             (fft_notices / name).write_text("FFT notice fixture\n")
-        tea_notices = self.work / "tetra_crypto-licenses"
+        tea_notices = build / "tetra_crypto-licenses"
         tea_notices.mkdir()
         (tea_notices / "tetra_crypto-LICENSE.txt").write_text("TEA notice fixture\n")
         share = self.work / "vcpkg-share"
@@ -287,7 +288,7 @@ class AirspyPackaging(unittest.TestCase):
                      "mp3lame", "mpg123"):
             (share / port).mkdir(parents=True)
             (share / port / "copyright").write_text("Port copyright fixture\n")
-        result = run(["cmake", f"-DPFFFT_LICENSE_DIR={fft_notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={tea_notices}",
+        result = run(["cmake", f"-DBUILD_DIR={build}",
                       f"-DMBELIB_NOTICE_DIR={mbelib_notice_fixture(self.work / 'mbelib-notices')}",
                       f"-DVCPKG_SHARE_DIR={share}",
                       f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",

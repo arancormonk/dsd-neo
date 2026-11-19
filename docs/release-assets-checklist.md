@@ -101,8 +101,12 @@ resource bundle, so they travel with the binary rather than as a separate file.
         `libsndfile-NOTICES.txt`, `libvorbis-lpc-NOTICE.txt`, `opus-NOTICES.txt`,
         `mp3lame-LGPL-2.1.txt`, `mp3lame-README.txt`, `mp3lame-LICENSE.txt`,
         `mp3lame-NOTICES.txt`, `mpg123-AUTHORS.txt` and `mpg123-NOTICES.txt`
-        (`cmake/stage_android_package.cmake` stages them; `android-ci` fails the
-        build if any are missing).
+        (each record's `android_release` map in `legal/components.json` names the
+        notices the APK carries for it and where each comes from;
+        `cmake/stage_android_package.cmake` stages them through
+        `cmake/stage_release_notices.cmake`, and `android-ci` fails the build if
+        any notice `tools/legal_inventory.py --release-notices android` lists is
+        missing).
   - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty
         `application-icon-*`, `versionName` equal to the tag without its `v`, and
         `versionCode` equal to `(major * 10000 + minor * 100 + patch) * 1000` —
