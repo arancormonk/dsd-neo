@@ -1486,6 +1486,8 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     const size_t stride = (size_t)stream->channels;
     /* What a discard kept goes first: it is older than anything the device holds. */
     const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    /* Read from the device by a discard but never counted there: they count as they reach the decoder. */
+    stream->device_frames += (uint64_t)carried;
     int16_t* cursor = buffer + carried * stride;
     size_t remaining = frames - carried;
     int reopened = 0;

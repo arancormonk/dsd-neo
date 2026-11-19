@@ -1162,8 +1162,15 @@ test_input_stream(void) {
     g.overrun_written_frames = (int64_t)g.buffer_capacity_frames;
     {
         const int dropped = dsd_audio_discard_input(stream, g.now_ns);
+        const uint64_t counted = stream->device_frames;
         int16_t next[4] = {0};
         const int got = dsd_audio_read(stream, next, 4);
+        /* The kept chunk's frames reach the decoder from the carry: the input frame count takes them as they do. */
+        if (stream->device_frames != counted + 4U) {
+            DSD_FPRINTF(stderr, "a read from the carry counted %llu input frames (expected 4)\n",
+                        (unsigned long long)(stream->device_frames - counted));
+        }
+        assert(stream->device_frames == counted + 4U);
         if (dropped != 256 || got != 4 || next[0] != 20000) {
             DSD_FPRINTF(stderr,
                         "an uncounted overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n",
