@@ -1025,8 +1025,8 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
     assert(state.last_vc_sync_time_m == 0.0);
 }
 
-/* Opens a call on lane 0 of over-the-air slot @p lane_slot (1 or 2), as the single-slot decoder's voice does after a
-   checked LC of that slot proved it (dsd_state::dmr_mono_lane_slot), keyed with ALG ID @p algid. */
+/* Opens a call on lane 0 of over-the-air slot @p lane_slot (1 or 2), as the single-slot decoder's voice does, keyed
+   with ALG ID @p algid. */
 static void
 open_lane_call(dsd_state* state, uint8_t lane_slot, int algid) {
     state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + lane_slot - 1U);
@@ -1041,7 +1041,6 @@ open_lane_call(dsd_state* state, uint8_t lane_slot, int algid) {
     assert(dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN) >= 0);
     dsd_call_snapshot call;
     assert(dsd_call_state_get(state, 0U, &call) > 0 && call.receive_identity.slot == lane_slot);
-    state->dmr_mono_lane_slot = lane_slot;
     state->payload_algid = algid;
 }
 
@@ -1060,11 +1059,10 @@ mono_data_burst(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t burst) {
     return g_handler_calls == 1 && g_handler_burst == burst && g_handler_slot == (int)slot;
 }
 
-/* Without trunking the single-slot decoder's lane belongs to the slot its call's checked LC proved. While that is slot
-   2, during its call and after it ended alike, a slot 1 data packet, which would run on index 0, the lane's, is the
-   other slot's: its header and blocks are not decoded, so they touch none of the call's crypto (ALG ID 0x21) or packet
-   state. A slot 2 one runs on index 1 as before. With no proven slot or a slot 1 one, a slot 1 data header runs on
-   index 0 as before. */
+/* Without trunking the single-slot decoder's lane carries one call. While it carries a slot 2 call, a slot 1 data
+   packet, which would run on index 0, the lane's, is the other slot's: its header and blocks are not decoded, so they
+   touch none of the call's crypto (ALG ID 0x21) or packet state. A slot 2 one runs on index 1 as before. With the lane
+   idle or on a slot 1 call a slot 1 data header runs on index 0 as before. */
 static void
 test_mono_other_slots_data_leaves_the_lane(void) {
     static dsd_opts opts;
@@ -1077,14 +1075,9 @@ test_mono_other_slots_data_leaves_the_lane(void) {
     state.dmr_stereo = 0;
     open_lane_call(&state, 2U, 0x21);
     static const uint8_t packet[] = {6U, 7U, 10U};
-    for (int ended = 0; ended <= 1; ended++) {
-        if (ended) {
-            dsd_call_state_end(&state, 0U, 0.0);
-        }
-        for (size_t i = 0; i < sizeof packet; i++) {
-            assert(!mono_data_burst(&opts, &state, 0U, packet[i]));
-            assert(state.payload_algid == 0x21 && state.data_header_valid[0] == 0);
-        }
+    for (size_t i = 0; i < sizeof packet; i++) {
+        assert(!mono_data_burst(&opts, &state, 0U, packet[i]));
+        assert(state.payload_algid == 0x21 && state.data_header_valid[0] == 0);
     }
     assert(mono_data_burst(&opts, &state, 1U, 6U));
     assert(state.payload_algid == 0x21 && state.payload_algidR == 0x24);

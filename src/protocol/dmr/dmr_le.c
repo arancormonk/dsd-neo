@@ -20,7 +20,6 @@
 #include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_mono_lane.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
@@ -274,13 +273,6 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
 
     uint8_t slot = state->currentslot;
     uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-
-    // The single-slot lane takes late-entry content only from the slot its call's checked LC proved: the other slot's
-    // voice on the lane, or any before a checked LC, collects nothing (dmr_mono_lane_voice_slot()).
-    const uint8_t voice_slot = dmr_mono_lane_voice_slot(state);
-    if (state->dmr_ms_mode == 1 && voice_slot != 0U && voice_slot != state->dmr_mono_lane_slot) {
-        return;
-    }
 
     // Hytera Enhanced carries its MI in its own PI/LC, so its call collects no DMRA late-entry MI. This is the slot's
     // call's mode, not a session setting: the other slot and the next call collect as ever (issue #657).

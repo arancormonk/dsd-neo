@@ -2059,11 +2059,10 @@ struct dsd_state {
      * left (a host may run one state more than once). */
     uint8_t dmr_enc_class_held[2];
     /* The single-slot DMR decoder without trunking (dmr_mono_folds_standalone_burst()) carries one call on one lane
-       (index 0): this is the over-the-air slot (1 or 2) its call's checked LC naming a voice call proved, whose cipher
-       state the lane holds; 0 before one, and at run start. The lane takes PI headers, alias, GPS, rekeys, terminators,
-       data and late-entry MI only from that slot (dmr_flco_lane_takes(), dmr_pi(), dmr_mono_lane_refuses_data()); a
-       checked voice LC of the other slot is a new call: the lane's cipher state is wiped and its voice held again
-       (dmr_flco()); the other slot's voice on the lane is held (dmr_mono_lane_voice_is_other_call()). Owned by
+       (index 0): this is the over-the-air slot (1 or 2) of the call its last checked LC of a known slot named, whose
+       cipher state the lane holds; 0 before one. A checked LC of the other slot is a new call: the lane's cipher state
+       is wiped and its voice held again (dmr_flco()); the other slot's voice on the lane is held
+       (dmr_mono_lane_voice_is_other_call()); its unchecked LCs, terminators and rekeys are ignored. Owned by
        src/protocol/dmr. */
     uint8_t dmr_mono_lane_slot;
     /* Whether the receiver has landed on a carrier yet in this run (any landing: the run's first stream, a tune, a scan

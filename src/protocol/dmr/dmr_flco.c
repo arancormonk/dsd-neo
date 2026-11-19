@@ -1799,52 +1799,24 @@ dmr_flco_lane_boundary(dmr_flco_ctx* ctx) {
     ctx->state->dmr_enc_class_held[0] = 1U;
 }
 
-/* Whether an LC names a voice call and passed its check, read from its bits before anything acts on it: a voice LC
-   header or embedded LC (@p type 1 or 3) whose check passed with no FEC failure, readable (not protected), whose FLCO is
-   a group or unit-to-unit voice call (0x00, 0x03; Capacity Max's 0x10 and 0x13 under FID 0x10). A talker alias, a
-   position, a Hytera Enhanced rekey (FLCO 0x02) or a terminator names none. */
-static int
-dmr_flco_bits_name_voice_call(uint8_t lc_bits[], uint32_t crc, uint32_t errors, uint8_t type) {
-    if ((type != 1U && type != 3U) || crc != 1U || errors != 0U || lc_bits[0] != 0U) {
-        return 0;
-    }
-    const uint8_t flco = (uint8_t)convert_bits_into_output(&lc_bits[2], 6);
-    const uint8_t fid = (uint8_t)convert_bits_into_output(&lc_bits[8], 8);
-    const uint8_t call = (fid == 0x10U && (flco == 0x10U || flco == 0x13U)) ? (uint8_t)(flco - 0x10U) : flco;
-    return call == 0x00U || call == 0x03U;
-}
-
-/* Whether the single-slot lane (no trunking) takes an LC of over-the-air slot @p lc_slot (1 or 2; 0 when not known or
-   not folded): from the slot its call's checked LC proved (dsd_state::dmr_mono_lane_slot) anything, from a slot it did
-   not prove (the other slot, or any before a checked LC) only a checked LC naming a voice call, which takes the lane,
-   and a data terminator of a packet the lane admitted (dmr_mono_lane_refuses_data()). Alias, position, PI-carrying
-   rekeys, terminators and failed LCs of a slot the lane did not prove touch nothing of it. */
-static int
-dmr_flco_lane_takes(const dsd_state* state, uint8_t lc_bits[], uint8_t type, uint8_t lc_slot, int names_call) {
-    if (lc_slot == 0U || lc_slot == state->dmr_mono_lane_slot || names_call) {
-        return 1;
-    }
-    const int data_terminator = type == 2U && lc_bits[0] == 0U && convert_bits_into_output(&lc_bits[2], 6) == 0x30U;
-    return data_terminator && !dmr_mono_lane_refuses_data(state, lc_slot);
-}
-
 void
 dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
          uint8_t type) {
-    /* The single-slot lane belongs to the slot its call's checked LC proved (dsd_state::dmr_mono_lane_slot). A checked
-       LC of the other slot naming a voice call is a new call on it (dmr_flco_lane_boundary()); anything else of a slot
-       it did not prove is shown, not acted on (dmr_flco_lane_takes()). */
+    /* The single-slot lane carries one call (dsd_state::dmr_mono_lane_slot). An LC of the other slot moves it only by
+       passing its check, as a new call's voice LC; one that failed, a terminator and a rekey in Hytera Enhanced shape
+       (read past its FEC failure) are the other slot's and touch nothing of the lane: shown, not acted on. */
     const uint8_t lc_slot = dmr_flco_lane_lc_slot(opts, state, type);
     const uint8_t lane_slot = state->dmr_mono_lane_slot;
-    const int names_call = dmr_flco_bits_name_voice_call(lc_bits, CRCCorrect, *IrrecoverableErrors, type);
-    if (!dmr_flco_lane_takes(state, lc_bits, type, lc_slot, names_call)) {
-        DSD_FPRINTF(stderr, "%s\n Slot %u LC not acted on: not the slot the single-slot lane's checked LC proved%s",
-                    KYEL, (unsigned)lc_slot, KNRM);
+    const int other_slot = lc_slot != 0U && lane_slot != 0U && lc_slot != lane_slot;
+    const int checked = type != 2U && CRCCorrect == 1U && *IrrecoverableErrors == 0U;
+    if (other_slot && !checked) {
+        DSD_FPRINTF(stderr, "%s\n Slot %u LC not acted on: the single-slot lane carries slot %u's call%s", KYEL,
+                    (unsigned)lc_slot, (unsigned)lane_slot, KNRM);
         return;
     }
     dmr_flco_ctx ctx;
     dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
-    if (names_call && lc_slot != 0U && lane_slot != 0U && lc_slot != lane_slot) {
+    if (other_slot) {
         dmr_flco_lane_boundary(&ctx);
     }
     // The burst handler indexed its CRC scope by the TACT slot. Mono mode re-homes this
@@ -1856,7 +1828,7 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     }
     dmr_flco_run(&ctx);
     state->event_crc_invalid[ctx.slot_idx] = saved;
-    if (names_call && lc_slot != 0U) {
+    if (lc_slot != 0U && checked) {
         state->dmr_mono_lane_slot = lc_slot;
     }
 }
