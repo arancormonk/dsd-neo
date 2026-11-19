@@ -19,6 +19,8 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 CHECK = ROOT / "tools/check_macos_portable_deps.sh"
+# The bash ctest found (macOS's /bin/bash is 3.2); plain bash from PATH otherwise.
+BASH = os.environ.get("DSD_TEST_BASH", "bash")
 
 FAKE_OTOOL = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -102,7 +104,7 @@ class CheckMacosPortableDeps(unittest.TestCase):
         (self.stage / rel).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
     def run_check(self, *args):
-        return subprocess.run(["bash", str(CHECK), str(self.stage), *args], env=self.env,
+        return subprocess.run([BASH, str(CHECK), str(self.stage), *args], env=self.env,
                               capture_output=True, text=True, check=False)
 
     def test_consistent_tree_passes(self):

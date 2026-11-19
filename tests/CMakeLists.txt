@@ -25848,14 +25848,22 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_android_source_directions.py
     )
-    # The macOS DMG's dependency check, with a fake otool: every staged file is
-    # built for the triplet's deployment target and loads only staged libraries.
-    add_test(
-        NAME TOOLS_CHECK_MACOS_PORTABLE_DEPS
-        COMMAND
-            ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
-    )
+    # The macOS DMG's dependency check, with fake otool and codesign: every staged
+    # file is built for the triplet's deployment target and loads only staged
+    # libraries. The check and its fakes are bash scripts, so it registers only
+    # where bash is (not Windows).
+    if(NOT WIN32 AND DSD_NEO_BASH_EXECUTABLE)
+        add_test(
+            NAME TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
+        )
+        set_tests_properties(
+            TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            PROPERTIES ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+        )
+    endif()
     # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
     # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4).
     add_test(
