@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <stdlib.h>
 #include <vector>
 
 #include <dsd-neo/core/safe_api.h>
