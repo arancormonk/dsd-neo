@@ -1925,6 +1925,60 @@ test_staged_low_rate_pcm(void) {
 /* Issue #834: 8 kHz PCM on stdin redirected from a file (no pipe): a retune's cutoff does not apply to it, so the drop
    keeps what the low-rate resampler staged and its FIR history, as it keeps the rest of the file: the staged outputs of
    the sample read are played, then the file reads on. */
+/* Issue #834: a watchdog's retune confirmed late, after the decoder read the new channel's first sample: the drop finds
+   the input read past its mark and keeps what was staged. That sample's staged outputs and the FIR history still came
+   through the old channel's samples (1000, 1000, 1000): they are rebuilt from the new channel alone, as a stream that
+   starts on it, so the old channel crosses no timeline boundary. */
+static int
+test_staged_low_rate_pcm_late_confirmation(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("late staged: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    opts->wav_sample_rate = 8000;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("late staged: pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("late staged: stdin reader", 0);
+    }
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    rc |= expect_true("late staged: the old channel",
+                      pipe_put(fds[1], 1000) && pipe_put(fds[1], 1000) && pipe_put(fds[1], 1000));
+    for (int i = 0; i < 3; i++) {
+        rc |= expect_true("late staged: an old sample read", staged_after_read(opts, 1000) || i > 0);
+    }
+    rc |= expect_true("late staged: the watchdog's hop", leg_watchdog(opts, state, VC2_HZ));
+    rc |= expect_true("late staged: the new channel", pipe_put(fds[1], 0) && pipe_put(fds[1], 0));
+    const int16_t s = pipe_next(opts);
+    dsd_pcm_input_stage_resample(opts, (float)s);
+    opts->input_upsample_pos = 1; /* the decoder took the first of the staged outputs */
+    take_at_the_next_read(opts, state);
+    int flat = s == 0 && opts->input_upsample_len == 6 && opts->input_upsample_pos == 1;
+    for (int i = opts->input_upsample_pos; i < opts->input_upsample_len; i++) {
+        const float d = opts->input_upsample_buf[i];
+        flat &= d > -0.001f && d < 0.001f;
+    }
+    char label[200];
+    DSD_SNPRINTF(label, sizeof label,
+                 "late staged: the new sample's staged outputs carry no old-channel sample (next %.3f, want 0)",
+                 (double)opts->input_upsample_buf[1]);
+    rc |= expect_true(label, flat);
+    rc |= expect_true("late staged: and the input reads on", pipe_next(opts) == 0);
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    dsd_resampler_reset(&opts->input_resampler);
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
 static int
 test_staged_low_rate_pcm_from_a_file(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -2166,6 +2220,7 @@ main(void) {
     rc |= test_old_audio_while_the_passband_is_set();
     rc |= test_staged_low_rate_pcm();
     rc |= test_staged_low_rate_pcm_from_a_file();
+    rc |= test_staged_low_rate_pcm_late_confirmation();
     rc |= test_symbol_reader_checks_posts_only_with_rigctl();
     rc |= test_a_producer_that_cannot_start_ends_its_case();
     rc |= test_retry_after_an_ambiguous_tune_drops_nothing();

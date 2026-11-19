@@ -3767,11 +3767,18 @@ dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
         default: break;
     }
     /* A low-rate stream's staged upsampled outputs and FIR history came from the last samples the decoder read: from
-       before the mark when the cut applied and the decoder had not read past it already (a confirmation taken late),
-       and then they go with the rest, so no old-channel audio is mixed into the new channel's first samples. A cut
-       that does not apply (stdin from a file, another input's cut) keeps them, as it keeps the input. */
-    if (dropped >= 0 && dsd_pcm_input_uses_staged_resampler(opts)) {
-        dsd_pcm_input_forget_staged(opts);
+       before the mark when the cut applied and the decoder had not read past it already, and then they go with the
+       rest, so no old-channel audio is mixed into the new channel's first samples. Read past it (a confirmation taken
+       late), they start again from the last sample, the new channel's. A cut that does not apply (stdin from a file,
+       another input's cut) keeps them, as it keeps the input. */
+    if (dsd_pcm_input_uses_staged_resampler(opts)) {
+        if (dropped >= 0) {
+            dsd_pcm_input_forget_staged(opts);
+        } else if (dropped == DSD_INPUT_DISCARD_READ_PAST) {
+            /* The last sample read is the new channel's, but its staged outputs and the FIR history may still hold
+               samples from before the mark: rebuilt from it alone. */
+            dsd_pcm_input_restart_staged(opts);
+        }
     }
 }
 
