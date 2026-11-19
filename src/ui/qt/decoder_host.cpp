@@ -182,7 +182,7 @@ DecoderHost::copyText(const QString& text) const {
 }
 
 QString
-DecoderHost::qtSourceNotice() const {
+DecoderHost::qtSourceNotice() {
     return qt_source_notice();
 }
 

@@ -261,7 +261,7 @@ class DecoderHost : public QObject {
     }
 
     /** @brief The licences screen's first section: where the source code of the Qt version built with is. */
-    Q_INVOKABLE QString qtSourceNotice() const;
+    Q_INVOKABLE static QString qtSourceNotice();
     /**
      * @brief The license and notice files the package carries, as the names noticeDirectory()'s index gives them
      * (notice-index.txt, one path under the folder per line), in its order; none without a folder or an index.
