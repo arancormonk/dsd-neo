@@ -275,6 +275,8 @@ typedef struct {
     size_t start;
     int fs4_shift;
     int start_phase;
+    /* A retune's input purge after the reader judged the read against the mute and before it wrote the read. */
+    int purge_before_write;
 } rtl_device_test_soapy_cf32_request;
 
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */

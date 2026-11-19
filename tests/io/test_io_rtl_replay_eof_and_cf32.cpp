@@ -3231,7 +3231,8 @@ test_soapy_cf32_read_enters_bounded(void) {
             char label[96];
             DSD_SNPRINTF(label, sizeof(label), "bounded Soapy CF32 read (fs/4 %s, phase %d)", fs4 ? "on" : "off",
                          start_phase);
-            rtl_device_test_soapy_cf32_request request{samples.data(), payload.size() / 2U, 64U, 54U, fs4, start_phase};
+            rtl_device_test_soapy_cf32_request request{
+                samples.data(), payload.size() / 2U, 64U, 54U, fs4, start_phase, 0};
             std::vector<float> output(payload.size() + 8U);
             size_t count = output.size();
             int phase = -1;
@@ -3244,6 +3245,30 @@ test_soapy_cf32_read_enters_bounded(void) {
             rc |= expect_cf32_entered_bounded(label, payload, output.data(), count, fs4, start_phase);
             rc |= expect_int_eq(label, phase, fs4 ? ((start_phase + (int)(payload.size() / 2U)) & 3) : start_phase);
         }
+    }
+    return rc;
+}
+
+/* A SoapySDR read the reader judged against the mute before a retune purged the input, and wrote after: its samples are
+ * from the old frequency, so none of them commits (they would count as the new capture's first input). A read with no
+ * purge in between commits whole. */
+static int
+test_soapy_read_across_a_retune_purge_never_commits(void) {
+    std::vector<float> samples(64U, 0.25f);
+    int rc = 0;
+    for (int purge = 0; purge <= 1; purge++) {
+        rtl_device_test_soapy_cf32_request request{samples.data(), samples.size() / 2U, 256U, 0U, 0, 0, purge};
+        std::vector<float> output(samples.size() + 8U);
+        size_t count = output.size();
+        int phase = -1;
+        const int hook_rc = rtl_device_test_soapy_cf32_ingest(&request, output.data(), &count, &phase);
+        if (hook_rc == 1) {
+            DSD_FPRINTF(stderr, "SKIP: Soapy read across a purge: no SoapySDR in this build\n");
+            return rc;
+        }
+        rc |= expect_int_eq("the read runs", hook_rc, 0);
+        rc |= expect_int_eq(purge ? "a read across a retune purge commits nothing" : "a read with no purge commits",
+                            (int)count, purge ? 0 : (int)samples.size());
     }
     return rc;
 }
@@ -4115,6 +4140,7 @@ main(void) {
     rc |= test_cf32_replay_enters_bounded(0);
     rc |= test_cf32_replay_enters_bounded(1);
     rc |= test_soapy_cf32_read_enters_bounded();
+    rc |= test_soapy_read_across_a_retune_purge_never_commits();
     rc |= test_replay_read_failure_mid_chunk_delivers_what_was_read();
     rc |= test_replay_refuses_a_capture_it_cannot_convert();
     rc |= test_replay_converts_cs16_at_the_cu8_stage();

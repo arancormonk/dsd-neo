@@ -1698,8 +1698,12 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
 }
 #endif
 
+/* Write @p num_elems CF32 pairs into the input ring as of @p generation, the ring's discard generation the reader took
+ * before it judged the block against a retune's mute: a purge since (a retune) drops the rest of the block, so samples
+ * from before a retune never commit after it. */
 static size_t
-soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot, int bounded) {
+soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot, int bounded,
+                         uint64_t generation) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1710,7 +1714,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
-        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
+        const uint64_t discard_generation = generation;
         float *p1 = NULL, *p2 = NULL;
         size_t w1 = 0U;
         size_t w2 = 0U;
@@ -1741,8 +1745,10 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
 }
 
 #ifdef USE_SOAPYSDR
+/* As soapy_write_cf32_to_ring(), for CS16 pairs. */
 static size_t
-soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot) {
+soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot,
+                         uint64_t generation) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1754,7 +1760,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
-        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
+        const uint64_t discard_generation = generation;
         float *p1 = NULL, *p2 = NULL;
         size_t w1 = 0U;
         size_t w2 = 0U;
@@ -5416,7 +5422,7 @@ soapy_handle_reconfigure_hold(struct rtl_device* dev, size_t kept_elems, int app
 static void
 soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elems,
                      const std::vector<std::complex<float>>& cf32_buf, const std::vector<int16_t>& cs16_buf,
-                     int apply_rot) {
+                     int apply_rot, uint64_t generation) {
     if (!dev || kept_elems == 0U) {
         return;
     }
@@ -5424,13 +5430,13 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
         const std::complex<float>* src = cf32_buf.data() + drop_elems;
         rtl_submit_capture_bytes(dev, src, kept_elems * sizeof(std::complex<float>));
         rtl_publish_cf32_input_level(reinterpret_cast<const float*>(src), kept_elems * 2U);
-        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot, 1);
+        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot, 1, generation);
         return;
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
     rtl_submit_capture_bytes(dev, src, kept_elems * 2U * sizeof(int16_t));
     rtl_publish_cs16_input_level(src, kept_elems * 2U, dev->soapy_cs16_full_scale);
-    (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot);
+    (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot, generation);
 }
 
 /* The SoapySDR reader's loop, while the device runs and the session does not end: 0 once either stopped it, else the
@@ -5461,6 +5467,8 @@ soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex
         }
         s->progress.fetch_add(1U, std::memory_order_relaxed);
 
+        /* Before the block is judged against a retune's mute: a retune purge from here on drops it at the write. */
+        const uint64_t generation = input_ring_discard_generation(s->input_ring);
         const int apply_rot = fs4_shift_capture_active(s);
         size_t frame_elems = (size_t)ret;
         size_t drop_elems = 0U;
@@ -5476,7 +5484,7 @@ soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex
         if (soapy_handle_reconfigure_hold(s, kept_elems, apply_rot)) {
             continue;
         }
-        soapy_submit_samples(s, drop_elems, kept_elems, *cf32_buf, *cs16_buf, apply_rot);
+        soapy_submit_samples(s, drop_elems, kept_elems, *cf32_buf, *cs16_buf, apply_rot, generation);
     }
     return 0;
 }
@@ -5606,6 +5614,8 @@ airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64
     if (!dev->run.load(std::memory_order_acquire)) {
         return;
     }
+    /* Before the block is judged against a retune's mute, as the SoapySDR reader takes it. */
+    const uint64_t generation = input_ring_discard_generation(dev->input_ring);
     if (dropped) {
         rtl_accumulate_ring_drops(dev->input_ring, (size_t)dropped * 2U);
         rtl_record_capture_mute(dev, dropped * 2U * sizeof(float), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
@@ -5635,7 +5645,7 @@ airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64
     }
     rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
     rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
-    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0);
+    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0, generation);
 }
 
 /* libairspy's single consumer owns sample ingestion; the monitor only observes
@@ -5711,7 +5721,12 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     std::vector<std::complex<float>> cf32_buf(request->pairs);
     const std::vector<int16_t> cs16_buf;
     DSD_MEMCPY(cf32_buf.data(), request->samples, request->pairs * 2U * sizeof(float));
-    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    /* Taken where the reader takes it, before the mute check (soapy_read_loop()). */
+    const uint64_t generation = input_ring_discard_generation(&ring);
+    if (request->purge_before_write) {
+        input_ring_request_discard(&ring);
+    }
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0, generation);
     size_t count = std::min(input_ring_used(&ring), *output_count);
     for (size_t i = 0; i < count; ++i) {
         output[i] = ring.buffer[(request->start + i) % ring.capacity];
@@ -5755,7 +5770,8 @@ rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* requ
     const std::vector<std::complex<float>> cf32_buf;
     std::vector<int16_t> cs16_buf(request->pairs * 2U);
     DSD_MEMCPY(cs16_buf.data(), request->samples, request->pairs * 2U * sizeof(int16_t));
-    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0,
+                         input_ring_discard_generation(&ring));
     size_t count = std::min(input_ring_used(&ring), *output_count);
     for (size_t i = 0; i < count; ++i) {
         output[i] = ring.buffer[(request->start + i) % ring.capacity];
