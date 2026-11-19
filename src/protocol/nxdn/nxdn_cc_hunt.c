@@ -12,11 +12,9 @@
  * disowns or completes a request.
  */
 
-#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -46,8 +44,6 @@ typedef struct {
     long cc_freq_hz;             // the control channel a CAC confirmed last; 0 none
     int cc_confirmed;            // a CAC confirmed cc_freq_hz (Type-C); a post-loss hunt needs it
     uint64_t foreign_request_id; // a tune in flight the hunt does not own, until it resolves
-    uint64_t return_request_id;  // a DISC or end-of-transmission return in flight (nxdn_cc_hunt_note_return())
-    double return_deadline_m;    // when that return, still unanswered, is failed
     int hunting;
     int park_pending; // 0 none; 1 park keeping the window, 2 park unarmed, once settled
     int hunt_index;
@@ -192,83 +188,6 @@ nxdn_cc_hunt_resolve(nxdn_cc_hunt_ctx* ctx, const dsd_opts* opts, double now_m) 
         }
     }
     return 1;
-}
-
-/* A return to the control channel landed (nxdn_return_to_cc_request(), at once or settled later by
-   nxdn_cc_hunt_tick_locked()): the receiver follows no voice channel any more, and what it followed there goes -- the
-   follow, the voice channel frequency, the SACCH superframe, the recent activity, an over-the-air cipher and the working
-   register with the IV the departed call received. */
-void
-nxdn_return_to_cc_landed(dsd_opts* opts, dsd_state* state) {
-    opts->trunk_is_tuned = 0;
-    nxdn_follow_release(state);
-    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-    state->nxdn_payload_mi = 0;
-    state->nxdn_iv_on_air = 0U;
-
-    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-    (void)dsd_recent_activity_clear_all(state);
-    if (state->M == 0) {
-        state->nxdn_cipher_type = 0;
-        nxdn_cipher_class_reset(state);
-    }
-}
-
-/* A receiver following a voice channel returns to the control channel it knows (state->p25_cc_freq) through the
-   control-channel tune. The request is kept and settled as the control-channel hunt keeps and settles its own
-   (nxdn_cc_hunt.c): one that lands at once releases what the receiver followed now; one in flight leaves it all
-   (trunk_is_tuned, the follow) in place until it lands, and nxdn_cc_hunt_tick_locked() settles it -- landed, the release
-   follows; failed, the return is asked again, as a failed probe is replaced. A return already in flight is not asked
-   twice; one refused or deferred leaves the receiver following, for the next DISC, end of transmission or the engine's
-   hangtime return. */
-void
-nxdn_return_to_cc_request(dsd_opts* opts, dsd_state* state) {
-    if (opts->trunk_enable != 1 || state->p25_cc_freq == 0 || opts->trunk_is_tuned != 1
-        || nxdn_cc_hunt_return_pending(state)) {
-        return;
-    }
-    uint64_t request_id = 0U;
-    const dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0, &request_id);
-    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && request_id != 0U) {
-        nxdn_cc_hunt_note_return(state, request_id);
-        return;
-    }
-    if (dsd_trunk_tune_result_is_ok(tune_result)) {
-        nxdn_return_to_cc_landed(opts, state);
-    }
-}
-
-/* Settle a DISC or end-of-transmission return in flight (nxdn_cc_hunt_note_return()) as nxdn_cc_hunt_resolve() settles a
-   probe: still in flight before its deadline, it waits; past it, it is failed. Landed, the follow it leaves is released
-   (nxdn_return_to_cc_landed()); failed, the return is asked again (nxdn_return_to_cc_request()), as a failed probe is
-   replaced. A tune begun after it decided where the receiver is: the return's outcome then changes nothing. */
-static void
-nxdn_cc_hunt_settle_return(nxdn_cc_hunt_ctx* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
-    const uint64_t request_id = ctx->return_request_id;
-    if (request_id == 0U) {
-        return;
-    }
-    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
-    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        if (now_m < ctx->return_deadline_m) {
-            return;
-        }
-        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
-        result = dsd_trunk_tuning_request_status(request_id, NULL); // a completion that won the race stands
-    }
-    ctx->return_request_id = 0U;
-    if (dsd_trunk_tuning_retuned_since(request_id)) {
-        return;
-    }
-    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
-        nxdn_return_to_cc_landed(opts, state);
-        return;
-    }
-    nxdn_cc_hunt_log(opts, "cc-return-failed");
-    nxdn_return_to_cc_request(opts, state);
 }
 
 /* A tune in flight the hunt does not own (a call's return to the control channel, a grant, an operator's tune), or 0. */
@@ -475,9 +394,6 @@ nxdn_cc_hunt_tick_locked(dsd_opts* opts, dsd_state* state) {
         return;
     }
     nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
-    if (ctx) {
-        nxdn_cc_hunt_settle_return(ctx, opts, state, dsd_decode_now_mono_s());
-    }
     if (!ctx) {
         if (!dsd_trunk_nxdn_recovery_allowed(opts, state)) {
             return;
@@ -514,22 +430,6 @@ nxdn_cc_hunt_tick_locked(dsd_opts* opts, dsd_state* state) {
     ctx->retry_after_m = 0.0;
     nxdn_cc_hunt_log(opts, ctx->cc_confirmed ? "cc-lost-hunt" : "cold-start-hunt");
     nxdn_cc_hunt_probe(ctx, opts, state, now_m);
-}
-
-void
-nxdn_cc_hunt_note_return(dsd_state* state, uint64_t request_id) {
-    nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_get(state);
-    if (!ctx) {
-        return;
-    }
-    ctx->return_request_id = request_id;
-    ctx->return_deadline_m = dsd_decode_now_mono_s() + NXDN_CC_HUNT_TUNE_TIMEOUT_S;
-}
-
-int
-nxdn_cc_hunt_return_pending(const dsd_state* state) {
-    const nxdn_cc_hunt_ctx* ctx = nxdn_cc_hunt_peek(state);
-    return ctx != NULL && ctx->return_request_id != 0U;
 }
 
 void

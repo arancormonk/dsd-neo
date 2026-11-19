@@ -10624,8 +10624,7 @@ control within the CC grace walks its channel map with the ordinary hunts.
   timed-out tune once it lands). The window (6 s) runs from the later of its arming
   and `dsd_state::nxdn_confirm_lock_m` (stamped by `nxdn_confirm_end_frame()` when a frame's own CRCs confirmed the
   transmission, never cleared); it is dropped on a voice channel and restarted while a tune the hunt does not own is in
-  flight, so a DISC return still pending (`trunk_is_tuned` drops when it lands, `nxdn_return_to_cc_landed()`) starts it
-  at that tune's completion stamp, even
+  flight, so a DISC return still pending when `trunk_is_tuned` drops starts it at that tune's completion stamp, even
   when the decoder could not tick while the stream waited for it. A context created while NXDN is named the owner
   belongs to a reused state's next run (the engine's cleanup frees the context): the owner goes back to unknown. Probes, settle tunes,
   deadlines and parking follow the DMR startup hunt's rules (a probe's 2 s dwell runs from its tune's completion); each
@@ -10958,8 +10957,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     snapshot beside `p25_vc_freq[]`, and a fresh target starts without one: a rotation between conventional P25
     targets runs neither, so the incoming carrier's call with the same target would otherwise take the other's grant.
   - The DMR trunk SM's voice-sync publication stamps its own tuned `vc_freq_hz`. The NXDN VCALL names the channel of
-    the followed route (`dsd_state::nxdn_follow`: written after an accepted tune, cleared once a DISC's or an end of
-    transmission's return to the control channel lands, kept in each trunk scan target's snapshot, and valid only while the receiver is still tuned to its
+    the followed route (`dsd_state::nxdn_follow`: written after an accepted tune, cleared by DISC's return and a Type-D
+    termination, kept in each trunk scan target's snapshot, and valid only while the receiver is still tuned to its
     frequency, `nxdn_follow_valid()`), never the last grant's (`nxdn_grant_chan`), since a duplicate assignment decoded
     while tuned moves that without moving the receiver.
   - The P25 encryption lockout's notice for a call the slot has not published (the synthetic snapshot of
@@ -12229,13 +12228,10 @@ Private per-protocol modules worth knowing about:
   the alias go, and with no voice heard for a second a receiver following a voice channel returns to the control
   channel it knows (`p25_cc_freq`, never a channel the map's rows name for it) through the control-channel tune,
   clearing the follow, the voice channel frequency, the SACCH superframe, the recent activity, an over-the-air cipher
-  and NXDN's register with the departed call's IV. The return (`nxdn_return_to_cc_request()`, in `nxdn_cc_hunt.c`) keeps
-  its tune request and settles it as the hunt settles a probe: one that lands at once releases the follow then
-  (`nxdn_return_to_cc_landed()`); one in flight (PENDING, an RTL retune) leaves `trunk_is_tuned` and the follow as they
-  are until `nxdn_cc_hunt_tick_locked()` settles it (`nxdn_cc_hunt_note_return()`; failed at
-  `NXDN_CC_HUNT_TUNE_TIMEOUT_S` if unanswered), which releases them once it landed and asks the return again once it
-  failed (a tune begun after it decides instead), so a failed return is never left gating frames with nobody to retry
-  it. A call option naming a cipher Type-D reserves (10, 11; shown as DES/AES)
+  and NXDN's register with the departed call's IV. That path, shared with DISC since main, leaves a PENDING return's
+  request unkept and clears `trunk_is_tuned` at once (`nxdn_release_and_return_to_cc()`), so a return that later fails
+  is not retried; NXDN's control-channel hunt (`nxdn_cc_hunt.c`) and the DMR, P25, TETRA and EDACS returns keep their
+  request and settle it (documented limit). A call option naming a cipher Type-D reserves (10, 11; shown as DES/AES)
   is kept like any other. No SCCH carries an IV or writes the scrambler register or IV: Type-D defines only Scramble
   (TS 1-E Table 6.6-31, TS 1-F §16), whose register the key loads at a superframe's start and which runs on four 49-bit
   VCH slots a frame, a FACCH1-stolen slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). How a frame's cipher slots

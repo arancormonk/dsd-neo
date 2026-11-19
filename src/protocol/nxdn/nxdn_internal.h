@@ -10,11 +10,9 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 
 #include <stddef.h>
@@ -153,19 +151,6 @@ nxdn_end_live_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason r
     dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     return 1;
 }
-
-/* The receiver lets go of the voice-channel call it followed: the follow, the held call and its policy row. */
-static inline void
-nxdn_follow_release(dsd_state* state) {
-    DSD_MEMSET(&state->nxdn_follow, 0, sizeof(state->nxdn_follow));
-    DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
-    (void)dsd_tg_policy_clear_active_call(state, -1);
-}
-
-/* The DISC / end-of-transmission return to the control channel (nxdn_cc_hunt.c): asked, tracked and settled with the
-   control-channel hunt's request pattern (nxdn_cc_hunt_note_return(), nxdn_cc_hunt_tick_locked()). */
-void nxdn_return_to_cc_request(dsd_opts* opts, dsd_state* state);
-void nxdn_return_to_cc_landed(dsd_opts* opts, dsd_state* state);
 
 nxdn_channel_result nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf,
                                       const uint8_t* m_data, uint8_t crc, uint8_t check);

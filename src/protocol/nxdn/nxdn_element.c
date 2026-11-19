@@ -77,6 +77,7 @@ static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex,
 static void nxdn_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id);
 static void nxdn_anchor_control_channel_from_current_tuner(const dsd_opts* opts, dsd_state* state, int only_if_missing);
 static nxdn_element_handler_fn nxdn_element_dispatch_handler(uint8_t message_type);
+static void nxdn_follow_release(dsd_state* state);
 static void nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
 static void nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                               size_t elements_bits);
@@ -501,11 +502,33 @@ nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const uint8_t* eleme
 }
 
 /* The end of a sending, a DISC's or an SCCH end of transmission's (nxdn_scch_end_of_transmission()): the alias it
-   carried goes, and a receiver following a voice channel returns to the control channel (nxdn_return_to_cc_request()). */
+   carried goes, and a receiver following a voice channel returns to the control channel (state->p25_cc_freq), clearing
+   what it followed there: the follow, the voice channel frequency, the SACCH superframe, the recent activity, an
+   over-the-air cipher and the working register with the IV the departed call received. */
 static void
 nxdn_release_and_return_to_cc(dsd_opts* opts, dsd_state* state) {
     nxdn_alias_reset(state);
-    nxdn_return_to_cc_request(opts, state);
+
+    if ((opts->trunk_enable == 1) && state->p25_cc_freq != 0 && (opts->trunk_is_tuned == 1)) {
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0, NULL);
+        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+            return;
+        }
+        opts->trunk_is_tuned = 0;
+        nxdn_follow_release(state);
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U;
+
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        (void)dsd_recent_activity_clear_all(state);
+        if (state->M == 0) {
+            state->nxdn_cipher_type = 0;
+            nxdn_cipher_class_reset(state);
+        }
+    }
 }
 
 static void
@@ -1985,6 +2008,12 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
 }
 
 /* The receiver went back to the control channel: no route, no held call. */
+static void
+nxdn_follow_release(dsd_state* state) {
+    DSD_MEMSET(&state->nxdn_follow, 0, sizeof(state->nxdn_follow));
+    DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
+    (void)dsd_tg_policy_clear_active_call(state, -1);
+}
 
 static uint8_t
 nxdn_message_type_from_bits(const uint8_t* Message) {
