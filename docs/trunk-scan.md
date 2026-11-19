@@ -1206,9 +1206,12 @@ Turning the setting on accepts these:
 - The calibration's own limits, with their figures, are under [Limits](signal-search.md#limits) in the Signal search
   guide.
 
-While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, an audio input
-that stops sending) gives up its read after 100 ms on a radio input and 500 ms on audio input. The scan's own timers
-(dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on.
+While a trunk scan or `-Y` runs, a sync search that gets no samples at all (a stalled rtl_tcp server, a network or
+stdin audio source that stops sending) gives up its read after 100 ms on a radio input, and on UDP, TCP or stdin audio
+input after about 600 ms (a first 100 ms wait that comes back empty, then 500 ms more of silence). The scan's own timers
+(dwell, visit cap, hangtime, departures) then run as on a silent channel, whether or not skip-silent is on. A sound-card
+input (PulseAudio, PortAudio, AAudio) waits for its source instead: a sound card keeps sending, silence included, but a
+source that is suspended or stops sending holds the scan, its timers included, until it sends again.
 
 Under `-Y`, whether or not skip-silent is on, only frames whose content passed their protocol's checks keep a row past
 its hangtime. Noise that keeps looking like the start of a frame, NXDN48 noise in particular, used to keep a `-Y` row on
