@@ -7403,8 +7403,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   moved with no RTL leg after it that landed (a trunk leg outside conventional scan, the io_control leg, the legacy
   leg, a conventional scan's or untyped step's RTL leg deferred or failed), the stream has no retune of its own to
   flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
-  (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, and the output ring clears under
-  a new output generation, which drops the decoder's cached symbols), on any thread under the reconfigure gate; the
+  (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, the demodulator's retained
+  state starts over as at a distant retune, `demod_reset_on_retune()`, its filter histories, a TETRA uplink's symbol
+  look-ahead, its timing and FLL estimate included, and the output ring clears under a new output generation, which
+  drops the decoder's cached symbols), on any thread under the reconfigure gate; the
   samples after the move go with it, since the stream cannot tell them apart (`ENGINE_TRUNK_RETUNE_REGRESSION`
   `check_rigctl_move_drops_the_rtl_stream()`, `check_rigctl_move_kept_when_the_rtl_leg_fails()`,
   `ENGINE_NO_CARRIER_RESET` `test_y_untyped_rigctl_move_flushes_when_the_rtl_leg_fails()`, `IO_RTL_RETUNE_PREPARE`). A

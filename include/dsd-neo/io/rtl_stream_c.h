@@ -1041,8 +1041,9 @@ void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz)
 
 /**
  * @brief Drop everything the stream holds after an external backend (a rigctl peer) moved its carrier with no retune
- * of the stream's own (issue #834): the demod thread discards the queued I/Q before its next read, and the output ring
- * is cleared under a new output generation, so the decoder drops the symbols it cached from it. What arrived after the
+ * of the stream's own (issue #834): the demod thread discards the queued I/Q before its next read, the demodulator's
+ * retained state (filter histories, symbol lookahead, timing, the FLL estimate) starts over as at a distant retune, and
+ * the output ring is cleared under a new output generation, so the decoder drops the symbols it cached from it. What arrived after the
  * move goes too, since nothing tells it apart. Taken under the reconfigure gate, as an external landing is; any thread.
  */
 void rtl_stream_discard_after_external_move(void);
