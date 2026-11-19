@@ -396,9 +396,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     const uint8_t saved_crc = state->event_crc_invalid[0];
     state->event_crc_invalid[0] |= state->event_crc_invalid[burst_slot];
     state->currentslot = 0;
-    state->dmr_mono_lane_word_slot = dmr_mono_burst_slot_known(state, burst_slot) ? (uint8_t)(burst_slot + 1U) : 0U;
     dmr_pi_run(opts, state, PI_BYTE, CRCCorrect);
-    state->dmr_mono_lane_word_slot = 0U;
     state->event_crc_invalid[0] = saved_crc;
     state->currentslot = burst_slot;
 }

@@ -41,7 +41,6 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
-#include <dsd-neo/protocol/dmr/dmr_mono_lane.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -2099,15 +2098,11 @@ mbe_dmr_slot_key_forced(const dsd_state* state, int slot, const mbe_frame_ctx_t*
 // released its call (dsd_state::dmr_enc_class_held): its encryption is unknown, as an X2-TDMA call's opening frames
 // are, until its checked LC or accepted PI header says, whatever the frame's class reads. The privacy bit or ALG ID
 // that class reads may come from data no check passed (an embedded LC whose checksum failed), and the key it selects
-// keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()). On the single-slot
-// decoder's lane, the other over-the-air slot's voice is held the same way while the lane's classification describes
-// the call of the slot it carried before (dmr_mono_lane_owned_by_other_slot()).
+// keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()).
 static void
 mbe_dmr_slot_judge(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx, mbe_frame_judgement* j) {
     j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
-    const int held = state->dmr_enc_class_held[slot] != 0U
-                     || (slot == 0 && dmr_mono_lane_owned_by_other_slot(state, dmr_mono_lane_voice_slot(state)));
-    j->crypto_unknown = held && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
+    j->crypto_unknown = state->dmr_enc_class_held[slot] != 0U && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
 }
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
