@@ -1787,6 +1787,18 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
 /* The timed -Y step's decision: the forced leaves, then the stays, then the voice gate, then the hangtime
    rule, with a quiet result (issue #834) stepping a row the voice gate still qualifies, or one the hangtime rule
    decides, before its time. Heard voice is the voice gate's alone. */
+/* Whether what the -Y row's frames said still holds it (issue #834; docs/trunk-scan.md), one rule for the frame
+   boundary and noCarrier(), beside the hangtime anchor each checks itself: -t has not passed since the last checked
+   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA, whose frames hold the row
+   while they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
+   (SCAN_QUIET_PENDING_MAX_MS at most) that adds no -t. */
+static int
+live_scanner_y_frames_hold_row(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    const double last_m =
+        state->scan_y_content_m > state->scan_y_unchecked_m ? state->scan_y_content_m : state->scan_y_unchecked_m;
+    return now_m - last_m <= (double)opts->trunk_hangtime || now_m < state->scan_y_partial_until_m;
+}
+
 static int
 no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t now) {
     const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
@@ -1811,7 +1823,9 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t no
                || (opts->scan_skip_silent && dsd_scan_voice_gate_qualifying(opts, state)
                    && no_carrier_quiet_skip(opts, state));
     }
-    return (now - state->last_cc_sync_time) > opts->trunk_hangtime || no_carrier_quiet_skip(opts, state);
+    return ((now - state->last_cc_sync_time) > opts->trunk_hangtime
+            && !live_scanner_y_frames_hold_row(opts, state, dsd_decode_now_mono_s()))
+           || no_carrier_quiet_skip(opts, state);
 }
 
 /* The -Y step evaluation with the scan quiet check's engine service around it (issue #834): the row on air is
@@ -4442,22 +4456,6 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
-/* Where the -Y step's content window starts: the latest of the landing or hangtime anchor, the last checked content, the
-   end of the latest open verdict's hold, and the last frame of a protocol with no content check (X2-TDMA, ProVoice,
-   TETRA), whose frames hold the row while they keep coming. */
-static double
-live_scanner_y_window_start_m(const dsd_state* state) {
-    double mark_m =
-        state->scan_y_content_m > state->last_cc_sync_time_m ? state->scan_y_content_m : state->last_cc_sync_time_m;
-    if (state->scan_y_partial_until_m > mark_m) {
-        mark_m = state->scan_y_partial_until_m; /* a verdict still open: wait for its hold to end */
-    }
-    if (state->scan_y_unchecked_m > mark_m) {
-        mark_m = state->scan_y_unchecked_m;
-    }
-    return mark_m;
-}
-
 /* Whether a frame boundary may end the synced-frames loop for the -Y step (issue #834 item 3): frames that keep coming
    never let noCarrier(), where the step is decided, run. Only when the hangtime rule noCarrier() applies is due (raw
    syncs of the protocols whose hunt stamps the anchor keep it fresh, as before), no content a protocol's CRC/FEC gate
@@ -4473,10 +4471,17 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
-    const double mark_m = live_scanner_y_window_start_m(state);
-    if (dsd_decode_now_mono_s() - mark_m <= (double)opts->trunk_hangtime
-        || !live_scanner_y_frame_step_may_decide(opts, state)) {
+    const double now_m = dsd_decode_now_mono_s();
+    if (now_m - state->last_cc_sync_time_m <= (double)opts->trunk_hangtime
+        || live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
+    }
+    /* What the stay's yield is for: the latest of the anchor, the last checked or unchecked frame and the open verdict's
+       deadline, so a later one of them owes a yield of its own. */
+    double mark_m = state->last_cc_sync_time_m;
+    const double marks[] = {state->scan_y_content_m, state->scan_y_unchecked_m, state->scan_y_partial_until_m};
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        mark_m = marks[i] > mark_m ? marks[i] : mark_m;
     }
     /* The stay the yield is for: the landing epoch, which a row's landing and a landing forgotten both move, so a stay
        no row landing is in force for (the scan's start frequency, a placeholder row) is tracked too. A state with no

@@ -16970,9 +16970,13 @@ enum {
     YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
     YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
     YC_STALE_NOTES,   /* a check, an open verdict and an unchecked frame the row left noted: the landing forgets all */
-    YC_UNCHECKED_FRAMES, /* X2-TDMA frames, which no check can prove: held while they come, then steps */
-    YC_UNLANDED,         /* rejected syncs on a stay no row landing is in force for (the scan's start frequency, a
+    YC_UNCHECKED_FRAMES,  /* X2-TDMA frames, which no check can prove: held while they come, then steps */
+    YC_UNLANDED,          /* rejected syncs on a stay no row landing is in force for (the scan's start frequency, a
                             placeholder row): yields at the first boundary, noCarrier() steps */
+    YC_PARTIAL_DEADLINE,  /* an open verdict's hold is a deadline: once it ended, with the anchors -t old, it yields at
+                            once, not -t later */
+    YC_SYNC_LOST_CONTENT, /* the sync lost mid-call (an M17 or D-STAR call whose syncs stamp no anchor): noCarrier()
+                             keeps the row while its last checked content is inside -t, then steps */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -17045,12 +17049,48 @@ yc_check_held_then_steps(dsd_opts* opts, dsd_state* state, int which) {
     return rc;
 }
 
+/* Issue #834: the -Y hangtime is one rule at a frame boundary and in noCarrier(): -t since the latest of the landing or
+   hangtime anchor, the last checked content and the last unchecked protocol's frame, and past an open verdict's hold,
+   a deadline of its own (docs/trunk-scan.md). */
+static int
+yc_check_one_rule(dsd_opts* opts, dsd_state* state, int which) {
+    int rc = 0;
+    const double now_m = dsd_decode_now_mono_s();
+    if (which == YC_PARTIAL_DEADLINE) {
+        rc |=
+            expect_true("open verdict deadline: held while the hold runs", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        state->scan_y_partial_until_m = now_m - 0.05; /* the hold just ended; everything else is -t old */
+        run_synced_frames(opts, state, 5, -1);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "open verdict deadline: yields once the hold ended, not -t later (frames %d)",
+                     g_frame_count);
+        rc |= expect_true(label, g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("open verdict deadline: and steps", g_rtl_tune_calls == 1);
+        return rc;
+    }
+    /* YC_SYNC_LOST_CONTENT: the frames' checked content is fresh, the hangtime anchor -t old, and the sync is lost. */
+    state->scan_y_content_m = now_m;
+    noCarrier(opts, state);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "sync lost mid-call: checked content 0 s old keeps the row (tunes %d)",
+                 g_rtl_tune_calls);
+    rc |= expect_true(label, g_rtl_tune_calls == 0);
+    state->scan_y_content_m = now_m - 11.0;
+    noCarrier(opts, state);
+    rc |= expect_true("sync lost mid-call: the content -t old, it steps", g_rtl_tune_calls == 1);
+    return rc;
+}
+
 /* What the case expects once its frames ran: 1 when a yield and a step are owed. */
 static int
 yc_check(dsd_opts* opts, dsd_state* state, int which) {
     int rc = 0;
     if (which == YC_PARTIAL || which == YC_UNCHECKED_FRAMES) {
         return yc_check_held_then_steps(opts, state, which);
+    }
+    if (which == YC_PARTIAL_DEADLINE || which == YC_SYNC_LOST_CONTENT) {
+        return yc_check_one_rule(opts, state, which);
     }
     if (which == YC_NOISE || which == YC_UNCHECKED_SET || which == YC_UNLANDED) {
         rc |= expect_true("noise: yields at the first boundary past -t", g_frame_count == 1);
@@ -17083,14 +17123,15 @@ yc_check(dsd_opts* opts, dsd_state* state, int which) {
 }
 
 /* Noted on the row left, and not read at a frame boundary before the step: a PROVEN note, an X2-TDMA frame
-   (processFrame()'s unchecked note), and a verdict still open whose hold the row left turned into an end already. */
+   (processFrame()'s unchecked note), and a verdict still open whose hold the row left turned into an end already, the
+   end reached as the step comes (a hold still running keeps the row it was noted on, noCarrier() included). */
 static void
 yc_stage_stale_notes(dsd_state* state) {
     state->scan_y_content_seq++;
     state->scan_y_unchecked_seq++;
     state->scan_y_partial_seq++;
     state->scan_y_partial_hold_ms = 900U;
-    state->scan_y_partial_until_m = dsd_decode_now_mono_s() + 0.9;
+    state->scan_y_partial_until_m = dsd_decode_now_mono_s();
 }
 
 /* The row's frames for the case: checked, unchecked, open verdicts, or rejected syncs. */
@@ -17102,7 +17143,9 @@ yc_run_frames(dsd_opts* opts, dsd_state* state, int which) {
         g_frame_unchecked = 1;
         run_synced_frames(opts, state, 5, -1);
         g_frame_unchecked = 0;
-    } else if (which == YC_PARTIAL) {
+    } else if (which == YC_SYNC_LOST_CONTENT) {
+        /* no frame: the sync is lost */
+    } else if (which == YC_PARTIAL || which == YC_PARTIAL_DEADLINE) {
         /* A hold longer than any gate's: the rule caps it at SCAN_QUIET_PENDING_MAX_MS. */
         run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
     } else {
@@ -17152,7 +17195,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_UNLANDED; which++) {
+    for (int which = YC_NOISE; which <= YC_SYNC_LOST_CONTENT; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }
