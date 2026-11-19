@@ -31,6 +31,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_mono_lane.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
@@ -113,6 +114,9 @@ typedef struct {
        any fold onto slot 0 (dmr_mono_folds_standalone_burst()). */
     uint8_t voice_slot;
     uint8_t voice_slot_known;
+    /* The over-the-air slot (1 or 2) of an LC decoded onto the single-slot decoder's lane (index 0): a standalone
+       burst's own, an embedded LC's the lane's (dmr_mono_lane_voice_slot()). 0 when not known or not on that lane. */
+    uint8_t lane_slot;
     uint8_t unk;
     uint8_t is_kenwood_sc;
     int protected_lc;
@@ -216,12 +220,27 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
 
     const int collapse = dmr_mono_folds_standalone_burst(opts, state);
     ctx->burst_slot = (uint8_t)(state->currentslot & 1);
-    ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0U);
+    /* A terminator ends the call it lands on: while lane 0 carries the other slot's call it acts on the other index
+       (1), as the other slot's does on the dual-slot decoder, never ending the lane's call
+       (dmr_mono_lane_call_is_other_slot()). A voice LC header, which names its own call, opens the call the lane carries
+       next (dmr_data_header_opened_lane_call()). */
+    uint8_t target = 0U;
+    if (collapse && type == 2U && dmr_mono_lane_call_is_other_slot(state, ctx->burst_slot)) {
+        target = 1U;
+    }
+    ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != target);
     if (collapse) {
-        state->currentslot = 0;
+        state->currentslot = target;
     }
     ctx->voice_slot = (uint8_t)(state->currentslot & 1);
     ctx->voice_slot_known = (uint8_t)(dmr_slot_is_known(state) != 0);
+    if (collapse && target == 0U) {
+        if (type == 3U) {
+            ctx->lane_slot = dmr_mono_lane_voice_slot(state);
+        } else if (dmr_mono_burst_slot_known(state, ctx->burst_slot)) {
+            ctx->lane_slot = (uint8_t)(ctx->burst_slot + 1U);
+        }
+    }
 
     ctx->slot = state->currentslot;
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
@@ -736,6 +755,18 @@ dmr_flco_ends_voice_hold(const dmr_flco_ctx* ctx) {
     return ctx->CRCCorrect == 1U && ctx->voice_slot_known && dmr_flco_lc_readable(ctx);
 }
 
+/* Whether this LC's slot's voice is held: its index's hold, or, on the single-slot decoder's lane, a classification that
+   describes the other over-the-air slot's call (dmr_mono_lane_owned_by_other_slot()). */
+static int
+dmr_flco_lane_other_slot(const dmr_flco_ctx* ctx) {
+    return ctx->voice_slot == 0U && dmr_mono_lane_owned_by_other_slot(ctx->state, ctx->lane_slot);
+}
+
+static int
+dmr_flco_voice_held(const dmr_flco_ctx* ctx) {
+    return ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U || dmr_flco_lane_other_slot(ctx);
+}
+
 static void
 dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
     if (!dmr_flco_ends_voice_hold(ctx)) {
@@ -757,7 +788,7 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
     if (ctx->unk != 1U || ctx->type == 2U) {
         return;
     }
-    if (dmr_flco_ends_voice_hold(ctx) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+    if (dmr_flco_ends_voice_hold(ctx) && dmr_flco_voice_held(ctx)) {
         dmr_enc_class_reset(ctx->state, ctx->voice_slot);
         unsigned int fid = 0U;
         unsigned int so = 0U;
@@ -785,12 +816,15 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // aggressive default the masked CRC never verifies, so those observations must repeat
     // before they can flip an established classification.
     ctx->lc_so = ctx->so;
-    if (ctx->voice_slot_known) {
+    /* On the single-slot decoder's lane, an LC of the other over-the-air slot than the call the lane's classification
+       describes changes it only by passing its check, which makes the lane its call's; one that failed says nothing of
+       either call. */
+    if (ctx->voice_slot_known && (ctx->CRCCorrect == 1U || !dmr_flco_lane_other_slot(ctx))) {
         // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
         // heal restoring what one wrote) or from a PI header naming no cipher.
-        if (ctx->CRCCorrect == 1U && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U) {
+        if (ctx->CRCCorrect == 1U && dmr_flco_voice_held(ctx)) {
             dmr_enc_class_reset(ctx->state, ctx->voice_slot);
         }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
@@ -1770,67 +1804,23 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
 }
 
 //combined flco handler (vlc, tlc, emb), minus the superfluous structs and strings
-/* The over-the-air slot (1 or 2) of an LC the single-slot decoder without trunking folds onto its one lane
-   (dmr_mono_folds_standalone_burst()): a standalone burst's (its CACH's, or its direct-mode sync word's), an embedded
-   LC's the slot its lane's voice is proven on. 0 when not known (one TACT naming the slot proves no embedded LC's: only
-   a proven slot moves the lane) or not folded. */
-static uint8_t
-dmr_flco_lane_lc_slot(const dsd_opts* opts, const dsd_state* state, uint8_t type) {
-    if (!dmr_mono_folds_standalone_burst(opts, state)) {
-        return 0U;
-    }
-    if (type == 3U) {
-        const uint8_t rx = state->dmr_mono_rx_slot;
-        return (rx == DSD_DMR_MONO_RX_TS1 || rx == DSD_DMR_MONO_RX_TS2) ? (uint8_t)(rx - DSD_DMR_MONO_RX_TS1 + 1U) : 0U;
-    }
-    const uint8_t burst_slot = (uint8_t)(state->currentslot & 1);
-    return dmr_mono_burst_slot_known(state, burst_slot) ? (uint8_t)(burst_slot + 1U) : 0U;
-}
-
-/* A checked LC of the other over-the-air slot than the single-slot lane's call is a call boundary on the lane: its
-   cipher state (ALG ID, key ID, MI and its superframe chain, vendor late-entry mode, the talkgroup key the autoload left,
-   a heal's stash) is wiped as at a terminator, and its voice held again, until that slot's own checked LC (this one,
-   when readable) or a PI header heard while the lane carries it says. The user's keys, forced ones included, stay. */
-static void
-dmr_flco_lane_boundary(dmr_flco_ctx* ctx) {
-    dmr_flco_reset_slot_crypto(ctx, 0U);
-    ctx->state->dmr_heal_valid[0] = 0U;
-    keyring_dmr_tg_autoload_forget_slot(ctx->state, 0U);
-    ctx->state->dmr_enc_class_held[0] = 1U;
-}
-
 void
 dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
          uint8_t type) {
-    /* The single-slot lane carries one call (dsd_state::dmr_mono_lane_slot). An LC of the other slot moves it only by
-       passing its check, as a new call's voice LC; one that failed, a terminator and a rekey in Hytera Enhanced shape
-       (read past its FEC failure) are the other slot's and touch nothing of the lane: shown, not acted on. */
-    const uint8_t lc_slot = dmr_flco_lane_lc_slot(opts, state, type);
-    const uint8_t lane_slot = state->dmr_mono_lane_slot;
-    const int other_slot = lc_slot != 0U && lane_slot != 0U && lc_slot != lane_slot;
-    const int checked = type != 2U && CRCCorrect == 1U && *IrrecoverableErrors == 0U;
-    if (other_slot && !checked) {
-        DSD_FPRINTF(stderr, "%s\n Slot %u LC not acted on: the single-slot lane carries slot %u's call%s", KYEL,
-                    (unsigned)lc_slot, (unsigned)lane_slot, KNRM);
-        return;
-    }
     dmr_flco_ctx ctx;
     dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
-    if (other_slot) {
-        dmr_flco_lane_boundary(&ctx);
-    }
     // The burst handler indexed its CRC scope by the TACT slot. Mono mode re-homes this
-    // LC onto slot 0, so its CRC verdict must follow it (issue #552 item 3). OR and restore
-    // preserve an outer verdict on that index, including across the early-return paths.
+    // LC onto another index (slot 0, or slot 1 for the other slot's terminator), so its CRC
+    // verdict must follow it (issue #552 item 3). OR and restore preserve an outer verdict on
+    // that index, including across the early-return paths.
     const uint8_t saved = state->event_crc_invalid[ctx.slot_idx];
     if (ctx.slot_collapsed) {
         state->event_crc_invalid[ctx.slot_idx] |= state->event_crc_invalid[ctx.burst_slot];
     }
+    state->dmr_mono_lane_word_slot = ctx.lane_slot;
     dmr_flco_run(&ctx);
+    state->dmr_mono_lane_word_slot = 0U;
     state->event_crc_invalid[ctx.slot_idx] = saved;
-    if (lc_slot != 0U && checked) {
-        state->dmr_mono_lane_slot = lc_slot;
-    }
 }
 
 static const char*

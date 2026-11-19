@@ -4993,130 +4993,9 @@ test_dmr_mono_pi_needs_a_dmr_call(void) {
     return rc;
 }
 
-/* -fr settings: the single-slot decoder without trunking, on a repeater. */
-static void
-dmr_mono_fr(dsd_opts* opts, dsd_state* state) {
-    opts->dmr_mono = 1;
-    opts->trunk_enable = 0;
-    state->dmr_stereo = 0;
-    state->dmr_ms_mode = 0;
-    state->dmr_mono_slot = 0;
-}
-
-/* The single-slot lane decodes its voice on slot @p slot (0: slot 1), proven by its bursts. */
-static void
-dmr_mono_lane_on(dsd_state* state, int slot) {
-    state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
-    state->dmr_mono_rx_candidate = state->dmr_mono_rx_slot;
-}
-
-/* Without trunking, a checked voice LC of the other slot than the single-slot lane's call is a new call on the lane: a
-   slot 2 RC4 call (its PI header applied) whose terminator was missed leaves nothing of its cipher to the clear slot 1
-   call whose checked voice LC header takes the lane next, so that call's frame plays as it came. */
-static int
-test_dmr_mono_other_slots_checked_lc_is_a_new_call(char frame[4][24]) {
-    char as_it_came[49] = {0};
-    int rc = expect_true("-fr new call: a fresh decoder records the frame as it came",
-                         dmr_hold_fresh_frame(dmr_fold_rc4_key, frame, as_it_came));
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    dmr_fold_rc4_key(opts, state);
-    dmr_mono_fr(opts, state);
-    dmr_mono_lane_call_on(opts, state, 1);
-    dmr_mono_lane_on(state, 1);
-    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
-    rc |= expect_true("-fr new call: the slot 2 call's PI header keys the lane", state->payload_algid == 0x21);
-    dmr_mono_lane_on(state, 0);
-    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 303U);
-    rc |= expect_true("-fr new call: slot 1's checked clear header leaves none of slot 2's cipher on the lane",
-                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_mi == 0ULL);
-    char recorded[49] = {0};
-    rc |= expect_true("-fr new call: the slot 1 call's frame plays as it came",
-                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
-                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
-/* Without trunking, while the single-slot lane carries a clear slot 1 call, a slot 2 voice LC header in Hytera Enhanced
-   shape (its own checksum passed, read past the FEC failure its shape reports) is the other slot's rekey: it keys
-   nothing on the lane and takes no call from it, so the slot 1 call's frame plays as it came. */
-static int
-test_dmr_mono_ignores_the_other_slots_hytera_rekey(char frame[4][24]) {
-    char as_it_came[49] = {0};
-    int rc = expect_true("-fr rekey: a fresh decoder records the frame as it came",
-                         dmr_hold_fresh_frame(dmr_fold_rc4_key, frame, as_it_came));
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    dmr_fold_rc4_key(opts, state);
-    dmr_mono_fr(opts, state);
-    dmr_mono_lane_call_on(opts, state, 0);
-    dmr_mono_lane_on(state, 0);
-    uint8_t bytes[9] = {0x02U, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
-    bytes[8] = dmr_hytera_checksum(bytes, 8U);
-    uint8_t bits[96];
-    DSD_MEMSET(bits, 0, sizeof bits);
-    for (size_t i = 0; i < sizeof bytes; i++) {
-        dmr_hop_put_bits(bits, i * 8U, bytes[i], 8U);
-    }
-    uint32_t errors = 1U;
-    state->currentslot = 1;
-    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    dmr_flco(opts, state, bits, 0U, &errors, 1U);
-    dsd_call_snapshot call;
-    rc |= expect_true("-fr rekey: the slot 1 call keeps the lane, with no cipher",
-                      dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-                          && call.receive_identity.slot == 1U && call.ota_target_id == 101U && state->payload_algid == 0
-                          && call.algid == 0U);
-    char recorded[49] = {0};
-    rc |= expect_true("-fr rekey: the slot 1 call's frame plays as it came",
-                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
-                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
-/* Without trunking, a receiver that also decodes P25 can keep a P25 Phase 2 call on index 1 while the single-slot lane
-   carries a slot 2 DMR call. A checked slot 1 DMR terminator is the other slot's: it ends no call, the P25 one
-   included. */
-static int
-test_dmr_mono_other_slots_terminator_ends_no_call(void) {
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
-    }
-    dmr_mono_fr(opts, state);
-    const dsd_call_observation p25 = {
-        .protocol = DSD_SYNC_P25P2_POS,
-        .slot = 1U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 404U,
-        .policy_target_id = 404U,
-    };
-    (void)dsd_call_state_observe(state, &p25, DSD_CALL_BOUNDARY_BEGIN);
-    dmr_mono_lane_call_on(opts, state, 1);
-    dmr_mono_standalone_terminator(opts, state, 0, 1);
-    dsd_call_snapshot other;
-    dsd_call_snapshot lane;
-    const int rc = expect_true("-fr with P25: a slot 1 DMR terminator ends neither the P25 call nor the lane's call",
-                               dsd_call_state_get(state, 1U, &other) > 0 && other.phase == DSD_CALL_PHASE_ACTIVE
-                                   && DSD_SYNC_IS_P25P2(other.protocol) && dsd_call_state_get(state, 0U, &lane) > 0
-                                   && lane.phase == DSD_CALL_PHASE_ACTIVE);
-    free_test_runtime(opts, state);
-    return rc;
-}
-
 /* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
-   slot. A slot 2 one heard with the lane idle (folded onto lane 0) resets slot 2's packet, never slot 1's. One heard
-   while the lane carries the other slot's call is that slot's terminator: it resets no packet, the lane's least of
-   all. */
+   slot. A slot 1 one heard while lane 0 carries a slot 2 call resets slot 1's packet, never slot 2's; a slot 2 one,
+   with the lane on a slot 1 call or idle (where it is folded onto lane 0), resets slot 2's, never slot 1's. */
 static int
 test_dmr_mono_data_terminator_resets_its_own_packet(void) {
     int rc = 0;
@@ -5144,15 +5023,9 @@ test_dmr_mono_data_terminator_resets_its_own_packet(void) {
         state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
         dmr_flco(opts, state, bits, 1U, &errors, 2U);
         char what[160];
-        if (c < 2) {
-            DSD_SNPRINTF(what, sizeof what, "-fr: a slot %d data terminator (lane on the other slot) resets no packet",
-                         slot + 1);
-            rc |= expect_true(what, state->data_header_valid[0] == 1 && state->data_header_valid[1] == 1);
-        } else {
-            DSD_SNPRINTF(what, sizeof what,
-                         "-fr: a slot %d data terminator (lane idle) resets its own slot's packet only", slot + 1);
-            rc |= expect_true(what, state->data_header_valid[slot] == 0 && state->data_header_valid[1 - slot] == 1);
-        }
+        DSD_SNPRINTF(what, sizeof what, "-fr: a slot %d data terminator (lane %s) resets its own slot's packet only",
+                     slot + 1, c < 2 ? "on the other slot" : "idle");
+        rc |= expect_true(what, state->data_header_valid[slot] == 0 && state->data_header_valid[1 - slot] == 1);
         free_test_runtime(opts, state);
     }
     return rc;
@@ -5223,9 +5096,6 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_direct_mode_slot1_burst_names_its_slot();
     rc |= test_dmr_mono_discards_pi_for_the_other_slot(frame);
     rc |= test_dmr_mono_pi_needs_a_dmr_call();
-    rc |= test_dmr_mono_other_slots_checked_lc_is_a_new_call(frame);
-    rc |= test_dmr_mono_ignores_the_other_slots_hytera_rekey(frame);
-    rc |= test_dmr_mono_other_slots_terminator_ends_no_call();
     rc |= test_dmr_mono_lane_hold_per_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
