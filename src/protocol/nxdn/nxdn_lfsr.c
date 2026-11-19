@@ -31,6 +31,7 @@ LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
     }
 
     state->payload_miN = (unsigned long long)(lfsr & 0x7FFF);
+    state->nxdn_iv_on_air = 0U; /* the register now holds key stream, no received IV */
 }
 
 void

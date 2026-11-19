@@ -13,7 +13,6 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
@@ -1847,26 +1846,6 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
     return rc;
 }
 
-/* The IV an NXDN DES or AES call received (a VCALL_IV of the open call, <dsd-neo/core/nxdn_received_iv.h>): its
-   keystream starts only from one, for the active NXDN call on this carrier. Opens that call and takes the working IV
-   (and AES's expanded one) as the received IV. */
-static void
-hold_nxdn_received_iv(dsd_state* s) {
-    const dsd_call_observation call = {
-        .protocol = DSD_SYNC_NXDN_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 123U,
-        .policy_target_id = 123U,
-    };
-    (void)dsd_call_state_observe(s, &call, DSD_CALL_BOUNDARY_BEGIN);
-    s->nxdn_rx_iv = s->payload_miN;
-    s->nxdn_rx_iv_valid = 1U;
-    s->nxdn_rx_iv_transmission = dsd_nxdn_active_call_transmission(s);
-    s->nxdn_rx_iv_carrier = s->carrier_seq;
-    DSD_MEMCPY(s->nxdn_rx_iv_aes, s->aes_iv, sizeof(s->nxdn_rx_iv_aes));
-}
-
 static int
 test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     int rc = 0;
@@ -1925,7 +1904,6 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     state.nxdn_new_iv = 1;
     state.R = 0x0102030405ULL;
     state.payload_miN = 0x1122334455667788ULL;
-    hold_nxdn_received_iv(&state);
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
@@ -1938,7 +1916,6 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     rc |= expect_eq_int("nxdn-cipher2 errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("nxdn-cipher2 status", strcmp(state.err_str, expected_err_str), 0);
     rc |= expect_eq_mem("nxdn-cipher2 temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
-    dsd_state_ext_free_all(&state);
 
     return rc;
 }
@@ -2034,7 +2011,6 @@ test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset(void) {
         state.aes_key[i] = (uint8_t)(0xA0U + (i * 3U));
     }
     aes_ofb_keystream_output(state.aes_iv, state.aes_key, expected_keystream, DSD_AES_KEY_256, 15);
-    hold_nxdn_received_iv(&state);
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
@@ -2044,7 +2020,6 @@ test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset(void) {
     rc |= expect_bits_match("nxdn-cipher3 state voice offset", state.ks_bitstreamL, expected_keystream + 16U,
                             14U * 16U * 8U);
     rc |= expect_bits_differ("nxdn-cipher3 rejects old offset", state.ks_bitstreamL, expected_keystream + 8U, 64U);
-    dsd_state_ext_free_all(&state);
 
     return rc;
 }

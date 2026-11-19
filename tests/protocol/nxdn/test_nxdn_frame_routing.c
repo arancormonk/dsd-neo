@@ -115,6 +115,10 @@ static int g_stub_scch_invalid;
 static unsigned long long g_stub_scch_places_register;
 static int g_positioned_part = -1;
 static unsigned g_positioned_cipher;
+/* A checked superframe SACCH's VCALL selects Scramble after the SACCH placed the register (its last segment). */
+static int g_stub_sacch_selects_scramble;
+/* The FACCH1 is a control channel's CCH_INFO: a Type-C site (as dsd_nxdn_note_type_c() notes it). */
+static int g_stub_facch_notes_type_c;
 /* The location category the FACCH1 decoder read. */
 static char g_facch_category[32];
 
@@ -166,6 +170,8 @@ reset_state(void) {
     g_stub_scch_places_register = 0ULL;
     g_positioned_part = -1;
     g_positioned_cipher = 0U;
+    g_stub_sacch_selects_scramble = 0;
+    g_stub_facch_notes_type_c = 0;
     g_facch_category[0] = '\0';
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
@@ -289,7 +295,13 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     (void)opts;
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
-        state->payload_miN = g_stub_scch_places_register; /* a checked SACCH places it as a checked SCCH does */
+        /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) places the register and keeps its position for
+           the frame, here the first. */
+        nxdn_prepare_sacch_payload_seed(state, 0);
+        state->nxdn_frame_seed_part = 1U;
+        if (g_stub_sacch_selects_scramble) {
+            state->nxdn_cipher_type = 1U;
+        }
     }
     g_sacch_calls++;
     g_sacch_frame_channel = state->nxdn_frame_channel;
@@ -310,7 +322,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         }
     }
     if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
-        state->nxdn_scch_frame_part = 1U; /* a verified SCCH at the superframe's first frame */
+        state->nxdn_frame_seed_part = 1U; /* a verified SCCH at the superframe's first frame */
     }
     if (g_stub_scch_tune >= 0) {
         dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq});
@@ -350,6 +362,13 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     g_facch_frame_channel = state->nxdn_frame_channel;
     DSD_SNPRINTF(g_facch_category, sizeof(g_facch_category), "%s", state->nxdn_location_category);
     g_facch_part_mask |= 1 << part;
+    if (g_stub_facch_ok && g_stub_facch_notes_type_c) {
+        /* dsd_nxdn_note_type_c(): the site is Type-C, and the SCCH's "Type-D" layout goes. */
+        state->nxdn_site.type_c = 1U;
+        if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+            DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+        }
+    }
     g_last_facch_bit = bits[0];
     g_last_facch_reliab = reliab[0];
 }
@@ -1127,21 +1146,18 @@ test_stolen_slots_step_after_the_scch_places_the_register(void) {
 }
 
 /* A frame whose signalling retuned the receiver (here its SCCH followed a busy message): the rest of it was read on the
-   carrier left, so its cipher slots are not stepped on the next carrier's key (a data frame's four, here), and the IV
-   the carrier left's call received is dropped. */
+   carrier left, so its cipher slots are not stepped on the next carrier's key (a data frame's four, here). */
 static int
 test_retuned_frame_steps_no_cipher(void) {
     reset_state();
     g_state.nxdn_cipher_type = 1;
     g_state.R = 0x5A5AULL;
     g_state.payload_miN = 777ULL;
-    g_state.nxdn_rx_iv_valid = 1U;
     g_stub_scch_tune = DSD_TRUNK_TUNE_RESULT_OK;
     (void)route_frame(0x62U); /* Type-D RTCH2: SCCH, no voice */
     int rc = 0;
     rc |= expect_int("retuned frame: no cipher step", g_lfsr_calls, 0);
     rc |= expect_u64("retuned frame: register kept", g_state.payload_miN, 777ULL);
-    rc |= expect_int("retuned frame: IV dropped", g_state.nxdn_rx_iv_valid, 0);
     dsd_trunk_tuning_requests_reset();
     return rc;
 }
@@ -1171,6 +1187,64 @@ test_scch_position_uses_the_frames_cipher(void) {
     (void)route_frame(0x72U);
     rc |= expect_int("no key: nothing placed", g_positioned_part, -1);
     rc |= expect_u64("no key: the working value kept", g_state.payload_miN, 0x234567ULL);
+    return rc;
+}
+
+/* A Type-D frame whose four VCH slots are all stolen (two FACCH1 halves, no voice) still takes its four PN slots (NXDN
+   TS 1-F Fig 16.4-1): under a forced scrambler (-4) with its key, the frame its verified SCCH placed selects Scramble
+   first, so the placement and the four-slot step are not lost. */
+static int
+test_forced_scramble_on_a_fully_stolen_frame(void) {
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_stub_scch_ok = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x62U); /* Type-D RTCH2: SCCH, FACCH1 in both halves */
+    int rc = 0;
+    rc |= expect_int("fully stolen: placed at the first frame", g_positioned_part, 0);
+    rc |= expect_int("fully stolen: placed as Scramble", (int)g_positioned_cipher, 1);
+    rc |= expect_u64("fully stolen: four slots stepped", g_state.payload_miN, 1004ULL);
+    return rc;
+}
+
+/* Type-C late entry: the superframe SACCH that completes the VCALL selecting Scramble placed the register before that
+   VCALL was decoded. The frame places it again with the cipher it ended on, before its leading FACCH1 takes two slots,
+   so the voice starts two slots in (TS 1-D Fig 5.4-2). */
+static int
+test_type_c_scramble_placed_after_its_vcall(void) {
+    reset_state();
+    g_state.R = 0x5A5AULL;
+    g_state.nxdn_cipher_type = 0;
+    g_state.payload_miN = 0ULL;
+    g_stub_sacch_ok = 1;
+    g_stub_sacch_selects_scramble = 1;
+    g_stub_scch_places_register = 1000ULL;
+    (void)route_frame(0x32U);
+    int rc = 0;
+    rc |= expect_int("type-c late scramble: placed with the vcall's cipher", (int)g_positioned_cipher, 1);
+    rc |= expect_u64("type-c late scramble: stolen slots after the placement", g_state.payload_miN, 1002ULL);
+    return rc;
+}
+
+/* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a
+   control channel's CCH_INFO, which verifies a Type-C site: the rollback undoes only the SCCH's layout, never the
+   Type-C correction, so later VCALLs and IVs are not read with Type-D's 11-bit IDs. */
+static int
+test_rollback_keeps_a_verified_type_c(void) {
+    reset_state();
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    g_state.nxdn_site.type_c = 0U;
+    g_stub_scch_ok = 1;
+    g_stub_scch_names_type_d = 1;
+    g_stub_scch_invalid = 1;
+    g_stub_facch_ok = 1;
+    g_stub_facch_notes_type_c = 1;
+    (void)route_frame(0x73U);
+    int rc = 0;
+    rc |= expect_int("rollback: type-c verified", g_state.nxdn_site.type_c, 1);
+    rc |= expect_string("rollback: no type-d layout after a type-c correction", g_state.nxdn_location_category, " ");
     return rc;
 }
 
@@ -1226,6 +1300,9 @@ main(void) {
     rc |= test_stolen_slots_step_after_the_scch_places_the_register();
     rc |= test_retuned_frame_steps_no_cipher();
     rc |= test_scch_position_uses_the_frames_cipher();
+    rc |= test_forced_scramble_on_a_fully_stolen_frame();
+    rc |= test_type_c_scramble_placed_after_its_vcall();
+    rc |= test_rollback_keeps_a_verified_type_c();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     dsd_decode_clock_use_system();
 

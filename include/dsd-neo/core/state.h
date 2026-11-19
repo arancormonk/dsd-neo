@@ -2157,32 +2157,19 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
-    /* The IV an NXDN VCALL_IV carried over the air (<dsd-neo/core/nxdn_received_iv.h>), never the working register
-       payload_miN, which a scrambled call loads from the key. It counts only while nxdn_rx_iv_valid, for the call
-       transmission it was received in (nxdn_rx_iv_transmission, dsd_call_snapshot_transmission()) on the carrier it
-       was received on (nxdn_rx_iv_carrier, dsd_state::carrier_seq): nothing is kept for a call not yet open, and a
-       call, target, Type-D destination prefix (nxdn_dest_prefix) or carrier change drops it. */
-    unsigned long long nxdn_rx_iv;
-    uint64_t nxdn_rx_iv_transmission;
-    uint32_t nxdn_rx_iv_carrier;
-    uint8_t nxdn_rx_iv_valid;
-    /* The Type-D destination prefix (+ 1; 0: unknown) Type-D signalling named for the call transmission
-       nxdn_dest_prefix_transmission: an ID is unique only within its prefix (TS 1-E §6.6.7, §6.6.8), so another prefix
-       is another destination. */
-    uint8_t nxdn_dest_prefix;
-    uint64_t nxdn_dest_prefix_transmission;
-    uint8_t nxdn_rx_iv_aes[16]; /* nxdn_rx_iv expanded to AES's 128-bit IV (TS 1-D §5.3.3.2), made when it came */
-    /* The call transmission whose received IV started the DES/AES keystream now running (dsd_mbe.c), 0 for none: the
-       voice of that call is decryptable from that session's first word on, never before (TS 1-D §5.4.4.2(4)). */
-    uint64_t nxdn_ks_session_transmission;
+    /* 1 while payload_miN holds the IV a CRC-verified VCALL_IV carried over the air; 0 once the scrambler loaded the
+       register from the key or ran it (nxdn_reset_payload_seed_if_forced(), LFSRN()). Only such an IV is ever an NXDN
+       call's MI (nxdn_published_mi()): the key-loaded register never is. */
+    uint8_t nxdn_iv_on_air;
     /* Set while the frame being decoded carried an SCCH whose CRC-7 passed with content NXDN TS 1-E does not define
        (a reserved prefix, an INFO1 with its Spare bit set): the Type-D layout it names stays with the frame
        (nxdn_decode_frame_channels()). */
     uint8_t nxdn_scch_frame_invalid;
-    /* The superframe position (part + 1; 0: none) a CRC-verified, valid SCCH of the frame being decoded gave
-       (nxdn_deperm_scch_soft()): the frame places the scrambler register there once its signalling and key selection
-       are done, before its stolen or voice slots step it (nxdn_frame()). */
-    uint8_t nxdn_scch_frame_part;
+    /* The superframe position (part + 1; 0: none) the frame being decoded gave: a CRC-verified, valid SCCH's
+       (nxdn_deperm_scch_soft()) or a superframe SACCH's (nxdn_handle_sacch_superframe()). The frame places the
+       scrambler register there once its signalling and key selection are done, before its stolen or voice slots step
+       it (nxdn_frame()). */
+    uint8_t nxdn_frame_seed_part;
     uint16_t nxdn_pn95_seed;
 
     /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,

@@ -34,7 +34,6 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
@@ -3615,7 +3614,6 @@ reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
     state->payload_algid = state->payload_algidR = 0;
     state->payload_keyid = state->payload_keyidR = 0;
     state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
-    dsd_nxdn_received_iv_clear(state);
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     if (clear_trunk_vc) {

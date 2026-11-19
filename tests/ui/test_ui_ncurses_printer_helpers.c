@@ -5099,8 +5099,8 @@ test_withheld_data_without_a_call(void) {
 }
 
 /* The NXDN encryption line: a scrambled call's register is loaded from the key (NXDN TS 1-F §16.4.2), so its "Seed" is
-   shown only through the key redaction, as the key is. A DES or AES call's "IV" is the one the call received (its MI),
-   never the working register. */
+   shown only through the key redaction, as the key is. A DES or AES call's "IV" is one received over the air, never the
+   register the scrambler left. */
 static void
 test_nxdn_encryption_line_redacts_the_seed(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -5122,46 +5122,17 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
     opts->show_keys = 0;
     state->nxdn_cipher_type = 2;
     state->payload_miN = 0x5A5AULL; /* a register the scrambler left */
+    state->nxdn_iv_on_air = 0U;
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
     assert_capture_contains("IV: none");
     assert(strstr(g_printw_capture, "5A5A") == NULL);
-    const dsd_call_observation nxdn = {.protocol = DSD_SYNC_NXDN_POS,
-                                       .slot = 0,
-                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
-                                       .ota_target_id = 100,
-                                       .policy_target_id = 100};
-    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    /* The call's MI alone (here set by hand) is no received IV; the IV the open call received on this carrier is. */
-    const dsd_call_crypto_update crypto = {
-        .classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
-        .algid = 2U,
-        .mi = 0x2222222222222222ULL,
-    };
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
-    reset_printw_capture();
-    ui_render_nxdn_encryption_line(opts, state);
-    assert_capture_contains("IV: none");
-    dsd_call_snapshot call;
-    assert(dsd_call_state_get(state, 0U, &call) > 0);
-    state->nxdn_rx_iv = 0x1122334455667788ULL;
-    state->nxdn_rx_iv_valid = 1U;
-    state->nxdn_rx_iv_transmission = dsd_call_snapshot_transmission(&call);
-    state->nxdn_rx_iv_carrier = state->carrier_seq;
+    /* An IV a VCALL_IV carried is shown. */
+    state->payload_miN = 0x1122334455667788ULL;
+    state->nxdn_iv_on_air = 1U;
     reset_printw_capture();
     ui_render_nxdn_encryption_line(opts, state);
     assert_capture_contains("IV: 1122334455667788");
-    /* On another carrier, or once the call ended, it is not the line's to show. */
-    state->carrier_seq++;
-    reset_printw_capture();
-    ui_render_nxdn_encryption_line(opts, state);
-    assert_capture_contains("IV: none");
-    state->carrier_seq--;
-    assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
-    reset_printw_capture();
-    ui_render_nxdn_encryption_line(opts, state);
-    assert_capture_contains("IV: none");
-    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
 }

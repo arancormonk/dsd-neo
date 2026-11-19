@@ -10,7 +10,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/p25_patch.h>
@@ -1092,7 +1091,6 @@ init_state_protocol_defaults_b(dsd_state* state) {
 
     //NXDN, when a new IV has arrived
     state->nxdn_new_iv = 0;
-    dsd_nxdn_received_iv_clear(state);
 
     /* Cleared directly rather than through provoice_confirm_reset(): core must not call into
      * protocol modules. */

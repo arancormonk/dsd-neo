@@ -706,19 +706,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/dmr_key_map.h
   C
 )
-# The IV an NXDN call received over the air, apart from the working register.
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_core_nxdn_received_iv
-  HEADERS_PUBLIC_CORE_NXDN_RECEIVED_IV
-  dsd-neo/core/nxdn_received_iv.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_core_nxdn_received_iv_cxx
-  HEADERS_PUBLIC_CORE_NXDN_RECEIVED_IV_CXX
-  dsd-neo/core/nxdn_received_iv.h
-  CXX
-)
 # The trunk-scan list spec opts, the next start and the user config share (issue #697).
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_trunk_scan_lists

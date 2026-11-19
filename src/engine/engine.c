@@ -18,7 +18,6 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
@@ -3118,7 +3117,6 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->bit_counterR = 0;
     state->xl_is_hdu = 0;
     state->nxdn_new_iv = 0;
-    dsd_nxdn_received_iv_clear(state);
 }
 
 static void
@@ -3691,9 +3689,6 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
     // Nor a span measured on the symbol clock: the symbols the old target produced are not time elapsed on the new one
     // (a DMR slot's missed superframes, issue #729).
     state->symbol_clock_epoch++;
-    // Nor an NXDN call's received IV or the keystream session started from it: it counts only on the carrier it came on
-    // (<dsd-neo/core/nxdn_received_iv.h>), a stream gap included.
-    dsd_nxdn_received_iv_clear(state);
     // Nor the proof that the carrier was P25, which the CQPSK timing loop's post-lock gain follows: the next validated
     // frame gives it again, after a stream gap too.
     dsd_rtl_stream_metrics_hook_forget_p25_proof();

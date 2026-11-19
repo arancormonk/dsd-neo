@@ -93,6 +93,7 @@ void
 nxdn_reset_payload_seed_if_forced(dsd_state* state) {
     if ((state->nxdn_cipher_type == 1 || state->M == 1) && dsd_key_scalar_present(state, 0)) {
         state->payload_miN = state->R;
+        state->nxdn_iv_on_air = 0U; /* loaded from the key: never an MI */
     }
 }
 
@@ -335,6 +336,9 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
     nxdn_prepare_sacch_payload_seed(state, part_of_frame);
 
     if (crc == check) {
+        /* A verified segment's position stays with the frame too: a VCALL this segment completes may select Scramble or
+           its key only after the placing above, and the frame places the register again with them (nxdn_frame()). */
+        state->nxdn_frame_seed_part = (uint8_t)(part_of_frame + 1);
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         if (nxdn_confirm_is_confirmed(state)) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
@@ -841,7 +845,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
         .algid = cipher,
         .kid = 0U,
         /* DCR carries no IV; the working register a scrambled call loads from the key is never an MI. */
-        .mi = nxdn_live_call_received_mi(state),
+        .mi = nxdn_published_mi(state),
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
@@ -1525,7 +1529,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
            and the register runs on. */
         if (valid) {
             const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
-            state->nxdn_scch_frame_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
+            state->nxdn_frame_seed_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
             nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
             nxdn_confirm_note_scch(state);
         }

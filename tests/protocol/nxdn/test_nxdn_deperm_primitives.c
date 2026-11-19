@@ -9,7 +9,6 @@
  */
 
 #include <dsd-neo/core/access_code.h>
-#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -18,6 +17,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
@@ -1340,7 +1340,7 @@ test_scch_crc_gates_scrambler_reload(void) {
         make_scch_soft_bits(bits, payload, corrupt);
         nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
         rc |= expect_int(corrupt ? "scch-bad-crc-no-position" : "scch-good-crc-first-frame",
-                         state->nxdn_scch_frame_part, corrupt ? 0 : 1);
+                         state->nxdn_frame_seed_part, corrupt ? 0 : 1);
         rc |= expect_int("scch-decoder-leaves-register", state->payload_miN == 0x1234ULL ? 1 : 0, 1);
         free_fixture(opts, state);
     }
@@ -1356,8 +1356,8 @@ test_scch_crc_gates_scrambler_reload(void) {
     state->payload_miN = 0x1234ULL;
     make_scch_soft_bits(bits, payload, 0);
     nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
-    rc |= expect_int("scch-good-crc-third-frame", state->nxdn_scch_frame_part, 3);
-    nxdn_prepare_sacch_payload_seed(state, state->nxdn_scch_frame_part - 1);
+    rc |= expect_int("scch-good-crc-third-frame", state->nxdn_frame_seed_part, 3);
+    nxdn_prepare_sacch_payload_seed(state, state->nxdn_frame_seed_part - 1);
     rc |=
         expect_int("scch-placement-two-frames-on", state->payload_miN == advance_nxdn_lfsr_seed(key, 2 * 4) ? 1 : 0, 1);
     free_fixture(opts, state);
@@ -1365,9 +1365,9 @@ test_scch_crc_gates_scrambler_reload(void) {
 }
 
 /*
- * An SCCH whose content NXDN TS 1-E does not define -- an INFO3 with the reserved prefix 31 (Table 6.6-4), an INFO1 with
- * its Spare bit set -- passes its CRC-7 but is no evidence of a transmission (Table 9.1-1): frames of them alone never
- * confirm one. Valid SCCHs (the control) do.
+ * An SCCH whose content NXDN TS 1-E does not define -- an INFO3 with the reserved prefix 31 (Table 6.6-4), an INFO1 or
+ * an INFO3 with its Spare bit set (Figs 6.5-2, 6.5-3) -- passes its CRC-7 but is no evidence of a transmission (Table
+ * 9.1-1): frames of them alone never confirm one. Valid SCCHs (the control) do.
  */
 static int
 test_scch_undefined_content_confirms_nothing(void) {
@@ -1378,7 +1378,7 @@ test_scch_undefined_content_confirms_nothing(void) {
     uint8_t reliab[60];
     int rc = 0;
     DSD_MEMSET(reliab, 255, sizeof(reliab));
-    for (int kind = 0; kind < 3; kind++) {
+    for (int kind = 0; kind < 4; kind++) {
         DSD_MEMSET(payload, 0, sizeof(payload));
         if (kind == 2) {
             write_bits_msb(payload, 0U, 2U, 3U); /* INFO1 */
@@ -1388,6 +1388,7 @@ test_scch_undefined_content_confirms_nothing(void) {
             write_bits_msb(payload, 3U, 5U, 2U);
             write_bits_msb(payload, 8U, 5U, kind == 0 ? 31U : 3U);
             write_bits_msb(payload, 13U, 11U, 1234U);
+            payload[24] = kind == 3 ? 1U : 0U; /* Spare */
         }
         if (alloc_fixture(&opts, &state) != 0) {
             return 1;
@@ -1403,6 +1404,7 @@ test_scch_undefined_content_confirms_nothing(void) {
         }
         const char* tag = kind == 0   ? "scch-reserved-prefix-confirms-nothing"
                           : kind == 2 ? "scch-spare-info1-confirms-nothing"
+                          : kind == 3 ? "scch-spare-info3-confirms-nothing"
                                       : "scch-valid-confirms";
         rc |= expect_int(tag, nxdn_confirm_is_confirmed(state), kind == 1 ? 1 : 0);
         free_fixture(opts, state);
@@ -1428,7 +1430,7 @@ make_vcall_elements(uint8_t bits[96], uint8_t message_type, uint16_t source, uin
  * The MI a call publishes reaches the canonical call, event history and from there the API feed. An NXDN call's MI is
  * only an IV it received over the air: a scrambled call's (whose working register is the key itself, then key stream,
  * NXDN TS 1-F §16.4.2) is none; a DES call's is none until its VCALL_IV comes (here the working register holds the
- * key an assignment loaded), and its voice is undecryptable until then.
+ * key an assignment loaded, or the key stream a scrambled call before it left).
  */
 static int
 test_nxdn_history_mi_only_from_received_iv(void) {
@@ -1467,8 +1469,6 @@ test_nxdn_history_mi_only_from_received_iv(void) {
     rc |= expect_int("history-mi-des-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("history-mi-des-call-mi", call.mi == 0ULL ? 1 : 0, 1);
     rc |= expect_int("history-mi-des-event-mi", histories[0].Event_History_Items[0].mi == 0ULL ? 1 : 0, 1);
-    rc |=
-        expect_int("history-mi-des-undecryptable", dsd_nxdn_voice_crypto_class(state), DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV, in the open call */
     write_bits_msb(bits, 8U, 32U, 0x11223344U);
@@ -1480,10 +1480,55 @@ test_nxdn_history_mi_only_from_received_iv(void) {
                      histories[0].Event_History_Items[0].mi == 0x1122334455667788ULL ? 1 : 0, 1);
     rc |= expect_int("history-mi-des-iv-published-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
     rc |= expect_int("history-mi-des-iv-armed", state->nxdn_new_iv, 1);
-    /* The voice itself plays from the session its IV starts (the vocoder, at the next session start). */
-    rc |= expect_int("history-mi-des-iv-voice-waits-for-its-session", dsd_nxdn_voice_crypto_class(state),
-                     DSD_VOICE_CRYPTO_UNDECRYPTABLE);
     free_fixture(opts, state);
+
+    /* A scrambled call ran its register on (LFSRN()); the call's cipher then reads DES: that key stream is no MI. */
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->R = 0x3039ULL;
+    state->payload_miN = 0x1122334455667788ULL;
+    state->nxdn_iv_on_air = 1U; /* an IV an earlier call received */
+    {
+        const char in[49] = {0};
+        char out[49];
+        state->payload_miN = state->R;
+        LFSRN(in, out, state);
+    }
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 0x01U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("history-mi-after-scramble-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("history-mi-after-scramble-mi", call.mi == 0ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
+    return rc;
+}
+
+/*
+ * A Type-C superframe SACCH places the scrambler register before the messages it completes are decoded
+ * (nxdn_prepare_sacch_payload_seed()). A verified segment also keeps its position for the frame, which places the
+ * register again once those messages chose the cipher and key (nxdn_frame()); a failed one keeps none.
+ */
+static int
+test_sacch_superframe_position_stays_with_the_frame(void) {
+    static const uint8_t m_data[5] = {0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    uint8_t trellis[32];
+    int rc = 0;
+    for (int bad = 0; bad < 2; bad++) {
+        if (alloc_fixture(&opts, &state) != 0) {
+            return 1;
+        }
+        state->nxdn_sacch_non_superframe = 0;
+        make_sacch_trellis(trellis, 2U, 0x15U); /* the second segment of four */
+        nxdn_handle_sacch(opts, state, trellis, m_data, 0x2AU, bad ? 0x2BU : 0x2AU);
+        rc |= expect_int(bad ? "sacch-sf-bad-crc-no-position" : "sacch-sf-position-for-the-frame",
+                         state->nxdn_frame_seed_part, bad ? 0 : state->nxdn_part_of_frame + 1);
+        free_fixture(opts, state);
+    }
     return rc;
 }
 
@@ -1512,6 +1557,7 @@ main(void) {
     rc |= test_scch_crc_gates_scrambler_reload();
     rc |= test_scch_undefined_content_confirms_nothing();
     rc |= test_nxdn_history_mi_only_from_received_iv();
+    rc |= test_sacch_superframe_position_stays_with_the_frame();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

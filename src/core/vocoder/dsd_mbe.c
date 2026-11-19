@@ -27,7 +27,6 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -1066,22 +1065,8 @@ mbe_apply_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
     LFSRN(ambe_temp, ambe_d, state);
 }
 
-/* A DES/AES keystream session starts at a session start (part 0) from the IV the active call received, armed the
-   moment the cipher, a key and that IV are all present (dsd_nxdn_cipher_arm_if_ready()). An armed IV the call no longer
-   holds (dropped at a call, target or carrier change) starts nothing; the session's call is recorded, and its voice is
-   decryptable from this word on (dsd_nxdn_voice_crypto_class()). */
 static void
 mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
-    (void)dsd_nxdn_cipher_arm_if_ready(state);
-    if (state->nxdn_new_iv == 1 && !dsd_nxdn_received_iv_for_active_call(state, NULL)) {
-        state->nxdn_new_iv = 0;
-        return;
-    }
-    const int starts = state->nxdn_new_iv == 1 && state->nxdn_part_of_frame == 0
-                       && (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03);
-    if (starts) {
-        state->nxdn_ks_session_transmission = state->nxdn_rx_iv_transmission;
-    }
     if (state->nxdn_cipher_type == 0x02 && state->nxdn_new_iv == 1 && state->nxdn_part_of_frame == 0) {
         DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));

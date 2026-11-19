@@ -637,6 +637,45 @@ nxdn_run_scch_termination_case(void) {
     return rc;
 }
 
+/* Repeater in Use / Go to Repeater 31 ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4
+ * (EOT)": structure 00b or 10b). Once the voice window has run out, an INFO4 EOT returns the tuner to the control
+ * channel repeater 31 maps to; an INFO2 EOT, which may be the only one received, does the same under the same policy. */
+static int
+nxdn_run_scch_info2_termination_returns_case(void) {
+    const nxdn_case termination = {
+        "type-d-scch-info2-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
+    };
+    int rc = 0;
+    int tunes[2] = {0, 0};
+    long freqs[2] = {0, 0};
+    for (int info2 = 0; info2 < 2; info2++) {
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        nxdn_setup_fixture(&termination);
+        nxdn_install_hooks();
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = termination.scch_id,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        uint8_t message[32];
+        build_scch(message, &termination);
+        write_bits_u32(message, 0U, info2 ? 2U : 0U, 2U);
+        NXDN_decode_scch(&g_opts, &g_state, message, 1);
+        dsd_call_snapshot call;
+        rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED,
+                          termination.name, info2 ? "info2" : "info4", "the call ended");
+        tunes[info2] = g_tune_count;
+        freqs[info2] = g_last_tune_freq;
+    }
+    rc |= nxdn_expect(tunes[0] == 1 && freqs[0] == termination.expected_freq, termination.name, "info4",
+                      "an INFO4 EOT returns the tuner");
+    rc |= nxdn_expect(tunes[1] == tunes[0] && freqs[1] == freqs[0], termination.name, "info2",
+                      "an INFO2 EOT returns it as an INFO4 EOT does");
+    return rc;
+}
+
 /* An SCCH that passed its 7-bit CRC on a transmission nothing has confirmed (a false IDAS sync) moves nothing: no
  * control channel from the map, no tune, no call end. On a confirmed one its termination still ends an NXDN call
  * only, never another protocol's call on slot 0. */
@@ -847,11 +886,9 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
                           && call.priority == 5U,
                       context.name, "target-fragment", "service metadata preserved");
-    /* Another target is another call: its crypto class carries over, the previous call's MI (an IV that call
-       received) does not. */
     rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0U && call.audio_permitted == 0U,
-                      context.name, "target-fragment", "crypto preserved, the previous call's MI not");
+                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
+                      context.name, "target-fragment", "crypto preserved");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "target-fragment", "media state preserved");
     rc |= nxdn_expect(strcmp(call.source_text, "SOURCE 1100") == 0, context.name, "target-fragment",
                       "counterpart text preserved");
@@ -873,7 +910,7 @@ nxdn_run_scch_identity_context_case(void) {
                           && call.priority == 5U,
                       context.name, "source-fragment", "service metadata preserved");
     rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0U && call.audio_permitted == 0U,
+                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
                       context.name, "source-fragment", "crypto preserved");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "source-fragment", "media state preserved");
     return rc;
@@ -2484,6 +2521,7 @@ main(void) {
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
     rc |= nxdn_run_scch_termination_case();
+    rc |= nxdn_run_scch_info2_termination_returns_case();
     rc |= nxdn_run_unconfirmed_scch_case();
     rc |= nxdn_run_scch_busy_enrich_case("tuned-there", NXDN_RX_TUNED_THERE, 1);
     rc |= nxdn_run_scch_busy_enrich_case("tuned-elsewhere", NXDN_RX_TUNED_ELSEWHERE, 0);

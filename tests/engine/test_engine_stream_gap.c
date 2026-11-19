@@ -497,19 +497,11 @@ test_gap_resets_evidence_and_assemblies(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->p25_mac_frag, 0x5A, sizeof(state->p25_mac_frag));
     state->m17_lsf[0] = 1;
     state->ysf_txt[0][0] = 'T';
-    state->nxdn_rx_iv = 0x1122334455667788ULL; /* an NXDN call's received IV and the session it started */
-    state->nxdn_rx_iv_valid = 1U;
-    state->nxdn_ks_session_transmission = 7U;
-    state->nxdn_new_iv = 1U;
     const uint32_t carrier_seq = state->carrier_seq;
     const uint32_t epoch = state->symbol_clock_epoch;
     state->carrier_change_seen = 0U;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
-
-    expect("nxdn: the received IV, its session and an armed keystream go",
-           state->nxdn_rx_iv_valid == 0U && state->nxdn_rx_iv == 0ULL && state->nxdn_ks_session_transmission == 0U
-               && state->nxdn_new_iv == 0U);
 
     expect("evidence: the confirmation gates restart",
            state->nxdn_confirmed == 0 && state->dpmr_confirmed == 0 && state->dpmr_cch_evidence == 0

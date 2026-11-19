@@ -16,7 +16,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -275,35 +274,12 @@ key_nxdn_cipher1(dsd_state* s) {
     s->R = 0x1234ULL;
 }
 
-/* The IV an NXDN DES or AES call received (a VCALL_IV of the open call, <dsd-neo/core/nxdn_received_iv.h>): its
-   keystream starts only from one, for the active NXDN call on this carrier. Opens that call when none is open, and
-   takes the working IV (and AES's expanded one) as the received IV. */
-static void
-hold_nxdn_received_iv(dsd_state* s) {
-    if (dsd_nxdn_active_call_transmission(s) == 0U) {
-        const dsd_call_observation call = {
-            .protocol = DSD_SYNC_NXDN_POS,
-            .slot = 0U,
-            .kind = DSD_CALL_KIND_GROUP_VOICE,
-            .ota_target_id = 123U,
-            .policy_target_id = 123U,
-        };
-        (void)dsd_call_state_observe(s, &call, DSD_CALL_BOUNDARY_BEGIN);
-    }
-    s->nxdn_rx_iv = s->payload_miN;
-    s->nxdn_rx_iv_valid = 1U;
-    s->nxdn_rx_iv_transmission = dsd_nxdn_active_call_transmission(s);
-    s->nxdn_rx_iv_carrier = s->carrier_seq;
-    DSD_MEMCPY(s->nxdn_rx_iv_aes, s->aes_iv, sizeof(s->nxdn_rx_iv_aes));
-}
-
 static void
 key_nxdn_cipher2(dsd_state* s) {
     s->nxdn_cipher_type = 0x02;
     s->nxdn_new_iv = 1;
     s->payload_miN = 0x0102030405060708ULL;
     s->R = 0x0123456789ABCDULL;
-    hold_nxdn_received_iv(s);
 }
 
 static void
@@ -317,7 +293,6 @@ key_nxdn_cipher3(dsd_state* s) {
     for (int i = 0; i < 16; i++) {
         s->aes_iv[i] = (uint8_t)(0xA0U + (unsigned)i);
     }
-    hold_nxdn_received_iv(s);
 }
 
 static void
@@ -1015,9 +990,6 @@ check_fdma_exhaustion_outputs(key_setup_fn setup, int p25, int stereo, int float
         .policy_target_id = 123U,
     };
     int rc = expect_int("exhaustion output call", dsd_call_state_observe(&g_state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
-    if (!p25) {
-        hold_nxdn_received_iv(&g_state); /* the IV is this call's */
-    }
     char path[DSD_TEST_PATH_MAX];
     const int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_exhausted_output");
     if (fd < 0) {
@@ -1460,48 +1432,6 @@ test_p25p2_aes_does_not_skip_dmr_silence_patterns(void) {
     return rc;
 }
 
-/*
- * A DES call's voice is decryptable only from the first word of a keystream session that started from the IV its open
- * call received (TS 1-D §5.4.4.2(4)): an IV that arrives mid-session (a SACCH VCALL_IV, part 3) is the next session's,
- * so the words before the next session start (part 0) stay muted; the keystream arms the moment the cipher, the key and
- * that IV are all present, here the key last; and an armed IV the call no longer holds (the carrier moved) starts
- * nothing.
- */
-static int
-test_nxdn_session_starts_from_the_calls_iv(void) {
-    int rc = 0;
-    reset_state(DSD_SYNC_NXDN_POS, 0);
-    g_opts.dmr_mute_encL = 1; /* undecryptable voice is muted (the default) */
-    g_state.nxdn_cipher_type = 0x02;
-    g_state.payload_miN = 0x0102030405060708ULL;
-    hold_nxdn_received_iv(&g_state); /* the IV came; no key yet */
-    g_state.nxdn_part_of_frame = 3;
-    process_fdma_test_frame(DSD_VOICE_PROTOCOL_NXDN, 0);
-    rc |= expect_int("nxdn no key: not armed", g_state.nxdn_new_iv, 0);
-    rc |= expect_int("nxdn no key: muted", g_state.mbe_slot_muted[0], 1);
-    g_state.R = 0x0123456789ABCDULL; /* the key comes last */
-    process_fdma_test_frame(DSD_VOICE_PROTOCOL_NXDN, 0);
-    rc |= expect_int("nxdn key last: armed", g_state.nxdn_new_iv, 1);
-    rc |= expect_int("nxdn mid-session: no session yet", g_state.nxdn_ks_session_transmission == 0U, 1);
-    rc |= expect_int("nxdn mid-session: muted", g_state.mbe_slot_muted[0], 1);
-    g_state.nxdn_part_of_frame = 0;
-    process_fdma_test_frame(DSD_VOICE_PROTOCOL_NXDN, 0);
-    rc |= expect_int("nxdn session start: started", g_state.nxdn_ks_session_transmission != 0U, 1);
-    rc |= expect_int("nxdn session start: decrypted", g_state.mbe_slot_muted[0], 0);
-
-    /* Armed, then the carrier moves before the session starts: the IV is not this carrier's, nothing starts. */
-    reset_state(DSD_SYNC_NXDN_POS, 0);
-    g_opts.dmr_mute_encL = 1;
-    key_nxdn_cipher2(&g_state);
-    g_state.carrier_seq++;
-    g_state.nxdn_part_of_frame = 0;
-    process_fdma_test_frame(DSD_VOICE_PROTOCOL_NXDN, 0);
-    rc |= expect_int("nxdn carrier left: no session", g_state.nxdn_ks_session_transmission == 0U, 1);
-    rc |= expect_int("nxdn carrier left: disarmed", g_state.nxdn_new_iv, 0);
-    rc |= expect_int("nxdn carrier left: muted", g_state.mbe_slot_muted[0], 1);
-    return rc;
-}
-
 /* A missing NXDN replacement IV ends the 32-word session: do not repeatedly apply the last word or use unused
    cipher-block padding. A fresh IV restores the next session. The same bound applies to DES and AES. */
 static int
@@ -1739,7 +1669,6 @@ main(void) {
     rc |= test_amb_capture_replays_as_live();
     rc |= test_p25p2_aes_does_not_skip_dmr_silence_patterns();
     rc |= test_nxdn_cipher23_session_exhaustion();
-    rc |= test_nxdn_session_starts_from_the_calls_iv();
     rc |= test_keystream_muted_frame_stages_silence();
     rc |= test_keystream_exhaustion_blocks_fdma_outputs();
     rc |= test_manual_keystream_takes_over_exhausted_frame();

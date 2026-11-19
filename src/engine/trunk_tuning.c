@@ -7,7 +7,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive.h>
@@ -303,7 +302,6 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     state->payload_miR = 0;
     state->payload_miP = 0;
     state->payload_miN = 0;
-    dsd_nxdn_received_iv_clear(state);
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
     DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));

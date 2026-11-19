@@ -42,7 +42,6 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
@@ -3092,14 +3091,13 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-/* The NXDN "IV:" field: the IV the active NXDN call received over the air (<dsd-neo/core/nxdn_received_iv.h>), or
-   "none" before one came. Never the decoder's working register, which on a scrambled call is loaded from the key and
-   may still hold that state when the cipher changes, and never an ended or another protocol's call's MI. */
+/* The NXDN "IV:" field: the IV a CRC-verified VCALL_IV carried over the air while the working register still holds it
+   (dsd_state::nxdn_iv_on_air), or "none". Never the register a scrambled call loaded from the key and ran on, which it
+   may still hold when the cipher changes. */
 static void
 ui_print_nxdn_received_iv(const dsd_state* state) {
-    unsigned long long iv = 0ULL;
-    if (dsd_nxdn_received_iv_for_active_call(state, &iv)) {
-        printw("IV: %016llX ", iv);
+    if (state->nxdn_iv_on_air != 0U && state->payload_miN != 0ULL) {
+        printw("IV: %016llX ", state->payload_miN);
     } else {
         printw("IV: none ");
     }

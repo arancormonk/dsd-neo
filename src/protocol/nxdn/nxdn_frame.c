@@ -26,7 +26,6 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
-#include <dsd-neo/core/nxdn_received_iv.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -48,6 +47,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -545,15 +545,18 @@ nxdn_print_voice_or_data(dsd_state* state, const nxdn_frame_ctx* ctx) {
 
 /* The scrambler position and the cipher slots the frame's leading non-voice part takes, once the frame's signalling
    decoded on this carrier (never after it retuned the receiver, never on another channel's frame): a forced scrambler
-   (-4) is selected first; a checked, valid SCCH's position then places the register at the frame's start with the
-   cipher and key this frame chose (nxdn_prepare_sacch_payload_seed(), as a SACCH does); and the stolen slots step it
+   (-4) is selected first, on a voice frame or a traffic frame whose SCCH or SACCH placed it (all four slots stolen
+   included); the position then places the register at the frame's start with the cipher and key this frame's
+   signalling chose (nxdn_prepare_sacch_payload_seed(): a SACCH superframe segment's, as main placed it before its
+   messages, again once a VCALL it completed selected Scramble or its key; a checked, valid SCCH's); and the stolen slots
+   step it
    (NXDN TS 1-D Fig 5.4-2, TS 1-F Fig 16.4-1: the PN sequence and the DES/AES output keep their places in a stolen
    slot): a data frame's four, a leading FACCH1's two, so the voice starts where it belongs. */
 static void
 nxdn_step_cipher_before_voice(dsd_state* state, const nxdn_frame_ctx* ctx) {
-    const uint8_t part = state->nxdn_scch_frame_part;
-    state->nxdn_scch_frame_part = 0U;
-    if (ctx->voice && state->M == 1 && dsd_key_scalar_present(state, 0)) {
+    const uint8_t part = state->nxdn_frame_seed_part;
+    state->nxdn_frame_seed_part = 0U;
+    if ((ctx->voice || part != 0U) && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
     if (part != 0U && state->nxdn_cipher_type == 0x1 && dsd_key_scalar_present(state, 0)) {
@@ -698,13 +701,19 @@ static int
 nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
     char category[sizeof(state->nxdn_location_category)];
     DSD_MEMCPY(category, state->nxdn_location_category, sizeof(category));
+    const uint8_t type_c_before = state->nxdn_site.type_c;
     state->nxdn_scch_frame_invalid = 0U;
-    state->nxdn_scch_frame_part = 0U;
+    state->nxdn_frame_seed_part = 0U;
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
     /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
-       channels only: it never outlives the frame, whatever confirmed the transmission. */
+       channels only: it never outlives the frame, whatever confirmed the transmission. The rollback undoes only the
+       SCCH's provisional layout: a Type-C site a later channel of the frame verified (dsd_nxdn_note_type_c()) never
+       reads "Type-D" again. */
     if (!nxdn_confirm_is_confirmed(state) || state->nxdn_scch_frame_invalid != 0U) {
         DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
+        if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
+            DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+        }
     }
     state->nxdn_scch_frame_invalid = 0U;
     return left_carrier;
@@ -770,7 +779,7 @@ nxdn_finalize_sync_reject(dsd_state* state) {
 static void
 nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->foreign) {
-        state->nxdn_scch_frame_part = 0U;
+        state->nxdn_frame_seed_part = 0U;
         DSD_FPRINTF(stderr, "\n");
         return;
     }
@@ -814,12 +823,10 @@ nxdn_frame_begin_evidence(const dsd_opts* opts, dsd_state* state, uint32_t frame
 }
 
 /* A frame whose channel retuned the receiver: its remaining channels and voice were read on the carrier left and are
-   dropped, nothing of it stamps the carrier reached as active or steps its cipher, and the IV the carrier left's call
-   received is not the next carrier's. */
+   dropped, and nothing of it stamps the carrier reached as active or steps its cipher. */
 static void
 nxdn_frame_left(dsd_state* state) {
-    state->nxdn_scch_frame_part = 0U;
-    dsd_nxdn_received_iv_clear(state);
+    state->nxdn_frame_seed_part = 0U;
     DSD_FPRINTF(stderr, "\n");
 }
 
