@@ -2640,8 +2640,9 @@ channel is delayed.
     clears the stream the same way, losing a few of the new channel's first samples with it. A
     tune to the frequency the radio software is already on, one it refuses, and one it does not answer drop nothing.
     When the radio software's answer to a tune is lost or cannot be read, DSD-neo no longer knows where the radio is,
-    since it may have moved: the next tune is always sent, and it drops what the input held, even a tune back to the
-    frequency it had before. A file, or stdin read from a file, is never dropped.
+    since it may have moved, and a late answer could be taken for the next one: it connects to the radio software
+    again before it asks anything more (at most once a second while it cannot), then always sends the next tune, which
+    drops what the input held, even a tune back to the frequency it had before. A file, or stdin read from a file, is never dropped.
   - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
     DSD-neo, when it asks for the tune. It arrives after the retune and is read as the new channel's. So for the
     first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just

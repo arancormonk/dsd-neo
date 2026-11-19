@@ -88,6 +88,14 @@ Connect(char* hostname, int portno) {
     return g_connect_result;
 }
 
+/* Whether the client says the connection on g_resync_sock needs making again (issue #834). */
+static dsd_socket_t g_resync_sock = DSD_INVALID_SOCKET;
+
+int
+RigctlNeedsResync(dsd_socket_t sockfd) {
+    return sockfd != DSD_INVALID_SOCKET && sockfd == g_resync_sock;
+}
+
 void
 RigctlRebindPeer(dsd_socket_t old_fd, dsd_socket_t new_fd, int same_endpoint) {
     note_call('R');
@@ -290,6 +298,32 @@ test_failed_first_connection_records_the_endpoint(void) {
     assert(strcmp(opts.rigctlhostname, "rig.local") == 0);
 }
 
+/* Issue #834: a connection a lost reply left out of step is made again, to the same host and port, at most once a
+   second while it cannot be; one in step, or rigctl off, is left alone. */
+static void
+test_resync_reconnects_a_connection_out_of_step(void) {
+    dsd_opts opts;
+    reset_fakes();
+    seed_opts(&opts, "rig.lan", 4532, 61, 1);
+    g_resync_sock = DSD_INVALID_SOCKET;
+    assert(svc_rigctl_resync(&opts, &g_state, 10000U) == 0 && g_call_count == 0);
+    g_resync_sock = 61;
+    g_connect_result = DSD_INVALID_SOCKET; /* the peer cannot be reached */
+    assert(svc_rigctl_resync(&opts, &g_state, 10000U) == 0);
+    assert(strcmp(g_calls, "C") == 0 && strcmp(g_connect_host, "rig.lan") == 0 && g_connect_port == 4532);
+    assert(svc_rigctl_resync(&opts, &g_state, 10500U) == 0 && strcmp(g_calls, "C") == 0); /* not again yet */
+    reset_fakes();
+    g_connect_result = 62;
+    assert(svc_rigctl_resync(&opts, &g_state, 11000U) == 1);
+    assert(g_calls[0] == 'C' && g_rebind_old == 61 && g_rebind_new == 62 && g_rebind_same == 1);
+    expect_reconnected(&opts, "rig.lan", 4532, 62);
+    reset_fakes();
+    opts.use_rigctl = 0;
+    g_resync_sock = 62;
+    assert(svc_rigctl_resync(&opts, &g_state, 20000U) == 0 && g_call_count == 0);
+    g_resync_sock = DSD_INVALID_SOCKET;
+}
+
 int
 main(void) {
     test_same_endpoint_hands_the_record_over_then_closes();
@@ -297,5 +331,6 @@ main(void) {
     test_first_connection_closes_nothing();
     test_failed_reconnect_keeps_the_live_connection();
     test_failed_first_connection_records_the_endpoint();
+    test_resync_reconnects_a_connection_out_of_step();
     return 0;
 }

@@ -19,6 +19,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <limits.h>
@@ -60,6 +61,11 @@ static int g_close_count;
 static dsd_socket_t g_closed_sock;
 static int g_recv_timeout_count;
 static unsigned int g_last_timeout_ms;
+/* The realtime clock the client's reply deadline reads (issue #834), and how long each receive takes on it: a receive
+   that takes longer than the receive timeout last set (0: none set) times out instead, after that timeout. */
+static uint64_t g_now_ms = 5000U;
+static uint64_t g_recv_step_ms;
+
 static int g_setsockopt_count;
 /* Keepalive (dsd_socket_set_keepalive()): the calls, the socket and timing of the last one. */
 static int g_keepalive_count;
@@ -119,6 +125,7 @@ reset_stubs(void) {
     g_closed_sock = DSD_INVALID_SOCKET;
     g_recv_timeout_count = 0;
     g_last_timeout_ms = 0;
+    g_recv_step_ms = 0U;
     g_setsockopt_count = 0;
     g_keepalive_count = 0;
     g_keepalive_sock = DSD_INVALID_SOCKET;
@@ -318,10 +325,20 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     return (int)len;
 }
 
+uint64_t
+dsd_realtime_mono_ms(void) {
+    return g_now_ms;
+}
+
 int
 dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     (void)sock;
     (void)flags;
+    if (g_recv_step_ms > 0U && g_last_timeout_ms > 0U && g_recv_step_ms > g_last_timeout_ms) {
+        g_now_ms += g_last_timeout_ms;
+        return -1;
+    }
+    g_now_ms += g_recv_step_ms;
     if (!buf || len == 0U || g_response_index >= g_response_count) {
         return 0;
     }
@@ -1324,8 +1341,11 @@ test_full_size_replies_stay_in_bounds(void) {
     assert(GetCurrentFreq(123) == 851037500L);
     push_response(ok_reply);
     assert(!SetFreq(123, 851050000L));
+    /* That reply's tail may be the next one's start: the connection is made again before another request. */
+    assert(RigctlNeedsResync(123));
+    RigctlRebindPeer(123, 124, 1);
     push_response(ok_reply);
-    assert(SetModulationKind(123, DSD_ANALOG_DEMOD_AM, 8333));
+    assert(SetModulationKind(124, DSD_ANALOG_DEMOD_AM, 8333));
     assert(g_command_count == 3);
     return 0;
 }
@@ -1355,18 +1375,73 @@ test_set_freq_takes_only_a_complete_rprt(void) {
     static const char* const k_unknown[] = {"?\n",    "RPRT x\n", "RPRT 0", "RPRT 0 1\n", "RPRT 0\nRPRT 0\n",
                                             "RPRT\n", ""};
     for (size_t i = 0; i < sizeof k_unknown / sizeof k_unknown[0]; i++) {
+        const dsd_socket_t sock = (dsd_socket_t)(131 + (int)i);
         push_response("RPRT 0\n");
-        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)));
+        assert(SetFreq(sock, 851025000L));
         if (k_unknown[i][0] != '\0') {
             push_response(k_unknown[i]);
         }
-        assert(!SetFreq(130, 851500000L));
-        assert(RigctlConfirmedFreq(130) == 0U);
-        /* A request for the frequency confirmed before goes out again. */
-        push_response("RPRT 0\n");
+        assert(!SetFreq(sock, 851500000L));
+        assert(RigctlConfirmedFreq(sock) == 0U && RigctlNeedsResync(sock));
+        /* Nothing goes out on the connection until it is made again: a late reply would be read as the next one's. */
         const size_t before = g_command_count;
-        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)) && g_command_count == before + 1);
+        assert(!SetFreq(sock, 851025000L) && g_command_count == before);
+        /* A new connection to the peer: a request for the frequency confirmed before goes out again. */
+        const dsd_socket_t again = (dsd_socket_t)(sock + 100);
+        RigctlRebindPeer(sock, again, 1);
+        assert(!RigctlNeedsResync(sock) && !RigctlNeedsResync(again));
+        push_response("RPRT 0\n");
+        assert(SetFreq(again, 851025000L) && g_command_count == before + 1);
     }
+    return 0;
+}
+
+/* Issue #834: a request whose reply came late leaves it in the stream, where it would be read as the next request's:
+   the client then asks the peer nothing on that connection until it is made again (a late "RPRT 0" never confirms a
+   later request), and says the connection needs it. */
+static int
+test_set_freq_resyncs_after_a_late_reply(void) {
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(150, 851012500L));
+    assert(!RigctlNeedsResync(150));
+    assert(!SetFreq(150, 851025000L)); /* no reply within the timeout */
+    push_response("RPRT 0\n");         /* B's reply, late */
+    const size_t sent = g_command_count;
+    const int confirmed = SetFreq(150, 851012500L);
+    if (confirmed || g_command_count != sent) {
+        DSD_FPRINTF(stderr, "a late reply confirmed the next request (confirmed %d, sent %zu)\n", confirmed,
+                    g_command_count - sent);
+    }
+    assert(!confirmed && g_command_count == sent && RigctlNeedsResync(150));
+    return 0;
+}
+
+/* Issue #834: a reply in pieces is read against one deadline, the receive timeout, from the first receive: each later
+   receive waits only for what is left of it, and a reply not complete by then is no reply. The timeout is put back
+   for the next request. */
+static int
+test_set_freq_reply_has_one_deadline(void) {
+    reset_stubs();
+    g_last_timeout_ms = 1500U; /* as the connection was made */
+    g_recv_step_ms = 600U;
+    push_response("RPRT");
+    push_response(" 0");
+    push_response("\n");
+    const int confirmed = SetFreq(160, 851012500L);
+    if (confirmed) {
+        DSD_FPRINTF(stderr, "a reply that took 1800 ms of a 1500 ms deadline confirmed the request\n");
+    }
+    assert(!confirmed && RigctlNeedsResync(160));
+    assert(g_last_timeout_ms == 1500U);
+    /* Within the deadline: three pieces 400 ms apart. */
+    reset_stubs();
+    g_last_timeout_ms = 1500U;
+    g_recv_step_ms = 400U;
+    push_response("RPRT");
+    push_response(" 0");
+    push_response("\n");
+    assert(SetFreq(161, 851012500L) && g_last_timeout_ms == 1500U);
     return 0;
 }
 
@@ -3119,6 +3194,8 @@ main(void) {
     rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_set_freq_takes_only_a_complete_rprt();
+    rc |= test_set_freq_resyncs_after_a_late_reply();
+    rc |= test_set_freq_reply_has_one_deadline();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();

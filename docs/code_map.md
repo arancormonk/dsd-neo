@@ -7385,13 +7385,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
   refused request or a lost reply installs nothing. Only a complete numeric RPRT line says what a frequency request
-  did (`rigctl_read_freq_reply()` reads through the newline): `RPRT 0` confirms and a non-zero status refuses, which
+  did (`rigctl_read_freq_reply()` reads through the newline, every read after the first waiting only for what is left
+  of one deadline, the connection's receive timeout from the first read): `RPRT 0` confirms and a non-zero status
+  refuses, which
   leaves the peer where it last confirmed. Any other reply, or none, leaves the frequency unknown, since the peer may
   have moved: the client forgets its no-op cache, so the next request goes out, and every leg takes
   `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so the next
   tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed before
   (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()`, `ENGINE_RIGCTL_RETUNE`
-  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). On an RTL input whose carrier the rigctl peer
+  `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). Such a reply may also still be on its way, and
+  would be read as the next request's: the connection is then out of step (`RigctlNeedsResync()`), nothing is sent on
+  it (`Send()` refuses, so every request on it fails at once), and the control pump makes it again to the same host
+  and port (`svc_rigctl_resync()`, through `svc_rigctl_connect()`, at most once a second while the peer cannot be
+  reached); the rebind clears it (`test_set_freq_resyncs_after_a_late_reply()`,
+  `test_set_freq_reply_has_one_deadline()`, `UI_RIGCTL_CONNECT` `test_resync_reconnects_a_connection_out_of_step()`). On an RTL input whose carrier the rigctl peer
   moved with no RTL leg after it (a trunk leg outside conventional scan, the io_control leg), the stream has no retune
   of its own to flush it, so `dsd_engine_note_rigctl_retune()` drops all it holds at once
   (`rtl_stream_discard_after_external_move()`: the demod thread purges the queued I/Q, and the output ring clears under
