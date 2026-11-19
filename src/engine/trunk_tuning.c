@@ -1000,7 +1000,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
 #endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        /* Where the peer is before the tune: read back after a reply the client could not read (issue #834). */
+        const uint32_t sent_before_hz = RigctlFreqBeforeTune(opts->rigctl_sockfd, opts->rigctl_sent_freq_hz);
         dsd_input_cut mark;
         if (!dsd_engine_tune_rigctl(opts, state, freq, &mark)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;

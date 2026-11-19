@@ -1452,7 +1452,8 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
     }
     legacy_tune_caches_expire_if_stale();
     if (freq != s_last_rigctl_freq) {
-        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        /* Where the peer is before the tune: read back after a reply the client could not read (issue #834). */
+        const uint32_t sent_before_hz = RigctlFreqBeforeTune(opts->rigctl_sockfd, opts->rigctl_sent_freq_hz);
         /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
            the old frequency while it answered the passband request above. */
         dsd_input_cut mark;

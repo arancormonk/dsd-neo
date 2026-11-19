@@ -7382,7 +7382,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`test_old_audio_while_the_passband_is_set()`), and a peer may move and send the new channel's audio before its
   reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
-  refused request or a lost reply installs nothing. The queue the decoder reads attaches itself while it exists
+  refused request or a lost reply installs nothing. A lost or unreadable reply leaves the peer's frequency unknown (it
+  may have moved), so the next tune reads it back first (`RigctlFreqBeforeTune()`, `GetCurrentFreq()`), and a retry of
+  the frequency the peer already reached drops nothing (`test_retry_after_an_ambiguous_tune_drops_nothing()`); an RPRT
+  refusal leaves the frequency last confirmed standing. The queue the decoder reads attaches itself while it exists
   (`dsd_input_backlog_attach()`): the PCM stream reader of stdin and TCP counts the bytes it read in plus those its
   descriptor or socket holds ready (`FIONREAD`, `dsd_fd_readable_bytes()`, `dsd_socket_readable_bytes()`), and the UDP
   ring the samples written into it, after moving every datagram its socket holds into it (`udp_input_arrived()`: the

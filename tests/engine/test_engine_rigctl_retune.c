@@ -115,8 +115,9 @@ start_producer(dsd_thread_t* th,
 
 /* ---- A rigctl peer on a loopback socket ---- */
 
-/* What the peer does with a frequency request (F). */
-enum { RIG_TAKES = 0, RIG_REFUSES = 1, RIG_DROPS = 2 };
+/* What the peer does with a frequency request (F). RIG_MOVES_GARBLED: it moves, but its reply is not one the client can
+   read (a lost or corrupted reply); the next request is taken. */
+enum { RIG_TAKES = 0, RIG_REFUSES = 1, RIG_DROPS = 2, RIG_MOVES_GARBLED = 3 };
 
 typedef struct {
     dsd_socket_t listener;
@@ -169,6 +170,10 @@ fake_rig_reply(fake_rig* rig, const char* line, long* freq, char* buf, size_t ca
         }
         (void)atomic_fetch_add(&rig->f_taken, 1);
         fake_rig_send_audio(rig, &rig->f_audio_value);
+        if (mode == RIG_MOVES_GARBLED) {
+            atomic_store(&rig->f_mode, RIG_TAKES);
+            return "?\n";
+        }
         return "RPRT 0\n";
     }
     if (line[0] == 'M') {
@@ -1812,6 +1817,58 @@ staged_after_read(dsd_opts* opts, int16_t want) {
     return opts->input_upsample_len == 6 && opts->input_upsample_prev_valid == 1;
 }
 
+/* Issue #834: the peer moved to B but its reply was lost, so the client does not know where the peer is. A call on B
+   begins, and the retry of B is taken: the peer was on B already, so nothing it sent is the old channel's, and nothing
+   is dropped (the retry reads the peer's frequency back first). An explicit refusal leaves the peer where it was, as
+   known. On the trunk leg and on the io_control leg. */
+static int
+ambiguous_retry_case(int io_control) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("ambiguous retry: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int fds[2] = {-1, -1};
+    int rc = expect_true("ambiguous retry: pipe", make_pipe(fds) == 0);
+    opts->audio_in_stdin = rc == 0 ? dsd_pcm_stream_open_fd(fds[0]) : NULL;
+    if (opts->audio_in_stdin == NULL) {
+        rig_case_close(&c);
+        return expect_true("ambiguous retry: stdin reader", 0);
+    }
+    const char* what = io_control ? "io_control" : "trunk";
+    char label[200];
+    rc |= expect_true("ambiguous retry: on A", tune_on(opts, state, VC1_HZ, io_control));
+    dsd_symbol_apply_input_drop(opts, state);
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    atomic_store(&c.rig.f_mode, RIG_MOVES_GARBLED);
+    DSD_SNPRINTF(label, sizeof label, "%s: the tune to B is not confirmed", what);
+    rc |= expect_true(label, !tune_on(opts, state, VC2_HZ, io_control));
+    /* The call on B begins while the client does not know where the peer is. */
+    rc |= expect_true("ambiguous retry: B's audio", pipe_put(fds[1], 700) && pipe_put(fds[1], 701));
+    const uint32_t e = state->symbol_clock_epoch;
+    DSD_SNPRINTF(label, sizeof label, "%s: the retry of B is taken", what);
+    rc |= expect_true(label, tune_on(opts, state, VC2_HZ, io_control));
+    take_at_the_next_read(opts, state);
+    const int16_t first = pipe_next(opts);
+    DSD_SNPRINTF(label, sizeof label,
+                 "%s: the peer was on B already: no drop, no new timeline (epoch moved %u, first sample %d)", what,
+                 state->symbol_clock_epoch - e, (int)first);
+    rc |= expect_true(label, state->symbol_clock_epoch == e && first == 700);
+    dsd_pcm_stream_close(opts->audio_in_stdin);
+    opts->audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    rig_case_close(&c);
+    return rc;
+}
+
+static int
+test_retry_after_an_ambiguous_tune_drops_nothing(void) {
+    return ambiguous_retry_case(0) | ambiguous_retry_case(1);
+}
+
 static int
 test_staged_low_rate_pcm(void) {
     rig_case c;
@@ -2111,6 +2168,7 @@ main(void) {
     rc |= test_staged_low_rate_pcm_from_a_file();
     rc |= test_symbol_reader_checks_posts_only_with_rigctl();
     rc |= test_a_producer_that_cannot_start_ends_its_case();
+    rc |= test_retry_after_an_ambiguous_tune_drops_nothing();
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     dsd_socket_cleanup();

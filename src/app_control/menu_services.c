@@ -37,6 +37,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
@@ -2811,7 +2812,9 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
     if (!opts) {
         return -1;
     }
-    const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+    /* Where the peer is before the tune: read back after a reply the client could not read (issue #834). */
+    const uint32_t sent_before_hz =
+        opts->use_rigctl == 1 ? RigctlFreqBeforeTune(opts->rigctl_sockfd, opts->rigctl_sent_freq_hz) : 0U;
     /* Marked by the leg immediately before it sends the frequency: the peer may move and send new audio before it
        answers, and is on the old frequency while it answers a passband request before that. */
     dsd_input_cut mark;

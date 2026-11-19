@@ -38,6 +38,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -647,6 +648,13 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     g_carrier_boundary_calls++;
     g_carrier_boundary_kind = (int)kind;
     g_carrier_boundary_guarded = guard_held;
+}
+
+/* Where the rigctl peer is before a tune: the stand-in's replies are always read (issue #834). */
+uint32_t
+RigctlFreqBeforeTune(dsd_socket_t sockfd, uint32_t sent_hz) {
+    (void)sockfd;
+    return sent_hz;
 }
 
 /* A rigctl peer's confirmed move (issue #834): the engine's timeline is not this test's. */
