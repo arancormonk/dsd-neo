@@ -6353,7 +6353,8 @@ retune_listening_note_input(size_t count) {
     const uint64_t first = input_ring.consumed_total.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
     if (g_retune_listening.waiting.load(std::memory_order_relaxed) && first + count > g_retune_listening.mark) {
-        g_retune_listening.listening_ns = dsd_decode_now_mono_ns();
+        /* A first input later than the wait's end counts from that end, as a poll before it would have. */
+        g_retune_listening.listening_ns = std::min(dsd_decode_now_mono_ns(), g_retune_listening.latest_ns);
         g_retune_listening.waiting.store(0, std::memory_order_release);
     }
 }

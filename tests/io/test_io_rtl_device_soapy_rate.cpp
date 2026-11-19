@@ -1086,6 +1086,21 @@ test_listening_waits_for_input_past_the_retune_mute(void) {
     dsd_decode_clock_test_set_ns(60000000000ULL);
     expect_eq("listening once the wait is over", (double)rtl_stream_input_listening_since_ns(&since_ns), 1.0);
     expect_true("from a second past the mute's end", since_ns > 2200000000ULL && since_ns < 60000000000ULL);
+    const uint64_t deadline_ns = since_ns;
+
+    /* A third retune whose first input comes long after that deadline, with no one asking in between: listening counts
+       from the deadline all the same, not from the late arrival. */
+    dsd_decode_clock_test_set_ns(100000000000ULL);
+    expect_true("the third retune runs",
+                rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, kCenterHz + 25000U, 0, &got)
+                    == 0);
+    dsd_decode_clock_test_set_ns(200000000000ULL);
+    rtl_stream_test_input_produced(1024U);
+    rtl_stream_test_demod_took_input(1024U);
+    expect_eq("listening after a late first input", (double)rtl_stream_input_listening_since_ns(&since_ns), 1.0);
+    /* The second retune was armed at 1.2 s and the third at 100 s, with the same mute: the same wait after each. */
+    expect_eq("counts from the deadline, as a poll in between would have", (double)since_ns,
+              (double)(deadline_ns - 1200000000ULL + 100000000000ULL));
     rtl_stream_test_capture_session_end();
     expect_eq("no stream, no retune", (double)rtl_stream_input_listening_since_ns(&since_ns), 0.0);
     dsd_decode_clock_use_system();
