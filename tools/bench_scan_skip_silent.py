@@ -750,6 +750,25 @@ def summary_table(results):
 # ---------------------------------------------------------------- serving a frontend
 
 
+def frontend_record(args):
+    """A frontend run's record (--serve), the silent channels' mode list and the report option included, so --analyze
+    can report its visits by mode."""
+    record = {"scan": "frontend", "skip": args.skip, "level": args.level, "seed": args.seed, "silent": args.silent}
+    record.update({"jitter_s": args.jitter, "wall_offset_s": time.time() - time.monotonic()})
+    record.update({"process_cpu_s": None, "load_average_end": None})
+    record.update({"silent_modes": list(args.silent_modes), "by_mode": bool(args.by_mode)})
+    return record
+
+
+def report_options(record, args):
+    """A saved run scored again (--rescore, --analyze) reports by mode when this scoring asks for it (--by-mode),
+    whatever the run saved; a run that saved no mode list ran the default one."""
+    if args.by_mode:
+        record["by_mode"] = True
+        record.setdefault("silent_modes", list(ACTIVE))
+    return record
+
+
 def serve(args):
     """Serve the scene to whatever connects, for --seconds, rewriting OUT_DIR/run.json (the retunes so far) every
     second; --analyze scores it afterwards."""
@@ -760,9 +779,7 @@ def serve(args):
     scene = Scene(channels, args.seed, port=args.serve, keep_serving=True)
     scene.thread.start()
     print(f"serving the scene on 127.0.0.1:{scene.port}; lists in {out_dir}", flush=True)
-    record = {"scan": "frontend", "skip": args.skip, "level": args.level, "seed": args.seed, "silent": args.silent}
-    record.update({"jitter_s": args.jitter, "wall_offset_s": time.time() - time.monotonic()})
-    record.update({"process_cpu_s": None, "load_average_end": None})
+    record = frontend_record(args)
     started = time.monotonic()
     try:
         while time.monotonic() - started < args.seconds:
@@ -799,7 +816,15 @@ def analyze(args, record, channels):
         log.writelines(f"{t - shift:.3f} {text}\n" for t, text in lines)
     result = score(record, channels, os.path.abspath(args.out))
     print(f"clock shift {shift:+.3f} s from {len(gaps)} retunes")
+    print_result(result)
+
+
+def print_result(result):
+    """One run's table, and its per-mode table when it has one."""
     print(summary_table([result]))
+    if "silent_by_mode" in result:
+        print()
+        print(by_mode_table([result]))
 
 
 def parse_args():
@@ -873,19 +898,15 @@ def main():
         return
     if args.rescore or args.analyze:
         with open(os.path.join(args.out, "run.json"), encoding="utf-8") as handle:
-            record = json.load(handle)
+            record = report_options(json.load(handle), args)
         channels = scene_channels(record["silent"], record["level"], record["seed"], record["jitter_s"])
         if args.analyze:
             analyze(args, record, channels)
         else:
-            print(summary_table([score(record, channels, os.path.abspath(args.out))]))
+            print_result(score(record, channels, os.path.abspath(args.out)))
         return
     record, channels = run(args)
-    result = score(record, channels, os.path.abspath(args.out))
-    print(summary_table([result]))
-    if "silent_by_mode" in result:
-        print()
-        print(by_mode_table([result]))
+    print_result(score(record, channels, os.path.abspath(args.out)))
     if record["exit"] not in (0, -15):
         raise SystemExit(f"dsd-neo exited {record['exit']}")
 

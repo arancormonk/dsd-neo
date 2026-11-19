@@ -3331,6 +3331,41 @@ expect_dmr_service_options(const char* label, const dsd_state* state, unsigned i
     return 0;
 }
 
+/* One heap dsd_state the scan quiet cases share (issue #834): a state is about 2 MiB, so one keeps the test's memory to
+   one state's. Each case gets it released (what an earlier case left allocated in it, as reset_scan_opts_state()
+   releases) and cleared, as its own zeroed static was; freed at the end (qt_shared_state_free()). */
+static dsd_state* g_qt_shared_state;
+
+static void
+qt_shared_state_release(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+}
+
+static dsd_state*
+qt_shared_state(void) {
+    if (!g_qt_shared_state) {
+        g_qt_shared_state = (dsd_state*)calloc(1, sizeof *g_qt_shared_state);
+        if (!g_qt_shared_state) {
+            abort();
+        }
+        return g_qt_shared_state;
+    }
+    qt_shared_state_release(g_qt_shared_state);
+    DSD_MEMSET(g_qt_shared_state, 0, sizeof *g_qt_shared_state);
+    return g_qt_shared_state;
+}
+
+static void
+qt_shared_state_free(void) {
+    if (g_qt_shared_state) {
+        qt_shared_state_release(g_qt_shared_state);
+    }
+    free(g_qt_shared_state);
+    g_qt_shared_state = NULL;
+}
+
 /* A trunk scan started from the menu after the run's first stream landed the receiver (run_landed 1): its first park is
    a carrier move like any other, and holds each slot's voice until its call says. */
 static int
@@ -3344,25 +3379,25 @@ test_menu_started_trunk_scan_first_park_holds(void) {
         return 1;
     }
     static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
+    dsd_state* const state_p = qt_shared_state();
+    reset_scan_opts_state(&opts, state_p);
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;
-    state.run_landed = 1U;
+    state_p->run_landed = 1U;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(&opts, state_p, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "menu-started trunk scan init failed: %s\n", err);
         test_rc = 1;
     }
-    if (state.dmr_enc_class_held[0] != 1U || state.dmr_enc_class_held[1] != 1U) {
+    if (state_p->dmr_enc_class_held[0] != 1U || state_p->dmr_enc_class_held[1] != 1U) {
         DSD_FPRINTF(stderr,
                     "a trunk scan started after the receiver landed did not hold at its first park (held %u %u)\n",
-                    (unsigned)state.dmr_enc_class_held[0], (unsigned)state.dmr_enc_class_held[1]);
+                    (unsigned)state_p->dmr_enc_class_held[0], (unsigned)state_p->dmr_enc_class_held[1]);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(&opts, state_p);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -23305,24 +23340,24 @@ test_scan_quiet_rejected_sync_keeps_the_check(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_notices_watch(1);
     qt_decode_at(10U);
-    int rc = qt_pass_to_ready(&opts, &state);
-    qt_frame(&state, 0, 0U);
-    qt_frame(&state, 0, 0U);
-    rc |= qt_expect("rejected syncs: the check stays READY", scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
+    int rc = qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, 0, 0U);
+    qt_frame(state_p, 0, 0U);
+    rc |= qt_expect("rejected syncs: the check stays READY", scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
     rc |= qt_expect("rejected syncs: the hunt still hands back",
-                    dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_HAND_BACK);
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
     qt_decode_at(60U);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_active_target(&state, "the per-frame tick after a rejected frame", 1U);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the per-frame tick after a rejected frame", 1U);
     rc |= qt_expect("one NOTICE line", g_qt_notices == 1);
     qt_notices_watch(0);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23350,17 +23385,18 @@ test_scan_quiet_y_noise_frames_still_step(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     scan_quiet_eligibility e;
-    int rc = qt_y_ready(&opts, &state, &e);
-    qt_frame(&state, 0, 0U);
-    rc |= qt_expect("the frame boundary yields for the quiet result", dsd_engine_scan_quiet_frame_yield(&opts, &state));
-    rc |= qt_expect("the -Y step applies it", scan_quiet_apply(&opts, &state, SCAN_QUIET_OWNER_Y, &e) == 1);
+    int rc = qt_y_ready(&opts, state_p, &e);
+    qt_frame(state_p, 0, 0U);
+    rc |=
+        qt_expect("the frame boundary yields for the quiet result", dsd_engine_scan_quiet_frame_yield(&opts, state_p));
+    rc |= qt_expect("the -Y step applies it", scan_quiet_apply(&opts, state_p, SCAN_QUIET_OWNER_Y, &e) == 1);
     opts.scanner_mode = 0;
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23385,69 +23421,69 @@ test_scan_quiet_pending_verdict_holds_every_skip_point(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_decode_at(10U);
-    int rc = qt_pass_to_ready(&opts, &state);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    rc |= qt_expect_held(&opts, &state, "a frame still decoding: held");
-    dsd_engine_scan_quiet_note_evidence(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_frame_end(&state);
-    rc |= qt_expect_held(&opts, &state, "a PARTIAL frame: held");
+    int rc = qt_pass_to_ready(&opts, state_p);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    rc |= qt_expect_held(&opts, state_p, "a frame still decoding: held");
+    dsd_engine_scan_quiet_note_evidence(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_frame_end(state_p);
+    rc |= qt_expect_held(&opts, state_p, "a PARTIAL frame: held");
     qt_decode_at(100U);
-    qt_frame(&state, 0, 0U); /* an NXDN LICH reject: the weak streak stands, and so does the hold */
-    rc |= qt_expect_held(&opts, &state, "a rejected frame inside the hold: held");
+    qt_frame(state_p, 0, 0U); /* an NXDN LICH reject: the weak streak stands, and so does the hold */
+    rc |= qt_expect_held(&opts, state_p, "a rejected frame inside the hold: held");
     qt_decode_at(169U);
-    rc |= qt_expect_held(&opts, &state, "1 ms before the hold ends: held");
+    rc |= qt_expect_held(&opts, state_p, "1 ms before the hold ends: held");
     qt_decode_at(171U);
     rc |= qt_expect("the hold over: the hunt hands back",
-                    dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_HAND_BACK);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_active_target(&state, "the hold over: the tick skips", 1U);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the hold over: the tick skips", 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
 
     /* The frame after a PARTIAL one completes it (PROVEN): activity, the check ends and nothing skips. */
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_decode_at(10U);
-    rc |= qt_pass_to_ready(&opts, &state);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
     qt_decode_at(90U);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-    rc |= qt_expect("corroborated: no hand-back", dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_NONE);
-    qt_pass(&opts, &state);
-    rc |= expect_active_target(&state, "corroborated: the target stays", 0U);
-    rc |= qt_expect("corroborated: DONE", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= qt_expect("corroborated: no hand-back", dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "corroborated: the target stays", 0U);
+    rc |= qt_expect("corroborated: DONE", scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
 
     /* A new tune, the target landed again: another visit, whose check waits for no verdict the last one left. */
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    quiet_land_again(&state, k_qt_hz_a);
-    quiet_publish(&opts, &state);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    quiet_land_again(state_p, k_qt_hz_a);
+    quiet_publish(&opts, state_p);
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
     rc |= qt_expect("a new visit: the last one's hold is dropped",
-                    dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_HAND_BACK);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    quiet_rig_finish(&opts, state_p, dir, path);
 
     /* -Y: the frame-boundary yield, the step's apply and its decline all hold while a frame's verdict is pending. */
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     scan_quiet_eligibility e;
-    rc |= qt_y_ready(&opts, &state, &e);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 320U);
-    rc |= qt_expect("-Y PARTIAL: no frame-boundary yield", !dsd_engine_scan_quiet_frame_yield(&opts, &state));
+    rc |= qt_y_ready(&opts, state_p, &e);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 320U);
+    rc |= qt_expect("-Y PARTIAL: no frame-boundary yield", !dsd_engine_scan_quiet_frame_yield(&opts, state_p));
     rc |=
-        qt_expect("-Y PARTIAL: the step does not apply", scan_quiet_apply(&opts, &state, SCAN_QUIET_OWNER_Y, &e) == 0);
-    scan_quiet_reconcile_declined(&opts, &state, SCAN_QUIET_OWNER_Y, 0);
-    rc |= qt_expect("-Y PARTIAL: nor declines", scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
+        qt_expect("-Y PARTIAL: the step does not apply", scan_quiet_apply(&opts, state_p, SCAN_QUIET_OWNER_Y, &e) == 0);
+    scan_quiet_reconcile_declined(&opts, state_p, SCAN_QUIET_OWNER_Y, 0);
+    rc |= qt_expect("-Y PARTIAL: nor declines", scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
     qt_decode_at(10U + 321U);
-    rc |= qt_expect("-Y hold over: the frame boundary yields", dsd_engine_scan_quiet_frame_yield(&opts, &state));
-    rc |= qt_expect("-Y hold over: the step applies", scan_quiet_apply(&opts, &state, SCAN_QUIET_OWNER_Y, &e) == 1);
+    rc |= qt_expect("-Y hold over: the frame boundary yields", dsd_engine_scan_quiet_frame_yield(&opts, state_p));
+    rc |= qt_expect("-Y hold over: the step applies", scan_quiet_apply(&opts, state_p, SCAN_QUIET_OWNER_Y, &e) == 1);
     opts.scanner_mode = 0;
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23457,64 +23493,64 @@ test_scan_quiet_pending_verdict_holds_every_skip_point(void) {
    of the same tune keeps it. A state with no scan owner gets none made by any note. */
 static int
 test_scan_quiet_evidence_notes_bookkeeping(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof state);
+    dsd_state* const state_p = qt_shared_state();
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
     dsd_decode_clock_use_test(1000000000000ULL);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    dsd_engine_scan_quiet_note_evidence(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-    dsd_engine_scan_quiet_note_evidence(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_frame_end(&state);
-    dsd_engine_scan_quiet_pending_reset(&state);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    dsd_engine_scan_quiet_note_evidence(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    dsd_engine_scan_quiet_note_evidence(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_frame_end(state_p);
+    dsd_engine_scan_quiet_pending_reset(state_p);
     int rc = qt_expect("no owner: none made by a note",
-                       dsd_state_ext_get_const(&state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
-    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(&state);
+                       dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state_p);
     if (!owner) {
         return 1;
     }
-    qt_frame(&state, 0, 0U);
+    qt_frame(state_p, 0, 0U);
     rc |= qt_expect("a rejected frame: no activity, nothing pending",
                     owner->activity_seq == 0U && !owner->frame_pending && owner->pending_until_m < 1e-9);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    qt_note_proven(&state);
-    qt_note_proven(&state);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    qt_note_proven(state_p);
+    qt_note_proven(state_p);
     rc |= qt_expect("a frame with two passing checks: one activity", owner->activity_seq == 1U);
-    dsd_engine_scan_quiet_frame_end(&state);
-    qt_note_proven(&state);
-    qt_note_proven(&state);
+    dsd_engine_scan_quiet_frame_end(state_p);
+    qt_note_proven(state_p);
+    qt_note_proven(state_p);
     rc |= qt_expect("outside a frame: one activity a note", owner->activity_seq == 3U);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    dsd_engine_scan_quiet_note_evidence(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    qt_note_proven(&state);
-    dsd_engine_scan_quiet_frame_end(&state);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    dsd_engine_scan_quiet_note_evidence(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    qt_note_proven(state_p);
+    dsd_engine_scan_quiet_frame_end(state_p);
     rc |= qt_expect("PARTIAL then PROVEN: nothing pending", owner->pending_until_m < 1e-9 && owner->activity_seq == 4U);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    qt_note_proven(&state);
-    dsd_engine_scan_quiet_note_evidence(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_frame_end(&state);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    qt_note_proven(state_p);
+    dsd_engine_scan_quiet_note_evidence(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_frame_end(state_p);
     rc |= qt_expect("PROVEN then PARTIAL: nothing pending", owner->pending_until_m < 1e-9 && owner->activity_seq == 5U);
     const double now_m = dsd_decode_now_mono_s();
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
     rc |= qt_expect("a hold is capped at 1000 ms", fabs(owner->pending_until_m - (now_m + 1.0)) < 1e-6);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 80U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 80U);
     rc |= qt_expect("a shorter hold keeps the longer one", fabs(owner->pending_until_m - (now_m + 1.0)) < 1e-6);
     rc |= qt_expect("PARTIAL moves no activity", owner->activity_seq == 5U);
 
-    dsd_engine_scan_landing_note_row(&state, 0, 452000000L, 0U);
+    dsd_engine_scan_landing_note_row(state_p, 0, 452000000L, 0U);
     rc |= qt_expect("the same tune's landing keeps the hold", owner->pending_until_m > now_m);
-    dsd_engine_scan_landing_note_tune(&state);
+    dsd_engine_scan_landing_note_tune(state_p);
     rc |= qt_expect("a new scan tune clears it", owner->pending_until_m < 1e-9);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    dsd_engine_scan_landing_forget(&state);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    dsd_engine_scan_landing_forget(state_p);
     rc |= qt_expect("a forgotten landing clears it", owner->pending_until_m < 1e-9 && !owner->frame_pending);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    dsd_engine_scan_quiet_pending_reset(&state);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    dsd_engine_scan_quiet_pending_reset(state_p);
     rc |= qt_expect("the frame loop's early leave clears it", owner->pending_until_m < 1e-9 && !owner->frame_pending);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0);
     rc |= qt_expect("the setting's change clears it", owner->pending_until_m < 1e-9);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state_p);
     dsd_decode_clock_use_system();
     return rc;
 }
@@ -23532,35 +23568,35 @@ qt_counting_evidence(dsd_state* state, int level, uint32_t hold_ms) {
 static int
 test_scan_quiet_evidence_hook_off_is_one_load(void) {
     static dsd_opts opts;
-    static dsd_state state;
+    dsd_state* const state_p = qt_shared_state();
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
     dsd_frame_sync_hooks saved;
     dsd_frame_sync_hooks_get(&saved);
     dsd_frame_sync_hooks hooks = saved;
     hooks.content_evidence = qt_counting_evidence;
     dsd_frame_sync_hooks_set(&hooks);
     g_qt_evidence_calls = 0;
-    dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-    dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_frame_sync_hook_content_evidence(NULL, &state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    dsd_frame_sync_hook_content_evidence(NULL, state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     int rc = qt_expect("off: the engine is not asked", g_qt_evidence_calls == 0);
     /* The -Y step's checked content (issue #834 item 3) is noted whatever the setting: PROVEN only, one store each. An
        open verdict (PARTIAL) moves its own count and keeps its hold for the -Y step's frame boundary. */
-    rc |= qt_expect("off: PROVEN notes move the -Y content count, PARTIAL does not", state.scan_y_content_seq == 2U);
+    rc |= qt_expect("off: PROVEN notes move the -Y content count, PARTIAL does not", state_p->scan_y_content_seq == 2U);
     rc |= qt_expect("off: PARTIAL notes move the open-verdict count and keep the hold",
-                    state.scan_y_partial_seq == 1U && state.scan_y_partial_hold_ms == 160U);
-    dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PARTIAL, 80U);
+                    state_p->scan_y_partial_seq == 1U && state_p->scan_y_partial_hold_ms == 160U);
+    dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 80U);
+    rc |= qt_expect("off: the longest hold kept",
+                    state_p->scan_y_partial_seq == 2U && state_p->scan_y_partial_hold_ms == 160U);
     rc |=
-        qt_expect("off: the longest hold kept", state.scan_y_partial_seq == 2U && state.scan_y_partial_hold_ms == 160U);
-    rc |=
-        qt_expect("off: no scan owner made", dsd_state_ext_get_const(&state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
+        qt_expect("off: no scan owner made", dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
     opts.scan_skip_silent = 1;
-    dsd_frame_sync_hook_content_evidence(&opts, &state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     rc |= qt_expect("on: the engine is asked", g_qt_evidence_calls == 1);
-    rc |= qt_expect("no scan owner made", dsd_state_ext_get_const(&state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
+    rc |= qt_expect("no scan owner made", dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
     dsd_frame_sync_hooks_set(&saved);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state_p);
     return rc;
 }
 
@@ -23571,22 +23607,22 @@ test_scan_quiet_evidence_moves_no_trunk_activity(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_decode_at(10U);
-    const time_t cc_sync = state.last_cc_sync_time;
-    const double cc_sync_m = state.last_cc_sync_time_m;
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    qt_pass(&opts, &state);
-    int rc = qt_expect("no allowed activity", !dsd_engine_trunk_scan_quiet_activity_since(&state, 0.0));
+    const time_t cc_sync = state_p->last_cc_sync_time;
+    const double cc_sync_m = state_p->last_cc_sync_time_m;
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    qt_pass(&opts, state_p);
+    int rc = qt_expect("no allowed activity", !dsd_engine_trunk_scan_quiet_activity_since(state_p, 0.0));
     rc |= qt_expect("no hangtime stamp",
-                    state.last_cc_sync_time == cc_sync && fabs(state.last_cc_sync_time_m - cc_sync_m) < 1e-9);
-    rc |= expect_scan_timing(&state, "content notes", DSD_SCAN_STAY_IDLE_DWELL, 1002.0, 2000U, 1000U);
-    rc |= expect_active_target(&state, "content notes", 0U);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    state_p->last_cc_sync_time == cc_sync && fabs(state_p->last_cc_sync_time_m - cc_sync_m) < 1e-9);
+    rc |= expect_scan_timing(state_p, "content notes", DSD_SCAN_STAY_IDLE_DWELL, 1002.0, 2000U, 1000U);
+    rc |= expect_active_target(state_p, "content notes", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23630,39 +23666,39 @@ test_scan_quiet_frame_boundary_settles_before_requesting(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    uint64_t landed_ms = qt_publish_without_capture(&opts, &state, 10U);
-    int rc = qt_expect("no capture yet: WAIT_CAPTURE", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 10U);
+    int rc = qt_expect("no capture yet: WAIT_CAPTURE", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     rc |= qt_expect("the capture seen at a frame boundary: no request yet",
-                    qt_frame_at(&opts, &state, landed_ms, 30U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+                    qt_frame_at(&opts, state_p, landed_ms, 30U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
     rc |= qt_expect("124 ms after it: still none",
-                    qt_frame_at(&opts, &state, landed_ms, 154U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
-    (void)qt_frame_at(&opts, &state, landed_ms, 155U);
+                    qt_frame_at(&opts, state_p, landed_ms, 154U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+    (void)qt_frame_at(&opts, state_p, landed_ms, 155U);
     rc |= qt_expect("125 ms after it: requested",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
 
     /* The next visit: a legacy read at 10 ms finds nothing, so the next is due at 60 ms. A frame boundary at 30 ms sees
        the capture and does not move that schedule: the hunt's point at 59 ms reads nothing, the one at 60 ms
        requests, as with no frame boundary. */
-    quiet_land_again(&state, k_qt_hz_a);
-    landed_ms = qt_publish_without_capture(&opts, &state, 10U);
+    quiet_land_again(state_p, k_qt_hz_a);
+    landed_ms = qt_publish_without_capture(&opts, state_p, 10U);
     const int requests = g_tap.requests;
     quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
-    (void)qt_frame_at(&opts, &state, landed_ms, 30U);
+    (void)qt_frame_at(&opts, state_p, landed_ms, 30U);
     const int reads = g_tap.capture_reads;
     g_quiet_rt_ms = landed_ms + 59U;
     rc |= qt_expect("the hunt's point before the legacy recheck: no read, no request",
-                    dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_LIVE && g_tap.capture_reads == reads
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_LIVE && g_tap.capture_reads == reads
                         && g_tap.requests == requests);
     g_quiet_rt_ms = landed_ms + 60U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
     rc |= qt_expect("the hunt's point at the legacy recheck: requested at once, no settle",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == requests + 1);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23676,31 +23712,31 @@ qt_late_capture_case(int legacy_at_1010) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint64_t landed_ms = qt_publish_without_capture(&opts, &state, 0U);
+    const uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 0U);
     int rc = 0;
     for (uint64_t at = 100U; at < 900U; at += 80U) {
-        (void)qt_frame_at(&opts, &state, landed_ms, at);
+        (void)qt_frame_at(&opts, state_p, landed_ms, at);
     }
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     rc |= qt_expect("seen 900 ms in: no request",
-                    qt_frame_at(&opts, &state, landed_ms, 900U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+                    qt_frame_at(&opts, state_p, landed_ms, 900U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
     rc |= qt_expect("980 ms in: still settling",
-                    qt_frame_at(&opts, &state, landed_ms, 980U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+                    qt_frame_at(&opts, state_p, landed_ms, 980U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
     if (legacy_at_1010) {
         g_quiet_rt_ms = landed_ms + 1010U;
-        (void)dsd_engine_scan_quiet_service(&opts, &state);
+        (void)dsd_engine_scan_quiet_service(&opts, state_p);
         rc |= qt_expect("a legacy point past the bound requests the capture seen in time",
-                        scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     } else {
-        (void)qt_frame_at(&opts, &state, landed_ms, 1060U);
+        (void)qt_frame_at(&opts, state_p, landed_ms, 1060U);
         rc |= qt_expect("the first boundary past the settle requests it, past the bound",
-                        scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     }
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23709,30 +23745,30 @@ qt_capture_bound_case(int seen_then_gone) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint64_t landed_ms = qt_publish_without_capture(&opts, &state, 0U);
+    const uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 0U);
     int rc = 0;
     if (seen_then_gone) {
         quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
-        (void)qt_frame_at(&opts, &state, landed_ms, 900U);
+        (void)qt_frame_at(&opts, state_p, landed_ms, 900U);
         g_tap.have_capture = 0;
         rc |= qt_expect("the capture gone inside the settle: still waiting",
-                        qt_frame_at(&opts, &state, landed_ms, 1020U) == DSD_SCAN_QUIET_LIVE);
-        (void)qt_frame_at(&opts, &state, landed_ms, 1100U);
+                        qt_frame_at(&opts, state_p, landed_ms, 1020U) == DSD_SCAN_QUIET_LIVE);
+        (void)qt_frame_at(&opts, state_p, landed_ms, 1100U);
         rc |= qt_expect("gone past the settle: DONE, nothing requested",
-                        scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 0);
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == 0);
     } else {
-        (void)qt_frame_at(&opts, &state, landed_ms, 999U);
-        rc |= qt_expect("999 ms with no capture: waiting", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+        (void)qt_frame_at(&opts, state_p, landed_ms, 999U);
+        rc |= qt_expect("999 ms with no capture: waiting", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
         quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
         rc |= qt_expect("a capture first there at the bound comes too late: DONE",
-                        qt_frame_at(&opts, &state, landed_ms, 1000U) == DSD_SCAN_QUIET_NONE
-                            && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 0);
+                        qt_frame_at(&opts, state_p, landed_ms, 1000U) == DSD_SCAN_QUIET_NONE
+                            && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == 0);
     }
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23741,26 +23777,26 @@ qt_late_retry_case(uint64_t failed_at) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint64_t landed_ms = qt_landed_ms(&state);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
     g_quiet_rt_ms = landed_ms + failed_at - 200U;
-    quiet_publish(&opts, &state);
-    int rc = qt_expect("requested", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     g_quiet_rt_ms = landed_ms + failed_at - 10U;
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
     rc |= qt_expect("the failure collected at a frame boundary: waits for its capture again",
-                    qt_frame_at(&opts, &state, landed_ms, failed_at) == DSD_SCAN_QUIET_LIVE
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
-    rc |=
-        qt_expect("80 ms after it: settling",
-                  qt_frame_at(&opts, &state, landed_ms, failed_at + 80U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 1);
-    (void)qt_frame_at(&opts, &state, landed_ms, failed_at + 160U);
+                    qt_frame_at(&opts, state_p, landed_ms, failed_at) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    rc |= qt_expect("80 ms after it: settling",
+                    qt_frame_at(&opts, state_p, landed_ms, failed_at + 80U) == DSD_SCAN_QUIET_LIVE
+                        && g_tap.requests == 1);
+    (void)qt_frame_at(&opts, state_p, landed_ms, failed_at + 160U);
     rc |= qt_expect("the first boundary past the settle requests again",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23786,62 +23822,63 @@ qt_frame_lifecycle_case(int which) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_notices_watch(1);
     qt_decode_at(10U);
-    const uint64_t landed_ms = qt_landed_ms(&state);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
     g_tap.have_capture = 0;
     g_quiet_rt_ms = landed_ms + 10U;
-    qt_pass(&opts, &state); /* the visit's one publication */
-    int rc = qt_expect("published, waiting for its capture", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    qt_pass(&opts, state_p); /* the visit's one publication */
+    int rc = qt_expect("published, waiting for its capture", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     uint64_t at = 30U;
-    for (; scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE && at < 400U; at += 40U) {
-        (void)qt_frame_at(&opts, &state, landed_ms, at);
+    for (; scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && at < 400U; at += 40U) {
+        (void)qt_frame_at(&opts, state_p, landed_ms, at);
     }
     rc |= qt_expect("a frame boundary requests after the settle",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1 && at - 40U >= 155U);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1 && at - 40U >= 155U);
     const uint64_t requested_at = at - 40U;
     if (which == QT_FB_BUSY) {
         g_quiet_rt_ms = landed_ms + requested_at + 90U;
         quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
-        rc |= qt_expect("busy: DONE", qt_frame_at(&opts, &state, landed_ms, requested_at + 100U) == DSD_SCAN_QUIET_NONE
-                                          && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+        rc |= qt_expect("busy: DONE", qt_frame_at(&opts, state_p, landed_ms, requested_at + 100U) == DSD_SCAN_QUIET_NONE
+                                          && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
     } else if (which == QT_FB_RETRY_THEN_TERMINAL) {
         g_quiet_rt_ms = landed_ms + requested_at + 90U;
         quiet_tap_finish(0, DSD_SIGNAL_MEASURE_DROPPED);
-        (void)qt_frame_at(&opts, &state, landed_ms, requested_at + 100U);
-        rc |= qt_expect("a dropped request: waits again", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
-        (void)qt_frame_at(&opts, &state, landed_ms, requested_at + 240U);
+        (void)qt_frame_at(&opts, state_p, landed_ms, requested_at + 100U);
+        rc |= qt_expect("a dropped request: waits again", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+        (void)qt_frame_at(&opts, state_p, landed_ms, requested_at + 240U);
         rc |= qt_expect("asked again after the settle",
-                        scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
         g_quiet_rt_ms = landed_ms + requested_at + 300U;
         quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CLIPPED);
-        rc |=
-            qt_expect("clipped: DONE", qt_frame_at(&opts, &state, landed_ms, requested_at + 320U) == DSD_SCAN_QUIET_NONE
-                                           && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 2);
+        rc |= qt_expect("clipped: DONE",
+                        qt_frame_at(&opts, state_p, landed_ms, requested_at + 320U) == DSD_SCAN_QUIET_NONE
+                            && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == 2);
     } else if (which == QT_FB_DEADLINE) {
         const int cancels = g_tap.cancels;
-        (void)qt_frame_at(&opts, &state, landed_ms, requested_at + 399U);
-        rc |= qt_expect("399 ms with no answer: still requested", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+        (void)qt_frame_at(&opts, state_p, landed_ms, requested_at + 399U);
+        rc |=
+            qt_expect("399 ms with no answer: still requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
         rc |= qt_expect("400 ms: DONE and cancelled",
-                        qt_frame_at(&opts, &state, landed_ms, requested_at + 400U) == DSD_SCAN_QUIET_NONE
-                            && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.cancels == cancels + 1);
+                        qt_frame_at(&opts, state_p, landed_ms, requested_at + 400U) == DSD_SCAN_QUIET_NONE
+                            && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.cancels == cancels + 1);
     } else {
         g_quiet_rt_ms = landed_ms + requested_at + 90U;
         quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
         rc |= qt_expect("quiet: handed back at the frame boundary",
-                        qt_frame_at(&opts, &state, landed_ms, requested_at + 100U) == DSD_SCAN_QUIET_HAND_BACK);
+                        qt_frame_at(&opts, state_p, landed_ms, requested_at + 100U) == DSD_SCAN_QUIET_HAND_BACK);
         qt_decode_at(500U);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        rc |= expect_active_target(&state, "the per-frame tick after the frame boundary", 1U);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+        rc |= expect_active_target(state_p, "the per-frame tick after the frame boundary", 1U);
         rc |= qt_expect("one NOTICE line", g_qt_notices == 1);
     }
     qt_notices_watch(0);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834 scan quiet: frame-boundary lifecycle case %d\n", which);
     }
@@ -23867,48 +23904,48 @@ test_scan_quiet_sync_free_visit_timing(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint64_t landed_ms = qt_landed_ms(&state);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
     g_tap.have_capture = 0;
     g_quiet_rt_ms = landed_ms + 5U;
-    quiet_publish(&opts, &state);
+    quiet_publish(&opts, state_p);
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     g_quiet_rt_ms = landed_ms + 50U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
-    int rc = qt_expect("before the recheck: waiting", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
+    int rc = qt_expect("before the recheck: waiting", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     g_quiet_rt_ms = landed_ms + 55U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
     rc |= qt_expect("at the recheck: requested",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     g_quiet_rt_ms = landed_ms + 100U;
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
     g_quiet_rt_ms = landed_ms + 117U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
-    rc |= qt_expect("the failure collected", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
+    rc |= qt_expect("the failure collected", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     g_quiet_rt_ms = landed_ms + 118U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
     rc |= qt_expect("asked again at the next point, no settle",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
     g_quiet_rt_ms = landed_ms + 500U;
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_DROPPED);
     g_quiet_rt_ms = landed_ms + 600U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
     g_quiet_rt_ms = landed_ms + 601U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
-    rc |= qt_expect("asked a third time", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 3);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
+    rc |= qt_expect("asked a third time", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 3);
     g_quiet_rt_ms = landed_ms + 940U;
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
     g_quiet_rt_ms = landed_ms + 950U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
-    rc |= qt_expect("a late failure collected", scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
+    rc |= qt_expect("a late failure collected", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     g_quiet_rt_ms = landed_ms + 1012U;
-    (void)dsd_engine_scan_quiet_service(&opts, &state);
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
     rc |= qt_expect("its next point past the bound: DONE, as before",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == 3);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == 3);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23921,35 +23958,35 @@ test_scan_quiet_trunk_sync_free_publication(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     qt_notices_watch(1);
     qt_decode_at(10U);
-    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
     int rc = qt_expect("a tick with no pass owed that tunes nothing publishes nothing",
-                       scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED && g_tap.requests == 0
+                       scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED && g_tap.requests == 0
                            && g_tap.capture_reads == 0);
-    qt_pass(&opts, &state);
-    rc |= qt_expect("the outer pass publishes the landed target", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+    qt_pass(&opts, state_p);
+    rc |= qt_expect("the outer pass publishes the landed target", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
                                                                       && g_tap.requests == 1
-                                                                      && scan_quiet_key_get(&state).index == 0);
+                                                                      && scan_quiet_key_get(state_p).index == 0);
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
-    rc |= qt_expect("READY", quiet_service_after(&opts, &state, 10U) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("READY", quiet_service_after(&opts, state_p, 10U) == DSD_SCAN_QUIET_HAND_BACK);
     qt_decode_at(60U);
-    qt_pass(&opts, &state);
-    rc |= expect_active_target(&state, "the pass that skips", 1U);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "the pass that skips", 1U);
     rc |= qt_expect("the same tick publishes the target it tuned",
-                    g_qt_notices == 1 && scan_quiet_key_get(&state).index == 1
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+                    g_qt_notices == 1 && scan_quiet_key_get(state_p).index == 1
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
     const int reads = g_tap.capture_reads;
     g_quiet_rt_ms += 60U;
-    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
     rc |= qt_expect("a later tick with no pass owed that tunes nothing: no publication, no read",
-                    g_tap.capture_reads == reads && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
+                    g_tap.capture_reads == reads && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
     qt_notices_watch(0);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23962,46 +23999,46 @@ test_scan_quiet_suspension_owes_one_republication(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     const int T = SCAN_QUIET_OWNER_TRUNK;
-    quiet_publish(&opts, &state);
-    int rc = qt_expect("measuring", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
-    rc |= qt_expect("nothing owed while measuring", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("measuring", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    rc |= qt_expect("nothing owed while measuring", dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 0);
     g_tap.receive_seq++; /* a receive request the stream numbered, which may change the receive chain */
     g_tap.change_seq++;
     rc |=
-        qt_expect("the revision suspends", dsd_engine_scan_quiet_frame_service(&opts, &state, T) == DSD_SCAN_QUIET_NONE
-                                               && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+        qt_expect("the revision suspends", dsd_engine_scan_quiet_frame_service(&opts, state_p, T) == DSD_SCAN_QUIET_NONE
+                                               && scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED);
     rc |= qt_expect("another owner is owed nothing",
-                    dsd_engine_scan_quiet_take_republish(&opts, &state, SCAN_QUIET_OWNER_Y) == 0);
+                    dsd_engine_scan_quiet_take_republish(&opts, state_p, SCAN_QUIET_OWNER_Y) == 0);
     opts.scan_skip_silent = 0;
-    rc |= qt_expect("setting off: nothing owed", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
+    rc |= qt_expect("setting off: nothing owed", dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 0);
     opts.scan_skip_silent = 1;
-    rc |= qt_expect("owed once", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 1);
-    rc |= qt_expect("not twice for one suspension", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
-    quiet_publish(&opts, &state);
+    rc |= qt_expect("owed once", dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 1);
+    rc |= qt_expect("not twice for one suspension", dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 0);
+    quiet_publish(&opts, state_p);
     rc |= qt_expect("republished: measured again",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
-    dsd_engine_scan_quiet_note_change(&state);
-    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    dsd_engine_scan_quiet_note_change(state_p);
+    (void)dsd_engine_scan_quiet_frame_service(&opts, state_p, T);
     rc |= qt_expect("a new suspension (a note of change) owes again",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
-                        && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 1);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED
+                        && dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 1);
     g_tap.receive_seq++;
     g_tap.change_seq++;
-    quiet_publish(&opts, &state); /* restarts, then the revision moves under it */
-    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
-    quiet_publish(&opts, &state);
-    rc |= qt_expect("a publication clears what is owed", dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
-    dsd_engine_scan_landing_forget(&state);
-    (void)dsd_engine_scan_quiet_frame_service(&opts, &state, T);
+    quiet_publish(&opts, state_p); /* restarts, then the revision moves under it */
+    (void)dsd_engine_scan_quiet_frame_service(&opts, state_p, T);
+    quiet_publish(&opts, state_p);
+    rc |= qt_expect("a publication clears what is owed", dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 0);
+    dsd_engine_scan_landing_forget(state_p);
+    (void)dsd_engine_scan_quiet_frame_service(&opts, state_p, T);
     rc |= qt_expect("suspended because the landing went: nothing owed",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED
-                        && dsd_engine_scan_quiet_take_republish(&opts, &state, T) == 0);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED
+                        && dsd_engine_scan_quiet_take_republish(&opts, state_p, T) == 0);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -24014,25 +24051,25 @@ test_scan_quiet_repeated_profile_request_keeps_the_check(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    quiet_publish(&opts, &state);
-    int rc = qt_expect("measuring", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("measuring", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
     g_tap.receive_seq++; /* numbered, the change number left alone */
     rc |= qt_expect("a repeated profile request keeps the check measuring",
-                    dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_LIVE
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.cancels == 0);
+                    dsd_engine_scan_quiet_frame_service(&opts, state_p, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.cancels == 0);
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
     rc |= qt_expect("and its quiet result is handed back",
-                    quiet_service_after(&opts, &state, 10U) == DSD_SCAN_QUIET_HAND_BACK);
+                    quiet_service_after(&opts, state_p, 10U) == DSD_SCAN_QUIET_HAND_BACK);
     g_tap.receive_seq++;
     g_tap.change_seq++;
     rc |= qt_expect("a request that may change the chain suspends it",
-                    dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_NONE
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    dsd_engine_scan_quiet_frame_service(&opts, state_p, SCAN_QUIET_OWNER_TRUNK) == DSD_SCAN_QUIET_NONE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -24042,23 +24079,23 @@ test_scan_quiet_frame_boundary_setting_off(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_portable_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint64_t landed_ms = qt_publish_without_capture(&opts, &state, 10U);
+    const uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 10U);
     quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
     opts.scan_skip_silent = 0;
     const int reads = g_tap.capture_reads;
-    int rc = qt_expect("setting off: nothing", qt_frame_at(&opts, &state, landed_ms, 300U) == DSD_SCAN_QUIET_NONE
+    int rc = qt_expect("setting off: nothing", qt_frame_at(&opts, state_p, landed_ms, 300U) == DSD_SCAN_QUIET_NONE
                                                    && g_tap.capture_reads == reads && g_tap.requests == 0
-                                                   && scan_quiet_phase_get(&state) == SCAN_QUIET_WAIT_CAPTURE);
-    rc |= qt_expect("setting off: no -Y yield", dsd_engine_scan_quiet_frame_yield(&opts, &state) == 0);
+                                                   && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    rc |= qt_expect("setting off: no -Y yield", dsd_engine_scan_quiet_frame_yield(&opts, state_p) == 0);
     opts.scan_skip_silent = 1;
     rc |= qt_expect("another owner's frame boundary: nothing",
-                    dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_NONE
+                    dsd_engine_scan_quiet_frame_service(&opts, state_p, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_NONE
                         && g_tap.capture_reads == reads);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -24245,92 +24282,92 @@ test_scan_quiet_capture_refusals_are_cached(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (quiet_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
     /* Centred I/Q, then the stream moves to a new generation (the shift back on): the same visit starts again. */
     g_tap.capture.rotation_hz = 0;
-    scan_quiet_eligibility e = quiet_elig(&opts, &state);
-    int rc = qt_refused(&opts, &state, &e, "centred I/Q: SUSPENDED, nothing requested");
+    scan_quiet_eligibility e = quiet_elig(&opts, state_p);
+    int rc = qt_refused(&opts, state_p, &e, "centred I/Q: SUSPENDED, nothing requested");
     g_quiet_stream_gen++;
     quiet_tap_capture(k_qt_hz_a, g_quiet_stream_gen);
-    quiet_publish(&opts, &state);
+    quiet_publish(&opts, state_p);
     rc |= qt_expect("a new stream generation starts the same visit again",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
 
     /* An unvalidated rate, then another DSP rate in force: started again. */
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.requests = 0;
     g_tap.rate_ok = 0;
-    e = quiet_elig(&opts, &state);
-    rc |= qt_refused(&opts, &state, &e, "an unvalidated rate: SUSPENDED, nothing requested");
+    e = quiet_elig(&opts, state_p);
+    rc |= qt_refused(&opts, state_p, &e, "an unvalidated rate: SUSPENDED, nothing requested");
     g_tap.rate_ok = 1;
     e.dsp_rate_hz = 24000U;
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
-    rc |= qt_expect("a rate change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    scan_quiet_publish_eligibility(&opts, state_p, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |= qt_expect("a rate change starts it again", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
 
     /* An unvalidated analog width, then a width edit (the facts and the configured width move): started again. */
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.requests = 0;
     g_tap.analog_ok = 0;
-    e = quiet_elig(&opts, &state);
+    e = quiet_elig(&opts, state_p);
     qt_analog_facts(&e, DSD_ANALOG_DEMOD_FM, 13500U);
-    rc |= qt_refused(&opts, &state, &e, "an unvalidated analog width: SUSPENDED, nothing requested");
+    rc |= qt_refused(&opts, state_p, &e, "an unvalidated analog width: SUSPENDED, nothing requested");
     g_tap.analog_ok = 1;
     opts.analog_nfm_bandwidth_hz = 12500;
-    e = quiet_elig(&opts, &state);
+    e = quiet_elig(&opts, state_p);
     qt_analog_facts(&e, DSD_ANALOG_DEMOD_FM, 12500U);
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    scan_quiet_publish_eligibility(&opts, state_p, SCAN_QUIET_OWNER_TRUNK, &e);
     rc |= qt_expect("a width edit starts it again on the same visit",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED && g_tap.last_request.analog_width_hz == 12500U
-                        && g_tap.requests == 1);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
+                        && g_tap.last_request.analog_width_hz == 12500U && g_tap.requests == 1);
 
     /* Refused again, then the decoder set's classes change: started again. */
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.requests = 0;
     g_tap.analog_ok = 0;
-    e = quiet_elig(&opts, &state);
+    e = quiet_elig(&opts, state_p);
     qt_analog_facts(&e, DSD_ANALOG_DEMOD_AM, 7000U);
-    rc |= qt_refused(&opts, &state, &e, "an AM width it did not validate: SUSPENDED");
-    e = quiet_elig(&opts, &state);
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    rc |= qt_refused(&opts, state_p, &e, "an AM width it did not validate: SUSPENDED");
+    e = quiet_elig(&opts, state_p);
+    scan_quiet_publish_eligibility(&opts, state_p, SCAN_QUIET_OWNER_TRUNK, &e);
     rc |=
-        qt_expect("a decoder change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+        qt_expect("a decoder change starts it again", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
                                                           && g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_12K5);
 
     /* Refused, then a list edit (a revision): started again. */
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.requests = 0;
     g_tap.capture.rotation_hz = 0;
-    e = quiet_elig(&opts, &state);
-    rc |= qt_refused(&opts, &state, &e, "centred again: SUSPENDED");
+    e = quiet_elig(&opts, state_p);
+    rc |= qt_refused(&opts, state_p, &e, "centred again: SUSPENDED");
     g_tap.capture.rotation_hz = 384000;
-    state.trunk_scan_lists_seq++;
-    quiet_publish(&opts, &state);
-    rc |= qt_expect("a list change starts it again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    state_p->trunk_scan_lists_seq++;
+    quiet_publish(&opts, state_p);
+    rc |= qt_expect("a list change starts it again", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
 
     /* Refused, then the input switched away and back (the session refuses, then admits): started again. */
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.requests = 0;
     g_tap.rate_ok = 0;
-    e = quiet_elig(&opts, &state);
-    rc |= qt_refused(&opts, &state, &e, "an unvalidated rate again: SUSPENDED");
+    e = quiet_elig(&opts, state_p);
+    rc |= qt_refused(&opts, state_p, &e, "an unvalidated rate again: SUSPENDED");
     g_tap.rate_ok = 1;
     opts.audio_in_type = AUDIO_IN_PULSE;
-    quiet_publish(&opts, &state);
-    rc |= qt_expect("audio input: SUSPENDED", scan_quiet_phase_get(&state) == SCAN_QUIET_SUSPENDED);
+    quiet_publish(&opts, state_p);
+    rc |= qt_expect("audio input: SUSPENDED", scan_quiet_phase_get(state_p) == SCAN_QUIET_SUSPENDED);
     opts.audio_in_type = AUDIO_IN_RTL;
-    quiet_publish(&opts, &state);
-    rc |= qt_expect("the radio input back: started again", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    quiet_publish(&opts, state_p);
+    rc |= qt_expect("the radio input back: started again", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
 
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     g_tap.refuse = 1;
     const int before = g_tap.requests;
-    quiet_publish(&opts, &state);
+    quiet_publish(&opts, state_p);
     rc |= qt_expect("a refused request: DONE",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE && g_tap.requests == before + 1);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE && g_tap.requests == before + 1);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -24952,60 +24989,60 @@ qt_adoption_case(int adopt_before_ready, int corroborated) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (quiet_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
         return 1;
     }
-    const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
+    const uint32_t session = dsd_engine_scan_landing_get(state_p)->session;
     g_scan_tune_to_freq_pending = 1;
-    (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    (void)dsd_engine_trunk_scan_control(&opts, state_p, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     const uint64_t park = g_scan_tune_pending_request;
-    scan_quiet_eligibility e = quiet_elig(&opts, &state);
+    scan_quiet_eligibility e = quiet_elig(&opts, state_p);
     e.key.index = 1;
     e.key.session = session;
     e.key.tune_request = park;
     e.frequency_hz = k_qt_hz_b;
-    scan_quiet_publish_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK, &e);
+    scan_quiet_publish_eligibility(&opts, state_p, SCAN_QUIET_OWNER_TRUNK, &e);
     g_quiet_stream_gen = QT_GEN + 3;
     quiet_tap_capture(k_qt_hz_b, QT_GEN + 3);
     dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
-    (void)quiet_service_after(&opts, &state, 5U);
-    int rc = qt_expect("REQUESTED in flight", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    (void)quiet_service_after(&opts, state_p, 5U);
+    int rc = qt_expect("REQUESTED in flight", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
     /* The parked channel's first frame leaves a weak verdict (an NXDN SACCH CRC-6): PARTIAL, 160 ms. */
-    qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
     if (adopt_before_ready) {
         /* The per-frame tick records the park's landing while the check is still REQUESTED: adopted, not skipped. */
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        rc |= qt_expect("adopted while REQUESTED", scan_quiet_key_get(&state).epoch != 0U
-                                                       && scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
-                                                       && dsd_engine_trunk_scan_active_index(&state) == 1U);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+        rc |= qt_expect("adopted while REQUESTED", scan_quiet_key_get(state_p).epoch != 0U
+                                                       && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
+                                                       && dsd_engine_trunk_scan_active_index(state_p) == 1U);
     }
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
     rc |= qt_expect("READY while the verdict is pending: LIVE, no hand-back",
-                    quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_READY);
+                    quiet_service_after(&opts, state_p, 5U) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
     /* The per-frame tick (recording the park's landing here when it was not recorded yet) decides: held. */
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= qt_expect("adopted, not skipped", scan_quiet_key_get(&state).epoch != 0U
-                                                && scan_quiet_phase_get(&state) == SCAN_QUIET_READY
-                                                && dsd_engine_trunk_scan_active_index(&state) == 1U);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= qt_expect("adopted, not skipped", scan_quiet_key_get(state_p).epoch != 0U
+                                                && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY
+                                                && dsd_engine_trunk_scan_active_index(state_p) == 1U);
     rc |= qt_expect("still pending after the adoption: no hand-back",
-                    quiet_service_after(&opts, &state, 5U) == DSD_SCAN_QUIET_LIVE);
+                    quiet_service_after(&opts, state_p, 5U) == DSD_SCAN_QUIET_LIVE);
     if (corroborated) {
-        qt_frame(&state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
         rc |=
-            qt_expect("corroborated: DONE, the target stays", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
-                                                                  && dsd_engine_trunk_scan_active_index(&state) == 1U);
+            qt_expect("corroborated: DONE, the target stays", scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE
+                                                                  && dsd_engine_trunk_scan_active_index(state_p) == 1U);
     } else {
         /* The hold (decode clock) outlives the result's 250 ms age (realtime): DONE, no skip. */
         g_quiet_rt_ms += SCAN_QUIET_READY_MAX_AGE_MS;
-        rc |= qt_expect("aged out: no hand-back", quiet_service_after(&opts, &state, 1U) == DSD_SCAN_QUIET_NONE);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        rc |= qt_expect("aged out: DONE, the target stays", scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
-                                                                && dsd_engine_trunk_scan_active_index(&state) == 1U);
+        rc |= qt_expect("aged out: no hand-back", quiet_service_after(&opts, state_p, 1U) == DSD_SCAN_QUIET_NONE);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+        rc |= qt_expect("aged out: DONE, the target stays", scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE
+                                                                && dsd_engine_trunk_scan_active_index(state_p) == 1U);
     }
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834 scan quiet: adoption %s READY, %s\n", adopt_before_ready ? "before" : "after",
                     corroborated ? "corroborated" : "aged out");
@@ -25032,26 +25069,26 @@ test_scan_quiet_changing_candidates_are_bounded_by_the_result_age(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (quiet_rig_start_body(&opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
         return 1;
     }
     qt_decode_at(10U);
-    int rc = qt_pass_to_ready(&opts, &state);
+    int rc = qt_pass_to_ready(&opts, state_p);
     for (uint64_t ms = 0U; ms <= SCAN_QUIET_READY_MAX_AGE_MS; ms += 30U) {
         qt_decode_at(20U + ms);
-        qt_frame(&state, DSD_CONTENT_EVIDENCE_PARTIAL, 120U);
+        qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 120U);
         g_quiet_rt_ms += 30U;
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        rc |= expect_active_target(&state, "a changing candidate holds the skip", 0U);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+        rc |= expect_active_target(state_p, "a changing candidate holds the skip", 0U);
     }
     rc |= qt_expect("the result aged out: DONE, no hand-back",
-                    scan_quiet_phase_get(&state) == SCAN_QUIET_DONE
-                        && dsd_engine_scan_quiet_service(&opts, &state) == DSD_SCAN_QUIET_NONE);
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE
+                        && dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
     qt_decode_at(600U);
-    qt_pass(&opts, &state);
-    rc |= expect_active_target(&state, "no stale skip once the wait ends", 0U);
-    quiet_rig_finish(&opts, &state, dir, path);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "no stale skip once the wait ends", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -25063,21 +25100,21 @@ test_scan_quiet_stale_result_never_hands_back_from_a_frame(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (quiet_rig_start_body(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (quiet_rig_start_body(&opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_dwell_targets) != 0) {
         return 1;
     }
     qt_decode_at(10U);
-    qt_pass(&opts, &state);
-    int rc = qt_expect("the pass requests the check", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    qt_pass(&opts, state_p);
+    int rc = qt_expect("the pass requests the check", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
     g_quiet_rt_ms += 300U;
-    const int served = dsd_engine_scan_quiet_frame_service(&opts, &state, SCAN_QUIET_OWNER_TRUNK);
+    const int served = dsd_engine_scan_quiet_frame_service(&opts, state_p, SCAN_QUIET_OWNER_TRUNK);
     char label[160];
     DSD_SNPRINTF(label, sizeof label, "a result 300 ms old hands nothing back from a frame (service %d, phase %d)",
-                 served, (int)scan_quiet_phase_get(&state));
-    rc |= qt_expect(label, served == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
-    quiet_rig_finish(&opts, &state, dir, path);
+                 served, (int)scan_quiet_phase_get(state_p));
+    rc |= qt_expect(label, served == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26436,87 +26473,87 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_qt_warn_targets) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_warn_targets) != 0) {
         return 1;
     }
     qt_warns_watch();
     qt_decode_at(10U);
-    qt_pass(&opts, &state);
-    int rc = qt_expect("NFM 15 kHz is measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED
+    qt_pass(&opts, state_p);
+    int rc = qt_expect("NFM 15 kHz is measured", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
                                                      && g_tap.last_request.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
                                                      && g_tap.last_request.analog_width_hz == 15000U);
-    rc |= qt_expect_quiet(&state, "measuring", DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= qt_expect_quiet(state_p, "measuring", DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
     quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
-    (void)quiet_service_after(&opts, &state, 10U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "busy: the plain phrase", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    (void)quiet_service_after(&opts, state_p, 10U);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "busy: the plain phrase", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     rc |= qt_expect("a checked target logs nothing", g_qt_warns == 0);
 
-    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
     for (int pass = 0; pass < 3; pass++) {
         qt_decode_at(20U + 10U * (uint64_t)pass);
-        qt_pass(&opts, &state);
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        qt_pass(&opts, state_p);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
     }
-    rc |= qt_expect_quiet(&state, "no NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    rc |= qt_expect_quiet(state_p, "no NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
     rc |= qt_expect_warn("no NFM width: one line", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun", k_qt_hz_b,
                          DSD_ANALOG_DEMOD_FM, 0U);
     rc |= qt_expect("no width: nothing requested", g_tap.requests == 1);
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy");
-    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     for (int pass = 0; pass < 3; pass++) {
         qt_decode_at(60U + 10U * (uint64_t)pass);
-        qt_pass(&opts, &state);
+        qt_pass(&opts, state_p);
     }
-    rc |= qt_expect_quiet(&state, "a native Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER);
+    rc |= qt_expect_quiet(state_p, "a native Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER);
     rc |= qt_expect_warn("a native Airspy: one line", 2, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_AIRSPY, 0U, NULL,
                          0U, 0, 0U);
     rc |= qt_expect("a centred capture: nothing requested", g_tap.requests == 1);
-    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     qt_decode_at(100U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "the receiver outranks the width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "the receiver outranks the width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_TUNER);
     rc |= qt_expect("no second line for either", g_qt_warns == 2);
 
     /* Another device with a centred capture (an RTL-SDR with offset tuning): a new key, logged. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0");
-    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     qt_decode_at(110U);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect_warn("another device: logged", 3, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_CENTRED, 0U, NULL,
                          0U, 0, 0U);
 
     /* Off, then on: the visit on air waits for the next tune, which logs its line again. */
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0);
     qt_decode_at(120U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "the setting off", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "the setting off", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(&state, 1);
-    qt_next_target(&opts, &state, k_qt_hz_b, 0);
-    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     qt_decode_at(130U);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect_warn("off and on: logged again", 4, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_CENTRED, 0U, NULL,
                          0U, 0, 0U);
     /* The width target, still under the centred verdict; then the stream opens again (its shift and offset tuning are
        set anew there), and the verdict no longer stands for a visit that reads no capture of its own. */
-    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     qt_decode_at(140U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "the centred verdict in this stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "the centred verdict in this stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_TUNER);
     g_tap.session++;
     qt_decode_at(150U);
-    qt_pass(&opts, &state);
-    rc |=
-        qt_expect_quiet(&state, "a new stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "a new stream session", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_NO_WIDTH);
     rc |= qt_expect_warn("its own reason, logged", 5, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun", k_qt_hz_b, 0, 0U);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26531,17 +26568,17 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
+    dsd_state* const state_p = qt_shared_state();
     g_qt_monitor_nfm_hz = 0; /* the -8 monitor beside DMR, at no NFM width */
-    const int failed = qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets);
+    const int failed = qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets);
     g_qt_monitor_nfm_hz = -1;
     if (failed != 0) {
         return 1;
     }
     qt_warns_watch();
     qt_decode_at(10U);
-    qt_pass(&opts, &state);
-    int rc = qt_expect_quiet(&state, "the monitor has no width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_pass(&opts, state_p);
+    int rc = qt_expect_quiet(state_p, "the monitor has no width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                              DSD_SCAN_QUIET_REASON_NO_WIDTH);
     rc |= qt_expect_warn("the monitor has no width: one line naming the monitor", 1, DSD_SCAN_QUIET_REASON_NO_WIDTH,
                          SCAN_QUIET_WARN_MONITOR, 0U, "d", k_qt_hz_a, 0, 0U);
@@ -26550,32 +26587,32 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     /* An uncalibrated rate at the capture; a quiet result held for a frame's verdict reads Quiet check. */
     g_tap.rate_ok = 0;
     qt_decode_at(20U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
     rc |= qt_expect_warn("an uncalibrated rate: one line", 2, DSD_SCAN_QUIET_REASON_RATE, 0, 1536000U, NULL, 0U, 0, 0U);
     g_tap.rate_ok = 1;
-    quiet_land_again(&state, k_qt_hz_a);
+    quiet_land_again(state_p, k_qt_hz_a);
     qt_decode_at(30U);
-    rc |= qt_pass_to_ready(&opts, &state);
-    dsd_engine_scan_quiet_note_frame_sync(&state);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |=
-        qt_expect_quiet(&state, "READY held for a verdict", DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
-    rc |= expect_active_target(&state, "READY held: the target stays", 0U);
-    dsd_engine_scan_quiet_frame_end(&state);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    dsd_engine_scan_quiet_note_frame_sync(state_p);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "READY held for a verdict", DSD_SCAN_QUIET_STATUS_CHECKING,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    rc |= expect_active_target(state_p, "READY held: the target stays", 0U);
+    dsd_engine_scan_quiet_frame_end(state_p);
 
     /* Held: the dwell is paused and the phrase says so; nothing about the check. */
-    qt_mut_hold_toggle(&opts, &state);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "held", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
-    qt_mut_hold_toggle(&opts, &state);
+    qt_mut_hold_toggle(&opts, state_p);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "held", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    qt_mut_hold_toggle(&opts, state_p);
 
     /* An uncalibrated analog width at the capture. */
     g_tap.analog_ok = 0;
-    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
     qt_decode_at(40U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "an uncalibrated NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "an uncalibrated NFM width", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_WIDTH);
     rc |= qt_expect_warn("an uncalibrated NFM width: one line", 3, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "w", k_qt_hz_b,
                          DSD_ANALOG_DEMOD_FM, 13500U);
@@ -26587,28 +26624,28 @@ test_scan_quiet_trunk_publishes_each_cause(void) {
     DSD_SNPRINTF(live_dev, sizeof live_dev, "%s", opts.audio_in_dev);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqreplay:capture.iq.json");
     qt_decode_at(50U);
-    qt_pass(&opts, &state);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "an I/Q replay", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    qt_pass(&opts, state_p);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "an I/Q replay", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
     rc |= qt_expect_warn("an I/Q replay: one line", 4, DSD_SCAN_QUIET_REASON_INPUT, SCAN_QUIET_WARN_REPLAY, 0U, NULL,
                          0U, 0, 0U);
     /* An I/Q stream (issue #743) has no check either, and its line names it, never a replay. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "iqtcp:127.0.0.1:5000:240000:cs16");
     qt_decode_at(55U);
-    qt_pass(&opts, &state);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "an I/Q stream", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    qt_pass(&opts, state_p);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "an I/Q stream", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
     rc |= qt_expect_warn("an I/Q stream: one line", 5, DSD_SCAN_QUIET_REASON_INPUT, SCAN_QUIET_WARN_STREAM, 0U, NULL,
                          0U, 0, 0U);
 
     /* A trunked target is never checked: nothing to say, even on this input. */
-    qt_next_target(&opts, &state, 454000000U, 384000);
+    qt_next_target(&opts, state_p, 454000000U, 384000);
     qt_decode_at(60U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "a trunked target", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "a trunked target", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     rc |= qt_expect("no line for a trunked target", g_qt_warns == 5);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", live_dev);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26634,37 +26671,37 @@ test_scan_quiet_trunk_channel_lines_once_per_key(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
         return 1;
     }
     qt_warns_watch();
     uint64_t at = 10U;
     qt_decode_at(at);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     for (int lap = 0; lap < 3; lap++) {
         for (int t = 1; t <= 4; t++) {
-            qt_visit(&opts, &state, hz[t % 4], &at);
+            qt_visit(&opts, state_p, hz[t % 4], &at);
         }
     }
     int rc = qt_expect("two unchecked targets in turn: one line each", g_qt_warns == 2);
 
     /* Parked on the DMR target: the -8 monitor at a width the calibration does not cover, then at another one. */
-    qt_next_target(&opts, &state, hz[1], 384000);
-    qt_next_target(&opts, &state, hz[2], 384000);
+    qt_next_target(&opts, state_p, hz[1], 384000);
+    qt_next_target(&opts, state_p, hz[2], 384000);
     g_tap.analog_ok = 0;
     opts.monitor_input_audio = 1;
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     opts.analog_nfm_bandwidth_hz = 13500;
     at += 10U;
     qt_decode_at(at);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect_warn("the monitor at 13.5 kHz", 3, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "d", hz[2],
                          DSD_ANALOG_DEMOD_FM, 13500U);
     opts.analog_nfm_bandwidth_hz = 13000;
     at += 10U;
     qt_decode_at(at);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect_warn("the monitor at another width: logged again", 4, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "d",
                          hz[2], DSD_ANALOG_DEMOD_FM, 13000U);
     opts.monitor_input_audio = 0;
@@ -26672,16 +26709,16 @@ test_scan_quiet_trunk_channel_lines_once_per_key(void) {
 
     /* A target at its own width the calibration does not cover: refused at its capture, and at once on its next
        visit, with no capture wait and no Quiet check. */
-    qt_visit(&opts, &state, hz[3], &at);
+    qt_visit(&opts, state_p, hz[3], &at);
     rc |= qt_expect_warn("its own width, 13.5 kHz", 5, DSD_SCAN_QUIET_REASON_WIDTH, 0, 0U, "w", hz[3],
                          DSD_ANALOG_DEMOD_FM, 13500U);
-    qt_next_target(&opts, &state, hz[0], 384000);
-    qt_next_target(&opts, &state, hz[1], 384000);
-    qt_next_target(&opts, &state, hz[2], 384000);
+    qt_next_target(&opts, state_p, hz[0], 384000);
+    qt_next_target(&opts, state_p, hz[1], 384000);
+    qt_next_target(&opts, state_p, hz[2], 384000);
     const int reads = g_tap.capture_reads;
     const int requests = g_tap.requests;
-    qt_visit(&opts, &state, hz[3], &at);
-    rc |= qt_expect_quiet(&state, "the width-refused target's next visit", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_visit(&opts, state_p, hz[3], &at);
+    rc |= qt_expect_quiet(state_p, "the width-refused target's next visit", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_WIDTH);
     rc |= qt_expect("refused without a capture read", g_tap.capture_reads == reads && g_tap.requests == requests);
     rc |= qt_expect("no second line for it", g_qt_warns == 5);
@@ -26691,23 +26728,23 @@ test_scan_quiet_trunk_channel_lines_once_per_key(void) {
     dsd_scan_row_edit_value value;
     DSD_MEMSET(&value, 0, sizeof value);
     value.squelch_db = -45;
-    (void)dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "u1", DSD_SCAN_ROW_FIELD_SQUELCH,
+    (void)dsd_engine_trunk_scan_edit_target(&opts, state_p, state_p->scan_row_session, "u1", DSD_SCAN_ROW_FIELD_SQUELCH,
                                             DSD_SCAN_ROW_EDIT_SET, &value, NULL);
-    qt_visit(&opts, &state, hz[0], &at);
+    qt_visit(&opts, state_p, hz[0], &at);
     rc |=
         qt_expect_warn("an edit in place: logged again", 6, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "u1", hz[0], 0, 0U);
 
     /* The list loaded again: another coordinator, logged again. */
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(&opts, state_p);
     char err[256] = {0};
-    rc |= qt_expect("the list loads again", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0);
+    rc |= qt_expect("the list loads again", dsd_engine_trunk_scan_init(&opts, state_p, err, sizeof err) == 0);
     g_quiet_stream_gen++;
     quiet_tap_capture(hz[0], g_quiet_stream_gen);
     at += 10U;
     qt_decode_at(at);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect_warn("a list reload: logged again", 7, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "u1", hz[0], 0, 0U);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26721,7 +26758,7 @@ test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
     char path[DSD_TEST_PATH_MAX];
     char second[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
+    dsd_state* const state_p = qt_shared_state();
     if (make_temp_dir(dir, sizeof dir) != 0
         || write_targets_file_with_header(dir, k_squelch_targets_header, "d,dmr-conventional,452000000,,2000,1000,,\n",
                                           path, sizeof path)
@@ -26733,7 +26770,7 @@ test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
         return 1;
     }
     DSD_SNPRINTF(g_qt_second_list, sizeof g_qt_second_list, "%s", second);
-    const int failed = quiet_rig_init(&opts, &state, path);
+    const int failed = quiet_rig_init(&opts, state_p, path);
     g_qt_second_list[0] = '\0';
     if (failed != 0) {
         return 1;
@@ -26741,22 +26778,22 @@ test_scan_quiet_width_ahead_keeps_rate_precedence(void) {
     qt_warns_watch();
     g_tap.analog_ok = 0;
     qt_decode_at(10U);
-    qt_pass(&opts, &state);
-    int rc = qt_expect("list 1's target is measured", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    qt_pass(&opts, state_p);
+    int rc = qt_expect("list 1's target is measured", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
     /* List 2: another DSP rate, and a capture rate the calibration did not validate. */
     g_scan_dsp_rate_hz = 24000;
     g_tap.refused_rate_hz = 2400000U;
     const int reads = g_tap.capture_reads;
-    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
     g_tap.capture.rate_hz = 2400000U;
     qt_decode_at(20U);
-    qt_pass(&opts, &state);
-    rc |= qt_expect_quiet(&state, "list 2's width target at an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    qt_pass(&opts, state_p);
+    rc |= qt_expect_quiet(state_p, "list 2's width target at an uncalibrated rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_RATE);
     rc |= qt_expect("it read its own capture", g_tap.capture_reads > reads);
     rc |= qt_expect_warn("the rate line", 1, DSD_SCAN_QUIET_REASON_RATE, 0, 2400000U, NULL, 0U, 0, 0U);
     (void)remove(second);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26770,34 +26807,34 @@ test_scan_quiet_width_ahead_needs_the_stream_session(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
-    if (qt_warn_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
         return 1;
     }
     qt_warns_watch();
     g_tap.analog_ok = 0;
     qt_decode_at(10U);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     int rc =
-        qt_expect_quiet(&state, "refused at its capture", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
-    qt_next_target(&opts, &state, k_qt_hz_b, 384000);
+        qt_expect_quiet(state_p, "refused at its capture", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
     int reads = g_tap.capture_reads;
-    qt_next_target(&opts, &state, k_qt_hz_a, 384000);
+    qt_next_target(&opts, state_p, k_qt_hz_a, 384000);
     qt_decode_at(20U);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect("the next visit is refused ahead", g_tap.capture_reads == reads);
-    rc |= qt_expect_quiet(&state, "refused ahead", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    rc |= qt_expect_quiet(state_p, "refused ahead", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
     /* The stream opens again with its rotation off. */
-    qt_next_target(&opts, &state, k_qt_hz_b, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     g_tap.session++;
     reads = g_tap.capture_reads;
-    qt_next_target(&opts, &state, k_qt_hz_a, 0);
+    qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     qt_decode_at(30U);
-    qt_pass(&opts, &state);
+    qt_pass(&opts, state_p);
     rc |= qt_expect("another session: it reads its own capture", g_tap.capture_reads > reads);
-    rc |= qt_expect_quiet(&state, "a reopened stream with no rotation", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+    rc |= qt_expect_quiet(state_p, "a reopened stream with no rotation", DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_TUNER);
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -26886,13 +26923,13 @@ test_scan_quiet_input_has_no_check(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
-    static dsd_state state;
+    dsd_state* const state_p = qt_shared_state();
     if (make_runtime_targets("a,dmr-conventional,452000000,,2000,1000,\nb,dmr-conventional,453000000,,2000,1000,\n",
                              path, sizeof path, dir, sizeof dir)
         != 0) {
         return 1;
     }
-    reset_scan_opts_state(&opts, &state);
+    reset_scan_opts_state(&opts, state_p);
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
     opts.trunk_scan_list_count = 1;
     opts.scan_skip_silent = 1;
@@ -26903,7 +26940,7 @@ test_scan_quiet_input_has_no_check(void) {
     }
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
-    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+    int rc = dsd_engine_trunk_scan_init(&opts, state_p, err, sizeof err) != 0;
 #ifdef USE_RADIO
     /* A replay in force under a running scan (the scan itself refuses to start on one): its spec, which the session
        judges (issue #743), on the radio input it is. */
@@ -26915,20 +26952,20 @@ test_scan_quiet_input_has_no_check(void) {
 #endif
     for (int i = 0; i < 4; i++) {
         trunk_scan_test_set_now(0.1 * (double)(i + 1));
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
     }
-    const dsd_scan_timing_publication on = state.scan_timing;
+    const dsd_scan_timing_publication on = state_p->scan_timing;
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0);
     trunk_scan_test_set_now(0.6);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    const dsd_scan_timing_publication off = state.scan_timing;
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    const dsd_scan_timing_publication off = state_p->scan_timing;
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1);
     trunk_scan_test_set_now(0.7);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    dsd_engine_trunk_scan_shutdown(&opts, state_p);
     (void)dsd_test_capture_stderr_end(&cap);
     char buf[16384] = {0};
     (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
@@ -27380,6 +27417,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_hold_start_pending_outcomes);
     rc |= run_with_default_tune_hook(test_hold_start_refused_park_runs_on_unheld);
     rc |= run_with_default_tune_hook(test_hold_start_single_target_refused_stays_unheld);
+    qt_shared_state_free();
     return rc;
 }
 

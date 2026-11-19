@@ -1054,9 +1054,10 @@ dmr_sm_end_left_calls(dsd_opts* opts, dsd_state* state) {
 }
 
 /* What a DMR tune that left a carrier forgets of the left calls' decryption, as the release does
-   (dsd_engine_release_tuned_call_state()): both slots' ALG, key ID and MI, and each slot's MI chain. Otherwise a rigctl
-   tune, which keeps the symbol timeline, would step the left call's MI on and decrypt the next carrier's frames before
-   their own PI or LC with it. DMR's own tunes and an operator's manual move the machine judges reach this
+   (dsd_engine_release_tuned_call_state()): both slots' ALG, key ID and MI, and each slot's MI chain. A rigctl tune the
+   peer confirmed to another frequency starts a new symbol timeline (dsd_engine_note_rigctl_retune()), but the left
+   call's crypto is the call's, not the timeline's: without this a trusted chain would step the left call's MI on and
+   decrypt the next carrier's frames before their own PI or LC with it. DMR's own tunes and an operator's manual move the machine judges reach this
    (dmr_sm_note_operator_leave(), whose caller gates it on DMR owning the trunk or the owner not being known yet). With
    the owner unknown a P25 or NXDN carrier can be the one left; the move's own reset of the call tracking already
    cleared these shared fields there, so clearing them again takes nothing from it. */

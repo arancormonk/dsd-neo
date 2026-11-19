@@ -12762,8 +12762,10 @@ Private per-protocol modules worth knowing about:
     their end, keep the vendor annotations their FID names (`TXI;`, `PRIORITY;`), both slots' ALG, key ID and MI
     (`payload_*`, `payload_miP`/`miN`) and MI chain (`dmr_vcrypt_forget()`), so the next carrier's frames before their
     own PI or LC decrypt with none of it, and are held until that PI or LC says whether the call is encrypted
-    (`dmr_enc_class_hold()`, see the encrypted-audio verdict); a rigctl tune keeps the symbol timeline, so a trusted
-    chain would otherwise step the left call's MI on and decrypt them with it. DMR's other tunes that leave a carrier
+    (`dmr_enc_class_hold()`, see the encrypted-audio verdict). A rigctl tune the peer confirmed to another frequency
+    starts a new symbol timeline (`dsd_engine_note_rigctl_retune()` moves `symbol_clock_epoch`, at once or through
+    the decoder thread's notice), but one the peer refused, or one to the frequency it is on, keeps it, and a trusted
+    chain on a kept timeline would otherwise step the left call's MI on and decrypt them with it. DMR's other tunes that leave a carrier
     forget the same privacy bit, ALG, key ID, MI and MI chain, and hold the next carrier's voice, once the tune is
     accepted (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest move
     (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two read

@@ -119,6 +119,33 @@ class LeftMidCall(unittest.TestCase):
         self.assertEqual(out.get("dmr"), 0, f"200 ms of the call left: {out}")
 
 
+class SavedRunReport(unittest.TestCase):
+    """A run scored again (--rescore) or a frontend's (--analyze) reports by mode when the scoring asks for it, whatever
+    the run saved; a frontend run (--serve) saves its mode list, which the report reads."""
+
+    def test_rescore_by_mode_asks_for_the_report(self):
+        args, message = parse(*BASE_ARGS, "--rescore", "--by-mode")
+        self.assertIsNone(message)
+        record = bench.report_options({"scan": "typed"}, args)
+        self.assertTrue(record["by_mode"])
+        self.assertEqual(tuple(record["silent_modes"]), bench.ACTIVE)
+
+    def test_rescore_keeps_the_saved_modes(self):
+        args, _message = parse(*BASE_ARGS, "--rescore", "--by-mode")
+        record = bench.report_options({"scan": "typed", "silent_modes": ["dpmr"], "by_mode": False}, args)
+        self.assertTrue(record["by_mode"])
+        self.assertEqual(record["silent_modes"], ["dpmr"])
+
+    def test_serve_saves_its_modes(self):
+        args, message = parse(
+            "--serve", "5000", "--dmr-synth-gen", "gen", "--out", "out", "--silent-modes", "nxdn48,dpmr", "--by-mode"
+        )
+        self.assertIsNone(message)
+        record = bench.frontend_record(args)
+        self.assertEqual(record["silent_modes"], ["nxdn48", "dpmr"])
+        self.assertTrue(record["by_mode"])
+
+
 class StampedLines(unittest.TestCase):
     """dsd-neo's output, as stamp_lines() logs it, ends each line with one newline whatever the child wrote: LF, or CRLF
     on Windows. The log's readers match its lines up to their end."""
