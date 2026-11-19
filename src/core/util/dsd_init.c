@@ -1243,7 +1243,6 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_y_unchecked_seq = 0U;
     state->scan_y_unchecked_seen = 0U;
     state->scan_y_unchecked_m = -1.0;
-    state->scan_y_stay_content_seq = 0U;
     state->scan_y_call_seq = 0U;
     state->scan_y_stay_call_seq = 0U;
     state->scan_voice_gate_roll_seen = 0;

@@ -3238,17 +3238,17 @@ struct dsd_state {
     uint32_t scan_y_unchecked_seq;
     uint32_t scan_y_unchecked_seen;
     double scan_y_unchecked_m;
-    /* A call heard that no checked content shows (issue #834), for the -Y no-check status only: it moves as an analog
-     * call is admitted (the conventional NFM call begins once its reception ran the minimum through every gate,
-     * engine/analog_call.c), and as the decoder of a protocol with no content check took a frame on the carrier it
-     * was dispatched on, uninterrupted (processFrame(): X2-TDMA, whose decoder reports no verdict; ProVoice once its
-     * transmission is confirmed; TETRA once a burst's CRC passed). Raw carrier, which a tone-rejected transmission has
-     * too, and a sync no decoder took never move it. */
+    /* A call heard (issue #834), for the -Y no-check status only: it moves as the call store begins a call epoch
+     * (dsd_call_state_observe(), which takes only checked content), as an analog call is admitted (the conventional NFM
+     * call begins once its reception ran the minimum through every gate, engine/analog_call.c), and as the decoder of a
+     * protocol with no content check took a frame on the carrier it was dispatched on, uninterrupted (processFrame():
+     * X2-TDMA voice, whose decoder reports no verdict; ProVoice once its transmission is confirmed; TETRA once a
+     * burst's CRC passed). Checked content that is no call (a control channel's traffic), raw carrier, which a
+     * tone-rejected transmission has too, and a sync no decoder took never move it. */
     uint32_t scan_y_call_seq;
-    /* scan_y_content_seq and scan_y_call_seq when the receiver's stay with no -Y row landing in force began: the run's
-     * start, a -Y scan's start, or the last forget of a landing (dsd_engine_scan_y_stay_begin()). The -Y no-check
-     * status is shown on such a stay until either moves past them, as on a landed row's visit until a call. */
-    uint32_t scan_y_stay_content_seq;
+    /* scan_y_call_seq when the receiver's stay with no -Y row landing in force began: the run's start, a -Y scan's
+     * start, or the last forget of a landing (dsd_engine_scan_y_stay_begin()). The -Y no-check status is shown on such
+     * a stay until it moves past it, as on a landed row's visit until a call. */
     uint32_t scan_y_stay_call_seq;
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;

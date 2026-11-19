@@ -735,16 +735,18 @@ Generated (do not edit/commit):
       (`scan_quiet_stay_shows_status()`: IDLE_DWELL, which -Y's voice gate also publishes while a row qualifies, and
       -Y's HANGTIME; a raw sync no longer ends the check (R1), so a -Y row's hangtime or qualify window shows CHECKING
       whether or not it has synced, and a check ended by checked content or a carrier is DONE, so NONE). NO_CHECK on -Y
-      only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_content_seq`,
-      checked content, and `scan_y_call_seq`, a call no checked content shows: an analog call admitted, which
+      only while the row has carried no call this visit (R8's unsynced hangtime: `dsd_state::scan_y_call_seq`, a call
+      heard: one the call store began, which `dsd_call_state_observe()` moves as it begins a call epoch, from checked
+      content only; checked content that is no call, an idle control channel's traffic, moves nothing
+      (`test_y_quiet_no_check_outlasts_checked_control_traffic()`); an analog call admitted, which
       `analog_call_qualify()` moves as the NFM call begins once its reception passed every gate, never on raw carrier
       a tone check rejected, or a frame a decoder of a protocol with no content check took, which `processFrame()`
       moves after the handler only for a verdict that took the frame on its carrier, uninterrupted: every X2-TDMA voice frame (a data burst carries nothing checked and is no call),
       a ProVoice frame once a second sync confirmed the transmission, a TETRA burst whose CRC passed, never one sync,
-      against the values the landing recorded, `dsd_engine_scan_landing::y_content_seq`, `y_call_seq`), since under the
+      against the value the landing recorded, `dsd_engine_scan_landing::y_call_seq`), since under the
       legacy rule HANGTIME is the stay a call publishes from start to end; with no row landing in force (the start
       frequency before the first step, a step that forgot the landing and then failed, an input switch) against the
-      stay's own start instead (`dsd_state::scan_y_stay_content_seq`, `scan_y_stay_call_seq`, set by
+      stay's own start instead (`dsd_state::scan_y_stay_call_seq`, set by
       `dsd_engine_scan_y_stay_begin()` at the run's start, a -Y scan's start and every landing forget), so the session's
       INPUT reason shows on an idle start frequency and goes while a call is heard there (`quiet_fill_no_check()`).
       Activity that ends a -Y visit's suspended check (a carrier, which a short transmission no tone check admitted

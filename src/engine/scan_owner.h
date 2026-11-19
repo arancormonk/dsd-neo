@@ -39,11 +39,9 @@ typedef struct {
     /** The owner's tune sequence of that tune (dsd_engine_scan_owner::tune_seq): a visit tuned before skip-silent was
         turned on is never checked. */
     uint64_t tune_seq;
-    /** dsd_state::scan_y_content_seq and scan_y_call_seq when a -Y landing was noted (issue #834 R6, R8): the row
-        carried a call on this visit once either has moved past it, content a protocol's CRC/FEC gate passed, or a call
-        no checked content shows (an admitted analog call, a frame a decoder of a protocol with no content check took).
-        A raw sync or raw carrier moves neither. */
-    uint32_t y_content_seq;
+    /** dsd_state::scan_y_call_seq when a -Y landing was noted (issue #834 R6, R8): the row carried a call on this visit
+        once it has moved past it (a call the call store began, an admitted analog call, a frame a decoder of a protocol
+        with no content check took). Checked content that is no call, a raw sync or raw carrier moves nothing. */
     uint32_t y_call_seq;
 } dsd_engine_scan_landing;
 

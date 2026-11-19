@@ -15606,6 +15606,20 @@ yq_list(dsd_opts* opts, dsd_state* state, int rows, int typed, int on, long int 
     return (dsd_engine_scan_landing_is_row(state, 0) && g_rtl_tune_freq == (uint32_t)base_hz) ? 0 : 1;
 }
 
+/* A decoded call on the stay (issue #834): content its protocol's CRC/FEC gate passed, which the call store begins a
+   call to @p target from. Returns 0 once the call began. */
+static int
+yq_call_begins(const dsd_opts* opts, dsd_state* state, uint32_t target) {
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = target,
+                                       .policy_target_id = target,
+                                       .ota_source_id = 99U};
+    return expect_true("the call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
 static void
 yq_finish(dsd_opts* opts, dsd_state* state) {
     yq_stop();
@@ -15881,8 +15895,8 @@ yq_cause_case(int which) {
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "raw syncs and a re-armed anchor", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
-    /* A decoded call: content its protocol's CRC/FEC gate passed. */
-    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    /* A decoded call: content its protocol's CRC/FEC gate passed, which the call store begins a call from. */
+    rc |= yq_call_begins(opts, state, 9U);
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "a decoded call", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
                           DSD_SCAN_QUIET_REASON_NONE);
@@ -15921,14 +15935,14 @@ test_y_quiet_input_shows_until_a_call(void) {
         state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
     }
     state->lcn_freq_roll = 0;
-    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U); /* an earlier run's call */
+    yq_call_begins(opts, state, 301U); /* an earlier run's call */
     dsd_engine_note_run_start(opts, state);
     state->last_cc_sync_time = dsd_decode_time();
     yq_timing_tick(opts, state);
     int rc = expect_true("no row has landed", !dsd_engine_scan_landing_is_row(state, 0));
     rc |= yq_expect_quiet(state, "audio input, idle before the first landing", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
-    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= yq_call_begins(opts, state, 302U);
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, a call before the first landing", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
@@ -15937,7 +15951,7 @@ test_y_quiet_input_shows_until_a_call(void) {
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
                           DSD_SCAN_QUIET_REASON_INPUT);
-    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= yq_call_begins(opts, state, 303U);
     yq_timing_tick(opts, state);
     rc |= yq_expect_quiet(state, "audio input, a call on the landed row", DSD_SCAN_STAY_HANGTIME,
                           DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
@@ -16065,6 +16079,47 @@ test_y_quiet_no_check_outlasts_an_unqualified_carrier(int edited) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status after an unqualified carrier, edited %d\n", edited);
+    }
+    return rc;
+}
+
+/* issue #834: checked control traffic with no call on it (a P25 control channel's TSDUs, whose NID passes its BCH
+   check) is evidence for the quiet check and the hangtime, but no call: "No check" stays until a call is heard there,
+   a call the call store begins (docs/trunk-scan.md). */
+static int
+test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 514512500L) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a row refused for its width", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    /* Idle control traffic: content a gate passed, no call. */
+    state->scan_y_content_seq++;
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "checked control traffic is no call", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    /* A call: the store begins it. */
+    const dsd_call_observation call = {.protocol = DSD_SYNC_P25P1_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 300U,
+                                       .policy_target_id = 300U,
+                                       .ota_source_id = 30U};
+    rc |= expect_true("a call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a call was heard", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status through checked control traffic\n");
     }
     return rc;
 }
@@ -17228,6 +17283,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_refused_row_republished_on_a_new_generation();
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
     rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
+    rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
     rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
     rc |= test_trunk_quiet_noise_syncs_still_skip(1);
     rc |= test_trunk_quiet_noise_syncs_still_skip(0);

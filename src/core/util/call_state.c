@@ -715,6 +715,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         ext->epoch_sequence[slot] = call_state_next_nonzero(ext->epoch_sequence[slot]);
         snapshot->epoch = ext->epoch_sequence[slot];
         snapshot->transmission_epoch = snapshot->epoch;
+        state->scan_y_call_seq++; /* a call heard, for the -Y no-check status (issue #834) */
         snapshot->slot = slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
