@@ -107,6 +107,9 @@ class MapTileWorker : public QObject {
         std::function<qint64()> wallSecs;
         /** Monotonic milliseconds for the backoff; empty reads dsd_realtime_mono_ms(). */
         std::function<quint64()> monoMs;
+        /** Test seam, empty in the app: called on the worker's thread once a fetch's answer is in and its generation
+         *  and storage are fixed, before it is decoded or stored. */
+        std::function<void()> afterAnswerForTest;
     };
 
     explicit MapTileWorker(QObject* parent = nullptr);

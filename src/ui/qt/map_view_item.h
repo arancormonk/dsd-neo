@@ -618,6 +618,9 @@ class MapViewItem : public QQuickItem {
     };
 
     QHash<MapTileKey, HeldTile> m_tileImages;
+    /* Keys in view the server has no tile for (withdrawn): settled, so no stand-in covers them; for one source. */
+    QSet<MapTileKey> m_tileMissing;
+    QString m_tileMissingSource;
     quint64 m_tileSerial = 0;
 
     /* Sync-time buffers, reused (the GUI thread is blocked while they are used). */

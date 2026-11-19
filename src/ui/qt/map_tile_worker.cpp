@@ -8,6 +8,7 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QStringList>
 #include <Qt>
 #include <algorithm>
 #include <atomic>
@@ -66,6 +67,14 @@ tile_missing(const dsd_tile_fetch_response& resp) {
         return false;
     }
     return resp.http_status == 404 || resp.http_status == 410 || resp.http_status == 204 || resp.http_status == 200;
+}
+
+/* Whether an answer over the size cap still means "no usable tile here" (an oversized tile, or a hole with a large
+ * page) rather than an outage or a rate limit, which back off for the whole source like any other failure. */
+bool
+too_large_is_miss(const dsd_tile_fetch_response& resp) {
+    const long s = resp.http_status;
+    return s == 200 || s == 204 || s == 404 || s == 410;
 }
 
 MapTileCache::Storage
@@ -178,6 +187,54 @@ scan_placeholders(const QString& rest, int counts[3]) {
     return true;
 }
 
+/* A port: 1 to 5 digits, 1..65535. */
+bool
+valid_port(const QString& port) {
+    if (port.isEmpty() || port.size() > 5) {
+        return false;
+    }
+    int value = 0;
+    for (const QChar c : port) {
+        if (c < QLatin1Char('0') || c > QLatin1Char('9')) {
+            return false;
+        }
+        value = value * 10 + (c.unicode() - u'0');
+    }
+    return value >= 1 && value <= 65535;
+}
+
+/* A registered name: dot-separated labels of letters, digits, '-' and '_', none empty, none starting or ending with
+ * '-'. A bracketed IPv6 literal holds hex digits, ':' and '.' only. */
+bool
+valid_host(const QString& host) {
+    if (host.size() >= 2 && host.startsWith(QLatin1Char('[')) && host.endsWith(QLatin1Char(']'))) {
+        const QString inner = host.mid(1, host.size() - 2);
+        return inner.contains(QLatin1Char(':')) && std::all_of(inner.cbegin(), inner.cend(), [](QChar c) {
+                   return c.isDigit() || (c.toLower() >= QLatin1Char('a') && c.toLower() <= QLatin1Char('f'))
+                          || c == QLatin1Char(':') || c == QLatin1Char('.');
+               });
+    }
+    const QStringList labels = host.split(QLatin1Char('.'));
+    return !host.isEmpty() && std::all_of(labels.cbegin(), labels.cend(), [](const QString& label) {
+        return !label.isEmpty() && !label.startsWith(QLatin1Char('-')) && !label.endsWith(QLatin1Char('-'))
+               && std::all_of(label.cbegin(), label.cend(), [](QChar c) {
+                      return (c.unicode() < 0x80U && c.isLetterOrNumber()) || c == QLatin1Char('-')
+                             || c == QLatin1Char('_');
+                  });
+    });
+}
+
+/* @p authority is a valid host with an optional valid port. */
+bool
+valid_host_port(const QString& authority) {
+    const qsizetype close = authority.lastIndexOf(QLatin1Char(']'));
+    const qsizetype colon = authority.lastIndexOf(QLatin1Char(':'));
+    if (colon > close) {
+        return valid_host(authority.left(colon)) && valid_port(authority.mid(colon + 1));
+    }
+    return valid_host(authority);
+}
+
 /* The host and port at the start of @p rest (the template after its scheme); empty when there is none, or it holds a
  * brace or userinfo. */
 QString
@@ -188,9 +245,10 @@ template_authority(const QString& rest) {
         ++end;
     }
     QString authority = rest.left(end);
-    /* No userinfo: a credential there would be shown as the server's name and stored as the Host value. */
+    /* No userinfo: a credential there would be shown as the server's name and stored as the Host value. A host and
+     * port libcurl would refuse (no host, a port that is not a number) is refused here too, before it is saved. */
     if (authority.contains(QLatin1Char('{')) || authority.contains(QLatin1Char('}'))
-        || authority.contains(QLatin1Char('@'))) {
+        || authority.contains(QLatin1Char('@')) || !valid_host_port(authority)) {
         return QString();
     }
     return authority;
@@ -243,6 +301,8 @@ struct MapTileWorker::Core {
     Options options;
     QByteArray userAgent;
     dsd_tile_fetch_cancel* cancel = nullptr;
+    /* Connection reuse across this worker's fetches; only the worker's thread fetches with it. */
+    dsd_tile_fetch_session* session = nullptr;
 
     /* The worker thread's own. */
     std::unique_ptr<MapTileCache> cache;
@@ -252,7 +312,10 @@ struct MapTileWorker::Core {
     Core(const Core&) = delete;
     Core& operator=(const Core&) = delete;
 
-    ~Core() { dsd_tile_fetch_cancel_destroy(cancel); }
+    ~Core() {
+        dsd_tile_fetch_session_destroy(session);
+        dsd_tile_fetch_cancel_destroy(cancel);
+    }
 
     quint64
     monoMs() const {
@@ -409,6 +472,11 @@ MapTileWorker::Core::lookupNext(std::unique_lock<std::mutex>& lock) {
         job.ifModifiedSince = found.ifModifiedSince;
         network.push_back(job);
     }
+    if (pending.empty() && network.empty() && lastPosted == State::Retrying) {
+        /* The whole view came from the cache: nothing is waiting on the server, so the notice goes. The backoff
+         * deadline stays for whatever the next view needs to fetch. */
+        postState(State::Ready);
+    }
 }
 
 void
@@ -438,10 +506,18 @@ MapTileWorker::Core::fetchNext(std::unique_lock<std::mutex>& lock) {
     Exchange ex;
     perform(job, url, &ex);
     lock.lock();
-    /* Decided once the answer is in: a device-placed view that kept the fetch while it ran makes it memory only. */
+    /* Decided once the answer is in, and closed to adoption in the same step: a device-placed view that kept the
+     * fetch while it ran makes it memory only, and the generation and storage are fixed together. A view asking for
+     * the key from here on looks it up afresh with its own origin, so a retry can never carry a hand view's storage
+     * into a device-placed one. */
+    inflight = false;
     NetJob done = job;
     done.memoryOnly = inflightMemoryOnly;
+    done.generation = inflightGeneration;
     lock.unlock();
+    if (options.afterAnswerForTest) {
+        options.afterAnswerForTest();
+    }
     FetchResult result;
     if (stopping.load()) {
         /* Torn down while it ran: no decode and no disk write, so the thread leaves as soon as libcurl has. */
@@ -451,8 +527,6 @@ MapTileWorker::Core::fetchNext(std::unique_lock<std::mutex>& lock) {
     }
     dsd_tile_fetch_response_free(&ex.resp);
     lock.lock();
-    inflight = false;
-    done.generation = inflightGeneration;
     apply(done, result);
 }
 
@@ -465,6 +539,7 @@ MapTileWorker::Core::perform(const NetJob& job, const QString& url, Exchange* ex
     req.if_modified_since = job.ifModifiedSince.isEmpty() ? nullptr : job.ifModifiedSince.constData();
     req.cancel = cancel;
     req.transport = options.transport;
+    req.session = session;
     ex->requestTime = wallSecs();
     (void)dsd_tile_fetch(&req, &ex->resp);
     ex->responseTime = wallSecs();
@@ -514,8 +589,13 @@ MapTileWorker::Core::interpret(const NetJob& job, Exchange* ex, MapTileCache& ti
         case DSD_TILE_FETCH_ERR_CANCELLED: result.outcome = Outcome::Cancelled; return result;
         case DSD_TILE_FETCH_ERR_INVALID: result.outcome = Outcome::Invalid; return result;
         case DSD_TILE_FETCH_ERR_UNSUPPORTED: result.outcome = Outcome::Unsupported; return result;
-        /* Over the body or header cap: the same answer every time, so a miss for this tile, not a wait for all. */
-        case DSD_TILE_FETCH_ERR_TOO_LARGE: result.outcome = Outcome::Miss; break;
+        /* Over the body or header cap: an oversized tile is a miss for this tile, not a wait for all; an oversized
+         * 429 or 5xx page is still an outage (backoff, Retry-After, the cached copy kept). */
+        case DSD_TILE_FETCH_ERR_TOO_LARGE:
+            if (too_large_is_miss(*resp)) {
+                result.outcome = Outcome::Miss;
+            }
+            break;
         default:
             if (tile_missing(*resp)) {
                 result.outcome = Outcome::Miss;
@@ -606,6 +686,7 @@ MapTileWorker::MapTileWorker(QObject* parent) : MapTileWorker(Options(), parent)
 MapTileWorker::MapTileWorker(Options options, QObject* parent) : QObject(parent), m_core(std::make_shared<Core>()) {
     m_core->options = std::move(options);
     m_core->cancel = dsd_tile_fetch_cancel_create();
+    m_core->session = dsd_tile_fetch_session_create();
     char agent[kUserAgentCap];
     if (dsd_tile_fetch_user_agent(agent, sizeof(agent)) == 0) {
         m_core->userAgent = QByteArray(agent);

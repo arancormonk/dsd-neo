@@ -11,8 +11,9 @@
  * the response's metadata and its PNG, written whole through QSaveFile so a crash never pairs an image with another
  * response's validators. The directory is named by a hash, never by the template, which may carry a key. An entry
  * that cannot be read back (torn, foreign, not a PNG within 512×512) is deleted. The disk budget is one LRU across
- * every template's directory, stamped by the file's modification time, which a disk hit renews. CacheLocation is
- * not in the backup allowlist (backup_archive.h), so tiles are never backed up.
+ * every template's directory, stamped by the file's modification time, which a disk hit by hand renews (a memory hit
+ * by hand too, at most hourly). CacheLocation is not in the backup allowlist (backup_archive.h), so tiles are never
+ * backed up.
  *
  * A view the device's position placed (Locate me, Follow my position, a fit that took in the device's dot) must
  * leave no trace on disk: its lookups, stores and 304 merges take Storage::MemoryOnly. They never read, write, stamp
@@ -151,6 +152,8 @@ class MapTileCache {
     static constexpr qint64 kDiskCapBytes = 50LL * 1024 * 1024;
     static constexpr int kMemoryTiles = 64;
     static constexpr qint64 kDefaultFreshnessSecs = 7LL * 24 * 3600;
+    /** A memory hit by hand renews its file's LRU stamp at most this often (seconds). */
+    static constexpr qint64 kRecencyStepSecs = 3600;
     static constexpr int kMaxTileSide = 512;
 
     using WallClock = std::function<qint64()>;
@@ -253,6 +256,7 @@ class MapTileCache {
 
     qint64 now() const;
     bool loadFromDisk(const MapTileKey& key, MemoryEntry* entry);
+    void renewDiskStamp(const MapTileKey& key);
     bool writeEntry(const MapTileKey& key, const MapTileMeta& meta, const QByteArray& png);
     bool readPng(const MapTileKey& key, QByteArray* png) const;
     void remember(const MapTileKey& key, const MemoryEntry& entry);

@@ -484,6 +484,30 @@ stored_text(const QVariant& raw) {
 }
 
 /*
+ * A stored switch: a bool, or the text QSettings writes for one ("true"/"false", any case) or 1/0. Anything else, a
+ * garbled or hand-edited value such as "off", is @p fallback: QVariant::toBool() would read every other non-empty
+ * text as true, and switches like the map's tile opt-in must never turn on that way.
+ */
+bool
+stored_flag(const QVariant& raw, bool fallback) {
+    const QVariant value = as_scalar(raw);
+    if (!value.isValid()) {
+        return fallback;
+    }
+    if (value.typeId() == QMetaType::Bool) {
+        return value.toBool();
+    }
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QLatin1String("true") || text == QLatin1String("1")) {
+        return true;
+    }
+    if (text == QLatin1String("false") || text == QLatin1String("0")) {
+        return false;
+    }
+    return fallback;
+}
+
+/*
  * The saved map view is stored as JSON whole numbers, latitude and longitude in 1e-7 degrees and the zoom in
  * thousandths, so a value read back is exactly the one written and compares without a tolerance.
  */
@@ -733,7 +757,7 @@ AppPrefs::setAppearance(int mode) {
 
 bool
 AppPrefs::metricUnits() const {
-    return m_settings.value(key_name(kMetricUnits), false).toBool();
+    return stored_flag(m_settings.value(key_name(kMetricUnits)), false);
 }
 
 void
@@ -747,7 +771,7 @@ AppPrefs::setMetricUnits(bool on) {
 
 bool
 AppPrefs::onboardingDone() const {
-    return m_settings.value(key_name(kOnboardingDone), false).toBool();
+    return stored_flag(m_settings.value(key_name(kOnboardingDone)), false);
 }
 
 void
@@ -761,7 +785,7 @@ AppPrefs::setOnboardingDone(bool done) {
 
 bool
 AppPrefs::notificationExplained() const {
-    return m_settings.value(key_name(kNotificationExplained), false).toBool();
+    return stored_flag(m_settings.value(key_name(kNotificationExplained)), false);
 }
 
 void
@@ -775,7 +799,7 @@ AppPrefs::setNotificationExplained(bool value) {
 
 bool
 AppPrefs::backgroundListening() const {
-    return m_settings.value(key_name(kBackgroundListening), true).toBool();
+    return stored_flag(m_settings.value(key_name(kBackgroundListening)), true);
 }
 
 void
@@ -795,7 +819,7 @@ AppPrefs::screenMode() const {
     }
     // Never chosen: carry the old switch over. Reading only — the new key is
     // written when the user picks a mode, and the old one never is.
-    return m_settings.value(key_name(kLegacyKeepAwake), false).toBool() ? ScreenAlwaysOn : ScreenSystem;
+    return stored_flag(m_settings.value(key_name(kLegacyKeepAwake)), false) ? ScreenAlwaysOn : ScreenSystem;
 }
 
 void
@@ -840,7 +864,7 @@ AppPrefs::screenDelayChoices() const {
 
 bool
 AppPrefs::persistTgLockouts() const {
-    return m_settings.value(key_name(kPersistTgLockouts), true).toBool();
+    return stored_flag(m_settings.value(key_name(kPersistTgLockouts)), true);
 }
 
 void
@@ -854,7 +878,7 @@ AppPrefs::setPersistTgLockouts(bool on) {
 
 bool
 AppPrefs::skipEncrypted() const {
-    return m_settings.value(key_name(kSkipEncrypted), true).toBool();
+    return stored_flag(m_settings.value(key_name(kSkipEncrypted)), true);
 }
 
 void
@@ -883,7 +907,7 @@ AppPrefs::setHangtimeSec(double seconds) {
 
 bool
 AppPrefs::autoPpm() const {
-    return m_settings.value(key_name(kAutoPpm), false).toBool();
+    return stored_flag(m_settings.value(key_name(kAutoPpm)), false);
 }
 
 void
@@ -897,7 +921,7 @@ AppPrefs::setAutoPpm(bool on) {
 
 bool
 AppPrefs::relaxedCrc() const {
-    return m_settings.value(key_name(kRelaxedCrc), false).toBool();
+    return stored_flag(m_settings.value(key_name(kRelaxedCrc)), false);
 }
 
 void
@@ -954,7 +978,7 @@ AppPrefs::setBandwidthKhz(int khz) {
 
 bool
 AppPrefs::biasTee() const {
-    return m_settings.value(key_name(kBiasTee), false).toBool();
+    return stored_flag(m_settings.value(key_name(kBiasTee)), false);
 }
 
 void
@@ -1115,7 +1139,7 @@ AppPrefs::setSearchPort(int port) {
 
 bool
 AppPrefs::monitorDetailsExpanded() const {
-    return m_settings.value(key_name(kMonitorDetailsExpanded), false).toBool();
+    return stored_flag(m_settings.value(key_name(kMonitorDetailsExpanded)), false);
 }
 
 void
@@ -1129,7 +1153,7 @@ AppPrefs::setMonitorDetailsExpanded(bool on) {
 
 bool
 AppPrefs::chooseFilesInApp() const {
-    return m_settings.value(key_name(kChooseFilesInApp), false).toBool();
+    return stored_flag(m_settings.value(key_name(kChooseFilesInApp)), false);
 }
 
 void
@@ -1183,7 +1207,7 @@ AppPrefs::setSystemsSort(const QString& sort) {
 
 bool
 AppPrefs::roamingEnabled() const {
-    return m_settings.value(key_name(kRoamingEnabled), false).toBool();
+    return stored_flag(m_settings.value(key_name(kRoamingEnabled)), false);
 }
 
 void
@@ -1246,12 +1270,12 @@ AppPrefs::roamingMarginChoices() const {
 
 bool
 AppPrefs::autoStartOnAttach() const {
-    return m_settings.value(key_name(kAutoStartOnAttach), false).toBool();
+    return stored_flag(m_settings.value(key_name(kAutoStartOnAttach)), false);
 }
 
 void
 AppPrefs::setAutoStartOnAttach(bool value) {
-    if (m_settings.value(key_name(kAutoStartOnAttach), false).toBool() == value) {
+    if (stored_flag(m_settings.value(key_name(kAutoStartOnAttach)), false) == value) {
         return;
     }
     m_settings.setValue(key_name(kAutoStartOnAttach), value);
@@ -1543,7 +1567,7 @@ AppPrefs::setLastFixAt(qint64 value) {
 
 bool
 AppPrefs::recordCalls() const {
-    return m_settings.value(key_name(kRecordCalls), false).toBool();
+    return stored_flag(m_settings.value(key_name(kRecordCalls)), false);
 }
 
 void
@@ -1557,7 +1581,7 @@ AppPrefs::setRecordCalls(bool on) {
 
 bool
 AppPrefs::recordUnknownOnly() const {
-    return m_settings.value(key_name(kRecordUnknownOnly), false).toBool();
+    return stored_flag(m_settings.value(key_name(kRecordUnknownOnly)), false);
 }
 
 void
@@ -1643,7 +1667,7 @@ AppPrefs::analogPrerollChoices() {
 
 bool
 AppPrefs::mapTilesEnabled() const {
-    return m_settings.value(key_name(kMapTilesEnabled), false).toBool();
+    return stored_flag(m_settings.value(key_name(kMapTilesEnabled)), false);
 }
 
 void
@@ -1732,7 +1756,7 @@ AppPrefs::setMapViewport(const QVariantMap& view) {
     if (same) {
         return;
     }
-    m_viewportText = text;
+    m_viewportText = std::move(text);
     m_viewportHeld = true;
     m_viewportWrite.start();
     Q_EMIT mapViewportChanged();

@@ -1576,6 +1576,31 @@ test_map_prefs() {
     expect("map: an age that is no number reads as all", AppPrefs().mapAgeFilter() == 0);
     stored.setValue(QStringLiteral("map/ageFilter"), 120);
     expect("map: an age no pill offers reads as all", AppPrefs().mapAgeFilter() == 0);
+    // PR2 r2: the tile opt-in turns on only for a value that means true. A hand-edited "off" (which QVariant::toBool()
+    // reads as true), "on", a list or junk reads as off, so opening the map sends nothing.
+    for (const QVariant& notYes :
+         {QVariant(QStringLiteral("off")), QVariant(QStringLiteral("on")), QVariant(QStringLiteral("yes")),
+          QVariant(QStringLiteral("2")), QVariant(QStringList{QStringLiteral("true"), QStringLiteral("true")}),
+          QVariant(QString())}) {
+        stored.setValue(QStringLiteral("map/tilesEnabled"), notYes);
+        expect(qPrintable(QStringLiteral("map: tiles stay off for a stored ") + notYes.toString()),
+               !AppPrefs().mapTilesEnabled());
+    }
+    for (const QVariant& yes : {QVariant(true), QVariant(QStringLiteral("true")), QVariant(QStringLiteral("TRUE")),
+                                QVariant(QStringLiteral("1")), QVariant(1)}) {
+        stored.setValue(QStringLiteral("map/tilesEnabled"), yes);
+        expect(qPrintable(QStringLiteral("map: tiles are on for a stored ") + yes.toString()),
+               AppPrefs().mapTilesEnabled());
+    }
+    // The same rule for every stored switch: junk reads as the switch's default, never as on.
+    stored.setValue(QStringLiteral("listen/background"), QStringLiteral("nope"));
+    expect("prefs: a garbled switch reads as its default (on)", AppPrefs().backgroundListening());
+    stored.setValue(QStringLiteral("listen/background"), QStringLiteral("false"));
+    expect("prefs: a stored false is false", !AppPrefs().backgroundListening());
+    stored.setValue(QStringLiteral("roaming/enabled"), QStringLiteral("off"));
+    expect("prefs: a garbled opt-in reads as its default (off)", !AppPrefs().roamingEnabled());
+    stored.setValue(QStringLiteral("recording/recordCalls"), QStringLiteral("off"));
+    expect("prefs: and so does call recording's", !AppPrefs().recordCalls());
     clear_prefs_file();
 }
 

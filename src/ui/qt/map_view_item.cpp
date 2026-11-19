@@ -1178,6 +1178,21 @@ MapViewItem::keepStandIns(const QSet<MapTileKey>& inView, bool complete) {
         double distance = 0.0;
     };
 
+    /* A key the server answered "no tile" for counts as settled: it stays blank (a parent stand-in must not cover it
+     * for good). Misses are kept only for keys still in view, and only for the source that gave them. */
+    const QString source = m_tiles ? m_tiles->urlTemplate() : QString();
+    if (source != m_tileMissingSource) {
+        m_tileMissing.clear();
+        m_tileMissingSource = source;
+    }
+    for (auto it = m_tileMissing.begin(); it != m_tileMissing.end();) {
+        it = inView.contains(*it) ? std::next(it) : m_tileMissing.erase(it);
+    }
+    bool settled = true;
+    for (const MapTileKey& key : inView) {
+        settled = settled && (m_tileImages.contains(key) || m_tileMissing.contains(key));
+    }
+    complete = complete || settled;
     /* An image the cache rules do not let us show again (no-store, no-cache, must-revalidate) ends with its
      * presentation: once out of the view's tiles it is dropped, so it never stands in or comes back. */
     for (auto it = m_tileImages.begin(); it != m_tileImages.end();) {
@@ -1224,8 +1239,14 @@ MapViewItem::onTileReady(quint64 generation, int z, int x, int y, const QImage& 
     (void)stale;
     const MapTileKey key{z, x, y};
     if (image.isNull()) {
-        /* Withdrawn: the server has no usable tile there now, so a stale copy shown before goes at once. */
-        if (m_tileImages.remove(key) > 0) {
+        /* Withdrawn: the server has no usable tile there now, so a stale copy shown before goes at once, and the
+         * key counts as settled (blank), not as still loading. */
+        const bool held = m_tileImages.remove(key) > 0;
+        const bool wanted = tilesWanted() && m_requested.contains(key);
+        if (wanted) {
+            m_tileMissing.insert(key);
+        }
+        if (held || wanted) {
             polish();
             update();
         }
@@ -1235,6 +1256,7 @@ MapViewItem::onTileReady(quint64 generation, int z, int x, int y, const QImage& 
     if (!tilesWanted() || !m_requested.contains(key)) {
         return;
     }
+    m_tileMissing.remove(key);
     const auto held = m_tileImages.find(key);
     if (held != m_tileImages.end() && held.value().source.cacheKey() == image.cacheKey()) {
         /* The same image again (a memory hit for a re-requested view): keep its toned copy and texture. */

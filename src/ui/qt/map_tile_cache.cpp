@@ -391,8 +391,12 @@ bool
 mapTileReusable(const MapTileMeta& meta) {
     const map_tile_http::CacheControl cc = map_tile_http::parseCacheControl(meta.cacheControl);
     bool star = false;
-    (void)map_tile_http::parseVary(meta.vary, &star);
-    return !(cc.noStore || cc.noCache || cc.mustRevalidate || cc.syntaxError || star);
+    const QList<QByteArray> nominated = map_tile_http::parseVary(meta.vary, &star);
+    /* A representation chosen by a conditional field (Vary: If-None-Match) was selected for that request only: a
+     * lookup by an unconditional request does not match it, and neither may the canvas show it for another view. */
+    const bool conditional = nominated.contains(QByteArrayLiteral("if-none-match"))
+                             || nominated.contains(QByteArrayLiteral("if-modified-since"));
+    return !(cc.noStore || cc.noCache || cc.mustRevalidate || cc.syntaxError || star || conditional);
 }
 
 QImage
@@ -467,6 +471,11 @@ MapTileCache::lookup(const MapTileKey& key, const MapTileRequestFields& sent, St
     if (found != m_memory.cend()) {
         entry = found.value();
         remember(key, entry);
+        if (storage == Storage::DiskAndMemory && entry.persistable) {
+            /* A view by hand reuses it: its file counts as used too, so the disk LRU does not evict a tile looked at
+             * often in favour of one fetched once. A device-placed view touches nothing on disk. */
+            renewDiskStamp(key);
+        }
     } else if (storage == Storage::MemoryOnly || !loadFromDisk(key, &entry)) {
         return out;
     }
@@ -639,6 +648,29 @@ MapTileCache::loadFromDisk(const MapTileKey& key, MemoryEntry* entry) {
     entry->persistable = true;
     remember(key, *entry);
     return true;
+}
+
+void
+MapTileCache::renewDiskStamp(const MapTileKey& key) {
+    const QString path = pathFor(key);
+    if (path.isEmpty()) {
+        return;
+    }
+    ensureScanned();
+    const auto found = m_disk.constFind(QDir::cleanPath(path));
+    const qint64 stamp = now();
+    /* Coarse on purpose: a pan re-asks every tile in view, and one write an hour per tile is enough for the LRU. */
+    if (found == m_disk.cend() || stamp - found.value().stamp < kRecencyStepSecs) {
+        return;
+    }
+    const qint64 bytes = found.value().bytes;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadWrite | QIODevice::ExistingOnly)
+        || !file.setFileTime(QDateTime::fromSecsSinceEpoch(stamp), QFileDevice::FileModificationTime)) {
+        return;
+    }
+    file.close();
+    noteFile(path, bytes, stamp);
 }
 
 bool

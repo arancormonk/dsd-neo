@@ -518,6 +518,18 @@ test_held_tiles_follow_the_cache_rules() {
         f.map->testPolish(); /* the new zoom's tiles have not arrived */
         if (centreReusable) {
             assert(f.map->testHeldTiles() == 1 && f.map->testTileSerial(centre.z, centre.x, centre.y) != 0U);
+            /* PR2 r2: once every child the server answered is a definitive miss, the parent stops standing in: the
+             * missing tiles stay blank rather than showing enlarged parent imagery for good. */
+            const QList<MapTileKey> children = f.map->testRequestedTiles();
+            for (int i = 0; i + 1 < children.size(); ++i) {
+                f.map->testDeliverTile(children[i].z, children[i].x, children[i].y, QImage());
+                f.map->testPolish();
+                assert(f.map->testTileSerial(centre.z, centre.x, centre.y) != 0U); /* one child still loading */
+            }
+            const MapTileKey last = children.back();
+            f.map->testDeliverTile(last.z, last.x, last.y, QImage());
+            f.map->testPolish();
+            assert(f.map->testHeldTiles() == 0);
         } else {
             assert(f.map->testHeldTiles() == 0);
         }

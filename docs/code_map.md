@@ -4859,6 +4859,13 @@ suite runs under this compiler.
     - Every `curl_easy_setopt` result is checked, and any failure fails the fetch closed (`ERR_SETUP`, nothing sent).
     - Redirects are never followed: any 3xx but 304 is `ERR_REDIRECT`, a failure the worker backs off from.
     - Caps: body 512 KiB (`DSD_TILE_FETCH_BODY_CAP_BYTES`), header block 32 KiB; over either is `ERR_TOO_LARGE`.
+      When only the body was over, `http_status` and the header fields (Retry-After) are still filled, so the worker
+      can tell an oversized 429/5xx page (backoff) from an oversized tile (a miss). A URL libcurl rejects as malformed
+      (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
+    - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
+      for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
+      per-fetch easy and multi handles stay private, so cancel, caps and options are unchanged. Measured against the
+      default server, 6 sequential tiles: 1066 ms and a new connection each without it, 393 ms with one connection.
     - Response fields (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`, `Date`, `Age`, `Vary`, `Retry-After`) come
       raw from the final header block with `header_present`/`header_invalid` masks; interpreting them is the caller's.
       An `ETag` or `Last-Modified` with a tab is invalid on receipt: it could not be sent back in `If-None-Match` /
@@ -18092,7 +18099,9 @@ Qt Quick frontend (`src/ui/qt`):
     holds one response per tile, the one the request named in `If-None-Match`. One
     file per tile (`<z>-<x>-<y>.tile`: magic, metadata JSON, PNG; written whole by `QSaveFile`, owner-only) under
     `QStandardPaths::CacheLocation/map-tiles/<first 128 bits of the template's SHA-256>`, so the template itself is
-    never written. A lookup opens an entry with `ExistingOnly`, so a miss writes nothing to the directory.
+    never written. A lookup opens an entry with `ExistingOnly`, so a miss writes nothing to the directory. A memory hit
+    by hand renews its file's LRU stamp at most hourly (`kRecencyStepSecs`); a device-placed view's never does.
+    `mapTileReusable()` is also false for a response that varies on `If-None-Match`/`If-Modified-Since`.
     64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
     entries are deleted and stray temp files removed at the first scan. `Storage::MemoryOnly` (a view the device's
     position placed; spec 4.8, final review I1) never touches the disk: no read (a read can stamp the access time), no
@@ -18122,13 +18131,19 @@ Qt Quick frontend (`src/ui/qt`):
     never lead there (a regional server's 404s outside its coverage stay `Ready`). Network failures, 429, 5xx, redirects
     and a 304 that selects nothing keep the global backoff. `requestTiles(keys, origin)`: `ViewOrigin::FromDevice` makes
     the generation memory only; a fetch kept in flight takes the OR of every generation that kept it, read once its
-    answer is in, so a late result of a device-placed view never reaches the disk. Results go back with a queued
+    answer is in, so a late result of a device-placed view never reaches the disk. That read also closes the fetch to
+    adoption (generation and storage fixed together), so a view asking for the key while the answer is decoded looks
+    it up afresh, and a retry never carries a hand view's storage into a device-placed one. An oversized answer is a
+    miss only for 200, 204, 404 and 410; an oversized 429 or 5xx page backs off (Retry-After) and keeps the cached
+    copy. A view served wholly from the cache clears `Retrying` (the backoff deadline stays). Each worker passes one
+    `dsd_tile_fetch_session`, so its fetches reuse connections. Results go back with a queued
     `invokeMethod`; a fetch that returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor
     stored. Teardown never waits on the GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to
     the thread, which ends by itself. Every thread is in a registry, joined at the next start;
     `shutdownThreads(kShutdownJoinMs)` (2 s, android/main.cpp `TeardownStage("map tile threads")` right after
     `engine.reset()`, and a `qAddPostRoutine` on every platform) joins what ends in time and releases only an old
-    libcurl stuck in a name lookup. `validTemplate()`: `https://`, a host without braces or userinfo, each of
+    libcurl stuck in a name lookup. `validTemplate()`: `https://`, a host without braces or userinfo that is a valid
+    name (labels of letters, digits, `-`, `_`) or a bracketed IPv6 literal, with an optional port 1-65535, each of
     `{z}{x}{y}` exactly once (a repeat is refused), no other braces, at most 2048 B filled; `templateHost()` gives the
     host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL; the template
     is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
@@ -18225,8 +18240,9 @@ Qt Quick frontend (`src/ui/qt`):
     built once when the canvas shows again (or when a camera call such as `fitAll()` needs it). While a new
     zoom's tiles load, earlier zooms' tiles in view stand in (at most 64), except an image the cache rules do not let
     be shown again (`reusable` false), which goes as soon as its key leaves the view's tiles. A null `tileReady` image
-    withdraws its key at once, and the same image delivered again (a memory hit for a re-requested view) keeps its
-    toned copy and texture serial, so a pan does not re-tone and re-upload it.
+    withdraws its key at once and marks it settled (blank) for that source, so once every key in view is held or
+    withdrawn no parent stands in over a child the server does not have; the same image delivered again (a memory hit
+    for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
     The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
     also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
@@ -18307,7 +18323,9 @@ Qt Quick frontend (`src/ui/qt`):
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, kindText, receivedTime?}`, `{}`
     without one); `position_kind_text.h` names a report format in the same words on the map and on the pin.
-  - Prefs (spec 4.8; `AppPrefs`, all device-local, so never in a backup and untouched by a restore): `map/tilesEnabled`,
+  - Prefs (spec 4.8; `AppPrefs`, all device-local, so never in a backup and untouched by a restore): `map/tilesEnabled`
+    (on only for a stored `true`/`1`; any other text, "off" included, reads as off, as every stored switch reads junk
+    as its default through `stored_flag()`),
     `map/tileUrl` (a template can hold a key), `map/tileAttribution` (both read as the OpenStreetMap defaults when
     unset or empty), `map/ageFilter` (0, 900 or 3600) and `map/viewport` (`{latitude, longitude, zoom}`, stored as
     whole numbers: 1e-7°, 0.001 zoom). A view write is held in memory and reaches the file a second after the last

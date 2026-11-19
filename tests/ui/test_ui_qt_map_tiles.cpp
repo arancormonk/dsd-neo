@@ -595,6 +595,7 @@ struct SeenRequest {
     QString url;
     QByteArray ifNoneMatch;
     QByteArray ifModifiedSince;
+    const void* session = nullptr;
 };
 
 struct FakeServer {
@@ -679,6 +680,7 @@ fake_perform(void* ctx, const dsd_tile_fetch_request* req, dsd_tile_fetch_exchan
     seen.url = QString::fromLatin1(req->url);
     seen.ifNoneMatch = req->if_none_match != nullptr ? QByteArray(req->if_none_match) : QByteArray();
     seen.ifModifiedSince = req->if_modified_since != nullptr ? QByteArray(req->if_modified_since) : QByteArray();
+    seen.session = req->session;
     server->seen.push_back(seen);
     std::deque<FakeReply>& queue = server->scripted[seen.url];
     FakeReply reply = server->fallback;
@@ -727,7 +729,7 @@ struct Harness {
     std::vector<MapTileKey> gone;
     MapTileWorker* worker = nullptr;
 
-    explicit Harness(const QString& root) {
+    explicit Harness(const QString& root, std::function<void()> afterAnswer = std::function<void()>()) {
         transport.perform = fake_perform;
         transport.ctx = &server;
         server.fallback.headers = {"Cache-Control: max-age=600"};
@@ -737,6 +739,7 @@ struct Harness {
         options.transport = &transport;
         options.wallSecs = wall_now;
         options.monoMs = mono_now;
+        options.afterAnswerForTest = std::move(afterAnswer);
         worker = new MapTileWorker(options);
         worker->setUrlTemplate(kTemplate);
         QObject::connect(worker, &MapTileWorker::tileReady, worker,
@@ -1037,6 +1040,21 @@ test_templates() {
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png#{")));
     expect("a plain fragment after a full template is fine",
            MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z}/{x}/{y}.png#top")));
+    for (const char* bad :
+         {"https://:443/{z}/{x}/{y}.png", "https://tiles.example.test:nope/{z}/{x}/{y}.png",
+          "https://tiles.example.test:/{z}/{x}/{y}.png", "https://tiles.example.test:0/{z}/{x}/{y}.png",
+          "https://tiles.example.test:70000/{z}/{x}/{y}.png", "https://tiles..example.test/{z}/{x}/{y}.png",
+          "https://-tiles.example.test/{z}/{x}/{y}.png", "https://fe80::1/{z}/{x}/{y}.png",
+          "https://[::1/{z}/{x}/{y}.png", "https://[zz::1]/{z}/{x}/{y}.png"}) {
+        expect(qPrintable(QStringLiteral("a malformed host or port is refused before it is saved: ")
+                          + QString::fromLatin1(bad)),
+               !MapTileWorker::validTemplate(QString::fromLatin1(bad)));
+    }
+    expect("a bracketed IPv6 literal with a port is fine",
+           MapTileWorker::validTemplate(QStringLiteral("https://[::1]:8443/{z}/{x}/{y}.png"), &host)
+               && host == QStringLiteral("[::1]:8443"));
+    expect("a host with an underscore and a high port is fine",
+           MapTileWorker::validTemplate(QStringLiteral("https://my_tiles.example.test:65535/{z}/{x}/{y}.png")));
     expect("a placeholder in the host is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://{z}.example.test/{x}/{y}.png")));
     expect("spaces are refused", !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/{z} /{x}/{y}")));
@@ -1574,6 +1592,7 @@ test_vary_on_validator(const QString& root) {
         h.worker->requestTiles({a}, kByHand);
         expect("the revalidation's 200 arrives", wait_for([&h] { return h.tiles.size() == 3U; }));
         expect("it was conditional", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
+        expect("and, chosen by a conditional field, the canvas may not show it for another view", !h.tiles[2].reusable);
     }
     MapTileCache cache(dir, kTemplate, wall_now);
     expect("an unconditional request does not match a response that varies on If-None-Match",
@@ -1611,6 +1630,25 @@ test_reusable_flag(const QString& root) {
     expect("a memory hit carries it too", wait_for([&h] { return h.tiles.size() == 1U; }) && h.tiles[0].reusable);
 }
 
+/* PR2 r2: a memory hit by hand renews its file's LRU stamp (at most hourly); a device-placed view's hit never does. */
+void
+test_memory_hit_recency(const QString& root) {
+    MapTileCache cache(root, kTemplate, wall_now);
+    const MapTileKey k = key(22, 1, 1);
+    expect("a tile is stored", store_tile(cache, k, {"Cache-Control: max-age=86400"}));
+    const QString path = cache.pathFor(k);
+    const qint64 stored = QFileInfo(path).lastModified().toSecsSinceEpoch();
+    g_wall += 600;
+    expect("a memory hit by hand", cache.lookup(k, fields()).reuse == MapTileCache::Reuse::Fresh);
+    expect("within the hour renews nothing", QFileInfo(path).lastModified().toSecsSinceEpoch() == stored);
+    g_wall += 2 * 3600;
+    expect("a device-placed view's memory hit",
+           cache.lookup(k, fields(), kMemoryOnly).reuse == MapTileCache::Reuse::Fresh);
+    expect("touches nothing on disk", QFileInfo(path).lastModified().toSecsSinceEpoch() == stored);
+    expect("a memory hit by hand later", cache.lookup(k, fields()).reuse == MapTileCache::Reuse::Fresh);
+    expect("renews the file's stamp", QFileInfo(path).lastModified().toSecsSinceEpoch() == wall_now());
+}
+
 /* PR2 r1: a lookup miss creates no file, not even for a moment (the directory is not written). */
 void
 test_lookup_miss_writes_nothing(const QString& root) {
@@ -1626,6 +1664,116 @@ test_lookup_miss_writes_nothing(const QString& root) {
     QFileInfo after(dir);
     after.refresh();
     expect("and the directory was not written", after.lastModified() == before);
+}
+
+/* PR2 r2: a fetch closed to adoption once its answer is in, so a device-placed view that asks for the key while the
+ * answer is processed never inherits a hand view's storage, not even through the retry a failure queues. */
+void
+test_answer_closes_adoption(const QString& root) {
+    const QString dir = root + QStringLiteral("/adoption");
+    std::atomic<int> answers{0};
+    std::atomic<bool> holdNext{false};
+    std::atomic<bool> held{false};
+    std::atomic<bool> release{false};
+    Harness h(dir, [&]() {
+        answers++;
+        if (holdNext.exchange(false)) {
+            held = true;
+            for (int i = 0; i < 3000 && !release.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    });
+    h.worker->setEnabled(true);
+    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileKey a = key(18, 1, 1);
+    FakeReply first;
+    first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
+    first.body = make_png(256, 256, Qt::green);
+    h.server.script(a, first);
+    FakeReply other;
+    other.status = 304;
+    other.headers = {"ETag: \"v2\""}; /* selects nothing: a failure, retried unconditionally */
+    h.server.script(a, other);
+    h.worker->requestTiles({a}, kFromDevice);
+    expect("the device-placed view's tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    expect("in memory only", !QFileInfo::exists(paths.pathFor(a)));
+    g_wall += 120;
+    holdNext = true;
+    h.worker->requestTiles({a}, kByHand); /* stale in memory: revalidated by hand */
+    expect("the hand view's revalidation is answered", wait_for([&] { return held.load(); }));
+    h.worker->requestTiles({a}, kFromDevice); /* while that answer is processed */
+    release = true;
+    g_mono += 1000;
+    for (int i = 0; i < 20; ++i) {
+        h.worker->wakeForTest();
+        settle(20);
+        g_mono += 1000;
+    }
+    expect("the tile is fetched again", h.server.seenCount() >= 3U);
+    expect("and the retry of the hand view's fetch never wrote the device-placed view's tile",
+           !QFileInfo::exists(paths.pathFor(a)));
+}
+
+/* PR2 r2: an oversized error page is an outage, not a missing tile: it backs off (Retry-After) and keeps the cached
+ * copy; an oversized 200 is still a per-tile miss. */
+void
+test_oversized_error_backs_off(const QString& root) {
+    const QString dir = root + QStringLiteral("/oversized-error");
+    Harness h(dir);
+    h.worker->setEnabled(true);
+    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileKey a = key(19, 1, 1);
+    FakeReply first;
+    first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
+    first.body = make_png(256, 256, Qt::green);
+    h.server.script(a, first);
+    FakeReply busy;
+    busy.status = 503;
+    busy.headers = {"Retry-After: 30"};
+    busy.body = QByteArray(static_cast<int>(DSD_TILE_FETCH_BODY_CAP_BYTES) + 1024, 'x');
+    h.server.script(a, busy);
+    h.worker->requestTiles({a}, kByHand);
+    expect("the tile arrives", wait_for([&h] { return h.tiles.size() == 1U; }));
+    g_wall += 120;
+    h.worker->requestTiles({a}, kByHand);
+    expect("an oversized 503 puts the worker in Retrying",
+           wait_for([&h] { return h.worker->state() == MapTileWorker::State::Retrying; }));
+    expect("for its Retry-After", h.worker->backoffRemainingMsForTest() == 30000);
+    settle();
+    expect("the stale copy is not withdrawn", h.gone.empty());
+    expect("and stays cached", QFileInfo::exists(paths.pathFor(a)));
+}
+
+/* PR2 r2: a view served wholly from the cache clears the retry notice; the backoff for the next fetch stays. */
+void
+test_cached_view_clears_retrying(const QString& root) {
+    Harness h(root + QStringLiteral("/cached-ready"));
+    h.worker->setEnabled(true);
+    const MapTileKey cached = key(20, 1, 1);
+    h.worker->requestTiles({cached}, kByHand);
+    expect("a tile is cached", wait_for([&h] { return h.tiles.size() == 1U; }));
+    const MapTileKey a = key(20, 2, 1);
+    FakeReply busy;
+    busy.status = 503;
+    h.server.script(a, busy);
+    h.worker->requestTiles({a}, kByHand);
+    expect("a failure: Retrying", wait_for([&h] { return h.worker->state() == MapTileWorker::State::Retrying; }));
+    h.worker->requestTiles({cached}, kByHand);
+    expect("a view served from the cache alone is Ready again",
+           wait_for([&h] { return h.worker->state() == MapTileWorker::State::Ready; }));
+    expect("while the server's backoff still stands", h.worker->backoffRemainingMsForTest() > 0);
+}
+
+/* PR2 r2: every fetch of a worker passes its one session, so the built-in transport can reuse connections. */
+void
+test_worker_session(const QString& root) {
+    Harness h(root + QStringLiteral("/session"));
+    h.worker->setEnabled(true);
+    h.worker->requestTiles({key(21, 1, 1), key(21, 2, 1)}, kByHand);
+    expect("two tiles arrive", wait_for([&h] { return h.tiles.size() == 2U; }));
+    expect("both fetches name the worker's session",
+           h.server.seenAt(0).session != nullptr && h.server.seenAt(0).session == h.server.seenAt(1).session);
 }
 
 } // namespace
@@ -1653,6 +1801,7 @@ main(int argc, char** argv) {
     test_disk_lru_and_memory_bound(root + QStringLiteral("/c7"));
     test_memory_only_storage(root + QStringLiteral("/c8"));
     test_lookup_miss_writes_nothing(root + QStringLiteral("/c9"));
+    test_memory_hit_recency(root + QStringLiteral("/c10"));
 
     test_off_means_nothing(root);
     expect("the off test's thread ended", wait_threads_gone());
@@ -1678,6 +1827,10 @@ main(int argc, char** argv) {
     test_gone_on_revalidation(root);
     test_vary_on_validator(root);
     test_reusable_flag(root);
+    test_answer_closes_adoption(root);
+    test_oversized_error_backs_off(root);
+    test_cached_view_clears_retrying(root);
+    test_worker_session(root);
     expect("every worker thread so far ended", wait_threads_gone());
     test_shutdown_joins_threads(root);
 
