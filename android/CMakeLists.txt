@@ -1,6 +1,20 @@
 # Android app shell: Qt Quick UI + JNI lifecycle glue around the engine.
 # Built only for ANDROID with DSD_ENABLE_QT_UI=ON (see the root CMakeLists).
 
+# Release packages leave out Qt's QML debugger plugins by CMAKE_BUILD_TYPE (below), which a
+# multi-config generator leaves empty: its --config Release APK would keep them.
+get_property(
+    _dsd_android_multi_config
+    GLOBAL
+    PROPERTY GENERATOR_IS_MULTI_CONFIG
+)
+if(_dsd_android_multi_config)
+    message(
+        FATAL_ERROR
+        "The Android app is packaged with a single-configuration generator (Ninja, as android-ci uses with the android-app preset) and CMAKE_BUILD_TYPE; ${CMAKE_GENERATOR} would keep Qt's QML debugger plugins in a release APK."
+    )
+endif()
+
 find_package(
     Qt6
     REQUIRED

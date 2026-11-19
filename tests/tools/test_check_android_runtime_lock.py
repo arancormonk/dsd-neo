@@ -7,6 +7,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -231,6 +233,39 @@ class AndroidRuntimeLockTests(unittest.TestCase):
         code, err = self.fake.run(components=path)
         self.assertNotEqual(code, 0)
         self.assertIn("qt", err)
+
+
+@unittest.skipUnless(shutil.which("cmake") and shutil.which("ninja"), "cmake and ninja are required")
+class AndroidPackagingGenerator(unittest.TestCase):
+    """Release APKs leave out the QML debugger plugins by CMAKE_BUILD_TYPE, which a multi-config generator leaves
+    empty: android/CMakeLists.txt refuses such a generator before anything else, so no APK is built with them."""
+
+    REFUSAL = "The Android app is packaged with a single-configuration generator"
+
+    def configure(self, *args):
+        with tempfile.TemporaryDirectory(prefix="dsd-android-generator-") as work:
+            probe = Path(work) / "probe"
+            probe.mkdir()
+            (probe / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\n"
+                "project(probe NONE)\n"
+                f"add_subdirectory(\"{(ROOT / 'android').as_posix()}\" android)\n", encoding="utf-8")
+            # No Qt is looked for, so the single-config run stops at Qt and never builds anything.
+            return subprocess.run(["cmake", "-S", str(probe), "-B", str(Path(work) / "build"),
+                                   "-DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON", *args],
+                                  capture_output=True, text=True, check=False)
+
+    def test_multi_config_generator_is_refused(self):
+        result = self.configure("-G", "Ninja Multi-Config")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(self.REFUSAL, result.stderr)
+
+    def test_single_config_generator_passes_the_check(self):
+        for build_type in ("Release", "Debug"):
+            with self.subTest(build_type=build_type):
+                result = self.configure("-G", "Ninja", f"-DCMAKE_BUILD_TYPE={build_type}")
+                self.assertNotIn(self.REFUSAL, result.stderr)
+                self.assertIn("Qt6", result.stderr)
 
 
 if __name__ == "__main__":
