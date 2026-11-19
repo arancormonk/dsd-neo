@@ -157,6 +157,17 @@ function headingText(ddeg, ambiguous) {
     return ambiguous ? qsTr("%1, or the direction is not known").arg(text) : text
 }
 
+// LIP's time elapsed, for a report with no time of its own: the most the
+// position can have aged before the radio sent it (5 s, 5 min or 30 min),
+// said beside "Received", which is only when it arrived.
+function sentAgeText(maxSeconds) {
+    if (typeof maxSeconds !== "number" || !isFinite(maxSeconds) || maxSeconds <= 0)
+        return ""
+    if (maxSeconds < 60)
+        return qsTr("Measured less than %1 seconds before it was sent").arg(Math.round(maxSeconds))
+    return qsTr("Measured less than %1 minutes before it was sent").arg(Math.round(maxSeconds / 60))
+}
+
 // Decimetres in the unit shown.
 function altitudeText(dm, metric) {
     if (typeof dm !== "number" || !isFinite(dm))

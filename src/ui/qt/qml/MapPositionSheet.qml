@@ -310,7 +310,9 @@ ModalSheet {
             visible: text.length > 0
             step: block.stepKey + ":" + (block.fix.fixTime || 0)
             readonly property string at: block.fix.fixTime > 0 ? Qt.formatDateTime(new Date(block.fix.fixTime * 1000), "hh:mm:ss") : ""
-            text: at.length === 0 ? "" : block.reportAgeSeconds >= 0 ? qsTr("Measured %1").arg(MapText.agoText(block.reportAgeSeconds, at)) : qsTr("Measured at %1").arg(at)
+            // A report with no time of its own (LIP) may still say how old the
+            // position was when sent: that bound, not nothing.
+            text: at.length === 0 ? MapText.sentAgeText(block.fix.ageAtSendMaxSeconds) : block.reportAgeSeconds >= 0 ? qsTr("Measured %1").arg(MapText.agoText(block.reportAgeSeconds, at)) : qsTr("Measured at %1").arg(at)
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)

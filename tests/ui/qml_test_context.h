@@ -4647,7 +4647,8 @@ class Setup : public QObject {
 
     /**
      * @brief The optional report fields pushPosition() takes: speedDkmh, headingDdeg, altitudeDm, fixAgeSeconds (the
-     * report's own time that long before now), targetId, freqHz and kind (dsd_position_kind). Absent keys stay unknown.
+     * report's own time that long before now), targetId, freqHz, kind (dsd_position_kind) and ageClass (LIP's time
+     * elapsed code, 0..3). Absent keys stay unknown.
      */
     static void
     pushPositionDetails(const QVariantMap& fix, dsd_position_fix* f) {
@@ -4673,6 +4674,9 @@ class Setup : public QObject {
         }
         if (has("kind")) {
             f->kind = static_cast<uint8_t>(num("kind"));
+        }
+        if (has("ageClass")) {
+            f->age_class = static_cast<uint8_t>(num("ageClass"));
         }
     }
 

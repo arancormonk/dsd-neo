@@ -326,7 +326,10 @@ Item {
             }
             // Emergency has its tag; the rest of the states are words here: the
             // shown fix's, the track's source, then the ring's beside it.
-            readonly property var states: gap ? [] : MapText.fixWords(shownFix).concat(model.anonymous ? [qsTr("Radio not confirmed")] : [])
+            // A LIP report up to 5 or 30 minutes old when sent says so: the
+            // row's age is only when it arrived.
+            readonly property var states: gap ? [] : MapText.fixWords(shownFix).concat(shownFix.ageAtSendMaxSeconds >= 300 ? [MapText.sentAgeText(shownFix.ageAtSendMaxSeconds)] : [])
+                .concat(model.anonymous ? [qsTr("Radio not confirmed")] : [])
                 .concat(currentDrawn && ringDrawn ? [MapText.ringWords(model.unknownFix)] : [])
             readonly property string gapTitle: model.timeText && model.timeText.length > 0 ? qsTr("Positions may be missing from %1").arg(model.timeText) : qsTr("Positions may be missing")
             readonly property string gapDetail: qsTr("Reports that came while the app could not read them were lost. Trails break here.")

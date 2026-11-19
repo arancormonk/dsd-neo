@@ -18135,39 +18135,39 @@ Qt Quick frontend (`src/ui/qt`):
     Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
     epochs, backoff, Retry-After, UA, https only, each placeholder once, misses without backoff, `NoPngTiles` only
     from non-PNG 200s, device-placed views kept off disk (late results included), the exit join).
-  - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as
-    `positionView`): the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
+  - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as `positionView`):
+    the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
     `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at
     Stop. A track is a typed source (protocol family, scope, ID or callsign; D7 identity): 100 points each, 200 tracks,
     the row whose newest report arrived first evicted first, named or not (spec 4.5). Anonymous rows (one per report)
     are held to `kAnonymousCapacity` (50, a quarter): a new one past that share replaces the oldest anonymous row, so a
     hashed flood (every DMR USBD LIP is hashed) keeps at most 50 rows and at least 150 stay for named radios, while a
-    fresh anonymous fix still never gives way to a stale named track. Hashed or unverified
-    sources are anonymous single points with no trail or name; validity-unknown fixes (D11) are kept apart, hollow and
-    never on a trail; provisional formats (D12) are flagged per point (dashed). A trail breaks at a cursor loss, a queue
-    drop and a stream change, and the List shows one gap row ("Positions may be missing from …") only where reports may
-    really be missing (a stream read to its end after its run stopped is read through). Ages: SYSTEM fixes on the wall
-    clock; REPLAY fixes only on the sample of their own running replay that the view returns with the cursor, so no
-    clock is ever mixed; no age is older than any filter. `ageFilterSeconds` (0, 900, 3600) is the map's and the
-    List's filter; a 1 s timer runs while `ageing` (the map screen shows). Rows never move once placed (a11y).
-    The flat roles (flags, readings, `kindText`, `fixTime`) describe a track's newest report; `currentFix` and
-    `unknownFix` (maps, `{}` when none) describe the filled marker's own report and the open ring's, each with its
-    flags, readings, times, `newest`, its own recipient (`targetId`, `targetGroup`: a track's reports can each name
-    another, and the sheet's identity line and a List row name the shown report's) and `ageAtSendMaxSeconds` (LIP's
-    time elapsed: under 5 s, 5 min or 30 min old when sent, for a report with no time of its own). `clear()` is a
-    boundary at the published head (`position_skip_to_head()`): a report published after the last poll but before
-    Clear is never read; only reports published after it repopulate the map. `currentShown`/`unknownShown` (age roles,
-    so a filter change or an age tick announces them) say whether the canvas draws the marker and the ring under the
-    age filter. The detail sheet and the List describe only what is drawn (final review M1): the sheet's "Position"
-    block is the drawn marker's report, else the drawn ring's (else a History pin), with its own states, readings and
-    age; a drawn ring beside a drawn marker gets a "Newer report"/"Earlier report" block; a List row says the shown
-    report's states, format, distance and age, and "Newer report may be old or invalid" (with its format and weak
-    check) only for a drawn ring beside the marker. The sheet's ring block names its own recipient when it is not the
-    shown report's. The distance line says "from you" while a live fix is followed, "from your last known position"
-    once that fix is a minute old with nothing newer, "from your saved location" for the saved fix.
-    `positionView.trackCount` leaves the gap row out, so the filtered-empty state ("No positions in …", Show all) shows
-    after a loss too, on the map and below the List's gap row (declared after the List, so the gap row is read and
-    tabbed first).
+    fresh anonymous fix still never gives way to a stale named track. Hashed or unverified sources are anonymous single
+    points with no trail or name; validity-unknown fixes (D11) are kept apart, hollow and never on a trail; provisional
+    formats (D12) are flagged per point (dashed). A trail breaks at a cursor loss, a queue drop and a stream change, and
+    the List shows one gap row ("Positions may be missing from …") only where reports may really be missing (a stream
+    read to its end after its run stopped is read through). Ages: SYSTEM fixes on the wall clock; REPLAY fixes only on
+    the sample of their own running replay that the view returns with the cursor, so no clock is ever mixed; no age is
+    older than any filter. `ageFilterSeconds` (0, 900, 3600) is the map's and the List's filter; a 1 s timer runs while
+    `ageing` (the map screen shows). Rows never move once placed (a11y). The flat roles (flags, readings, `kindText`,
+    `fixTime`) describe a track's newest report; `currentFix` and `unknownFix` (maps, `{}` when none) describe the
+    filled marker's own report and the open ring's, each with its flags, readings, times, `newest`, its own recipient
+    (`targetId`, `targetGroup`: a track's reports can each name another, and the sheet's identity line and a List row
+    name the shown report's) and `ageAtSendMaxSeconds` (LIP's time elapsed: under 5 s, 5 min or 30 min old when sent,
+    for a report with no time of its own; the sheet says it in the Measured line, "Measured less than 30 minutes before
+    it was sent", and a List row from 5 min up). `clear()` is a boundary at the published head
+    (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
+    published after it repopulate the map. `currentShown`/`unknownShown` (age roles, so a filter change or an age tick
+    announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and the
+    List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report, else
+    the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn marker
+    gets a "Newer report"/"Earlier report" block; a List row says the shown report's states, format, distance and age,
+    and "Newer report may be old or invalid" (with its format and weak check) only for a drawn ring beside the marker.
+    The sheet's ring block names its own recipient when it is not the shown report's. The distance line says "from you"
+    while a live fix is followed, "from your last known position" once that fix is a minute old with nothing newer,
+    "from your saved location" for the saved fix. `positionView.trackCount` leaves the gap row out, so the
+    filtered-empty state ("No positions in …", Show all) shows after a loss too, on the map and below the List's gap row
+    (declared after the List, so the gap row is read and tabbed first).
   - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
     Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
     a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
@@ -18275,18 +18275,18 @@ Qt Quick frontend (`src/ui/qt`):
     before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
     refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
-    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow
-    on, precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it
-    stands when the lease is taken, since the host repeats nothing). A stream fix is live while at most
+    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow on,
+    precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
+    when the lease is taken, since the host repeats nothing). A stream fix is live while at most
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
     stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
     Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
-    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). On Android an Item stays visible while the
-    app is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended is away, Inactive is
-    not, as the feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`: the lease goes while
-    the app is away and comes back on return with follow on; the feed's own state slot runs first and finds no lease
-    held, so the platform feed starts once. A live fix moves the dot and the camera, nothing else. Desktop has no
-    location: the button is hidden.
+    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). On Android an
+    Item stays visible while the app is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended
+    is away, Inactive is not, as the feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`:
+    the lease goes while the app is away and comes back on return with follow on; the feed's own state slot runs first
+    and finds no lease held, so the platform feed starts once. A live fix moves the dot and the camera, nothing else.
+    Desktop has no location: the button is hidden.
   - Navigation: `mainRoot.mapOpen`, a `Loader` built at the first open and kept (its view, tile source and the List's
     place survive a close), declared after the session tools so it covers idle and session History. Its guard joins
     `callRecordingsOpen` at the six sites that block auto-start and the session tools under it. Entries: the session

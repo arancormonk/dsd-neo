@@ -944,6 +944,28 @@ Item {
             compare(item("mapAttributionText").text, "My own credit");
         }
 
+        // A LIP report with no time of its own says how old the position was when sent, at most: the sheet in its
+        // Measured line, the List from 5 minutes up (its row age is only when the report came).
+        function test_17m_lip_says_how_old_the_position_was_when_sent() {
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", kind: 5, ageClass: 2, ageSeconds: 20});
+            push({source: 1002, lat: 10.1, lon: 20.1, label: "Medic 3", kind: 12, ageClass: 0, ageSeconds: 20});
+            var e7 = trackNamed("Engine 7"), m3 = trackNamed("Medic 3");
+            screen.openTrack(e7, false);
+            compare(item("mapShownFixMeasured").text, "Measured less than 30 minutes before it was sent");
+            sheet().visible = false;
+            screen.openTrack(m3, false);
+            compare(item("mapShownFixMeasured").text, "Measured less than 5 seconds before it was sent");
+            sheet().visible = false;
+            screen.mapShown = false;
+            var list = item("mapList");
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(e7)) !== null; });
+            var said = list.itemAtIndex(positionView.rowForTrack(e7)).node.Accessible.description;
+            verify(said.indexOf("Measured less than 30 minutes before it was sent") >= 0, said);
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(m3)) !== null; });
+            said = list.itemAtIndex(positionView.rowForTrack(m3)).node.Accessible.description;
+            verify(said.indexOf("Measured") < 0, "under 5 s is not worth a List line: " + said);
+        }
+
         // The pin leaves the map as the marks do: its layer is clipped to the canvas.
         function test_17l_the_pin_is_clipped_to_the_canvas() {
             screen.showPin({uid: 41, name: "CALL 041", when: 1700000000, tg: 100, src: 2001, sourceName: "",
