@@ -12777,7 +12777,12 @@ Private per-protocol modules worth knowing about:
     thread applies the request before its next frame (`dsd_engine_apply_dmr_leave()`: in `processFrame()`, after the
     synced frame's ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state), as it
     applies the received identity's drop; a run's start clears one an earlier run left (`ENGINE_TRUNK_RETUNE_REGRESSION`
-    `check_dmr_leave_waits_for_the_decoder()`, `ENGINE_PROTOCOL_DISPATCH`). Tests:
+    `check_dmr_leave_waits_for_the_decoder()`, `ENGINE_PROTOCOL_DISPATCH`). An RTL tune still in flight (PENDING, the
+    controller's bounded wait ran out) with no rigctl leg having moved has not left the carrier yet, and a probe that
+    then fails never does: its decryption leave waits for the request (`dsd_engine_dmr_leave_after()`,
+    `dsd_state::dmr_leave_request`) and the decoder thread applies it once the request lands, or drops it when the
+    request fails (`dsd_engine_apply_dmr_leave()`); one with no request ID, or while another waits, leaves at once
+    (`check_dmr_leave_waits_for_a_pending_tune()`). Tests:
     `ENGINE_NO_CARRIER_RESET` (`test_dmr_trunk_hop_leaves_no_call_crypto()`,
     `test_dmr_rest_move_leaves_no_call_crypto()`, `test_dmr_composite_cc_grant_holds_nothing()`). A follow of the
     carrier the receiver is already on (a grant for the composite control channel's own payload, a Cap+ status naming

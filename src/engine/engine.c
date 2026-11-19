@@ -3773,6 +3773,7 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     }
     /* Nor does a leave an earlier run's watchdog tune asked for hold this run's first landing. */
     state->dmr_leave_pending = 0U;
+    state->dmr_leave_request = 0U;
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
     /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once

@@ -218,6 +218,9 @@ dsd_recent_activity_clear_all(dsd_state* state) {
 static int g_tune_generation_advance_calls = 0;
 static uint64_t g_tune_request_next = 0U;
 static uint64_t g_tune_request_pending = 0U;
+/* The request last completed, and how. */
+static uint64_t g_tune_request_done = 0U;
+static dsd_trunk_tune_result g_tune_request_done_result = DSD_TRUNK_TUNE_RESULT_FAILED;
 static dsdneoRuntimeConfig g_runtime_config;
 
 void
@@ -396,6 +399,9 @@ dsd_trunk_tuning_request_status(uint64_t request_id, double* out_completed_m) {
     if (out_completed_m) {
         *out_completed_m = 0.0;
     }
+    if (request_id != 0U && request_id == g_tune_request_done) {
+        return g_tune_request_done_result;
+    }
     return request_id != 0U && request_id == g_tune_request_pending ? DSD_TRUNK_TUNE_RESULT_PENDING
                                                                     : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
@@ -407,6 +413,8 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
         return;
     }
     g_tune_request_pending = 0U;
+    g_tune_request_done = request_id;
+    g_tune_request_done_result = result;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         dsd_trunk_tuning_generation_advance();
     }
@@ -2888,6 +2896,54 @@ check_dmr_leave_waits_for_the_decoder(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+#ifdef USE_RADIO
+/* Issue #834: an RTL tune still in flight (the controller's bounded wait ran out) has not moved the receiver yet, and
+   may never: a probe that then fails leaves it on the carrier, whose DMR calls keep their decryption and play on. The
+   DMR leave waits for the request: it is applied once the request lands, and never when it fails. A grant's tune and a
+   control-channel tune alike. */
+static void
+check_dmr_leave_waits_for_a_pending_tune(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_last_applied_freq = 851000000U;
+    opts->rtlsdr_center_freq = 851000000U;
+    for (int lands = 0; lands < 2; lands++) {
+        for (int cc = 0; cc < 2; cc++) {
+            seed_left_dmr_call(state);
+            const uint64_t id = dsd_trunk_tuning_request_begin();
+            const dsd_trunk_tune_result result =
+                cc ? dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 0, id)
+                   : dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, id);
+            assert(result == DSD_TRUNK_TUNE_RESULT_PENDING);
+            (void)dsd_engine_apply_dmr_leave(state);
+            if (state->dmr_so != 0x40 || state->dmr_enc_class_held[0] != 0U) {
+                DSD_FPRINTF(stderr, "a %s tune still in flight left the DMR calls' carrier (SO %u, held %u)\n",
+                            cc ? "control-channel" : "grant's", (unsigned)state->dmr_so,
+                            (unsigned)state->dmr_enc_class_held[0]);
+            }
+            assert(state->dmr_so == 0x40 && state->dmr_enc_class_held[0] == 0U);
+            dsd_trunk_tuning_request_complete(id, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+            (void)dsd_engine_apply_dmr_leave(state);
+            if (lands) {
+                /* Landed: the receiver left the carrier. */
+                assert(state->dmr_so == 0 && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+            } else {
+                /* Failed: still on the carrier, nothing left behind. */
+                assert(state->dmr_so == 0x40 && state->dmr_enc_class_held[0] == 0U);
+            }
+            assert(dsd_engine_apply_dmr_leave(state) == 0);
+        }
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_freq = 0U;
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+}
+#endif
+
 /* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
 static void
 auto_probe_session(dsd_opts* opts, dsd_state* state) {
@@ -3257,6 +3313,9 @@ main(void) {
     check_rxid_decoder_tunes(opts, state);
     check_rxid_tunes_reset_dmr_ras(opts, state);
     check_dmr_leave_waits_for_the_decoder(opts, state);
+#ifdef USE_RADIO
+    check_dmr_leave_waits_for_a_pending_tune(opts, state);
+#endif
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

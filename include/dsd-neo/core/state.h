@@ -3321,6 +3321,10 @@ struct dsd_state {
        outside the P25 SM tick guard, so no other thread writes them. Written under the guard by the watchdog, read and
        cleared by the decoder thread under it, before each frame; outside every snapshot copy range. */
     uint8_t dmr_leave_pending;
+    /* An RTL tune still in flight (issue #834) whose landing would leave the DMR calls' carrier: its request ID, or 0.
+       The decoder thread applies the decryption leave once the request lands, and drops it when the request fails,
+       since the receiver then stayed (dsd_engine_apply_dmr_leave()). Written and read as dmr_leave_pending is. */
+    uint64_t dmr_leave_request;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];

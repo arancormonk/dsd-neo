@@ -43,7 +43,7 @@ process_frame_apply_off_thread_retunes(dsd_state* state) {
     }
     /* What such a retune left of the DMR calls' decryption (dsd_engine_apply_dmr_leave()): one load while nothing
        waits. */
-    if (state->dmr_leave_pending != 0U) {
+    if (state->dmr_leave_pending != 0U || state->dmr_leave_request != 0U) {
         (void)dsd_engine_apply_dmr_leave(state);
     }
 }

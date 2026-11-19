@@ -306,12 +306,34 @@ dsd_engine_dmr_leave(dsd_state* state, unsigned int what) {
     dsd_engine_dmr_leave_now(state, what);
 }
 
+/* A move a tune still in flight would make (issue #834): the DMR leave waits for its request
+   (dsd_state::dmr_leave_request), so a tune that fails, and leaves the receiver where it was, takes nothing from the
+   calls there. One with no request ID to follow, or while another such leave still waits (either may land), leaves
+   now. */
+static void
+dsd_engine_dmr_leave_after(dsd_state* state, uint64_t request_id) {
+    if (request_id == 0U || state->dmr_leave_request != 0U) {
+        dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_DECRYPTION);
+    }
+    state->dmr_leave_request = request_id;
+}
+
 int
 dsd_engine_apply_dmr_leave(dsd_state* state) {
-    if (!state || state->dmr_leave_pending == 0U) {
+    if (!state) {
         return 0;
     }
-    const unsigned int what = state->dmr_leave_pending;
+    unsigned int what = state->dmr_leave_pending;
+    if (state->dmr_leave_request != 0U) {
+        const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(state->dmr_leave_request, NULL);
+        if (result != DSD_TRUNK_TUNE_RESULT_PENDING) {
+            state->dmr_leave_request = 0U;
+            what |= result == DSD_TRUNK_TUNE_RESULT_OK ? DSD_DMR_LEAVE_DECRYPTION : 0U;
+        }
+    }
+    if (what == 0U) {
+        return 0;
+    }
     state->dmr_leave_pending = 0U;
     dsd_engine_dmr_leave_now(state, what);
     return 1;
@@ -1218,14 +1240,22 @@ dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
    is left to that caller, so every move is judged once. Off the decoder thread (the P25 watchdog's tunes) the DMR part
    waits for the decoder thread's next frame (dsd_engine_dmr_leave()). */
 static void
-dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
+dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq,
+                               uint64_t pending_request) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
         if (!dsd_trunk_tuning_caller_judges()) {
-            dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_DECRYPTION);
+            dsd_engine_dmr_leave_after(state, pending_request);
         }
     }
+}
+
+/* The request a tune's DMR leave waits for (dsd_engine_dmr_leave_after()): an RTL tune still in flight that no rigctl
+   leg moved first, else 0, a move made. */
+static uint64_t
+dsd_engine_tune_pending_request(dsd_trunk_tune_result result, uint64_t request_id) {
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING && !s_backend_rigctl_moved ? request_id : 0U;
 }
 
 /**
@@ -1272,7 +1302,7 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     if (retunes) {
         /* The release ended the voice channel's calls before the receiver's audio of it closes. */
         dsd_trunk_tuning_caller_judges_begin();
-        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc);
+        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc, 0U);
         dsd_trunk_tuning_caller_judges_end();
     }
 
@@ -1405,7 +1435,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     dsd_engine_update_vc_tune_state(opts, state, freq);
-    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq, dsd_engine_tune_pending_request(result, request_id));
     return result;
 }
 
@@ -1490,7 +1520,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     /* A hunt's probe, a settle, a protocol's own return: each leaves its carrier, which may carry voice (a DMR XPT or
        Capacity Plus control channel is a voice repeater). */
-    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq, dsd_engine_tune_pending_request(result, request_id));
     return result;
 }
 
