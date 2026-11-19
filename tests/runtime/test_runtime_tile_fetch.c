@@ -27,6 +27,7 @@
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <curl/curl.h>
+#include <curl/curlver.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
