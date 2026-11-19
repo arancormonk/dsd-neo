@@ -100,17 +100,12 @@ dmr_mono_lane_call_slot(const dsd_state* state) {
     return call.receive_identity.slot <= 2U ? call.receive_identity.slot : 0U;
 }
 
-/* Whether lane 0 carries an active call known to be of the other over-the-air slot than @p burst_slot: its receive slot
-   is known and is not the burst's, and the burst's slot is known (dmr_mono_burst_slot_known()). A standalone burst the
-   single-slot decoder would fold onto lane 0 (dmr_mono_folds_standalone_burst()) says nothing of that call: its
-   terminator acts on the other index (1), as the other slot's does on the dual-slot decoder, and does not end it. */
+/* Whether the single-slot lane refuses a data packet's burst (header, block or terminator) of over-the-air slot @p slot
+   (1 or 2; 0 when not known): one of slot 1, which runs on index 0, the lane's, while the slot the lane's checked LC
+   proved (dsd_state::dmr_mono_lane_slot) is slot 2. A slot 2 packet runs on index 1, which the lane never uses. */
 static inline int
-dmr_mono_lane_call_is_other_slot(const dsd_state* state, uint8_t burst_slot) {
-    if (!dmr_mono_burst_slot_known(state, burst_slot)) {
-        return 0;
-    }
-    const uint8_t lane = dmr_mono_lane_call_slot(state);
-    return lane != 0U && lane != (uint8_t)(burst_slot + 1U);
+dmr_mono_lane_refuses_data(const dsd_state* state, uint8_t slot) {
+    return slot == 1U && state->dmr_mono_lane_slot == 2U;
 }
 
 #endif

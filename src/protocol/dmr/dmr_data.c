@@ -441,18 +441,17 @@ dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
     ctx->header_marked = 1U;
 }
 
-/* Whether the burst is a data header or data block of the other over-the-air slot than the call the single-slot lane
-   carries (no trunking, or the MS path), on the lane's index (0): a slot 1 packet while the lane carries a slot 2 call.
-   It is not decoded, so it touches none of that call's crypto or packet state. The burst's slot is its CACH's, or on the
-   MS path the one its direct-mode sync word named (dmr_mono_burst_slot_known()); a slot 2 packet runs on index 1 and
-   touches nothing of the lane. */
+/* Whether the burst is a data header or data block the single-slot lane (no trunking, or the MS path) refuses
+   (dmr_mono_lane_refuses_data()): a slot 1 packet on index 0, the lane's, while the lane's checked LC proved slot 2. It
+   is not decoded, so it touches none of the lane's crypto or packet state. The burst's slot is its CACH's, or on the MS
+   path the one its direct-mode sync word named (dmr_mono_burst_slot_known()). */
 static int
 dmr_data_is_other_slots_packet_on_the_lane(const dmr_data_sync_ctx* ctx) {
     const uint8_t burst = ctx->burst;
     const int data = burst == 6U || burst == 7U || burst == 8U || burst == 10U;
     const dsd_state* state = ctx->state;
     return data && state->currentslot == 0 && dmr_mono_folds_standalone_burst(ctx->opts, state)
-           && dmr_mono_lane_call_is_other_slot(state, 0U);
+           && dmr_mono_burst_slot_known(state, 0U) && dmr_mono_lane_refuses_data(state, 1U);
 }
 
 /* Whether the burst was a voice LC header that the call it names took (issue #637): the call on the lane the header

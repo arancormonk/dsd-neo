@@ -5103,6 +5103,103 @@ test_dmr_mono_other_slots_terminator_ends_no_call(void) {
     return rc;
 }
 
+/* Over-the-air slot @p slot's (0: slot 1) voice opens a call on the single-slot lane before any LC of it: voice the
+   decoder admitted, its slot proven by its CACH (a late entry). */
+static void
+dmr_mono_voice_opens_call(dsd_state* state, int slot) {
+    dmr_mono_lane_on(state, slot);
+    const dsd_call_observation voice = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+/* Without trunking, the single-slot lane takes a PI header only from the slot its call's checked LC proved. A slot 2
+   call that entered late (its voice before any LC of it) while the lane's checked LC was slot 1's gets no cipher from
+   its PI header and stays held, and slot 1's voice gets none of it either. With no checked LC yet (a fresh lane), a late
+   slot 2 call's PI header keys nothing, and a slot 1 terminator, of no slot the lane proved, ends no call. */
+static int
+test_dmr_mono_lane_takes_pi_only_from_its_proven_slot(char frame[4][24]) {
+    int rc = 0;
+    for (int fresh = 0; fresh <= 1; fresh++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_fold_rc4_key(opts, state);
+        dmr_mono_fr(opts, state);
+        if (!fresh) {
+            dmr_mono_lane_call_on(opts, state, 0);
+        }
+        dmr_mono_voice_opens_call(state, 1);
+        dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "-fr proven slot (%s): a late slot 2 call's PI header keys nothing",
+                     fresh ? "fresh lane" : "lane's LC slot 1");
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_keyid == 0);
+        if (fresh) {
+            dmr_mono_standalone_terminator(opts, state, 0, 1);
+            dsd_call_snapshot call;
+            rc |= expect_true("-fr proven slot (fresh lane): a slot 1 terminator ends no call",
+                              dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        } else {
+            char recorded[49] = {0};
+            dmr_mono_lane_on(state, 1);
+            rc |= expect_true("-fr proven slot (lane's LC slot 1): the late slot 2 call's frame stays held",
+                              !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        }
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Without trunking, while the single-slot lane carries a slot 1 RC4 call, the other slot's checked content that names
+   no voice call (an embedded GPS LC, a voice LC header in Hytera Enhanced shape whose outer check passed) is not the
+   lane's: the lane keeps slot 1's cipher and stays slot 1's. */
+static int
+test_dmr_mono_other_slots_non_call_lc_takes_no_lane(void) {
+    int rc = 0;
+    for (int c = 0; c < 2; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_fold_rc4_key(opts, state);
+        dmr_mono_fr(opts, state);
+        dmr_mono_lane_call_on(opts, state, 0);
+        dmr_mono_lane_on(state, 0);
+        dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+        uint8_t bits[96];
+        DSD_MEMSET(bits, 0, sizeof bits);
+        uint32_t errors = 0U;
+        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        if (c == 0) {
+            dmr_hop_put_bits(bits, 2U, 0x08U, 6U); /* Embedded GPS, from slot 2's proven voice. */
+            dmr_mono_lane_on(state, 1);
+            state->currentslot = 0;
+            dmr_flco(opts, state, bits, 1U, &errors, 3U);
+        } else {
+            const uint8_t bytes[9] = {0x02U, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
+            for (size_t i = 0; i < sizeof bytes; i++) {
+                dmr_hop_put_bits(bits, i * 8U, bytes[i], 8U);
+            }
+            state->currentslot = 1;
+            dmr_flco(opts, state, bits, 1U, &errors, 1U);
+        }
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "-fr non-call LC: slot 2's %s leaves the slot 1 lane and its cipher",
+                     c == 0 ? "embedded GPS" : "checked Hytera Enhanced header");
+        rc |= expect_true(what,
+                          state->payload_algid == 0x21 && state->payload_keyid == 5 && state->dmr_mono_lane_slot == 1U);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 /* A host may run one state more than once: the lane's slot the earlier run's checked LC proved is no proof in the next
    run, so that run's first landing holds no slot's voice for it. */
 static int
@@ -5119,10 +5216,34 @@ test_dmr_mono_run_start_forgets_the_lane_slot(void) {
     return rc;
 }
 
+/* Late-entry content (the MI fragments in a superframe's voice) is the lane's only from the slot its call's checked LC
+   proved: the other slot's voice on the lane collects none. */
+static int
+test_dmr_mono_late_entry_only_from_the_proven_slot(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_mono_fr(opts, state);
+    dmr_mono_lane_call_on(opts, state, 0);
+    dmr_mono_lane_on(state, 1);
+    state->dmr_ms_mode = 1;
+    state->currentslot = 0;
+    state->dmr_le_frag_mask[0] = 0U;
+    uint8_t fr[3][4][24];
+    DSD_MEMSET(fr, 0, sizeof fr);
+    dmr_late_entry_mi_fragment(opts, state, 2U, fr[0], fr[1], fr[2]);
+    const int rc = expect_true("-fr late entry: slot 2's voice on a slot 1 lane collects no MI fragment",
+                               state->dmr_le_frag_mask[0] == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* A data terminator (TD_LC, FLCO 0x30) ends a data packet, which the single-slot decoder assembles on its burst's own
-   slot. A slot 2 one heard with the lane idle (folded onto lane 0) resets slot 2's packet, never slot 1's. One heard
-   while the lane carries the other slot's call is that slot's terminator: it resets no packet, the lane's least of
-   all. */
+   slot. A slot 2 one resets slot 2's packet (index 1, which the lane never uses), never slot 1's, whatever call the
+   lane carries. A slot 1 one heard while the lane's checked LC is slot 2's is the other slot's on the lane's index: no
+   slot 1 packet was admitted there, and it resets nothing. */
 static int
 test_dmr_mono_data_terminator_resets_its_own_packet(void) {
     int rc = 0;
@@ -5150,13 +5271,13 @@ test_dmr_mono_data_terminator_resets_its_own_packet(void) {
         state->dmr_mono_rx_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + slot);
         dmr_flco(opts, state, bits, 1U, &errors, 2U);
         char what[160];
-        if (c < 2) {
-            DSD_SNPRINTF(what, sizeof what, "-fr: a slot %d data terminator (lane on the other slot) resets no packet",
-                         slot + 1);
+        if (c == 0) {
+            DSD_SNPRINTF(what, sizeof what, "-fr: a slot 1 data terminator (lane slot 2's) resets no packet");
             rc |= expect_true(what, state->data_header_valid[0] == 1 && state->data_header_valid[1] == 1);
         } else {
             DSD_SNPRINTF(what, sizeof what,
-                         "-fr: a slot %d data terminator (lane idle) resets its own slot's packet only", slot + 1);
+                         "-fr: a slot %d data terminator (lane %s) resets its own slot's packet only", slot + 1,
+                         c == 1 ? "slot 1's" : "idle");
             rc |= expect_true(what, state->data_header_valid[slot] == 0 && state->data_header_valid[1 - slot] == 1);
         }
         free_test_runtime(opts, state);
@@ -5231,7 +5352,10 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_mono_other_slots_checked_lc_is_a_new_call(frame);
     rc |= test_dmr_mono_ignores_the_other_slots_hytera_rekey(frame);
     rc |= test_dmr_mono_other_slots_terminator_ends_no_call();
+    rc |= test_dmr_mono_lane_takes_pi_only_from_its_proven_slot(frame);
+    rc |= test_dmr_mono_other_slots_non_call_lc_takes_no_lane();
     rc |= test_dmr_mono_run_start_forgets_the_lane_slot();
+    rc |= test_dmr_mono_late_entry_only_from_the_proven_slot();
     rc |= test_dmr_mono_lane_hold_per_slot(frame);
     rc |= test_dmr_mono_data_terminator_resets_its_own_packet();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();

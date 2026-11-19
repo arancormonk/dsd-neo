@@ -382,13 +382,15 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
         return;
     }
     /* Where the single-slot decoder folds a burst onto lane 0 (dmr_mono_folds_standalone_burst()), a PI header is applied
-       only while lane 0 carries that slot's active call: its ALG ID, key ID and MI go where the lane's voice decrypts
-       from, and the burst's CRC verdict, indexed by its own slot, follows it. One heard for a slot the lane is not
-       carrying (the lane idle, on the other slot's call, or on a call of no known slot) is discarded, neither applied nor
-       kept: that slot's call is held until its own checked LC, or a PI header heard while the lane carries it (a forced
-       key still plays; AGENTS.md, CRC/FEC provenance). One whose own slot is not known (dmr_mono_burst_slot_known()) is
-       taken for the lane's, as before. */
-    if (dmr_mono_burst_slot_known(state, burst_slot) && dmr_mono_lane_call_slot(state) != (uint8_t)(burst_slot + 1U)) {
+       only from the slot the lane's checked LC proved (dsd_state::dmr_mono_lane_slot), while lane 0 carries that slot's
+       active call: its ALG ID, key ID and MI go where the lane's voice decrypts from, and the burst's CRC verdict,
+       indexed by its own slot, follows it. Any other (no checked LC yet, a call of the other slot that entered late, the
+       lane idle) is discarded, neither applied nor kept: that slot's call is held until its own checked LC (a forced key
+       still plays; AGENTS.md, CRC/FEC provenance). One whose own slot is not known (dmr_mono_burst_slot_known()) is taken
+       for the lane's, as before. */
+    const uint8_t pi_slot = (uint8_t)(burst_slot + 1U);
+    if (dmr_mono_burst_slot_known(state, burst_slot)
+        && (state->dmr_mono_lane_slot != pi_slot || dmr_mono_lane_call_slot(state) != pi_slot)) {
         DSD_FPRINTF(stderr, "%s\n Slot %u PI header not applied: the single-slot lane is not on that slot's call%s",
                     KYEL, (unsigned)burst_slot + 1U, KNRM);
         return;
