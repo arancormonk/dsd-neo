@@ -108,7 +108,8 @@ class CachedCompilerCommand(unittest.TestCase):
 class CollectorChoice(unittest.TestCase):
     """The serial collector is a default only. HotSpot refuses to start with two collectors selected ("Multiple garbage
     collectors selected"), so a collector the caller selected, in JAVA_OPTS for kotlinc or in the options every JVM or
-    every java launch reads (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS), is the one used, and no other is added."""
+    every java launch reads (JAVA_TOOL_OPTIONS, HotSpot's _JAVA_OPTIONS, JDK_JAVA_OPTIONS), is the one used, and no
+    other is added."""
 
     SERIAL = "-XX:+UseSerialGC"
 
@@ -128,7 +129,7 @@ class CollectorChoice(unittest.TestCase):
         self.assertIn("-XX:TieredStopAtLevel=1", options)
 
     def test_jvm_wide_collector_is_kept_alone(self):
-        for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"):
+        for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
             with self.subTest(name=name):
                 environ = {name: "-Xss1M -XX:+UseZGC"}
                 self.assertNotIn(self.SERIAL, self.kotlinc_options(environ))

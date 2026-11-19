@@ -21,10 +21,10 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 # the usb suite outlasted CTest's 90 s beside a full parallel build.
 JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
 # The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
-# so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS)
-# or every java launch (JDK_JAVA_OPTIONS) reads, is left alone.
+# so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
+# and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone.
 COLLECTOR_SELECTION = re.compile(r"(?:^|\s)-XX:\+Use\w*GC(?=\s|$)")
-JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")
+JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
 # kotlinc takes its JVM's options from JAVA_OPTS, in both launchers (bin/kotlinc and bin/kotlinc.bat), and puts each
 # word on the java command line itself. Not as -J arguments: Windows runs kotlinc.bat, and cmd.exe splits a batch file's
 # arguments at "=", so -J-XX:TieredStopAtLevel=1 reached the JVM as -XX:TieredStopAtLevel and a stray 1. A set JAVA_OPTS
