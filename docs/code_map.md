@@ -3441,12 +3441,12 @@ suite runs under this compiler.
   packet state. The other slot's voice on the lane, once the lane moved there (proven, or Checking after a checked
   TACT named it), is held as on a held slot until that slot's checked LC (`dmr_mono_lane_voice_is_other_call()` in
   `mbe_dmr_slot_judge()`). A PI header counts a lane call only when it is a DMR call (`dmr_mono_lane_call_slot()`). A
-  data packet stays on its over-the-air slot's index from header to last block (the block assembler keys on it; a slot
-  2 one is on index 1). One that would run on the lane's index while the lane carries the other slot's call (a slot 1
-  packet during a slot 2 call, its slot named by its CACH or, on the MS path, its direct-mode sync word) is not decoded
-  (`dmr_data_is_other_slots_packet_on_the_lane()`), so it touches none of that call's crypto or packet state. A
-  packet's AES IV is expanded apart from the voice IV, MI and frame counter (`dmr_block_crypto_prepare_aes_iv()`), and
-  its data terminator, when not the other slot's, resets the packet on its own slot. A voice LC header
+  data packet stays on its over-the-air slot's index from header to last block (the block assembler keys
+  on it; a slot 2 one is on index 1): a slot 1 one runs on index 0 with its own live crypto swapped in while lane 0
+  carries a slot 2 call or the packet is in progress, and the call's is put back after each burst
+  (`dsd_state::dmr_mono_slot1_data_crypto`, `dmr_data_swap_in_slot1_data_crypto()`), so a data header neither resets
+  nor replaces the lane call's crypto; its AES IV is expanded apart from the voice IV, MI and frame counter
+  (`dmr_block_crypto_prepare_aes_iv()`), and its data terminator resets the packet on its own slot. A voice LC header
   still opens the call the lane carries next: it names its own call, and the lane's voice follows it. Under trunking
   nothing is folded.
 

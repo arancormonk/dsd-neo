@@ -2077,6 +2077,20 @@ struct dsd_state {
      * decoding never writes (issue #657). */
     uint8_t dmr_le_vendor[2];
 
+    /* The single-slot decoder without trunking keeps a slot 1 data packet on index 0, its over-the-air slot, while
+     * lane 0's voice is a slot 2 call: index 0's live crypto (dmr_so, payload_algid, payload_keyid, payload_mi,
+     * dmr_le_vendor[0]) is then that call's, so each slot 1 data burst runs with the packet's own values swapped in
+     * and the call's put back after (dmr_data.c). active: a packet in progress keeps its values here between its bursts.
+     * Forgotten with the slots' call decryption (dmr_forget_call_decryption()). Owned by src/protocol/dmr. */
+    struct {
+        uint8_t active;
+        uint8_t le_vendor;
+        unsigned int so;
+        int algid;
+        int keyid;
+        unsigned long long int mi;
+    } dmr_mono_slot1_data_crypto;
+
     /* A checked DMR PI header decoded while no call was active on the slot (its voice LC header was lost): the ALG ID
      * and key id it carried, with the DSD_CALL_CRYPTO_RX_* bits it received (<dsd-neo/core/call_state.h>), held for the
      * call the next checked LC opens on the slot, which receives them (dmr_flco.c). Cleared when they transfer, at the
