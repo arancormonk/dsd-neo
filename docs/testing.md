@@ -4422,6 +4422,21 @@ script tests only where bash is (not Windows), so the macOS and Windows suites
 are smaller than the Linux one; each job prints its registered test count before
 running.
 
+The Windows release scripts' tests run their scripts under pwsh many times, so a
+busy runner could push one ctest entry past its limit. Their classes run as
+several entries that `ctest -j` runs side by side: `TOOLS_SOAPY_RELEASE_SCRIPTS_1`
+to `_4` (`tests/tools/test_soapy_module_packaging.py`) and
+`TOOLS_STAGE_RUNTIME_DLLS_1` and `_2` (`tests/tools/test_stage_runtime_dlls.py`).
+Each entry sets `DSD_NEO_TEST_SHARD=<i>/<n>`, and the module's `load_tests` hook
+(`tests/tools/unittest_shards.py`) keeps that shard's tests: the ones its table
+names, chosen from measured times, and a share of any test the table does not
+name, so a new test runs in exactly one entry. A test in shard 1 checks that the
+shards run every test of the class once. Without the variable the module runs
+every test, as before. Passing runs of `verify_release_tree.ps1` that only show a
+tree passes steps 0-3 before or after a test's change use its `-SkipProgramRuns`
+switch; `test_verify_release_tree`, every refusal and the release jobs run the
+whole script.
+
 The libairspy and librtlsdr transfer tests (`VENDORED_LIBAIRSPY_TRANSFERS`,
 `VENDORED_LIBRTLSDR_TRANSFERS`, `VENDORED_LIBRTLSDR_ASYNC_ALLOC`) build the
 Android app's patched copies on all three. The `backend-matrix (both, …)` legs

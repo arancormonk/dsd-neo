@@ -22,6 +22,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import unittest_shards
+
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 SCRIPT = ROOT / "tools/windows/stage_runtime_dlls.ps1"
 PWSH = os.environ.get("DSD_NEO_TEST_PWSH") or shutil.which("pwsh")
@@ -821,6 +823,39 @@ class StageRuntimeDlls(unittest.TestCase):
                      out=llvm_readobj_report(["a.dll"]).replace("{path}", str(self.work / "other.exe")))
         (self.search / "a.dll").write_bytes(pe_image(b"a"))
         self.assert_refused(["llvm-readobj", str(self.target)])
+
+
+# The StageRuntimeDlls tests each entry TOOLS_STAGE_RUNTIME_DLLS_1 and _2 runs (DSD_NEO_TEST_SHARD), chosen from
+# measured times so the two take about as long: about 30 s each at a 1-minute load of 10-15 on a 32-thread desktop. A
+# test this table does not name still runs in exactly one entry (unittest_shards).
+STAGE_RUNTIME_DLLS_SHARDS = (
+    ("test_import_tables_the_tool_could_not_read_stop_staging", "test_every_dependency_name_is_staged",
+     "test_empty_import_tables_are_valid", "test_runtime_already_in_the_destination_is_the_toolsets_copy",
+     "test_images_of_another_machine_are_refused", "test_unrecorded_runtime_dlls_are_refused",
+     "test_pe_header_past_the_first_4096_bytes", "test_gnu_and_llvm_objdump_reports_stage_dependencies",
+     "test_only_listed_windows_dlls_stay_out_of_bin", "test_every_visual_cpp_runtime_dll_is_staged",
+     "test_runtime_is_found_when_the_destination_is_the_only_search_folder", "test_failed_dumpbin_stops_staging",
+     "test_missing_dependency_still_fails", "test_objdump_report_for_another_file_stops_staging",
+     "test_object_files_are_refused"),
+    ("test_unread_dependency_lines_stop_staging", "test_debug_runtime_dlls_are_refused",
+     "test_runtime_comes_from_the_installation_of_the_toolset", "test_export_table_names_no_dependency",
+     "test_delay_loaded_dependencies_are_staged", "test_objdump_cannot_list_delay_loaded_dependencies",
+     "test_runtime_comes_only_from_the_toolsets_redistributable_folder",
+     "test_dumpbin_report_stages_dependencies_and_the_runtime", "test_tool_reports_for_object_files_are_refused",
+     "test_dumpbin_report_without_dependencies_is_valid", "test_dumpbin_without_a_report_stops_staging",
+     "test_manifest_lists_hidden_dlls", "test_llvm_readobj_report_for_another_file_stops_staging",
+     "test_failed_objdump_stops_staging", "test_objdump_header_without_a_pe_format_stops_staging"),
+)
+
+
+class StageRuntimeDllsShards(unittest.TestCase):
+    def test_the_shards_run_every_test_once(self):
+        unittest_shards.check_shards(self, StageRuntimeDlls, STAGE_RUNTIME_DLLS_SHARDS, (StageRuntimeDllsShards,),
+                                     (ROOT / "tests/CMakeLists.txt").read_text(encoding="utf-8"),
+                                     "TOOLS_STAGE_RUNTIME_DLLS")
+
+
+load_tests = unittest_shards.load_tests_for(StageRuntimeDlls, STAGE_RUNTIME_DLLS_SHARDS, (StageRuntimeDllsShards,))
 
 
 if __name__ == "__main__":

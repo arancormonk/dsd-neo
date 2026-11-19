@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import unittest_shards
 from test_stage_runtime_dlls import pe_image
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
@@ -1940,6 +1941,41 @@ class SoapyReleaseScripts(unittest.TestCase):
                     self.report["dependents"][importer] = saved
                     del self.report["dependents"][copy]
                     (bin_dir / copy).unlink()
+
+
+# The SoapyReleaseScripts tests each entry TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4 runs (DSD_NEO_TEST_SHARD), chosen from
+# measured times so the four take about as long: about 100 s each at a 1-minute load of 15-30 on a 32-thread desktop,
+# where the whole class takes about 400 s. The staging tests weigh most, and the most under load. A test this table
+# does not name still runs in exactly one entry (unittest_shards).
+RELEASE_SCRIPT_SHARDS = (
+    ("test_stage_release_tree_keeps_notice_sources_in_their_roots", "test_stage_release_tree_needs_an_empty_folder",
+     "test_stage_release_tree_takes_the_runtime_from_the_toolset", "test_stage_release_tree_sees_hidden_modules"),
+    ("test_stage_release_tree_needs_the_developer_shell_of_the_build",
+     "test_stage_release_tree_checks_the_text_of_repository_notices",
+     "test_stage_release_tree_takes_the_vcpkg_tree_of_the_build", "test_stage_release_tree"),
+    ("test_stage_release_tree_refusals", "test_verify_release_tree_follows_imports_whatever_the_suffix",
+     "test_verify_release_tree_needs_a_record_and_notices_for_every_file", "test_verify_release_tree",
+     "test_verify_release_tree_checks_the_text_of_every_notice",
+     "test_verify_release_tree_needs_one_copy_of_each_shared_library"),
+    ("test_verify_release_tree_needs_the_runtime_record_with_the_runtime",
+     "test_verify_release_tree_refuses_images_of_another_machine",
+     "test_verify_release_tree_refuses_unrecorded_runtime_dlls", "test_verify_release_tree_sees_hidden_files",
+     "test_verify_release_tree_refusals", "test_isolated_process_runner",
+     "test_verify_release_tree_reads_every_dependency_name",
+     "test_verify_release_tree_needs_the_runtime_notice_with_the_runtime",
+     "test_verify_release_tree_refuses_dlls_only_the_build_machine_has",
+     "test_verify_release_tree_refuses_the_debug_runtime", "test_dumpbin_readers_refuse_lines_they_cannot_read",
+     "test_dumpbin_readers_read_every_name", "test_readers_on_windows_output", "test_scripts_parse"),
+)
+
+
+class ReleaseScriptShards(unittest.TestCase):
+    def test_the_shards_run_every_test_once(self):
+        unittest_shards.check_shards(self, SoapyReleaseScripts, RELEASE_SCRIPT_SHARDS, (ReleaseScriptShards,),
+                                     read("tests/CMakeLists.txt"), "TOOLS_SOAPY_RELEASE_SCRIPTS")
+
+
+load_tests = unittest_shards.load_tests_for(SoapyReleaseScripts, RELEASE_SCRIPT_SHARDS, (ReleaseScriptShards,))
 
 
 if __name__ == "__main__":

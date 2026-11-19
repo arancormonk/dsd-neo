@@ -25848,7 +25848,7 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
     )
     # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
-    # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS).
+    # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4).
     add_test(
         NAME TOOLS_SOAPY_MODULE_PACKAGING
         COMMAND
@@ -26167,36 +26167,45 @@ if(Python3_Interpreter_FOUND)
     # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
-        add_test(
-            NAME TOOLS_STAGE_RUNTIME_DLLS
-            COMMAND
-                ${Python3_EXECUTABLE}
-                ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
-        )
-        # About 25 runs of the script under pwsh: a busy machine can take minutes.
-        set_tests_properties(
-            TOOLS_STAGE_RUNTIME_DLLS
-            PROPERTIES
-                TIMEOUT 300
-                ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
-        )
+        # About 30 runs of the script under pwsh: a busy machine can take minutes, so
+        # the class runs as two entries that ctest -j runs side by side. Each keeps
+        # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
+        # every test runs in exactly one.
+        foreach(_dsd_shard RANGE 1 2)
+            add_test(
+                NAME TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
+            )
+            set_tests_properties(
+                TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 300
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2"
+            )
+        endforeach()
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
         # verify_release_tree.ps1 over a fake release tree, and the readers it uses fed
         # output that Windows builds of SoapySDRUtil and dsd-neo printed under Wine. The
-        # fakes are POSIX scripts here too.
-        add_test(
-            NAME TOOLS_SOAPY_RELEASE_SCRIPTS
-            COMMAND
-                ${Python3_EXECUTABLE}
-                ${PROJECT_SOURCE_DIR}/tests/tools/test_soapy_module_packaging.py
-                SoapyReleaseScripts
-        )
-        set_tests_properties(
-            TOOLS_SOAPY_RELEASE_SCRIPTS
-            PROPERTIES
-                TIMEOUT 600
-                ENVIRONMENT "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS}"
-        )
+        # fakes are POSIX scripts here too. About 80 script runs under pwsh, as four
+        # entries of the SoapyReleaseScripts class, sharded as above.
+        foreach(_dsd_shard RANGE 1 4)
+            add_test(
+                NAME TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_soapy_module_packaging.py
+            )
+            set_tests_properties(
+                TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 600
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4"
+            )
+        endforeach()
     endif()
     # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
     # The model imports numpy and scipy, so it registers only where the tests' Python
