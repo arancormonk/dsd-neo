@@ -276,6 +276,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int kind = KindVoice;  // KindRole
         QString name;          // NameRole: a channel id shown by its name
         qulonglong tg = 0;
+        int gi = -1; // GiRole: who the call was to, 0 a talkgroup, 1 a radio, -1 not known
         qulonglong src = 0;
         QString sourceName;
         QString systemName;

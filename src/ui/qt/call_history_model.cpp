@@ -706,6 +706,7 @@ export_row_at(const CallHistoryModel& model, const QModelIndex& idx) {
     row.kind = model.data(idx, CallHistoryModel::KindRole).toInt();
     row.name = text(CallHistoryModel::NameRole);
     row.tg = model.data(idx, CallHistoryModel::TgRole).toULongLong();
+    row.gi = model.data(idx, CallHistoryModel::GiRole).toInt();
     row.src = model.data(idx, CallHistoryModel::SrcRole).toULongLong();
     row.sourceName = text(CallHistoryModel::SourceNameRole);
     row.systemName = text(CallHistoryModel::SystemNameRole);
@@ -792,8 +793,9 @@ CallHistoryModel::heardTalkgroups(qint64 forSession) const {
     QList<uint32_t> heard;
     QSet<uint32_t> seen;
     for (const Row& row : m_rows) {
+        // A private call's target is a radio, never a talkgroup heard (issue #800); not knowing stays as before.
         if (row.kind != KindVoice || (forSession > 0 && row.session != forSession) || row.tg == 0U
-            || row.tg > UINT32_MAX) {
+            || row.tg > UINT32_MAX || row.gi == 1) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);

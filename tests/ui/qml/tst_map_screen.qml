@@ -1028,7 +1028,15 @@ Item {
             return [{tag: "360x420 1.0", w: 360, h: 420, s: 1.0}, {tag: "360x420 1.6", w: 360, h: 420, s: 1.6},
                     {tag: "500x440 1.0", w: 500, h: 440, s: 1.0}, {tag: "500x440 1.6", w: 500, h: 440, s: 1.6},
                     {tag: "640x320 1.6", w: 640, h: 320, s: 1.6}, {tag: "360x780 1.6", w: 360, h: 780, s: 1.6},
-                    {tag: "1280x720 1.0", w: 1280, h: 720, s: 1.0}];
+                    {tag: "1280x720 1.0", w: 1280, h: 720, s: 1.0}].concat(narrow());
+        }
+        // Re-review R1: 320 px wide (a 360 dp phone at a larger display size, or split screen).
+        function narrow() {
+            var rows = [];
+            for (var h of [420, 480, 520])
+                for (var sc of [1.0, 1.3, 1.6])
+                    rows.push({tag: "320x" + h + " " + sc, w: 320, h: h, s: sc});
+            return rows;
         }
         function test_18a2_chips_and_controls_never_collide(data) {
             push({source: 1001, lat: 11.0, lon: 21.0, label: "Engine 7"});
@@ -1047,7 +1055,12 @@ Item {
             verify(!overlaps(band, ctl), "chips " + band + " over controls " + ctl);
             verify(a.y >= 0 && a.y + status.height <= c.height && b.y >= 0 && b.y + controls.height <= c.height + 0.5,
                    "both on the canvas: chips " + band + ", controls " + ctl + ", canvas " + c.height);
-            verify(status.width >= Math.min(240, c.width - 24), "not a tall narrow column: " + status.width);
+            verify(status.width >= Math.min(220, c.width - 24), "not a tall narrow column: " + status.width);
+            // A floor: the band shows at least one chip (40 px). On the tightest canvas (170 px: a 420 px window at 1.6x
+            // text, the credit stacked over flat controls, every touch target kept at 48 px) it is a scrolling strip
+            // of at least a line of chip text.
+            var floor = c.height >= 180 ? 40 : 28;
+            verify(status.height >= Math.min(floor, status.contentHeight), "the chips have a band: " + status.height + " of " + status.contentHeight + " (canvas " + c.height + ")");
             verify(c.topInset <= c.height, "the centring aims inside the canvas: " + c.topInset + " of " + c.height);
             verify(!item("mapAttributionText").truncated, "the credit is never cut: " + item("mapAttribution").width);
             // The pin's Details, scrolled into the band if it has to be, is never under a control.
@@ -1071,10 +1084,10 @@ Item {
         // Review r2 M3: on the shortest screens at a large text size the tiles prompt scrolls in its band, so the
         // canvas keeps room for the controls lying flat and none reaches over the prompt.
         function test_18a3_the_prompt_leaves_room_for_the_controls_data() {
-            return [{tag: "568x320", w: 568, h: 320}, {tag: "600x280", w: 600, h: 280}];
+            return [{tag: "568x320", w: 568, h: 320, s: 1.6}, {tag: "600x280", w: 600, h: 280, s: 1.6}].concat(narrow());
         }
         function test_18a3_the_prompt_leaves_room_for_the_controls(data) {
-            Ui.Theme.fontScale = 1.6;
+            Ui.Theme.fontScale = data.s;
             resize(data.w, data.h);
             verify(item("mapTilesPrompt").visible);
             var c = canvas(), controls = item("mapControls");
@@ -1083,7 +1096,13 @@ Item {
             var band = item("mapTilesPromptScroll");
             var p = screen.mapFromItem(band, 0, 0), q = screen.mapFromItem(controls, 0, 0);
             verify(!overlaps(Qt.rect(p.x, p.y, band.width, band.height), Qt.rect(q.x, q.y, controls.width, controls.height)));
-            verify(band.contentHeight > band.height, "the prompt scrolls here: " + band.contentHeight + " in " + band.height);
+            verify(b.y + controls.height <= c.height + 0.5, "the controls stay on the canvas");
+            verify(!item("mapAttributionText").truncated, "the credit is never cut");
+            var credit = item("mapAttribution"), r = screen.mapFromItem(credit, 0, 0);
+            verify(!overlaps(Qt.rect(p.x, p.y, band.width, band.height), Qt.rect(r.x, r.y, credit.width, credit.height)),
+                   "the credit stays off the prompt: " + r + " vs band bottom " + (p.y + band.height));
+            if (data.h <= 320)
+                verify(band.contentHeight > band.height, "the prompt scrolls here: " + band.contentHeight + " in " + band.height);
             Ui.Theme.resetFontScale();
             resize(360, 780);
         }
@@ -1124,6 +1143,18 @@ Item {
             answer(10.6);
             verify(Math.abs(c.centerLatitude - 12.0) < 0.01, "Show on map's view stays: " + c.centerLatitude);
             compare(item("mapLocate").Accessible.name, "Locate me");
+            // Re-review r3: the zoom buttons and the wheel are explicit camera actions too.
+            for (var act of ["zoomIn", "wheel"]) {
+                c.centerOn(12.0, 22.0, 12);
+                item("mapLocate").activate();
+                if (act === "zoomIn")
+                    item("mapZoomIn").activate();
+                else
+                    mouseWheel(c, c.width / 2, c.height / 2, 0, 120);
+                answer(10.65);
+                verify(Math.abs(c.centerLatitude - 10.65) > 0.5, act + " keeps the view: " + c.centerLatitude);
+                compare(item("mapLocate").Accessible.name, "Locate me", act);
+            }
             // Uninterrupted, it still centres and arms Follow.
             item("mapLocate").activate();
             answer(10.7);
@@ -1314,6 +1345,17 @@ Item {
             var d = new Date(now * 1000);
             var noon = Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0).getTime() / 1000);
             compare(take(noon), "Measured at 12:00:00");
+            sheet().visible = false;
+            // Re-review r2: "Received at" by the same rule.
+            var received = function (rx) {
+                sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: -1,
+                              currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, receivedTime: rx}});
+                sheet().visible = true;
+                return item("mapShownFixReceived").text;
+            };
+            compare(received(old), "Received at " + Qt.formatDateTime(new Date(old * 1000), "yyyy-MM-dd hh:mm:ss"));
+            sheet().visible = false;
+            compare(received(noon), "Received at 12:00:00");
             sheet().visible = false;
         }
 

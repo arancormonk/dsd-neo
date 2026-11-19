@@ -5405,6 +5405,12 @@ test_call_kind_is_kept_and_parts_calls(void) {
                model.data(model.index(group), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 44"));
         const QString uid = model.data(model.index(priv), CallHistoryModel::UidRole).toString();
         expect("r2: the record carries it", model.recordFor(uid).value(QStringLiteral("gi")).toInt() == 1);
+        expect("r2: the export row carries it",
+               model.exportRows({priv, group}).value(0).gi == 1 && model.exportRows({priv, group}).value(1).gi == 0);
+        // Re-review r1: a private call's radio is never a talkgroup heard; not knowing stays as before.
+        const QList<uint32_t> heard = model.heardTalkgroups(0);
+        expect("r1: heard talkgroups leave the radio out",
+               !heard.contains(42U) && heard.contains(43U) && heard.contains(44U));
     }
     {
         const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");

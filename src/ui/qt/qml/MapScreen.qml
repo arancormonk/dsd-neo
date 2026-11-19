@@ -366,7 +366,9 @@ Item {
         x: Theme.screenPadding
         y: chrome.y + chrome.height + 10
         width: Math.max(0, screen.width - 2 * Theme.screenPadding)
-        readonly property real maximumHeight: Math.max(Theme.minimumTouchSize, screen.height - y - 10 - (Theme.minimumTouchSize + 2 * 12))
+        // The canvas keeps room for its controls lying flat, and for the
+        // credit above them when it cannot sit beside them.
+        readonly property real maximumHeight: Math.max(Theme.minimumTouchSize, screen.height - y - 10 - controls.needFor(2))
         height: Math.min(tilesPrompt.height, maximumHeight)
         contentWidth: width
         contentHeight: tilesPrompt.height
@@ -516,6 +518,7 @@ Item {
                 target: null
                 onWheel: function (event) {
                     screen.userMovedCamera();
+                    locator.keepView();
                     map.zoomAbout(map.zoom + event.angleDelta.y / 240, wheel.point.position.x, wheel.point.position.y);
                 }
             }
@@ -604,8 +607,8 @@ Item {
             // A chip's action button (a 48 px target) stands out of its 40 px
             // chip by this much above and below; the band holds it whole.
             readonly property real overhang: Math.max(0, (Theme.minimumTouchSize - 40) / 2)
-            readonly property real maximumHeight: Math.max(0, beside ? parent.height - 2 * 12 - attribution.height + overhang
-                : parent.height - 3 * 12 - Math.max(attribution.height, controls.height) + overhang)
+            readonly property real maximumHeight: Math.max(0, beside ? parent.height - 2 * 12 - attribution.reserve + 4 + overhang
+                : parent.height - 3 * 12 - Math.max(attribution.reserve - 4, controls.height) + overhang)
             y: 12 - overhang
             x: beside ? 12 + (room - width) / 2 : (parent.width - width) / 2
             width: Math.max(0, Math.min(parent.width >= 640 ? 600 : 420, room))
@@ -693,14 +696,53 @@ Item {
             // canvas above the controls lay them flat, to leave the chips the
             // most room.
             readonly property int naturalArrangement: {
-                var t = Theme.minimumTouchSize, room = parent.height - 2 * anchors.margins;
-                var column = 2 * t + 1 + 10 + t + (locator.supported ? 10 + t : 0);
-                return column <= room ? 0 : 2 * t + 1 <= room ? 1 : 2;
+                for (var a = 0; a < 2; ++a) {
+                    if (needFor(a) <= parent.height)
+                        return a;
+                }
+                return 2;
             }
-            // Flat only while the credit beside it keeps room for its longest
-            // word: it wraps, it is never cut (`attribution.minimumWidth`).
-            readonly property int arrangement: !status.beside && status.chipsShown
-                && parent.width - widthFor(2) - 3 * 12 >= attribution.minimumWidth ? 2 : naturalArrangement
+            // Whether the credit has to stack above arrangement @p a: the room
+            // beside it does not hold the credit's longest word.
+            function creditStacksFor(a) {
+                return parent.width - widthFor(a) - 3 * 12 < attribution.minimumWidth;
+            }
+            // The canvas height arrangement @p a needs: itself and its margins,
+            // and a stacked credit (one touch row) above it when it must.
+            function needFor(a) {
+                return heightFor(a) + 2 * anchors.margins + (creditStacksFor(a) ? 4 + Theme.minimumTouchSize : 0);
+            }
+            // With the chips across the canvas above them, the arrangement
+            // (from the natural one to flat) that leaves the chips the most
+            // room, the credit's place counted: beside, or stacked above a
+            // row too wide for it (review r2: a column on a narrow screen
+            // left the chips no band at all).
+            readonly property int arrangement: {
+                if (status.beside || !status.chipsShown)
+                    return naturalArrangement;
+                var best = naturalArrangement, bestRoom = -1;
+                for (var a = naturalArrangement; a <= 2; ++a) {
+                    var room = chipRoomFor(a);
+                    if (room > bestRoom + 0.5) {
+                        best = a;
+                        bestRoom = room;
+                    }
+                }
+                return best;
+            }
+            // The height an arrangement takes.
+            function heightFor(a) {
+                var t = Theme.minimumTouchSize;
+                return a === 0 ? 2 * t + 1 + 10 + t + (locator.supported ? 10 + t : 0) : a === 1 ? 2 * t + 1 : t;
+            }
+            // The room above the controls in arrangement @p a for chips across
+            // the canvas, the credit taken as one touch row high (its height
+            // there is not known before it is laid out).
+            function chipRoomFor(a) {
+                var t = Theme.minimumTouchSize, m = anchors.margins;
+                var credit = creditStacksFor(a) ? m + heightFor(a) + t : t;
+                return parent.height - 3 * 12 - Math.max(credit, heightFor(a));
+            }
             // The width an arrangement takes (the zoom pair, fit, locate).
             function widthFor(a) {
                 var t = Theme.minimumTouchSize, rest = 10 + t + (locator.supported ? 10 + t : 0);
@@ -726,6 +768,7 @@ Item {
                     enabled: map.zoom < map.maximumZoom - 0.01
                     onClicked: {
                         screen.userMovedCamera();
+                        locator.keepView();
                         map.zoomIn();
                     }
                 }
@@ -746,6 +789,7 @@ Item {
                     enabled: map.zoom > map.minimumZoom + 0.01
                     onClicked: {
                         screen.userMovedCamera();
+                        locator.keepView();
                         map.zoomOut();
                     }
                 }
@@ -830,8 +874,8 @@ Item {
             // Beside a column of controls; above a row (it spans the canvas).
             anchors.right: screen.mapShown && controls.arrangement === 0 ? controls.left : parent.right
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: !screen.mapShown ? 0 : controls.arrangement === 0 ? attribution.height
-                : Math.max(attribution.height, controls.height + 2 * controls.anchors.margins)
+            anchors.bottomMargin: !screen.mapShown ? 0 : controls.arrangement === 0 ? attribution.reserve
+                : Math.max(attribution.reserve, controls.height + 2 * controls.anchors.margins)
             contentWidth: width
             contentHeight: Math.max(height, emptyState.y + emptyState.height + 12)
             clip: true
@@ -897,9 +941,16 @@ Item {
         anchors.left: area.left
         anchors.bottom: area.bottom
         anchors.leftMargin: 8
-        anchors.bottomMargin: 4
-        width: Math.min(chip.implicitWidth, area.width - controls.width - 3 * 12)
+        // Beside the controls while that room holds the credit's longest
+        // word; else above them, across the canvas (review r2): the credit
+        // wraps whole and is never cut, in every arrangement.
+        readonly property real besideRoom: area.width - controls.width - 3 * 12
+        readonly property bool stacked: besideRoom < minimumWidth
+        anchors.bottomMargin: stacked ? controls.anchors.margins + controls.height + 4 : 4
+        width: Math.min(chip.implicitWidth, stacked ? area.width - 2 * 12 : besideRoom)
         height: Math.max(Theme.minimumTouchSize, chip.height + 8)
+        // How much of the canvas's bottom it takes, its margins included.
+        readonly property real reserve: height + anchors.bottomMargin
         // The narrowest it may be: its longest word on a line, so the credit
         // wraps whole (three lines at most) and is never cut.
         readonly property real minimumWidth: longestWord.advanceWidth + 16 + 8

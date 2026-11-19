@@ -139,7 +139,8 @@ A private call has no talkgroup to avoid, so both are off for it; its **Hold** h
 calls with that radio, and a radio is blocked from the radio ID list. History and the
 recent calls say who each call was to the same way: **TG** for a talkgroup, **TO RADIO**
 for a private call (its details say "Sent to radio" and offer **Hold radio**), and just
-the number when the decoder did not say which.
+the number when the decoder did not say which. A radio heard only in private calls gets no
+card on Talkgroups, and the History export's last column, `call_kind`, says the same.
 **Skip** is unaffected by this setting and never saves. Avoids and unexpired call
 skips survive scan-target revisits; **Clear temporary avoids and call skips — current
 list** clears both in the active list. List reload/replacement or stopping the decoder

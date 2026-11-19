@@ -306,8 +306,10 @@ ModalSheet {
                     return qsTr("Received %1").arg(Qt.formatDateTime(new Date(block.receivedWhen * 1000), "yyyy-MM-dd hh:mm:ss"));
                 if (block.receivedWhen === 0 || !block.hasFix)
                     return "";
-                var ago = MapText.agoText(block.ageSeconds, block.fix.timeText);
-                return ago.length > 0 ? qsTr("Received %1").arg(ago) + (block.ageSeconds >= 0 && block.fix.timeText ? " · " + block.fix.timeText : "") : "";
+                // The receive time with its date when not today, as "Measured at".
+                var at = MapText.clockText(block.fix.receivedTime, savedSystems.realtimeNowMs()) || block.fix.timeText || "";
+                var ago = MapText.agoText(block.ageSeconds, at);
+                return ago.length > 0 ? qsTr("Received %1").arg(ago) + (block.ageSeconds >= 0 && at.length > 0 ? " · " + at : "") : "";
             }
             wrapMode: Text.Wrap
             font.family: Theme.sans

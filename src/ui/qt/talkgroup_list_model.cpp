@@ -129,6 +129,7 @@ TalkgroupListModel::TalkgroupListModel(QAbstractItemModel* history, QObject* par
     m_tgRole = roles.key("tg", -1);
     m_sessionRole = roles.key("session", -1);
     m_kindRole = roles.key("kind", -1);
+    m_giRole = roles.key("gi", -1);
     m_heardSource = qobject_cast<HeardTalkgroupSource*>(history);
     const auto dirty = [this]() { m_heardDirty = true; };
     connect(history, &QAbstractItemModel::rowsInserted, this, dirty);
@@ -334,6 +335,10 @@ TalkgroupListModel::heardFromRoles() const {
         }
         const qulonglong target = m_history->data(idx, m_tgRole).toULongLong();
         if (target == 0 || target > std::numeric_limits<uint32_t>::max()) {
+            continue;
+        }
+        // A private call's target is a radio, never a talkgroup heard (issue #800); not knowing stays as before.
+        if (m_giRole >= 0 && m_history->data(idx, m_giRole).toInt() == 1) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(target);
