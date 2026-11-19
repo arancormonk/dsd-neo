@@ -302,7 +302,7 @@ test_failed_first_connection_records_the_endpoint(void) {
    second while it cannot be; one in step, or rigctl off, is left alone. */
 static void
 test_resync_reconnects_a_connection_out_of_step(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     reset_fakes();
     seed_opts(&opts, "rig.lan", 4532, 61, 1);
     g_resync_sock = DSD_INVALID_SOCKET;
