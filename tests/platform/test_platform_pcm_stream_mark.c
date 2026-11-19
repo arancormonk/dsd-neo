@@ -207,7 +207,7 @@ test_pause_before_the_first_refill(void) {
 }
 
 /* A read of g_console_fd blocks, as an idle Windows console's _read() does once its readiness said it was ready, until
-   released or 3 s on the real clock. */
+   the test releases it (or 60 s on the real clock, a deadlock safeguard only). */
 static atomic_int g_console_fd = -1;
 static atomic_int g_console_in_read;
 static atomic_int g_console_release;
@@ -217,7 +217,7 @@ mark_read(int fd, void* buf, size_t count) {
     if (fd == atomic_load(&g_console_fd)) {
         atomic_store(&g_console_in_read, 1);
         const uint64_t start = mark_real_time_monotonic_ms();
-        while (!atomic_load(&g_console_release) && mark_real_time_monotonic_ms() - start < 3000U) {
+        while (!atomic_load(&g_console_release) && mark_real_time_monotonic_ms() - start < 60000U) {
             dsd_sleep_ms(1U);
         }
     }
@@ -231,10 +231,24 @@ decoder_console_read(void* arg) {
     DSD_THREAD_RETURN;
 }
 
+/* The watchdog's mark, on a thread of its own. */
+static atomic_int g_console_marked;
+static dsd_input_cut g_console_cut;
+
+static DSD_THREAD_RETURN_TYPE
+watchdog_console_mark(void* arg) {
+    (void)arg;
+    dsd_input_backlog_mark(&g_console_cut);
+    atomic_store(&g_console_marked, 1);
+    DSD_THREAD_RETURN;
+}
+
 /* Issue #834: stdin that is no stream (a console, a regular file) holds no backlog a retune could drop, and a read of
    it may block while the reader holds its refill lock: a Windows console reads as ready at once, then its _read()
    waits for a key. A watchdog's mark of such an input must not wait on that read before it sends its tune: it counts
-   nothing and takes no lock. */
+   nothing and takes no lock. The case checks the order, never a time: the read stays held until the mark has
+   returned, and a mark that waited on it would never return while it is (30 s on the real clock end the wait, a
+   deadlock safeguard only). */
 static void
 test_mark_never_waits_on_a_console_read(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -263,17 +277,28 @@ test_mark_never_waits_on_a_console_read(void) {
     while (!atomic_load(&g_console_in_read)) {
         dsd_sleep_ms(1U);
     }
-    const uint64_t start = mark_real_time_monotonic_ms();
-    dsd_input_cut cut;
-    dsd_input_backlog_mark(&cut);
-    const uint64_t took = mark_real_time_monotonic_ms() - start;
+    atomic_store(&g_console_marked, 0);
+    DSD_MEMSET(&g_console_cut, 0, sizeof g_console_cut);
+    dsd_thread_t watchdog;
+    const int watchdog_started = dsd_thread_create(&watchdog, watchdog_console_mark, NULL) == 0;
+    check(watchdog_started, "the watchdog thread for the console's mark");
+    const uint64_t safeguard_start = mark_real_time_monotonic_ms();
+    while (watchdog_started && !atomic_load(&g_console_marked)
+           && mark_real_time_monotonic_ms() - safeguard_start < 30000U) {
+        dsd_sleep_ms(1U);
+    }
+    /* Read before the release: the console's read is still held here. */
+    const int marked_while_held = atomic_load(&g_console_marked) && !atomic_load(&g_console_release);
     atomic_store(&g_console_release, 1);
+    if (watchdog_started) {
+        (void)dsd_thread_join(watchdog);
+    }
     (void)dsd_thread_join(decoder);
     atomic_store(&g_console_fd, -1);
     char what[160];
-    DSD_SNPRINTF(what, sizeof what, "a mark of a console in a read returns at once (took %llu ms, counted %llu)",
-                 (unsigned long long)took, (unsigned long long)cut.arrived);
-    check(took < 1000U && cut.arrived == 0U, what);
+    DSD_SNPRINTF(what, sizeof what, "a mark of a console in a read returns while the read is held (counted %llu)",
+                 (unsigned long long)g_console_cut.arrived);
+    check(marked_while_held && g_console_cut.arrived == 0U, what);
     dsd_pcm_stream_close(stream);
     (void)close(fd);
     (void)remove(path);
