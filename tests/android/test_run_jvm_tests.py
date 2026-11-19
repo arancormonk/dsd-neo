@@ -138,11 +138,16 @@ class CollectorChoice(unittest.TestCase):
 
     def test_quoted_collector_is_kept_alone(self):
         # The JVM takes JAVA_TOOL_OPTIONS='"-XX:+UseG1GC"' (its options may be quoted), and two collectors stop it.
-        for quoted in ('"-XX:+UseG1GC"', "'-XX:+UseG1GC'", '-Xss1M "-XX:+UseZGC" -Xmx1G'):
+        for quoted in ('"-XX:+UseG1GC"', "'-XX:+UseG1GC'", '-Xss1M "-XX:+UseZGC" -Xmx1G', '-XX:+"UseG1GC"'):
             with self.subTest(quoted=quoted):
                 environ = {"JAVA_TOOL_OPTIONS": quoted}
                 self.assertNotIn(self.SERIAL, self.cached_argv(environ))
                 self.assertNotIn(self.SERIAL, runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ))
+
+    def test_a_quoted_property_value_selects_no_collector(self):
+        # One system property whose value happens to name a collector: the JVM selects none by it.
+        environ = {"JAVA_TOOL_OPTIONS": '-Dorg.gradle.jvmargs="-XX:+UseG1GC"'}
+        self.assertIn(self.SERIAL, self.cached_argv(environ))
 
     def test_serial_by_default(self):
         self.assertIn(self.SERIAL, self.kotlinc_options({}))

@@ -23,8 +23,8 @@ JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
 # The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
 # so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
 # and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone.
-# A token may be quoted, as the JVM reads these options (JAVA_TOOL_OPTIONS='"-XX:+UseG1GC"').
-COLLECTOR_SELECTION = re.compile(r"""(?:^|[\s"'])-XX:\+Use\w*GC(?=[\s"']|$)""")
+# Matched against whole arguments, as the JVM splits these options (jvm_option_words()).
+COLLECTOR_SELECTION = re.compile(r"-XX:\+Use\w*GC")
 JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
 # kotlinc takes its JVM's options from JAVA_OPTS, in both launchers (bin/kotlinc and bin/kotlinc.bat), and puts each
 # word on the java command line itself. Not as -J arguments: Windows runs kotlinc.bat, and cmd.exe splits a batch file's
@@ -1776,12 +1776,41 @@ def cached_compiler():
     return jars
 
 
+def jvm_option_words(text):
+    """@p text split into arguments as HotSpot splits JAVA_TOOL_OPTIONS (and the launcher JDK_JAVA_OPTIONS): at
+    whitespace outside quotes, a single- or double-quoted run taken as it is and its quotes dropped, anywhere in a
+    word (-XX:+"UseG1GC" is -XX:+UseG1GC; -Dname="-XX:+UseG1GC" is one property)."""
+    words, word, quote, quoted = [], [], None, False
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                word.append(char)
+        elif char in "\"'":
+            quote, quoted = char, True
+        elif char.isspace():
+            if word or quoted:
+                words.append("".join(word))
+            word, quoted = [], False
+        else:
+            word.append(char)
+    if word or quoted:
+        words.append("".join(word))
+    return words
+
+
+def selects_collector(options):
+    """Whether the JVM options @p options select a garbage collector: one whole argument -XX:+Use...GC."""
+    return any(COLLECTOR_SELECTION.fullmatch(word) for word in jvm_option_words(options))
+
+
 def jvm_options(environ, given=""):
     """JVM_OPTIONS for a JVM started with the options @p given under @p environ, without the serial collector when
     @p given or the JVM-wide options in @p environ select a collector already."""
     selected = [given, *(environ.get(name, "") for name in JVM_WIDE_OPTIONS)]
-    if any(COLLECTOR_SELECTION.search(options) for options in selected):
-        return tuple(option for option in JVM_OPTIONS if not COLLECTOR_SELECTION.search(option))
+    if any(selects_collector(options) for options in selected):
+        return tuple(option for option in JVM_OPTIONS if not selects_collector(option))
     return JVM_OPTIONS
 
 
