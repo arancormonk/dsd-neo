@@ -8900,6 +8900,35 @@ test_idle_dwell_starts_when_the_input_comes_back(void) {
     return test_rc;
 }
 
+/* A target whose state machine retunes again after the park (a control channel probe every few seconds on a silent
+   system): each retune mutes the input again, but the dwell's start is the input's return from the park's own mute, so
+   the later mutes neither move it nor pause it, and the target still rotates when it runs out. */
+static int
+test_idle_dwell_keeps_the_parks_listening_start(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* Target a parked at 100.0 s with a 250 ms dwell; the input came back at 100.10 s and a tick saw it. */
+    g_scan_listening_since_m = 100.10;
+    set_decode_now_s(100.20);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a tick 100 ms after the input came back", 0U);
+    /* A probe retunes at 100.30 s; its mute lasts past the dwell's end. */
+    g_scan_listening_since_m = -1.0;
+    set_decode_now_s(100.36);
+    test_rc |= expect_control_rc("the dwell from the park's listening start runs out",
+                                 dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the target rotates despite the probe's mute", 1U);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
 /* A park that lands while no tick looks (a held no-sync pass), and an operator hold toggled on and off before the next
    tick: the release promises a fresh dwell (docs/code_map.md), which the late-noticed landing must not replace with
    its older stamp. */
@@ -25547,6 +25576,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_idle_dwell_due_yields_once_and_counts_from_the_landing);
     rc |= run_with_default_tune_hook(test_idle_dwell_counts_from_a_blocking_tunes_landing);
     rc |= run_with_default_tune_hook(test_idle_dwell_starts_when_the_input_comes_back);
+    rc |= run_with_default_tune_hook(test_idle_dwell_keeps_the_parks_listening_start);
     rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_dwell_due_answers_again_after_a_tick_that_lost_the_guard);
     rc |= run_with_default_tune_hook(test_dwell_due_after_a_tone_check_stay);

@@ -250,6 +250,12 @@ typedef struct {
     double idle_since_m;
     /* Why idle_since_m is disarmed; read only while it is (trunk_scan_disarm_dwell()). */
     trunk_scan_dwell_disarm dwell_disarm;
+    /* The idle dwell start the input's return from the park's retune mute gave the dwell armed at
+       listening_armed_m (trunk_scan_latch_listening()), once a tick saw it: a later retune on the target (a control
+       channel probe) arms another mute, which must not move this dwell again. */
+    int listening_latched;
+    double listening_armed_m;
+    double listening_start_m;
     /* The due dwell start, and the stay reason, a tick under the coordinator's guard last decided (advance, re-arm or
        stay): dsd_engine_trunk_scan_dwell_due() hands back again only once either differs (issue #834 B3). */
     double dwell_serviced_start_m;
@@ -4651,15 +4657,37 @@ trunk_scan_refresh_activity(const dsd_opts* opts, dsd_state* state, dsd_trunk_sc
    target, starts no earlier than the first samples after it (dsd_engine_scan_input_listening_since_m()). -1 while the
    input is still muted, as for a dwell not armed. */
 static double
-trunk_scan_listening_dwell_start(const dsd_opts* opts, const dsd_state* state, double start_m) {
+trunk_scan_listening_dwell_start(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                                 double start_m) {
     if (start_m < 0.0) {
         return start_m;
+    }
+    if (rt->listening_latched && fabs(rt->listening_armed_m - start_m) < 1e-9) {
+        return rt->listening_start_m;
     }
     const double listening_m = dsd_engine_scan_input_listening_since_m(opts, state);
     if (listening_m < 0.0) {
         return -1.0;
     }
     return listening_m > start_m ? listening_m : start_m;
+}
+
+/* Latch, for the dwell armed at @p start_m, the start the input's return gave it (trunk_scan_listening_dwell_start()),
+   once the input is back: the park's mute decides the dwell's start once, and a later retune's mute on the same target
+   (a control channel probe every few seconds) leaves it where it is, so the dwell still runs out. */
+static void
+trunk_scan_latch_listening(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                           double start_m) {
+    if (start_m < 0.0 || (rt->listening_latched && fabs(rt->listening_armed_m - start_m) < 1e-9)) {
+        return;
+    }
+    const double listening_start_m = trunk_scan_listening_dwell_start(opts, state, rt, start_m);
+    if (listening_start_m < 0.0) {
+        return;
+    }
+    rt->listening_latched = 1;
+    rt->listening_armed_m = start_m;
+    rt->listening_start_m = listening_start_m;
 }
 
 /* Pick the reason the row on air is staying, and the window it runs for when the coordinator
@@ -4709,7 +4737,7 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
     }
     report->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
     /* A dwell waiting for the input after a retune's mute names no window until it starts. */
-    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt->idle_since_m);
+    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt, rt->idle_since_m);
     if (start_m >= 0.0) {
         report->started_m = start_m;
         report->deadline_m = start_m + (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
@@ -5121,7 +5149,8 @@ trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, const dsd_state* state, dsd_
     if (rt->idle_since_m < 0.0 && !trunk_scan_rearm_dwell(opts, rt, now_m)) {
         return 0;
     }
-    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt->idle_since_m);
+    trunk_scan_latch_listening(opts, state, rt, rt->idle_since_m);
+    const double start_m = trunk_scan_listening_dwell_start(opts, state, rt, rt->idle_since_m);
     const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
     return start_m >= 0.0 && (now_m - start_m) >= dwell_s;
 }
@@ -5292,6 +5321,8 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     if (rt->retry_released_park) {
         return;
     }
+    /* Before the state machine runs, which can retune on its own (a control channel probe). */
+    trunk_scan_latch_listening(opts, state, rt, rt->idle_since_m);
     trunk_scan_tick_active_target_sm(opts, state, rt);
     if (state->p2_wacn != rt->iden_share_wacn || state->p2_sysid != rt->iden_share_sysid) {
         trunk_scan_share_peer_idens(coord, state, rt);
@@ -5327,7 +5358,8 @@ trunk_scan_idle_dwell_start(const dsd_opts* opts, const dsd_trunk_scan_target_ru
 static double
 trunk_scan_due_dwell_start(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
                            double now_m) {
-    const double start_m = trunk_scan_listening_dwell_start(opts, state, trunk_scan_idle_dwell_start(opts, rt, now_m));
+    const double start_m =
+        trunk_scan_listening_dwell_start(opts, state, rt, trunk_scan_idle_dwell_start(opts, rt, now_m));
     const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
     return (start_m >= 0.0 && (now_m - start_m) >= dwell_s) ? start_m : -1.0;
 }
