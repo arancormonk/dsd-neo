@@ -685,6 +685,68 @@ function Get-CMakeCacheValue {
     return $entries[0].Substring($entries[0].IndexOf('=') + 1).Trim()
 }
 
+# The x64 Visual C++ runtime a developer shell names (VCToolsRedistDir), checked against
+# the toolset it names (VCToolsInstallDir): both folders of one Visual Studio installation,
+# <VC>\Tools\MSVC\<tools version> and <VC>\Redist\MSVC\<runtime version>, and a pair of
+# that installation's version files in <VC>\Auxiliary\Build (or a folder in it), the ones
+# the developer shell reads, Microsoft.VCToolsVersion.<name>.txt naming the tools
+# version and Microsoft.VCRedistVersion.<name>.txt naming the runtime version. A runtime
+# folder of another installation, or of another toolset of the same one, is refused: the
+# release would carry and record a runtime its toolset did not come with. Returns the
+# canonical runtime folder.
+function Assert-ToolsetRedistributable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ToolsInstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RedistDir
+    )
+
+    $tools = Resolve-CanonicalPath $ToolsInstallDir
+    $redist = Resolve-CanonicalPath $RedistDir
+    $toolsVc = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $tools))
+    $redistVc = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $redist))
+    $toolsShape = (Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $tools))) -eq 'Tools' -and
+        (Split-Path -Leaf (Split-Path -Parent $tools)) -eq 'MSVC'
+    $redistShape = (Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $redist))) -eq 'Redist' -and
+        (Split-Path -Leaf (Split-Path -Parent $redist)) -eq 'MSVC'
+    if (-not $toolsShape -or -not $redistShape) {
+        throw "VCToolsInstallDir ($ToolsInstallDir) and VCToolsRedistDir ($RedistDir) are not a toolset's VC\Tools\MSVC\<version> and VC\Redist\MSVC\<version> folders"
+    }
+    if (-not (Test-SamePath -Path $toolsVc -Other $redistVc)) {
+        throw "VCToolsRedistDir ($RedistDir) is not in the Visual Studio installation of VCToolsInstallDir ($ToolsInstallDir): the release would carry another installation's Visual C++ runtime"
+    }
+    $toolsVersion = Split-Path -Leaf $tools
+    $redistVersion = Split-Path -Leaf $redist
+    $build = Join-Path $toolsVc 'Auxiliary/Build'
+    $folders = @(Get-Item -LiteralPath $build -ErrorAction SilentlyContinue) +
+        @(Get-ChildItem -LiteralPath $build -Directory -Force -ErrorAction SilentlyContinue)
+    $paired = $false
+    $named = $false
+    foreach ($folder in @($folders | Where-Object { $_ })) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $folder.FullName -File -Force -Filter 'Microsoft.VCToolsVersion.*.txt')) {
+            if ((Get-Content -Raw -LiteralPath $file.FullName).Trim() -ne $toolsVersion) {
+                continue
+            }
+            $named = $true
+            $suffix = $file.Name.Substring('Microsoft.VCToolsVersion.'.Length)
+            $pair = Join-Path $folder.FullName ('Microsoft.VCRedistVersion.' + $suffix)
+            if ((Test-Path -LiteralPath $pair -PathType Leaf) -and
+                (Get-Content -Raw -LiteralPath $pair).Trim() -eq $redistVersion) {
+                $paired = $true
+            }
+        }
+    }
+    if (-not $named) {
+        throw "No Microsoft.VCToolsVersion.*.txt in $build names the toolset $toolsVersion of VCToolsInstallDir ($ToolsInstallDir), so its Visual C++ runtime is unknown"
+    }
+    if (-not $paired) {
+        throw "VCToolsRedistDir ($RedistDir) is runtime $redistVersion, which no Microsoft.VCRedistVersion.*.txt in $build pairs with the toolset $toolsVersion of VCToolsInstallDir ($ToolsInstallDir): the release would carry another toolset's Visual C++ runtime"
+    }
+    return $redist
+}
+
 # Runs a program in a fresh process, from a new empty working directory, with PATH
 # set to $PathValue and the variables that would point SoapySDR or dsd-neo elsewhere
 # removed. Returns the exit code and both streams as check text; throws when the
@@ -759,4 +821,4 @@ Export-ModuleMember -Function ConvertTo-CheckText, ConvertTo-CheckLines, Convert
     Assert-ReleaseBinaryRecords, Get-SoapyProbeMessages, Get-SoapyNoMatchMessage, Get-DllKind, Get-RecordedRuntimeFiles,
     Get-PeImageMachine, Test-PeImage, Assert-ReleaseMachine, Find-DumpbinDiagnostic, Get-DumpbinMachine,
     Test-DumpbinImageReport, Test-ImportName, Get-DumpbinDependents, Resolve-CanonicalPath, Test-SamePath,
-    Test-PathInside, Get-CMakeCacheValue, Invoke-IsolatedProcess
+    Test-PathInside, Get-CMakeCacheValue, Assert-ToolsetRedistributable, Invoke-IsolatedProcess

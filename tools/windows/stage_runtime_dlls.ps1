@@ -464,7 +464,9 @@ function Get-DependentDllNames {
 # the Visual Studio developer shell of that toolset sets (stage_release_tree.ps1 checks
 # that the build's compilers are that shell's). Never another installed toolset's: an
 # image built with one toolset may need a newer runtime than an older toolset's, and the
-# release says which toolset its runtime came from. Microsoft's REDIST list lets a
+# release says which toolset its runtime came from. So VCToolsRedistDir must be the
+# runtime folder the shell's own installation pairs with its toolset, VCToolsInstallDir
+# (Assert-ToolsetRedistributable), or staging stops. Microsoft's REDIST list lets a
 # licensed Visual Studio user distribute the files of VC\Redist, except its
 # debug_nonredist folders (legal/components.json, msvc-runtime). $null when there is no
 # such folder.
@@ -473,6 +475,10 @@ function Get-VcRuntimeDir {
     if ([string]::IsNullOrWhiteSpace($redist)) {
         return $null
     }
+    if ([string]::IsNullOrWhiteSpace($env:VCToolsInstallDir)) {
+        throw "VCToolsRedistDir is set without VCToolsInstallDir, so the toolset its Visual C++ runtime must come with is unknown: run from the Visual Studio developer shell of the toolset that built the binaries"
+    }
+    $redist = Assert-ToolsetRedistributable -ToolsInstallDir $env:VCToolsInstallDir -RedistDir $redist
     $arch = Join-Path $redist 'x64'
     if (!(Test-Path -LiteralPath $arch -PathType Container)) {
         return $null

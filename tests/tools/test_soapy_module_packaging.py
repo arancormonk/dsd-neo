@@ -1085,8 +1085,10 @@ class SoapyReleaseScripts(unittest.TestCase):
         for name in RUNTIME_DLLS:
             (self.crt / name).write_bytes(pe_image(name.encode()))
         # The developer shell of the toolset that built the tree: its compilers, as CMake records them, and the
-        # variables it sets. Its runtime folder has a version of its own.
+        # variables it sets. Its runtime folder has a version of its own, which the installation's version files pair
+        # with the toolset's, as the developer shell reads them.
         self.toolset = self.toolset_folder(self.work / "vs", "14.51.36231")
+        self.version_files(self.work / "vs", "14.51.36231", "14.50.35719")
         self.shell = {"VCToolsInstallDir": f"{self.toolset}/", "VCToolsRedistDir": f"{self.crt.parent.parent}/"}
         self.write_cache(build, self.toolset)
         return tools, build, installed, windows
@@ -1098,6 +1100,13 @@ class SoapyReleaseScripts(unittest.TestCase):
         for name in ("cl.exe", "link.exe"):
             (toolset / "bin/Hostx64/x64" / name).write_bytes(pe_image(name.encode(), dll=False))
         return toolset
+
+    def version_files(self, install, tools_version, redist_version, name="default"):
+        """The version files in VC/Auxiliary/Build that pair a toolset with its runtime folder."""
+        folder = install / "VC/Auxiliary/Build"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"Microsoft.VCToolsVersion.{name}.txt").write_text(tools_version + "\r\n")
+        (folder / f"Microsoft.VCRedistVersion.{name}.txt").write_text(redist_version + "\r\n")
 
     def write_cache(self, build, toolset, compiler=None):
         """The CMakeCache.txt of a build whose compilers are toolset's cl.exe, as CMake records the preset's cl."""
@@ -1270,13 +1279,26 @@ class SoapyReleaseScripts(unittest.TestCase):
 
     def test_stage_release_tree_needs_the_developer_shell_of_the_build(self):
         # The runtime the release carries is that of the toolset that built it: staging takes it from the developer
-        # shell's VCToolsRedistDir, so the build's compilers must be that shell's, under its VCToolsInstallDir.
+        # shell's VCToolsRedistDir, so the build's compilers must be that shell's, under its VCToolsInstallDir, and
+        # that runtime folder must be the one the same installation pairs with that toolset.
         tools, build, installed, windows = self.fake_tree()
         shell = dict(self.shell)
         older = self.toolset_folder(self.work / "vs", "14.44.35207")
         # A folder whose name starts like the toolset's, and a folder in the toolset that links out of it.
         lookalike = self.toolset_folder(self.work / "vs", "14.51.36231-old")
         (self.toolset / "bin/Hostx64/arm64").symlink_to(older / "bin/Hostx64/x64", target_is_directory=True)
+        # Another Visual Studio installation with the same toolset and its runtime, and another runtime folder of this
+        # installation that its version files do not pair with the toolset.
+        other_install = self.work / "vs-other"
+        self.toolset_folder(other_install, "14.51.36231")
+        self.version_files(other_install, "14.51.36231", "14.50.35719")
+        other_crt = other_install / "VC/Redist/MSVC/14.50.35719/x64/Microsoft.VC145.CRT"
+        older_crt = self.work / "vs/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT"
+        for crt in (other_crt, older_crt):
+            crt.mkdir(parents=True)
+            for name in RUNTIME_DLLS:
+                (crt / name).write_bytes(pe_image(b"another runtime"))
+        versions = self.work / "vs/VC/Auxiliary/Build"
         cases = (
             ("built with another toolset", lambda: self.write_cache(build, older),
              [f"was built with {older}/bin/Hostx64/x64/cl.exe", self.shell["VCToolsInstallDir"]]),
@@ -1292,6 +1314,17 @@ class SoapyReleaseScripts(unittest.TestCase):
             ("no VCToolsRedistDir", lambda: self.shell.pop("VCToolsRedistDir"), ["VCToolsRedistDir is not set"]),
             ("no VCToolsInstallDir", lambda: self.shell.pop("VCToolsInstallDir"), ["VCToolsInstallDir is not set"]),
             ("no CMake cache", lambda: (build / "CMakeCache.txt").unlink(), ["No CMakeCache.txt in"]),
+            ("the runtime of another installation",
+             lambda: self.shell.update(VCToolsRedistDir=f"{other_crt.parent.parent}/"),
+             ["is not in the Visual Studio installation of VCToolsInstallDir", str(other_crt.parent.parent)]),
+            ("the runtime of another toolset of the installation",
+             lambda: self.shell.update(VCToolsRedistDir=f"{older_crt.parent.parent}/"),
+             ["is runtime 14.44.35112, which no Microsoft.VCRedistVersion.*.txt", "toolset 14.51.36231"]),
+            ("version files that pair the toolset with another runtime",
+             lambda: self.version_files(self.work / "vs", "14.51.36231", "14.44.35112"),
+             ["is runtime 14.50.35719, which no Microsoft.VCRedistVersion.*.txt"]),
+            ("no version files", lambda: shutil.rmtree(versions),
+             ["No Microsoft.VCToolsVersion.*.txt", "names the toolset 14.51.36231"]),
         )
         for label, break_shell, words in cases:
             with self.subTest(case=label):
@@ -1305,6 +1338,7 @@ class SoapyReleaseScripts(unittest.TestCase):
                 finally:
                     self.shell = dict(shell)
                     self.write_cache(build, self.toolset)
+                    self.version_files(self.work / "vs", "14.51.36231", "14.50.35719")
                     shutil.rmtree(self.work / "dist/dsd-neo-msvc", ignore_errors=True)
         # A cache that spells the toolset's folder with backslashes, as on Windows, names the same compilers.
         cache = build / "CMakeCache.txt"

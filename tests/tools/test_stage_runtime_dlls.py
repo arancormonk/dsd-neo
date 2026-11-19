@@ -255,20 +255,33 @@ class StageRuntimeDlls(unittest.TestCase):
         crt = install / f"VC/Redist/MSVC/{version}/x64/Microsoft.{toolset}.CRT"
         crt.mkdir(parents=True)
         if self.redist is None:
-            self.redist = install / f"VC/Redist/MSVC/{version}"
+            self.redist = self.developer_shell(install, "14.51.36500", version)
         return crt
+
+    def developer_shell(self, install, tools_version, redist_version, name="default"):
+        """The variables a developer shell of a Visual Studio installation sets: its toolset's folder and the runtime
+        folder its version files in VC/Auxiliary/Build pair with that toolset, as the shell reads them."""
+        (install / "VC/Tools/MSVC" / tools_version / "bin/Hostx64/x64").mkdir(parents=True, exist_ok=True)
+        (install / "VC/Redist/MSVC" / redist_version).mkdir(parents=True, exist_ok=True)
+        versions = install / "VC/Auxiliary/Build"
+        versions.mkdir(parents=True, exist_ok=True)
+        (versions / f"Microsoft.VCToolsVersion.{name}.txt").write_text(tools_version + "\r\n")
+        (versions / f"Microsoft.VCRedistVersion.{name}.txt").write_text(redist_version + "\r\n")
+        return {"VCToolsInstallDir": f"{install}/VC/Tools/MSVC/{tools_version}/",
+                "VCToolsRedistDir": f"{install}/VC/Redist/MSVC/{redist_version}/"}
 
     def stage(self, search=None, redist=DEVELOPER_SHELL):
         # Only the fakes are on PATH, so no real dumpbin, objdump or llvm-objdump on the host can answer instead.
         env = dict(os.environ, PATH=str(self.tools), SystemRoot=str(self.work / "windows"))
         env["ProgramFiles(x86)"] = str(self.program_files)
-        # A Visual Studio developer shell names its toolset's redistributable folder here; None is no developer
-        # shell.
-        env.pop("VCToolsRedistDir", None)
+        # A Visual Studio developer shell names its toolset's folder and that toolset's redistributable folder here
+        # (developer_shell()); None is no developer shell.
+        for name in ("VCToolsInstallDir", "VCToolsRedistDir"):
+            env.pop(name, None)
         if redist is DEVELOPER_SHELL:
             redist = self.redist
         if redist is not None:
-            env["VCToolsRedistDir"] = str(redist)
+            env.update(redist)
         runner = self.work / "run.ps1"
         runner.write_text(RUNNER, encoding="utf-8")
         search = self.search if search is None else search
@@ -364,6 +377,7 @@ class StageRuntimeDlls(unittest.TestCase):
         (self.system32 / "VCRUNTIME140.dll").write_bytes(pe_image(b"system"))
         (self.search / "VCRUNTIME140.dll").write_bytes(pe_image(b"vcpkg"))
         # The developer shell's toolset: Visual Studio 2026 names its folder Microsoft.VC145.CRT.
+        shell_vars = self.developer_shell(self.work / "vs18", "14.51.36500", "14.51.36231")
         shell = self.work / "vs18/VC/Redist/MSVC/14.51.36231"
         (shell / "x64/Microsoft.VC145.CRT").mkdir(parents=True)
         (shell / "x64/Microsoft.VC145.CRT/VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
@@ -371,7 +385,7 @@ class StageRuntimeDlls(unittest.TestCase):
         newer = self.visual_studio(version="14.52.36400", toolset="VC145")
         (newer / "VCRUNTIME140.dll").write_bytes(pe_image(b"newest toolset"))
         self.runtime_import()
-        rc, output = self.stage(redist=shell)
+        rc, output = self.stage(redist=shell_vars)
         self.assertEqual(rc, 0, output)
         self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"developer shell"))
         # Without a developer shell the toolset that built the binaries is unknown: the newest one installed may not
@@ -386,8 +400,46 @@ class StageRuntimeDlls(unittest.TestCase):
             (where / "MSVCP140.dll").write_bytes(pe_image(b"elsewhere"))
         output = self.assert_refused(["MSVCP140.dll",
                                       f"not in the Visual C++ runtime folder {shell / 'x64/Microsoft.VC145.CRT'}"],
-                                     redist=shell)
+                                     redist=shell_vars)
         self.assertFalse((self.dest / "MSVCP140.dll").exists(), output)
+
+    def test_runtime_comes_from_the_installation_of_the_toolset(self):
+        # VCToolsRedistDir must be the runtime folder that the installation of the shell's toolset (VCToolsInstallDir)
+        # pairs with that toolset in its version files: another installation's runtime, or another toolset's, would
+        # be copied, hashed and recorded as this toolset's.
+        crt = self.visual_studio()
+        (crt / "VCRUNTIME140.dll").write_bytes(pe_image(b"developer shell"))
+        shell = dict(self.redist)
+        other = self.developer_shell(self.work / "vs-other", "14.51.36500", "14.51.36231")
+        older = self.work / "vs/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT"
+        for folder in (self.work / "vs-other/VC/Redist/MSVC/14.51.36231/x64/Microsoft.VC143.CRT", older):
+            folder.mkdir(parents=True)
+            (folder / "VCRUNTIME140.dll").write_bytes(pe_image(b"another runtime"))
+        for label, variables, words in (
+                ("another installation's runtime", dict(shell, VCToolsRedistDir=other["VCToolsRedistDir"]),
+                 ["is not in the Visual Studio installation of VCToolsInstallDir", other["VCToolsRedistDir"]]),
+                ("another toolset's runtime", dict(shell, VCToolsRedistDir=f"{older.parent.parent}/"),
+                 ["is runtime 14.44.35112, which no Microsoft.VCRedistVersion.*.txt", "toolset 14.51.36500"]),
+                ("no toolset", {"VCToolsRedistDir": shell["VCToolsRedistDir"]},
+                 ["VCToolsRedistDir is set without VCToolsInstallDir"])):
+            with self.subTest(case=label):
+                self.runtime_import()
+                output = self.assert_refused(words, redist=variables)
+                self.assertFalse((self.dest / "VCRUNTIME140.dll").exists(), output)
+        # An older toolset installed beside the default one has its own pair of version files, in a folder of its own.
+        side = self.developer_shell(self.work / "vs", "14.44.35207", "14.44.35112", name="14.44.35207")
+        (self.work / "vs/VC/Auxiliary/Build/14.44.35207").mkdir()
+        for kind in ("Tools", "Redist"):
+            (self.work / f"vs/VC/Auxiliary/Build/Microsoft.VC{kind}Version.14.44.35207.txt").rename(
+                self.work / f"vs/VC/Auxiliary/Build/14.44.35207/Microsoft.VC{kind}Version.14.44.35207.txt")
+        self.runtime_import()
+        rc, output = self.stage(redist=side)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"another runtime"))
+        self.runtime_import()
+        rc, output = self.stage()
+        self.assertEqual(rc, 0, output)
+        self.assertEqual((self.dest / "VCRUNTIME140.dll").read_bytes(), pe_image(b"developer shell"))
 
     def test_runtime_already_in_the_destination_is_the_toolsets_copy(self):
         # Staging keeps a DLL already in the destination rather than copy it again (the release jobs stage three

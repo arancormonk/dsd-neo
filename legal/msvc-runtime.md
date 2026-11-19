@@ -21,8 +21,11 @@ the `msvc-runtime` record lists under `windows_release`: `concrt140.dll`,
 - `tools/windows/stage_runtime_dlls.ps1` copies them unmodified from the x64
   runtime folder of the toolset that built the release,
   `VC\Redist\MSVC\<version>\x64\Microsoft.VC<toolset>.CRT`, and never from
-  System32. It refuses the debug runtime and any runtime DLL the record does
-  not list.
+  System32. That folder must be in the same Visual Studio installation as the
+  toolset, and that installation's version files in `VC\Auxiliary\Build`
+  (`Microsoft.VCToolsVersion.*.txt` and `Microsoft.VCRedistVersion.*.txt`) must
+  pair the two versions; staging refuses any other runtime folder. It refuses
+  the debug runtime and any runtime DLL the record does not list.
 - `tools/windows/verify_release_tree.ps1` refuses the same in the staged tree
   and in the unpacked ZIP. It also refuses a tree that carries any of these
   DLLs without the end-user notice below.

@@ -39,10 +39,12 @@ $installed = (Resolve-Path -LiteralPath $InstalledDir).Path
 # The Visual C++ runtime the release carries must be that of the toolset that built it
 # (legal/msvc-runtime.md). stage_runtime_dlls.ps1 takes it from VCToolsRedistDir, the
 # runtime folder of the developer shell's toolset, so the build's compilers must be that
-# toolset's: under VCToolsInstallDir, which the same shell sets. Paths are compared as
-# the file system resolves them, so a cache that names the toolset through another
-# spelling of the same folder (a short 8.3 name, a link or a junction) passes, and a
-# compiler that only appears to be under it does not.
+# toolset's: under VCToolsInstallDir, which the same shell sets, and that runtime folder
+# must be the one the same installation pairs with the toolset
+# (Assert-ToolsetRedistributable). Paths are compared as the file system resolves them,
+# so a cache that names the toolset through another spelling of the same folder (a short
+# 8.3 name, a link or a junction) passes, and a compiler that only appears to be under it
+# does not.
 function Assert-BuildToolset {
     param(
         [Parameter(Mandatory = $true)]
@@ -66,6 +68,7 @@ function Assert-BuildToolset {
             throw "$Build was built with $compiler ($resolved), not with the toolset of this developer shell ($env:VCToolsInstallDir), whose Visual C++ runtime the release would carry"
         }
     }
+    Assert-ToolsetRedistributable -ToolsInstallDir $env:VCToolsInstallDir -RedistDir $env:VCToolsRedistDir | Out-Null
 }
 
 Assert-BuildToolset -Build $build
