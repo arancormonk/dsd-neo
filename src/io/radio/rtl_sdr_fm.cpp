@@ -2512,7 +2512,7 @@ static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
 static void snr_ema_reset(void);
 static void controller_arm_retune_mute(const char* phase, int post_retune);
-static void retune_listening_note_input(uint64_t first, size_t count);
+static void retune_listening_note_input(size_t count);
 
 namespace {
 
@@ -4002,7 +4002,7 @@ demod_read_input_block(const struct demod_state* d, DemodInputSpan* span) {
         return 0;
     }
     span->reserved_count = (size_t)span->got;
-    retune_listening_note_input(input_ring.consumed_total.load(std::memory_order_acquire), span->reserved_count);
+    retune_listening_note_input(span->reserved_count);
     demod_input_span_stop_at_gap(span);
     span->direct_input_span =
         (span->ring_p1 && span->ring_n1 == (size_t)span->got && (!span->ring_p2 || span->ring_n2 == 0)) ? 1 : 0;
@@ -6343,13 +6343,14 @@ retune_listening_arm(int mute_bytes, uint32_t sample_rate_hz) {
     g_retune_listening.waiting.store(1, std::memory_order_release);
 }
 
-/* The demodulator took @p count floats of input from stream position @p first: the first past a waiting retune's
- * mute starts listening now. */
+/* The demodulator took the next @p count floats of input, from the ring's consumer position: the first past a waiting
+ * retune's mute starts listening now. With no retune waiting it reads nothing more than that flag. */
 static void
-retune_listening_note_input(uint64_t first, size_t count) {
+retune_listening_note_input(size_t count) {
     if (count == 0U || !g_retune_listening.waiting.load(std::memory_order_acquire)) {
         return;
     }
+    const uint64_t first = input_ring.consumed_total.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lock(g_retune_listening.mutex);
     if (g_retune_listening.waiting.load(std::memory_order_relaxed) && first + count > g_retune_listening.mark) {
         g_retune_listening.listening_ns = dsd_decode_now_mono_ns();
@@ -13869,7 +13870,7 @@ rtl_stream_test_input_produced(size_t floats) {
 
 extern "C" void
 rtl_stream_test_demod_took_input(size_t floats) {
-    retune_listening_note_input(input_ring.consumed_total.load(std::memory_order_acquire), floats);
+    retune_listening_note_input(floats);
     input_ring.consumed_total.fetch_add(floats, std::memory_order_acq_rel);
 }
 
