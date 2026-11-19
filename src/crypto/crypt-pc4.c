@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/safe_api.h"
 #include "md2ii.h"
 #include "pc4_internal.h"
 
@@ -430,6 +431,11 @@ void
 pc4_tyt_set_key(const unsigned char* key, size_t key_len) {
     create_keys(&g_tyt_pc4_context, key, key_len);
     g_tyt_pc4_context.rounds = nbround;
+}
+
+void
+pc4_tyt_context_wipe(void) {
+    DSD_SECURE_ZERO(&g_tyt_pc4_context, sizeof g_tyt_pc4_context);
 }
 
 void

@@ -13,6 +13,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "md2ii.h"
+#include "pc4_internal.h"
 
 #define PC5_NBROUND 254
 #define PC5_MD2_N   264
@@ -353,6 +354,12 @@ pc5decrypt(PC5Context* ctx) {
         ctx->convert[i + 3] = ctx->l[(rounds - 1) % 2][i];
         ctx->convert[i] = ctx->r[(rounds - 1) % 2][i];
     }
+}
+
+void
+dmr_vendor_key_contexts_wipe(void) {
+    DSD_SECURE_ZERO(&g_pc5_context, sizeof g_pc5_context);
+    pc4_tyt_context_wipe();
 }
 
 static void

@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../../src/core/util/key_set_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -811,6 +812,69 @@ test_teardown_wipes_keystreams_and_opts_secrets(void) {
     return failed;
 }
 
+/* A frame the vendor ciphers do not skip as silence: every bit pattern set, the tail included. */
+static void
+vendor_test_frame(char frame[49]) {
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i % 3) != 0);
+    }
+}
+
+/* The TYT AP (PC4) and Baofeng AP (PC5) key schedules and the TYT EP keystream live in the crypto module, not the
+   state, for the whole process: freeState() wipes them with the state's keys, so a stopped session leaves no key
+   material behind. A wiped schedule decrypts as one no key was ever loaded into does (the run's first, before any key:
+   this test runs first). */
+static int
+test_teardown_wipes_vendor_key_contexts(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    initState(state);
+    char never_keyed[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(never_keyed[c]);
+    }
+    state->tyt_ap = 1;
+    (void)tyt_ap_pc4_apply_frame49(state, never_keyed[0]);
+    state->baofeng_ap = 1;
+    (void)baofeng_pc5_apply_frame49(state, never_keyed[1]);
+    state->tyt_ap = state->baofeng_ap = 0;
+
+    tyt_ap_pc4_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+    (void)baofeng_ap_pc5_keystream_creation(state, "0123456789ABCDEF FEDCBA9876543210", 0);
+    tyt_ep_aes_keystream_creation(state, "0123456789ABCDEF FEDCBA9876543210", 0);
+    char keyed[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(keyed[c]);
+    }
+    (void)tyt_ap_pc4_apply_frame49(state, keyed[0]);
+    (void)baofeng_pc5_apply_frame49(state, keyed[1]);
+    (void)tyt_ep_aes_apply_frame49(state, keyed[2]);
+    int failed = memcmp(keyed[0], never_keyed[0], 49) == 0 || memcmp(keyed[1], never_keyed[1], 49) == 0
+                 || memcmp(keyed[2], never_keyed[2], 49) == 0;
+    freeState(state);
+
+    initState(state);
+    state->tyt_ap = state->baofeng_ap = state->tyt_ep = 1;
+    char after[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(after[c]);
+    }
+    (void)tyt_ap_pc4_apply_frame49(state, after[0]);
+    (void)baofeng_pc5_apply_frame49(state, after[1]);
+    (void)tyt_ep_aes_apply_frame49(state, after[2]);
+    if (memcmp(after[0], never_keyed[0], 49) != 0 || memcmp(after[1], never_keyed[1], 49) != 0
+        || memcmp(after[2], never_keyed[2], 49) != 0) {
+        DSD_FPRINTF(stderr, "freeState left a TYT or Baofeng key schedule or keystream behind\n");
+        failed = 1;
+    }
+    state->tyt_ap = state->baofeng_ap = state->tyt_ep = 0;
+    freeState(state);
+    free(state);
+    return failed;
+}
+
 /* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
    overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
    does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
@@ -900,6 +964,10 @@ test_key_readers_fill_their_outputs(void) {
 
 int
 main(void) {
+    /* First: it compares with the vendor schedules as no key has touched them yet. */
+    if (test_teardown_wipes_vendor_key_contexts() != 0) {
+        return 1;
+    }
     if (test_key_readers_fill_their_outputs() != 0) {
         return 1;
     }

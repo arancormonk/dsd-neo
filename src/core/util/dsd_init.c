@@ -1636,6 +1636,7 @@ freeState(dsd_state* state) {
     dsd_state_trunk_scan_entry_reasons_free(state);
     dsd_key_state_secure_wipe(state); // its keys go with it, whatever armed them (keyloader or not)
     retevis_rc2_context_release(state);
+    dmr_vendor_key_contexts_wipe(); // the TYT and Baofeng keys the session loaded, held for the process
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {
