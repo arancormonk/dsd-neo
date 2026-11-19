@@ -534,9 +534,17 @@ class InventoryTests(unittest.TestCase):
             encoding="utf-8"))
         # What the records do not settle stays visible in the findings.
         status = (ROOT / "legal/status.md").read_text(encoding="utf-8")
-        for words in ("licences screen reads a fixed list that leaves out Qt, codec2 and the vcpkg libraries",
-                      "Nothing guards these records against a Qt, Gradle or NDK update"):
+        # The licences screen, the release APK's plugin set and the drift check are delivered in this change set; the
+        # macOS ncurses overlay and Android's vcpkg requirement are settled. None of them is left as an open item.
+        for words in ("the app's licences screen lists every notice the APK carries",
+                      "release APKs no longer bundle Qt's QML debugger and profiler plugins",
+                      "android-ci fails when the Qt kit, the Gradle dependency set or the NDK runtime differs",
+                      "the DMG keeps the vcpkg ncurses overlay",
+                      "Android configure keeps requiring vcpkg"):
             self.assertIn(words, status)
+        for words in ("licences screen reads a fixed list", "Nothing guards these records",
+                      "For the APK: show every notice", "stay open under RUNTIME-NOTICES"):
+            self.assertNotIn(words, status)
         # Qt's source is offered by directions beside every APK (GPL 3 section 6(d)); the records say so, and that the
         # obligation stays with dsd-neo while the archives sit on Qt's servers.
         self.assertIn("These are now provided by directions under GPL section 6(d)", status)
