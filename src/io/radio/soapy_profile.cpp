@@ -613,13 +613,25 @@ range_point_within(const SoapyRange& range, double requested, double max_rate, d
         *out_point = std::min(std::max(requested, range.minimum), top);
         return true;
     }
-    const double last_steps = std::floor((range_last_point(range) - range.minimum) / range.step + 0.5);
-    double steps = std::min(last_steps, std::floor((max_rate + 0.5 - range.minimum) / range.step));
-    while (steps > 0.0 && std::llround(range.minimum + steps * range.step) > std::llround(max_rate)) {
-        steps -= 1.0;
+    /* The highest point within the cap: the range's last point as range_last_point() gives it (a step that passes the
+       maximum by rounding error is the maximum, which the setter keeps), else the grid point at or below the cap's
+       rounding boundary, stepped down while it rounds over the cap. A grid finer than a double resolves at that
+       magnitude has no distinguishable point below the boundary to step to; its largest representable value below
+       the boundary stands for it. */
+    const double cap_boundary = max_rate + 0.5;
+    double top = range_last_point(range);
+    if (std::llround(top) > std::llround(max_rate)) {
+        top = range.minimum + std::floor((cap_boundary - range.minimum) / range.step) * range.step;
+        for (int i = 0; i < 2 && top > range.minimum && std::llround(top) > std::llround(max_rate); i++) {
+            const double lower = top - range.step;
+            top = lower < top ? std::max(lower, range.minimum) : std::nextafter(cap_boundary, 0.0);
+        }
+        if (std::llround(top) > std::llround(max_rate)) {
+            top = std::max(range.minimum, std::nextafter(cap_boundary, 0.0));
+        }
     }
-    const double nearest = std::floor((requested - range.minimum) / range.step + 0.5);
-    *out_point = range.minimum + std::min(std::max(nearest, 0.0), steps) * range.step;
+    const double nearest = range.minimum + std::floor((requested - range.minimum) / range.step + 0.5) * range.step;
+    *out_point = std::min(std::max(nearest, range.minimum), top);
     return true;
 }
 

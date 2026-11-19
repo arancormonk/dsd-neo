@@ -254,6 +254,18 @@ test_nearest_rate_within_limit(void) {
                       dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, singleton, &found), 1520003.2);
     rc |= expect_double("the stepped range's last point within the cap",
                         dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, thirds, &found), 1520000.5);
+    /* The range's last point is the one range_last_point() gives, clamped to the maximum within rounding error: a
+       range from 1,020,003.5 Hz to 1,520,003.4999 Hz in 500 kHz steps ends at its maximum, which rounds within the
+       cap. */
+    const std::vector<dsdneo::SoapyRange> clamped_end = {{1020003.5, 1520003.4999, 500000.0}};
+    rc |= expect_double("the clamped last point within the cap",
+                        dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, clamped_end, &found),
+                        1520003.4999);
+    /* A grid finer than a double resolves at this magnitude still yields a point within the cap, and the query ends. */
+    const std::vector<dsdneo::SoapyRange> fine = {{1e6, 2e6, std::ldexp(1.0, -36)}};
+    const double fine_point = dsdneo::soapy_nearest_sample_rate_within(1536000.0, 1520003.0, {}, fine, &found);
+    rc |= expect_true("a fine grid's point is found", found);
+    rc |= expect_true("and rounds within the cap", std::llround(fine_point) <= 1520003LL);
     rc |= expect_double("a listed rate nearer than every range point wins",
                         dsdneo::soapy_nearest_sample_rate_within(2900000.0, 4000003.0, far_listed, halves, &found),
                         3072025.0);
