@@ -477,12 +477,15 @@ test_a_lost_tcp_input_is_no_socket(void) {
    or nothing (no beat was waiting). Counts every service the read makes. */
 enum { BEAT_NONE = 0, BEAT_MOVES = 1, BEAT_REFUSED = 2 };
 
+static int g_defer = 0; /* a put-off publication: the service defers, though no command is queued */
+
 static int
 fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    /* As p25_sm_watchdog_service() does: a beat behind queued work stands, and no tick runs. */
-    if (g_beat != BEAT_NONE && (g_pending || exitflag)) {
+    /* As p25_sm_watchdog_service() does: a beat behind queued work (a command, a put-off publication: g_defer) stands,
+       and no tick runs. */
+    if (g_beat != BEAT_NONE && (g_pending || g_defer || exitflag)) {
         return -1;
     }
     g_services++;
@@ -742,6 +745,30 @@ test_a_tcp_reconnect_services_the_beat(void) {
         g_failures++;
     }
     g_pending = 0;
+    g_beat = BEAT_NONE;
+
+    /* So does a beat behind a put-off publication, which the reconnect's own check does not see: the service's
+       deferral cancels the reconnect, which neither connects nor drops the old connection's staging (nothing moved),
+       and the read gives way so the engine loop can publish. */
+    install_watchdog_service();
+    init_tcp_session(opts, state, 0);
+    open_owned_tcp_socket();
+    opts->input_upsample_prev_valid = 1;
+    opts->input_upsample_len = 4;
+    g_defer = 1;
+    g_beat = BEAT_MOVES;
+    (void)getSymbol(opts, state, 0);
+    if (g_tcp_connects != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 1
+        || opts->input_upsample_prev_valid != 1 || opts->input_upsample_len != 4) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a reconnect went on past a deferred beat (connects %d, beat left %d, interrupted %d, "
+                    "history %d, staged %d)\n",
+                    g_tcp_connects, g_beat, state->input_interrupted, opts->input_upsample_prev_valid,
+                    opts->input_upsample_len);
+        g_failures++;
+    }
+    close_owned_tcp_socket(opts);
+    g_defer = 0;
     g_beat = BEAT_NONE;
     g_beat_during_connect = 0;
     dsd_frame_sync_hooks_set(NULL);

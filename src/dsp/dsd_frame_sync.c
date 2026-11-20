@@ -6046,7 +6046,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
-            if (frame_sync_service_p25_watchdog(opts, state)) { /* a beat's tick (frame_sync_watchdog_tick.c) */
+            if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
                 frame_sync_sps_hunt_mark_return(state);
                 return frame_sync_hand_back_after_tick(state);
             }

@@ -2910,17 +2910,25 @@ symbol_tcp_reconnect_cancelled_decoding(void* context) {
 
 /* A hunt's reconnect gives way to shutdown and to a queued command, checked first so that neither starts a tune on a
    receiver being stopped or replaced: a P25 watchdog beat then stays asked for, for the next service point. Else it
-   services the beat in its backoff and connect waits (frame_sync_watchdog_tick.c). A tick that moved the chain does not
-   cancel the reconnect: the server's return has nothing to do with the receiver's tune, and a reconnect that started
-   over at every move would never reach its connect while the receiver kept moving. The move is noted, and the read
-   hands back before the new connection's first sample (symbol_tcp_reconnect_read()). */
+   services the beat in its backoff and connect waits (frame_sync_watchdog_tick.c), and gives way as well when the
+   service defers the beat to queued work this check does not see (a put-off publication). A tick that moved the chain
+   does not cancel the reconnect: the server's return has nothing to do with the receiver's tune, and a reconnect that
+   started over at every move would never reach its connect while the receiver kept moving. The move is noted, and the
+   read hands back before the new connection's first sample (symbol_tcp_reconnect_read()). */
 static int
 symbol_tcp_reconnect_cancelled_hunting(void* context) {
     if (dsd_exitflag_load() == 1 || dsd_runtime_controls_pending()) {
         return 1;
     }
     symbol_tcp_reconnect_ctx* ctx = context;
-    if (ctx != NULL && frame_sync_service_p25_watchdog(ctx->opts, ctx->state)) {
+    if (ctx == NULL) {
+        return 0;
+    }
+    const int serviced = frame_sync_service_p25_watchdog(ctx->opts, ctx->state);
+    if (serviced == FRAME_SYNC_WD_DEFERRED) {
+        return 1;
+    }
+    if (serviced == FRAME_SYNC_WD_MOVED) {
         ctx->moved = 1;
     }
     return 0;

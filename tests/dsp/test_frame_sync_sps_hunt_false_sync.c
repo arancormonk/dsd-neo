@@ -33,6 +33,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -1469,7 +1470,7 @@ test_a_p25p1_word_hint_is_the_unlocked_rotations_alone(void) {
  * no-carrier pass), and the engine's next call starts on the new carrier with both taken afresh. A tune request the
  * receiver refused or deferred before it moved keeps the window: a word spanning the checkpoint still matches.
  */
-enum { WATCHDOG_TICK_MOVES = 1, WATCHDOG_TICK_REFUSED = 2 };
+enum { WATCHDOG_TICK_MOVES = 1, WATCHDOG_TICK_REFUSED = 2, WATCHDOG_TICK_DEFERRED = 3 };
 
 static int g_watchdog_tick_kind = 0;
 static int g_watchdog_ticks = 0;
@@ -1499,6 +1500,11 @@ static double g_watchdog_tick_mono_stamp = 0.0;
 static int
 fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    if (g_watchdog_tick_kind == WATCHDOG_TICK_DEFERRED) {
+        /* A beat behind queued work: no tick runs, nothing moves. */
+        g_watchdog_ticks++;
+        return P25_SM_WATCHDOG_DEFERRED;
+    }
     watchdog_tick_effect();
     if (g_watchdog_tick_wall_stamp != 0) {
         state->last_cc_sync_time = g_watchdog_tick_wall_stamp;
@@ -1603,6 +1609,25 @@ test_a_refused_checkpoint_tune_keeps_the_window(void) {
         DSD_FPRINTF(stderr,
                     "FAIL: a refused tune lost the word spanning the checkpoint (sync %d, ticks %d, reads %ld)\n", sync,
                     g_watchdog_ticks, g_reads);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
+/* A beat at the checkpoint behind queued work (a command, a put-off publication) runs no tick and moves nothing: the
+   hunt goes on, and the word spanning the checkpoint (symbols 290 to 313) still matches in the same call. The work
+   waits for the hunt's return, as it does at any checkpoint. */
+static void
+test_a_deferred_checkpoint_beat_keeps_the_window(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 313, WATCHDOG_TICK_DEFERRED);
+    const int sync = getFrameSync(opts, state);
+    if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1 || g_reads != 313 || state->input_interrupted != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a deferred beat lost the word spanning the checkpoint (sync %d, services %d, reads %ld, "
+                    "interrupted %d)\n",
+                    sync, g_watchdog_ticks, g_reads, state->input_interrupted);
         g_watchdog_failures++;
     }
     watchdog_case_done(opts, state);
@@ -1773,6 +1798,7 @@ main(void) {
     test_a_p25p1_word_hint_keeps_the_rotation_after_4800_4();
     test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now();
     test_a_refused_checkpoint_tune_keeps_the_window();
+    test_a_deferred_checkpoint_beat_keeps_the_window();
     test_a_sync_never_moves_the_control_channel_stamp_back();
     test_a_sync_moves_neither_control_channel_stamp_back();
     test_a_sync_follows_a_wall_clock_set_back();

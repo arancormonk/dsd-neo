@@ -1301,14 +1301,15 @@ hunt's entry run the decoder's own tick (`p25_sm_try_tick()`), which spends a st
 a second tick for it. A beat with no recovery to run (trunking off, -Y, no P25 to follow, a startup hunt:
 `p25_sm_tick_eligible()`) is let go at once and hands no read back. Otherwise shutdown, a queued command or a put-off
 publication comes first: `p25_sm_watchdog_service()` then runs no tick and answers `P25_SM_WATCHDOG_DEFERRED`, the beat
-standing, so no tune starts on a receiver being stopped or replaced; a hunt that meets it hands back, and the engine
-runs the work and then its own tick. The reconnect's backoff and its bounded connect (`dsd_socket_connect_bounded()`)
-each wait to one real-time deadline that counts the ticks' own time and is checked after every wait, before another
-check. A beat that finds the guard held stays asked for. A tick inside the hunt that moved the chain
-(`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may have moved the receiver,
-`dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window) hands back at once: the
-read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync with
-`dsd_state::input_interrupted` set and its history dropped, as for a queued command, with no no-carrier pass. The
+standing, so no tune starts on a receiver being stopped or replaced; a hunt read that meets it hands back (a TCP
+reconnect gives up), and the engine runs the work and then its own tick; the hunt's checkpoint, which waits on no input,
+hunts on with its window, the work waiting for the hunt's return as at any checkpoint. The reconnect's backoff and its
+bounded connect (`dsd_socket_connect_bounded()`) each wait to one real-time deadline that counts the ticks' own time and
+is checked after every wait, before another check. A beat that finds the guard held stays asked for. A tick inside the
+hunt that moved the chain (`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may
+have moved the receiver, `dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window)
+hands back at once: the read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync
+with `dsd_state::input_interrupted` set and its history dropped, as for a queued command, with no no-carrier pass. The
 engine's next call then starts on the new carrier with the tuning generation (the dispatch gate's) and the decode time
 (the sync stamps') taken afresh, so no window joins the two carriers and the first frame on the new one dispatches.
 Every P25 tick, wherever it runs, notes what its tunes did (`p25_sm_tick_noting_tunes()`): a tune that may have moved
