@@ -420,9 +420,10 @@ jobs:
         run: |
           set -euxo pipefail
           # Build tools only: vcpkg's autotools ports (libusb, ncurses) need autoconf,
-          # automake and libtool, and vcpkg finds pkg-config on the PATH. No library
-          # the DMG bundles comes from Homebrew.
-          brew install cmake ninja pkg-config ccache autoconf automake libtool
+          # automake and libtool, libusb's autoreconf also needs autoconf-archive's
+          # macros, and vcpkg finds pkg-config on the PATH. No library the DMG
+          # bundles comes from Homebrew.
+          brew install cmake ninja pkg-config ccache autoconf autoconf-archive automake libtool
           brew --version
           cmake --version
           pkg-config --version
