@@ -37,9 +37,12 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <sndfile.h>
@@ -824,6 +827,72 @@ test_watchdog_tune_drops_at_the_next_read(void) {
         rc |= expect_true("the reconcile takes nothing twice",
                           state->symbol_clock_epoch == e + 1U && state->input_drop_pending == 0U);
     }
+    if (tx != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(tx);
+    }
+    udp_input_stop(opts);
+    rig_case_close(&c);
+    return rc;
+}
+
+/* The P25 watchdog's beat, serviced on the decoder thread (p25_sm_watchdog_service()): its tick releases a followed
+   voice channel to the control channel over rigctl, an ordinary decoder-thread tune, so it marks the input and asks
+   for its drop (dsd_engine_note_rigctl_retune()). The decoder's next read drops the old channel's queued audio, so no
+   frame on the control channel is built from it. */
+static int
+test_watchdog_beat_tick_drops_at_the_next_read(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_UDP) != 0) {
+        return expect_true("watchdog beat: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dsd_engine_net_audio_input_hooks_install();
+    dsd_engine_trunk_tuning_hooks_install();
+    dsd_engine_set_decoder_thread(1);
+    int rc = expect_true("udp input", udp_input_start(opts, "127.0.0.1", 0, 48000) == 0);
+    const int port = bound_port(opts->udp_in_sockfd);
+    dsd_socket_t tx = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    rc |= expect_true("sender", tx != DSD_INVALID_SOCKET && port > 0);
+    opts->trunk_tune_group_calls = 1;
+    opts->frame_p25p1 = 1;
+    state->p25_cc_freq = CC_HZ;
+    state->trunk_chan_map[0x1234] = VC1_HZ;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, VC1_HZ, 1234, 42, 0);
+    p25_sm_tick_guard_enter();
+    p25_sm_event(ctx, opts, state, &grant);
+    state->p25_sm_force_release = 1;
+    p25_sm_tick_guard_leave();
+    rc |= expect_true("on the voice channel", ctx->state == P25_SM_TUNED);
+    dsd_symbol_apply_input_drop(opts, state);
+    dsd_frame_sync_off_thread_tunes_reset(state);
+    /* The voice channel's audio, queued: more than a symbol of it once its first sample was read. */
+    rc |= expect_true("the voice channel's audio", udp_send_ramp(tx, port, 30, 300U) == 0 && udp_next(opts) == 30);
+    state->symbol_clock_input = opts->pcm_input_generation;
+    const uint32_t e = state->symbol_clock_epoch;
+    p25_sm_watchdog_request_tick();
+    rc |= expect_true("the beat's tick ran", p25_sm_watchdog_service(opts, state) == 1);
+    rc |= expect_true("and returned to the control channel", ctx->state != P25_SM_TUNED && opts->trunk_is_tuned == 0);
+    rc |= expect_epoch("the decoder-thread tune moves the epoch at once", state, e, 1);
+    /* The control channel's audio comes once the decoder waits on the input. */
+    late_sender ls = {tx, port, 1000, 300U, 50U, 0, 0};
+    dsd_thread_t th;
+    if (start_producer(&th, late_sender_main, &ls) != 0) {
+        rc |= expect_true("the late sender started", 0);
+    } else {
+        (void)getSymbol(opts, state, 0);
+        atomic_store(&ls.read_returned, 1);
+        (void)dsd_thread_join(th);
+        rc |= expect_true("the read returned on the control channel's audio", atomic_load(&ls.gave_up) == 0);
+        dsd_exitflag_store(0);
+        rc |= expect_true("the next read drops the voice channel's queued audio: what follows is the control channel's",
+                          udp_next(opts) >= 1000);
+    }
+    p25_sm_init_ctx(ctx, opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     if (tx != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(tx);
     }
@@ -2315,6 +2384,7 @@ main(void) {
     rc |= test_dmr_follow_end_to_end();
     rc |= test_udp_backlog();
     rc |= test_watchdog_tune_drops_at_the_next_read();
+    rc |= test_watchdog_beat_tick_drops_at_the_next_read();
     rc |= test_watchdog_post_drops_only_what_was_queued();
     rc |= test_watchdog_post_while_tcp_reconnects();
     rc |= test_watchdog_post_and_an_input_switch();
