@@ -1232,7 +1232,9 @@ such frame, so a late-joined D-STAR call waiting for its header is not cut. ProV
 have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
 themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
 check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
-control-channel checks.
+control-channel checks. The one exception is the start of an NXDN48 call whose first frame passed a strong check on
+its own: that check counts once the next frame arrives exactly one frame later, so the hold starts on that second
+frame even if none of its own checks pass. The frames after it only keep the hold going when their own checks pass.
 
 ## Limitations
 

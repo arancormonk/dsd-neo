@@ -2486,7 +2486,9 @@ channel is delayed.
   frame; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they come; DMR, P25, ProVoice and
   EDACS syncs restart `-t` as before ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is
   refreshed only by a frame whose own content passed its CRC (a lone short CRC that a noise frame passes by chance does
-  not count), so an open squelch on an empty channel no longer parks the scan. `-Y` scans only a channel map you
+  not count), so an open squelch on an empty channel no longer parks the scan. The one exception: when an NXDN48
+  call's first frame passed a strong CRC on its own, the next frame arriving one frame later confirms it and starts the
+  hold, even with no passing CRC of its own; later frames without one do not refresh it. `-Y` scans only a channel map you
   import (`-C`, a config `chan_csv`, or an import during the session). With none, at start or after Clear channel map,
   it stays on its frequency until one is imported: channels a DMR site announces over the air are recorded, but `-Y`
   never steps to them, and neither the voice gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan
