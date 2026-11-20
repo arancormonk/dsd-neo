@@ -14029,11 +14029,12 @@ Private per-protocol modules worth knowing about:
   ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
   its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
   010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
-  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the
-  open call's (same called/calling IDs, service options and colour code) one message frame (192 symbols) after the
-  last call header on the same stream goes on with that call (`dpmr_header_continues_call()`, CONTINUE, no end or
-  capture close): a radio waking powersaving receivers sends its header several times back to back (TS 102 658
-  5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
+  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the open
+  call's (same called/calling IDs, service options and colour code) k message frames (192 symbols each) after the last
+  call header on the same stream, k from 1 to the frames that header said follow it (its WU; 1 after a normal header, so
+  a lost header does not split the call), goes on with that call (`dpmr_header_continues_call()`, CONTINUE, no end or
+  capture close): a radio waking powersaving receivers sends its header several times back to back (TS 102 658 5.5.19.1,
+  Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
   `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
   PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
   (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing
