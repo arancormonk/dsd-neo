@@ -1588,8 +1588,10 @@ carries a UID another list already holds (a hand-edited or older `scan_lists.jso
 a new UID when the lists load, the first list keeping the old one, and the repair is
 saved at once. History rows logged before that repair under the UID the two entries
 shared keep whatever name the app's map of scan-list ids gives them, since a history row
-records no list (a decided limit). Frequency entries select P25, DMR, NXDN48 or NXDN96
-conventional decoding, or an analog channel: **NFM (analog)** (`nfm-conventional`) or
+records no list (a decided limit). Frequency entries select, in the picker's order, P25, DMR,
+NXDN96, NXDN48, dPMR, D-STAR, YSF (C4FM), M17 or TETRA DMO conventional decoding (issue
+#890: `dpmr-conventional`, `dstar-conventional`, `ysf-conventional`, `m17-conventional`,
+`tetra-dmo-conventional`), or an analog channel: **NFM (analog)** (`nfm-conventional`) or
 **AM (analog)** (`am-conventional`).
 
 Saved P25 (`-ft`, `-f1`, `-mq`, `-^`), DMR (`-fs`), NXDN48 (`-fi`) and NXDN96
@@ -1605,9 +1607,25 @@ sets no tone filter either, so an NFM entry runs the configured one (`--tone-all
 RadioReference P25 imports (`-ft -^` and `-mq -^`) retain both their modulation
 and their per-target preference for learned control-channel candidates. That
 preference is restored to the configured default when leaving the target.
-Auto, `-Y`, D-STAR, YSF, M17 and EDACS are refused. Systems with extra options are
+Saved dPMR (`-fm`), D-STAR (`-fd`), YSF (`-fy`), M17 (`-fz`) and TETRA (`-fT`) systems
+become conventional targets of those types (a TETRA system scans as TETRA DMO); one
+marked trunked is refused, since these targets are conventional only. Their class runs
+its own modulation, so the editor hides the choice and none is written: a modulation
+saved in such a system's Radio settings is refused, with the fix named. Keys follow what
+each protocol can decrypt: dPMR takes its scrambler key (`-R`, direct or from a profile)
+and refuses any other key or a key file; M17 uses the session's keys (set in the app's
+decoder options) and refuses a saved system that sets its own; YSF, D-STAR and TETRA DMO
+decrypt nothing, so the editor hides the decryption choice and their rows carry no keys.
+Auto, `-Y`, ProVoice and EDACS are refused. Systems with extra options are
 refused because those options cannot be scoped safely. Channel maps require a
 trunked target; P25 band plans require a P25 trunked target.
+
+A scan with a TETRA DMO target runs at one bandwidth for the whole session, every list
+started together included: **App default** is then 72 kHz, the bandwidth TETRA decodes
+at, and the editor's note says so. A list with its own bandwidth other than 72 kHz is
+refused at start with the fix (set 72 kHz or App default), and the editor says so under
+the Bandwidth choice. A TETRA DMO entry that is switched off is not scanned, so it does
+not count.
 
 Each system's group file becomes a scoped `-G` option. The list's group file is
 only the fallback for entries without their own file. Key CSVs retain their

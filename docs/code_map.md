@@ -15974,10 +15974,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row
   that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
-  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). NXDN48, dPMR and D-STAR are the 6.25 kHz modes,
-  as the receiver's channel filter has them, and a saved TETRA (`-fT`) system is a 25 kHz
-  carrier; decode flags compare exactly (`-fm` is dPMR, `-fM` AM, `-fT` TETRA, `-ft` P25)
-  and mode or type names without case. Only the width option of the channel's own
+  6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). Every width comes from the scan-list protocol
+  catalog (`scan_protocol_catalog.h`, `scan_protocol_for_mode()`, issue #890): NXDN48, dPMR and
+  D-STAR are the 6.25 kHz modes, as the receiver's channel filter has them, TETRA (a saved
+  `-fT` system, a `tetra_dmo` entry, a `tetra-dmo-conventional` row, a `tetra-dmo` map mode) a
+  25 kHz carrier, AM its 6 kHz default, the rest 12.5 kHz; decode flags compare exactly (`-fm`
+  is dPMR, `-fM` AM, `-fT` TETRA, `-ft` P25) and mode or type names without case and whole, so
+  a suffixed type (`dpmr-conventional`) is its protocol's and a type is never split at its
+  first hyphen. A match's `protocolLabel` is the catalog label of its entry's protocol, its
+  system's decode flag or its row's type (`scan_entry_type_label()`), empty for one the catalog
+  does not have. Only the width option of the channel's own
   analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
   `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
   NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
@@ -22588,6 +22594,44 @@ generator writes it to the row's `options` column, and the starter's DSP-rate wa
 entry to it. Any other text, the other kind's
 option, or a digital system with any Extra arguments stays refused (`UI_QT_SCAN_LIST_TARGETS`,
 `UI_QT_SCAN_LIST_ROUNDTRIP`). A standalone start passes the same text through unchanged.
+
+The protocols a list scans are one catalog (`scan_protocol_catalog.h`, issue #890): per protocol its frequency-entry id,
+decode flag (exact case), engine type prefix, channel-map scan class, label, channel width and capabilities (trunked
+type, modulation choice, keys). Picker order, which `ScanListsModel::protocols` gives QML (`ScanListScreen.qml`'s
+pickers and preview, `ScanEntryRow.qml`; `protocolForFlag()` and `protocolForType()` look one up): P25 (`-ft`; `-f1`,
+`-mq`, `-^` and the `-^` pairs too), DMR (`-fs`), NXDN96 (`nxdn`, `-fn`), NXDN48 (`-fi`), dPMR (`-fm`), D-STAR (`-fd`),
+YSF (C4FM) (`-fy`), M17 (`-fz`), TETRA DMO (`tetra_dmo`, `-fT`, `tetra-dmo-conventional`), NFM (analog) (`-fA`), AM
+(analog) (`-fM`). The generator, `scan_entry_name.h` (labels, unnamed-entry names), `known_frequency_index.cpp` and the
+starter read it; app-control's document inspection (`trunk_scan_document.cpp`) spells the same CSV type names without
+Qt. dPMR, D-STAR, YSF, M17 and TETRA DMO are conventional only: a saved system of theirs with trunking on is refused
+(`<label> entries are conventional only`), so is a channel map, and their rows never write a modulation (the editor
+hides the choice, an entry's hidden one is not written, a modulation saved in the system's Radio settings is refused).
+The key matrix (`ScanProtocolKeys`, `keyMatrixError()`, `scan_list_entry_takes_keys()`): P25, DMR and NXDN take every
+key setting as before; dPMR only its scoped `-R` scrambler (a direct or profile key, so a legacy NXDN / dPMR scrambler
+system keeps working; any other key type or a key or key-map file is refused); M17 none of its own (a saved system with
+any key setting is refused, naming the session's keys); YSF, D-STAR and TETRA DMO, like NFM and AM, decrypt nothing, so
+the editor hides the decryption choice, the starter resolves none of their profiles (an entry's hidden profile is no
+use, `DecryptionProfilesModel::useCount()`), and their rows pass only the talkgroup file. The editor shows M17 a note
+that the session's keys apply. The wizard has a dPMR chip (`-fm`, `qml/Util.js`).
+
+TETRA list rate (issue #890, D3): `ScanListStarter::hasTetraTargets()` reads whether a list has a target the engine can
+visit that is TETRA DMO: an enabled entry (a switched-off one is left out of the CSV) of the protocol, a frequency
+entry's or a saved `-fT` system's, or a `tetra-dmo-conventional` row of its imported CSV (`dsd_app_scan_csv_inspect()`,
+the private copy's source). `startLists()` resolves it once over every list of the session (each loads, so a list the
+monitor can switch on later counts) and passes it to every list's `prepare()`: `session_args_scan_list_bandwidth_khz()`
+makes App default 72 kHz (`DSD_TETRA_DSP_BW_KHZ`) and keeps a list's own bandwidth,
+`session_args_scan_list_rate_error()` refuses an own bandwidth TETRA cannot decode at (`session_args_tetra_runs_on()`)
+before any file is written, naming the fix (72 kHz or App default), and the same value feeds the join check (`Different
+bandwidth`), the analog-width warning and the argv's RTL USB, RTL-TCP and Airspy spec
+(`session_args_scan_build_lists(..., tetraTargets)`). The Scan-with sheet's `joinConflict()` judges the pair as one
+session. The editor's App default note reads `ScanListStarter::bandwidthKhz()` and, with an own bandwidth TETRA cannot
+run, `scanTetraRateNote` says so beside the choice. A USB permission wait and an auto-start reload the lists by uid
+(`startScanByUid()`), so they resolve the same rate. Tests: `UI_QT_SCAN_LIST_TARGETS` (catalog, families × trunking,
+modulation, key matrix), `UI_QT_SESSION_ARGS` (Default P25 with a TETRA companion is 72, explicit 72 joins Default,
+explicit 48 with a switched-off TETRA entry builds, explicit 48 with TETRA is refused), `UI_QT_SCAN_LIST_ROUNDTRIP` (the
+starter; the starts and the engine round trip of the new types run once the engine takes them), `UI_QT_SIGNAL_SEARCH`
+(widths and labels), `UI_QT_DECRYPTION_PROFILES` (hidden profiles hold no use), `tst_scan_list_screen.qml` (picker
+order, rows, the notice).
 
 A list's session switches sit in the editor's Advanced section (`ScanListScreen.qml`): Voice only (`voiceOnly`,
 `--scan-voice-only`) and, under it, Skip silent channels (`skipSilent`, `--scan-skip-silent`, issue #834), a
