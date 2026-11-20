@@ -1401,5 +1401,6 @@ Item {
         id: callDetails
         objectName: "searchCallDetails"
         showHold: false
+        showMap: false
     }
 }

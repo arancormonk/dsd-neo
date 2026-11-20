@@ -56,6 +56,7 @@
 #include "app_prefs.h"
 #include "decoder_host.h"
 #include "imported_files_model.h"
+#include "location_requests.h"
 #include "qml_gc_policy.h"
 #include "radio_reference_model.h"
 #include "teardown_trace_capture.h"
@@ -340,9 +341,12 @@ struct Harness {
     dsd_qt::ImportedFilesModel library{&host};
     Fake fake;
     dsd_rr_transport transport{&fake_perform, &fake};
+    dsd_qt::LocationRequests requests;
     dsd_qt::RadioReferenceModel model{&prefs, &library, &host};
 
     Harness() {
+        requests.setHost(&host);
+        model.setLocationRequests(&requests);
         prefs.setRrUsername(kUsername);
         prefs.setRrAppKey(kAppKey);
         model.setPassword(kPassword);
@@ -1590,9 +1594,10 @@ test_nearby() {
     expect("explicit cancel settles", !h.model.busy() && h.host.cancelled == h.host.requested);
     h.model.lookupNearby();
     const qint64 dismissed = h.host.requested;
-    const qint64 chooser = h.model.nextLocationRequestId();
+    const qint64 chooser = h.requests.requestSite(QStringLiteral("siteChooser"));
     expect("chooser ownership retires nearby caller", !h.model.busy() && h.host.cancelled == dismissed);
     expect("shared allocator advances for chooser", chooser > dismissed);
+    expect("the chooser's request is the pending one", h.requests.pendingFor(QStringLiteral("siteChooser")));
     Q_EMIT h.host.locationResult(dismissed, true, 45, -95, 100, now, true, "52401", "US", "");
     expect("retired nearby result ignored", h.prefs.lastLat() == 44 && !h.model.busy());
     h.model.lookupNearby();

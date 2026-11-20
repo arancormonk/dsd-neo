@@ -80,6 +80,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
@@ -3263,7 +3264,9 @@ test_record_for_uid(void) {
                 {"receivedTone", CallHistoryModel::ReceivedToneRole},
                 {"siteText", CallHistoryModel::SiteTextRole},
                 {"analog", CallHistoryModel::AnalogRole},
-                {"analogMode", CallHistoryModel::AnalogModeRole}};
+                {"analogMode", CallHistoryModel::AnalogModeRole},
+                {"position", CallHistoryModel::PositionRole},
+                {"gi", CallHistoryModel::GiRole}};
 
     expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
     for (const auto& key : keys) {
@@ -5317,6 +5320,142 @@ test_voice_row_keeps_gps_and_message(void) {
     expect("B2: a late message joins the GPS text",
            model.count() == 3
                && detail_of(model, row_with_tg(model, 80002U)) == u8("On my way \xC2\xB7 GPS: Protected"));
+}
+
+/* Issue #800, P7: the map's "Show on map" pin reads a row's saved fix through the position role and recordFor(): its
+ * place, error, states and format, and nothing for a row without one. */
+void
+test_position_role_feeds_the_map_pin(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754701000;
+    Event_History* call = ring.commit(0, 80051U, 8051U, when, when + 5);
+    with_gps(call, "GPS: 22.50000 45.00000", 225000000, -450000000, 3U);
+    call->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_VALIDITY_UNKNOWN | DSD_POS_FLAG_FORMAT_PROVISIONAL
+                                            | DSD_POS_FLAG_ERR_LOWER_BOUND | DSD_POS_FLAG_EMERGENCY);
+    call->pos.rx_time_s = when + 2;
+    ring.commit(0, 80052U, 8052U, when + 20, when + 25);
+    Event_History* group = ring.commit(0, 80053U, 8053U, when + 30, when + 35);
+    with_gps(group, "GPS: 22.60000 45.10000", 226000000, -451000000, 3U);
+    group->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_TARGET_GROUP);
+    model.refresh(ring.state);
+    const int withFix = row_with_tg(model, 80051U);
+    const int without = row_with_tg(model, 80052U);
+    const int toGroup = row_with_tg(model, 80053U);
+    expect("P7: both rows land", withFix >= 0 && without >= 0);
+    const QVariantMap pos = model.data(model.index(withFix), CallHistoryModel::PositionRole).toMap();
+    expect("P7: the role is named for QML", model.roleNames().value(CallHistoryModel::PositionRole) == "position");
+    expect("P7: the pin's place in degrees",
+           std::fabs(pos.value(QStringLiteral("latitude")).toDouble() - 22.5) < 1e-9
+               && std::fabs(pos.value(QStringLiteral("longitude")).toDouble() + 45.0) < 1e-9);
+    expect("P7: the error and that it is a lower bound", pos.value(QStringLiteral("errorM")).toUInt() == 10U
+                                                             && pos.value(QStringLiteral("errorLowerBound")).toBool());
+    expect("P7: the states in their own keys",
+           pos.value(QStringLiteral("validityUnknown")).toBool() && pos.value(QStringLiteral("provisional")).toBool()
+               && pos.value(QStringLiteral("emergency")).toBool() && !pos.value(QStringLiteral("anonymous")).toBool()
+               && !pos.value(QStringLiteral("weakCheck")).toBool());
+    expect("P7: the format in words",
+           pos.value(QStringLiteral("kindText")).toString() == QStringLiteral("DMR embedded GPS"));
+    expect("P7: when it was received", pos.value(QStringLiteral("receivedTime")).toLongLong() == when + 2);
+    // Review r2: the row's target is its call's, a talkgroup or a radio; the pin says "Talkgroup" only on the report's
+    // own word.
+    expect("r2: a report that names no talkgroup is not one",
+           pos.contains(QStringLiteral("targetGroup")) && !pos.value(QStringLiteral("targetGroup")).toBool());
+    expect("r2: a report to a talkgroup says so",
+           toGroup >= 0
+               && model.data(model.index(toGroup), CallHistoryModel::PositionRole)
+                      .toMap()
+                      .value(QStringLiteral("targetGroup"))
+                      .toBool());
+    expect("P7: a row without a fix has none",
+           model.data(model.index(without), CallHistoryModel::PositionRole).toMap().isEmpty());
+    const QString uid = model.data(model.index(withFix), CallHistoryModel::UidRole).toString();
+    expect("P7: the detail sheet's record carries it",
+           model.recordFor(uid).value(QStringLiteral("position")).toMap() == pos);
+}
+
+/* Review r2 (issue #800): who a call was to (Event_History::gi: 0 a talkgroup, 1 a radio, -1 not known) is the row's:
+ * a role and a record key, the name a row with no other gets, part of the call's identity (a group call and a private
+ * call to the same number from the same radio are two rows, a fragment that only learns the kind folds in), and kept
+ * across a save and a reload (only when known: a row an older build stored reads -1). */
+void
+test_call_kind_is_kept_and_parts_calls(void) {
+    const time_t when = 1754702000;
+    {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 42U, 7U, when, when + 3)->gi = 1;
+        ring.commit(1, 43U, 8U, when + 20, when + 23)->gi = -1;
+        ring.commit(0, 44U, 9U, when + 40, when + 43)->gi = 0;
+        model.refresh(ring.state);
+        const int priv = row_with_tg(model, 42U), unknown = row_with_tg(model, 43U), group = row_with_tg(model, 44U);
+        expect("r2: three rows", priv >= 0 && unknown >= 0 && group >= 0);
+        expect("r2: the role names the kind",
+               model.roleNames().value(CallHistoryModel::GiRole) == "gi"
+                   && model.data(model.index(priv), CallHistoryModel::GiRole).toInt() == 1
+                   && model.data(model.index(unknown), CallHistoryModel::GiRole).toInt() == -1
+                   && model.data(model.index(group), CallHistoryModel::GiRole).toInt() == 0);
+        expect("r2: a private call is named for its radio",
+               model.data(model.index(priv), CallHistoryModel::NameRole).toString() == QStringLiteral("Radio 42"));
+        expect("r2: not knowing the kind, for the number",
+               model.data(model.index(unknown), CallHistoryModel::NameRole).toString() == QStringLiteral("Call to 43"));
+        expect("r2: a group call for its talkgroup",
+               model.data(model.index(group), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 44"));
+        const QString uid = model.data(model.index(priv), CallHistoryModel::UidRole).toString();
+        expect("r2: the record carries it", model.recordFor(uid).value(QStringLiteral("gi")).toInt() == 1);
+        expect("r2: the export row carries it",
+               model.exportRows({priv, group}).value(0).gi == 1 && model.exportRows({priv, group}).value(1).gi == 0);
+        // Re-review r1: a private call's radio is never a talkgroup heard; not knowing stays as before.
+        const QList<uint32_t> heard = model.heardTalkgroups(0);
+        expect("r1: heard talkgroups leave the radio out",
+               !heard.contains(42U) && heard.contains(43U) && heard.contains(44U));
+    }
+    {
+        const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        expect("r2: a known kind is stored, an unknown one is not",
+               stored_row_with_tg(rows, 42U).value(QLatin1String("gi")).toInt(-9) == 1
+                   && stored_row_with_tg(rows, 44U).value(QLatin1String("gi")).toInt(-9) == 0
+                   && !stored_row_with_tg(rows, 43U).contains(QLatin1String("gi")));
+        RingFixture ring;
+        CallHistoryModel reloaded;
+        expect("r2: a reload keeps it",
+               reloaded.data(reloaded.index(row_with_tg(reloaded, 42U)), CallHistoryModel::GiRole).toInt() == 1
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 44U)), CallHistoryModel::GiRole).toInt() == 0
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 43U)), CallHistoryModel::GiRole).toInt()
+                          == -1);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 50U, 9U, when, when + 3)->gi = 0;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 50U, 9U, when + 5, when + 8)->gi = 1;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a group call and a private call to one number are two rows (incremental)"
+                           : "r2: a group call and a private call to one number are two rows (batched)",
+               model.count() == 2);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 51U, 9U, when, when + 3)->gi = -1;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 51U, 9U, when + 5, when + 8)->gi = 0;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a fragment that learns the kind folds in (incremental)"
+                           : "r2: a fragment that learns the kind folds in (batched)",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::GiRole).toInt() == 0
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                          == QStringLiteral("Talkgroup 51"));
+    }
 }
 
 /* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen
@@ -7704,6 +7843,8 @@ main(int argc, char** argv) {
     test_startless_fold_keeps_later_end();
     test_row_without_start_time_reads_unknown();
     test_voice_row_keeps_gps_and_message();
+    test_position_role_feeds_the_map_pin();
+    test_call_kind_is_kept_and_parts_calls();
     test_texts_and_position_survive_save_reload_and_spill();
     test_spill_replay_keeps_newer_revision();
     test_spill_text_only_replay_keeps_saved_position();

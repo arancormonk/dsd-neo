@@ -23,6 +23,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/radioreference.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
@@ -1263,6 +1264,140 @@ test_loopback_cancel_mid_transfer(void) {
     rr_test_server_stop(&server);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Stalled TLS handshake (real curl transport)                                */
+/* ------------------------------------------------------------------------- */
+
+typedef struct {
+    dsd_socket_t listen_sock;
+    dsd_thread_t thread;
+    atomic_int stop;
+    atomic_int accepted;
+} rr_handshake_stall;
+
+/* Accepts one connection and never answers it, so an https:// request waits in
+ * the TLS handshake, the phase where libcurl calls no progress callback. */
+static DSD_THREAD_RETURN_TYPE
+rr_handshake_stall_thread(void* arg) {
+    rr_handshake_stall* s = (rr_handshake_stall*)arg;
+    dsd_socket_t client = dsd_socket_accept(s->listen_sock, NULL, NULL);
+    if (client != DSD_INVALID_SOCKET) {
+        atomic_store(&s->accepted, 1);
+        while (atomic_load(&s->stop) == 0) {
+            dsd_sleep_ms(10U);
+        }
+        (void)dsd_socket_close(client);
+    }
+    DSD_THREAD_RETURN;
+}
+
+static int
+rr_handshake_stall_start(rr_handshake_stall* s, char* url, size_t url_cap) {
+    DSD_MEMSET(s, 0, sizeof(*s));
+    atomic_store(&s->stop, 0);
+    atomic_store(&s->accepted, 0);
+    if (dsd_socket_init() != 0) {
+        return 1;
+    }
+    s->listen_sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (s->listen_sock == DSD_INVALID_SOCKET) {
+        return 1;
+    }
+    (void)dsd_socket_set_recv_timeout(s->listen_sock, 10000U); /* bounds accept() if curl never connects */
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t addr_len = (socklen_t)sizeof(addr);
+    if (dsd_socket_bind(s->listen_sock, (const struct sockaddr*)&addr, (int)sizeof(addr)) != 0
+        || dsd_socket_listen(s->listen_sock, 1) != 0
+        || getsockname(s->listen_sock, (struct sockaddr*)&addr, &addr_len) != 0) {
+        (void)dsd_socket_close(s->listen_sock);
+        return 1;
+    }
+    const int n = DSD_SNPRINTF(url, url_cap, "https://127.0.0.1:%u/", (unsigned int)ntohs(addr.sin_port));
+    if (n <= 0 || (size_t)n >= url_cap || dsd_thread_create(&s->thread, rr_handshake_stall_thread, s) != 0) {
+        (void)dsd_socket_close(s->listen_sock);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+rr_handshake_stall_stop(rr_handshake_stall* s) {
+    atomic_store(&s->stop, 1);
+    (void)dsd_thread_join(s->thread);
+    (void)dsd_socket_close(s->listen_sock);
+    dsd_socket_cleanup();
+}
+
+/** @return 1 once curl has connected to the stalled server, 0 after 5 s. */
+static int
+rr_wait_accepted(const rr_handshake_stall* s) {
+    for (int i = 0; i < 500; i++) {
+        if (atomic_load(&s->accepted) != 0) {
+            dsd_sleep_ms(200U); /* let the ClientHello go out and the handshake settle into its wait */
+            return 1;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return 0;
+}
+
+/*
+ * Regression: the progress callback is never called while a TLS handshake
+ * stalls, so with curl_easy_perform() a cancel and dsd_rr_client_destroy() both
+ * waited out the whole connect timeout (20 s here) instead of the promised
+ * prompt unwind. Both must now land within about a second.
+ */
+static void
+test_loopback_handshake_stall(int use_destroy) {
+    rr_handshake_stall server;
+    dsd_rr_client_config config;
+    DSD_MEMSET(&config, 0, sizeof(config));
+    config.connect_timeout_ms = 20000; /* Long, so a timeout cannot pass for a cancel. */
+    config.total_timeout_ms = 30000;
+    config.transient_retries = 0;
+    if (rr_handshake_stall_start(&server, config.endpoint_url, sizeof(config.endpoint_url)) != 0) {
+        expect("handshake-stall server started", 0);
+        return;
+    }
+
+    dsd_rr_client* client = dsd_rr_client_create(&config);
+    dsd_rr_auth auth;
+    fill_auth(&auth, "user");
+    async_result* out = async_result_new();
+    expect("callback context allocated", client != NULL && out != NULL);
+    if (client == NULL || out == NULL) {
+        dsd_rr_client_destroy(client);
+        free(out);
+        rr_handshake_stall_stop(&server);
+        return;
+    }
+    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, out);
+    expect("stalled fetch queued", id != 0U);
+    expect("curl reached the stalled server", rr_wait_accepted(&server));
+
+    const uint64_t started = dsd_realtime_mono_ms();
+    if (use_destroy) {
+        dsd_rr_client_destroy(client);
+        client = NULL;
+    } else {
+        (void)dsd_rr_cancel(client, id);
+        expect("cancelled handshake completes", wait_done(out, 5000U));
+        expect_ll("cancelled handshake reports CANCELLED", (long long)atomic_load(&out->status),
+                  (long long)DSD_RR_ERR_CANCELLED);
+    }
+    const uint64_t elapsed = dsd_realtime_mono_ms() - started;
+    expect(use_destroy ? "destroy during a stalled handshake returns within ~1 s"
+                       : "cancel during a stalled handshake lands within ~1 s",
+           elapsed <= 1500U);
+
+    dsd_rr_client_destroy(client);
+    free(out);
+    rr_handshake_stall_stop(&server);
+}
+
 #endif /* USE_CURL && !DSD_PLATFORM_WIN_NATIVE */
 
 /*
@@ -1278,6 +1413,8 @@ run_loopback_cases(void) {
     test_loopback_fault_is_classified();
     test_loopback_unreachable();
     test_loopback_cancel_mid_transfer();
+    test_loopback_handshake_stall(0);
+    test_loopback_handshake_stall(1);
 #endif
 }
 

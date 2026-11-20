@@ -102,7 +102,7 @@ Item {
             tryVerify(function () {
                 for (var i = 0; i < tc.chips.count; ++i) {
                     var chip = tc.chips.itemAtIndex(i);
-                    if (chip !== null && chip.text === "FIRE") {
+                    if (chip !== null && chip.pill.text === "FIRE") {
                         fire = chip;
                         return true;
                     }

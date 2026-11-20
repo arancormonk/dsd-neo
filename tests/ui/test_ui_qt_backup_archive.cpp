@@ -1755,12 +1755,23 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     prefs.insert("monitor/detailsExpanded", true);
     prefs.insert("listen/section", "scanLists");
     prefs.insert("evil/key", QJsonArray{1});
+    // Issue #800 (spec 4.8): the map's keys are this device's; an edited backup that carries them restores none.
+    prefs.insert("map/tilesEnabled", true);
+    prefs.insert("map/tileUrl", "https://tiles.example.org/{z}/{x}/{y}.png?key=secret");
+    prefs.insert("map/tileAttribution", "Example tiles");
+    prefs.insert("map/viewport", "{\"latE7\":225000000,\"lonE7\":450000000,\"zoomE3\":12000}");
+    prefs.insert("map/ageFilter", 900);
     forged.manifest.insert("prefs", prefs);
     const auto parsed = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
     expect("unknown and device-local settings are dropped",
            parsed.error == BackupError::None && !parsed.prefs.contains("ui/onboardingDone")
                && !parsed.prefs.contains("monitor/detailsExpanded") && !parsed.prefs.contains("listen/section")
                && !parsed.prefs.contains("evil/key") && parsed.prefs.value("rr/username") == "scanner");
+    for (const char* key :
+         {"map/tilesEnabled", "map/tileUrl", "map/tileAttribution", "map/viewport", "map/ageFilter"}) {
+        expect(qPrintable(QStringLiteral("a backup's %1 is dropped").arg(QLatin1String(key))),
+               !parsed.prefs.contains(QLatin1String(key)));
+    }
 
     for (const auto& value : {QJsonValue(0), QJsonValue(-1), QJsonValue(4294967296.0), QJsonValue(1.5),
                               QJsonValue("156800000"), QJsonValue(QJsonArray())}) {

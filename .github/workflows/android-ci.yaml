@@ -341,11 +341,15 @@ jobs:
             --target dsd-neo_test_ui_qt_qml \
             dsd-neo_test_ui_qt_site_groups \
             dsd-neo_test_ui_qt_site_roaming \
+            dsd-neo_test_ui_qt_location_feed \
+            dsd-neo_test_ui_qt_location_requests \
             dsd-neo_test_ui_qt_persistence \
             dsd-neo_test_ui_qt_decryption_profiles \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_call_history_tap \
             dsd-neo_test_ui_qt_recording_store \
+            dsd-neo_test_ui_qt_map_tiles \
+            dsd-neo_test_ui_qt_map_view \
             dsd-neo_test_ui_qt_frequency_query \
             dsd-neo_test_ui_qt_session_args \
             dsd-neo_test_ui_qt_session_args_parse \
@@ -378,9 +382,12 @@ jobs:
             dsd-neo_test_runtime_log_tap \
             dsd-neo_test_ui_qt_p25_network_model \
             dsd-neo_test_ui_qt_unit_activity_model \
+            dsd-neo_test_ui_qt_position_model \
             dsd-neo_test_ui_qt_controller \
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_trace_geometry \
+            dsd-neo_test_ui_qt_map_math \
+            dsd-neo_test_ui_qt_map_geometry \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_signal_search \
             dsd-neo_test_ui_qt_call_history_export \

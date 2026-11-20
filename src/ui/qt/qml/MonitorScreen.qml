@@ -36,7 +36,25 @@ Item {
     property bool sitesAvailable: false
     signal openSites
     signal openSessionMenu
+    // Issue #800: the control the session menu opens from, which takes the
+    // focus back when a screen the menu pushed (the map) is left.
+    readonly property Item sessionOptions: sessionOptionsButton
     signal openTalkgroups
+    // Issue #800: a recent call's "Show on map", with the sheet to return to.
+    signal showOnMap(var record, var sheet)
+    // The keyboard stop of the call row logged under @p uid, brought into
+    // view: where a sheet opened again by uid (Back from the map) returns the
+    // focus. The row it was opened from can be gone by then: a covered list
+    // holds no rows (issue #782) and builds new ones. Null when not listed.
+    function rowFocusFor(uid) {
+        var source = callHistory.rowForUid(uid);
+        var row = source < 0 ? -1 : monitorView.mapFromSource(callHistory.index(source, 0)).row;
+        if (row < 0 || !recentList.model)
+            return null;
+        recentList.positionViewAtIndex(row, ListView.Contain);
+        var item = recentList.itemAtIndex(row);
+        return item ? item.node : null;
+    }
     // Issue #644: what the channel the operator tuned to can be started as,
     // with its own settings (Main's listenActions), and the ask; Main starts
     // the one there is, or opens the menu of several.
@@ -1625,7 +1643,7 @@ Item {
                 // first thing a narrow phone elides.
                 var meta = [];
                 if (model.tg > 0)
-                    meta.push("TG " + model.tg);
+                    meta.push(Util.targetMeta(model.tg, model.gi));
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 var code = model.analog ? model.receivedTone : model.accessCode;
@@ -2601,6 +2619,9 @@ Item {
     HistoryDetailSheet {
         id: historyDetail
         objectName: "monitorHistoryDetail"
+        onShowOnMapRequested: function (record) {
+            screen.showOnMap(record, historyDetail);
+        }
     }
 
     ActionMenu {

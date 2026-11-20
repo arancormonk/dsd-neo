@@ -152,14 +152,28 @@ Item {
         visible: talkgroups.categories.length > 0
         model: screen.live ? [qsTr("All")].concat(talkgroups.categories) : []
 
-        delegate: FilterPill {
+        // The pill sits in a plain item (issue #800, F1): the view writes
+        // Accessible.ignored on each delegate's root as it lays it out, and a
+        // pill that was the root came back into the tree under a sheet.
+        delegate: Item {
+            id: chip
             required property int index
             required property string modelData
+            readonly property alias pill: chipPill
+            // The wrapper gates itself too (a cover with no re-layout leaves
+            // nothing of it; re-laid, it is a bare node offering nothing).
+            Accessible.ignored: !Navigation.allows(chip) || !visible
 
-            caret: false
-            text: modelData
-            active: index === 0 ? talkgroupView.filterTag === "" : talkgroupView.filterTag === modelData
-            onClicked: talkgroupView.filterTag = index === 0 ? "" : modelData
+            width: chipPill.width
+            height: chipPill.height
+
+            FilterPill {
+                id: chipPill
+                caret: false
+                text: chip.modelData
+                active: chip.index === 0 ? talkgroupView.filterTag === "" : talkgroupView.filterTag === chip.modelData
+                onClicked: talkgroupView.filterTag = chip.index === 0 ? "" : chip.modelData
+            }
         }
     }
 

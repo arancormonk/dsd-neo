@@ -5171,6 +5171,47 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_spectrum_trace_geometry
 )
 
+# The map's Web Mercator arithmetic (map_math.h), header-only and Qt-free like
+# spectrum_math.h: projection from fixed-point positions, the tiles a view at a
+# fractional zoom needs, the wrap at 180 degrees, the pinch anchor, taps and
+# fit-to-markers. A slip in any of them draws a radio in the wrong place.
+add_executable(dsd-neo_test_ui_qt_map_math ui/test_ui_qt_map_math.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_math
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+# IEEE semantics, as dsd-neo_ui_qt builds its includers: the non-finite cases
+# check guards that fast-math would compile out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_MATH COMMAND dsd-neo_test_ui_qt_map_math)
+
+# The map's trails, accuracy circles and marker sprites as triangles
+# (map_geometry.h, header-only over the spectrum trace's stroke builder):
+# breaks never bridged, real dashes, circles that cover each pixel once and
+# stay cheap far larger than the view, sprites on whole device pixels.
+add_executable(
+    dsd-neo_test_ui_qt_map_geometry
+    ui/test_ui_qt_map_geometry.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_geometry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_map_geometry
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_geometry PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_GEOMETRY COMMAND dsd-neo_test_ui_qt_map_geometry)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -5207,6 +5248,8 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
+    # Issue #800: the map prefs refuse NaN and infinite views, which fast-math folds away.
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_persistence)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
     add_executable(
@@ -5347,6 +5390,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
@@ -5373,6 +5417,54 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
     add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
+    set_tests_properties(
+        UI_QT_SITE_ROAMING
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # #800: the location feed GPS roaming and the map share (idempotent named leases over the host's one feed, a
+    # restart once per foreground epoch move with the notice first, host replacement, permission changes), and the
+    # one-shot location broker (overlapping requesters, cancel, stale ids, an answer inside the call), each over a
+    # scripted host.
+    foreach(_location_case IN ITEMS feed requests)
+        string(TOUPPER "${_location_case}" _location_case_upper)
+        add_executable(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            ui/test_ui_qt_location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/qt
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE QT_NO_KEYWORDS
+        )
+        set_target_properties(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PROPERTIES AUTOMOC ON
+        )
+        add_test(
+            NAME UI_QT_LOCATION_${_location_case_upper}
+            COMMAND dsd-neo_test_ui_qt_location_${_location_case}
+        )
+        set_tests_properties(
+            UI_QT_LOCATION_${_location_case_upper}
+            PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+    endforeach()
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
@@ -5957,6 +6049,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6018,6 +6111,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6075,6 +6169,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/sign_in_autofill.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6347,6 +6442,17 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
             ui/qml_spectrum_stub.cpp
+            # Issue #800: the map canvas, its tile worker on a canned transport, and the production track model over
+            # a canned position stream (ui/qml_map_stub.cpp): no network, no decoder.
+            ui/qml_map_stub.h
+            ui/qml_map_stub.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -6386,6 +6492,9 @@ if(DSD_ENABLE_QT_UI)
             # Issue #786: GPS roaming's executor and its decision core, which Main drives.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+            # Issue #800: the location feed roaming shares, and the one-shot location broker.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
@@ -7062,6 +7171,218 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
+
+# Issue #800: the map's tile fetch. The public suite runs against the library as
+# shipped (with libcurl it also cancels a stalled HTTPS transfer on a loopback
+# socket). The NO_CURL build compiles tile_fetch.c alone without USE_CURL on
+# every configure, so the stub is pinned even where libcurl is installed.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH
+  dsd-neo/runtime/tile_fetch.h
+  C
+)
+# Also as C++: the Qt tile worker is the consumer.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch_cxx
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH_CXX
+  dsd-neo/runtime/tile_fetch.h
+  CXX
+)
+add_executable(
+    dsd-neo_test_runtime_tile_fetch
+    runtime/test_runtime_tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_tile_fetch PRIVATE dsd-neo_runtime)
+# test_env.h: the loopback cases clear any proxy the runner exports.
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+# On POSIX the executable answers its own getaddrinfo() (and can hold it), so the
+# test can cancel a fetch while its name lookup hangs.
+if(NOT WIN32)
+    target_sources(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE test_support/fake_getaddrinfo.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+    )
+endif()
+add_test(NAME RUNTIME_TILE_FETCH COMMAND dsd-neo_test_runtime_tile_fetch)
+
+add_executable(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    runtime/test_runtime_tile_fetch.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/runtime
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE DSD_TILE_FETCH_TEST_STANDALONE
+)
+target_link_libraries(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_TILE_FETCH_NO_CURL
+    COMMAND dsd-neo_test_runtime_tile_fetch_no_curl
+)
+
+# The built-in libcurl transport with every easy-handle call routed through the
+# test (DSD_TILE_FETCH_TEST_HOOKS): options and their values, fail-closed setup,
+# caps and cancel, with no network. Built a second time with the curl version
+# forced below 7.85 for the CURLOPT_PROTOCOLS branch. A forced version only ever
+# lowers the installed headers' one, and the test picks its expectations from the
+# same effective version, so both build on every supported curl (7.56 and up).
+# CURL_DISABLE_DEPRECATION because both name CURLOPT_PROTOCOLS, deprecated in
+# current headers.
+if(DSD_HAS_CURL)
+    foreach(
+        _tile_variant
+        IN
+        ITEMS
+            "tile_fetch_curl;RUNTIME_TILE_FETCH_CURL;"
+            "tile_fetch_curl_pre_7_85;RUNTIME_TILE_FETCH_CURL_PRE_7_85;DSD_TILE_FETCH_TEST_CURL_VERSION_NUM=0x075400"
+    )
+        list(GET _tile_variant 0 _tile_target)
+        list(GET _tile_variant 1 _tile_test)
+        list(GET _tile_variant 2 _tile_define)
+        add_executable(
+            dsd-neo_test_runtime_${_tile_target}
+            runtime/test_runtime_tile_fetch_curl.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                DSD_TILE_FETCH_TEST_HOOKS
+                CURL_DISABLE_DEPRECATION
+                ${_tile_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME ${_tile_test}
+            COMMAND dsd-neo_test_runtime_${_tile_target}
+        )
+    endforeach()
+
+    # dsd_curl_perform_cancellable() branch by branch, its multi-interface calls
+    # routed through the test (DSD_CURL_COMMON_TEST_HOOKS). Built a second time
+    # with the curl version forced to 7.65 for the curl_multi_wait branch. Quick
+    # exit (8.20) and curl_multi_poll (7.66) are each chosen from the effective
+    # version, which a forced one only lowers.
+    foreach(
+        _cc_variant
+        IN
+        ITEMS
+            "curl_cancellable;RUNTIME_CURL_CANCELLABLE;"
+            "curl_cancellable_pre_7_66;RUNTIME_CURL_CANCELLABLE_PRE_7_66;DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=0x074100"
+    )
+        list(GET _cc_variant 0 _cc_target)
+        list(GET _cc_variant 1 _cc_test)
+        list(GET _cc_variant 2 _cc_define)
+        add_executable(
+            dsd-neo_test_runtime_${_cc_target}
+            runtime/test_runtime_curl_cancellable.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE DSD_CURL_COMMON_TEST_HOOKS ${_cc_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(NAME ${_cc_test} COMMAND dsd-neo_test_runtime_${_cc_target})
+    endforeach()
+
+    # The built-in transport with the real libcurl against a loopback server, over
+    # plain http (DSD_TILE_FETCH_TEST_PLAIN_HTTP; the shipped library is https
+    # only): an answer over the body cap keeps its status and the header lines
+    # libcurl delivered (Retry-After), with a declared length and without.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            runtime/test_runtime_tile_fetch_plain_http.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+                ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME RUNTIME_TILE_FETCH_PLAIN_HTTP
+            COMMAND dsd-neo_test_runtime_tile_fetch_plain_http
+        )
+    endif()
+
+    # Build checks, no test: curl_common.c as shipped (no hooks) with the curl
+    # version forced below 8.20 (no CURLMOPT_QUICK_EXIT) and below 7.66
+    # (curl_multi_wait), so warnings-as-errors catches code that only compiles
+    # against current headers. A forced version above the installed one is
+    # ignored (curl_common.c clamps it), so older headers build these too.
+    foreach(_cc_old_version IN ITEMS 0x081300 0x074100)
+        add_library(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            OBJECT
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=${_cc_old_version}
+        )
+        target_link_libraries(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+    endforeach()
+endif()
 
 # rr_import.c is pure policy - no transport, no parser - and compiles
 # unconditionally, so its suite is registered outside the expat gate below.
@@ -26109,6 +26430,9 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
+        # Issue #800: the map's tracks, polled on every tick.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -26240,6 +26564,85 @@ if(DSD_ENABLE_QT_UI)
     set_tests_properties(
         UI_QT_RECORDING_STORE
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
+if(DSD_ENABLE_QT_UI)
+    # Issue #800: the map's tile cache (RFC 9111 private-cache rules, the disk LRU and the decoded-image bound) and its
+    # tile worker (generations, no prefetch, the backoff, https-only templates, the teardown during a stalled
+    # transfer), through a fake transport: no network.
+    add_executable(
+        dsd-neo_test_ui_qt_map_tiles
+        ui/test_ui_qt_map_tiles.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE Qt6::Core Qt6::Gui dsd-neo_runtime dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_map_tiles PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_TILES COMMAND dsd-neo_test_ui_qt_map_tiles)
+    set_tests_properties(
+        UI_QT_MAP_TILES
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # Issue #800: the map view's scene-graph tree, the one a device draws (headless Qt renders only the software
+    # path, which the QML suite covers): its layers, the pan that only moves the overlay, and tiles through the
+    # production worker on the QML suite's canned transport (no network).
+    add_executable(
+        dsd-neo_test_ui_qt_map_view
+        ui/test_ui_qt_map_view.cpp
+        ui/qml_map_stub.h
+        ui/qml_map_stub.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${CMAKE_CURRENT_SOURCE_DIR}/ui
+    )
+    find_package(Qt6 REQUIRED COMPONENTS Gui Quick)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            Qt6::Gui
+            Qt6::Quick
+            dsd-neo_app_control
+            dsd-neo_runtime
+            dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_map_view)
+    set_target_properties(dsd-neo_test_ui_qt_map_view PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_VIEW COMMAND dsd-neo_test_ui_qt_map_view)
+    set_tests_properties(
+        UI_QT_MAP_VIEW
+        PROPERTIES
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
     )
 endif()
 
@@ -27023,6 +27426,35 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_UNIT_ACTIVITY_MODEL
         COMMAND dsd-neo_test_ui_qt_unit_activity_model
+    )
+    # Issue #800: the map's tracks over the position view's cursor (the real read, on a ring the test publishes), and
+    # their background capture.
+    add_executable(
+        dsd-neo_test_ui_qt_position_model
+        ui/test_ui_qt_position_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_app_control
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_POSITION_MODEL
+        COMMAND dsd-neo_test_ui_qt_position_model
+    )
+    set_tests_properties(
+        UI_QT_POSITION_MODEL
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()
 

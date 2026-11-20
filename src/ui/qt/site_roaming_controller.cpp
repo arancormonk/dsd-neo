@@ -18,6 +18,7 @@
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "location_feed.h"
 #include "saved_systems_model.h"
 #include "site_groups.h"
 
@@ -177,6 +178,8 @@ SiteRoaming::SiteRoaming(AppPrefs* prefs, SavedSystemsModel* systems, QObject* p
     m_timer.setObjectName(QStringLiteral("siteRoamingTick"));
     m_timer.setInterval(kTickMs);
     connect(&m_timer, &QTimer::timeout, this, &SiteRoaming::tick);
+    m_ownFeed = new LocationFeed(this);
+    attachFeed(m_ownFeed);
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::roamingEnabledChanged, this, &SiteRoaming::onEnabledChanged);
         connect(m_prefs, &AppPrefs::roamingDistancesChanged, this, &SiteRoaming::evaluate);
@@ -202,9 +205,9 @@ SiteRoaming::setHost(DecoderHost* host) {
     }
     if (m_host != nullptr) {
         disconnect(m_host, nullptr, this, nullptr);
-        if (m_streamOn) {
-            m_host->stopLocationStream();
-        }
+    }
+    if (m_feed != nullptr) {
+        m_feed->release(LocationFeed::roamingLease()); // the last lease stops the old host's feed
     }
     m_streamOn = false;
     forgetMeasurement();
@@ -224,11 +227,40 @@ SiteRoaming::setHost(DecoderHost* host) {
     m_sessionHadFix = false;
     m_locatingSinceMs = -1;
     m_host = host;
+    if (m_feed == m_ownFeed) {
+        m_ownFeed->setHost(host);
+    }
     if (host != nullptr) {
         connect(host, &DecoderHost::sessionStateChanged, this, &SiteRoaming::onHostSession);
-        connect(host, &DecoderHost::locationStreamUpdate, this, &SiteRoaming::onStreamUpdate);
     }
     evaluate();
+}
+
+void
+SiteRoaming::setLocationFeed(LocationFeed* feed) {
+    LocationFeed* next = feed != nullptr ? feed : m_ownFeed;
+    if (m_feed == next) {
+        return;
+    }
+    if (m_feed != nullptr) {
+        m_feed->release(LocationFeed::roamingLease());
+        disconnect(m_feed, nullptr, this, nullptr);
+    }
+    m_streamOn = false;
+    m_streamState.clear();
+    forgetMeasurement();
+    // Roaming's own feed follows its host only while it is the one roaming uses.
+    m_ownFeed->setHost(next == m_ownFeed ? m_host.data() : nullptr);
+    attachFeed(next);
+    evaluate();
+}
+
+void
+SiteRoaming::attachFeed(LocationFeed* feed) {
+    m_feed = feed;
+    connect(feed, &LocationFeed::updated, this, &SiteRoaming::onStreamUpdate);
+    connect(feed, &LocationFeed::foregroundMoved, this, &SiteRoaming::onFeedForegroundMoved);
+    connect(feed, &LocationFeed::leasesDropped, this, &SiteRoaming::onFeedLeasesDropped);
 }
 
 void
@@ -662,8 +694,9 @@ SiteRoaming::onForegroundLost() {
     m_qualifyingUid.clear();
     m_resetFloor = m_seenNs;
     forgetMeasurement();
-    // The platform stopped the feed when the app left the foreground. The pass this runs in asks for it again when
-    // roaming needs it, even while the app is still hidden: the platform keeps that start until the app is visible.
+    // The platform stopped the feed when the app left the foreground. The pass this runs in takes the lease again when
+    // roaming needs it (the feed starts the feed once more, even while the app is still hidden: the platform keeps
+    // that start until the app is visible), or gives the lease up.
     m_streamOn = false;
     m_streamState.clear();
 }
@@ -702,6 +735,25 @@ SiteRoaming::onStreamUpdate(const QVariantMap& record) {
     evaluateSoon();
 }
 
+/* The feed saw the foreground epoch move before any fix of the new epoch: a move roaming has not seen yet is handled
+ * now, by the pass that notes the foreground, before the feed starts again. One roaming saw first is done already. */
+void
+SiteRoaming::onFeedForegroundMoved(qint64 epoch) {
+    if (m_epochKnown && epoch == m_seenEpoch) {
+        return;
+    }
+    evaluate();
+}
+
+/* The shared feed changed hosts: roaming's lease is gone, and it is taken again on the next pass that needs it. */
+void
+SiteRoaming::onFeedLeasesDropped() {
+    m_streamOn = false;
+    m_streamState.clear();
+    forgetMeasurement();
+    evaluateSoon();
+}
+
 void
 SiteRoaming::evaluateSoon() {
     if (m_evaluateQueued) {
@@ -717,9 +769,12 @@ SiteRoaming::evaluateSoon() {
         Qt::QueuedConnection);
 }
 
+/* Roaming's lease on the feed: taken when roaming needs location (the feed starts it, starts it again after a
+ * foreground loss, or roaming joins the map's and reads where it stands), given up when it does not. The lease is
+ * idempotent: one held since before a foreground loss is given up too, though roaming stopped following it then. */
 void
 SiteRoaming::ensureStream(bool need) {
-    if (m_host == nullptr) {
+    if (m_host == nullptr || m_feed == nullptr) {
         m_streamOn = false;
         return;
     }
@@ -730,12 +785,21 @@ SiteRoaming::ensureStream(bool need) {
         m_streamOn = true;
         m_streamState.clear();
         forgetMeasurement();
-        m_host->startLocationStream();
-    } else if (!need && m_streamOn) {
-        m_streamOn = false;
-        m_streamState.clear();
-        forgetMeasurement();
-        m_host->stopLocationStream();
+        if (!m_feed->acquire(LocationFeed::roamingLease())) {
+            m_streamOn = false; // a feed with no host to lease from: nothing follows, and the next pass asks again
+            return;
+        }
+        const QVariantMap standing = m_feed->record();
+        if (!standing.isEmpty()) {
+            onStreamUpdate(standing);
+        }
+    } else if (!need) {
+        if (m_streamOn) {
+            m_streamOn = false;
+            m_streamState.clear();
+            forgetMeasurement();
+        }
+        m_feed->release(LocationFeed::roamingLease());
     }
 }
 

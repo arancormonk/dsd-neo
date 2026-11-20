@@ -422,7 +422,8 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
  */
 bool
 fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return !(existing.tg != 0U && row.tg != 0U && existing.tg != row.tg) && receive_services_compatible(existing, row)
+    return !(existing.tg != 0U && row.tg != 0U && existing.tg != row.tg) && !call_kinds_differ(existing.gi, row.gi)
+           && receive_services_compatible(existing, row)
            && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
@@ -646,11 +647,21 @@ raw_texts_differ(const QString& a, const QString& b) {
  */
 bool
 rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
-    return call_history_protocols_compatible(existing.protocol, row.protocol)
+    return !call_kinds_differ(existing.gi, row.gi) && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
            && !raw_texts_differ(existing.sourceText, row.sourceText)
            && !raw_texts_differ(existing.targetText, row.targetText);
+}
+
+bool
+call_kinds_differ(int a, int b) {
+    return a >= 0 && b >= 0 && a != b;
+}
+
+qint8
+stored_gi(qint64 value) {
+    return value == 0 || value == 1 ? static_cast<qint8>(value) : static_cast<qint8>(-1);
 }
 
 /** @brief Whether a row has a GPS unit: GPS text, a position, or both. */

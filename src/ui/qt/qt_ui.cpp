@@ -43,8 +43,13 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "location_feed.h"
+#include "location_requests.h"
+#include "map_tile_worker.h"
+#include "map_view_item.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
+#include "position_model.h"
 #include "radio_reference_model.h"
 #include "recording_status.h"
 #include "recording_store.h"
@@ -279,6 +284,18 @@ publish_unit_activity(QQmlContext* context, UiController* controller, QObject* o
     context->setContextProperty(QStringLiteral("activityView"), activityView);
 }
 
+// Issue #800: the map's tracks, fed by the controller's tick (and by their own background tap while the app is away),
+// and the List's view of the ones the age filter shows.
+static void
+publish_positions(QQmlContext* context, UiController* controller, QObject* owner) {
+    auto* positions = new PositionModel(owner);
+    auto* positionView = new PositionFilterModel(owner);
+    positionView->setSourceModel(positions);
+    controller->setPositions(positions);
+    context->setContextProperty(QStringLiteral("positions"), positions);
+    context->setContextProperty(QStringLiteral("positionView"), positionView);
+}
+
 // Issue #708: the call recording store and status, to QML.
 static void
 publish_recording_context(QQmlContext* context, RecordingStore* recordings, RecordingStatus* recordingStatus) {
@@ -296,6 +313,9 @@ register_qml_types() {
                                                     QStringLiteral("siteRoaming is the app's one roaming executor"));
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+    // Issue #800: the map canvas and its tile loader (one per map screen; off until the user turns tiles on).
+    qmlRegisterType<MapViewItem>("DsdNeo", 1, 0, "MapView");
+    qmlRegisterType<MapTileWorker>("DsdNeo", 1, 0, "MapTileSource");
 }
 
 // A restore the user confirmed applies before any model reads a store it replaces (#580), so the restored data goes
@@ -382,12 +402,28 @@ publish_listen(QQmlContext* context, ListenPins* pins, SavedSystemsModel* system
     context->setContextProperty(QStringLiteral("savedSystemCards"), cards);
 }
 
-/* GPS site roaming (#786): its executor, over the host the session runs on. Main.qml feeds it the session and
-   carries out its switches. */
+/* #800: the one-shot location broker every "use my location" goes through (the RadioReference nearby lookup among
+   them), and the continuous location feed GPS roaming and the map share. Both after the RadioReference model, so the
+   model, which gives its request up as it goes, goes before them. */
+static LocationFeed*
+publish_location(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, QObject* owner) {
+    auto* requests = new LocationRequests(owner);
+    requests->setHost(host);
+    radioReference->setLocationRequests(requests);
+    context->setContextProperty(QStringLiteral("locationRequests"), requests);
+    auto* feed = new LocationFeed(owner);
+    feed->setHost(host);
+    context->setContextProperty(QStringLiteral("locationFeed"), feed);
+    return feed;
+}
+
+/* GPS site roaming (#786): its executor, over the host the session runs on and the location feed it shares with the
+   map (#800). Main.qml feeds it the session and carries out its switches. */
 static void
 publish_site_roaming(QQmlContext* context, DecoderHost* host, AppPrefs* prefs, SavedSystemsModel* systems,
-                     QObject* owner) {
+                     LocationFeed* feed, QObject* owner) {
     auto* roaming = new SiteRoaming(prefs, systems, owner);
+    roaming->setLocationFeed(feed);
     roaming->setHost(host);
     context->setContextProperty(QStringLiteral("siteRoaming"), roaming);
 }
@@ -520,12 +556,14 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     publish_history_context(context, history, historyExport, &engine);
     publish_recording_context(context, recordings, recordingStatus);
     publish_unit_activity(context, controller, &engine);
+    publish_positions(context, controller, &engine);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     publish_listen(context, listenPins, systems, prefs, importedFiles, host, &engine);
-    publish_site_roaming(context, host, prefs, systems, &engine);
+    LocationFeed* locationFeed = publish_location(context, host, radioReference, &engine);
+    publish_site_roaming(context, host, prefs, systems, locationFeed, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     publish_app_context(context, host, radioReference, prefs, &engine);
 

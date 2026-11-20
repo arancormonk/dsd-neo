@@ -38,6 +38,7 @@
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
 #include <dsd-neo/core/safe_api.h>
@@ -61,6 +62,7 @@
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
+#include "position_kind_text.h"
 #include "realtime_clock.h"
 #include "teardown_trace.h"
 
@@ -428,6 +430,7 @@ row_identity_value(const CallHistoryModel::Row& row, int role) {
     switch (role) {
         case CallHistoryModel::NameRole: return row.name;
         case CallHistoryModel::TgRole: return row.tg;
+        case CallHistoryModel::GiRole: return static_cast<int>(row.gi);
         case CallHistoryModel::SrcRole: return row.src;
         case CallHistoryModel::SourceNameRole: return row.sourceName;
         case CallHistoryModel::SystemNameRole: return row.systemName;
@@ -450,7 +453,40 @@ row_site_text(const CallHistoryModel::Row& row) {
     return QString::fromUtf8(text);
 }
 
-/** @brief The frequency, access-code and site roles. Their texts are app-control's, spelled at read time. */
+/**
+ * @brief A row's saved fix as the map's "Show on map" pin reads it (issue #800): {latitude, longitude, errorM,
+ * errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText, receivedTime},
+ * or an empty map when the row has none. targetGroup: the report named a talkgroup as its target (the row's target can
+ * be a radio, a private call's). errorM and receivedTime are left out when not known (0). Degrees are for display only.
+ */
+QVariantMap
+position_record(const CallHistoryModel::Position& pos) {
+    QVariantMap out;
+    if (!pos.valid) {
+        return out;
+    }
+    const auto flag = [&pos](unsigned bit) { return (pos.flags & bit) != 0U; };
+    out.insert(QStringLiteral("latitude"), static_cast<double>(pos.latE7) / 1.0e7);
+    out.insert(QStringLiteral("longitude"), static_cast<double>(pos.lonE7) / 1.0e7);
+    if (pos.errM > 0U) {
+        out.insert(QStringLiteral("errorM"), pos.errM);
+    }
+    out.insert(QStringLiteral("errorLowerBound"), flag(DSD_POS_FLAG_ERR_LOWER_BOUND));
+    out.insert(QStringLiteral("validityUnknown"), flag(DSD_POS_FLAG_VALIDITY_UNKNOWN));
+    out.insert(QStringLiteral("provisional"), flag(DSD_POS_FLAG_FORMAT_PROVISIONAL));
+    out.insert(QStringLiteral("weakCheck"), flag(DSD_POS_FLAG_WEAK_CHECK));
+    out.insert(QStringLiteral("anonymous"),
+               pos.anonymous || flag(DSD_POS_FLAG_SOURCE_HASHED) || flag(DSD_POS_FLAG_SOURCE_UNVERIFIED));
+    out.insert(QStringLiteral("emergency"), flag(DSD_POS_FLAG_EMERGENCY));
+    out.insert(QStringLiteral("targetGroup"), flag(DSD_POS_FLAG_TARGET_GROUP));
+    out.insert(QStringLiteral("kindText"), position_kind_text(pos.kind));
+    if (pos.rxTimeS > 0) {
+        out.insert(QStringLiteral("receivedTime"), static_cast<double>(pos.rxTimeS));
+    }
+    return out;
+}
+
+/** @brief The frequency, access-code, site and position roles. Their texts are app-control's, spelled at read time. */
 QVariant
 row_carrier_value(const CallHistoryModel::Row& row, int role) {
     switch (role) {
@@ -467,6 +503,7 @@ row_carrier_value(const CallHistoryModel::Row& row, int role) {
             return QString::fromLatin1(text);
         }
         case CallHistoryModel::SiteTextRole: return row_site_text(row);
+        case CallHistoryModel::PositionRole: return position_record(row.pos);
         default: return row_identity_value(row, role);
     }
 }
@@ -639,6 +676,8 @@ CallHistoryModel::recordFor(const QString& uid) const {
         {"siteText", SiteTextRole},
         {"analog", AnalogRole},
         {"analogMode", AnalogModeRole},
+        {"position", PositionRole},
+        {"gi", GiRole},
     };
 
     bool parsed = false;
@@ -667,6 +706,7 @@ export_row_at(const CallHistoryModel& model, const QModelIndex& idx) {
     row.kind = model.data(idx, CallHistoryModel::KindRole).toInt();
     row.name = text(CallHistoryModel::NameRole);
     row.tg = model.data(idx, CallHistoryModel::TgRole).toULongLong();
+    row.gi = model.data(idx, CallHistoryModel::GiRole).toInt();
     row.src = model.data(idx, CallHistoryModel::SrcRole).toULongLong();
     row.sourceName = text(CallHistoryModel::SourceNameRole);
     row.systemName = text(CallHistoryModel::SystemNameRole);
@@ -753,8 +793,9 @@ CallHistoryModel::heardTalkgroups(qint64 forSession) const {
     QList<uint32_t> heard;
     QSet<uint32_t> seen;
     for (const Row& row : m_rows) {
+        // A private call's target is a radio, never a talkgroup heard (issue #800); not knowing stays as before.
         if (row.kind != KindVoice || (forSession > 0 && row.session != forSession) || row.tg == 0U
-            || row.tg > UINT32_MAX) {
+            || row.tg > UINT32_MAX || row.gi == 1) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);
@@ -771,6 +812,7 @@ CallHistoryModel::roleNames() const {
     QHash<int, QByteArray> roles;
     roles.insert(NameRole, QByteArrayLiteral("name"));
     roles.insert(TgRole, QByteArrayLiteral("tg"));
+    roles.insert(GiRole, QByteArrayLiteral("gi"));
     roles.insert(SrcRole, QByteArrayLiteral("src"));
     roles.insert(SourceNameRole, QByteArrayLiteral("srcName"));
     roles.insert(EmergencyRole, QByteArrayLiteral("emergency"));
@@ -796,6 +838,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(SiteTextRole, QByteArrayLiteral("siteText"));
     roles.insert(AnalogRole, QByteArrayLiteral("analog"));
     roles.insert(AnalogModeRole, QByteArrayLiteral("analogMode"));
+    roles.insert(PositionRole, QByteArrayLiteral("position"));
     return roles;
 }
 
@@ -1154,6 +1197,19 @@ row_take_site(CallHistoryModel::Row& row, const Event_History* item) {
 }
 
 /** @brief One committed ring item as a display row. */
+/** @brief The name of a row with no other: who it was to, a talkgroup, a radio (a private call), or, not knowing which,
+ * the number (issue #800). */
+QString
+target_fallback_name(const CallHistoryModel::Row& row) {
+    if (row.gi == 0) {
+        return QStringLiteral("Talkgroup %1").arg(row.tg);
+    }
+    if (row.gi == 1) {
+        return QStringLiteral("Radio %1").arg(row.tg);
+    }
+    return QStringLiteral("Call to %1").arg(row.tg);
+}
+
 void
 row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
     if (row.kind == CallHistoryModel::KindNotice) {
@@ -1176,8 +1232,8 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
          * operator recognises it by, and "Talkgroup 0" is not. */
         row.name = QString::fromUtf8(item->channel_label);
     } else {
-        row.name = item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode)
-                                                    : QStringLiteral("Talkgroup %1").arg(row.tg);
+        row.name =
+            item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode) : target_fallback_name(row);
     }
 }
 
@@ -1188,6 +1244,7 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.slot = slot;
     row.seq = seq;
     row.tg = static_cast<qulonglong>(item->target_id);
+    row.gi = item->gi == 0 || item->gi == 1 ? static_cast<qint8>(item->gi) : static_cast<qint8>(-1);
     row.src = static_cast<qulonglong>(item->source_id);
     row.sourceName = QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str);
     row.enc = item->enc != 0U;
@@ -1803,6 +1860,7 @@ void
 take_part_sender(FragmentPart& to, const FragmentPart& from) {
     to.protocol = from.protocol;
     to.tg = from.tg;
+    to.gi = from.gi;
     to.src = from.src;
     to.sourceText = from.sourceText;
     to.targetText = from.targetText;
@@ -1856,6 +1914,7 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.session = row.session;
     part.protocol = row.protocol;
     part.tg = row.tg;
+    part.gi = row.gi;
     part.src = row.src;
     part.sourceText = row.sourceText;
     part.targetText = row.targetText;
@@ -1906,6 +1965,7 @@ row_of_part(const FragmentPart& part) {
     row.session = part.session;
     row.protocol = part.protocol;
     row.tg = part.tg;
+    row.gi = part.gi;
     row.src = part.src;
     row.sourceText = part.sourceText;
     row.targetText = part.targetText;
@@ -2172,6 +2232,15 @@ fold_call_identity(CallHistoryModel::Row& rebuilt, const CallHistoryModel::Row& 
             rebuilt.name = from.name;
         }
     }
+    // Who the call was to: a known kind wins (the core's merge does the same); the two never disagree here
+    // (fragment_call_compatible()).
+    if (rebuilt.gi < 0 && from.gi >= 0) {
+        rebuilt.gi = from.gi;
+        // A name that was only "Call to N", for not knowing the kind, takes the name the kind gave (row_take_name()).
+        if (nameIsLabel && rebuilt.tg == from.tg && rebuilt.name == QStringLiteral("Call to %1").arg(rebuilt.tg)) {
+            rebuilt.name = from.name;
+        }
+    }
     const QString destination = from.targetText.simplified();
     if (destination.isEmpty() || !rebuilt.targetText.simplified().isEmpty()) {
         return;
@@ -2225,6 +2294,7 @@ take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& r
     existing.session = rebuilt.session;
     existing.protocol = rebuilt.protocol;
     existing.tg = rebuilt.tg;
+    existing.gi = rebuilt.gi;
     existing.src = rebuilt.src;
     existing.sourceText = rebuilt.sourceText;
     existing.targetText = rebuilt.targetText;
@@ -2733,7 +2803,7 @@ CallHistoryModel::settleMerged(int merged) {
         WhenRole,           TgRole,          SrcRole,          SourceNameRole, EncRole,        DurationSecsRole,
         DayLabelRole,       TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,
         AccessCodeTextRole, ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole,
-        SiteTextRole,       AnalogModeRole,  DetailRole};
+        SiteTextRole,       AnalogModeRole,  DetailRole,       GiRole};
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
@@ -3399,6 +3469,7 @@ part_from_json(const QJsonObject& entry, const QString& fragment, const CallHist
     fields.src = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "src", 0), 0));
     // A part an earlier build of this one stored keeps no target: every part of a row then had the row's.
     fields.tg = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "tg", static_cast<qint64>(row.tg)), 0));
+    fields.gi = stored_gi(json_i64_or(entry, "gi", row.gi));
     fields.sourceName = entry.value(QLatin1String("srcName")).toString();
     fields.sourceNameWhen = json_i64_or(entry, "srcNameWhen", fields.when);
     fields.sourceNameSeq = static_cast<qulonglong>(json_i64_or(entry, "srcNameSeq", 0));
@@ -3439,6 +3510,14 @@ row_parts_from_json(const CallHistoryModel::Row& row, const QJsonObject& obj) {
     return parts;
 }
 
+/** @brief A call kind (Row::gi) into @p obj as `gi`, only when known: an unknown one is left out (it reads -1). */
+void
+put_gi(QJsonObject& obj, qint8 gi) {
+    if (gi >= 0) {
+        obj.insert(QLatin1String("gi"), static_cast<int>(gi));
+    }
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -3446,6 +3525,7 @@ row_from_json(const QJsonObject& obj) {
     row.when = obj.value(QLatin1String("when")).toVariant().toLongLong();
     row.name = obj.value(QLatin1String("name")).toString();
     row.tg = obj.value(QLatin1String("tg")).toVariant().toULongLong();
+    row.gi = stored_gi(json_i64_or(obj, "gi", -1));
     row.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
     row.sourceName = obj.value(QLatin1String("srcName")).toString();
     row.enc = obj.value(QLatin1String("enc")).toBool();
@@ -3568,6 +3648,7 @@ row_parts_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         row_site_to_json(fields, entry);
         row_payload_to_json(fields, entry);
         entry.insert(QLatin1String("tg"), static_cast<qint64>(fields.tg));
+        put_gi(entry, fields.gi);
         if (fields.src != 0U) {
             entry.insert(QLatin1String("src"), static_cast<qint64>(fields.src));
         }
@@ -3591,6 +3672,7 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("when"), row.when);
     obj.insert(QLatin1String("name"), row.name);
     obj.insert(QLatin1String("tg"), static_cast<qint64>(row.tg));
+    put_gi(obj, row.gi);
     obj.insert(QLatin1String("src"), static_cast<qint64>(row.src));
     obj.insert(QLatin1String("srcName"), row.sourceName);
     obj.insert(QLatin1String("srcNameWhen"), row.sourceNameWhen);

@@ -34,6 +34,7 @@ const struct {
     {"radio_name", true},     {"system", true},      {"channel", true},      {"frequency_hz", false},
     {"access_code", true},    {"tone", true},        {"site", true},         {"analog_mode", false},
     {"encrypted", false},     {"emergency", false},  {"message", true},      {"recordings", true},
+    {"call_kind", false},
 };
 
 const QLatin1String kSeparator(" | ");
@@ -94,6 +95,21 @@ flag(bool on) {
     return on ? QStringLiteral("1") : QStringLiteral("0");
 }
 
+/* Who the row's target is: `talkgroup`, `radio` (a private call) or `unknown`; empty without a target (issue #800). */
+QString
+callKindText(const CallHistoryModel::ExportRow& row) {
+    if (row.tg == 0U) {
+        return QString();
+    }
+    if (row.gi == 0) {
+        return QStringLiteral("talkgroup");
+    }
+    if (row.gi == 1) {
+        return QStringLiteral("radio");
+    }
+    return QStringLiteral("unknown");
+}
+
 /* `NFM` or `AM` as heard, `analog` for an analog row whose mode is not known, empty for a digital row. */
 QString
 analogModeText(const CallHistoryModel::ExportRow& row) {
@@ -111,7 +127,7 @@ fields(const CallHistoryModel::ExportRow& row, const QTimeZone& zone) {
         << knownNumber(row.tg) << knownNumber(row.src) << row.sourceName << row.systemName << row.channel
         << (row.freqHz > 0 ? QString::number(row.freqHz) : QString()) << row.accessCode << row.receivedTone
         << row.siteText << analogModeText(row) << flag(row.enc) << flag(row.emergency) << row.detail
-        << joinRecordingNames(row.recordingNames);
+        << joinRecordingNames(row.recordingNames) << callKindText(row);
     return out;
 }
 

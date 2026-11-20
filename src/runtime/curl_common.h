@@ -4,8 +4,8 @@
  */
 
 /*
- * Shared libcurl helpers for runtime HTTP consumers (rdio-scanner uploads and the
- * RadioReference SOAP client).
+ * Shared libcurl helpers for runtime HTTP consumers (rdio-scanner uploads, the
+ * RadioReference SOAP client and the map tile fetch).
  *
  * Deliberately module-private rather than public: dsd_curl_apply_hardening() names
  * a libcurl type, and every header under include/dsd-neo/runtime must compile
@@ -79,6 +79,19 @@ void dsd_curl_body_buf_free(dsd_curl_body_buf* buf);
 
 #ifdef USE_CURL
 /**
+ * @brief The loaded libcurl's curl_version_info(CURLVERSION_NOW), read once.
+ *
+ * curl_version_info() is not thread-safe: before curl_global_init() it may set
+ * up static data, and every call rewrites static buffers (seen under TSan with
+ * two threads probing at once). The one call runs inside dsd_curl_global_ready()'s
+ * initialization, on the thread that initializes, and every reader gets that
+ * result; nothing else in dsd-neo may call curl_version_info().
+ *
+ * @return The data, or NULL when libcurl could not be initialized.
+ */
+const curl_version_info_data* dsd_curl_version_info(void);
+
+/**
  * @brief Apply the transport-neutral hardening every dsd-neo request shares.
  *
  * Sets connect/total timeouts, disables signals and redirects, restricts the
@@ -106,6 +119,44 @@ void dsd_curl_apply_hardening(CURL* curl, int connect_timeout_ms, int total_time
  * @return Number of bytes consumed, or 0 to abort the transfer.
  */
 size_t dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata);
+
+/**
+ * @brief Cancel predicate for dsd_curl_perform_cancellable().
+ *
+ * @param ctx Caller's context.
+ * @return Nonzero when the transfer should stop.
+ */
+typedef int (*dsd_curl_cancel_fn)(const void* ctx);
+
+/**
+ * @brief curl_easy_perform() that a cancel stops promptly.
+ *
+ * The xferinfo callback alone does not bound a cancel: libcurl 8.23 was seen
+ * calling it not once while a TLS handshake stalled (a loopback socket that
+ * accepts and never answers), so a cancel waited out the whole connect timeout.
+ * This runs the easy handle on a private multi handle and asks @p cancelled
+ * between waits of at most 100 ms. Callers keep their xferinfo callback for the
+ * transfer itself. The easy handle's own timeouts still apply, and the handle is
+ * detached again on return.
+ *
+ * How soon it returns after a cancel:
+ * - connect, TLS and transfer: within about 100 ms;
+ * - a name lookup in progress (threaded resolver): within about 100 ms with
+ *   libcurl 8.20 or later, which is told (CURLMOPT_QUICK_EXIT) not to join the
+ *   resolver thread; that thread ends on its own when getaddrinfo() returns.
+ *   With older libcurl, cleanup joins it, so the return can wait for the system
+ *   resolver's own timeout (seconds). Callers must therefore never wait for this
+ *   on a UI thread.
+ *
+ * Multi-interface failures come back as CURLE_OUT_OF_MEMORY (allocation) or
+ * CURLE_FAILED_INIT (anything else).
+ *
+ * @param curl      Configured easy handle.
+ * @param cancelled Predicate, or NULL for never.
+ * @param ctx       Passed to @p cancelled.
+ * @return The transfer's result; CURLE_ABORTED_BY_CALLBACK when cancelled here.
+ */
+CURLcode dsd_curl_perform_cancellable(CURL* curl, dsd_curl_cancel_fn cancelled, const void* ctx);
 #endif
 
 #ifdef __cplusplus

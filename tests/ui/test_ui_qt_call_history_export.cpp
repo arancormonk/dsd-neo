@@ -78,7 +78,7 @@ expect(int line, bool ok) {
 
 const char kHeader[] =
     "started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,"
-    "frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings\r\n";
+    "frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings,call_kind\r\n";
 
 QByteArray
 head() {
@@ -105,6 +105,7 @@ voice_row() {
     row.kind = CallHistoryModel::KindVoice;
     row.name = QStringLiteral("County Fire");
     row.tg = 1001;
+    row.gi = 0;
     row.src = 2002;
     row.sourceName = QStringLiteral("Engine 5");
     row.systemName = QStringLiteral("County P25");
@@ -171,16 +172,16 @@ test_columns() {
         head()
         + QStringLiteral("2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,42,call,County Fire,1001,2002,Engine 5,"
                          "County P25,North,851012500,NAC 293,,P25 · Site 5,,1,1,,"
-                         "County (1a2b3c4d)/sub/a.wav | County (1a2b3c4d)/b.wav\r\n")
+                         "County (1a2b3c4d)/sub/a.wav | County (1a2b3c4d)/b.wav,talkgroup\r\n")
               .toUtf8()
         + "2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,7,call,NFM,,,,Scan,Ch 3,462562500,,CTCSS 100.0 Hz,,NFM,"
-          "0,0,,\r\n"
+          "0,0,,,\r\n"
         + "2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,7,call,AM,,,,Scan,Ch 3,462562500,,CTCSS 100.0 Hz,,AM,0,"
-          "0,,\r\n"
+          "0,,,\r\n"
         + "2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,7,call,Analog,,,,Scan,Ch 3,462562500,,CTCSS 100.0 Hz,,"
-          "analog,0,0,,\r\n"
+          "analog,0,0,,,\r\n"
         + "2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,,message,[CRC ERR] SMS 2002 > 1001,1001,2002,,,,,,,,,0,"
-          "0,\"Line one\nLine \"\"two\"\"\",\r\n";
+          "0,\"Line one\nLine \"\"two\"\"\",,unknown\r\n";
     if (file != expected) {
         printf("got:\n%s\nwant:\n%s\n", file.constData(), expected.constData());
     }
@@ -192,14 +193,14 @@ test_columns() {
 void
 test_empty_values() {
     const CallHistoryModel::ExportRow blank;
-    expect(__LINE__, record_of(blank, QTimeZone(QTimeZone::UTC)) == ",,,,call,,,,,,,,,,,,0,0,,\r\n");
+    expect(__LINE__, record_of(blank, QTimeZone(QTimeZone::UTC)) == ",,,,call,,,,,,,,,,,,0,0,,,\r\n");
     CallHistoryModel::ExportRow negative;
     negative.when = -5;
     negative.durationSecs = 0;
-    expect(__LINE__, record_of(negative, QTimeZone(QTimeZone::UTC)) == ",,,0,call,,,,,,,,,,,,0,0,,\r\n");
+    expect(__LINE__, record_of(negative, QTimeZone(QTimeZone::UTC)) == ",,,0,call,,,,,,,,,,,,0,0,,,\r\n");
     const QTimeZone kolkata(QByteArrayLiteral("Asia/Kolkata"));
     if (kolkata.isValid()) {
-        expect(__LINE__, record_of(blank, kolkata) == ",,,,call,,,,,,,,,,,,0,0,,\r\n");
+        expect(__LINE__, record_of(blank, kolkata) == ",,,,call,,,,,,,,,,,,0,0,,,\r\n");
     }
 }
 
@@ -208,7 +209,7 @@ void
 test_invalid_zone() {
     const QByteArray record = record_of(voice_row(), QTimeZone());
     expect(__LINE__, record.startsWith(",,2026-11-07T14:03:22Z,42,call,County Fire,"));
-    expect(__LINE__, record_of(CallHistoryModel::ExportRow(), QTimeZone()) == ",,,,call,,,,,,,,,,,,0,0,,\r\n");
+    expect(__LINE__, record_of(CallHistoryModel::ExportRow(), QTimeZone()) == ",,,,call,,,,,,,,,,,,0,0,,,\r\n");
 }
 
 /* The formula guard on every text column (a recordings folder name starting `=` too), none on the time, numeric and
@@ -233,7 +234,7 @@ test_formula_guard() {
     expect(__LINE__,
            record_of(row, QTimeZone(QTimeZone::UTC))
                == "2026-11-07 14:03:22,UTC+00:00,2026-11-07T14:03:22Z,3,call,'=SUM(A1),5,6,'+Alias,'-System,'@Channel,"
-                  "155340000,'=AC,'+Tone,'-Site,,0,0,'=HYPERLINK(1),'=Fire (1a2b3c4d)/a.wav\r\n");
+                  "155340000,'=AC,'+Tone,'-Site,,0,0,'=HYPERLINK(1),'=Fire (1a2b3c4d)/a.wav,unknown\r\n");
     // A negative offset starts with its letters, so it is written as it is.
     const QTimeZone york(QByteArrayLiteral("America/New_York"));
     if (york.isValid()) {
@@ -257,8 +258,9 @@ test_time_zones() {
         standard.when = utc_secs(2026, 11, 1, 6, 30, 0);
         const QByteArray file = history_export::file({daylight, standard}, york);
         expect(__LINE__, file
-                             == head() + "2026-11-01 01:30:00,UTC-04:00,2026-11-01T05:30:00Z,,call,,,,,,,,,,,,0,0,,\r\n"
-                                    + "2026-11-01 01:30:00,UTC-05:00,2026-11-01T06:30:00Z,,call,,,,,,,,,,,,0,0,,\r\n");
+                             == head()
+                                    + "2026-11-01 01:30:00,UTC-04:00,2026-11-01T05:30:00Z,,call,,,,,,,,,,,,0,0,,,\r\n"
+                                    + "2026-11-01 01:30:00,UTC-05:00,2026-11-01T06:30:00Z,,call,,,,,,,,,,,,0,0,,,\r\n");
     }
     const QTimeZone kolkata(QByteArrayLiteral("Asia/Kolkata"));
     if (!kolkata.isValid()) {
@@ -305,6 +307,22 @@ test_locale_independent() {
     expect(__LINE__, history_export::file(rows, zone) == plain);
     QLocale::setDefault(before);
     setlocale(LC_NUMERIC, numeric.constData());
+}
+
+/* Review r2 (issue #800): the last column says who the talkgroup column's target is: a talkgroup, a radio (a private
+ * call), or not known; empty without a target. */
+void
+test_call_kind_column() {
+    CallHistoryModel::ExportRow row = voice_row();
+    row.recordingNames.clear();
+    const QTimeZone utc(QTimeZone::UTC);
+    expect(__LINE__, record_of(row, utc).endsWith(",talkgroup\r\n"));
+    row.gi = 1;
+    expect(__LINE__, record_of(row, utc).endsWith(",radio\r\n"));
+    row.gi = -1;
+    expect(__LINE__, record_of(row, utc).endsWith(",unknown\r\n"));
+    row.tg = 0;
+    expect(__LINE__, record_of(row, utc).endsWith(",,\r\n"));
 }
 
 /* Text beyond ASCII is written as UTF-8; an access code is text, never a number. */
@@ -354,7 +372,8 @@ test_recording_names() {
         CallHistoryModel::ExportRow row;
         row.recordingNames = names;
         const QByteArray record = record_of(row, QTimeZone(QTimeZone::UTC));
-        expect(__LINE__, record == ",,,,call,,,,,,,,,,,,0,0,," + dsd_qt::csv_text::field(cell, true).toUtf8() + "\r\n");
+        expect(__LINE__,
+               record == ",,,,call,,,,,,,,,,,,0,0,," + dsd_qt::csv_text::field(cell, true).toUtf8() + ",\r\n");
     }
 }
 
@@ -1059,7 +1078,8 @@ test_exporter_real_recordings(const QString& root) {
         zipNames.append(zip_names_of(store, store.recordingsForFragments(fragments.value(i))));
         const QByteArray cell =
             dsd_qt::csv_text::field(history_export::joinRecordingNames(zipNames.value(i)), true).toUtf8();
-        expect(__LINE__, records.value(i).endsWith("," + cell + "\r"));
+        // The recordings cell, then the call kind: rows stored without one (an older build's) read `unknown`.
+        expect(__LINE__, records.value(i).endsWith("," + cell + ",unknown\r"));
     }
     const QString owner = QStringLiteral("County (1a2b3c4d)/");
     expect(__LINE__, zipNames.value(0)
@@ -1067,7 +1087,7 @@ test_exporter_real_recordings(const QString& root) {
                                          owner + QStringLiteral("c.wav")}));
     expect(__LINE__, zipNames.value(1) == QStringList{owner + QStringLiteral("c.wav")} && zipNames.value(2).isEmpty());
     expect(__LINE__, records.value(0).endsWith(",County (1a2b3c4d)/sub/a.wav | County (1a2b3c4d)/b.wav | "
-                                               "County (1a2b3c4d)/c.wav\r"));
+                                               "County (1a2b3c4d)/c.wav,unknown\r"));
     const QVariantMap every = store.selectForExport(kOwnerUid, QStringLiteral("all"));
     store.releaseSelection(every.value(QStringLiteral("selection")).toInt());
     expect(__LINE__, every.value(QStringLiteral("names")).toStringList() == zipNames.value(0));
@@ -1094,6 +1114,7 @@ main(int argc, char** argv) {
     test_time_zones();
     test_invalid_zone();
     test_locale_independent();
+    test_call_kind_column();
     test_text_values();
     test_recording_names();
     test_export_rows_match_display();

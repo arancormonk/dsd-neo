@@ -1,6 +1,6 @@
 # DSD-neo Privacy Policy
 
-**Effective date: November 15, 2026**
+**Effective date: November 18, 2026**
 
 This policy covers the DSD-neo Android app (package `io.github.arancormonk.dsdneo`)
 distributed on Google Play. The same practices apply to the side-loaded Android APK and the
@@ -15,8 +15,8 @@ report to the developer or anyone else.
 Data leaves your device only when you use a feature that needs another service, and only to
 the service you choose: an SDR server or audio stream you point the app at, RadioReference
 when you sign in, import a system or update its places, an rdio-scanner server you upload
-calls to, and your device's location service when you use location. Each is described below,
-with what it receives.
+calls to, a map tile server once you turn on map tiles, and your device's location service
+when you use location. Each is described below, with what it receives.
 
 ## Everything runs on your device
 
@@ -47,6 +47,7 @@ The app only opens network connections that you explicitly set up:
   their names, aliases, times, decoded positions and text messages. It listens only on the
   device itself by default; any other address requires a shared token, and the connection is
   not encrypted.
+- **Map tiles:** see [Map](#map) below.
 - **RadioReference:** see below.
 
 None of these features are enabled by default, and none of them involve the developer's
@@ -76,10 +77,47 @@ your password in memory only, while the app runs, and never writes it to storage
 logs. On Android, the sign-in fields are offered to your device's autofill service, so a
 password manager you use can fill them in and save them under its own terms.
 
+## Map
+
+The Map screen shows where radios reported their position. The positions come from what the
+app decodes. The map keeps them in memory while the app runs (a History row keeps the position
+its call carried, with the rest of the call history), and they are not sent anywhere.
+
+The map's background (streets and places) comes from a tile server, and only once you turn
+it on with **Load map tiles** on the map or the switch in Map settings. Until then the map is
+a plain grid and the app sends nothing. Once tiles are on, the app asks the tile server for the
+map squares (tiles) of the area you are looking at, over an encrypted (HTTPS) connection. The
+server is OpenStreetMap's (tile.openstreetmap.org) unless you enter another one in Map
+settings, and the map names it before you turn tiles on. Each request tells the server which
+area you are looking at and at what zoom, and it also receives your IP address and the app's
+name and version (its User-Agent). If you show your own position on the map, the area you look
+at is around you, so the tile server can tell roughly where you are. The app sends it no
+positions, radio IDs or other decoded data. The tile server handles this under its own terms;
+for OpenStreetMap that is the OpenStreetMap Foundation's privacy policy.
+
+The app keeps the tiles of areas you looked at by hand in a cache on your device, so the same
+area does not have to be fetched again. Each cached tile is stored with the time it was fetched
+or last shown, and stays until newer tiles push it out (the cache holds up to 50 MB) or the
+cache is cleared, so the cache shows which areas you looked at, and when. Once your own
+position has placed the map (Locate me, Follow my position, Show every radio when it took in
+your dot, or a map that first opened around you), the tiles of the rest of that visit to the
+map are kept in memory only and never written to the cache, so the cache holds no trail of
+where you were. The cache is not part of the app's backup file, and Android can clear it at any
+time.
+
+The app saves on your device whether tiles are on, the tile server you entered and its
+attribution, the age filter you chose, and the area you last looked at, so the map can open
+where you left it. That saved area is never one your own position shaped: once Locate me,
+Follow my position or Show every radio has used your position in a visit, or the map first
+opened around you, the map saves no area until you close it. It then goes back to the last
+area it saved, or shows the whole world when it saved none. None of these are part of the
+app's backup file. A tile server address you enter can hold a key, so the app does not
+write it to its diagnostics log.
+
 ## Location
 
-Location is optional and only used in the RadioReference screens, on Listen's Systems tab and by
-GPS roaming:
+Location is optional and only used in the RadioReference screens, on Listen's Systems tab, by
+GPS roaming and on the map:
 
 - **Use my location** finds your ZIP code so you don't have to type it. The app asks Android
   for your location, then asks Android's geocoder to turn it into a postal code. It sends
@@ -95,10 +133,18 @@ GPS roaming:
   only while DSD-neo is on screen; leaving the app stops it. The distances are worked out on
   your device, nothing is sent anywhere, and these locations are never saved: the app keeps
   only the newest readings in memory while roaming runs.
+- **The map** can show your own position as a dot. **Locate me** asks Android for your
+  coordinates once, with no postal-code lookup, as the nearby-site chooser does, and saves the
+  result the same way (see below). **Follow my position**, if you turn it on, uses your precise
+  location to keep the map on you as you move, only while the map is on screen; leaving the map
+  or the app stops it. Those locations are never saved, and neither are the map tiles fetched
+  around you: they stay in memory only. The dot is drawn on your device, and nothing about your
+  position is sent anywhere, apart from the map tiles of the area you look at (see
+  [Map](#map)).
 
 The first time you use location, the app asks for approximate location (Use my location) or
-for approximate and precise location (the nearby-site chooser, Listen's Nearest order and GPS
-roaming). GPS roaming works only with precise location.
+for approximate and precise location (the nearby-site chooser, Listen's Nearest order, GPS
+roaming and the map). GPS roaming and Follow my position work only with precise location.
 The app keeps your location at the precision you allowed, approximate or precise. Once you
 have granted precise location, Use my location can use it too. Getting a location and turning
 it into a postal code are done by your device's location services (on most phones they are
@@ -106,9 +152,10 @@ Google's), which may use Wi-Fi, mobile network and GPS information and contact t
 to do it, under that provider's terms. The app asks for location only while you are using it,
 never in the background.
 
-The last location the app got for Use my location, the nearby-site chooser and Listen's
-Nearest order (latitude, longitude, accuracy and time) is saved on your device so it can pick
-nearby sites and order your saved systems by distance. It stops being used after 24 hours
+The last location the app got for Use my location, the nearby-site chooser, Listen's Nearest
+order and the map's Locate me (latitude, longitude, accuracy and time) is saved on your device
+so it can pick nearby sites, order your saved systems by distance and show your dot on the
+map. It stops being used after 24 hours
 and is removed the next time the app checks it, while it is running or when you open it
 again. The app does not write it to its diagnostics log, and it is not part of the app's own
 backup file. If you deny location, ZIP code, browse and system ID searches all still work.
@@ -148,15 +195,17 @@ lines from the log's saved files as well, not only from what the app shows. It c
 device's maker and model, its Android version, and what the app decoded, such as talkgroups
 and radio IDs. If you turn on raw message printing (the `-Z` option, off by default), the log
 also keeps the raw bytes of received messages, and those can still hold a position in coded
-form. The log leaves your device only if you copy or share it yourself.
+form. The map's tile server address is never written to it. The log leaves your device only
+if you copy or share it yourself.
 
 ## Permissions
 
-- **Internet:** used only for the connections described above.
+- **Internet:** used only for the connections described above, map tiles included once you
+  turn them on.
 - **Network state:** lets the app see whether the device is online. It sends nothing.
 - **Location** (optional, approximate or precise, only while the app is in use): only for Use
-  my location, the nearby-site chooser, Listen's Nearest order and GPS roaming, as described
-  above.
+  my location, the nearby-site chooser, Listen's Nearest order, GPS roaming and the map, as
+  described above.
 - **Foreground service and notifications:** keep decoding running while the app is in the
   background and show its status.
 - **Wake lock:** keep the device awake during long decode sessions.
@@ -174,9 +223,10 @@ DSD-neo is not directed at children. The developer collects no data from anyone.
 ## Third-party services
 
 The app has no built-in third-party analytics, advertising, or data-collection services.
-The services described above (RadioReference, an rdio-scanner server, your device's location,
-geocoding and autofill services, and any server you connect the app to) are used only when
-you choose to use those features, and each handles your data under its own terms.
+The services described above (RadioReference, an rdio-scanner server, a map tile server, your
+device's location, geocoding and autofill services, and any server you connect the app to) are
+used only when you choose to use those features, and each handles your data under its own
+terms.
 
 ## Changes to this policy
 

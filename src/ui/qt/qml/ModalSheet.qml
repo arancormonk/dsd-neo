@@ -128,7 +128,12 @@ Rectangle {
     // keyboardRectangle is in window coordinates. Mapping it avoids subtracting
     // the keyboard twice when Android has already resized the usable window.
     property real keyboardTop: Theme.keyboardTop(sheet)
-    property real maximumHeight: Math.max(0, Math.min(height, keyboardTop) - 2 * Theme.screenPadding)
+    // Room at the bottom the panel stays out of, as if the sheet ended there:
+    // something drawn over the dim that must stay readable (the map's
+    // attribution, issue #800). 0 for every other sheet.
+    property real bottomInset: 0
+    readonly property real availableHeight: Math.max(0, Math.min(height - bottomInset, keyboardTop))
+    property real maximumHeight: Math.max(0, availableHeight - 2 * Theme.screenPadding)
 
     function revealFocus() {
         Theme.revealFocus(scroll, column, sheet.Window.window ? sheet.Window.window.activeFocusItem : null);
@@ -233,7 +238,7 @@ Rectangle {
         id: panelItem
 
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.max(0, (Math.min(sheet.height, sheet.keyboardTop) - height) / 2)
+        y: Math.max(0, (sheet.availableHeight - height) / 2)
         width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
         height: Math.min(sheet.maximumHeight, column.height + 2 * Theme.cardPadding)
 

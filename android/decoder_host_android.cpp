@@ -438,6 +438,15 @@ DecoderHostAndroid::refreshPresentation() {
         m_audio_route = route;
         Q_EMIT audioRouteChanged();
     }
+    // Issue #800: areAnimatorsEnabled() (API 26) is false once the user removes animations (animator duration scale
+    // 0); the map's camera then jumps. A failed call reads false too, which only costs the camera its glide.
+    const bool reduced =
+        QJniObject::callStaticMethod<jboolean>("android/animation/ValueAnimator", "areAnimatorsEnabled", "()Z")
+        != JNI_TRUE;
+    if (reduced != m_reduced_motion) {
+        m_reduced_motion = reduced;
+        Q_EMIT reducedMotionChanged();
+    }
     if (changes.keyboard) {
         Q_EMIT keyboardChanged();
     }

@@ -136,7 +136,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         HasRecordingRole,   // whether the row has any
         SiteTextRole,       // "DMR · Con+ · Net 3 · Site 5 · Connect Plus · LCN 3" (site_identity_view.h), else empty
         AnalogRole,         // a conventional analog (NFM/AM) reception (issue #667)
-        AnalogModeRole      // an analog row's mode, "NFM" or "AM"; empty when not known, and on every other row
+        AnalogModeRole,     // an analog row's mode, "NFM" or "AM"; empty when not known, and on every other row
+        PositionRole,       // issue #800: the row's saved fix for the map's pin (position_record()); {} without one
+        GiRole              // issue #800: who the call was to: 0 a talkgroup, 1 a radio (private), -1 not known
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -274,6 +276,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int kind = KindVoice;  // KindRole
         QString name;          // NameRole: a channel id shown by its name
         qulonglong tg = 0;
+        int gi = -1; // GiRole: who the call was to, 0 a talkgroup, 1 a radio, -1 not known
         qulonglong src = 0;
         QString sourceName;
         QString systemName;
@@ -523,6 +526,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Whether rxGen is known (Row::rxGenKnown). */
         bool rxGenKnown = false;
         uint8_t callChannelKind = 0;
+        /* Who the call was to (Event_History::gi): 0 a talkgroup, 1 a radio (a private call), -1 not known. */
+        qint8 gi = -1;
         qint64 when = 0;
         qint64 end = 0;
         int durationSecs = -1;
@@ -587,6 +592,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         int sourceNameSlot = 0;
         bool emergency = false;
         bool enc = false;
+        /* Who the call was to (Event_History::gi, issue #800): 0 a talkgroup, 1 a radio (a private call), -1 not
+           known. Part of the call's identity: a group call and a private call to the same number are two calls
+           (call_kinds_differ()). A fold adopts a known value. Persisted (`gi`) when known; older rows read -1. */
+        qint8 gi = -1;
         int durationSecs = -1;
         /* When the call ended, in seconds; 0 when not known. Kept only with a start stamp it is measured from, and
            persisted (`end`), so a span past the plausible cap still reads unknown after a fold, an update or a reload.

@@ -10,6 +10,30 @@ Item {
     id: screen
 
     property bool showTitle: true
+    // Issue #800: the map (its kept tracks stay reachable after Stop), and a
+    // row's "Show on map" with the sheet to return to.
+    signal openMap
+    signal showOnMap(var record, var sheet)
+    // The keyboard stop of the call row logged under @p uid, brought into
+    // view: where a sheet opened again by uid (Back from the map) returns the
+    // focus. The row it was opened from can be gone by then: a covered list
+    // holds no rows (issue #782) and builds new ones. Null when not listed.
+    function rowFocusFor(uid) {
+        var row = logPlace.rowOf(uid);
+        if (row < 0 || !logList.model)
+            return null;
+        logList.positionViewAtIndex(row, ListView.Contain);
+        var item = logList.itemAtIndex(row);
+        return item ? item.node : null;
+    }
+    // Back from the map when the row it showed has left the log: the focus
+    // goes to the list, where the row was.
+    function focusList() {
+        if (!logList.visible || !Navigation.allows(logList))
+            return false;
+        logList.forceActiveFocus();
+        return true;
+    }
 
     // Hand off pending text before another History instance can accept input.
     // Otherwise this screen's older timer could overwrite the new editor.
@@ -262,13 +286,13 @@ Item {
                 id: header
 
                 readonly property real titleHeight: screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0
-                readonly property bool buttonsShown: callHistory.count > 0
-                readonly property bool stacked: screen.showTitle && buttonsShown
+                // Map is always offered (issue #800); Export… and Clear only with calls.
+                readonly property bool stacked: screen.showTitle
                                                  && historyTitle.implicitWidth + Theme.gap + headerButtons.implicitWidth > width
 
                 width: parent.width
                 height: stacked ? titleHeight + headerButtons.implicitHeight
-                                : Math.max(titleHeight, buttonsShown ? headerButtons.implicitHeight : 0)
+                                : Math.max(titleHeight, headerButtons.implicitHeight)
                 visible: height > 0
 
                 ReadableText {
@@ -292,10 +316,22 @@ Item {
                     anchors.right: parent.right
                     y: header.stacked ? header.titleHeight : (header.height - height) / 2
                     spacing: 10
-                    visible: header.buttonsShown
+
+                    // A glyph, as the top bars' other icon actions, so the
+                    // title, Export… and Clear still share one line on a phone.
+                    MapControlButton {
+                        objectName: "historyMapButton"
+                        anchors.verticalCenter: parent.verticalCenter
+                        framed: false
+                        shape: "map"
+                        accessibleName: qsTr("Map")
+                        accessibleDescription: qsTr("Positions radios sent, on a map")
+                        onClicked: screen.openMap()
+                    }
 
                     OutlineButton {
                         objectName: "historyExportButton"
+                        visible: callHistory.count > 0
                         text: qsTr("Export…")
                         accessibleName: qsTr("Export history as a CSV file")
                         // Held while this screen's picker is out, while either
@@ -308,6 +344,7 @@ Item {
                     OutlineButton {
                         id: clearHistory
                         objectName: "clearHistoryButton"
+                        visible: callHistory.count > 0
                         text: qsTr("Clear")
                         onClicked: confirmClear.open()
                     }
@@ -493,7 +530,7 @@ Item {
                 if (model.kind === 1) {
                     var parts = [];
                     if (model.tg > 0)
-                        parts.push("TG " + model.tg);
+                        parts.push(Util.targetMeta(model.tg, model.gi));
                     if (model.src > 0 || model.srcName)
                         parts.push("SRC " + Util.sourceText(model.src, model.srcName));
                     if (model.accessCode.length > 0)
@@ -518,7 +555,7 @@ Item {
                 if (model.emergency)
                     meta.push(qsTr("EMERGENCY"));
                 if (model.tg > 0)
-                    meta.push("TG " + model.tg);
+                    meta.push(Util.targetMeta(model.tg, model.gi));
                 if (model.src > 0 || model.srcName)
                     meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 // The code the call's carrier was confirmed on ("CC 1", "NAC 293"),
@@ -566,6 +603,9 @@ Item {
     HistoryDetailSheet {
         id: detailSheet
         objectName: "historyDetailSheet"
+        onShowOnMapRequested: function (record) {
+            screen.showOnMap(record, detailSheet);
+        }
     }
 
     // Keeps the newest call in view for a reader parked at the top of the log.

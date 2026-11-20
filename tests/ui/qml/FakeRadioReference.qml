@@ -4,8 +4,8 @@ import QtQuick
 // Offline account and import responses; production QML owns the navigation.
 // Deliberately limited to these flows: credentialsReady follows the password
 // alone, without validating the username or application key. Imports record the
-// savedRow argument but omit it from the result. Location request allocation,
-// nearby/zip lookups and place-browsing load methods are not modeled here.
+// savedRow argument but omit it from the result. Nearby/zip lookups and
+// place-browsing load methods are not modeled here.
 //
 // The account check follows RadioReferenceModel's state: a new password resets
 // it to None (0), checkAccount() makes it Checking (1, busy) unless it already
@@ -13,7 +13,6 @@ import QtQuick
 // accountChecks counts every submission, the ones the model would drop
 // included, so a case sees a doubled request.
 QtObject {
-    signal locationRequestAllocated(double requestId)
     property bool available: true
     property bool hasAppKey: true
     property bool buildHasAppKey: true

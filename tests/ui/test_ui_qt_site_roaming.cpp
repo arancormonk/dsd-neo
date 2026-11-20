@@ -10,6 +10,7 @@
  */
 #include <QCoreApplication>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QList>
 #include <QObject>
 #include <QPair>
@@ -29,6 +30,7 @@
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "location_feed.h"
 #include "saved_systems_model.h"
 #include "site_groups.h"
 #include "site_roaming.h"
@@ -1928,6 +1930,145 @@ check_executor_locating() {
           "locating: back in the foreground after a fix, still paused");
 }
 
+// ---- The feed shared with the map (#800) ----
+
+using dsd_qt::LocationFeed;
+
+/* The rig with roaming on a location feed it shares with the map, as qt_ui.cpp wires it. The feed outlives the rig. */
+struct SharedRig {
+    LocationFeed feed;
+    Rig rig;
+
+    SharedRig() {
+        feed.setHost(&rig.host);
+        rig.roaming.setLocationFeed(&feed);
+    }
+
+    void
+    settle() {
+        QCoreApplication::sendPostedEvents(&rig.roaming, QEvent::MetaCall);
+    }
+};
+
+/* The map joins and leaves the feed roaming follows: no start or stop for either, and fixes keep reaching roaming. */
+void
+check_feed_map_joins_and_leaves() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    rig.running();
+    rig.nearA(0);
+    check(rig.roaming.state() == SiteRoaming::Following && rig.host.streamStarts == 1, "feed: roaming follows");
+    shared.feed.acquire(LocationFeed::mapLease());
+    rig.nearA(1000);
+    check(rig.host.streamStarts == 1 && rig.host.streamStops == 0 && rig.roaming.state() == SiteRoaming::Following,
+          "feed: the map joins roaming's feed");
+    shared.feed.release(LocationFeed::mapLease());
+    rig.nearA(1000);
+    check(rig.host.streamStops == 0 && rig.roaming.state() == SiteRoaming::Following,
+          "feed: the map leaving keeps roaming's feed");
+    rig.prefs.setRoamingEnabled(false);
+    check(rig.host.streamStops == 1 && !shared.feed.active(), "feed: roaming leaving last stops it");
+}
+
+/* A switch under way when the map takes the feed: the switch goes on untouched, and the map leaving again leaves
+ * roaming's feed running for the checks before the destination starts. */
+void
+check_feed_pending_switch_while_map_acquires() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    rig.qualifyB();
+    const qint64 id = rig.roamId();
+    check(rig.host.switchStops == 1 && rig.roaming.state() == SiteRoaming::Switching, "feed: the switch is under way");
+    shared.feed.acquire(LocationFeed::mapLease());
+    rig.tick(1000);
+    check(rig.host.streamStarts == 1 && rig.host.streamStops == 0 && rig.switches.size() == 1
+              && rig.roaming.transactionActive() && rig.roaming.state() == SiteRoaming::Switching,
+          "feed: the map's lease changes nothing for the switch");
+    shared.feed.release(LocationFeed::mapLease());
+    check(rig.host.streamStops == 0 && shared.feed.holds(LocationFeed::roamingLease()),
+          "feed: roaming keeps the feed through its switch");
+    rig.host.setPhase(dsd_qt::DecoderHost::Idle);
+    const QVariantMap plan = rig.roaming.startPlan(id);
+    check(plan.value("ok").toBool() && plan.value("uid").toString() == rig.uids[1],
+          "feed: the switch starts its destination as before");
+}
+
+/* Roaming arming while the map already holds the feed joins it and reads where it stands at once. */
+void
+check_feed_roaming_joins_the_map() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    shared.feed.acquire(LocationFeed::mapLease());
+    Q_EMIT rig.host.locationStreamUpdate({{"generation", 1}, {"state", "approximateOnly"}, {"hasFix", false}});
+    rig.running();
+    shared.settle();
+    check(rig.host.streamStarts == 1 && rig.roaming.reason() == SiteRoaming::ApproximateOnly,
+          "feed: roaming joins the map's feed and reads its state");
+    rig.prefs.setRoamingEnabled(false);
+    check(rig.host.streamStops == 0 && shared.feed.active(), "feed: roaming leaving keeps the map's feed");
+}
+
+/* The map's pass sees a foreground move first: roaming handles the move before the feed starts again, so the first
+ * fix of the new epoch counts and roaming's own later look neither forgets it nor starts the feed a second time. */
+void
+check_feed_map_sees_the_foreground_move_first() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    rig.running();
+    rig.nearB(0);
+    rig.nearB(10000);
+    shared.feed.acquire(LocationFeed::mapLease());
+    check(rig.roaming.state() == SiteRoaming::Candidate, "feed: a candidate before the move");
+    rig.host.epochValue = 1;
+    shared.feed.acquire(LocationFeed::mapLease());
+    check(rig.host.streamStarts == 2 && rig.roaming.reason() == SiteRoaming::NoFix,
+          "feed: one start for the epoch, the candidate gone first");
+    rig.nearA(1000);
+    check(rig.roaming.state() == SiteRoaming::Following, "feed: the new epoch's first fix counts");
+    rig.tick(500);
+    check(rig.roaming.state() == SiteRoaming::Following && rig.host.streamStarts == 2 && rig.host.streamStops == 0,
+          "feed: roaming's own look keeps that fix and starts nothing more");
+}
+
+/* The app goes to the background and back with roaming and the map on the feed: the feed's own return (Active) is the
+ * first look, roaming handles the move before the restart, and the order of today holds: one start for the epoch, the
+ * candidate gone, the new epoch's first fix counted and kept. */
+void
+check_feed_background_cycle() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    rig.running();
+    rig.nearB(0);
+    rig.nearB(10000);
+    shared.feed.acquire(LocationFeed::mapLease());
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+    check(shared.feed.record().isEmpty(), "feed: nothing from before the background reads as live");
+    rig.host.epochValue = 1;
+    Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+    check(rig.host.streamStarts == 2 && rig.roaming.reason() == SiteRoaming::NoFix,
+          "feed: back on screen, one start, roaming's candidate gone first");
+    rig.nearA(1000);
+    rig.tick(500);
+    check(rig.roaming.state() == SiteRoaming::Following && rig.host.streamStarts == 2 && rig.host.streamStops == 0,
+          "feed: the first fix after the return counts, and nothing starts twice");
+}
+
+/* A shared feed with no host refuses roaming's lease: roaming does not take itself for following one, and takes the
+ * lease on a later pass once the feed has a host. */
+void
+check_feed_refused_lease() {
+    SharedRig shared;
+    Rig& rig = shared.rig;
+    shared.feed.setHost(nullptr);
+    rig.running();
+    shared.settle();
+    check(rig.host.streamStarts == 0 && !shared.feed.active(), "feed: no lease without a host");
+    shared.feed.setHost(&rig.host);
+    rig.tick(1000);
+    check(rig.host.streamStarts == 1 && shared.feed.holds(LocationFeed::roamingLease()),
+          "feed: the next pass takes the lease");
+}
+
 } // namespace
 
 int
@@ -1950,7 +2091,7 @@ main(int argc, char** argv) {
     check_invalid_settings();
     check_call_wait();
 
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv); // the location feed follows the application state (#800)
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(QStringLiteral("site-roaming-%1").arg(QCoreApplication::applicationPid()));
     dsd_test_qt_isolate_paths();
@@ -1974,6 +2115,12 @@ main(int argc, char** argv) {
     check_executor_timer();
     check_executor_header_text();
     check_executor_locating();
+    check_feed_map_joins_and_leaves();
+    check_feed_pending_switch_while_map_acquires();
+    check_feed_roaming_joins_the_map();
+    check_feed_map_sees_the_foreground_move_first();
+    check_feed_background_cycle();
+    check_feed_refused_lease();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

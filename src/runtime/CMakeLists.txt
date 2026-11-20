@@ -47,6 +47,7 @@ target_sources(
         rtl_stream_metrics_hooks.c
         m17_udp_hooks.c
         curl_common.c
+        tile_fetch.c
         radioreference/rr_types.c
         radioreference/rr_soap.c
         radioreference/rr_client.c
