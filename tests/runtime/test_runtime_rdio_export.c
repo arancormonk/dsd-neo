@@ -1962,6 +1962,66 @@ test_sidecar_tag_of_unknown_kind_is_empty(void) {
     return rc;
 }
 
+// Issue #888 B6: the sidecar's emergency is the row's own flag (an NXDN VCALL with the emergency bit, say), never a
+// constant false.
+static int
+test_sidecar_emergency_from_the_row(void) {
+    static Event_History_I hist;
+    int rc = 0;
+    for (int emergency = 0; emergency <= 1; emergency++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        Event_History* item = &hist.Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->event_time = (time_t)1700001200;
+        item->target_id = 301U;
+        item->emergency = (uint8_t)emergency;
+        char body[4096];
+        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(emergency ? "emergency row" : "routine row", body,
+                              emergency ? "\"emergency\": true," : "\"emergency\": false,");
+    }
+    return rc;
+}
+
+// Issue #888 B8: short_name is the row's system string, else the protocol's word, so a row with no system string (an
+// X2-TDMA call) still names a system for an rdio-scanner v8 DirWatch, which resolves the system from short_name.
+static int
+test_sidecar_short_name_falls_back_to_the_protocol(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        const char* sysid;
+        const char* want;
+    } cases[] = {
+        {"X2-TDMA, no system string", DSD_SYNC_X2TDMA_VOICE_POS, "", "\"short_name\": \"X2-TDMA\","},
+        {"D-STAR, no system string", DSD_SYNC_DSTAR_VOICE_NEG, "", "\"short_name\": \"D-STAR\","},
+        {"P25 phase 2, no system string", DSD_SYNC_P25P2_POS, "", "\"short_name\": \"P25\","},
+        {"NXDN with a system string", DSD_SYNC_NXDN_NEG, "NXDN_RAN_9", "\"short_name\": \"NXDN_RAN_9\","},
+        {"no protocol", DSD_SYNC_DIGITAL, "", "\"short_name\": \"\","},
+    };
+
+    static Event_History_I hist;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        Event_History* item = &hist.Event_History_Items[0];
+        item->systype = (int8_t)cases[i].systype;
+        item->event_time = (time_t)1700001300;
+        item->target_id = 12U;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
+        char body[4096];
+        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, cases[i].want);
+    }
+    return rc;
+}
+
 static int
 test_api_shutdown_drains_queue(void) {
 #ifndef USE_CURL
@@ -3130,6 +3190,8 @@ main(void) {
     rc |= test_analog_tag_is_stable();
     rc |= test_analog_system_id();
     rc |= test_sidecar_tag_of_unknown_kind_is_empty();
+    rc |= test_sidecar_emergency_from_the_row();
+    rc |= test_sidecar_short_name_falls_back_to_the_protocol();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_journaled_upload_keeps_the_wav();

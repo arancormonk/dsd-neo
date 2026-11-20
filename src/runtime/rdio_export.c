@@ -745,6 +745,7 @@ typedef struct {
     uint32_t freq_hz; /* dsd_rdio_usable_freq_hz(): 0 when unknown or not storable */
     int system_id;
     int encrypted;
+    int emergency;
     const char* talkgroup_tag;
     const char* short_name;
     char analog_tag[64]; /* an analog call's frequency tag, when talkgroup_tag names it */
@@ -756,6 +757,46 @@ typedef struct {
 static uint32_t
 dsd_rdio_usable_freq_hz(int64_t freq_hz) {
     return (freq_hz >= 1000000 && freq_hz <= (int64_t)INT32_MAX) ? (uint32_t)freq_hz : 0U;
+}
+
+/* The protocol's word for a digital row's sync type (issue #888 B8, D3), "" for analog and any other sync type. P25's
+   two phases share one word. */
+static const char*
+dsd_rdio_protocol_word(int systype) {
+    if (DSD_SYNC_IS_P25(systype)) {
+        return "P25";
+    }
+    if (DSD_SYNC_IS_DMR(systype)) {
+        return "DMR";
+    }
+    if (DSD_SYNC_IS_NXDN(systype)) {
+        return "NXDN";
+    }
+    if (DSD_SYNC_IS_DSTAR(systype)) {
+        return "D-STAR";
+    }
+    if (DSD_SYNC_IS_YSF(systype)) {
+        return "YSF";
+    }
+    if (DSD_SYNC_IS_DPMR(systype)) {
+        return "dPMR";
+    }
+    if (DSD_SYNC_IS_M17(systype)) {
+        return "M17";
+    }
+    if (DSD_SYNC_IS_X2TDMA(systype)) {
+        return "X2-TDMA";
+    }
+    if (DSD_SYNC_IS_PROVOICE(systype)) {
+        return "ProVoice";
+    }
+    if (DSD_SYNC_IS_EDACS_ONLY(systype)) {
+        return "EDACS";
+    }
+    if (DSD_SYNC_IS_TETRA(systype)) {
+        return "TETRA";
+    }
+    return "";
 }
 
 /* The row a recording is exported from: the slot's staged row, or none. */
@@ -846,6 +887,7 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->freq_hz = 0;
     out->system_id = dsd_rdio_call_system_id(opts, event);
     out->encrypted = 0;
+    out->emergency = 0;
     out->talkgroup_tag = "";
     out->short_name = "";
     out->analog_tag[0] = '\0';
@@ -857,7 +899,10 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
     // an LCN or a dPMR colour code, not Hz.
     out->freq_hz = dsd_rdio_usable_freq_hz(event->freq_hz);
-    out->short_name = event->sysid_string;
+    // A row with no system string (an X2-TDMA call) is named by its protocol, so a v8 DirWatch, which resolves the
+    // system from short_name, still finds one.
+    out->short_name = event->sysid_string[0] != '\0' ? event->sysid_string : dsd_rdio_protocol_word(event->systype);
+    out->emergency = event->emergency ? 1 : 0;
     if (event->systype == DSD_SYNC_ANALOG) {
         dsd_rdio_analog_meta_fields(opts, event, out);
         return;
@@ -930,7 +975,7 @@ dsd_rdio_write_meta_json(FILE* fp, const dsd_opts* opts, const dsd_rdio_meta_fie
     DSD_FPRINTF(fp, "  \"short_name\": \"");
     dsd_rdio_json_write_escaped(fp, fields->short_name);
     DSD_FPRINTF(fp, "\",\n");
-    DSD_FPRINTF(fp, "  \"emergency\": false,\n");
+    DSD_FPRINTF(fp, "  \"emergency\": %s,\n", fields->emergency ? "true" : "false");
     DSD_FPRINTF(fp, "  \"encrypted\": %s\n", fields->encrypted ? "true" : "false");
     DSD_FPRINTF(fp, "}\n");
 }
