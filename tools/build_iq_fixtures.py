@@ -643,8 +643,9 @@ THEN_NOISE_CAPTURE_STARTED_UTC = "2026-07-30T00:00:58Z"
 #
 # The one off-air dPMR recording available to this project (the "dpmr" fixture) was
 # long thought to carry no recoverable CCH; it is received at inverted polarity, and
-# under -xd its headers, CCH and end frame pass their CRCs (issue #890,
-# DECODE_IQ_DPMR_OFF_AIR). This fixture is modulated from tests/protocol/dpmr/fixtures,
+# under -xd its headers and CCH pass their CRCs (issue #890, DECODE_IQ_DPMR_OFF_AIR).
+# Its end frame lies at about 29 s of the source recording, past the fixture's 10 s.
+# This fixture is modulated from tests/protocol/dpmr/fixtures,
 # the same vectors DPMR_REFERENCE_VECTORS decodes, so the tree also has a dPMR sample
 # that is correct by construction, in the default polarity: every CCH CRC-7 in it
 # passes.

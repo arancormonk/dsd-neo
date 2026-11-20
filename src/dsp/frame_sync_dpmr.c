@@ -323,6 +323,25 @@ dpmr_check_header(dsd_state* state, const dpmr_levels* levels, uint8_t inverted)
     return inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
 }
 
+/* The second END copy, read both ways: as one 72-bit run's second half (7.7, and the off-air recording) and from a
+ * fresh scrambler (11.6). Whichever passes and agrees with a passing first copy @p info0 is taken, so a reading that
+ * passes by chance does not turn the frame into two copies that disagree; else the first that passes. */
+static int
+dpmr_read_second_end(const uint8_t* wire, int ok0, const uint8_t* info0, uint8_t* info1) {
+    uint8_t run[DSD_DPMR_END_INFO_BITS];
+    uint8_t fresh[DSD_DPMR_END_INFO_BITS];
+    const int ok_run = frame_sync_dpmr_decode_end(wire, DPMR_END_WIRE_BITS, run);
+    const int ok_fresh = frame_sync_dpmr_decode_end(wire, 0, fresh);
+    /* The fresh reading is taken over the run's only when it agrees with the first copy, or the run's does not pass. */
+    const int fresh_agrees = ok0 && ok_fresh && memcmp(fresh, info0, sizeof fresh) == 0;
+    if (!ok_run && !ok_fresh) {
+        return 0;
+    }
+    const uint8_t* take = (fresh_agrees || !ok_run) ? fresh : run;
+    DSD_MEMCPY(info1, take, DSD_DPMR_END_INFO_BITS);
+    return 1;
+}
+
 static int
 dpmr_check_end(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
@@ -331,10 +350,7 @@ dpmr_check_end(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     uint8_t info1[DSD_DPMR_END_INFO_BITS];
     dpmr_read_back_bits(state, levels, inverted, DSD_DPMR_END_DIBITS, bits);
     const int ok0 = frame_sync_dpmr_decode_end(bits, 0, info0);
-    /* The second copy as one 72-bit run's second half (7.7, and the off-air recording), else from a fresh scrambler
-       (11.6). */
-    const int ok1 = frame_sync_dpmr_decode_end(bits + DPMR_END_WIRE_BITS, DPMR_END_WIRE_BITS, info1)
-                    || frame_sync_dpmr_decode_end(bits + DPMR_END_WIRE_BITS, 0, info1);
+    const int ok1 = dpmr_read_second_end(bits + DPMR_END_WIRE_BITS, ok0, info0, info1);
     const uint8_t copies = dpmr_pick_copy(ok0, info0, ok1, info1, DSD_DPMR_END_INFO_BITS, sync->checked_bits);
     if (copies == 0U) {
         return DSD_SYNC_NONE;

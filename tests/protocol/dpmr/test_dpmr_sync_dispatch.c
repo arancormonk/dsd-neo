@@ -585,6 +585,75 @@ test_dispatch_powersave_headers_open_one_call(void) {
     assert(g_close_calls == 3);
 }
 
+/* The powersave run with headers lost (FS1 is an exact 24-symbol word: one symbol error drops a header): each header
+   that is received is the call's, up to the frames the last one received said follow it (its WU, Table 5.71). Nine
+   headers sent, @p lost (a bitmask over 0..8) not received: one call, its capture closed once. */
+static void
+run_powersave_headers_with_losses(unsigned lost) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.mbe_out_f = stdout;
+    state.dpmr_color_code = -1;
+    g_close_calls = 0;
+    uint64_t epoch = 0U;
+    int received = 0;
+    for (int h = 0; h < 9; h++) {
+        if ((lost >> h) & 1U) {
+            continue;
+        }
+        state.symbol_clock = 5000U + (192U * (uint64_t)h);
+        plant_checked_header(&state, 0x0U, 0U, 0U);
+        put_bits(state.dpmr_sync.checked_bits, 61, 3, h < 8 ? 7U : 0U);
+        put_bits(state.dpmr_sync.checked_bits, 64, 8, h < 8 ? (uint32_t)(8 - h) : 0U);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        if (received++ == 0) {
+            epoch = call.epoch;
+        }
+        assert(call.epoch == epoch);
+    }
+    assert(g_close_calls == 1);
+}
+
+/* Issue #890: a lost header in the run does not split the call; the bound is the last received header's WU. After a
+   normal header (WU 0) only the next frame goes on with it, and after WU 1 only the next frame too: a header two frames
+   on is a new key-up. */
+static void
+test_dispatch_powersave_headers_with_lost_ones(void) {
+    run_powersave_headers_with_losses(1U << 3);               /* one lost */
+    run_powersave_headers_with_losses((1U << 3) | (1U << 4)); /* two in a row */
+    run_powersave_headers_with_losses((1U << 1) | (1U << 6)); /* two apart */
+    run_powersave_headers_with_losses(1U << 7);               /* the last powersave header (WU 1) lost */
+
+    static const struct {
+        uint32_t mi_type;
+        uint32_t wu;
+    } k_bounds[] = {{0U, 0U}, {7U, 1U}};
+
+    for (size_t b = 0; b < sizeof(k_bounds) / sizeof(k_bounds[0]); b++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        dsd_call_snapshot call;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.dpmr_color_code = -1;
+        state.symbol_clock = 9000U;
+        plant_checked_header(&state, 0x0U, 0U, 0U);
+        put_bits(state.dpmr_sync.checked_bits, 61, 3, k_bounds[b].mi_type);
+        put_bits(state.dpmr_sync.checked_bits, 64, 8, k_bounds[b].wu);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0);
+        const uint64_t first = call.epoch;
+        state.symbol_clock += 2U * 192U;
+        plant_checked_header(&state, 0x0U, 0U, 0U);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != first);
+    }
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -597,6 +666,7 @@ main(void) {
     test_dispatch_unchecked_end_keeps_the_call();
     test_dispatch_checked_header_opens_its_call();
     test_dispatch_powersave_headers_open_one_call();
+    test_dispatch_powersave_headers_with_lost_ones();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();

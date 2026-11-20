@@ -99,7 +99,8 @@ int dpmr_header_opens_call(const dpmr_header* header);
 
 /**
  * @brief Whether a checked header that opens a call is a repeat of the header that opened the open dPMR call, in the
- * same key-up: one message frame (DSD_DPMR_MESSAGE_FRAME_SYMBOLS) after the last such header on the same stream, with
+ * same key-up: k message frames (DSD_DPMR_MESSAGE_FRAME_SYMBOLS) after the last such header on the same stream, k from 1
+ * to the frames that header said follow it (its WU; 1 for a normal header), so a lost header does not split it, with
  * the same called and calling IDs, service and colour code. A radio sends its Communications_Start header several
  * times when it wakes powersaving receivers first (TS 102 658 5.5.19.1, Table 5.71: powersave headers, MI_TYPE 111,
  * WU counting down to the normal header, "the other fields may remain as the normal header"); MI_TYPE and MI_DET are

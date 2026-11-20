@@ -324,6 +324,7 @@ typedef struct {
     /* The dPMR decoder's own: where the last checked header that opened or went on with a call was accepted
        (src/protocol/dpmr/dpmr_header.c, dpmr_header_continues_call()), kind DSD_DPMR_SYNC_FRAME_HEADER when set. */
     dsd_dpmr_sync_mark call_header;
+    uint8_t call_header_wu; /* that header's WU: how many header frames it said follow it (0 for a normal header) */
 } dsd_dpmr_frame_sync;
 
 /* The NAC the P25 Phase 1 NIDs on the carrier being received established, and a NAC change held for corroboration

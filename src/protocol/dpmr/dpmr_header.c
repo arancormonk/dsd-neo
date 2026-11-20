@@ -216,9 +216,14 @@ dpmr_header_follows_call_header(const dsd_state* state) {
         || state->symbol_clock < last->clock) {
         return 0;
     }
-    /* Back to back: the next message frame, within the symbol a frame may slip. */
+    /* Back to back: k message frames on, within the symbol a frame may slip, k up to the frames the last header said
+       follow it (Table 5.71: a powersave header's WU), so a header lost in the run does not split the call; one, the
+       next frame, after a normal header. */
     const uint64_t since = state->symbol_clock - last->clock;
-    return since + 1U >= DSD_DPMR_MESSAGE_FRAME_SYMBOLS && since <= DSD_DPMR_MESSAGE_FRAME_SYMBOLS + 1U;
+    const uint64_t frames = (since + 1U) / DSD_DPMR_MESSAGE_FRAME_SYMBOLS;
+    const uint64_t most = state->dpmr_sync.call_header_wu != 0U ? state->dpmr_sync.call_header_wu : 1U;
+    const uint64_t at = frames * DSD_DPMR_MESSAGE_FRAME_SYMBOLS;
+    return frames >= 1U && frames <= most && since + 1U >= at && since <= at + 1U;
 }
 
 /* Whether the open dPMR call is the one @p header names: its called and calling IDs, service and colour code. */
@@ -245,7 +250,7 @@ dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header) {
 }
 
 static void
-dpmr_note_call_header(dsd_state* state) {
+dpmr_note_call_header(dsd_state* state, const dpmr_header* header) {
     dsd_dpmr_sync_mark* mark = &state->dpmr_sync.call_header;
     mark->clock = state->symbol_clock;
     mark->epoch = state->symbol_clock_epoch;
@@ -253,6 +258,9 @@ dpmr_note_call_header(dsd_state* state) {
     mark->carrier_seq = state->carrier_seq;
     mark->sps_hunt_idx = state->sps_hunt_idx;
     mark->kind = DSD_DPMR_SYNC_FRAME_HEADER;
+    mark->inverted = (uint8_t)(state->synctype == DSD_SYNC_DPMR_FS1_NEG);
+    /* How many header frames this one says follow it: a powersave header's WU (Table 5.71), none for a normal one. */
+    state->dpmr_sync.call_header_wu = header->mi_type == 7U ? (uint8_t)(header->mi_detail & 0xFU) : 0U;
 }
 
 void
@@ -271,7 +279,7 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header,
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     if (dpmr_header_opens_call(header)) {
         dpmr_publish_header_call(opts, state, header, continues);
-        dpmr_note_call_header(state);
+        dpmr_note_call_header(state, header);
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
     } else {

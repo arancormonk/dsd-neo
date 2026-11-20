@@ -9118,9 +9118,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   s noise_floor fixture under -fm). Each one reads a 372-dibit dPMR frame, about 155 ms, and stands the NXDN48 matcher
   down for it (`dsd_frame_sync_suppress_nxdn48_sync()`, #374); nothing is published, since the CCH CRC gate (#407) holds
   every call. A four-level read of FS2 (all twelve symbols outer, within two bit errors) would drop those, but is not
-  used: the closed-eye off-air `dpmr` fixture reads 5-8 bit errors on its FS2s, the same as noise (5-7), so no threshold
-  keeps its syncs (`DECODE_IQ_DPMR_MARGINAL`) and drops noise, and on the scan captures the shorter 2400/4 dwells it
-  leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does.
+  used. The off-air `dpmr` fixture's 5-8 bit errors per FS2 (the same as noise, 5-7), once the reason, were measured at
+  the wrong polarity: the recording is received inverted (`-xd`, issue #890). At `-xd` 57 of the 59 FS2s in its 10 s
+  read within one bit error and two read 5 and 7 (measured on the #890 research discriminator, not dsd-neo's slicer),
+  so that fixture no longer argues against the read. What stands is the scan cost: on the scan captures the shorter
+  2400/4 dwells it leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does. Not revisited here.
 - dPMR FS1 and FS3 (`frame_sync_try_dpmr()`, `src/dsp/frame_sync_dpmr.c`, issue #890). FS1 (24 symbols, its own
   window, readiness and settling check) marks a header candidate (`dsd_dpmr_frame_sync::pending`) under the
   configured polarity alone: FS4 is FS1's symbol-wise complement (TS 102 658 6.1.4 NOTE), so the other polarity's FS1
@@ -9136,12 +9138,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy through three
   Hamming(12,8) words and the CRC-7. The specification contradicts itself on the END scrambling: 7.7 scrambles "the
   total 72 bits" as one run, 11.6 re-initializes the scrambler for each copy. The first copy is the same either way;
-  the second is read as the run's bits 36 to 71 (what the off-air recording behind `tests/fixtures/iq/dpmr.iq` sends)
-  and, failing that, from a fresh scrambler, each CRC-checked. A copy passes when every word is correctable and its
-  CRC matches; one copy is enough, two that pass with different contents are no frame. Both CRCs run MSB first from a
-  zero register with no final inversion, which the spec does not say but the same recording (sigidwiki DPMR.zip,
-  `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI copies of its 9 headers pass the CRC-8 so and none
-  with a preset of all ones; its end frame's first copy and its CCH halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
+  the second is read both as the run's bits 36 to 71 (what the off-air recording behind `tests/fixtures/iq/dpmr.iq`
+  sends) and from a fresh scrambler, each CRC-checked, the reading that agrees with a passing first copy taken. A
+  copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with different
+  contents are no frame. Both CRCs run MSB first from a zero register with no final inversion, which the spec does not
+  say but the same recording (sigidwiki DPMR.zip, `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI
+  copies of its 9 headers pass the CRC-8 so and none with a preset of all ones; its end frame's first copy and its CCH
+  halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
   (lock and `lastsynctype`, no warm start), with its bits in `checked_*`; the stream must be the one the word was read
   on (clock epoch, input, carrier count, SPS profile, polarity) and an input interruption forgets the candidate
   (`frame_sync_dpmr_forget()`). On non-dPMR input the matcher's added cost is one 24-symbol compare per window while

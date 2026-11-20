@@ -635,6 +635,57 @@ test_powersave_headers_back_to_back(void) {
     free_state_buffers(&state);
 }
 
+/* An end frame sent the 11.6 way (each copy from a fresh scrambler) whose second copy took bit errors, one at most in
+   each Hamming word, that its fresh reading corrects but that also make it pass, by chance, read as the second half of
+   one 72-bit run, with other bits. The codes are linear, so whether that run reading passes depends on the error
+   pattern alone (here searched for), not on the END's contents. The reading that agrees with the first copy is the
+   frame's: the frame is not two copies that disagree. */
+static void
+test_end_second_copy_agreeing_reading_wins(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t end[DPMR_SPEC_END_BITS];
+    uint8_t wire[DPMR_SPEC_END_WIRE];
+    uint8_t hit[DPMR_SPEC_END_WIRE];
+    uint8_t out[DPMR_SPEC_END_BITS];
+    end_info(end);
+    dpmr_spec_encode_end(end, 0, wire);
+    int found = 0;
+    for (int e0 = 0; e0 <= 12 && !found; e0++) {
+        for (int e1 = 0; e1 <= 12 && !found; e1++) {
+            for (int e2 = 0; e2 <= 12 && !found; e2++) {
+                memcpy(hit, wire, sizeof hit);
+                const int err[3] = {e0, e1, e2};
+                for (int w = 0; w < 3; w++) {
+                    if (err[w] > 0) {
+                        hit[(w * 12) + err[w] - 1] ^= 1U;
+                    }
+                }
+                found = frame_sync_dpmr_decode_end(hit, DPMR_SPEC_END_WIRE, out) == 1
+                        && memcmp(out, end, sizeof out) != 0 && frame_sync_dpmr_decode_end(hit, 0, out) == 1
+                        && memcmp(out, end, sizeof out) == 0;
+            }
+        }
+    }
+    assert(found);
+    setup(&opts, &state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_fs2_frame(DPMR_FRAME_SYNC_2);
+    put_word(DPMR_FRAME_SYNC_3);
+    put_bits(wire, DPMR_SPEC_END_WIRE);
+    put_bits(hit, DPMR_SPEC_END_WIRE);
+    const int end_at = g_len;
+    put_filler(200);
+    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS2_POS);
+    read_fs2_body(&opts, &state);
+    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS3_POS);
+    assert(g_pos == end_at);
+    assert(state.dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
+    assert(checked_bits_equal(&state, end, DPMR_SPEC_END_BITS));
+    free_state_buffers(&state);
+}
+
 /* NXDN48's frame sync word as transmitted: the first positive reading of the matcher's. */
 static const char k_nxdn_fsw[] = "3131331131";
 
@@ -729,6 +780,7 @@ main(void) {
     test_wire_codecs();
     test_crc_conventions_off_air();
     test_powersave_headers_back_to_back();
+    test_end_second_copy_agreeing_reading_wins();
     test_header_both_polarities();
     test_header_copies();
     test_header_cut_by_an_interruption();
