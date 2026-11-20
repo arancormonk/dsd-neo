@@ -2268,15 +2268,16 @@ Every leg must exit 0, print the decode regex, report no sanitizer error, and le
 | `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `YSF` (the protocol alone), `freq` 0 and no `freqList`, system 48, `short_name` `YSF`, an empty `srcList` |
 | `audio_off` | `-i raw.wav` with no `--rdio-unknown-talkgroup` | no sidecar at all; the "not exported" line logged exactly once, and no "skipped" or "export failed" line |
 
-The canonical paths are pinned in unit tests through the real observation, render and close: `CORE_CALL_ALERT_HISTORY`
-(`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup as decoded, one above it
-and the broadcast address take the kHz number and the `M17 CAN 3 433.4750 MHz` label, a source above it lists no
-radio), and `CORE_WAV_JOURNAL` (`test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under
-the fallback once signalling proves the carrier, and the speech before it is not;
-`test_playback_unnumbered_call_export`: a played SDRTrunk call with no talkgroup, on a receiver tuned to 452.3125 MHz
-with colour code 3, is exported under `--rdio-unknown-talkgroup` at its first frame's second, labelled `DMR`, with
-`freq` 0 and no `freqList`, and is kept local without the option). The number and label rules themselves are in
-`RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
+The canonical paths are pinned in unit tests: `CORE_CALL_ALERT_HISTORY` through the real observation, render and commit
+rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup
+as decoded, one above it and the broadcast address take the kHz number and the `M17 CAN 3 433.4750 MHz` label, a source
+above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and export
+(`test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once signalling
+proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
+no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
+its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option). The
+number and label rules themselves are in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in
+`CORE_WAV_JOURNAL`'s `test_d7_*` cases.
 
 ### Digital voice chain checks (issue #653)
 

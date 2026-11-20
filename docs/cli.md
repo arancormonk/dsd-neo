@@ -703,8 +703,9 @@ not decode, so with `--rdio-mode` set dsd-neo gives such a call a number for the
   numbers.
 - M17 calls to the broadcast address, or to a callsign whose encoded address is above 4294967295 (32 bits). A
   callsign below that is the call's talkgroup, as before.
-- An NXDN call to group 0 (an unaddressed call, heard on its RAN alone), an EDACS system all-call, TETRA speech before
-  the call setup that names it, and a DMR, NXDN or P25 call whose talkgroup did not decode or was protected.
+- An NXDN call to group 0 (an unaddressed call, heard on its RAN alone), an EDACS system all-call, a TETRA call
+  admitted on its speech before any call setup names it, and a DMR, NXDN or P25 call whose talkgroup did not decode or
+  was protected.
 
 Which calls get a number:
 
@@ -737,7 +738,8 @@ What the sidecar holds:
 - `srcList` names the radio when its ID decoded and fits 32 bits; `short_name` is the call's system (as in the file
   name, `NXDN_RAN_9`), else the protocol (`X2-TDMA`); `emergency` and `encrypted` are the call's.
 - `freq` and `freqList` follow the analog rule: the frequency in Hz from 1 MHz up to 2147.483647 MHz, else `freq` 0
-  and no `freqList`.
+  and no `freqList`. A frequency below 1 MHz still names the talkgroup and the label, as for analog calls:
+  `DMR 0.5300 MHz`, talkgroup `530`.
 
 Which rdio-scanner system a call lands in:
 
@@ -769,10 +771,12 @@ Limits:
 - A radio or talkgroup ID above 2147483647 (an M17 callsign number in the upper half of the 32-bit range, or an ID
   from an SDRTrunk recording) is sent as decoded. rdio-scanner's default SQLite database stores it; its MySQL,
   MariaDB and PostgreSQL databases cannot.
-- `--rdio-mode both` on a drive without hard links copies each call's WAV and JSON when the recording closes, which
-  takes a moment on the decoder for a long recording. A copy that cannot be made is not uploaded: the WAV and JSON
-  are still published for the DirWatch, and an error is logged. On Windows, a DirWatch that deletes a call's files
-  can fail while the API upload is still reading its hard link, as before.
+- `--rdio-mode both` on a drive without hard links copies each call's WAV (the JSON is copied on every drive) when the
+  recording closes, which takes a moment on the decoder for a long recording. So does the first export's check for
+  copies an earlier run left in that folder. At a call's commit both run under the lock that guards the call state,
+  so the P25 watchdog thread, which takes that lock too, waits for them as well. A copy that cannot be made is not
+  uploaded: the WAV and JSON are still published for the DirWatch, and an error is logged. On Windows, a DirWatch that
+  deletes a call's files can fail while the API upload is still reading its hard link, as before.
 
 ## IQ Capture And Replay
 
