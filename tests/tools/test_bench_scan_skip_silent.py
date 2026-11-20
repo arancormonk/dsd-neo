@@ -81,6 +81,15 @@ class SilentModes(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no silent", message)
 
+    def test_rescoring_a_saved_trunk_run_is_not_refused(self):
+        # A saved run is scored with its own map: the check of today's rotation is for a run about to start.
+        for extra in (("--rescore",), ("--analyze", "logcat.txt")):
+            with self.subTest(extra=extra):
+                args, message = parse(
+                    *BASE_ARGS, "--scan", "trunk", "--silent", "1", "--silent-modes", "dpmr,nxdn48", *extra
+                )
+                self.assertIsNone(message)
+
     def test_rescoring_takes_the_modes_the_run_used(self):
         # A saved run is scored with the modes its typed map gave each frequency, whatever today's rotation gives.
         channels = bench.scene_layout(3)

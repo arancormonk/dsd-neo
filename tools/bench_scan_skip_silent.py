@@ -902,7 +902,9 @@ def parse_args():
             "--scan untyped runs every row under -ft (DMR and P25 only) from a map with no mode column: "
             "--silent-modes applies to --scan typed and --scan trunk"
         )
-    if args.scan == "trunk" and all(
+    # Only a run about to start: a saved one (--rescore, --analyze) is scored with the map it ran (apply_saved_modes()).
+    starting = not (args.rescore or args.analyze)
+    if starting and args.scan == "trunk" and all(
         channel_mode(c, args.silent_modes) == "dpmr" for c in scene_layout(args.silent) if c.kind == "silent"
     ):
         parser.error(
