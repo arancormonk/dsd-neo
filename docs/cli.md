@@ -454,7 +454,9 @@ Windows console runs:
   that call (DMR embedded GPS, P25 L3Harris or Motorola link control, M17, D-STAR); a separate data report (LRRP, LOCN,
   LIP, UDT NMEA, ASCII NMEA, NXDN GPS, TETRA LIP) gets its own data line with its `GPS:` line, never the call of the
   radio talking at the time, and a DMR USBD LIP reply is an anonymous `USBD LIP Poll Response; SRC(Hash): NNN;` line
-  (the hash is not a radio ID). A D-STAR position or text message joins a call only when a header of the same
+  (the hash is not a radio ID). A D-STAR call ends on the end pattern that closes its transmission, not only when its
+  signal is lost, and the header a radio repeats in slow data is read whether or not code squelch data comes before it.
+  A D-STAR position or text message joins a call only when a header of the same
   transmission whose check passed named the caller (a callsign suffix alone names no one, a header marked as data
   names no one and takes back what an earlier header named), a position only when its own APRS source is that caller
   too, and a text message only when all of it, its first block included, was heard after the transmission proved

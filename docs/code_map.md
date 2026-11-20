@@ -1612,7 +1612,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   carry, or one a dropped P25p1 candidate's carry brought (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote
   its word's dibits there and the NID read its NID's; a no-sync exit's carry brings none, since the no-carrier reset
   after the exit clears them), counted no further back than the buffers hold dibits written since their last clear or
-  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
+  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. A frame
+  decoder that read into the hunt's symbols hands them back the same way (`dsd_frame_sync_hand_back_symbols()`, no
+  pass position, `own_symbols` 0): D-STAR reads the start of each resynchronization word to tell it from the end
+  pattern, and the hunt matches the word where it ends. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
   at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
   Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
   still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
@@ -1905,8 +1908,9 @@ suite runs under this compiler.
   attached handle): DMR data and finalize (MS data only when trunking does not withhold it), dPMR FS1/3/4, NXDN
   non-voice, X2-TDMA data, P25 Phase 1 header, terminators and control (both slots), the P25 state machine and Phase 2
   XCCH per slot (naming P25 themselves, since the watchdog runs outside any dispatch), EDACS after a control frame
-  checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header; the engine closes
-  both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary, trunk-scan switch).
+  checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header or its end pattern;
+  the engine closes both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary,
+  trunk-scan switch).
   `dsd_mbe_out_enabled()` (folder set or handle attached) gates every capture path before any record gate runs.
 - Invariant (voice crypto ownership, issue #656; `<dsd-neo/core/vocoder.h>`): every caller of `processMbeFrame()` /
   `processMbeFrameSoft()` passes the `dsd_voice_protocol` that owns the frame. The codec path and the output stage still
@@ -13841,9 +13845,25 @@ Private per-protocol modules worth knowing about:
   `mbe_process_provoice()` hands the decode's `mbe_process_result` to `mbe_processImbe4400Dataf()` unchanged: its
   `MBE_PROCESS_FLAG_PROVOICE` is what gives a muted frame ProVoice comfort noise rather than the P25 level, and
   `CORE_MBE_TRANSFORM_CONTEXT` pins the live path to mbelib's own ProVoice frame API through repeats into muting.
-- `src/protocol/dstar/dstar.c` — `processDSTAR()` reads one superframe: 21 AMBE 3600x2400 voice frames and the slow
-  data between them. `processDSTAR_HD()` decodes the RF header and then calls it without changing `state->synctype`,
-  so the voice frames behind a header reach the vocoder as `DSD_SYNC_DSTAR_HD_*`. `processMbeFrameInternal()` sends
+- `src/protocol/dstar/dstar.c` — `processDSTAR()` reads one superframe behind the resynchronization word the hunt
+  matched: voice frames 1-20, each with its data frame (the slow data), then voice frame 0 of the next superframe.
+  `processDSTAR_HD()` decodes the RF header, then reads voice frame 0 and the word in its data frame (JARL STD 6.0
+  4.1.2 (c)), then the same superframe, so the first superframe's slow data is aligned (a header rebroadcast in it is
+  read whole) and no 20 ms is dropped (issue #890, B11); the superframe behind a header counts as weak evidence only
+  when that word was there. Neither changes `state->synctype`, so the voice frames behind a header reach the vocoder as
+  `DSD_SYNC_DSTAR_HD_*`. The end pattern (4.1.2 (g)-(h), `0xAAAAAAAA135E`) is matched exactly on the 48 bits ending on
+  any step of the frames' 24-symbol grid (JARL, and the capture behind `DECODE_IQ_DSTAR`, start it on a data frame,
+  MMDVM on a voice frame, MMDVMHost's end frame ends it with a data frame), from voice frame 0 behind a header on: it
+  ends the D-STAR call
+  (`DSD_CALL_END_TERMINATOR`), closes the capture, begins a new transmission (`dstar_tx_begin()`) and reads nothing
+  after it; no CRC covers it, so it is no evidence. The data frame after a superframe's last voice frame, which the hunt
+  matches the next word in, is read one symbol at a time while an end can still be there (it or the 24 symbols after
+  it) and the symbols read go back to the hunt (`dsd_frame_sync_hand_back_symbols()`): a word after its 12th symbol, so
+  the hunt matches it where it ends, as before (`DSTAR_PROCESS`, `FRAME_SYNC_HISTORY_CARRY`). The header's soft costs
+  follow the slicer's polarity (`gmsk_soft_symbol_to_viterbi_cost()`: a +header reads a high symbol as 0), so a
+  +header decodes as a -header does; before, every +header failed its CRC (issue #890, B18; `DSTAR_HEADER_POLARITY`).
+  `dstar_slow_data.c` reads a header rebroadcast from block 0, or from block 1 behind a code squelch block (type 0xC,
+  JARL 6.4-6.5; B17). `processMbeFrameInternal()` sends
   every `DSD_SYNC_IS_DSTAR()` synctype to `mbe_process_dstar()`; before issue #599 only the voice synctypes went
   there, and a header's superframe was synthesized as DMR AMBE 3600x2450, whose model then carried into the next
   superframe. The two codecs share the ECC, so only the audio shows the difference: `CORE_MBE_TRANSFORM_CONTEXT`

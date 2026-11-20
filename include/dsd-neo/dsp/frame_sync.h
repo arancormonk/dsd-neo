@@ -345,6 +345,17 @@ int dsd_frame_sync_active_profile_levels(const dsd_state* state);
 int getFrameSync(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief A frame decoder read past its frame into symbols that are the hunt's, and hands the last @p symbols of them
+ * back (at most DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS): the next getFrameSync() call starts its windows from them, as
+ * from a history a no-sync exit carries (dsd_frame_sync_history_carry), so a sync word whose first symbols the decoder
+ * read is matched where it ends. Dropped like any carry when something comes between (a read, a retune, a carrier
+ * boundary, another profile or modulation). The rolling dibit buffers do not count as holding them (own_symbols 0):
+ * DMR and X2-TDMA never decode a burst back from them. D-STAR reads the start of each resynchronization word this way,
+ * to tell it from the end pattern (src/protocol/dstar/dstar.c). Decoder thread.
+ */
+void dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols);
+
+/**
  * @brief Emit diagnostic information about detected frame sync.
  *
  * @param frametype Human-friendly frame type string.

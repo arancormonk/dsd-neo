@@ -799,6 +799,40 @@ test_flush_at_first_read_restarts_the_carried_pass(void) {
     }
 }
 
+/* Issue #890: D-STAR reads the first symbols of the data frame after a superframe's last voice frame, to tell the next
+   resynchronization word from the end pattern, and hands them back (dsd_frame_sync_hand_back_symbols()): the hunt
+   matches the word where it ends, as when it read the word itself. Without them it starts after the word and misses
+   it. The decoder's slicer wrote no DMR payload for them, so none counts as the rolling buffers'. */
+static void
+test_dstar_word_handed_back_is_matched_where_it_ends(void) {
+    enum { DSTAR_WORD_END = 300, DSTAR_READ_OF_WORD = 12 };
+
+    for (int handed = 0; handed <= 1; handed++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        init_sign_session(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 1);
+        opts.frame_dstar = 1;
+        sign_stream_put_word(DSTAR_SYNC, 24, DSTAR_WORD_END);
+        while (g_pos < DSTAR_WORD_END - 24 + DSTAR_READ_OF_WORD) {
+            (void)getSymbol(&opts, &state, 1);
+        }
+        if (handed) {
+            dsd_frame_sync_hand_back_symbols(&state, DSTAR_READ_OF_WORD);
+            assert(state.frame_sync_carry.valid == 1);
+            assert(state.frame_sync_carry.own_symbols == 0);
+        }
+        const int sync = getFrameSync(&opts, &state);
+        if (handed) {
+            assert(sync == DSD_SYNC_DSTAR_VOICE_POS);
+            assert(g_pos == DSTAR_WORD_END);
+        } else {
+            assert(sync != DSD_SYNC_DSTAR_VOICE_POS);
+        }
+        dsd_frame_sync_hooks_set(NULL);
+        free_state_buffers(&state);
+    }
+}
+
 int
 main(void) {
     test_burst_across_the_exit_locks();
@@ -826,6 +860,7 @@ main(void) {
     test_x2tdma_sync_across_the_exit_is_not_matched();
     test_x2tdma_sync_read_whole_in_the_call_is_matched();
     test_x2tdma_voice_sync_notes_what_it_cannot_read_back();
+    test_dstar_word_handed_back_is_matched_where_it_ends();
     printf("FRAME_SYNC_HISTORY_CARRY: OK\n");
     return 0;
 }

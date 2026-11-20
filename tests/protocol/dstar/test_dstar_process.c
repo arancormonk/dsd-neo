@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -18,11 +19,13 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -34,12 +37,30 @@ enum {
     DSTAR_FRAME_DIBITS = DSTAR_VOICE_DIBITS_PER_FRAME + DSTAR_SLOW_DATA_DIBITS_PER_FRAME,
     DSTAR_EXPECTED_VOICE_DIBITS = DSTAR_VOICE_FRAMES * DSTAR_VOICE_DIBITS_PER_FRAME,
     DSTAR_EXPECTED_SLOW_DIBITS = DSTAR_SLOW_DATA_FRAMES * DSTAR_SLOW_DATA_DIBITS_PER_FRAME,
+    /* The superframe's symbols up to the data frame after its last voice frame (the next resynchronization word). */
+    DSTAR_SUPERFRAME_DIBITS = DSTAR_EXPECTED_VOICE_DIBITS + DSTAR_EXPECTED_SLOW_DIBITS,
+    /* What an RF header takes before voice frame 0. */
+    DSTAR_HEADER_DIBITS = 660,
+    /* Behind an RF header: voice frame 0, then the word, then the superframe. */
+    DSTAR_HEADER_VOICE_FRAMES = DSTAR_VOICE_FRAMES + 1,
+    /* The default stream's bit after a superframe's last voice frame is 0 (dibit pos & 3 on an even position): neither
+       place an end pattern could take there starts with it, so the decoder reads that one symbol and hands it back to
+       the hunt. */
+    DSTAR_DEFAULT_RESYNC_PROBE = 1,
+    STREAM_SCRIPT_MAX = 8192,
 };
+
+/* JARL STD 6.0 section 4.1.2: the resynchronization word, and the end pattern's two 24-bit halves (0xAAAAAAAA135E). */
+#define RESYNC_WORD   0xAAB468U
+#define END_FIRST_24  0xAAAAAAU
+#define END_SECOND_24 0xAA135EU
 
 /* Both readers share one symbol stream, so the position of each read shows its order. A read at position `pos`
  * returns dibit `pos & 3`, and the soft reader also hands out the symbol (pos + 1) / 4, from which the reliability
  * stub below recovers `pos` and reports expected_reliability(pos). */
 static int stream_pos;
+/* What the stream holds at a position, when a test scripted it (a bit, 0 or 1); -1: the default, dibit pos & 3. */
+static int8_t stream_script[STREAM_SCRIPT_MAX];
 static int dibit_calls;
 static int soft_symbol_calls;
 static int mbe_frame_calls;
@@ -54,7 +75,7 @@ static int header_decode_soft_calls;
 /* What the stubbed header CRC reports; processDSTAR_HD() must hand it straight back. */
 static int header_decode_soft_result = 1;
 static uint8_t captured_slow_data[DSTAR_EXPECTED_SLOW_DIBITS];
-static dsd_vocoder_soft_bit captured_ambe_frames[DSTAR_VOICE_FRAMES][4][24];
+static dsd_vocoder_soft_bit captured_ambe_frames[DSTAR_HEADER_VOICE_FRAMES][4][24];
 static float captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS];
 /* The stream position whose read adopts a retune its capture recorded, where the carrier boundary moves the carrier
    count (dsd_engine_carrier_boundary(), issue #575); -1 for none. */
@@ -62,6 +83,47 @@ static int boundary_at = -1;
 /* The stream position whose read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the
    interruption there and stands erasures in for that symbol and every one after it; -1 for none. */
 static int interrupt_at = -1;
+/* What the decoder handed back to the hunt (dsd_frame_sync_hand_back_symbols()), and where the stream then stood. */
+static int hand_back_calls;
+static int handed_back;
+static int hand_back_pos;
+/* The calls the end pattern ended (dsd_call_state_end_ex()), and the call slot 0 holds (dsd_call_state_get()). */
+static int call_end_calls;
+static int call_end_reason = -1;
+static int call_present = 1;
+static int call_protocol = DSD_SYNC_DSTAR_VOICE_POS;
+
+static int
+stream_value(int pos) {
+    if (pos >= 0 && pos < STREAM_SCRIPT_MAX && stream_script[pos] >= 0) {
+        return stream_script[pos];
+    }
+    return pos & 3;
+}
+
+/* @p count bits of @p bits, most significant first, from stream position @p at. */
+static void
+script_bits(int at, uint32_t bits, int count) {
+    for (int i = 0; i < count; i++) {
+        assert(at + i >= 0 && at + i < STREAM_SCRIPT_MAX);
+        stream_script[at + i] = (int8_t)((bits >> (unsigned)(count - 1 - i)) & 1U);
+    }
+}
+
+/* The 48-bit end pattern from @p at, with the bit @p flip of it (0-47) inverted, or none for -1. */
+static void
+script_end_pattern(int at, int flip) {
+    script_bits(at, END_FIRST_24, 24);
+    script_bits(at + 24, END_SECOND_24, 24);
+    if (flip >= 0) {
+        stream_script[at + flip] = (int8_t)(stream_script[at + flip] ^ 1);
+    }
+}
+
+static int
+float_near(float a, float b) {
+    return fabsf(a - b) < 1e-4F;
+}
 
 static void
 note_read(dsd_state* state) {
@@ -94,6 +156,14 @@ reset_counters(void) {
     header_decode_soft_calls = 0;
     boundary_at = -1;
     interrupt_at = -1;
+    DSD_MEMSET(stream_script, 0xFF, sizeof(stream_script));
+    hand_back_calls = 0;
+    handed_back = 0;
+    hand_back_pos = -1;
+    call_end_calls = 0;
+    call_end_reason = -1;
+    call_present = 1;
+    call_protocol = DSD_SYNC_DSTAR_VOICE_POS;
     DSD_MEMSET(captured_slow_data, 0, sizeof(captured_slow_data));
     DSD_MEMSET(captured_ambe_frames, 0, sizeof(captured_ambe_frames));
     DSD_MEMSET(captured_soft_symbols, 0, sizeof(captured_soft_symbols));
@@ -105,7 +175,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     (void)opts;
     (void)out_analog_signal;
     note_read(state);
-    int value = stream_pos & 3;
+    int value = stream_value(stream_pos);
     stream_pos++;
     dibit_calls++;
     return value;
@@ -117,7 +187,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
     note_read(state);
     assert(out_soft_symbol != NULL);
     *out_soft_symbol = (float)(stream_pos + 1) * 0.25F;
-    int value = stream_pos & 3;
+    int value = stream_value(stream_pos);
     stream_pos++;
     soft_symbol_calls++;
     return value;
@@ -141,7 +211,7 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protoco
     assert(imbe_fr == NULL);
     assert(ambe_fr != NULL);
     assert(imbe7100_fr == NULL);
-    assert(mbe_frame_calls < DSTAR_VOICE_FRAMES);
+    assert(mbe_frame_calls < DSTAR_HEADER_VOICE_FRAMES);
     DSD_MEMCPY(captured_ambe_frames[mbe_frame_calls], ambe_fr, sizeof(captured_ambe_frames[0]));
     mbe_frame_calls++;
 }
@@ -205,6 +275,34 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     watchdog_current_calls++;
 }
 
+void
+dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
+    assert(state != NULL);
+    hand_back_calls++;
+    handed_back = symbols;
+    hand_back_pos = stream_pos;
+}
+
+int
+dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out) {
+    assert(state != NULL);
+    assert(slot == 0U);
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->protocol = call_protocol;
+    out->phase = DSD_CALL_PHASE_ACTIVE;
+    return call_present;
+}
+
+int
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
+    assert(state != NULL);
+    assert(slot == 0U);
+    (void)observed_m;
+    call_end_calls++;
+    call_end_reason = (int)reason;
+    return 1;
+}
+
 int
 dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
     (void)state;
@@ -214,31 +312,39 @@ dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_D
     return header_decode_soft_result;
 }
 
-/* A superframe read whole: @p voice_frames of its voice frames reached the vocoder and the speaker (all of a confirmed
- * transmission's, none of another), every symbol was read and the slow data decoded either way. */
+/* A superframe read whole (@p header: behind an RF header, so voice frame 0 and the resynchronization word first):
+ * @p voice_frames of its voice frames reached the vocoder and the speaker (all of a confirmed transmission's, none of
+ * another), every symbol was read and the slow data decoded either way, and the start of the next word went back to
+ * the hunt. */
 static void
-assert_voice_loop_counts(int header_symbols, int expected_ui_calls, int voice_frames) {
-    assert(soft_symbol_calls == header_symbols + DSTAR_EXPECTED_VOICE_DIBITS);
-    assert(dibit_calls == DSTAR_EXPECTED_SLOW_DIBITS);
+assert_voice_loop_counts(int header, int expected_ui_calls, int voice_frames) {
+    const int frames = header ? DSTAR_HEADER_VOICE_FRAMES : DSTAR_VOICE_FRAMES;
+    assert(soft_symbol_calls == (header ? DSTAR_HEADER_DIBITS : 0) + (frames * DSTAR_VOICE_DIBITS_PER_FRAME));
+    assert(dibit_calls
+           == (header ? DSTAR_SLOW_DATA_DIBITS_PER_FRAME : 0) + DSTAR_EXPECTED_SLOW_DIBITS
+                  + DSTAR_DEFAULT_RESYNC_PROBE);
     assert(mbe_frame_calls == voice_frames);
     assert(voice_play_calls == voice_frames);
     assert(slow_data_calls == 1);
     assert(ui_calls == expected_ui_calls);
-    assert(watchdog_history_calls == DSTAR_VOICE_FRAMES);
-    assert(watchdog_current_calls == DSTAR_VOICE_FRAMES);
+    assert(watchdog_history_calls == frames);
+    assert(watchdog_current_calls == frames);
+    assert(hand_back_calls == 1);
+    assert(handed_back == DSTAR_DEFAULT_RESYNC_PROBE);
+    assert(call_end_calls == 0);
 }
 
 /* Every voice frame's 72 symbols land on the interleave schedule, each cell with its symbol's dibit folded to one bit
  * (dibits 2 and 3 exercise the fold) and the reliability reported for that symbol. The 24 cells the schedule never
  * reaches stay {0, 0}. `start` is the stream position of the first voice symbol: 0, or the header's length. */
 static void
-assert_ambe_frames_follow_interleave(int start) {
-    for (int frame = 0; frame < DSTAR_VOICE_FRAMES; frame++) {
+assert_ambe_frames_follow_interleave(int start, int frames) {
+    for (int frame = 0; frame < frames; frame++) {
         dsd_vocoder_soft_bit expected[4][24];
         DSD_MEMSET(expected, 0, sizeof(expected));
         for (int i = 0; i < DSTAR_VOICE_DIBITS_PER_FRAME; i++) {
             const int pos = start + (frame * DSTAR_FRAME_DIBITS) + i;
-            expected[dstar_interleave_w[i]][dstar_interleave_x[i]].bit = (uint8_t)(pos & 1);
+            expected[dstar_interleave_w[i]][dstar_interleave_x[i]].bit = (uint8_t)(stream_value(pos) & 1);
             expected[dstar_interleave_w[i]][dstar_interleave_x[i]].reliability = expected_reliability(pos);
         }
         for (int row = 0; row < 4; row++) {
@@ -256,7 +362,7 @@ assert_slow_data_follows_each_voice_frame(int start) {
     for (int frame = 0; frame < DSTAR_SLOW_DATA_FRAMES; frame++) {
         for (int i = 0; i < DSTAR_SLOW_DATA_DIBITS_PER_FRAME; i++) {
             const int pos = start + (frame * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME + i;
-            assert(captured_slow_data[(frame * DSTAR_SLOW_DATA_DIBITS_PER_FRAME) + i] == (uint8_t)(pos & 3));
+            assert(captured_slow_data[(frame * DSTAR_SLOW_DATA_DIBITS_PER_FRAME) + i] == (uint8_t)stream_value(pos));
         }
     }
 }
@@ -279,12 +385,13 @@ test_voice_process_without_telemetry(void) {
     assert_voice_loop_counts(0, 0, 0);
     assert(header_decode_soft_calls == 0);
     assert_slow_data_follows_each_voice_frame(0);
+    assert(hand_back_pos == DSTAR_SUPERFRAME_DIBITS + DSTAR_DEFAULT_RESYNC_PROBE);
 
     /* The next superframe confirms the transmission as it starts, and plays. */
     reset_counters();
     assert(processDSTAR(&opts, &state) == 1);
     assert_voice_loop_counts(0, 0, DSTAR_VOICE_FRAMES);
-    assert_ambe_frames_follow_interleave(0);
+    assert_ambe_frames_follow_interleave(0, DSTAR_VOICE_FRAMES);
 }
 
 static void
@@ -319,11 +426,14 @@ test_header_process_captures_header_then_voice(void) {
     assert(processDSTAR_HD(&opts, &state) == 1);
 
     assert(header_decode_soft_calls == 1);
-    assert(captured_soft_symbols[0] == 0.25F);
-    assert(captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS - 1] == 165.0F);
-    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0, DSTAR_VOICE_FRAMES);
-    assert_ambe_frames_follow_interleave(DSD_DSTAR_HEADER_CODED_BITS);
-    assert_slow_data_follows_each_voice_frame(DSD_DSTAR_HEADER_CODED_BITS);
+    assert(float_near(captured_soft_symbols[0], 0.25F));
+    assert(float_near(captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS - 1], 165.0F));
+    /* Voice frame 0 and the 21 behind its word: no 20 ms lost. */
+    assert_voice_loop_counts(1, 0, DSTAR_HEADER_VOICE_FRAMES);
+    assert_ambe_frames_follow_interleave(DSTAR_HEADER_DIBITS, DSTAR_HEADER_VOICE_FRAMES);
+    /* The slow data starts behind the word, in voice frame 1's data frame. */
+    assert_slow_data_follows_each_voice_frame(DSTAR_HEADER_DIBITS + DSTAR_FRAME_DIBITS);
+    assert(hand_back_pos == DSTAR_HEADER_DIBITS + DSTAR_FRAME_DIBITS + DSTAR_SUPERFRAME_DIBITS + 1);
 }
 
 /* #391: the header CRC is the only verdict the D-STAR data path has, and processDSTAR_HD()
@@ -345,7 +455,7 @@ test_header_process_reports_the_header_crc_verdict(void) {
     assert(header_decode_soft_calls == 1);
     /* The voice frame is consumed regardless: that is the point of reporting the failure. Nothing confirmed it, so
      * none of it plays. */
-    assert_voice_loop_counts(DSD_DSTAR_HEADER_CODED_BITS, 0, 0);
+    assert_voice_loop_counts(1, 0, 0);
     header_decode_soft_result = 1;
 }
 
@@ -405,26 +515,32 @@ test_passing_header_confirms_the_voice_frame_behind_it(void) {
     assert(DSD_SYNC_IS_DSTAR(capture_close_synctype));
 }
 
-/* A failed header leaves the transmission unproved: the superframe it consumed anyway is
- * weak evidence only, so it reports unconfirmed and the header's own verdict stands. */
+/* A failed header leaves the transmission unproved: the superframe it consumed anyway is weak evidence only, and only
+ * when the resynchronization word in voice frame 0's data frame was there (the header's own sync proves the header was
+ * seen, not the word), so it reports unconfirmed and the header's own verdict stands. */
 static void
 test_failed_header_leaves_the_transmission_pending(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.floating_point = 1;
-    opts.pulse_digi_out_channels = 1;
-    reset_counters();
+    for (int word = 0; word <= 1; word++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        if (word) {
+            script_bits(DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME, RESYNC_WORD, 24);
+        }
 
-    capture_close_calls = 0;
-    header_decode_soft_result = 0;
-    assert(processDSTAR_HD(&opts, &state) == 0);
-    assert(state.dstar_confirmed == 0);
-    assert(state.dstar_confirm_weak_streak == 1);
-    /* A header that fails its CRC bounds nothing: the capture goes on. */
-    assert(capture_close_calls == 0);
-    header_decode_soft_result = 1;
+        capture_close_calls = 0;
+        header_decode_soft_result = 0;
+        assert(processDSTAR_HD(&opts, &state) == 0);
+        assert(state.dstar_confirmed == 0);
+        assert(state.dstar_confirm_weak_streak == (uint8_t)word);
+        /* A header that fails its CRC bounds nothing: the capture goes on. */
+        assert(capture_close_calls == 0);
+        header_decode_soft_result = 1;
+    }
 }
 
 /* Issue #575: the carrier boundary moved the carrier count while the superframe was read (a replay read adopting a
@@ -591,6 +707,224 @@ test_every_header_forgets_a_half_collected_dprs_record(void) {
     header_decode_soft_result = 1;
 }
 
+/* Issue #890 (B11): behind an RF header the stream is voice frame 0 and then the resynchronization word in its data
+ * frame (JARL STD 6.0 section 4.1.2 (c)). The header path reads both, so the superframe behind them starts at voice
+ * frame 1 with every data frame where it belongs: the first 24 slow-data bits are voice frame 1's data frame, not the
+ * word, and a header rebroadcast in the first superframe is read whole (DSTAR_HEADER_UTILS decodes it from these
+ * bits). The 20th data frame and the voice frame after it, which the read used to leave to the hunt, are read too. */
+static void
+test_header_entry_reads_voice_zero_and_the_word_first(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+    const int word_at = DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME;
+    script_bits(word_at, RESYNC_WORD, 24);
+    header_decode_soft_result = 0;
+
+    assert(processDSTAR_HD(&opts, &state) == 0);
+
+    /* The word was there: the superframe behind it is the weak evidence it always was. */
+    assert(state.dstar_confirm_weak_streak == 1);
+    assert_voice_loop_counts(1, 0, 0);
+    assert_slow_data_follows_each_voice_frame(word_at + DSTAR_SLOW_DATA_DIBITS_PER_FRAME);
+    for (int i = 0; i < DSTAR_SLOW_DATA_DIBITS_PER_FRAME; i++) {
+        /* None of the word reached the slow data. */
+        assert(captured_slow_data[i] == (uint8_t)stream_value(word_at + DSTAR_FRAME_DIBITS + i));
+    }
+    header_decode_soft_result = 1;
+}
+
+/* The end of a transmission as the decoder saw it: one call end, with the terminator's reason, its capture closed, a
+ * new transmission begun, nothing read past @p pattern_end, nothing handed to the hunt. */
+static void
+assert_ended_at(const dsd_state* state, int pattern_end, uint32_t tx_before) {
+    assert(stream_pos == pattern_end);
+    assert(call_end_calls == 1);
+    assert(call_end_reason == (int)DSD_CALL_END_TERMINATOR);
+    assert(capture_close_calls >= 1);
+    assert(state->dstar_tx_seq == tx_before + 1U);
+    assert(hand_back_calls == 0);
+}
+
+/* Issue #890 (B11): the end pattern (JARL STD 6.0 section 4.1.2 (g)-(h), 0xAAAAAAAA135E) ends the call as a terminator,
+ * on the 48 bits ending on any step of the frames' 24-symbol grid: starting on a data frame (JARL's placement, the
+ * DECODE_IQ_DSTAR capture's), on a voice frame (MMDVM's), 24 symbols into one, or ending with a data frame (MMDVMHost's end
+ * frame). Nothing after it is read, so the next transmission's header is the hunt's. No CRC covers it: it is no
+ * evidence, so an unconfirmed transmission stays unconfirmed. */
+static void
+test_end_pattern_ends_the_call_at_an_ordinary_position(void) {
+    /* Where the pattern starts, how many voice frames played before it. Data frame 4 starts at 4 * 96 + 72. */
+    static const int starts[4] = {
+        (4 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME, /* on data frame 4 */
+        5 * DSTAR_FRAME_DIBITS,                                  /* on voice frame 5 */
+        (5 * DSTAR_FRAME_DIBITS) + 24,                           /* 24 symbols into it */
+        (5 * DSTAR_FRAME_DIBITS) + 48,                           /* ending with data frame 5 */
+    };
+    static const int played[4] = {5, 5, 5, 6};
+    for (int c = 0; c < 4; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        capture_close_calls = 0;
+        state.dstar_confirmed = 1; // a confirmed transmission: its voice plays up to the end
+        state.dstar_tx_seq = 5U;
+        script_end_pattern(starts[c], -1);
+
+        assert(processDSTAR(&opts, &state) == 1);
+
+        assert_ended_at(&state, starts[c] + 48, 5U);
+        assert(mbe_frame_calls == played[c]);
+        /* The superframe was cut: its slow data is dropped, as on a sync loss. */
+        assert(slow_data_calls == 0);
+    }
+
+    /* Unconfirmed: the end proves nothing, so the superframe's own resynchronization word is all it has. */
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_counters();
+    script_end_pattern(starts[0], -1);
+    assert(processDSTAR(&opts, &state) == 0);
+    assert(state.dstar_confirmed == 0);
+    assert(state.dstar_confirm_weak_streak == 1);
+    assert(mbe_frame_calls == 0);
+    assert(call_end_calls == 1);
+
+    /* Another protocol's call on the slot (a DMR call left open) is not D-STAR's to end. */
+    reset_counters();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    call_protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    script_end_pattern(starts[0], -1);
+    (void)processDSTAR(&opts, &state);
+    assert(stream_pos == starts[0] + 48);
+    assert(call_end_calls == 0);
+    assert(state.dstar_tx_seq == 1U);
+}
+
+/* A near miss is no end: one bit of the 48 off, in either half, and the superframe reads on whole. The 24 symbols read
+ * after a data frame that held the pattern's first half are the next voice frame's: they decode as its first 24
+ * symbols (lookahead kept). The next transmission is not touched either. */
+static void
+test_end_pattern_near_miss_reads_on(void) {
+    static const int flips[3] = {0, 30, 47};
+    for (int f = 0; f < 3; f++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        state.dstar_confirmed = 1;
+        const int at = (4 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME;
+        script_end_pattern(at, flips[f]);
+
+        assert(processDSTAR(&opts, &state) == 1);
+
+        assert_voice_loop_counts(0, 0, DSTAR_VOICE_FRAMES);
+        assert_ambe_frames_follow_interleave(0, DSTAR_VOICE_FRAMES);
+        assert_slow_data_follows_each_voice_frame(0);
+    }
+}
+
+/* The first data position behind an RF header is the word's: an end there (a header and one voice frame, a key-up
+ * released at once) ends the call the header opened, as do the two placements around voice frame 0. Nothing after
+ * the pattern is read: the next transmission's header is the hunt's, and a header read next starts right there. */
+static void
+test_end_pattern_ends_the_call_behind_a_header(void) {
+    static const int starts[3] = {
+        DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME,      /* on the word's data frame */
+        DSTAR_HEADER_DIBITS,                                     /* on voice frame 0 */
+        DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME - 24, /* ending with the word's data frame */
+    };
+    static const int played[3] = {1, 0, 1};
+    for (int c = 0; c < 3; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        capture_close_calls = 0;
+        header_decode_soft_result = 1;
+        script_end_pattern(starts[c], -1);
+
+        assert(processDSTAR_HD(&opts, &state) == 1);
+
+        /* The header began transmission 1, its end begins 2. */
+        assert_ended_at(&state, starts[c] + 48, 1U);
+        assert(mbe_frame_calls == played[c]);
+        assert(slow_data_calls == 0);
+
+        /* The next transmission's header is read from the symbol after the pattern. */
+        const int next = stream_pos;
+        mbe_frame_calls = 0;
+        assert(processDSTAR_HD(&opts, &state) == 1);
+        assert(float_near(captured_soft_symbols[0], (float)(next + 1) * 0.25F));
+    }
+}
+
+/* The data frame after the superframe's last voice frame is the next resynchronization word, which the hunt matches,
+ * or the end pattern, which only the decoder reads: it reads that frame one symbol at a time while an end can still
+ * be there, and hands what it read back to the hunt once none can. A word goes back after its 12th symbol, the first
+ * that is no end pattern's; an end ending on the frame (behind a voice frame whose last 24 bits begin it) or 24
+ * symbols after it ends the call there; after a 24-bit first half that the rest does not complete, every symbol read
+ * goes back, the mismatch included. */
+static void
+test_end_pattern_at_the_hand_back_position(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const int slot = DSTAR_SUPERFRAME_DIBITS;
+
+    /* The word: matched by the hunt where it ends. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_counters();
+    state.dstar_confirmed = 1;
+    script_bits(slot, RESYNC_WORD, 24);
+    assert(processDSTAR(&opts, &state) == 1);
+    assert(slow_data_calls == 1);
+    assert(hand_back_calls == 1 && handed_back == 12 && hand_back_pos == slot + 12);
+    assert(call_end_calls == 0);
+
+    /* Ending on the frame: the last voice frame's last 24 bits and the frame. The superframe was whole: its slow data
+       decodes before the call ends. */
+    for (int after = 0; after <= 1; after++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_counters();
+        capture_close_calls = 0;
+        state.dstar_confirmed = 1;
+        script_end_pattern(after ? slot : slot - 24, -1);
+        assert(processDSTAR(&opts, &state) == 1);
+        assert(slow_data_calls == 1);
+        assert(mbe_frame_calls == DSTAR_VOICE_FRAMES);
+        assert_ended_at(&state, after ? slot + 48 : slot + 24, 0U);
+    }
+
+    /* The first half, then a second half off by one bit: all 48 read go back. Off earlier, at its 6th bit: 30. */
+    static const int flips[2] = {47, 29};
+    static const int back[2] = {48, 30};
+    for (int f = 0; f < 2; f++) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_counters();
+        state.dstar_confirmed = 1;
+        script_end_pattern(slot, flips[f]);
+        assert(processDSTAR(&opts, &state) == 1);
+        assert(call_end_calls == 0);
+        assert(hand_back_calls == 1 && handed_back == back[f] && hand_back_pos == slot + back[f]);
+    }
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -605,6 +939,11 @@ main(void) {
     test_header_cut_by_an_input_interruption_decodes_nothing();
     test_header_split_by_a_carrier_boundary_decodes_nothing();
     test_every_header_forgets_a_half_collected_dprs_record();
+    test_header_entry_reads_voice_zero_and_the_word_first();
+    test_end_pattern_ends_the_call_at_an_ordinary_position();
+    test_end_pattern_near_miss_reads_on();
+    test_end_pattern_ends_the_call_behind_a_header();
+    test_end_pattern_at_the_hand_back_position();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

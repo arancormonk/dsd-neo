@@ -3901,6 +3901,17 @@ frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols
     carry->valid = 1;
 }
 
+void
+dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
+    if (state == NULL || symbols <= 0) {
+        return;
+    }
+    /* A new pass: the decoder's frame was a sync's. */
+    frame_sync_history_carry_symbols(state, symbols, 0);
+    /* The decoder's slicer wrote its own dibits for them, and no DMR payload: nothing decodes a burst back from them. */
+    state->frame_sync_carry.own_symbols = 0;
+}
+
 /* Any other exit: the next call starts with no history. */
 static void
 frame_sync_history_drop(dsd_state* state) {

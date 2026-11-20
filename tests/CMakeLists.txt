@@ -2055,6 +2055,21 @@ target_link_libraries(
 )
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
+# Issue #890 (B18): one CRC-bearing RF header through both waveforms, the real slicer and soft cost.
+add_executable(
+    dsd-neo_test_dstar_header_polarity
+    protocol/dstar/test_dstar_header_polarity.c
+)
+target_include_directories(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE dsd-neo_proto_dstar
+)
+add_test(NAME DSTAR_HEADER_POLARITY COMMAND dsd-neo_test_dstar_header_polarity)
+
 add_executable(
     dsd-neo_test_dstar_process
     protocol/dstar/test_dstar_process.c
@@ -23428,8 +23443,9 @@ if(DSD_HAS_RADIO)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_AM_MONITOR MONITOR am_tone_synth -fM 96000)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_SOURCE_MONITOR MONITOR_8 dstar -fd)
     endif()
-    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first frame of the
-    # transmission's first voice superframe, which decodes with nothing to correct.
+    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first voice frame
+    # behind the first resynchronization word the hunt matches in the second call, which decodes with nothing to
+    # correct.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DSTAR_AMBE
         dstar
@@ -23997,17 +24013,17 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
         FILES 0
     )
-    # Voice plays and is captured only from a confirmed transmission. The capture's two RF headers fail their CRC, so
-    # the superframes behind them confirm nothing and are withheld; the third superframe runs on from the second and
-    # opens the one capture, with the 84 frames of the four superframes from there.
+    # Voice plays and is captured only from a confirmed transmission. The capture holds two, each behind an RF header
+    # whose CRC passes (both are +headers, read on the slicer's polarity): the repeater's 7-frame reply, which its end
+    # pattern closes, and the call after it, voice frame 0 behind its header included: one capture each, 113 frames.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DSTAR
         dstar
         -fd
         "SRC: KB7WUK"
         EXT .dmb
-        FILES 1
-        MIN_FRAMES 84
+        FILES 2
+        MIN_FRAMES 113
     )
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NXDN48
