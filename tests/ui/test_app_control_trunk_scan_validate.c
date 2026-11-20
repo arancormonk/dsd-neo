@@ -255,7 +255,7 @@ test_simplex_targets(const char* path) {
 
     write_targets_with_header(path, k_header, "m17,m17-conventional,145500000,,1500,1200,,gfsk\n");
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
-    assert(strstr(err, "row 2 has modulation 'gfsk'; a m17-conventional target takes only auto or an empty cell"));
+    assert(strstr(err, "row 2 has modulation 'gfsk'; m17-conventional targets take only auto or an empty cell"));
 
     char cell[301];
     DSD_MEMSET(cell, 'q', sizeof cell - 1U);

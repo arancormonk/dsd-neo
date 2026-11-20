@@ -165,8 +165,8 @@ static int g_rtl_complex_rate_hz = 48000;
  * (dsd_scan_mode_take_timed_digital_family(), issue #583). No row by default. */
 static int g_scan_row_timed_digital_family = 0;
 static size_t g_trunk_scan_target_count = 0;
-/* The parked trunk-scan target's landing profile (dsd_engine_trunk_scan_active_landing(), issue #890), as the
- * coordinator would resolve it: a symbol rate of 0 is none. */
+/* The class part of the parked trunk-scan target's landing (dsd_engine_trunk_scan_active_class_landing(), issue #890),
+ * as the coordinator would give it: a symbol rate of 0 is none. */
 static dsd_trunk_scan_landing g_trunk_scan_active_landing;
 static int g_trunk_scan_saved_autogain_is_set = 0;
 static int g_trunk_scan_saved_autogain_on = 0;
@@ -455,7 +455,7 @@ dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on) 
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_engine_trunk_scan_active_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
+dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
     (void)state;
     if (out) {
         *out = g_trunk_scan_active_landing;

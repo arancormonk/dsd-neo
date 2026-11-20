@@ -968,11 +968,13 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   class, NXDN trunk, `p25_cc_freq` anchor, takes `gfsk`, simplex, the scan class `trunk_scan_target_mode()`, the
   conventional family and whose carrier a forced advance hands back) are one table, `k_trunk_scan_type_axes[]`, a row
   per type at its enum value, read by `trunk_scan_type_is_conventional()` and its siblings; a type appended without its
-  row fails the build at the table's size assert. The trunking flag a parked target sets is `!conventional`. `k_trunk_scan_types[]` is the one spelling table: the parser,
+  row fails the build at the table's size assert, and every row is written with designated members, so a row deleted
+  from the middle reads as zeros (scan class INHERIT, which `ENGINE_TRUNK_SCAN` checks every type against, and
+  `TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE`, 0, so it claims no family). The trunking flag a parked target sets is `!conventional`. `k_trunk_scan_types[]` is the one spelling table: the parser,
   the invalid-type list and `dsd_trunk_scan_target_type_name()` (which app-control's document inspector uses) read it.
   The simplex types are conventional only: `chan_csv` and `p25_bandplan_csv` are refused as for every conventional
   type, a `<family>-trunk` spelling is told `conventional only (use <family>-conventional)`, and the modulation column
-  takes only empty or `auto` (anything else: `a <type> target takes only auto or an empty cell`). The conventional
+  takes only empty or `auto` (anything else: `<type> targets take only auto or an empty cell`, the cell echoed to 48 bytes). The conventional
   families `TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF` .. `_TETRA_DMO` (3-7) name each simplex type's own family; no
   protocol reports for them yet.
 - Diagnostics (issue #890 B1): `DSD_TRUNK_SCAN_ROW_ERROR_MAX` (512) holds any row message, the unknown-type one with
@@ -994,10 +996,15 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   (TETRA: 72 kHz / 18000 = 4). The profile is applied to `dsd_state` (`sps_hunt_idx`, `rf_mod`, `samplesPerSymbol`,
   `symbolCenter`) and kept on the target runtime (`rt->landing`); the retune passes its `samples_per_symbol` as the TED
   (every digital class, the simplex ones included, so `dsd_engine_prepare_scan_profile()` always queues the class's
-  chain), and the tuning layer builds the RTL chain of every non-P25 target from
-  `dsd_engine_trunk_scan_active_landing()` (`dsd_engine_prepare_landing_rtl_chain()` in `trunk_tuning.c`: rate, levels, CQPSK state and filter, the TED from the
-  complex rate), which replaced the GFSK-only `dsd_engine_trunk_scan_active_gfsk_symbol_rate()` and its hard-coded four
-  levels and `rf_mod` 2. P25 keeps its own chain (`dsd_engine_prepare_p25_cc_rtl_chain()`, learned modulation) and
+  chain), and the tuning layer builds the RTL chain of every non-P25 target from the class part,
+  `dsd_engine_trunk_scan_active_class_landing()` (`dsd_engine_prepare_landing_rtl_chain()` in `trunk_tuning.c`: rate,
+  levels, CQPSK state and filter, the TED from the complex rate), which replaced the GFSK-only
+  `dsd_engine_trunk_scan_active_gfsk_symbol_rate()` and its hard-coded four levels and `rf_mod` 2. Threads: the class
+  part reads only the parked index and that target's type, which nothing rewrites after the load, so the P25
+  watchdog's tunes off the decoder thread may ask it, as they asked the query it replaced; the whole resolved landing
+  (`dsd_engine_trunk_scan_active_landing()`, rates and timings) is rewritten at every park and is the decoder
+  thread's only. Under a `-m` lock with no modulation of its own, a simplex target's `rf_mod` is the lock's
+  (`dsd_opts_modulation()`), never what its snapshot restored; DMR and NXDN keep the decoder's, as before. P25 keeps its own chain (`dsd_engine_prepare_p25_cc_rtl_chain()`, learned modulation) and
   DMR/NXDN land exactly as before. The live reapply after a command (`dsd_scan_mode_resume()`) times the row from the
   same class table and CQPSK rule (`scan_scope_cqpsk_choice()`), and the republish asks for the same chain
   (`svc_publish_symbol_profile()`). `dsd_trunk_scan_type_landing()` gives the class part for any type with no live
@@ -1127,7 +1134,8 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   scan runs on the no-op defaults.
 - Active-target queries used by the tuning layer and protocol code: `dsd_engine_trunk_scan_active_p25_ctx()`,
   `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
-  `dsd_engine_trunk_scan_active_landing()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
+  `dsd_engine_trunk_scan_active_class_landing()` (any thread that may ask the coordinator),
+  `dsd_engine_trunk_scan_active_landing()` (decoder thread), `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
   `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
 - Configured tuner gain and autogain: the coordinator owns the gain and autogain a target without its own `rtl_gain`
   runs, captured at scan start. The gain is restored at every switch and at shutdown; the autogain is applied by every

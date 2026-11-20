@@ -597,15 +597,34 @@ int dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_stat
 int dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
- * @brief The landing profile of the parked trunk-scan target (issue #890), which replaced the GFSK-only rate query.
+ * @brief The class part of the parked trunk-scan target's landing (issue #890), which replaced the GFSK-only rate query:
+ * dsd_trunk_scan_type_landing() of its type.
  *
  * The tuning layer cannot derive this on its own. `state->rf_mod == 2` is true for both the 4800 sym/s targets (DMR,
  * NXDN96) and the 2400 sym/s ones (NXDN48), a -m lock leaves rf_mod at the locked value for a target with no modulation
  * of its own, and `state->sps_hunt_idx` is rotated by the no-sync SPS hunt, so a plain `-T` session can be sitting on
- * the 2400 profile during dead air. The coordinator's own landing is the only stable answer: the tuning layer treats it
- * as authoritative for the RTL chain of every target but a P25 one (whose chain follows its learned modulation,
- * dsd_engine_trunk_scan_active_p25_cqpsk_request()), whatever rf_mod says, so a target whose modulation column is empty
- * under a global `-m` lock still gets its own symbol rate, levels, CQPSK state and channel filter.
+ * the 2400 profile during dead air. The coordinator's own target type is the only stable answer: the tuning layer
+ * treats it as authoritative for the RTL chain of every target but a P25 one (whose chain follows its learned
+ * modulation, dsd_engine_trunk_scan_active_p25_cqpsk_request()), whatever rf_mod says, so a target whose modulation
+ * column is empty under a global `-m` lock still gets its own symbol rate, levels, CQPSK state and channel filter.
+ *
+ * It reads only which target is parked and that target's type, which never changes once the list is loaded, as the
+ * query it replaced did: so a tune off the decoder thread (the P25 watchdog's) may ask it. The rates and timings are 0
+ * (dsd_engine_trunk_scan_active_landing() has them, on the decoder thread).
+ *
+ * @param state Decoder state owning the scan coordinator.
+ * @param out   Receives the class part (may be NULL); zeroed when there is none.
+ * @return 1 for a parked target with a symbol clock; 0 when trunk scan is not installed, is paused, or the parked
+ *         target is analog.
+ */
+int dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_scan_landing* out);
+
+/**
+ * @brief The whole landing profile of the parked trunk-scan target (issue #890), rates and timings included: the one its
+ * last park resolved and applied (the eligibility of a TETRA DMO target judges the TED rule from it).
+ *
+ * Decoder thread only: every park rewrites it. A tune off the decoder thread asks
+ * dsd_engine_trunk_scan_active_class_landing() instead.
  *
  * @param state Decoder state owning the scan coordinator.
  * @param out   Receives the profile (may be NULL); zeroed when there is none.

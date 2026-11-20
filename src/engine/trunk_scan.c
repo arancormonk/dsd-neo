@@ -570,16 +570,17 @@ scan_parse_ms_field(const char* s, int default_ms, int* out) {
  * differs -- so both NXDN conventional types answer to the same entry point. The simplex digital families (issue
  * #890) are one per type. */
 typedef enum {
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE =
-        -1, /* trunked, or analog: its carrier holds it (trunk_scan_refresh_activity()) */
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR = 0,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN = 1,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_P25 = 2,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF = 3,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR = 4,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR = 5,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_M17 = 6,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO = 7,
+    /* Trunked, or analog (its carrier holds it, trunk_scan_refresh_activity()). 0, so a row missing from the axes table
+       below, which reads as zeros, claims no family. */
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE = 0,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_P25,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_M17,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO,
 } trunk_scan_conventional_family;
 
 /* Whose carrier a forced advance hands back before the receiver moves (trunk_scan_release_active_carrier()): a trunked
@@ -600,49 +601,73 @@ typedef struct {
     uint8_t anchors_p25_cc; /* its control channel lives in state->p25_cc_freq (see below) */
     uint8_t takes_gfsk;     /* its modulation column takes gfsk */
     uint8_t simplex;        /* a simplex digital type (issue #890): modulation empty or auto only */
-    int8_t family;          /* trunk_scan_conventional_family */
+    uint8_t family;         /* trunk_scan_conventional_family */
     uint8_t carrier;        /* trunk_scan_carrier_owner */
 } trunk_scan_type_axes;
 
 /* Single home for the type axes, so a new target type is classified in one place instead of in every `type == A ||
- * type == B` chain: one row per type, at its enum value. Types are appended, never renumbered, so a type appended
- * without its row (DSD_TRUNK_SCAN_TARGET_LAST moved past the table) fails the build at the assert below rather than
- * silently inherit whichever answer a chain happened to fall through to.
+ * type == B` chain: one row per type, at its enum value, every axis a row leaves out 0 (no, no family, the shared
+ * carrier). Types are appended, never renumbered, so a type appended without its row (DSD_TRUNK_SCAN_TARGET_LAST moved
+ * past the table) fails the build at the assert below rather than silently inherit whichever answer a chain happened
+ * to fall through to. A row deleted from the middle reads as zeros: no class (mode INHERIT, which ENGINE_TRUNK_SCAN
+ * checks every type against) and no family.
  *
  * NXDN trunking reads and writes p25_cc_freq the same way P25 does (anchors_p25_cc); DMR trunking keeps it at 0 and
  * uses trunk_cc_freq alone, which is what stops a stray NXDN element from moving a DMR target's control channel. */
 static const trunk_scan_type_axes k_trunk_scan_type_axes[] = {
-    [DSD_TRUNK_SCAN_TARGET_P25_TRUNK] = {DSD_SCAN_MODE_P25, 0, 1, 0, 1, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
-                                         TRUNK_SCAN_CARRIER_P25_SM},
-    [DSD_TRUNK_SCAN_TARGET_DMR_TRUNK] = {DSD_SCAN_MODE_DMR, 0, 0, 0, 0, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
-                                         TRUNK_SCAN_CARRIER_DMR_SM},
-    [DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL] = {DSD_SCAN_MODE_DMR, 1, 0, 0, 0, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR,
-                                                TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK] = {DSD_SCAN_MODE_NXDN96, 0, 0, 1, 1, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
-                                          TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL] = {DSD_SCAN_MODE_NXDN96, 1, 0, 0, 0, 1, 0,
-                                                 TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL] = {DSD_SCAN_MODE_NXDN48, 1, 0, 0, 0, 1, 0,
-                                                   TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK] = {DSD_SCAN_MODE_NXDN48, 0, 0, 1, 1, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
-                                            TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL] = {DSD_SCAN_MODE_P25, 1, 1, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_P25,
-                                                TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL] = {DSD_SCAN_MODE_NFM, 1, 0, 0, 0, 0, 0,
-                                                TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE, TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL] = {DSD_SCAN_MODE_AM, 1, 0, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
-                                               TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL] = {DSD_SCAN_MODE_YSF, 1, 0, 0, 0, 0, 1, TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF,
-                                                TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL] = {DSD_SCAN_MODE_DSTAR, 1, 0, 0, 0, 0, 1,
-                                                  TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR, TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL] = {DSD_SCAN_MODE_DPMR, 1, 0, 0, 0, 0, 1,
-                                                 TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR, TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL] = {DSD_SCAN_MODE_M17, 1, 0, 0, 0, 0, 1, TRUNK_SCAN_CONVENTIONAL_FAMILY_M17,
-                                                TRUNK_SCAN_CARRIER_SHARED},
-    [DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL] = {DSD_SCAN_MODE_TETRA_DMO, 1, 0, 0, 0, 0, 1,
-                                                      TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO,
-                                                      TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_P25_TRUNK] = {.mode = DSD_SCAN_MODE_P25,
+                                         .p25_class = 1,
+                                         .anchors_p25_cc = 1,
+                                         .carrier = TRUNK_SCAN_CARRIER_P25_SM},
+    [DSD_TRUNK_SCAN_TARGET_DMR_TRUNK] = {.mode = DSD_SCAN_MODE_DMR,
+                                         .takes_gfsk = 1,
+                                         .carrier = TRUNK_SCAN_CARRIER_DMR_SM},
+    [DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_DMR,
+                                                .conventional = 1,
+                                                .takes_gfsk = 1,
+                                                .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR},
+    [DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK] = {.mode = DSD_SCAN_MODE_NXDN96,
+                                          .nxdn_trunk = 1,
+                                          .anchors_p25_cc = 1,
+                                          .takes_gfsk = 1},
+    [DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_NXDN96,
+                                                 .conventional = 1,
+                                                 .takes_gfsk = 1,
+                                                 .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN},
+    [DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_NXDN48,
+                                                   .conventional = 1,
+                                                   .takes_gfsk = 1,
+                                                   .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN},
+    [DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK] = {.mode = DSD_SCAN_MODE_NXDN48,
+                                            .nxdn_trunk = 1,
+                                            .anchors_p25_cc = 1,
+                                            .takes_gfsk = 1},
+    [DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_P25,
+                                                .conventional = 1,
+                                                .p25_class = 1,
+                                                .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_P25},
+    [DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_NFM, .conventional = 1},
+    [DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_AM, .conventional = 1},
+    [DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_YSF,
+                                                .conventional = 1,
+                                                .simplex = 1,
+                                                .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF},
+    [DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_DSTAR,
+                                                  .conventional = 1,
+                                                  .simplex = 1,
+                                                  .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR},
+    [DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_DPMR,
+                                                 .conventional = 1,
+                                                 .simplex = 1,
+                                                 .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR},
+    [DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_M17,
+                                                .conventional = 1,
+                                                .simplex = 1,
+                                                .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_M17},
+    [DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL] = {.mode = DSD_SCAN_MODE_TETRA_DMO,
+                                                      .conventional = 1,
+                                                      .simplex = 1,
+                                                      .family = TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO},
 };
 
 _Static_assert(sizeof(k_trunk_scan_type_axes) / sizeof(k_trunk_scan_type_axes[0])
@@ -652,8 +677,7 @@ _Static_assert(sizeof(k_trunk_scan_type_axes) / sizeof(k_trunk_scan_type_axes[0]
 /* The axes of @p type; a value no row can have is in no class, conventional or trunked. */
 static const trunk_scan_type_axes*
 trunk_scan_type_axes_of(dsd_trunk_scan_target_type type) {
-    static const trunk_scan_type_axes none = {
-        DSD_SCAN_MODE_INHERIT, 0, 0, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE, TRUNK_SCAN_CARRIER_SHARED};
+    static const trunk_scan_type_axes none = {.mode = DSD_SCAN_MODE_INHERIT};
     return (unsigned)type <= (unsigned)DSD_TRUNK_SCAN_TARGET_LAST ? &k_trunk_scan_type_axes[type] : &none;
 }
 
@@ -1022,12 +1046,16 @@ scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_
         scan_set_error(parse->err, parse->err_sz, "row %u: an analog target takes no modulation", parse->row);
         return -1;
     }
-    /* One modulation per simplex class (issue #890): auto names it; anything else is a setting the class lacks. */
+    /* One modulation per simplex class (issue #890): auto names it; anything else is a setting the class lacks. The cell
+       is echoed as an unknown type's is (TRUNK_SCAN_TYPE_ECHO_MAX). */
     if (trunk_scan_type_is_simplex_digital(target->type) && modulation_s[0] != '\0'
         && strcmp(modulation_s, "auto") != 0) {
+        const size_t len = strlen(modulation_s);
+        const int shown = (int)(len > TRUNK_SCAN_TYPE_ECHO_MAX ? TRUNK_SCAN_TYPE_ECHO_MAX : len);
         scan_set_error(parse->err, parse->err_sz,
-                       "row %u has modulation '%s'; a %s target takes only auto or an empty cell", parse->row,
-                       modulation_s, dsd_trunk_scan_target_type_name(target->type));
+                       "row %u has modulation '%.*s%s'; %s targets take only auto or an empty cell", parse->row, shown,
+                       modulation_s, len > TRUNK_SCAN_TYPE_ECHO_MAX ? "..." : "",
+                       dsd_trunk_scan_target_type_name(target->type));
         return -1;
     }
     if (scan_parse_modulation(modulation_s, target->type, &target->modulation) != 0) {
@@ -3130,7 +3158,10 @@ trunk_scan_landing_rf_mod(const dsd_opts* opts, const dsd_state* state, const ds
     if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
         return l->rf_mod;
     }
-    return state->rf_mod;
+    /* A simplex class under a -m lock: the lock's own modulation, from the options in force, never the rf_mod the
+       target's snapshot just restored, which is whatever the decoder ran when the target was left. DMR and NXDN keep
+       the decoder's, as they always have. */
+    return trunk_scan_type_is_simplex_digital(target->type) ? dsd_opts_modulation(opts) : state->rf_mod;
 }
 
 /* The landing profile of @p target now (dsd_trunk_scan_landing): the class's facts, then what this landing decides
@@ -3163,7 +3194,8 @@ trunk_scan_resolve_landing(const dsd_opts* opts, const dsd_state* state, const d
 /* Resolve the landing of @p rt and put it in force on the decoder: the hunt profile, the modulation and the timing.
  * The one place a landing writes them, after the target's snapshot is restored (which carries the timing the target
  * left with, under whatever class was on air then), so the incoming class's own always wins. Kept on @p rt for its
- * retune and for the tuning layer's chain (dsd_engine_trunk_scan_active_landing()). An analog target keeps the timing
+ * retune and for its readers on the decoder thread (dsd_engine_trunk_scan_active_landing()); the tuning layer's chain
+ * reads the class part from the type (dsd_engine_trunk_scan_active_class_landing()). An analog target keeps the timing
  * in force: it has no symbol clock. */
 static void
 trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
@@ -6143,7 +6175,7 @@ dsd_engine_trunk_scan_active_dmr_ctx(void) {
  * (trunk_scan_conventional_family). */
 static int
 trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_scan_conventional_family family) {
-    return trunk_scan_type_axes_of(type)->family == (int8_t)family;
+    return family != TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE && trunk_scan_type_axes_of(type)->family == (uint8_t)family;
 }
 
 /* Whether policy lets the reported call hold its target. A P25 group call on a live patch's supergroup is judged by the
@@ -7603,6 +7635,25 @@ dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandpl
                                                snapshot->site.p25_iden_tdma, skipped);
     }
     return count;
+}
+
+int
+dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+    }
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    if (!coord || coord->paused || coord->active >= coord->count) {
+        return 0;
+    }
+    dsd_trunk_scan_landing landing;
+    if (!dsd_trunk_scan_type_landing(coord->targets[coord->active].target.type, &landing)) {
+        return 0;
+    }
+    if (out) {
+        *out = landing;
+    }
+    return 1;
 }
 
 int

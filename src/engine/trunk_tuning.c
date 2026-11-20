@@ -562,12 +562,14 @@ dsd_engine_retune_lands_digital_family(const dsd_opts* opts, const dsd_state* st
            && (timed_digital_family || rtl_stream_family_landing_after_pending());
 }
 
-/* The landing profile of the parked trunk-scan target when the tuning layer builds its chain from it: every digital
- * target but a P25 one, whose chain follows its learned modulation (dsd_engine_prepare_p25_cc_rtl_chain()). 0 with
- * @p out zeroed otherwise, a -Y row and a plain -T retune (no coordinator) included. */
+/* The class part of the parked trunk-scan target's landing when the tuning layer builds its chain from it: every
+ * digital target but a P25 one, whose chain follows its learned modulation (dsd_engine_prepare_p25_cc_rtl_chain()).
+ * 0 with @p out zeroed otherwise, a -Y row and a plain -T retune (no coordinator) included. The class part only: it is
+ * read from the target's type, which a park never rewrites, so the P25 watchdog's tunes off the decoder thread read
+ * it as safely as the decoder's own (the resolved landing, rewritten at every park, is the decoder thread's). */
 static int
 dsd_engine_trunk_scan_symbol_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
-    if (dsd_engine_trunk_scan_active_landing(state, out) && out->mode != DSD_SCAN_MODE_P25) {
+    if (dsd_engine_trunk_scan_active_class_landing(state, out) && out->mode != DSD_SCAN_MODE_P25) {
         return 1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));

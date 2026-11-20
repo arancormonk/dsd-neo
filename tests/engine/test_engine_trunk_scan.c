@@ -54,6 +54,7 @@
 #endif
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -16087,7 +16088,7 @@ test_simplex_target_types_parse_and_diagnostics(void) {
         for (size_t m = 0; m < sizeof modulations / sizeof modulations[0]; m++) {
             DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,%s,,,,,\n", types[i].name, modulations[m]);
             char want[160];
-            DSD_SNPRINTF(want, sizeof want, "row 2 has modulation '%s'; a %s target takes only auto or an empty cell",
+            DSD_SNPRINTF(want, sizeof want, "row 2 has modulation '%s'; %s targets take only auto or an empty cell",
                          modulations[m], types[i].name);
             DSD_MEMSET(err, 0, sizeof err);
             if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want) != 0) {
@@ -16096,6 +16097,22 @@ test_simplex_target_types_parse_and_diagnostics(void) {
                 test_rc = 1;
                 dsd_trunk_scan_target_list_reset(&list);
             }
+        }
+
+        /* A long cell is echoed as a long type cell is: 48 bytes and "...". */
+        char long_cell[201];
+        DSD_MEMSET(long_cell, 'm', sizeof long_cell - 1U);
+        long_cell[sizeof long_cell - 1U] = '\0';
+        DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,%s,,,,,\n", types[i].name, long_cell);
+        char want_long[192];
+        DSD_SNPRINTF(want_long, sizeof want_long,
+                     "row 2 has modulation '%.48s...'; %s targets take only auto or an empty cell", long_cell,
+                     types[i].name);
+        DSD_MEMSET(err, 0, sizeof err);
+        if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want_long) != 0) {
+            DSD_FPRINTF(stderr, "%s long modulation: err '%s', want '%s'\n", types[i].name, err, want_long);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
         }
 
         const struct {
@@ -16169,23 +16186,60 @@ test_invalid_type_names_every_type(void) {
         dsd_trunk_scan_target_list_reset(&list);
     }
 
-    /* The session start: a list path near the 1024 bytes a list path holds, then the row's message. */
+    /* The session start: the list's path, as long as a list path can be (1023 bytes: folders under the temporary one
+       to fill it, where the platform takes such a path; a 200-byte file name on Windows), then the row's message,
+       whole in DSD_TRUNK_SCAN_ERROR_MAX. */
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
         return 1;
     }
-    char name[201];
-    DSD_MEMSET(name, 'n', sizeof name - 1U);
-    name[sizeof name - 1U] = '\0';
-    DSD_SNPRINTF(name + sizeof name - 5U, 5U, "%s", ".csv");
+    char folders[4][DSD_TEST_PATH_MAX];
+    size_t made = 0U;
+    char parent[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(parent, sizeof parent, "%s", dir);
+#if !DSD_PLATFORM_WIN_NATIVE
+    /* Folders of up to 240 bytes until a file name of 250 bytes or fewer brings the path to 1023 bytes. */
+    char folder_name[241];
+    for (; made < 4U; made++) {
+        const size_t rest = 1023U - strlen(parent) - 1U; /* after the separator */
+        if (rest <= 250U) {
+            break;
+        }
+        const size_t len = rest - 1U - 200U < 240U ? rest - 1U - 200U : 240U;
+        DSD_MEMSET(folder_name, 'd', len);
+        folder_name[len] = '\0';
+        if (dsd_test_path_join(folders[made], sizeof folders[made], parent, folder_name) != 0
+            || dsd_mkdir(folders[made], 0700) != 0) {
+            break;
+        }
+        DSD_SNPRINTF(parent, sizeof parent, "%s", folders[made]);
+    }
+    const size_t name_len = 1023U - strlen(parent) - 1U;
+#else
+    const size_t name_len = 200U;
+#endif
+    char name[256];
+    const size_t fill = name_len < sizeof name ? name_len : sizeof name - 1U;
+    DSD_MEMSET(name, 'n', fill);
+    name[fill] = '\0';
+    DSD_MEMCPY(name + fill - 4U, ".csv", 4U);
     char content[1024];
     DSD_SNPRINTF(content, sizeof content, "%s%s", k_nfm_targets_header, body);
-    if (dsd_test_path_join(target_path, sizeof target_path, dir, name) != 0
+    if (dsd_test_path_join(target_path, sizeof target_path, parent, name) != 0
         || write_text_file(target_path, content) != 0) {
+        for (size_t i = made; i > 0U; i--) {
+            (void)dsd_test_rmdir(folders[i - 1U]);
+        }
         cleanup_paths(dir, NULL, NULL);
         return 1;
     }
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (strlen(target_path) != 1023U) {
+        DSD_FPRINTF(stderr, "long list path: %zu bytes, want 1023\n", strlen(target_path));
+        test_rc = 1;
+    }
+#endif
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
@@ -16198,7 +16252,11 @@ test_invalid_type_names_every_type(void) {
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    cleanup_paths(dir, target_path, NULL);
+    (void)remove(target_path);
+    for (size_t i = made; i > 0U; i--) {
+        (void)dsd_test_rmdir(folders[i - 1U]);
+    }
+    cleanup_paths(dir, NULL, NULL);
     return test_rc;
 }
 
@@ -16247,6 +16305,17 @@ test_type_landing_and_ted_rule(void) {
             DSD_FPRINTF(stderr, "type %d landing: rate %d levels %d hunt %d rf_mod %d cqpsk %d profile %d\n",
                         (int)want[i].type, l.symbol_rate_hz, l.levels, l.sps_hunt_idx, l.rf_mod, l.cqpsk,
                         l.channel_profile);
+            test_rc = 1;
+        }
+    }
+    /* Every type up to the last has its row of axes: a class (a row missing from the table reads as INHERIT) and a
+       spelling. */
+    for (int type = 0; type <= (int)DSD_TRUNK_SCAN_TARGET_LAST; type++) {
+        dsd_trunk_scan_landing l;
+        (void)dsd_trunk_scan_type_landing((dsd_trunk_scan_target_type)type, &l);
+        if (l.mode == DSD_SCAN_MODE_INHERIT
+            || dsd_trunk_scan_target_type_name((dsd_trunk_scan_target_type)type)[0] == '\0') {
+            DSD_FPRINTF(stderr, "type %d has no class or no spelling\n", type);
             test_rc = 1;
         }
     }
@@ -16335,6 +16404,12 @@ expect_class_landing(const dsd_opts* opts, const dsd_state* state, const landing
     const int sps = dsd_opts_compute_sps_rate(opts, w->rate, w->output_rate);
     const int ted = dsd_opts_compute_sps_rate(opts, w->rate, 72000);
     const int have = dsd_engine_trunk_scan_active_landing(state, &l);
+    dsd_trunk_scan_landing c;
+    if (dsd_engine_trunk_scan_active_class_landing(state, &c) != 1 || c.mode != w->mode || c.symbol_rate_hz != w->rate
+        || c.levels != w->levels || c.cqpsk != w->cqpsk || c.channel_profile != w->profile || c.output_rate_hz != 0) {
+        DSD_FPRINTF(stderr, "%s (lock %d): the class part of target %zu disagrees\n", stage, locked, w->target);
+        return 1;
+    }
     if (dsd_engine_trunk_scan_active_index(state) != w->target || !have || l.mode != w->mode
         || l.symbol_rate_hz != w->rate || l.levels != w->levels || l.cqpsk != w->cqpsk
         || l.channel_profile != w->profile || l.rf_mod != rf_mod || l.output_rate_hz != w->output_rate
@@ -16462,6 +16537,10 @@ test_simplex_targets_land_their_class_profile(void) {
                 (void)dsd_scan_mode_suspend(&opts, &state);
                 (void)dsd_scan_mode_resume(&opts, &state);
                 test_rc |= expect_class_landing(&opts, &state, &want[i], locked, "resume");
+                if (round == 0 && want[i].mode == DSD_SCAN_MODE_M17) {
+                    /* The decoder left on GFSK: under the -mq lock the next landing takes the lock's QPSK, not this. */
+                    state.rf_mod = 2;
+                }
                 if (round == 0 && want[i].mode == DSD_SCAN_MODE_YSF) {
                     /* What the decoder runs when the target is left goes into its snapshot: another class's timing. */
                     state.samplesPerSymbol = 4;
@@ -18521,6 +18600,7 @@ test_paused_scan_gates_every_consumer(void) {
     if (dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL
         || dsd_trunk_scan_hook_active_chan_csv(&state) != NULL
         || dsd_engine_trunk_scan_active_landing(&state, NULL) != 0
+        || dsd_engine_trunk_scan_active_class_landing(&state, NULL) != 0
         || dsd_engine_trunk_scan_active_is_p25_class(&state) != 0
         || dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk) != 0 || cqpsk != -1) {
         DSD_FPRINTF(stderr, "gates: a paused target still answered for the receiver\n");
