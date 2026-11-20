@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/bp.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -456,6 +457,63 @@ test_basic_privacy_decrypts_window(void) {
     return rc;
 }
 
+/* A Basic Privacy packet of talkgroup @p tg on @p slot through the data path, its window encrypted with key index
+   @p key_index (0: none): whether it decrypted to the plaintext. */
+static int
+bp_packet_decrypts(dsd_state* state, uint8_t slot, uint32_t tg, unsigned key_index) {
+    dmr_block_crypto_ctx ctx;
+    uint8_t plaintext[32];
+    state->currentslot = slot;
+    state->data_ks_start[slot] = 4;
+    state->data_block_poc[slot] = 24;
+    state->data_byte_ctr[slot] = 48;
+    state->dmr_lrrp_target[slot] = tg;
+    state->dmr_data_target_is_group[slot] = 1U;
+    dmr_block_crypto_load_ctx(state, slot, 48U, &ctx);
+    if (ctx.end != 16) {
+        return 0;
+    }
+    const uint8_t stream[2] = {(uint8_t)((BPK[key_index] >> 8U) & 0xFFU), (uint8_t)(BPK[key_index] & 0xFFU)};
+    fill_pattern(plaintext, (size_t)ctx.end, 0x5A);
+    for (int i = 0; i < ctx.end; i++) {
+        state->dmr_pdu_sf[slot][ctx.start + i] = (uint8_t)(plaintext[i] ^ stream[i % 2]);
+    }
+    return dmr_block_crypto_decrypt_payload(state, slot, &ctx, 0) == 1
+           && memcmp(state->dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end) == 0;
+}
+
+/* The talkgroup key autoload keys each slot's voice from its own talkgroup's key, through the one working key: slot 1's
+   call on talkgroup 100 loads key 33 there, then slot 2's call on talkgroup 200, which has no key, gives the
+   operator's key (key 5, or none) back. A Basic Privacy packet for talkgroup 100 decrypts with talkgroup 100's key
+   all the same, one for talkgroup 200 with the operator's, and the packets leave the working key as the voice left
+   it. */
+static int
+test_basic_privacy_packet_keys_from_its_destination(void) {
+    static dsd_state state;
+    int rc = 0;
+    for (unsigned manual = 0; manual <= 5U; manual += 5U) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.keyloader = 1;
+        state.K = manual;
+        state.basic_key_present = (uint8_t)(manual != 0U);
+        const uint32_t cell = keyring_dmr_tg_key_cell(100U);
+        state.rkey_array[cell] = 33ULL;
+        state.rkey_array_loaded[cell] = 1U;
+        uint32_t keyed_from = 0U;
+        rc |= expect_int("bp autoload: slot 1 keys talkgroup 100",
+                         keyring_dmr_tg_autoload_apply(&state, 0U, 100U, &keyed_from) == 1 && state.K == 33ULL, 1);
+        rc |= expect_int("bp autoload: slot 2's keyless talkgroup gives the key back",
+                         keyring_dmr_tg_autoload_apply(&state, 1U, 200U, &keyed_from) == 0 && state.K == manual, 1);
+        rc |= expect_int("bp packet: talkgroup 100's key", bp_packet_decrypts(&state, 0U, 100U, 33U), 1);
+        if (manual != 0U) {
+            rc |= expect_int("bp packet: the operator's key for talkgroup 200",
+                             bp_packet_decrypts(&state, 1U, 200U, manual), 1);
+        }
+        rc |= expect_int("bp packet: the working key stays the voice's", (int)state.K, (int)manual);
+    }
+    return rc;
+}
+
 /* An imported zero key is a key: the data RC4, DES and AES-256 paths decrypt with it; nothing imported, nothing does. */
 /* Data AES needs its ALG's full key width: three of AES-256's segments, or one of AES-128's, stay refused. */
 static int
@@ -572,6 +630,7 @@ main(void) {
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
+    rc |= test_basic_privacy_packet_keys_from_its_destination();
     rc |= test_aes_missing_key_still_normalizes_alg();
     rc |= test_imported_zero_keys_decrypt();
     rc |= test_incomplete_aes_key_refused();

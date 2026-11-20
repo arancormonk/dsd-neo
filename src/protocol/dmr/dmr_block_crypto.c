@@ -93,8 +93,8 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
 // The data path's own ALG numbering, translated locally rather than normalized into the voice
 // space: data-2 (DES) and voice-0x02 (Hytera Enhanced) already collide there. Derived from what
 // dmr_block_crypto_decrypt_payload() actually consumes -- algs 1 and 2 require ctx->rkey, alg 4
-// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads state->K and the BPK table
-// instead of the keyring, and alg 7 (VTX STD) has no decrypt branch at all.
+// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads ctx->bp_key (dmr_block_bp_key()) and
+// the BPK table, and alg 7 (VTX STD) has no decrypt branch at all.
 static dsd_key_material_need
 dmr_block_alg_key_need(int alg) {
     switch (alg) {
@@ -104,6 +104,23 @@ dmr_block_alg_key_need(int alg) {
         case 5: /* AES-256 */ return DSD_KEY_NEED_AES_4;
         default: return DSD_KEY_NEED_NONE;
     }
+}
+
+/* The Basic Privacy key a packet of lane @p slot decrypts with. Where the talkgroup key autoload keys the voice (no
+   forced key), it is the key the packet's own destination leaves (keyring_dmr_tg_autoload_preview(): that
+   destination's key, else the key the autoload replaced, the operator's), as for a call's LC (dmr_flco.c), never the
+   shared working key, which the last voice frame of either slot keyed: the other slot's call on a talkgroup with no
+   key gives the operator's key back there. A forced key keys every packet, as it keys every frame. */
+static unsigned long long
+dmr_block_bp_key(const dsd_state* state, uint8_t slot) {
+    if (state->M != 0) {
+        return state->K;
+    }
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    const uint32_t target = (uint32_t)state->dmr_lrrp_target[slot & 1U];
+    keyring_dmr_tg_autoload_preview(state, slot, target, words, flags);
+    return words[0];
 }
 
 void
@@ -144,6 +161,7 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, uint16_t receive
                                          dmr_block_alg_key_need(ctx->alg), ctx->signaled_kid, &ctx->mapped);
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
     ctx->rkey_present = keyring_kid_scalar_present(state, ctx->kid);
+    ctx->bp_key = dmr_block_bp_key(state, id_slot);
 
     ctx->aes_key_loaded =
         dmr_block_load_aes_key(state, ctx->kid, dsd_key_need_aes_width(dmr_block_alg_key_need(ctx->alg)), ctx->aes_key);
@@ -291,13 +309,13 @@ dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, ui
 
 static uint8_t
 dmr_block_crypto_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx, int show_keys) {
-    if (ctx->alg != 0 || state->K == 0 || state->K > 0xFFULL) {
+    if (ctx->alg != 0 || ctx->bp_key == 0 || ctx->bp_key > 0xFFULL) {
         return 0;
     }
 
-    const uint16_t bp_key = BPK[state->K];
+    const uint16_t bp_key = BPK[ctx->bp_key];
     char key_text[16];
-    DSD_FPRINTF(stderr, " Key: %s;", dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->K, 0U));
+    DSD_FPRINTF(stderr, " Key: %s;", dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, ctx->bp_key, 0U));
     if (bp_key == 0U) {
         return 0;
     }

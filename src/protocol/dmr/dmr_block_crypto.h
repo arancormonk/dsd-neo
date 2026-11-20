@@ -20,6 +20,8 @@ typedef struct {
     int end;
     unsigned long long mi;
     unsigned long long rkey;
+    /* The Basic Privacy key index (ALG 0) the packet decrypts with: its destination's (dmr_block_crypto_load_ctx()) */
+    unsigned long long bp_key;
     uint8_t aes_key[32];
     uint8_t rc4_iv[9];
 } dmr_block_crypto_ctx;
