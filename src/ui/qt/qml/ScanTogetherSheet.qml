@@ -74,10 +74,14 @@ ModalSheet {
         }
         return out;
     }
-    // The lists switched on, as saved now.
+    // The lists switched on, as saved now. One removed (or made a draft) while the sheet is
+    // open is no list to judge the others with: getByUid() gives it as an empty map, which every
+    // row would differ from. setChosen() then drops its uid, since no row names it.
     function chosenLists() {
         return chosen.map(function (uid) {
             return scanLists.getByUid(uid);
+        }).filter(function (list) {
+            return !!list.uid && !list.isDraft;
         });
     }
     function setChosen(uid, on) {

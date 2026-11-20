@@ -593,8 +593,9 @@ ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& oth
     QVariantList session{primary, other};
     const QString otherUid = other.value("uid").toString();
     for (const QVariant& value : chosen) {
+        /* A list that no longer exists (an empty map) is in no session. */
         const QString uid = value.toMap().value("uid").toString();
-        if (uid != otherUid && uid != primary.value("uid").toString()) {
+        if (!uid.isEmpty() && uid != otherUid && uid != primary.value("uid").toString()) {
             session << value;
         }
     }

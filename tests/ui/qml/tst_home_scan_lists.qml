@@ -375,40 +375,79 @@ Item {
         // Issue #890: the sheet judges a list with the ones already switched on, as the start
         // would: a TETRA DMO list runs the session at 72 kHz, so an explicit 48 kHz list and it
         // join the card's App default list each alone, not together, whichever comes first.
-        function test_scan_with_other_lists_judges_the_set() {
+        // Opens the card's More menu on Scan with other lists, after adding @a lists, and returns
+        // the sheet.
+        function openScanTogether(lists) {
             var app = appLoader.item;
-            var oldOnboarding = prefs.onboardingDone;
-            prefs.onboardingDone = true;
-            testContext.setPrefs("bandwidthKhz", 48);
             app.currentTab = 0;
             var home = findChild(app, "homeScreen");
             tryCompare(home, "visible", true);
-            scanLists.add({name: "Narrow", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, bandwidthKhz: 48,
-                entries: [{kind: "freq", name: "Ops", protocol: "p25", freqMhz: "852.5", enabled: true}]});
-            var narrow = scanLists.get(scanLists.count - 1);
-            scanLists.add({name: "Direct", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
-                entries: [{kind: "freq", name: "DMO", protocol: "tetra_dmo", freqMhz: "430.5", enabled: true}]});
-            var direct = scanLists.get(scanLists.count - 1);
+            for (var list of lists)
+                scanLists.add(list);
             var menu = findChild(home, "scanListManageSheet");
             menu.openFor(0);
             menu.activate(1);
             var sheet = findChild(home, "scanTogetherSheet");
             tryCompare(sheet, "visible", true);
-            var narrowRow = findChild(sheet, "scanTogetherRow_" + narrow.uid);
-            var directRow = findChild(sheet, "scanTogetherRow_" + direct.uid);
-            verify(narrowRow.enabled && directRow.enabled);
-            narrowRow.activate();
-            compare(sheet.chosen.join(), narrow.uid);
-            tryCompare(findChild(sheet, "scanTogetherRow_" + direct.uid), "enabled", false);
-            compare(findChild(sheet, "scanTogetherRow_" + direct.uid).subtitle, "Different bandwidth");
-            findChild(sheet, "scanTogetherRow_" + narrow.uid).activate();
-            compare(sheet.chosen.length, 0);
-            findChild(sheet, "scanTogetherRow_" + direct.uid).activate();
-            compare(sheet.chosen.join(), direct.uid);
-            tryCompare(findChild(sheet, "scanTogetherRow_" + narrow.uid), "enabled", false);
-            compare(findChild(sheet, "scanTogetherRow_" + narrow.uid).subtitle, "Different bandwidth");
-            findChild(sheet, "scanTogetherCancel").clicked();
-            prefs.onboardingDone = oldOnboarding;
+            return sheet;
+        }
+        function p25List(name, extra) {
+            return Object.assign({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Ops", protocol: "p25", freqMhz: "852.5", enabled: true}]}, extra || {});
+        }
+
+        // Issue #890: the sheet judges a list with the ones already switched on, as the start
+        // would: a TETRA DMO list runs the session at 72 kHz, so an explicit 48 kHz list and it
+        // join the card's App default list each alone, not together, whichever comes first.
+        function test_scan_with_other_lists_judges_the_set() {
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            testContext.setPrefs("bandwidthKhz", 48);
+            try {
+                var sheet = openScanTogether([p25List("Narrow", {bandwidthKhz: 48}), {name: "Direct", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "DMO", protocol: "tetra_dmo", freqMhz: "430.5", enabled: true}]}]);
+                var narrow = scanLists.get(scanLists.count - 2);
+                var direct = scanLists.get(scanLists.count - 1);
+                verify(findChild(sheet, "scanTogetherRow_" + narrow.uid).enabled && findChild(sheet, "scanTogetherRow_" + direct.uid).enabled);
+                findChild(sheet, "scanTogetherRow_" + narrow.uid).activate();
+                compare(sheet.chosen.join(), narrow.uid);
+                tryCompare(findChild(sheet, "scanTogetherRow_" + direct.uid), "enabled", false);
+                compare(findChild(sheet, "scanTogetherRow_" + direct.uid).subtitle, "Different bandwidth");
+                findChild(sheet, "scanTogetherRow_" + narrow.uid).activate();
+                compare(sheet.chosen.length, 0);
+                findChild(sheet, "scanTogetherRow_" + direct.uid).activate();
+                compare(sheet.chosen.join(), direct.uid);
+                tryCompare(findChild(sheet, "scanTogetherRow_" + narrow.uid), "enabled", false);
+                compare(findChild(sheet, "scanTogetherRow_" + narrow.uid).subtitle, "Different bandwidth");
+                findChild(sheet, "scanTogetherCancel").clicked();
+            } finally {
+                prefs.onboardingDone = oldOnboarding;
+            }
+        }
+
+        // A list removed while the sheet is open leaves the choice alone; the others it held stay
+        // switched on and joinable, rather than every row being judged against a list that is gone.
+        function test_scan_with_other_lists_keeps_choice_when_one_is_removed() {
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            try {
+                var sheet = openScanTogether([p25List("Spare A"), p25List("Spare B")]);
+                var a = scanLists.get(scanLists.count - 2);
+                var b = scanLists.get(scanLists.count - 1);
+                findChild(sheet, "scanTogetherRow_" + a.uid).activate();
+                findChild(sheet, "scanTogetherRow_" + b.uid).activate();
+                compare(sheet.chosen.join(), [a.uid, b.uid].join());
+                verify(scanLists.remove(scanLists.rowForUid(b.uid)));
+                tryCompare(sheet, "chosen", [a.uid]);
+                compare(sheet.chosenLists().length, 1);
+                var row = findChild(sheet, "scanTogetherRow_" + a.uid);
+                verify(row.enabled && row.checked, row.subtitle);
+                compare(findChild(sheet, "scanTogetherRow_" + b.uid), null);
+                compare(findChild(sheet, "scanTogetherStart").text, "Start 2 lists");
+                findChild(sheet, "scanTogetherCancel").clicked();
+            } finally {
+                prefs.onboardingDone = oldOnboarding;
+            }
         }
 
         function test_home_card_and_confirmed_start() {

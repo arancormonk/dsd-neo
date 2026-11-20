@@ -894,6 +894,8 @@ checkTetraListRate(const QTemporaryDir& dir) {
     check(starter.joinConflict(primaryDefault, defaultDmo, {}).isEmpty());
     check(starter.joinConflict(primaryDefault, defaultDmo, {narrowP25}) == "Different bandwidth");
     check(starter.joinConflict(primaryDefault, narrowP25, {defaultDmo}) == "Different bandwidth");
+    // A chosen list that no longer exists (an empty map) is in no session.
+    check(starter.joinConflict(primaryDefault, narrowP25, {QVariantMap()}).isEmpty());
     // A list counts once: one already on is judged as itself, not twice.
     check(starter.joinConflict(primaryDefault, defaultDmo, {defaultDmo, primaryDefault}).isEmpty());
     // Two lists at the same explicit 48 kHz agree on the bandwidth, but TETRA cannot decode at it.

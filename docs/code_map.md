@@ -22624,17 +22624,17 @@ makes App default 72 kHz (`DSD_TETRA_DSP_BW_KHZ`) and keeps a list's own bandwid
 before any file is written, naming the fix (72 kHz or App default), and the same value feeds the join check (`Different
 bandwidth`), the analog-width warning and the argv's RTL USB, RTL-TCP and Airspy spec
 (`session_args_scan_build_lists(..., tetraTargets)`). The Scan-with sheet's `joinConflict(primary, other, chosen)`
-judges a list with the lists already switched on as the one session the start would run (each compared with the primary
-at the session's rate, then `TETRA DMO needs 72 kHz` when that rate cannot decode them), so a set the start refuses is
-never offered (`ScanTogetherSheet.qml` re-reads every row's reason when the choice changes). The editor's App default
-note reads `ScanListStarter::bandwidthKhz()` and `scanTetraRateNote` shows the start's own refusal beside the choice
-(`ScanListStarter::rateError()`). A USB permission wait and an auto-start reload the lists by uid (`startScanByUid()`),
-so they resolve the same rate. Tests: `UI_QT_SCAN_LIST_TARGETS` (catalog, families × trunking, modulation, key matrix),
-`UI_QT_SESSION_ARGS` (Default P25 with a TETRA companion is 72, explicit 72 joins Default, explicit 48 with a
-switched-off TETRA entry builds, explicit 48 with TETRA is refused), `UI_QT_SCAN_LIST_ROUNDTRIP` (the starter; the
-starts and the engine round trip of the new types run once the engine takes them), `UI_QT_SIGNAL_SEARCH` (widths and
-labels), `UI_QT_DECRYPTION_PROFILES` (hidden profiles hold no use), `tst_scan_list_screen.qml` (picker order, rows, the
-notice).
+judges a list with the lists already switched on (one removed meanwhile counts as none) as the one session the start
+would run (each compared with the primary at the session's rate, then `TETRA DMO needs 72 kHz` when that rate cannot
+decode them), so a set the start refuses is never offered (`ScanTogetherSheet.qml` re-reads every row's reason when the
+choice changes). The editor's App default note reads `ScanListStarter::bandwidthKhz()` and `scanTetraRateNote` shows the
+start's own refusal beside the choice (`ScanListStarter::rateError()`). A USB permission wait and an auto-start reload
+the lists by uid (`startScanByUid()`), so they resolve the same rate. Tests: `UI_QT_SCAN_LIST_TARGETS` (catalog,
+families × trunking, modulation, key matrix), `UI_QT_SESSION_ARGS` (Default P25 with a TETRA companion is 72, explicit
+72 joins Default, explicit 48 with a switched-off TETRA entry builds, explicit 48 with TETRA is refused),
+`UI_QT_SCAN_LIST_ROUNDTRIP` (the starter; the starts and the engine round trip of the new types run once the engine
+takes them), `UI_QT_SIGNAL_SEARCH` (widths and labels), `UI_QT_DECRYPTION_PROFILES` (hidden profiles hold no use),
+`tst_scan_list_screen.qml` (picker order, rows, the notice).
 
 A list's session switches sit in the editor's Advanced section (`ScanListScreen.qml`): Voice only (`voiceOnly`,
 `--scan-voice-only`) and, under it, Skip silent channels (`skipSilent`, `--scan-skip-silent`, issue #834), a
