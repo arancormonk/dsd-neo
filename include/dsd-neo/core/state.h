@@ -1269,6 +1269,9 @@ enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS
    audio both would. */
 enum { DSD_X2TDMA_CRYPTO_UNKNOWN = 0, DSD_X2TDMA_CRYPTO_CLEAR = 1, DSD_X2TDMA_CRYPTO_ENCRYPTED = 2 };
 
+/* dsd_state::m17_ip_stream: the M17 network stream the signature state belongs to. */
+enum { DSD_M17_IP_STREAM_NONE = 0, DSD_M17_IP_STREAM_OPEN = 1, DSD_M17_IP_STREAM_ENDED = 2 };
+
 /** Where received-tone detection stands (issue #522).
  * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
  * input switch, mode change or stop), or detection is not running at all. It does not by
@@ -3186,11 +3189,12 @@ struct dsd_state {
      *   despite a failed CRC is then shown and never replaces them.
      * m17_signature_fn_seen / m17_signature_last_fn: a network stream frame entered the digest, and the last one's frame
      *   number: each valid IP frame enters it once, in order (a copy that arrives again is not counted twice).
-     * m17_ip_stream_open / m17_ip_stream_sid: the network stream the signature state is the transmission of. */
+     * m17_ip_stream / m17_ip_stream_sid: the network stream the signature state is the transmission of
+     *   (DSD_M17_IP_STREAM_NONE, _OPEN, or _ENDED by its EOT, EOTX or DISC, its verdict kept until another stream). */
     uint8_t m17_lsf_checked;
     uint8_t m17_signature_fn_seen;
     uint16_t m17_signature_last_fn;
-    uint8_t m17_ip_stream_open;
+    uint8_t m17_ip_stream;
     uint16_t m17_ip_stream_sid;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame

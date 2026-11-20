@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -34,6 +35,15 @@ void m17_confirm_reset(dsd_state* state);
 
 /** @brief Whether the current M17 transmission has produced CRC-verified content. */
 int m17_confirm_is_confirmed(const dsd_state* state);
+
+/**
+ * @brief End the slot's call for an M17 end (the EOT marker, a stream frame's EOS bit, an IP stream's EOT, EOTX or
+ * DISC, a packet's end) with @p reason, and sync its event.
+ *
+ * Only an ACTIVE M17 call ends, and with @p data_only only a data one: another protocol's call still open on the slot
+ * is no transmission this end belongs to.
+ */
+void m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only);
 int encodeM17STR(dsd_opts* opts, dsd_state* state);
 void encodeM17BRT(dsd_opts* opts, dsd_state* state);
 int encodeM17PKT(dsd_opts* opts, dsd_state* state);

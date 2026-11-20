@@ -15,9 +15,12 @@ Implemented decode coverage:
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD,
   or an IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an
   LSF that failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has
-  set up the transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. A stream's LSD counts only when all six
-  of its LICH pieces were heard in one transmission, on one tuning, and on the same side of the moment the stream was
-  confirmed; one put together across a retune or another change is dropped, and the next whole set is read.
+  set up the transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type.
+  If the end of one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and
+  encryption stay in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six
+  stream frames, 240 ms) when those frames are received cleanly. A stream's LSD counts only when all six of its LICH pieces were heard in one transmission, on
+  one tuning, and on the same side of the moment the stream was confirmed; one put together across a retune or
+  another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
   topic, once per transmission, sender and META content. The console prints its coordinates only once the position
   was accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23 (never used by the specification) is no position,

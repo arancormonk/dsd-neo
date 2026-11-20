@@ -406,27 +406,6 @@ m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
 }
 
 static void
-m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && call.kind == DSD_CALL_KIND_DATA && DSD_SYNC_IS_M17(call.protocol)
-        && dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    }
-}
-
-/* End the slot's call for an M17 end (a stream frame's EOS bit, an IP stream's EOT, EOTX or DISC) when it is an M17 one:
-   another protocol's call still open on the slot is no transmission this end belongs to. */
-static void
-m17_end_active_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    }
-}
-
-static void
 m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0, &call) > 0) {
@@ -1237,11 +1216,18 @@ M17verifyCollectedSignature(dsd_state* state) {
     }
 }
 
+/* Whether @p frame_number is one of the four signature frames of a voice stream that advertises a signature (M17 spec
+   2.0.11, Signature Generation and Transmission): its payload is a signature chunk, never voice. */
+static int
+m17_is_signature_frame(const dsd_state* state, uint16_t frame_number) {
+    return state->m17_signature_advertised != 0U && m17_stream_signature_frame_index(frame_number) >= 0
+           && (state->m17_str_dt == 2U || state->m17_str_dt == 3U);
+}
+
 static int
 M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
                            uint16_t frame_number) {
-    if (state->m17_signature_advertised == 0U || m17_stream_signature_frame_index(frame_number) < 0
-        || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
+    if (!m17_is_signature_frame(state, frame_number)) {
         return 0;
     }
 
@@ -1349,6 +1335,17 @@ m17_stream_payload_may_play(const dsd_state* state, int update_media) {
     return m17_confirm_is_confirmed(state);
 }
 
+/* Whether a stream frame is a signature frame, consumed as one: its chunk collected, except from an IP frame whose CRC
+   failed, which would replace a good chunk and is no chunk, and no voice either (its payload is signature bits). */
+static int
+m17_stream_signature_frame_consumed(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
+                                    uint16_t frame_number, m17_stream_source source) {
+    if (source == M17_STREAM_FROM_NET_UNCHECKED) {
+        return m17_is_signature_frame(state, frame_number);
+    }
+    return M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0;
+}
+
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
                                      uint16_t frame_number, uint8_t* processed_payload, int update_media,
@@ -1367,9 +1364,7 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
                            sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
-    /* A signature chunk from an IP frame whose CRC failed would replace a good one: such a frame is no chunk. */
-    if (source != M17_STREAM_FROM_NET_UNCHECKED
-        && M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+    if (m17_stream_signature_frame_consumed(state, payload_bytes, trellis_buf, frame_number, source)) {
         return M17_STREAM_SIGNATURE_CONSUMED;
     }
 
@@ -1527,7 +1522,7 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
     // The stream frame's end-of-stream flag is an over-the-air terminator: it lets the event
     // layer keep an audible epoch whose LSF never decoded, where EXPLICIT would read as a retune.
     if (end != 0U) {
-        m17_end_active_call(opts, state, DSD_CALL_END_TERMINATOR);
+        m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
     }
 }
 
@@ -3593,7 +3588,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     m17_pkt_print_full_payload(&ctx);
     m17_pkt_send_mpkt_if_enabled(&ctx);
     m17_pkt_run_loop(&ctx);
-    m17_end_packet_call(opts, state);
+    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
     return 0;
 }
 
@@ -3908,7 +3903,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     m17_pkt_log_final_if_enabled(opts, state, end, crc_cmp, crc_ext);
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
-    m17_end_packet_call(opts, state);
+    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
 }
 
 /* Decodes the frame's @p soft_symbols. Returns non-zero when the frame carried a packet chunk
@@ -4103,10 +4098,17 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const int crc_valid = crc_ext == crc_cmp;
     if (crc_valid) {
         /* Every frame of a network stream carries its LSF, and none of them begins the transmission: only another
-           stream (a new stream ID, or any after the last one's end) does, and with it a new link setup and digest. */
-        if (state->m17_ip_stream_open == 0U || state->m17_ip_stream_sid != sid) {
+           stream does, and with it a new link setup and digest. That is a new stream ID, or the same one after its
+           stream ended starting again (a frame number not past the last one counted, frame 0 for a new
+           transmission); a late copy of the ended stream's frames past that (its last frame heard again) is still
+           that stream's, and its verdict stays. */
+        const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
+        const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
+        const int late_copy =
+            ended && same_sid && state->m17_signature_fn_seen != 0U && fn > state->m17_signature_last_fn;
+        if (!same_sid || (ended && !late_copy)) {
             m17_confirm_reset_link(state);
-            state->m17_ip_stream_open = 1U;
+            state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
             state->m17_ip_stream_sid = sid;
         }
         const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
@@ -4117,10 +4119,10 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
                                                crc_valid ? M17_STREAM_FROM_NET_CHECKED : M17_STREAM_FROM_NET_UNCHECKED);
     // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
     if (crc_valid && eot != 0U) {
-        m17_end_active_call(opts, state, DSD_CALL_END_TERMINATOR);
+        m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
         /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until then. */
         m17_gnss_tx_end(state);
-        state->m17_ip_stream_open = 0U;
+        state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
     }
 
     if (opts->payload == 1) {
@@ -4154,10 +4156,12 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
         m17_ip_dump_bytes_spaced(ip_frame, desc->dump_len, desc->dump_len, "");
     }
     if (desc->drop_carrier) {
-        m17_end_active_call(opts, state, DSD_CALL_END_EXPLICIT);
+        m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 0);
         /* The transmission ended (EOTX, DISC): a later stream that reuses its ID is another one, call or not. */
         m17_gnss_tx_end(state);
-        state->m17_ip_stream_open = 0U;
+        if (state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN) {
+            state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
+        }
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
     }
@@ -4195,7 +4199,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (crc_ext == crc_cmp) {
         /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
         decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
-        m17_end_packet_call(opts, state);
+        m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
         /* One MPKT is one whole transmission. */
         m17_gnss_tx_end(state);
     } else {

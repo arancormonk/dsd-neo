@@ -14091,6 +14091,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_m17_eot.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_call_end.c
 )
 target_include_directories(
     dsd-neo_test_m17_sync_dispatch

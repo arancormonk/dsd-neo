@@ -63,17 +63,6 @@ m17_drain_eot_marker(dsd_opts* opts, dsd_state* state, int inverted) {
     }
 }
 
-/* End the slot's call when it is an M17 one: the marker ends the transmission whose frames led the hunt to it, never a
- * call of another protocol still open on the slot. */
-static void
-m17_end_call_on_eot(dsd_opts* opts, dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
-    }
-}
-
 dsd_frame_verdict
 dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
     if (state->synctype == DSD_SYNC_M17_PRE_POS || state->synctype == DSD_SYNC_M17_PRE_NEG) {
@@ -91,7 +80,8 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         // An EOT marker decoded over the air is positive evidence the transmission ended, so the
         // event layer can keep an audible epoch whose LSF never reassembled; a plain EXPLICIT end
         // is indistinguishable from an engine retune and would drop that row.
-        m17_end_call_on_eot(opts, state);
+        // Only an M17 call: the marker ends the transmission whose frames led the hunt to it.
+        m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
         DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
         state->m17_pbc_ct = 0;

@@ -13808,8 +13808,11 @@ Private per-protocol modules worth knowing about:
   frame enters it only when its CRC passed and its frame number is past the last one counted, and an IP frame whose
   CRC failed is never a signature chunk (`M17updateSignatureDigest()`; `M17_STATE_DISPATCH`
   `test_signed_rf_stream_verifies_across_lich_rebuilds`, `test_signed_ip_stream_verifies_with_duplicates`). A stream
-  frame's EOS bit, an IP EOT, EOTX or DISC and the EOT marker end the slot's call only when it is an M17 one
-  (`m17_end_active_call()`, `m17_end_call_on_eot()`). The EOT also puts the
+  frame's EOS bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an
+  M17 one (`m17_end_call()`, `m17_call_end.c`, public in `<dsd-neo/protocol/m17/m17.h>`). After an IP stream's end a
+  frame of the same stream ID is that stream's late copy while its frame number is past the last one counted (its
+  verdict stays), and another transmission otherwise; a CRC-failed IP frame at a signature frame number is consumed,
+  neither a chunk nor voice. The EOT also puts the
   slicer levels back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker
   is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
   preamble against the skewed centre it left (issue #834).

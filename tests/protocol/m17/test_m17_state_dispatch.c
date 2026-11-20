@@ -4982,7 +4982,7 @@ static const uint16_t k_test_signature_fns[4] = {M17_STREAM_SIGNATURE_FN0, M17_S
                                                  M17_STREAM_SIGNATURE_FN2, M17_STREAM_SIGNATURE_FN3};
 
 /* A signed RF stream: its LSF frame, 16 voice frames and the four signature frames, each stream frame with its LICH
-   chunk. The LSF is rebuilt from the LICH three times on the way, the last between the second and third signature
+   chunk. The LSF is rebuilt from the LICH three times on the way, the last between the first and second signature
    frames; none of those rebuilds is a transmission boundary, so the digest and the signature collected so far survive
    them and the signature verifies against the station's public key. */
 static int
@@ -5088,12 +5088,32 @@ test_signed_ip_stream_verifies_with_duplicates(void) {
         send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX),
                              (uint8_t)((fn & M17_STREAM_FRAME_END_MASK) != 0U), M17_REF_SIGNATURE_BYTES + (i * 16U), 0);
         if (i == 1U) {
+            /* Nor is it voice: a CRC-failed copy of a signature frame is 128 bits of signature, never Codec2 audio. */
+            const int decodes = g_codec2_decode_calls;
             send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX), 0U,
                                  M17_REF_SIGNATURE_BYTES + (i * 16U), 1);
+            err |= expect_int("a CRC-failed signature frame plays nothing", g_codec2_decode_calls - decodes, 0);
         }
     }
     err |= expect_u8("network signature complete", state->m17_signature_complete, 1U);
     err |= expect_u8("signed network stream verifies", state->m17_signature_verification_status, 1U);
+
+    /* A copy of the stream's last frame (its EOT set) arriving again is that ended stream's, not a new one: the verdict
+       stays and the copy is no signature chunk out of sequence. */
+    send_ip_stream_frame(opts, state, lsf_bits, sid,
+                         (uint16_t)(M17_STREAM_SIGNATURE_FN3 & M17_STREAM_FRAME_COUNTER_MAX), 1U,
+                         M17_REF_SIGNATURE_BYTES + 48U, 0);
+    err |= expect_u8("a repeated last frame keeps the verdict", state->m17_signature_verification_status, 1U);
+    err |= expect_u8("a repeated last frame is in sequence", state->m17_signature_bad_sequence, 0U);
+
+    /* The same stream ID starting again from frame 0 after the end is another transmission. */
+    send_ip_stream_frame(opts, state, lsf_bits, sid, 0U, 0U, payloads[0], 0);
+    uint8_t restarted[M17_SIGNATURE_DIGEST_BYTES];
+    DSD_MEMSET(restarted, 0, sizeof(restarted));
+    m17_signature_digest_update(restarted, payloads[0]);
+    err |= expect_bytes("a restarted stream ID starts its own digest", state->m17_signature_digest, restarted,
+                        sizeof(restarted));
+    err |= expect_u8("a restarted stream ID starts its own verification", state->m17_signature_verification_status, 0U);
 
     /* The next stream (another stream ID) starts a digest of its own. */
     send_ip_stream_frame(opts, state, lsf_bits, (uint16_t)(sid + 1U), 0U, 0U, payloads[0], 0);
