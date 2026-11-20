@@ -1782,7 +1782,8 @@ def cached_compiler():
         candidates = sorted((cache / package).glob("*/*/*.jar"))
         if not candidates:
             return None
-        jars.append(candidates[-1])
+        # Absolute: the tests run in a working directory of their own, where a relative GRADLE_USER_HOME means nothing.
+        jars.append(candidates[-1].resolve())
     return jars
 
 
@@ -1859,16 +1860,26 @@ def kotlinc_environment(environ, kotlinc):
     return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, words)))}
 
 
-def compile_command(java, kotlinc, cached, files, output, environ):
+def compile_command(java, kotlinc, cached, files, output, environ, tmpdir=None):
     """The compile of @p files into the jar @p output: its argv, its environment and the classpath the tests run on. With
     kotlinc, the JVM options go through JAVA_OPTS and no argument carries one; with the cached compiler, java takes them
-    as arguments itself."""
+    as arguments itself. With @p tmpdir, the compiler JVM's java.io.tmpdir is there (it unpacks native libraries into
+    it): an argument to the cached compiler, and for kotlinc, whose POSIX launcher splits JAVA_OPTS at every space,
+    a quoted word appended to JAVA_TOOL_OPTIONS."""
     if kotlinc:
         argv = [kotlinc, "-include-runtime", *map(str, files), "-d", str(output)]
-        return argv, kotlinc_environment(environ, kotlinc), str(output)
+        env = kotlinc_environment(environ, kotlinc)
+        if tmpdir is not None:
+            temp = quote_jvm_word(f"-Djava.io.tmpdir={tmpdir}")
+            if temp is None:
+                raise ValueError(f"the compiler's temp folder {tmpdir} holds both quote characters")
+            given = environ.get("JAVA_TOOL_OPTIONS", "").strip()
+            env["JAVA_TOOL_OPTIONS"] = f"{given} {temp}" if given else temp
+        return argv, env, str(output)
     classpath = os.pathsep.join(map(str, cached))
+    temp = [f"-Djava.io.tmpdir={tmpdir}"] if tmpdir is not None else []
     argv = [
-        java, *jvm_options(environ), "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+        java, *jvm_options(environ), *temp, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
         "-no-stdlib", "-no-reflect", "-classpath", classpath, *map(str, files), "-d", str(output),
     ]
     return argv, dict(environ), os.pathsep.join((str(output), classpath))
@@ -1889,12 +1900,62 @@ def temp_environment(environ, tmpdir):
     return {**environ, "TMPDIR": str(tmpdir), "TEMP": str(tmpdir), "TMP": str(tmpdir)}
 
 
-def inherited_tmpdir_option(environ):
-    """The JVM-wide option variable in @p environ that sets java.io.tmpdir, or None. _JAVA_OPTIONS is applied after the
-    command line, so it would win over the test's own temp folder and send its files where nothing checks them."""
+def quote_jvm_word(word):
+    """@p word as one argument in a JVM-wide option variable, which HotSpot splits at whitespace outside quotes
+    (jvm_option_words()); None when it holds both kinds of quote and so cannot be written there."""
+    if not any(char.isspace() or char in "\"'" for char in word):
+        return word
+    if '"' not in word:
+        return f'"{word}"'
+    if "'" not in word:
+        return f"'{word}'"
+    return None
+
+
+# The arguments in a JVM-wide option variable that name a file: the launcher's @argfiles (JDK_JAVA_OPTIONS) and
+# HotSpot's options files. Relative, they would be looked up in the test's own working directory.
+JVM_FILE_ARGUMENTS = ("-XX:VMOptionsFile=", "-XX:Flags=")
+
+
+def absolute_jvm_files(environ, base):
+    """@p environ with each relative file a JVM-wide option variable names made absolute against @p base, the
+    runner's working directory, since the tests run in folders of their own. Raises ValueError for one it cannot
+    rewrite."""
+    env = dict(environ)
     for name in JVM_WIDE_OPTIONS:
-        if any(word.startswith("-Djava.io.tmpdir=") for word in jvm_option_words(environ.get(name, ""))):
-            return name
+        words = jvm_option_words(environ.get(name, ""))
+        changed = False
+        for i, word in enumerate(words):
+            prefix = next((p for p in JVM_FILE_ARGUMENTS if word.startswith(p)), None)
+            if prefix is None and word.startswith("@") and not word.startswith("@@"):
+                prefix = "@"
+            if prefix is None or Path(word[len(prefix):]).is_absolute():
+                continue
+            words[i] = prefix + str(Path(base) / word[len(prefix):])
+            changed = True
+        if changed:
+            quoted = [quote_jvm_word(word) for word in words]
+            if None in quoted:
+                raise ValueError(f"{name}: an argument holds both quote characters and cannot be rewritten")
+            env[name] = " ".join(quoted)
+    return env
+
+
+def effective_tmpdir(java, environ, cwd, tmpdir):
+    """The java.io.tmpdir a test JVM ends up with, given @p tmpdir on its command line: _JAVA_OPTIONS, which HotSpot
+    reads after the command line, or an options file named there, can replace it, and only the JVM can say which
+    wins. None when it does not say."""
+    probe = subprocess.run([java, *jvm_options(environ), f"-Djava.io.tmpdir={tmpdir}", "-XshowSettings:properties",
+                            "-version"], env=environ, cwd=cwd, capture_output=True, text=True, timeout=30)
+    return tmpdir_setting(probe.stderr)
+
+
+def tmpdir_setting(settings):
+    """java.io.tmpdir in @p settings, what -XshowSettings:properties prints; None when it is not there."""
+    for line in settings.splitlines():
+        key, sep, value = line.strip().partition(" = ")
+        if sep and key == "java.io.tmpdir":
+            return value
     return None
 
 
@@ -1906,16 +1967,29 @@ def leftovers(folder):
 def run_test(java, runtime, test, directory):
     """Run the compiled @p test in a temp folder of its own inside @p directory, which is its java.io.tmpdir, its native
     temp folder and its working directory (so a Unix socket can be bound by a short relative name). Each test must
-    remove what it creates there: what is left fails the run, naming it, and is removed."""
+    remove what it creates there: what is left fails the run, named, whether the test passed or not, and is removed."""
     jvm_tmp = Path(tempfile.mkdtemp(prefix="t", dir=directory))
+    env = temp_environment(absolute_jvm_files(os.environ, Path.cwd()), jvm_tmp)
     try:
-        subprocess.run(test_command(java, runtime, test, os.environ, jvm_tmp), env=temp_environment(os.environ, jvm_tmp),
-                       cwd=jvm_tmp, check=True, timeout=30)
+        seen = effective_tmpdir(java, env, jvm_tmp, jvm_tmp)
+        if seen != str(jvm_tmp):
+            raise RuntimeError(f"{test}: the test JVM's java.io.tmpdir would be {seen!r}, not its own folder "
+                               f"{str(jvm_tmp)!r}; unset what sets it (_JAVA_OPTIONS or an options file it names)")
+        failure = None
+        try:
+            subprocess.run(test_command(java, runtime, test, env, jvm_tmp), env=env, cwd=jvm_tmp, check=True,
+                           timeout=30)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            failure = error
         left = leftovers(jvm_tmp)
     finally:
         shutil.rmtree(jvm_tmp, ignore_errors=True)
     if left:
-        raise RuntimeError(f"{test} left {len(left)} entries in its temp folder: {', '.join(left[:20])}")
+        print(f"{test} left {len(left)} entries in its temp folder: {', '.join(left[:20])}", file=sys.stderr)
+    if failure is not None:
+        raise failure
+    if left:
+        raise RuntimeError(f"{test} left files in its temp folder")
 
 
 def run_build(name, build, java, kotlinc, cached):
@@ -1928,7 +2002,7 @@ def run_build(name, build, java, kotlinc, cached):
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
         argv, env, runtime = compile_command(java, kotlinc, cached, files, output,
-                                             temp_environment(os.environ, directory))
+                                             temp_environment(os.environ, directory), directory)
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
             run_test(java, runtime, test, directory)
@@ -1951,11 +2025,6 @@ def main():
     )
     args = parser.parse_args()
     selected = list(dict.fromkeys(args.suites or SUITES))
-    inherited = inherited_tmpdir_option(os.environ)
-    if inherited:
-        print(f"{inherited} sets java.io.tmpdir, which would send the tests' temp files where nothing checks them; "
-              "unset it for this run", file=sys.stderr)
-        return 1
     # Before the tool lookup, so a failed source check fails the run even where the compiler is missing.
     for name in selected:
         for check in SUITES[name].checks:

@@ -189,14 +189,39 @@ class CollectorChoice(unittest.TestCase):
         self.assertEqual((env["TMPDIR"], env["TEMP"], env["TMP"]), (str(Path("scratch")),) * 3)
         self.assertEqual(env["PATH"], "/bin")
 
-    def test_an_inherited_temp_folder_is_refused(self):
-        # _JAVA_OPTIONS comes after the command line, so its java.io.tmpdir would win over the test's own.
-        for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
-            with self.subTest(name=name):
-                self.assertEqual(runner.inherited_tmpdir_option({name: "-Xss1M -Djava.io.tmpdir=/tmp"}), name)
-                self.assertEqual(runner.inherited_tmpdir_option({name: '"-Djava.io.tmpdir=/a b"'}), name)
-        self.assertIsNone(runner.inherited_tmpdir_option({"_JAVA_OPTIONS": "-Dother=-Djava.io.tmpdir=/tmp -Xss1M"}))
-        self.assertIsNone(runner.inherited_tmpdir_option({}))
+    def test_the_compiler_jvm_gets_the_build_temp_folder(self):
+        cached = (PureWindowsPath(r"C:\gradle\kotlin-compiler-embeddable.jar"),)
+        argv, _env, _runtime = runner.compile_command(JAVA_EXE, None, cached, FILES, OUTPUT, {}, "C:\\b d")
+        self.assertEqual(argv.count("-Djava.io.tmpdir=C:\\b d"), 1)
+        self.assertLess(argv.index("-Djava.io.tmpdir=C:\\b d"), argv.index("-cp"))
+        # kotlinc's POSIX launcher splits JAVA_OPTS at every space, so the folder goes in JAVA_TOOL_OPTIONS, quoted.
+        _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT,
+                                                      {"JAVA_TOOL_OPTIONS": "-Xss1M"}, "/b d")
+        self.assertEqual(runner.jvm_option_words(env["JAVA_TOOL_OPTIONS"]), ["-Xss1M", "-Djava.io.tmpdir=/b d"])
+        _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT, {})
+        self.assertNotIn("JAVA_TOOL_OPTIONS", env)
+
+    def test_relative_jvm_option_files_are_made_absolute(self):
+        # The tests run in folders of their own, where the caller's relative names would not resolve.
+        base = Path.cwd() / "caller dir"
+        absolute = str(Path.cwd() / "abs" / "x.args")
+        flags = f"-XX:Flags={Path.cwd() / 'abs' / 'hotspotrc'}"
+        env = runner.absolute_jvm_files({"JDK_JAVA_OPTIONS": f"-Xss1M @opts.args @@literal \"@{absolute}\"",
+                                         "_JAVA_OPTIONS": '-XX:VMOptionsFile=vm.options "-Dname=a b"',
+                                         "JAVA_TOOL_OPTIONS": f'"{flags}"', "PATH": "/bin"}, base)
+        self.assertEqual(runner.jvm_option_words(env["JDK_JAVA_OPTIONS"]),
+                         ["-Xss1M", f"@{base / 'opts.args'}", "@@literal", f"@{absolute}"])
+        self.assertEqual(runner.jvm_option_words(env["_JAVA_OPTIONS"]),
+                         [f"-XX:VMOptionsFile={base / 'vm.options'}", "-Dname=a b"])
+        self.assertEqual(env["JAVA_TOOL_OPTIONS"], f'"{flags}"')  # nothing relative: left as it was
+        self.assertEqual(env["PATH"], "/bin")
+        with self.assertRaises(ValueError):
+            runner.absolute_jvm_files({"_JAVA_OPTIONS": """@rel "-Dq='a\"b'" """}, base)
+
+    def test_the_effective_temp_folder_is_read_from_the_jvm_settings(self):
+        settings = "Property settings:\n    file.encoding = UTF-8\n    java.io.tmpdir = /b d/t1\n    os.name = Linux\n"
+        self.assertEqual(runner.tmpdir_setting(settings), "/b d/t1")
+        self.assertIsNone(runner.tmpdir_setting("openjdk version 21\n"))
 
     def test_leftovers_are_named(self):
         with tempfile.TemporaryDirectory() as folder:

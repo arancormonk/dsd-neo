@@ -1114,6 +1114,14 @@ fun main() {
             println("UsbSourceManagerTest: $name OK")
         }
     } finally {
-        scratch.deleteRecursively()
+        removeTree(scratch.toPath())
     }
+}
+
+/**
+ * Remove [root] and what is in it without following a link: Files.walk() lists a link as itself, and Files.delete()
+ * removes the link, never what it names. A failure to remove anything is an error, not something left behind quietly.
+ */
+private fun removeTree(root: java.nio.file.Path) {
+    java.nio.file.Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(java.nio.file.Files::delete) }
 }
