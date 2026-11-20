@@ -907,6 +907,24 @@ class NoticeStagingTests(unittest.TestCase):
                     if real_package.exists():
                         real_package.rename(package)
 
+    @unittest.skipIf(os.name == "nt", "needs symbolic links")
+    def test_android_staging_refuses_symbolic_links_among_the_notices(self):
+        # A link the notices bring with them is refused before a package document is merged beneath it, so nothing is
+        # written through it into mbelib's installation or wherever else it points.
+        build, share, docs, args = self.android_fixture()
+        outside = self.work / "outside-legal"
+        (self.mbe / "legal").rename(outside)
+        (self.mbe / "legal").symlink_to(outside, target_is_directory=True)
+        before = sorted(path.name for path in outside.iterdir())
+        source = self.work / "package/assets/doc/dsd-neo/licenses/mbelib-neo/legal"
+        source.mkdir(parents=True)
+        (source / "extra.md").write_text("from the package source\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(sorted(path.name for path in outside.iterdir()), before)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{self.mbe / 'legal'} is a symbolic link", " ".join((result.stdout + result.stderr).split()))
+        self.assertEqual(self.scratch_folders(), [])
+
     def test_android_staging_keeps_the_package_source_documentation(self):
         # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
         # in an incremental one, and a generated notice of the same name takes its place.

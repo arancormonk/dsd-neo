@@ -52,6 +52,46 @@ endforeach()
 get_filename_component(_stage "${STAGE_DIR}" ABSOLUTE)
 set(_doc_dir "${_stage}/assets/doc/dsd-neo")
 
+# The first symbolic link among <root>, the folders on the way from it to <root>/<relative>
+# and everything in the folder there, or "" when there is none.
+function(_dsd_find_link out root relative)
+    get_filename_component(_path "${root}" ABSOLUTE)
+    set(_link "")
+    if(IS_SYMLINK "${_path}")
+        set(_link "${_path}")
+    endif()
+    string(REPLACE "/" ";" _parts "${relative}")
+    foreach(_part IN LISTS _parts)
+        if(NOT _link STREQUAL "")
+            break()
+        endif()
+        string(APPEND _path "/${_part}")
+        if(IS_SYMLINK "${_path}")
+            set(_link "${_path}")
+        endif()
+    endforeach()
+    if(_link STREQUAL "" AND IS_DIRECTORY "${_path}")
+        file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_path}/*")
+        foreach(_entry IN LISTS _entries)
+            if(IS_SYMLINK "${_entry}")
+                set(_link "${_entry}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    set(${out} "${_link}" PARENT_SCOPE)
+endfunction()
+
+function(_dsd_refuse_links root relative)
+    _dsd_find_link(_link "${root}" "${relative}")
+    if(NOT _link STREQUAL "")
+        message(
+            FATAL_ERROR
+            "${_link} is a symbolic link. The APK's documentation is staged only through real folders and files: replace it with the folder or file it points to."
+        )
+    endif()
+endfunction()
+
 if(DEFINED _DSD_FRESH_DIR)
     # The child: stage the documentation folder in the parent's new folder and bring the
     # package's folder in line with it.
@@ -72,6 +112,24 @@ if(DEFINED _DSD_FRESH_DIR)
             "${REPO_DIR}/THIRD_PARTY.md"
         DESTINATION "${_fresh_dir}"
     )
+
+    # file(COPY) copies a symbolic link as a link, and the notice and package files merged
+    # below would be written through one to wherever it points, so the notices bring none.
+    _dsd_find_link(_link "${_fresh_dir}" "")
+    if(NOT _link STREQUAL "")
+        file(RELATIVE_PATH _name "${_fresh_dir}" "${_link}")
+        if(_name MATCHES "^licenses/mbelib-neo/(.*)$")
+            set(_link "${MBELIB_NOTICE_DIR}/${CMAKE_MATCH_1}")
+        elseif(_name MATCHES "^licenses/(.*)$")
+            set(_link "${REPO_DIR}/LICENSES/${CMAKE_MATCH_1}")
+        else()
+            set(_link "${REPO_DIR}/${_name}")
+        endif()
+        message(
+            FATAL_ERROR
+            "${_link} is a symbolic link. The APK's notices are staged only from real folders and files: replace it with the folder or file it points to."
+        )
+    endif()
 
     # The notices of every component the APK carries, under the names its record gives them:
     # the vendored USB libraries, the fonts compiled into the Qt resource bundle, the
@@ -197,38 +255,6 @@ include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 # Every copy below writes through a symbolic link as through a folder, to wherever it
 # points, so none may be in the documentation's path: the source and stage folders
 # themselves, android/package/'s documentation or the way to it, or the staged package's.
-function(_dsd_refuse_links root relative)
-    get_filename_component(_path "${root}" ABSOLUTE)
-    if(IS_SYMLINK "${_path}")
-        set(_link "${_path}")
-    endif()
-    string(REPLACE "/" ";" _parts "${relative}")
-    foreach(_part IN LISTS _parts)
-        if(DEFINED _link)
-            break()
-        endif()
-        string(APPEND _path "/${_part}")
-        if(IS_SYMLINK "${_path}")
-            set(_link "${_path}")
-            break()
-        endif()
-    endforeach()
-    if(NOT DEFINED _link AND IS_DIRECTORY "${_path}")
-        file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_path}/*")
-        foreach(_entry IN LISTS _entries)
-            if(IS_SYMLINK "${_entry}")
-                set(_link "${_entry}")
-                break()
-            endif()
-        endforeach()
-    endif()
-    if(DEFINED _link)
-        message(
-            FATAL_ERROR
-            "${_link} is a symbolic link. The APK's documentation is staged only through real folders and files: replace it with the folder or file it points to."
-        )
-    endif()
-endfunction()
 _dsd_refuse_links("${SOURCE_DIR}" "assets/doc/dsd-neo")
 _dsd_refuse_links("${_stage}" "assets/doc/dsd-neo")
 
