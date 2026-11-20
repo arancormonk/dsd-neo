@@ -39,6 +39,10 @@ struct input_ring_state {
     /* Held to move discard_generation and by a producer's commit that depends on it
        (input_ring_commit_if_generation()), so a purge request falls wholly before or after such a commit. */
     std::mutex generation_m;
+    /* A test's seam: input_ring_commit_if_generation() calls it, with test_commit_arg, between its check and its
+       commit, holding generation_m. Unset (NULL) outside tests. */
+    void (*test_commit_hook)(void* arg) = nullptr;
+    void* test_commit_arg = nullptr;
     /* Stream positions in floats, counted since init: what the producer committed and what the consumer released
        (read, committed or discarded). The consumer is at stream position consumed_total, the sample at tail. */
     std::atomic<uint64_t> produced_total{0U};

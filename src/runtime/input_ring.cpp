@@ -235,6 +235,9 @@ input_ring_commit_if_generation(struct input_ring_state* r, size_t produced, uin
     if (r->discard_generation.load(std::memory_order_acquire) != generation) {
         return 0;
     }
+    if (r->test_commit_hook) {
+        r->test_commit_hook(r->test_commit_arg);
+    }
     input_ring_commit(r, produced);
     return 1;
 }
