@@ -5171,6 +5171,51 @@ test_m17_end_ends_only_an_m17_call(void) {
     return err;
 }
 
+/* After an IP stream's EOT, a copy of its last frame arriving again is that ended stream's: it opens no call row and
+   plays nothing, even on a session whose transmission evidence is still standing. The same stream ID starting again
+   from frame 0 is another transmission and opens its call. */
+static int
+test_ip_late_copy_after_eot_is_inert(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+
+    reset_audio_fakes();
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 1;
+    state->m17_can_en = -1;
+    build_checked_lsf(lsf_bits, lsf_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 0U, 0U), NULL);
+    DSD_MEMSET(payload, 0x3C, sizeof(payload));
+
+    const uint16_t sid = 0x2345U;
+    for (uint16_t fn = 0U; fn < 4U; fn++) {
+        send_ip_stream_frame(opts, state, lsf_bits, sid, fn, (uint8_t)(fn == 3U), payload, 0);
+    }
+    dsd_call_snapshot call;
+    err |= expect_int("unsigned IP stream had a call", get_m17_call(state, &call), 1);
+    err |= expect_int("its EOT ended the call", call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    const uint64_t ended_epoch = call.epoch;
+
+    state->m17_confirmed = 1U; /* evidence the IP EOT does not clear */
+    const int decodes = g_codec2_decode_calls;
+    send_ip_stream_frame(opts, state, lsf_bits, sid, 3U, 1U, payload, 0);
+    err |= expect_int("a late copy keeps the call record", get_m17_call(state, &call), 1);
+    err |= expect_int("a late copy opens no call row", call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    err |= expect_u64("a late copy starts no epoch", call.epoch, ended_epoch);
+    err |= expect_int("a late copy plays nothing", g_codec2_decode_calls - decodes, 0);
+
+    send_ip_stream_frame(opts, state, lsf_bits, sid, 0U, 0U, payload, 0);
+    err |= expect_int("a restart has a call", get_m17_call(state, &call), 1);
+    err |= expect_int("a restart opens its call row", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -5194,6 +5239,7 @@ main(void) {
     err |= test_signed_rf_stream_verifies_across_lich_rebuilds();
     err |= test_signed_ip_stream_verifies_with_duplicates();
     err |= test_m17_end_ends_only_an_m17_call();
+    err |= test_ip_late_copy_after_eot_is_inert();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();

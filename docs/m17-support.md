@@ -12,21 +12,22 @@ Implemented decode coverage:
 - Current LSF TYPE field semantics, including stream/packet mode, data type, encryption type/subtype, CAN, and signed
   stream advertisement.
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
-- Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD,
-  or an IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an
-  LSF that failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has
-  set up the transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type.
-  If the end of one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and
-  encryption stay in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six
-  stream frames, 240 ms) when those frames are received cleanly. A stream's LSD counts only when all six of its LICH pieces were heard in one transmission, on
-  one tuning, and on the same side of the moment the stream was confirmed; one put together across a retune or
-  another change is dropped, and the next whole set is read.
+- Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD, or an
+  IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an LSF that
+  failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has set up the
+  transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. If the end of
+  one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and encryption stay
+  in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six stream frames, 240
+  ms) when those frames are received cleanly. A stream's LSD counts only when all six of its LICH pieces were heard in
+  one transmission, on one tuning, and on the same side of the moment the stream was confirmed; one put together across
+  a retune or another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
-  topic, once per transmission, sender and META content. The console prints its coordinates only once the position
-  was accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23 (never used by the specification) is no position,
-  a bearing above 359 degrees reads `Bearing: Invalid;` with the speed kept, and radius code 7 counts as "more than 64
-  m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a
-  position: M17 defines no GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
+  topic, once per transmission, sender and META content. The console prints its coordinates only once the position was
+  accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23
+  (never used by the specification) is no position, a bearing above 359 degrees reads `Bearing: Invalid;` with the speed
+  kept, and radius code 7 counts as "more than 64 m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not
+  written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a position: M17 defines no
+  GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
 - Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided
   (M17 2.0.11 signatures). The digest runs over the whole stream from its first frame: the LSF repeated in the LICH

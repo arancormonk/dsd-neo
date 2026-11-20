@@ -1346,6 +1346,23 @@ m17_stream_signature_frame_consumed(dsd_state* state, const uint8_t* payload_byt
     return M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0;
 }
 
+/* A late copy of an ended network stream's frame (m17_ip_handle_stream_frame()): only a signature frame's chunk is
+   taken from it (the collector keeps the verdict it already reached), nothing else. */
+static void
+m17_collect_late_signature_chunk(dsd_state* state, const uint8_t* payload, uint16_t frame_number) {
+    if (!m17_is_signature_frame(state, frame_number)) {
+        return;
+    }
+    uint8_t payload_bytes[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t trellis_buf[M17_STREAM_TYPE1_FLUSH_BITS];
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    // payload spans M17_STREAM_PAYLOAD_BITS elements by contract.
+    dsd_pack_bits_to_bytes(payload, M17_STREAM_PAYLOAD_BITS, payload_bytes, sizeof(payload_bytes),
+                           sizeof(payload_bytes));
+    m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
+    (void)M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number);
+}
+
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
                                      uint16_t frame_number, uint8_t* processed_payload, int update_media,
@@ -4096,33 +4113,41 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     const int crc_valid = crc_ext == crc_cmp;
-    if (crc_valid) {
-        /* Every frame of a network stream carries its LSF, and none of them begins the transmission: only another
-           stream does, and with it a new link setup and digest. That is a new stream ID, or the same one after its
-           stream ended starting again (a frame number not past the last one counted, frame 0 for a new
-           transmission); a late copy of the ended stream's frames past that (its last frame heard again) is still
-           that stream's, and its verdict stays. */
-        const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
-        const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
-        const int late_copy =
-            ended && same_sid && state->m17_signature_fn_seen != 0U && fn > state->m17_signature_last_fn;
-        if (!same_sid || (ended && !late_copy)) {
-            m17_confirm_reset_link(state);
-            state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
-            state->m17_ip_stream_sid = sid;
+    /* Every frame of a network stream carries its LSF, and none of them begins the transmission: only another stream
+       does, and with it a new link setup and digest. That is a new stream ID, or the same one after its stream ended
+       (EOT, EOTX, DISC) starting again below the last frame number counted (frame 0 for a new transmission). A frame
+       of the ended stream at or past that number is a late copy of it (its last frame heard again, from a slower
+       network path): it is that stream's, and does nothing but give the signature collector its chunk, so it opens
+       no call, plays nothing and keeps the verdict. Accepted limit: a reordered older frame of the ended stream, below
+       the last number counted, is taken for a restart. */
+    const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
+    const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
+    const int late_copy =
+        crc_valid && ended && same_sid && state->m17_signature_fn_seen != 0U && fn >= state->m17_signature_last_fn;
+    if (late_copy) {
+        m17_collect_late_signature_chunk(state, payload, stream_frame_number);
+    } else {
+        if (crc_valid) {
+            if (!same_sid || ended) {
+                m17_confirm_reset_link(state);
+                state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
+                state->m17_ip_stream_sid = sid;
+            }
+            const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
+            (void)M17decodeLSF(opts, state, 1, &carrier);
         }
-        const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
-        (void)M17decodeLSF(opts, state, 1, &carrier);
-    }
-    uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
-    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid,
-                                               crc_valid ? M17_STREAM_FROM_NET_CHECKED : M17_STREAM_FROM_NET_UNCHECKED);
-    // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
-    if (crc_valid && eot != 0U) {
-        m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
-        /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until then. */
-        m17_gnss_tx_end(state);
-        state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
+        uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
+        (void)m17_dispatch_stream_payload_internal(
+            opts, state, payload, stream_frame_number, processed_payload, crc_valid,
+            crc_valid ? M17_STREAM_FROM_NET_CHECKED : M17_STREAM_FROM_NET_UNCHECKED);
+        // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
+        if (crc_valid && eot != 0U) {
+            m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
+            /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until
+               then. */
+            m17_gnss_tx_end(state);
+            state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
+        }
     }
 
     if (opts->payload == 1) {
