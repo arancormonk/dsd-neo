@@ -903,8 +903,7 @@ def parse_args():
             "--silent-modes applies to --scan typed and --scan trunk"
         )
     # Only a run about to start: a saved one (--rescore, --analyze) is scored with the map it ran (apply_saved_modes()).
-    starting = not (args.rescore or args.analyze)
-    if starting and args.scan == "trunk" and all(
+    if not (args.rescore or args.analyze) and args.scan == "trunk" and all(
         channel_mode(c, args.silent_modes) == "dpmr" for c in scene_layout(args.silent) if c.kind == "silent"
     ):
         parser.error(
