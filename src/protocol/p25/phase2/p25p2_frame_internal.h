@@ -28,7 +28,10 @@ void p25p2_process_isch(const dsd_opts* opts, dsd_state* state, int framing_inde
 void p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey);
 /* A voice frame of @p slot the crypto gate kept from the vocoder (issue #890): under --scan-voice-only the first one
    since the slot's last ESS is noted, and the next ESS whose RS check passes with no soft erasure makes them the slot
-   call's checked media; a failed ESS, a frame reset and a carrier forget drop them. */
+   call's checked media; a failed ESS, a frame reset and a carrier forget drop them. A 2V burst's ESS is settled before
+   its own two voice frames are decoded (process_2V()), so those two wait for the next superframe's ESS; the voice
+   probe's clamp to the call's start (dsd_call_snapshot::started_m) bounds a span reaching back to frames that waited
+   across a new call. */
 void p25p2_note_gated_voice_frame(const dsd_opts* opts, int slot);
 void p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 void p25p2_process_duid(dsd_opts* opts, dsd_state* state);

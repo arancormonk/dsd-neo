@@ -5348,6 +5348,74 @@ run_conventional_activity_after_restart_case(int elsewhere) {
     return test_rc;
 }
 
+/* Issue #890: a stream that reopens on the landed target's frequency lands nothing again when the scan was paused
+ * meanwhile (@p mode 0), when the target on air had a park in flight at the stop rather than a landing (1: the park's
+ * own reopen rule decides it at the next tick, not this one), or when the stream reopened on another radio source (2).
+ */
+static int
+run_restart_relands_nothing_case(int mode) {
+    static const char* const tags[] = {"restart while paused", "restart with a park in flight",
+                                       "restart on another source"};
+    const char* tag = tags[mode];
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    uint32_t reopen_hz = 461000000U;
+    if (mode == 1) {
+        /* The rotation to b goes in flight. */
+        g_scan_tune_to_freq_pending = 1;
+        g_scan_tune_pending_request = 0U;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        g_scan_tune_to_freq_pending = 0;
+        test_rc |= expect_active_target(&state, tag, 1U);
+        reopen_hz = 462000000U;
+    }
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    p25_sm_tick_guard_leave();
+    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
+        DSD_FPRINTF(stderr, "%s: the pause failed\n", tag);
+        test_rc = 1;
+    }
+    p25_sm_tick_guard_enter();
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    if (mode == 2) {
+        state.carrier_source_key = 2U;
+    }
+    opts.rtlsdr_center_freq = reopen_hz;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (state.scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state.scan_landing_visit);
+        test_rc = 1;
+    }
+    g_scan_tune_pending_request = 0U;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Issue #890: a visit that is stale while the carrier count is unchanged (a trunk-scan rotation between two targets
  * moves no carrier boundary): a frame dispatched under the visit before, its carrier the current one, holds nothing. */
 static int
@@ -5392,7 +5460,11 @@ test_conventional_activity_stale_visit_same_carrier(void) {
 
 static int
 test_conventional_activity_after_a_stream_restart(void) {
-    return run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
+    int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
+    for (int mode = 0; mode < 3; mode++) {
+        rc |= run_restart_relands_nothing_case(mode);
+    }
+    return rc;
 }
 
 static int

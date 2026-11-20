@@ -401,11 +401,15 @@ Generated (do not edit/commit):
     `m17_play_codec2_voice()`, so a build without Codec2 never has any; TETRA in `voice_frame_play()` for a good frame
     the codec decoded; P25 voice the crypto gate keeps from the vocoder, encrypted with no key, under
     `--scan-voice-only` only: a Phase 1 LDU once its link control or encryption sync passed the hard RS check
-    (`p25p1_ldu_note_gated_voice()`, from the LDU's start), a Phase 2 slot's gated frames once the ESS their bursts
-    carried passed the RS check with no soft erasure (`p25p2_note_gated_voice_frame()`, from the first gated frame)), never the media mark `dsd_call_state_update_media()` makes before the decode, which playback,
-    the -Y call count and the history keep. Each checked frame carries its scan observation origin (below); the probe
-    counts only media whose origin is the reception in force now, so a call another visit heard, ended or not, holds
-    nothing whatever its decode times say, and a frame of another origin starts the span again.
+    (`p25p1_ldu_note_gated_voice()`, from the LDU's start); a Phase 2 slot's gated frames since its last ESS once the
+    next ESS passed the RS check with no soft erasure (`p25p2_note_gated_voice_frame()`, from the first gated frame).
+    A 2V burst's ESS is settled before its own two voice frames are decoded, so those two are credited by the next
+    superframe's ESS; the voice probe's clamp to the call's start (`dsd_call_snapshot::started_m`) bounds a span that
+    reaches back to frames still waiting across a new call). Never the media mark `dsd_call_state_update_media()`
+    makes before the decode, which playback, the -Y call count and the history keep. Each checked frame carries its
+    scan observation origin (below); the probe counts only media whose origin is the reception in force now, so a
+    call another visit heard, ended or not, holds nothing whatever its decode times say, and a frame of another origin
+    starts the span again.
   - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
     epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
     none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`

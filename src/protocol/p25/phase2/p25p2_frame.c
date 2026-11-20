@@ -295,8 +295,9 @@ static int ess_b[2][96] = {0}; //96 bits for 4 - 24 bit ESS_B fields starting bi
 int ess_a[2][168] = {0};       //ESS_A 1 (96 bit) and 2 (72 bit) fields, starting at bit 168 and bit 266 (RS Parity)
 /* Issue #890: the decode-mono time of the first voice frame since the slot's last ESS that the crypto gate kept from
    the vocoder, -1 for none. Kept only under --scan-voice-only: encrypted voice with no key holds a voice-only scan
-   unless the talkgroup policy blocks it, and the ESS that the frames' bursts carry, once its Reed-Solomon check passes
-   with no soft erasure, is their proof (p25p2_process_ess()). */
+   unless the talkgroup policy blocks it, and the next ESS of the slot, once its Reed-Solomon check passes with no soft
+   erasure, is their proof (p25p2_process_ess()). A 2V burst settles its ESS before its own two voice frames, so those
+   two are credited by the next superframe's ESS (p25p2_note_gated_voice_frame()). */
 static double s_gated_voice_m[2] = {-1.0, -1.0};
 int16_t ess_a_llr[2][168] = {0};
 
