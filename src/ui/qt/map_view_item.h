@@ -33,8 +33,9 @@
  * view on every pan or zoom, keeps an image only while its tile is in view (or
  * stands in, scaled, for the new zoom's tiles while they load), and drops its
  * requests while it is inactive, hidden, or the app is in the background.
- * While the device's position placed the camera this visit (cameraUsedDevicePosition) or the camera follows the
- * device, every request is ViewOrigin::FromDevice, so the tile cache keeps nothing of it on disk.
+ * Once the device's position has placed the camera (cameraUsedDevicePosition, for the rest of the item's life, which
+ * is the app's run) or while the camera follows the device, every request is ViewOrigin::FromDevice, so the tile cache
+ * keeps nothing of it on disk.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_MAP_VIEW_ITEM_H_
@@ -50,6 +51,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QSet>
+#include <QSizeF>
 #include <QString>
 #include <QTimer>
 #include <QVariant>
@@ -100,8 +102,8 @@ class MapViewItem : public QQuickItem {
     Q_PROPERTY(double deviceLatitude READ deviceLatitude WRITE setDeviceLatitude NOTIFY deviceChanged)
     Q_PROPERTY(double deviceLongitude READ deviceLongitude WRITE setDeviceLongitude NOTIFY deviceChanged)
     Q_PROPERTY(double deviceAccuracyM READ deviceAccuracyM WRITE setDeviceAccuracyM NOTIFY deviceChanged)
-    /** The camera centred on or fitted the device's position since resetCameraUsedDevicePosition() (spec 4.8:
-     *  the saved viewport must not be derived from it). */
+    /** The camera has centred on or fitted the device's position, at any time in this item's life (spec 4.8: the
+     *  saved viewport must not be derived from it, and every later view starts from one that was). */
     Q_PROPERTY(bool cameraUsedDevicePosition READ cameraUsedDevicePosition NOTIFY cameraUsedDevicePositionChanged)
 
     /** Markers drawn now (current positions and open rings the age filter shows). */
@@ -307,14 +309,19 @@ class MapViewItem : public QQuickItem {
     /** @brief One whole zoom step in or out about the centre, animated (the accessible zoom buttons). */
     Q_INVOKABLE void zoomIn();
     Q_INVOKABLE void zoomOut();
-    /** @brief Show every marker drawn, and the device's dot when valid, animated. False when there is nothing. */
-    Q_INVOKABLE bool fitAll();
+    /** @brief Show every marker drawn, and the device's dot when valid and @p withDevice (the map's opening leaves out
+     *  a saved fix it cannot trust), animated. False when there is nothing. */
+    Q_INVOKABLE bool fitAll(bool withDevice = true);
     /** @brief fitAll() with (@p lat, @p lon) shown too: a pin the screen draws over the map (a History row's fix). */
     Q_INVOKABLE bool fitAllWith(double lat, double lon);
     /** @brief Centre on track @p trackId's marker (its current position, else its open ring), animated. */
     Q_INVOKABLE bool centerOnTrack(qulonglong trackId);
-    /** @brief Centre on the device's position, animated. False while it is not valid. */
+    /** @brief Centre on the device's position at deviceZoom() (Locate me, the map opening on the user, the List's own
+     *  row), animated. False while it is not valid. */
     Q_INVOKABLE bool centerOnDevice();
+    /** @brief The zoom centerOnDevice() goes in to: the streets around the dot (15 at most), with its accuracy circle
+     *  about half the view's shorter side across, however wide an approximate fix's circle is. */
+    Q_INVOKABLE double deviceZoom() const;
     /** @brief Centre on (@p lat, @p lon) at @p level (negative: keep the zoom), animated. */
     Q_INVOKABLE void centerOn(double lat, double lon, double level = -1.0);
     /** @brief The track whose marker a tap at (@p x, @p y) means, within hitRadius; 0 for none. */
@@ -324,8 +331,12 @@ class MapViewItem : public QQuickItem {
     /** @brief Where (@p lat, @p lon) is drawn now (item coordinates, the copy nearest the centre), for a pin the screen
      *  draws over the map (a History row's saved fix); undefined for a position out of range. */
     Q_INVOKABLE QVariant pointFor(double lat, double lon) const;
-    /** @brief Start a new map session for cameraUsedDevicePosition (the screen calls it when the map opens). */
+    /** @brief Forget that the device's position placed the camera, as a new item starts (tests begin each case from
+     *  one). The screen never calls it: the view it keeps between visits still derives from the device. */
     Q_INVOKABLE void resetCameraUsedDevicePosition();
+    /** @brief Centre a running follow's mark again at the user's zoom: below the chips as they are now (the screen calls
+     *  it once they are laid out on return). Nothing without a follow. */
+    Q_INVOKABLE void recentreFollow();
 
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief The node tree updatePaintNode() builds on an RHI window, built in @p window without one (as the
@@ -515,13 +526,17 @@ class MapViewItem : public QQuickItem {
     bool tilesSettled(const QSet<MapTileKey>& inView);
     void dropUnreusableTiles(const QSet<MapTileKey>& inView);
     map_math::Viewport cameraBase() const;
+    /** @brief itemChange(): the canvas left the screen or its window. */
+    void hidden();
+    /** @brief itemChange(): the canvas is shown again. */
+    void shownAgain();
     void retoneTiles();
     QImage toneTile(const QImage& image) const;
     map_math::Viewport viewportForSize() const;
 
     std::vector<map_math::WorldPoint> markerPoints() const;
     /** @brief Fit @p points and the device's dot when valid (fitAll()'s body). */
-    bool fitPoints(std::vector<map_math::WorldPoint> points);
+    bool fitPoints(std::vector<map_math::WorldPoint> points, bool takeDevice = true);
     /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
     map_math::Viewport belowTopInset(map_math::Viewport vp) const;
     map_math::Viewport centredOn(map_math::Viewport vp, map_math::WorldPoint at, bool raiseZoom = true) const;
@@ -570,6 +585,16 @@ class MapViewItem : public QQuickItem {
     bool m_active = true;
     bool m_appActive = true;
     map_math::Viewport m_vp;
+    /* The view last asked for (setViewport()), before clamping to the canvas: a size change clamps from it again. */
+    map_math::Viewport m_asked;
+    /* A follow's camera move was cut short by the canvas hiding: its next step moves even to the same mark. */
+    bool m_followCatchUp = false;
+    /* The follow's latest step was its first centring (one cut short is done again as a first). */
+    bool m_followStepFirst = false;
+    /* The camera move running is a follow step's (not a zoom button's). */
+    bool m_animFollow = false;
+    /* The canvas's size when it hid: a different one on return (a rotation) re-centres a follow. */
+    QSizeF m_hiddenSize;
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;

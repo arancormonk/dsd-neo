@@ -1090,6 +1090,46 @@ DecoderHostAndroid::requestSiteLocation(qint64 requestId) {
 }
 
 void
+DecoderHostAndroid::requestPreciseLocation(qint64 requestId) {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, {}, {}, QStringLiteral("No Android context"));
+        return;
+    }
+    // Must match LocationSupport.kt: @JvmStatic fun requestPreciseLocation(activity: Activity, id: Long).
+    QJniObject::callStaticMethod<void>(kLocationClass, "requestPreciseLocation", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
+}
+
+void
+DecoderHostAndroid::requestQuietLocation(qint64 requestId) {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, {}, {}, QStringLiteral("No Android context"));
+        return;
+    }
+    // Must match LocationSupport.kt: @JvmStatic fun requestQuietLocation(activity: Activity, id: Long).
+    QJniObject::callStaticMethod<void>(kLocationClass, "requestQuietLocation", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
+}
+
+QString
+DecoderHostAndroid::locationAccess() const {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return QStringLiteral("none");
+    }
+    // Must match LocationPermission.kt: @JvmStatic fun access(context: Context): String.
+    QJniEnvironment env;
+    const QJniObject access = QJniObject::callStaticObjectMethod(
+        kPermissionClass, "access", "(Landroid/content/Context;)Ljava/lang/String;", context.object());
+    if (env.checkAndClearExceptions() || !access.isValid()) {
+        return QStringLiteral("none");
+    }
+    return access.toString();
+}
+
+void
 DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
     QJniObject::callStaticMethod<void>(kLocationClass, "cancelLocationRequest", "(J)V", static_cast<jlong>(requestId));
 }

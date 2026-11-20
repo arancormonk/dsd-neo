@@ -1535,6 +1535,7 @@ AppPrefs::setLastLon(double value) {
 
 void
 AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM) {
+    fixAtMs = std::min(fixAtMs, realtimeMSecsSinceEpoch());
     m_settings.setValue(key_name(kLastAccuracyM), accuracyM);
     m_settings.setValue(key_name(kLastLat), lat);
     m_settings.setValue(key_name(kLastLon), lon);

@@ -78,6 +78,16 @@ class FakeHost : public dsd_qt::DecoderHost {
     }
 
     void
+    requestPreciseLocation(qint64 requestId) override {
+        calls.append(QStringLiteral("precise:%1").arg(requestId));
+    }
+
+    void
+    requestQuietLocation(qint64 requestId) override {
+        calls.append(QStringLiteral("quiet:%1").arg(requestId));
+    }
+
+    void
     cancelLocationRequest(qint64 requestId) override {
         calls.append(QStringLiteral("cancel:%1").arg(requestId));
     }
@@ -173,6 +183,33 @@ check_overlapping_requesters() {
           "overlap: the answer carries every field");
     const qint64 lookup = requests.requestCurrent(QStringLiteral("radioReference"));
     check(host.calls.last() == call("current", lookup), "overlap: a lookup asks for the postal code too");
+    const qint64 locate = requests.requestPrecise(QStringLiteral("map"));
+    check(host.calls.mid(host.calls.size() - 2) == QStringList{call("cancel", lookup), call("precise", locate)}
+              && requests.pendingFor(QStringLiteral("map")),
+          "overlap: the map's Locate me asks for a precise fix, after giving the lookup up");
+    host.answer(locate, 11.0);
+    check(log.events.last() == QStringLiteral("answered:map:%1").arg(locate), "overlap: the map gets its answer");
+    const qint64 opening = requests.requestQuiet(QStringLiteral("map"));
+    check(host.calls.last() == call("quiet", opening) && requests.pendingFor(QStringLiteral("map")),
+          "overlap: the map's opening fix asks without a prompt");
+}
+
+/* A host with no precise prompt of its own answers the map's Locate me as a site request. */
+void
+check_precise_defaults_to_site() {
+    UnsupportedHost host;
+    LocationRequests requests;
+    requests.setHost(&host);
+    Log log(requests);
+    const qint64 id = requests.requestPrecise(QStringLiteral("map"));
+    QCoreApplication::processEvents();
+    check(id > 0 && log.events == QStringList{QStringLiteral("answered:map:%1").arg(id)}
+              && !log.results.last().value("fixOk").toBool(),
+          "precise: the base host answers it as it answers any request");
+    const qint64 quiet = requests.requestQuiet(QStringLiteral("map"));
+    QCoreApplication::processEvents();
+    check(quiet > id && log.events.last() == QStringLiteral("answered:map:%1").arg(quiet),
+          "quiet: so does the opening fix");
 }
 
 /* A requester's own cancel gives the platform request up, tells no one it ended, and drops its late answer; a cancel
@@ -282,6 +319,7 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     check_overlapping_requesters();
+    check_precise_defaults_to_site();
     check_cancel();
     check_stale_ids();
     check_answer_inside_the_call();

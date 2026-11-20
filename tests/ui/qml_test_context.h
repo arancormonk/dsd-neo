@@ -398,6 +398,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return locationSupport;
     }
 
+    /* testContext.setLocationAccess() sets it on every host a case can use. */
+    QString locationAccessValue = QStringLiteral("precise");
+
+    QString
+    locationAccess() const override {
+        return locationAccessValue;
+    }
+
     qint64
     foregroundEpoch() const override {
         return epoch;
@@ -3379,6 +3387,25 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("requestSiteLocation"), {{QStringLiteral("id"), requestId}});
     }
 
+    /* The map's Locate me and its opening fix, recorded as the site request is. */
+    Q_INVOKABLE void
+    requestPreciseLocation(qint64 requestId) {
+        noteCall(QStringLiteral("requestPreciseLocation"), {{QStringLiteral("id"), requestId}});
+    }
+
+    Q_INVOKABLE void
+    requestQuietLocation(qint64 requestId) {
+        noteCall(QStringLiteral("requestQuietLocation"), {{QStringLiteral("id"), requestId}});
+    }
+
+    /* The location access a case set (testContext.setLocationAccess()), as DecoderHost::locationAccess() reads it. */
+    QString locationAccessValue = QStringLiteral("precise");
+
+    Q_INVOKABLE QString
+    locationAccess() const {
+        return locationAccessValue;
+    }
+
     Q_INVOKABLE void
     cancelLocationRequest(qint64 requestId) {
         noteCall(QStringLiteral("cancelLocationRequest"), {{QStringLiteral("id"), requestId}});
@@ -3650,6 +3677,16 @@ class LocationRelayHost : public dsd_qt::DecoderHost {
     void
     requestSiteLocation(qint64 requestId) override {
         forward("requestSiteLocation", requestId);
+    }
+
+    void
+    requestPreciseLocation(qint64 requestId) override {
+        forward("requestPreciseLocation", requestId);
+    }
+
+    void
+    requestQuietLocation(qint64 requestId) override {
+        forward("requestQuietLocation", requestId);
     }
 
     void
@@ -5873,6 +5910,14 @@ class Setup : public QObject {
     setLifecycleLocationSupported(bool supported) {
         m_import_host->locationSupport = supported;
         m_initializing_host->locationSupport = supported;
+    }
+
+    /** @brief The location access every host a case can use reports: "none", "approximate" or "precise". */
+    Q_INVOKABLE void
+    setLocationAccess(const QString& access) {
+        m_host_readings->locationAccessValue = access;
+        m_import_host->locationAccessValue = access;
+        m_initializing_host->locationAccessValue = access;
     }
 
     /** @brief #786: the monotonic time in ms GPS roaming reads (its clock in these cases), and the stream's fixAtMs. */

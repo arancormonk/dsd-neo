@@ -9,6 +9,7 @@ import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.location.LocationRequest
 import android.os.Build
 import android.os.Bundle
 import android.os.CancellationSignal
@@ -67,54 +68,110 @@ object LocationSupport {
     private const val MAX_ACCURACY_M = 10_000f
     private const val SITE_FIX_AGE_NS = 30 * 1_000_000_000L
     private const val SITE_TARGET_ACCURACY_M = 100f
+    // How long, from its start, a site request with GPS asked waits for GPS before another provider's answer may
+    // settle it. Google's fused provider answers a new request at once with the position it already holds, stamped as
+    // new, so the first answer is often not a new measurement: taken at once, every Locate me after the first came back
+    // where the first one was.
+    internal const val GPS_GRACE_MS = 10_000L
+    // The two "no provider" answers. The map reads which one it got: keep them as they are.
+    internal const val LOCATION_OFF_ERROR = "Location is off; use Browse."
+    internal const val PROVIDER_ERROR = "Location provider unavailable; use Browse."
+    internal const val PRECISE_NEEDED_ERROR = "Location needs precise access here; use Browse."
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
     private var result: String? = null
+    // The Activity's own, on the main looper: the map's opening fix runs only while the app is on screen.
+    private var visible = false
 
-    private class Request(val activity: Activity, val id: Long, val forSites: Boolean) {
+    /** How a request may ask for permission. */
+    private enum class Prompt {
+        /** Only when location is not allowed at all (every request but the map's). */
+        IF_NONE,
+        /** Also when only approximate location is allowed: the map's Locate me offers precise. */
+        PRECISE,
+        /** Never: the map's opening fix ends at once without permission. */
+        NEVER,
+    }
+
+    /** [forSites]: coordinates only (no postal code), as fresh and accurate as the providers give. */
+    private class Request(val activity: Activity, val id: Long, val forSites: Boolean, val prompt: Prompt) {
         val manager = activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val signals = mutableListOf<CancellationSignal>()
         val listeners = mutableListOf<LocationListener>()
         val pendingProviders = mutableSetOf<String>()
         var fix: Location? = null
-        var bestFix: Location? = null
+        // Each provider's newest answer: the one used is the best still usable when the request settles.
+        val answers = mutableMapOf<String, Location>()
         var timeout: Runnable? = null
+        var gpsGrace: Runnable? = null
+        var graceOver = false
         var geocodeTask: FutureTask<Unit>? = null
     }
 
-    @JvmStatic fun requestCurrentLocation(activity: Activity, id: Long) = request(activity, id, false)
+    @JvmStatic fun requestCurrentLocation(activity: Activity, id: Long) = request(activity, id, false, Prompt.IF_NONE)
 
-    @JvmStatic fun requestSiteLocation(activity: Activity, id: Long) = request(activity, id, true)
+    @JvmStatic fun requestSiteLocation(activity: Activity, id: Long) = request(activity, id, true, Prompt.IF_NONE)
 
-    private fun request(activity: Activity, id: Long, forSites: Boolean) {
+    /**
+     * The map's Locate me: a site request that, with approximate location only, first offers precise location. Asking
+     * for both again is how Android offers the upgrade; once the user has turned it down, Android answers at once
+     * without a prompt (Android 11 and later), and the request goes on with approximate location.
+     */
+    @JvmStatic fun requestPreciseLocation(activity: Activity, id: Long) = request(activity, id, true, Prompt.PRECISE)
+
+    /** The map's opening fix: a site request that never prompts, and ends at once when location is not allowed. */
+    @JvmStatic fun requestQuietLocation(activity: Activity, id: Long) = request(activity, id, true, Prompt.NEVER)
+
+    private fun request(activity: Activity, id: Long, forSites: Boolean, prompt: Prompt) {
         main.post {
             active?.let { release(it) }
             synchronized(this) { result = null }
-            val request = Request(activity, id, forSites)
+            val request = Request(activity, id, forSites, prompt)
             active = request
-            if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                locate(request)
-            } else {
-                // A prompt already open answers this request too; the broker opens no second one.
-                val permissions = if (forSites) {
-                    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
-                } else {
-                    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+            val coarse = activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            val fine = activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            when {
+                // The app left the foreground before this ran (Qt's call can come just after onStop): nothing to report.
+                prompt == Prompt.NEVER && !visible -> finish(request, false, "", "", "", cancelled = true)
+                coarse && (fine || prompt != Prompt.PRECISE) -> locate(request)
+                // Precise location would not help with the device's location switched off: no upgrade prompt.
+                coarse && locationOff(request.manager) -> finish(request, false, "", "", LOCATION_OFF_ERROR)
+                prompt == Prompt.NEVER -> finish(request, false, "", "", "Location permission not granted.")
+                else -> {
+                    // A prompt already open answers this request too; the broker opens no second one.
+                    val permissions = if (forSites) {
+                        arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+                    } else {
+                        arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+                    }
+                    // The answer resumes this request only: one given up or replaced meanwhile is left alone.
+                    LocationPermission.ask(activity, permissions, LocationPermission.Asker.ONE_SHOT) { answered, grants ->
+                        permissionAnswered(request, answered, grants)
+                    }
                 }
-                LocationPermission.ask(activity, permissions, LocationPermission.Asker.ONE_SHOT, ::permissionAnswered)
             }
         }
+    }
+
+    /** Activity `onStart`, on the main looper. */
+    @JvmStatic fun onActivityStart() {
+        visible = true
+    }
+
+    /** Activity `onStop`, on the main looper: the map's opening fix ends; it is for a map on screen. */
+    @JvmStatic fun onActivityStop() {
+        visible = false
+        active?.takeIf { it.prompt == Prompt.NEVER }?.let { finish(it, false, "", "", "", cancelled = true) }
     }
 
     /** Hands a permission answer to [LocationPermission], which owns the prompt; true when the code is its own. */
     @JvmStatic fun onRequestPermissionsResult(activity: Activity, code: Int, grants: IntArray): Boolean =
         LocationPermission.onRequestPermissionsResult(activity, code, grants)
 
-    /** The answer to the prompt: it resumes only the active request, and only when that request asked [activity]. */
-    private fun permissionAnswered(activity: Activity, grants: IntArray) {
-        val request = active ?: return
-        if (request.activity !== activity) return
+    /** The answer to the prompt: it resumes [request] only while it is the active one and asked [activity]. */
+    private fun permissionAnswered(request: Request, activity: Activity, grants: IntArray) {
+        if (active !== request || request.activity !== activity) return
         when {
             // An interrupted prompt comes back with no answers, and Android says to treat it as a cancellation: the
             // launcher icon or the notification brings the singleTask activity forward and closes the prompt (#782).
@@ -132,20 +189,28 @@ object LocationSupport {
         // Both providers honor coarse permission. The platform fused provider is public
         // from API 31; it does not require a Google Play Services dependency.
         val candidates = mutableListOf<String>()
+        val fine = request.activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= 31) candidates.add(LocationManager.FUSED_PROVIDER)
         candidates.add(LocationManager.NETWORK_PROVIDER)
-        if (request.forSites
-            && request.activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            candidates.add(LocationManager.GPS_PROVIDER)
-        }
+        if (request.forSites && fine) candidates.add(LocationManager.GPS_PROVIDER)
         val providers = candidates.filter { provider ->
             try { request.manager.isProviderEnabled(provider) } catch (_: Exception) { false }
         }
         if (providers.isEmpty()) {
-            finish(request, false, "", "", "Location provider unavailable; use Browse.")
+            // Location switched off for the whole device, or on with no provider this access may use (approximate
+            // access on Android 10-11 with the network provider off): the map sends each to its own settings.
+            finish(request, false, "", "", when {
+                locationOff(request.manager) -> LOCATION_OFF_ERROR
+                // Approximate access on Android 10-11 asks the network provider only; GPS is there, for precise access.
+                !fine && gpsEnabled(request.manager) -> PRECISE_NEEDED_ERROR
+                else -> PROVIDER_ERROR
+            })
             return
         }
-        val cached = providers.mapNotNull { provider ->
+        // With GPS asked, only its own cache is a measurement: the fused provider's last location can be the position
+        // it handed an earlier request, stamped as new.
+        val cacheProviders = if (LocationManager.GPS_PROVIDER in providers) listOf(LocationManager.GPS_PROVIDER) else providers
+        val cached = cacheProviders.mapNotNull { provider ->
             try { request.manager.getLastKnownLocation(provider) } catch (_: Exception) { null }
         }.filter { usableFix(it, request.forSites) }
             .let { fixes ->
@@ -159,10 +224,28 @@ object LocationSupport {
         // Register all candidates before any callback can arrive. A silent or failed
         // provider must not prevent another provider from satisfying the request.
         request.pendingProviders.addAll(providers)
+        if (request.forSites && LocationManager.GPS_PROVIDER in providers) {
+            request.gpsGrace = Runnable {
+                request.gpsGrace = null
+                request.graceOver = true
+                settleSite(request)
+            }.also { main.postDelayed(it, GPS_GRACE_MS) }
+        }
         for (provider in providers) {
             if (active !== request || request.fix != null) break
             try {
-                if (Build.VERSION.SDK_INT >= 30) {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val signal = CancellationSignal()
+                    request.signals.add(signal)
+                    // High accuracy when precise location is allowed, so the fused provider measures (GPS included)
+                    // rather than answering from what it holds; approximate location gets the balanced default.
+                    val quality = if (request.forSites && fine) LocationRequest.QUALITY_HIGH_ACCURACY
+                        else LocationRequest.QUALITY_BALANCED_POWER_ACCURACY
+                    val current = LocationRequest.Builder(0L).setQuality(quality).setDurationMillis(TIMEOUT_MS).build()
+                    request.manager.getCurrentLocation(provider, current, signal, request.activity.mainExecutor) { location ->
+                        providerResult(request, provider, location)
+                    }
+                } else if (Build.VERSION.SDK_INT >= 30) {
                     val signal = CancellationSignal()
                     request.signals.add(signal)
                     request.manager.getCurrentLocation(provider, signal, request.activity.mainExecutor) { location ->
@@ -184,6 +267,24 @@ object LocationSupport {
         }
     }
 
+    /**
+     * When [fix] was measured, on this phone's wall clock: now less its age on the elapsed clock. A provider's own
+     * `time` is GPS or network time, which a phone clock set ahead or behind does not match, and Qt ages the saved fix
+     * on the phone's clock (24 hours), so a fresh fix stamped in the other clock could expire as it is saved.
+     */
+    private fun wallTimeOf(fix: Location): Long =
+        System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos) / 1_000_000L
+
+    /** A request ending without a fix: [error], unless the device's location was switched off meanwhile. */
+    private fun noFix(request: Request, error: String) = if (locationOff(request.manager)) LOCATION_OFF_ERROR else error
+
+    private fun gpsEnabled(manager: LocationManager): Boolean =
+        try { manager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
+
+    /** Whether the device's location switch is off (Android 9 and later say so directly). */
+    private fun locationOff(manager: LocationManager): Boolean =
+        try { !manager.isLocationEnabled } catch (_: Exception) { false }
+
     private fun usableFix(location: Location?, forSites: Boolean = false): Boolean {
         if (location == null || !location.latitude.isFinite() || location.latitude !in -90.0..90.0
             || !location.longitude.isFinite() || location.longitude !in -180.0..180.0
@@ -197,31 +298,54 @@ object LocationSupport {
     private fun providerResult(request: Request, provider: String, location: Location?) {
         if (active !== request || request.fix != null || !request.pendingProviders.remove(provider)) return
         if (request.forSites) {
-            if (usableFix(location, true)) {
-                val best = request.bestFix
-                if (!usableFix(best, true) || location!!.accuracy < best!!.accuracy
-                    || (location.accuracy == best.accuracy && location.elapsedRealtimeNanos > best.elapsedRealtimeNanos)) {
-                    request.bestFix = location
+            // An answer unusable on arrival (none, too rough, too old, dated ahead of the clock) is never kept.
+            if (usableFix(location, true)) request.answers[provider] = location!!
+            if (provider == LocationManager.GPS_PROVIDER && usableFix(location, true)
+                && location!!.accuracy <= SITE_TARGET_ACCURACY_M) {
+                // A new measurement settles at once. It beats a fused answer that only claimed to be more accurate
+                // (see GPS_GRACE_MS), but not a more accurate network measurement still fresh.
+                val measured = request.answers.filterKeys { it != LocationManager.FUSED_PROVIDER }.values
+                    .filter { usableFix(it, true) }.minWithOrNull(BETTER_FIX)
+                if (measured != null) {
+                    gotFix(request, measured)
+                    return
                 }
             }
-            val best = request.bestFix
-            if (usableFix(best, true)
-                && (best!!.accuracy <= SITE_TARGET_ACCURACY_M || request.pendingProviders.isEmpty())) {
-                gotFix(request, best)
-            } else if (request.pendingProviders.isEmpty()) {
-                finish(request, false, "", "", "No current location fix available. Try again or choose a site manually.")
-            }
+            settleSite(request)
             return
         }
         if (usableFix(location)) gotFix(request, location!!)
-        else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", "No location fix available; use Browse.")
+        else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", noFix(request, "No location fix available; use Browse."))
+    }
+
+    /** The more accurate fix first, then the newer. */
+    private val BETTER_FIX = compareBy<Location> { it.accuracy }.thenByDescending { it.elapsedRealtimeNanos }
+
+    /** The most accurate answer still fresh enough now (then the newest), or null. */
+    private fun bestSiteFix(request: Request): Location? =
+        request.answers.values.filter { usableFix(it, true) }.minWithOrNull(BETTER_FIX)
+
+    /**
+     * A site request settles on its best answer once every provider has answered, or once that answer is close enough
+     * and GPS is not still owed its grace (see [GPS_GRACE_MS]); with nothing usable left to wait for it fails.
+     */
+    private fun settleSite(request: Request) {
+        if (active !== request || request.fix != null) return
+        val best = bestSiteFix(request)
+        val gpsOwed = LocationManager.GPS_PROVIDER in request.pendingProviders && !request.graceOver
+        when {
+            best != null && (request.pendingProviders.isEmpty() || (best.accuracy <= SITE_TARGET_ACCURACY_M && !gpsOwed)) ->
+                gotFix(request, best)
+            request.pendingProviders.isEmpty() ->
+                finish(request, false, "", "", noFix(request, "No current location fix available. Try again or choose a site manually."))
+        }
     }
 
     private fun armTimeout(request: Request, error: String) {
         request.timeout?.let { main.removeCallbacks(it) }
         request.timeout = Runnable {
-            if (request.forSites && usableFix(request.bestFix, true)) gotFix(request, request.bestFix!!)
-            else finish(request, false, "", "", error)
+            val best = if (request.forSites && request.fix == null) bestSiteFix(request) else null
+            if (best != null) gotFix(request, best) else finish(request, false, "", "", if (request.fix == null) noFix(request, error) else error)
         }
             .also { main.postDelayed(it, TIMEOUT_MS) }
     }
@@ -269,6 +393,8 @@ object LocationSupport {
     }
 
     private fun removeUpdates(request: Request) {
+        request.gpsGrace?.let { main.removeCallbacks(it) }
+        request.gpsGrace = null
         request.pendingProviders.clear()
         request.signals.forEach { it.cancel() }
         request.signals.clear()
@@ -294,7 +420,7 @@ object LocationSupport {
         val fix = request.fix
         val record = JSONObject().put("id", request.id).put("fixOk", fix != null)
             .put("lat", fix?.latitude ?: 0.0).put("lon", fix?.longitude ?: 0.0)
-            .put("accuracyM", fix?.accuracy?.toDouble() ?: 0.0).put("fixAtMs", fix?.time ?: 0L)
+            .put("accuracyM", fix?.accuracy?.toDouble() ?: 0.0).put("fixAtMs", fix?.let { wallTimeOf(it) } ?: 0L)
             .put("geocodeOk", geocodeOk).put("postalCode", postal).put("countryCode", country).put("error", error)
             .put("cancelled", cancelled)
         release(request)

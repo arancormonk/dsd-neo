@@ -1137,6 +1137,7 @@ def location_wiring():
 
     required = (
         ("override fun onStart(", "LocationStream.onActivityStart()"),
+        ("override fun onStart(", "LocationSupport.onActivityStart()"),
         ("override fun onDestroy(", "LocationStream.onDestroy()"),
         (
             "override fun onRequestPermissionsResult(",
@@ -1152,6 +1153,8 @@ def location_wiring():
     guarded = stop.index("if (!isChangingConfigurations) {") if "if (!isChangingConfigurations) {" in stop else len(stop)
     if stop.index("LocationStream.onActivityStop()") > guarded:
         return f"{where}: onStop must call LocationStream.onActivityStop() on every stop, outside the recreation guard"
+    if "LocationSupport.onActivityStop()" not in stop or stop.index("LocationSupport.onActivityStop()") > guarded:
+        return f"{where}: onStop must call LocationSupport.onActivityStop() on every stop, outside the recreation guard"
     if "LocationSupport.onRequestPermissionsResult(" in activity:
         return f"{where}: location permission answers go to LocationPermission, which owns the prompt"
     return None
