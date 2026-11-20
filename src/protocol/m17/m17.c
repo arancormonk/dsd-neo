@@ -4091,16 +4091,10 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_MEMSET(payload, 0, sizeof(payload));
     m17_ip_bits_from_bytes(ip_frame, 54U, ip_bits);
 
-    state->carrier = 1;
-    state->synctype = DSD_SYNC_M17_STR_POS;
-
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
-    m17_ip_copy_lsf_from_bits(state, ip_bits);
-
     const uint16_t fn = (uint16_t)convert_bits_into_output(&ip_bits[273], 15);
     const uint8_t eot = ip_bits[272];
     const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
-    m17_store_current_aes_counter(state, stream_frame_number);
     DSD_FPRINTF(stderr, "\n M17 IP Stream: %04X; FN: %05d;", sid, fn);
     if (eot) {
         DSD_FPRINTF(stderr, " EOT;");
@@ -4118,8 +4112,11 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
        (EOT, EOTX, DISC) starting again below the last frame number counted (frame 0 for a new transmission). A frame
        of the ended stream at or past that number is a late copy of it (its last frame heard again, from a slower
        network path): it is that stream's, and does nothing but give the signature collector its chunk, so it opens
-       no call, plays nothing and keeps the verdict. Accepted limit: a reordered older frame of the ended stream, below
-       the last number counted, is taken for a restart. */
+       no call, plays nothing and keeps the verdict; nothing of the state is touched for it before this either (no
+       carrier, sync type, staged LSF or AES counter: the collector needs none of them). Accepted limits: a reordered
+       older frame of the ended stream, below the last number counted, is taken for a restart; and a stream of one
+       frame (frame 0 with its EOT) restarting at frame 0 under the same ID cannot be told from that frame repeated,
+       so it is taken for the repeat. */
     const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
     const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
     const int late_copy =
@@ -4127,6 +4124,10 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     if (late_copy) {
         m17_collect_late_signature_chunk(state, payload, stream_frame_number);
     } else {
+        state->carrier = 1;
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        m17_ip_copy_lsf_from_bits(state, ip_bits);
+        m17_store_current_aes_counter(state, stream_frame_number);
         if (crc_valid) {
             if (!same_sid || ended) {
                 m17_confirm_reset_link(state);

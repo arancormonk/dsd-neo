@@ -13801,22 +13801,22 @@ Private per-protocol modules worth knowing about:
   (`m17_confirm_reset_link()`, `m17_confirm_reset_signature()`; issue #890): `dsd_state::m17_lsf_checked` marks that an
   LSF whose CRC passed set the live CAN (0 included), encryption, stream type and IV for this transmission, and while it
   stands a relaxed (`-F`) LSF is shown and replaces none of them. The digest and the signature chunks are the
-  transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten
-  only at a boundary: an LSF frame (a checked one also replaces the link setup), an EOT, `noCarrier()`, a carrier
-  boundary, or another IP stream (a new stream ID, or any after the last one's EOT, EOTX or DISC). Every RF stream
-  frame before the signature frames enters the digest, advertised or not yet (a rebuild can advertise it late); an IP
-  frame enters it only when its CRC passed and its frame number is past the last one counted, and an IP frame whose
-  CRC failed is never a signature chunk (`M17updateSignatureDigest()`; `M17_STATE_DISPATCH`
+  transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten only
+  at a boundary: an LSF frame (a checked one also replaces the link setup), an EOT, `noCarrier()`, a carrier boundary,
+  or another IP stream (a new stream ID, or any after the last one's EOT, EOTX or DISC). Every RF stream frame before
+  the signature frames enters the digest, advertised or not yet (a rebuild can advertise it late); an IP frame enters it
+  only when its CRC passed and its frame number is past the last one counted, and an IP frame whose CRC failed is never
+  a signature chunk (`M17updateSignatureDigest()`; `M17_STATE_DISPATCH`
   `test_signed_rf_stream_verifies_across_lich_rebuilds`, `test_signed_ip_stream_verifies_with_duplicates`). A stream
-  frame's EOS bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an
-  M17 one (`m17_end_call()`, `m17_call_end.c`, public in `<dsd-neo/protocol/m17/m17.h>`). After an IP stream's end a
-  frame of the same stream ID at or past the last frame number counted is that stream's late copy: it only gives the
-  signature collector its chunk (no LSF decode, media, call row or audio; its verdict stays), and one below it starts
-  another transmission (accepted limit: a reordered older frame counts as a restart); a CRC-failed IP frame at a signature frame number is consumed,
-  neither a chunk nor voice. The EOT also puts the
-  slicer levels back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker
-  is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
-  preamble against the skewed centre it left (issue #834).
+  frame's EOS bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17
+  one (`m17_end_call()`, `m17_call_end.c`, public in `<dsd-neo/protocol/m17/m17.h>`). After an IP stream's end a frame
+  of the same stream ID at or past the last frame number counted is that stream's late copy: it only gives the signature
+  collector its chunk (no LSF decode, media, call row or audio; its verdict stays), and one below it starts another
+  transmission (accepted limits: a reordered older frame counts as a restart, and a one-frame stream restarting at frame
+  0 under the same ID counts as that frame repeated); a CRC-failed IP frame at a signature frame number is consumed,
+  neither a chunk nor voice. The EOT also puts the slicer levels back where a lost carrier leaves them (`max`/`min`
+  +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer symbols of one sign to one of the other, and the
+  next transmission's hunt sliced and timed its preamble against the skewed centre it left (issue #834).
 - M17 end-of-transmission marker (M17 spec 2.0.11: 192 symbols of 0x555D, +3 six times, -3, +3). The hunt takes it
   (`frame_sync_try_m17_eot()`) only behind an M17 frame of a transmission with evidence and only on
   `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within

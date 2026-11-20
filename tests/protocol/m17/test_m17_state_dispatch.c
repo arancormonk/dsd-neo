@@ -5099,12 +5099,25 @@ test_signed_ip_stream_verifies_with_duplicates(void) {
     err |= expect_u8("signed network stream verifies", state->m17_signature_verification_status, 1U);
 
     /* A copy of the stream's last frame (its EOT set) arriving again is that ended stream's, not a new one: the verdict
-       stays and the copy is no signature chunk out of sequence. */
+       stays, the copy is no signature chunk out of sequence, and it opens no call row and plays nothing, even with the
+       transmission evidence still standing. (Accepted limits, m17_ip_handle_stream_frame(): a reordered older frame
+       is taken for a restart, and a one-frame stream restarting at frame 0 for that frame repeated.) */
+    dsd_call_snapshot ended_call;
+    err |= expect_int("signed IP stream had a call", get_m17_call(state, &ended_call), 1);
+    err |= expect_int("its EOT ended the call", ended_call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    state->m17_confirmed = 1U;
+    const int decodes_before_copy = g_codec2_decode_calls;
     send_ip_stream_frame(opts, state, lsf_bits, sid,
                          (uint16_t)(M17_STREAM_SIGNATURE_FN3 & M17_STREAM_FRAME_COUNTER_MAX), 1U,
                          M17_REF_SIGNATURE_BYTES + 48U, 0);
     err |= expect_u8("a repeated last frame keeps the verdict", state->m17_signature_verification_status, 1U);
     err |= expect_u8("a repeated last frame is in sequence", state->m17_signature_bad_sequence, 0U);
+    dsd_call_snapshot copy_call;
+    err |= expect_int("a repeated last frame keeps the call record", get_m17_call(state, &copy_call), 1);
+    err |= expect_int("a repeated last frame opens no call row", copy_call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    err |= expect_u64("a repeated last frame starts no epoch", copy_call.epoch, ended_call.epoch);
+    err |= expect_int("a repeated last frame plays nothing", g_codec2_decode_calls - decodes_before_copy, 0);
+    state->m17_confirmed = 0U;
 
     /* The same stream ID starting again from frame 0 after the end is another transmission. */
     send_ip_stream_frame(opts, state, lsf_bits, sid, 0U, 0U, payloads[0], 0);
