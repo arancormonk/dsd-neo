@@ -23,7 +23,9 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/m17/m17.h>
@@ -58,6 +60,12 @@
 #include "m17_confirm.h"
 #include "m17_internal.h"
 #include "test_support.h"
+#if DSD_PLATFORM_WIN_NATIVE
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 struct CODEC2;
 
@@ -2400,6 +2408,65 @@ test_stream_encoder_reads_stdin_samples(void) {
     opts.audio_in_stdin = NULL;
     (void)fclose(file);
     (void)remove(path);
+    return err;
+}
+
+/* Write @p count copies of @p value to the pipe @p fd as little-endian samples. */
+static int
+pipe_put_samples(int fd, int16_t value, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t b[2] = {(uint8_t)((uint16_t)value & 0xFFU), (uint8_t)((uint16_t)value >> 8)};
+        if (dsd_write(fd, b, sizeof b) != (ssize_t)sizeof b) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Issue #834: a rigctl peer's confirmed retune (here a manual tune's, asked for on the decoder thread) leaves a drop of
+   what the input held before it. The stream encoder reads its blocks itself, not through the symbol reader, so it
+   takes the drop before its next block: the old channel's queued audio is not transmitted after the tune. */
+static int
+test_stream_encoder_drops_audio_queued_before_a_rigctl_retune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int fds[2] = {-1, -1};
+#if DSD_PLATFORM_WIN_NATIVE
+    const int piped = _pipe(fds, 65536U, _O_BINARY);
+#else
+    const int piped = pipe(fds);
+#endif
+    if (piped != 0) {
+        DSD_FPRINTF(stderr, "failed to create the M17 encoder input pipe\n");
+        return 1;
+    }
+    opts.audio_in_stdin = dsd_pcm_stream_open_fd(fds[0]);
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    opts.input_volume_multiplier = 1;
+    opts.use_rigctl = 1;
+    int err = expect_int("the encoder's stdin reader opens", opts.audio_in_stdin != NULL, 1);
+    err |= expect_int("the old channel's audio is queued", pipe_put_samples(fds[1], 7, 320U), 1);
+    dsd_input_cut mark;
+    dsd_input_backlog_mark(&mark); /* the leg's mark, immediately before it sends the frequency */
+    err |= expect_int("the peer confirmed the tune: a drop is asked for",
+                      dsd_frame_sync_request_input_drop(&opts, &state, &mark), 1);
+    err |= expect_int("the new channel's audio follows", pipe_put_samples(fds[1], 9, 160U), 1);
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 8000);
+    short out[160];
+    err |= expect_int("the encoder reads a block", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    int new_channel = 1;
+    for (int i = 0; i < 160; i++) {
+        new_channel &= out[i] == 9;
+    }
+    err |= expect_int("the block is the new channel's audio, none of the old", new_channel, 1);
+    err |= expect_int("the drop was taken", state.input_drop_pending, 0);
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
     return err;
 }
 
@@ -4822,6 +4889,7 @@ main(void) {
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
     err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
     err |= test_stream_encoder_reads_stdin_samples();
+    err |= test_stream_encoder_drops_audio_queued_before_a_rigctl_retune();
     err |= test_ip_decoder_propagates_udp_backend_failure();
 
     if (err == 0) {

@@ -35,6 +35,8 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_voice.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -2494,6 +2496,17 @@ int
 m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam) {
     if (!opts || !state || !in || !out) {
         return M17_STR_READ_ERROR;
+    }
+    /* A rigctl peer's confirmed retune (a manual tune, a watchdog's post) left the channel it left's audio queued in
+       the input (issue #834): the encoder reads its blocks itself, not through symbol_read(), so it takes the drop
+       before its next block, as that reader does, and the input filter's memory of the old channel goes with it. */
+    if (opts->use_rigctl == 1) {
+        dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    }
+    if (state->input_drop_pending) {
+        dsd_symbol_apply_input_drop(opts, state);
+        dsd_voice_bandpass_reset(&in->lowpass);
+        in->sample = 0.0f;
     }
     /* Only an RTL stream carries the dynamic squelch's gate; every other read leaves it to the level squelch. */
     in->squelch_gated = 0;

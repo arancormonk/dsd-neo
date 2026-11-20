@@ -7906,8 +7906,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`svc_io_control_tune()`, also a trunked manual return or channel walk, which runs no carrier boundary). A tune to
   the frequency the peer is on, a refused request and a lost reply move nothing. The epoch moves at once, and the
   input's queued samples are asked to go: `dsd_state::input_drop_pending`, which the decoder thread carries out at its
-  next input read (`dsd_symbol_apply_input_drop()` in `dsd_symbol.c`, called before the symbol reader reads and before
-  EDACS analog voice reads a triplet), never inside the tune or a tick. On a low-rate stream input (8 kHz TCP, UDP or
+  next input read (`dsd_symbol_apply_input_drop()` in `dsd_symbol.c`, called before the symbol reader reads, before
+  EDACS analog voice reads a triplet, and before the M17 stream encoder reads a block, which also resets its input
+  filter: `M17_STATE_DISPATCH` `test_stream_encoder_drops_audio_queued_before_a_rigctl_retune()`), never inside the
+  tune or a tick. On a low-rate stream input (8 kHz TCP, UDP or
   stdin, upsampled through the staged resampler) the outputs still staged from the last sample read and the FIR history
   go with it (`dsd_pcm_input_forget_staged()`; the next sample re-primes the history), unless the decoder had read past
   the mark already (a confirmation taken late: the queue's drop returns `DSD_INPUT_DISCARD_READ_PAST`), when the last
