@@ -312,6 +312,20 @@ check_beat_order_and_boundary(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* The engine's own tick (p25_sm_try_tick()) is also the one a standing beat asked for: it spends the beat, so the next
+   service point runs no second tick for it (which would count a NAC mismatch twice, or retune before a symbol is
+   read). */
+static int
+check_engine_tick_spends_the_beat(dsd_opts* opts, dsd_state* state) {
+    p25_sm_watchdog_request_tick();
+    p25_sm_try_tick(opts, state);
+    if (p25_sm_watchdog_tick_wanted()) {
+        DSD_FPRINTF(stderr, "FAIL: the engine's own tick left the beat standing\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     if (dsd_test_setenv("DSD_NEO_P25_WD_MS", "20", 1) != 0) {
@@ -344,6 +358,7 @@ main(void) {
     int failed = check_release_tunes_on_decoder(opts, state);
     failed |= check_busy_guard_keeps_the_beat(opts, state);
     failed |= check_beat_order_and_boundary(opts, state);
+    failed |= check_engine_tick_spends_the_beat(opts, state);
 
     dsd_engine_set_decoder_thread(0);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
