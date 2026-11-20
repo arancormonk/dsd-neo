@@ -667,6 +667,47 @@ test_failed_start_restores_a_device_post(void) {
     dsd_input_backlog_retire();
 }
 
+/* A post measured on the queue a switch replaces, still pending when the switch's queue attaches, is no drop of the new
+   input; but if its start fails, the queue it was measured on is read again with the old channel's audio it held, so
+   the post comes back with it. A confirmation posted on the new queue meanwhile does not take its place, nor does the
+   decoder's take of what is pending while the new queue stands. Once the new input stands it is gone. */
+static void
+test_failed_start_restores_the_replaced_queues_post(void) {
+    static uint64_t kept = 60U;
+    static uint64_t failed = 70U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_cut on_kept;
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    post_now(); /* a retune confirmed on the new queue */
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_kept.order
+              && dsd_input_backlog_cut_applies(&held, &kept),
+          "a failed start gives the kept queue its post back over one posted on the failed queue");
+
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(dsd_input_backlog_take(NULL) == 0, "the replaced queue's post is no drop of the new queue");
+    dsd_input_backlog_attach_failed(&failed);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_kept.order
+              && dsd_input_backlog_cut_applies(&held, &kept),
+          "nor is it lost to a take while the new queue stood");
+
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_forget(); /* the new input stands */
+    check(dsd_input_backlog_take(NULL) == 0, "once the new input stands the replaced queue's post is gone");
+    dsd_input_backlog_detach(&failed);
+    dsd_input_backlog_retire();
+}
+
 /* Issue #834: a watchdog marks the input, sends its tune, and posts the mark only when the peer confirms. If the input
    was replaced in between (a TCP reconnect: the old connection's queue detached, the new one attached, and the decoder
    forgot the posts then pending, of which there was none yet), the late post is no drop of the new input: it is
@@ -793,6 +834,7 @@ main(void) {
     test_opening_keeps_its_own_connection();
     test_failed_start_puts_back_the_replaced_queue();
     test_failed_start_restores_a_device_post();
+    test_failed_start_restores_the_replaced_queues_post();
     test_late_post_from_a_replaced_input();
     test_later_mark_is_held();
     dsd_socket_cleanup();

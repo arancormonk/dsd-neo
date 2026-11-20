@@ -7993,8 +7993,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_input_backlog_attach_failed()`): the reader an input switch keeps running is the measured input again, on the
   attachment it had, so a mark taken on it before the switch still applies, and a device input's unmeasured post the
   attach retired stands again (unless a later post does), so the device the switch keeps running still drops its old
-  audio (`PLATFORM_PCM_STREAM` `test_failed_start_restores_a_device_post()`). Attachment numbers are never reused, so a
-  cut measured on the failed queue never applies to a later one.
+  audio (`PLATFORM_PCM_STREAM` `test_failed_start_restores_a_device_post()`). A post measured on the queue the attach
+  replaced is retired at the attach too and kept for its failed start alike, so a confirmation posted on the new queue
+  meanwhile, or the decoder's take while it stood, does not lose the kept queue's drop
+  (`test_failed_start_restores_the_replaced_queues_post()`). Attachment numbers are never reused, so a cut measured on
+  the failed queue never applies to a later one.
   Replacing the input (`dsd_opts_reset_pcm_input_state()`, the Pulse open, the TCP reconnect) retires a held post that
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for

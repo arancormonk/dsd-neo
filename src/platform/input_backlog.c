@@ -55,8 +55,8 @@ static uint64_t s_undo_prior_seq;
 static uint64_t s_undo_continued_from;
 static uint64_t s_undo_continued_to;
 /* The post of the input the last attach replaced, which its failed start puts back (dsd_input_backlog_attach_failed()):
-   the input it was posted on runs on. An unmeasured one (a device input's) the attach retired, or one marked on that
-   input and posted after the attach (dsd_input_backlog_post()). */
+   the input it was posted on runs on. One the attach retired (an unmeasured one, a device input's, or one measured on
+   the queue it replaced), or one marked on that input and posted after the attach (dsd_input_backlog_post()). */
 static int s_undo_post_held;
 static dsd_input_cut s_undo_post;
 
@@ -145,9 +145,11 @@ dsd_input_backlog_attach(const void* queue, dsd_input_arrived_fn arrived) {
             /* Measured when it was posted, on the connection this queue reads: nothing read the connection before its
                queue attached, so the queue's count goes on from the connection's and the post stands on it. */
             s_post.seq = s_seq;
-        } else if (!s_post.measured) {
-            /* Posted while no queue was attached (a device input, or none): the peer moved before this input existed,
-               so nothing it holds was queued before the post. Kept for a failed start, whose device runs on. */
+        } else if (!s_post.measured || (!continues && s_post.seq == opened)) {
+            /* Posted while no queue was attached (a device input, or none), or measured on the queue this attach
+               replaces: the peer moved before this input existed, so nothing it holds was queued before the post. Kept
+               for a failed start, whose input runs on and still holds what was queued before it; a post on this queue
+               meanwhile must not take its place. */
             s_undo_post_held = s_undo_held;
             s_undo_post = s_post;
             s_post_held = 0;
