@@ -15,6 +15,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -192,6 +193,28 @@ test_kirisun_pi_establishes_classification(void) {
     dsd_state_ext_free_all(&s_state);
 }
 
+/* A checked PI header ends a repeater slot's voice hold, as the slot's checked LC does, but only where the hold applies
+   (dsd_dmr_voice_hold_applies()): the single-slot decoder without trunking (-fr) has none, and its checked LC ends none,
+   so neither does its PI. The flag stays for trunking turned back on without a retune. */
+static void
+test_pi_ends_a_hold_only_where_the_hold_applies(void) {
+    for (int mono = 0; mono <= 1; mono++) {
+        reset_fixture();
+        s_opts.dmr_mono = mono;
+        s_opts.trunk_enable = 0;
+        s_state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        s_state.currentslot = 0;
+        dmr_enc_class_hold(&s_state);
+        uint8_t pi[11] = {0x02U, 0x68U, 0x34U, 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0xABU, 0x00U, 0x00U};
+        pi[9] = hytera_additive_checksum(pi, 9U);
+        dmr_pi(&s_opts, &s_state, pi, 0U, 0U);
+        assert(s_state.payload_algid == 0x02);
+        assert(s_state.dmr_enc_class_held[0] == (mono ? 1U : 0U));
+        assert(s_state.dmr_enc_class_held[1] == 1U);
+        dsd_state_ext_free_all(&s_state);
+    }
+}
+
 int
 main(void) {
     test_first_weak_observation_is_tentative();
@@ -204,5 +227,6 @@ main(void) {
     test_slot_isolation();
     test_hytera_pi_checksum_gates_crypto_writes();
     test_kirisun_pi_establishes_classification();
+    test_pi_ends_a_hold_only_where_the_hold_applies();
     return 0;
 }

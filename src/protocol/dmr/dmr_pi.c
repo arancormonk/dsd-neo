@@ -314,7 +314,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received) {
    the ALG ID and key id are the call's own (an SB identifier does not replace them), and the voice sync that follows the
    header is superframe 0. A PI naming no cipher the decoder knows checks nothing to keep. */
 static void
-dmr_pi_note_verified_first(dsd_state* state, uint8_t mfid, int checksum_verified) {
+dmr_pi_note_verified_first(const dsd_opts* opts, dsd_state* state, uint8_t mfid, int checksum_verified) {
     const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
     const int algid = slot == 0U ? state->payload_algid : state->payload_algidR;
     const int known = dmr_vcrypt_vendor_cipher_known(mfid, algid);
@@ -322,8 +322,9 @@ dmr_pi_note_verified_first(dsd_state* state, uint8_t mfid, int checksum_verified
        names no cipher the decoder knows for its vendor (ALG ID 0, or one it has no keystream for, such as a Kirisun ALG
        ID 0x80 beside service options without the privacy bit, which would read as clear) still says the call is
        encrypted, with nothing to judge its frames by: they stay held, not played as clear. */
-    /* Direct-mode traffic has no hold, and its PI ends none: a repeater slot's hold stays for that slot's own word. */
-    if (known && dsd_dmr_voice_hold_applies(NULL, state)) {
+    /* Direct-mode traffic and the single-slot decoder without trunking have no hold, and their PI ends none, as their
+       checked LC ends none (dsd_dmr_voice_hold_applies()): a repeater slot's hold stays for that slot's own word. */
+    if (known && dsd_dmr_voice_hold_applies(opts, state)) {
         dmr_enc_class_release_hold(state, slot);
     }
     /* Under -F the burst decoder accepts a PI whose CRC failed against the standard mask as RAS: that is no check of its
@@ -354,7 +355,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
         dmr_pi_handle_kirisun(state, PI_BYTE);
-        dmr_pi_note_verified_first(state, MFID, 0);
+        dmr_pi_note_verified_first(opts, state, MFID, 0);
         dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG);
         return;
     }
@@ -362,7 +363,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
     if (MFID == 0x68) { //Hytera Enhanced
         dmr_pi_handle_hytera(opts, state, PI_BYTE);
         if (dmr_hytera_checksum(PI_BYTE, 9U) == PI_BYTE[9]) {
-            dmr_pi_note_verified_first(state, MFID, 1);
+            dmr_pi_note_verified_first(opts, state, MFID, 1);
             dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
         }
         return;
@@ -370,7 +371,7 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x10 && CRCCorrect == 1) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
-        dmr_pi_note_verified_first(state, MFID, 0);
+        dmr_pi_note_verified_first(opts, state, MFID, 0);
         dmr_pi_publish_crypto(opts, state, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
     }
 }
