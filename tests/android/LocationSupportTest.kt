@@ -319,6 +319,186 @@ private fun siteCacheAndPermissionBoundaries() {
     check(LocationSupport.pollResult().isEmpty() && cancelled.manager.signal!!.cancelled)
 }
 
+// The map's second Locate me (field report): Google's fused provider answers a new request at once with the position it
+// already holds, stamped as new. With GPS asked, that early answer waits for GPS within the grace, the fused provider
+// is asked for high accuracy, and its cache is not taken as a measurement.
+private fun siteFixWaitsForGpsOverAnEarlyFusedAnswer() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        activity.manager.lastKnown[LocationManager.FUSED_PROVIDER] = Location().apply { latitude = 40.0; accuracy = 10f }
+        LocationSupport.requestSiteLocation(activity, 160)
+        Handler.drain()
+        check(LocationManager.FUSED_PROVIDER !in activity.manager.cacheReads) { "with GPS asked, only its cache counts" }
+        val fusedRequest = activity.manager.currentRequests.getValue(LocationManager.FUSED_PROVIDER)
+        check(fusedRequest.quality == android.location.LocationRequest.QUALITY_HIGH_ACCURACY) { "the fused provider measures" }
+        check(fusedRequest.durationMillis == 20_000L)
+        activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { latitude = 40.0; accuracy = 100f })
+        Handler.drain()
+        check(LocationSupport.pollResult().isEmpty()) { "an early fused answer must not settle while GPS is out" }
+        activity.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { latitude = 41.5; accuracy = 5f })
+        val found = JSONObject(LocationSupport.pollResult())
+        check(found.optLong("id") == 160L && found.optDouble("lat") == 41.5 && found.optDouble("accuracyM") == 5.0)
+        check(Handler.timeouts.isEmpty() && activity.manager.signals.values.all { it.cancelled })
+
+        // GPS's own fix wins over an earlier answer that only claims to be more accurate.
+        val claimed = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(claimed, 161)
+        Handler.drain()
+        claimed.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { latitude = 40.0; accuracy = 3f })
+        claimed.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { latitude = 41.5; accuracy = 8f })
+        check(JSONObject(LocationSupport.pollResult()).optDouble("lat") == 41.5)
+
+        // GPS silent (indoors): the early answer is used once the grace ends, not at the 20 s deadline.
+        val indoors = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(indoors, 162)
+        Handler.drain()
+        indoors.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { latitude = 40.0; accuracy = 30f })
+        Handler.advanceBy(LocationSupport.GPS_GRACE_MS - 1)
+        check(LocationSupport.pollResult().isEmpty())
+        Handler.advanceBy(1)
+        val graced = JSONObject(LocationSupport.pollResult())
+        check(graced.optBoolean("fixOk") && graced.optDouble("lat") == 40.0 && Handler.timeouts.isEmpty())
+        check(indoors.manager.signals.values.all { it.cancelled })
+
+        // GPS answering nothing ends the wait at once.
+        val noFix = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(noFix, 163)
+        Handler.drain()
+        noFix.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 30f })
+        noFix.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(null)
+        noFix.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(null)
+        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 30.0 && Handler.timeouts.isEmpty())
+
+        // Approximate location: no GPS, the balanced default, and the first close-enough answer settles.
+        val coarse = Activity()
+        LocationSupport.requestSiteLocation(coarse, 164)
+        Handler.drain()
+        check(coarse.manager.currentRequests.getValue(LocationManager.FUSED_PROVIDER).quality
+            == android.location.LocationRequest.QUALITY_BALANCED_POWER_ACCURACY)
+        coarse.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 100f })
+        check(JSONObject(LocationSupport.pollResult()).optBoolean("fixOk") && Handler.timeouts.isEmpty())
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+// The map's Locate me offers precise location when only approximate is allowed, and goes on with whatever is allowed.
+private fun preciseRequestOffersTheUpgrade() {
+    val approximate = Activity()
+    LocationSupport.requestPreciseLocation(approximate, 170)
+    Handler.drain()
+    check(approximate.permissionRequests == 1 && approximate.requestedPermissions == listOf(
+        android.Manifest.permission.ACCESS_COARSE_LOCATION, android.Manifest.permission.ACCESS_FINE_LOCATION)) {
+        "with approximate only, precise is offered"
+    }
+    check(approximate.manager.callbacks.isEmpty()) { "nothing is asked of a provider before the answer" }
+    // Kept approximate (or Android answering at once after two refusals): the request goes on without GPS.
+    check(LocationSupport.onRequestPermissionsResult(approximate, 4303, intArrayOf(0, -1)))
+    check(LocationManager.GPS_PROVIDER !in approximate.manager.callbacks)
+    approximate.manager.callback!!.accept(Location().apply { accuracy = 2_000f })
+    val kept = JSONObject(LocationSupport.pollResult())
+    check(kept.optLong("id") == 170L && kept.optBoolean("fixOk") && !kept.optBoolean("geocodeOk"))
+
+    val upgraded = Activity()
+    LocationSupport.requestPreciseLocation(upgraded, 171)
+    Handler.drain()
+    upgraded.finePermission = 0
+    check(LocationSupport.onRequestPermissionsResult(upgraded, 4303, intArrayOf(0, 0)))
+    check(LocationManager.GPS_PROVIDER in upgraded.manager.callbacks) { "precise allowed: GPS is asked" }
+    upgraded.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { accuracy = 4f })
+    check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 4.0)
+
+    val precise = Activity().apply { finePermission = 0 }
+    LocationSupport.requestPreciseLocation(precise, 172)
+    Handler.drain()
+    check(precise.permissionRequests == 0 && LocationManager.GPS_PROVIDER in precise.manager.callbacks) { "nothing to offer" }
+    LocationSupport.cancelLocationRequest(172)
+    Handler.drain()
+
+    val none = Activity().apply { permission = -1 }
+    LocationSupport.requestPreciseLocation(none, 173)
+    Handler.drain()
+    check(none.permissionRequests == 1)
+    check(LocationSupport.onRequestPermissionsResult(none, 4303, intArrayOf(-1, -1)))
+    check(JSONObject(LocationSupport.pollResult()).optString("error").contains("permission denied"))
+    check(Handler.timeouts.isEmpty())
+}
+
+// A prompt a request gave up (the map's Locate me cancelled while it offered precise) answers nothing for the request
+// that replaced it, whether that one asked no prompt or the answer comes empty.
+private fun aRetiredPromptLeavesItsReplacementAlone() {
+    for (grants in listOf(intArrayOf(), intArrayOf(0, 0))) {
+        val activity = Activity()
+        LocationSupport.requestPreciseLocation(activity, 180)
+        Handler.drain()
+        check(activity.permissionRequests == 1)
+        LocationSupport.cancelLocationRequest(180)
+        Handler.drain()
+        LocationSupport.requestSiteLocation(activity, 181)
+        Handler.drain()
+        val registered = activity.manager.callbacks.size
+        check(registered > 0 && activity.permissionRequests == 1) { "coarse allowed: the site request asks nothing" }
+        check(LocationSupport.onRequestPermissionsResult(activity, 4303, grants))
+        Handler.drain()
+        check(LocationSupport.pollResult().isEmpty()) { "the old prompt's answer neither cancels nor answers it" }
+        check(activity.manager.callbacks.size == registered && activity.manager.signals.values.none { it.cancelled }) {
+            "nor starts it again"
+        }
+        activity.manager.callback!!.accept(Location())
+        check(JSONObject(LocationSupport.pollResult()).optLong("id") == 181L)
+    }
+}
+
+// The answer used is the best still fresh when the request settles: an accurate one that went stale while GPS was
+// awaited gives way to a fresher, rougher one, rather than the request failing with a usable fix in hand.
+private fun aStaleBestGivesWayToAFreshAnswer() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(activity, 190)
+        Handler.drain()
+        val ageing = Location().apply { accuracy = 5f; latitude = 40.0; elapsedRealtimeNanos -= 25_000_000_000L }
+        activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(ageing)
+        activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { accuracy = 50f })
+        check(LocationSupport.pollResult().isEmpty()) { "GPS is still owed its grace" }
+        ageing.elapsedRealtimeNanos -= 10_000_000_000L // the grace's ten seconds pass on the fix's clock too
+        Handler.advanceBy(LocationSupport.GPS_GRACE_MS)
+        val settled = JSONObject(LocationSupport.pollResult())
+        check(settled.optBoolean("fixOk") && settled.optDouble("accuracyM") == 50.0) { "the fresh answer: $settled" }
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+// The grace runs from the request's start: an answer that comes after it settles at once.
+private fun theGraceRunsFromTheStart() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(activity, 195)
+        Handler.drain()
+        Handler.advanceBy(LocationSupport.GPS_GRACE_MS)
+        check(LocationSupport.pollResult().isEmpty()) { "nothing in hand at the grace's end: wait on" }
+        activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 30f })
+        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 30.0) { "a late answer settles at once" }
+        check(Handler.timeouts.isEmpty())
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+// The map's opening fix never prompts: without location access it ends at once, with an error and no prompt.
+private fun theQuietRequestNeverPrompts() {
+    val none = Activity().apply { permission = -1 }
+    LocationSupport.requestQuietLocation(none, 200)
+    Handler.drain()
+    val refused = JSONObject(LocationSupport.pollResult())
+    check(none.permissionRequests == 0 && refused.optLong("id") == 200L && !refused.optBoolean("fixOk"))
+    check(refused.optString("error").isNotEmpty() && !refused.optBoolean("cancelled") && Handler.timeouts.isEmpty())
+
+    val approximate = Activity()
+    LocationSupport.requestQuietLocation(approximate, 201)
+    Handler.drain()
+    check(approximate.permissionRequests == 0 && approximate.manager.callback != null) { "approximate: no upgrade offer" }
+    approximate.manager.callback!!.accept(Location().apply { accuracy = 2_000f })
+    check(JSONObject(LocationSupport.pollResult()).optBoolean("fixOk"))
+}
+
 private fun timeoutWithFixAndLateReplacement() {
     val activity = Activity()
     val started = CountDownLatch(1)
@@ -393,6 +573,12 @@ fun main() {
         siteFixIsFreshAndDoesNotGeocode()
         siteFixPrefersAccuracyAndHonorsCoarsePermission()
         siteCacheAndPermissionBoundaries()
+        siteFixWaitsForGpsOverAnEarlyFusedAnswer()
+        preciseRequestOffersTheUpgrade()
+        aRetiredPromptLeavesItsReplacementAlone()
+        aStaleBestGivesWayToAFreshAnswer()
+        theGraceRunsFromTheStart()
+        theQuietRequestNeverPrompts()
         timeoutWithFixAndLateReplacement()
         pollSharesTheWritersLock()
         println("PASS: location permission, cache freshness, provider fallback, legacy callbacks, deadlines and cancellation")

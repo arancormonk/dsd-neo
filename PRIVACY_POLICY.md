@@ -100,18 +100,17 @@ area does not have to be fetched again. Each cached tile is stored with the time
 or last shown, and stays until newer tiles push it out (the cache holds up to 50 MB) or the
 cache is cleared, so the cache shows which areas you looked at, and when. Once your own
 position has placed the map (Locate me, Follow my position, Show every radio when it took in
-your dot, or a map that first opened around you), the tiles of the rest of that visit to the
-map are kept in memory only and never written to the cache, so the cache holds no trail of
+your dot, or a map that opened around you), the tiles of the rest of that run of the app are
+kept in memory only and never written to the cache, so the cache holds no trail of
 where you were. The cache is not part of the app's backup file, and Android can clear it at any
 time.
 
 The app saves on your device whether tiles are on, the tile server you entered and its
 attribution, the age filter you chose, and the area you last looked at, so the map can open
-where you left it. That saved area is never one your own position shaped: once Locate me,
-Follow my position or Show every radio has used your position in a visit, or the map first
-opened around you, the map saves no area until you close it. It then goes back to the last
-area it saved, or shows the whole world when it saved none. None of these are part of the
-app's backup file. A tile server address you enter can hold a key, so the app does not
+there when location is not allowed. That saved area is never one your own position shaped:
+once Locate me, Follow my position or Show every radio has used your position, or the map
+opened around you, the map saves no area for the rest of that run of the app. None of these
+are part of the app's backup file. A tile server address you enter can hold a key, so the app does not
 write it to its diagnostics log.
 
 ## Location
@@ -133,9 +132,11 @@ GPS roaming and on the map:
   only while DSD-neo is on screen; leaving the app stops it. The distances are worked out on
   your device, nothing is sent anywhere, and these locations are never saved: the app keeps
   only the newest readings in memory while roaming runs.
-- **The map** can show your own position as a dot. **Locate me** asks Android for your
-  coordinates once, with no postal-code lookup, as the nearby-site chooser does, and saves the
-  result the same way (see below). **Follow my position**, if you turn it on, uses your precise
+- **The map** can show your own position as a dot. When you have already allowed location,
+  opening the map asks Android for your coordinates once, without a prompt, to centre the map
+  on you. **Locate me** asks Android for your coordinates once, with no postal-code lookup, as
+  the nearby-site chooser does; if you allowed only approximate location, it first lets Android
+  offer precise location again. Both save the result the same way (see below). **Follow my position**, if you turn it on, uses your precise
   location to keep the map on you as you move, only while the map is on screen; leaving the map
   or the app stops it. Those locations are never saved, and neither are the map tiles fetched
   around you: they stay in memory only. The dot is drawn on your device, and nothing about your
@@ -153,7 +154,7 @@ to do it, under that provider's terms. The app asks for location only while you 
 never in the background.
 
 The last location the app got for Use my location, the nearby-site chooser, Listen's Nearest
-order and the map's Locate me (latitude, longitude, accuracy and time) is saved on your device
+order and the map (latitude, longitude, accuracy and time) is saved on your device
 so it can pick nearby sites, order your saved systems by distance and show your dot on the
 map. It stops being used after 24 hours
 and is removed the next time the app checks it, while it is running or when you open it

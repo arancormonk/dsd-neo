@@ -540,7 +540,8 @@ test_held_tiles_follow_the_cache_rules() {
 }
 
 /* Final review I1: every tile request of a view the device's position placed is memory only (Locate me, Follow my
- * position, a fit that took in the dot), for the rest of the visit, even after a pan; a new visit asks by hand. */
+ * position, a fit that took in the dot), for the rest of the item's life (the app's run), even after a pan or a move
+ * elsewhere, since the screen keeps the view between visits; a new item asks by hand. */
 void
 test_device_views_ask_memory_only() {
     Fixture f;
@@ -564,27 +565,33 @@ test_device_views_ask_memory_only() {
     f.map->testPolish();
     assert(tiles.memoryOnlyForTest()); /* still near the device */
 
-    /* Same keys, new origin: a new visit asks again by hand; following asks again from the device. */
-    /* Read through a function: the generation moves inside the calls below, not in this scope. */
-    const auto generation_now = [&tiles] { return tiles.generation(); };
-    const quint64 before = generation_now();
-    f.map->resetCameraUsedDevicePosition();
+    f.map->centerOn(-40.0, 120.0, 6.0);
     f.map->testPolish();
-    assert(generation_now() > before && !tiles.memoryOnlyForTest());
-    f.map->setDeviceValid(false);
-    f.map->setFollowDevice(true); /* no fix yet: the camera does not move, the request is still memory only */
-    f.map->testPolish();
-    assert(tiles.memoryOnlyForTest());
-    f.map->setFollowDevice(false);
-    f.map->testPolish();
-    assert(!tiles.memoryOnlyForTest());
-
-    f.map->setDeviceValid(true);
-    const bool fitted = f.map->fitAll(); /* the fit takes in the dot */
-    assert(fitted);
-    f.map->testPolish();
-    assert(tiles.memoryOnlyForTest());
+    assert(f.map->cameraUsedDevicePosition() && tiles.memoryOnlyForTest()); /* for the item's life: the app's run */
     f.map->setTileSource(nullptr);
+
+    /* A new item (the next run) asks by hand; following asks from the device before any fix moves the camera. */
+    Fixture g;
+    stub::MapTileSourceStub fresh;
+    g.map->setTileSource(&fresh);
+    fresh.setEnabled(true);
+    g.map->testPolish();
+    assert(!g.map->cameraUsedDevicePosition() && !fresh.memoryOnlyForTest());
+    g.map->setFollowDevice(true); /* no fix yet: the camera does not move, the request is still memory only */
+    g.map->testPolish();
+    assert(fresh.memoryOnlyForTest());
+    g.map->setFollowDevice(false);
+    g.map->testPolish();
+    assert(!fresh.memoryOnlyForTest());
+
+    g.map->setDeviceLatitude(10.01);
+    g.map->setDeviceLongitude(20.01);
+    g.map->setDeviceValid(true);
+    const bool fitted = g.map->fitAll(); /* the fit takes in the dot */
+    assert(fitted);
+    g.map->testPolish();
+    assert(g.map->cameraUsedDevicePosition() && fresh.memoryOnlyForTest());
+    g.map->setTileSource(nullptr);
 }
 
 /* A pan that moves a trail-bearing marker across the flip line (half a world from the centre) rebuilds the overlay:
@@ -1021,10 +1028,33 @@ test_centring_raises_a_zoom_that_cannot() {
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 300.0});
     const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
     assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 150.0) < 1.0e-6);
-    assert(f.map->zoom() > 0.7 && f.map->zoom() < 4.0); /* raised, but only as far as needed */
-    f.map->setZoom(12.0);
+    assert(f.map->zoom() > 14.99 && f.map->zoom() < 15.01); /* Locate me goes in to the streets around the dot */
+    f.map->setZoom(17.0);
     const bool kept = f.map->centerOnDevice();
-    assert(kept && std::fabs(f.map->zoom() - 12.0) < 1.0e-9);
+    assert(kept && std::fabs(f.map->zoom() - 17.0) < 1.0e-9); /* a closer zoom is the user's, and stays */
+}
+
+/* Locate me's zoom: the streets around a precise fix, and an approximate fix's whole circle (about half the shorter
+ * side across), never wider than a town. The view is 400 x 300. */
+void
+test_device_zoom_follows_the_accuracy() {
+    Fixture f;
+    f.map->setDeviceLatitude(51.5);
+    f.map->setDeviceLongitude(20.0);
+    f.map->setDeviceValid(true);
+    f.map->setDeviceAccuracyM(0.0); /* unknown */
+    assert(std::fabs(f.map->deviceZoom() - 15.0) < 1.0e-9);
+    f.map->setDeviceAccuracyM(5.0);
+    assert(std::fabs(f.map->deviceZoom() - 15.0) < 1.0e-9);
+    f.map->setDeviceAccuracyM(2000.0);
+    const double approximate = f.map->deviceZoom();
+    const double radius_px = 2000.0 / mm::metres_per_px(51.5, approximate);
+    assert(approximate > 11.0 && approximate < 15.0 && std::fabs(radius_px - 75.0) < 1.0e-6);
+    f.map->setDeviceAccuracyM(50000.0);
+    assert(std::fabs(f.map->deviceZoom() - 11.0) < 1.0e-9);
+    f.map->setZoom(2.0);
+    f.map->setDeviceAccuracyM(2000.0);
+    assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - approximate) < 1.0e-9);
 }
 
 /* PR2 review 2: a fit while following the live position takes in the device dot that will be drawn after the follow
@@ -1107,6 +1137,7 @@ main(int argc, char** argv) {
     test_follow_keeps_a_pinched_out_zoom();
     test_follow_recentres_after_resize_and_restore();
     test_centring_raises_a_zoom_that_cannot();
+    test_device_zoom_follows_the_accuracy();
     test_fit_takes_the_dot_left_after_follow();
     test_ring_label_ranks_by_its_own_age();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);

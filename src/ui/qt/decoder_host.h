@@ -716,6 +716,15 @@ class DecoderHost : public QObject {
         return false;
     }
 
+    /**
+     * @brief The location access this app has now: "none", "approximate" or "precise". Read when it is needed, since
+     * the user can change it in the platform's settings while the app runs. The default host has none.
+     */
+    Q_INVOKABLE virtual QString
+    locationAccess() const {
+        return QStringLiteral("none");
+    }
+
     virtual bool
     shareSupported() const {
         return false;
@@ -827,6 +836,24 @@ class DecoderHost : public QObject {
     virtual void
     requestSiteLocation(qint64 requestId) {
         requestCurrentLocation(requestId);
+    }
+
+    /**
+     * The map's Locate me: fresh coordinates as requestSiteLocation(), but where only approximate location is allowed,
+     * the platform first offers precise location. Hosts without that difference ask for a site fix.
+     */
+    virtual void
+    requestPreciseLocation(qint64 requestId) {
+        requestSiteLocation(requestId);
+    }
+
+    /**
+     * The map's opening fix: fresh coordinates as requestSiteLocation(), but never a permission prompt; without
+     * location access it is answered at once with an error. Hosts without prompts ask for a site fix.
+     */
+    virtual void
+    requestQuietLocation(qint64 requestId) {
+        requestSiteLocation(requestId);
     }
 
     virtual void

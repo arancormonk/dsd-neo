@@ -240,7 +240,11 @@ The Sites chooser and Listen's Nearest order use a separate coordinate-only requ
 an accurate recent cache or fresh provider updates, and no reverse-geocoding wait. It offers
 fine and coarse foreground permission together when permission is first needed, respects
 existing approximate access, and adds GPS when fine permission is granted. A coarse result
-waits for a more accurate pending provider, up to the 20-second deadline. Accuracy and saved
+waits for a more accurate pending provider, up to the 20-second deadline. With precise location allowed, the fused provider is
+asked for high accuracy, only GPS's own recent fix is taken from the cache, and another provider's answer settles the
+request only from 10 seconds after it started, unless GPS answered first: Google's fused provider answers at once with
+the position it already holds, so without the wait a second lookup came back where the first one was. The answer used
+is the most accurate one still fresh when the request settles. Accuracy and saved
 location are visible in the chooser. Existing users can enable precise location in Android's
 app permission settings; background location is never requested.
 Desktop location defaults to unsupported.
@@ -269,7 +273,9 @@ exists. The optional last location fix includes accuracy in metres, uses millise
 after 24 hours, on load/read and by a foreground timer. Location producers use
 `AppPrefs::setLocationFix` to publish the tuple with one coherent notification; the coordinate
 and timestamp properties are read-only to QML. The map's Locate me goes through the same coordinate-only request, as
-requester "map" of the shared broker (`LocationRequests`), and its Follow my position takes the "map" lease of the
+requester "map" of the shared broker (`LocationRequests`), but offers precise location when only approximate is
+allowed (`LocationSupport.requestPreciseLocation`); the map's opening fix never prompts
+(`LocationSupport.requestQuietLocation`), and its Follow my position takes the "map" lease of the
 stream roaming uses (`LocationFeed`): the stream runs while either needs it, and a followed fix is never saved. The
 device's coordinates and direct key fields must never be included in diagnostic exports, and neither may a tile URL or
 the tile server address: nothing on the map's path logs one, and errors never carry the URL. Received positions are
@@ -740,8 +746,8 @@ and that User-Agent (see `PRIVACY_POLICY.md`, "Map"). It never gets positions, r
 decoded. Tiles of areas you looked at by hand are kept in the app's cache, each with the time it was fetched or last
 shown, until newer tiles push them out (up to 50 MB) or the cache is cleared. They follow the server's cache rules, or 7
 days when it gives none. Once your own position has placed the map (Locate me, Follow my position, **Show every radio**
-when it took in your dot, or a map that first opened around you), the tiles of the rest of that visit stay in memory and
-are never written to the cache. There is no download for offline use: OpenStreetMap's tile policy does not allow it.
+when it took in your dot, or a map that opened around you), the tiles of the rest of that run of the app stay in memory
+and are never written to the cache. There is no download for offline use: OpenStreetMap's tile policy does not allow it.
 When the server cannot be reached, a small line on the map says **Map tiles unavailable — retrying** and the app tries
 again later, waiting longer each time (up to 5 minutes). A tile the server does not have stays blank, and the rest still
 load. If the server sends something other than PNG tiles (or PNGs larger than 512×512), the line says **The tile server
@@ -749,9 +755,14 @@ sent no PNG tiles the map can use. Check Map settings.**
 
 ### Your own position
 
-**Locate me** asks for your location once and puts a dot there. It is saved like the nearby-site chooser's fix and
-dropped after 24 hours. Press the button again while the map is still on the dot to **Follow my position**: the map
-then moves with you, using precise location, only while the map is on screen. Leaving the map, moving it by hand or
+When location is allowed, the map opens on your position, close enough to see the streets around you: on your saved
+location at once, then on a fresh fix it asks for without a prompt. **Locate me** asks for your location again, puts
+the dot there and zooms in to it. If DSD-neo only has approximate location, Locate me first offers precise location; kept
+approximate, the map zooms to show the whole area you may be in and says **Your location is approximate. Allow precise
+location for a closer fix.**, with a Settings button. The fix is saved like the nearby-site chooser's and dropped after
+24 hours. With precise location, press the button again while the map is still on the dot to **Follow my position**:
+the map then moves with you, only while the map is on screen. With approximate location the button stays Locate me, so
+each press finds you again. Leaving the map, moving it by hand or
 pressing the button a third time stops it, and those live positions are never saved. Nor are the map tiles fetched
 around you: they stay in memory (see "Map tiles"). Without precise location the map says **Live position needs precise
 location.** When the phone has had no new fix for a minute (a tunnel), the dot stays where it last was, distances say
@@ -761,11 +772,11 @@ radio, a History row's position or your located dot stops any follow first, so t
 ### What the map keeps
 
 The map remembers, on this phone only, whether tiles are on, the tile server and its attribution, the age filter and
-the area you last looked at. None of these go into a backup, and a restore leaves them as they are. The saved area is
-never one centred on you: once Locate me, Follow my position or **Show every radio** has used your dot, or the map
-first opened around you, the map saves no area for the rest of that visit. Closing it then goes back to the last area
-it saved, or to the whole world when it saved none. So with a saved location less than a day old and no area saved
-yet, the map opens on the radios and you each time. Following a radio is never saved. Tracks are kept in memory
+the area you last looked at. None of these go into a backup, and a restore leaves them as they are. Leaving the map
+and coming back shows it as you left it. The saved area is never one centred on you: once Locate me, Follow my
+position or **Show every radio** has used your dot, or the map opened around you, the map saves no area for the rest
+of that run of the app. The saved area is only where the map opens when location is not allowed; without one it
+shows every radio. Following a radio is never saved. Tracks are kept in memory
 only; History rows keep their own position.
 
 ## Backup and restore

@@ -44,12 +44,22 @@ LocationRequests::setHost(DecoderHost* host) {
 
 qint64
 LocationRequests::requestSite(const QString& requester) {
-    return begin(requester, true);
+    return begin(requester, Kind::Site);
+}
+
+qint64
+LocationRequests::requestPrecise(const QString& requester) {
+    return begin(requester, Kind::Precise);
+}
+
+qint64
+LocationRequests::requestQuiet(const QString& requester) {
+    return begin(requester, Kind::Quiet);
 }
 
 qint64
 LocationRequests::requestCurrent(const QString& requester) {
-    return begin(requester, false);
+    return begin(requester, Kind::Current);
 }
 
 void
@@ -86,7 +96,7 @@ LocationRequests::busy() const {
 }
 
 qint64
-LocationRequests::begin(const QString& requester, bool forSites) {
+LocationRequests::begin(const QString& requester, Kind kind) {
     if (requester.isEmpty() || m_host == nullptr) {
         return 0;
     }
@@ -96,10 +106,11 @@ LocationRequests::begin(const QString& requester, bool forSites) {
     m_requester = requester;
     Q_EMIT pendingChanged();
     m_requesting = true;
-    if (forSites) {
-        m_host->requestSiteLocation(id);
-    } else {
-        m_host->requestCurrentLocation(id);
+    switch (kind) {
+        case Kind::Site: m_host->requestSiteLocation(id); break;
+        case Kind::Precise: m_host->requestPreciseLocation(id); break;
+        case Kind::Quiet: m_host->requestQuietLocation(id); break;
+        case Kind::Current: m_host->requestCurrentLocation(id); break;
     }
     m_requesting = false;
     return id;

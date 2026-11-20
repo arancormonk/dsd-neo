@@ -86,6 +86,8 @@
 -keep,allowoptimization class io.github.arancormonk.dsdneo.LocationSupport {
     public static void requestCurrentLocation(android.app.Activity, long);
     public static void requestSiteLocation(android.app.Activity, long);
+    public static void requestPreciseLocation(android.app.Activity, long);
+    public static void requestQuietLocation(android.app.Activity, long);
     public static void cancelLocationRequest(long);
     public static java.lang.String pollResult();
 }
@@ -100,6 +102,7 @@
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.LocationPermission {
     public static void requestRoamingPermission(android.app.Activity, long);
+    public static java.lang.String access(android.content.Context);
     public static void openAppLocationSettings(android.app.Activity);
     public static void openLocationSourceSettings(android.app.Activity);
 }

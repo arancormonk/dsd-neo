@@ -33,8 +33,9 @@
  * view on every pan or zoom, keeps an image only while its tile is in view (or
  * stands in, scaled, for the new zoom's tiles while they load), and drops its
  * requests while it is inactive, hidden, or the app is in the background.
- * While the device's position placed the camera this visit (cameraUsedDevicePosition) or the camera follows the
- * device, every request is ViewOrigin::FromDevice, so the tile cache keeps nothing of it on disk.
+ * Once the device's position has placed the camera (cameraUsedDevicePosition, for the rest of the item's life, which
+ * is the app's run) or while the camera follows the device, every request is ViewOrigin::FromDevice, so the tile cache
+ * keeps nothing of it on disk.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_MAP_VIEW_ITEM_H_
@@ -100,8 +101,8 @@ class MapViewItem : public QQuickItem {
     Q_PROPERTY(double deviceLatitude READ deviceLatitude WRITE setDeviceLatitude NOTIFY deviceChanged)
     Q_PROPERTY(double deviceLongitude READ deviceLongitude WRITE setDeviceLongitude NOTIFY deviceChanged)
     Q_PROPERTY(double deviceAccuracyM READ deviceAccuracyM WRITE setDeviceAccuracyM NOTIFY deviceChanged)
-    /** The camera centred on or fitted the device's position since resetCameraUsedDevicePosition() (spec 4.8:
-     *  the saved viewport must not be derived from it). */
+    /** The camera has centred on or fitted the device's position, at any time in this item's life (spec 4.8: the
+     *  saved viewport must not be derived from it, and every later view starts from one that was). */
     Q_PROPERTY(bool cameraUsedDevicePosition READ cameraUsedDevicePosition NOTIFY cameraUsedDevicePositionChanged)
 
     /** Markers drawn now (current positions and open rings the age filter shows). */
@@ -313,8 +314,13 @@ class MapViewItem : public QQuickItem {
     Q_INVOKABLE bool fitAllWith(double lat, double lon);
     /** @brief Centre on track @p trackId's marker (its current position, else its open ring), animated. */
     Q_INVOKABLE bool centerOnTrack(qulonglong trackId);
-    /** @brief Centre on the device's position, animated. False while it is not valid. */
-    Q_INVOKABLE bool centerOnDevice();
+    /** @brief Centre on the device's position (Locate me, the map opening on the user, the List's own row), animated.
+     *  The zoom goes in to at least deviceZoom(), keeping a closer one, or with @p exactZoom (a placement nobody chose,
+     *  as the map opening) to deviceZoom() itself. False while it is not valid. */
+    Q_INVOKABLE bool centerOnDevice(bool exactZoom = false);
+    /** @brief The zoom centerOnDevice() goes in to: the streets around the dot, with its accuracy circle about half the
+     *  view's shorter side across, from 11 (a wide approximate fix) to 15. */
+    Q_INVOKABLE double deviceZoom() const;
     /** @brief Centre on (@p lat, @p lon) at @p level (negative: keep the zoom), animated. */
     Q_INVOKABLE void centerOn(double lat, double lon, double level = -1.0);
     /** @brief The track whose marker a tap at (@p x, @p y) means, within hitRadius; 0 for none. */
@@ -324,7 +330,8 @@ class MapViewItem : public QQuickItem {
     /** @brief Where (@p lat, @p lon) is drawn now (item coordinates, the copy nearest the centre), for a pin the screen
      *  draws over the map (a History row's saved fix); undefined for a position out of range. */
     Q_INVOKABLE QVariant pointFor(double lat, double lon) const;
-    /** @brief Start a new map session for cameraUsedDevicePosition (the screen calls it when the map opens). */
+    /** @brief Forget that the device's position placed the camera, as a new item starts (tests begin each case from
+     *  one). The screen never calls it: the view it keeps between visits still derives from the device. */
     Q_INVOKABLE void resetCameraUsedDevicePosition();
 
 #ifdef DSD_NEO_TEST_HOOKS

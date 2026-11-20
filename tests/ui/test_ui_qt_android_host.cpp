@@ -463,6 +463,17 @@ void
 DecoderHostAndroid::requestSiteLocation(qint64) {}
 
 void
+DecoderHostAndroid::requestPreciseLocation(qint64) {}
+
+void
+DecoderHostAndroid::requestQuietLocation(qint64) {}
+
+QString
+DecoderHostAndroid::locationAccess() const {
+    return QStringLiteral("none");
+}
+
+void
 DecoderHostAndroid::cancelLocationRequest(qint64) {}
 
 void

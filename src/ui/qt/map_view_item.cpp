@@ -517,6 +517,13 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         (change == ItemSceneChange && value.window == nullptr) || (change == ItemVisibleHasChanged && !value.boolValue);
     if (gone) {
         releaseTiles();
+        /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no
+         * follow step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as
+         * the map closes cannot carry the camera with it. */
+        stopCamera();
+    }
+    if (change == ItemVisibleHasChanged && value.boolValue) {
+        rearmFollow(); /* a follow still on catches up with its mark */
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
         catchUpScene();
@@ -702,14 +709,34 @@ MapViewItem::centerOnTrack(qulonglong trackId) {
 }
 
 bool
-MapViewItem::centerOnDevice() {
+MapViewItem::centerOnDevice(bool exactZoom) {
     mm::WorldPoint at{};
     if (!deviceWorld(&at)) {
         return false;
     }
     markUsedDevice();
-    moveCamera(centredOn(cameraBase(), at));
+    mm::Viewport vp = cameraBase();
+    vp.zoom = exactZoom ? deviceZoom() : std::max(vp.zoom, deviceZoom()); /* closer already: the user's zoom stays */
+    moveCamera(centredOn(vp, at));
     return true;
+}
+
+double
+MapViewItem::deviceZoom() const {
+    constexpr double kNear = 15.0; /* a few streets either way on a phone */
+    constexpr double kFar = 11.0;  /* a town: an approximate fix's circle, kilometres across */
+    const double side = std::min(width(), height());
+    if (!(side > 0.0) || !(m_deviceAccuracyM > 0.0) || !std::isfinite(m_deviceAccuracyM)
+        || !std::isfinite(m_deviceLat)) {
+        return kNear;
+    }
+    /* The circle's radius spans a quarter of the shorter side, and each zoom step halves the metres per pixel:
+     * metres_per_px(lat, 0) / 2^zoom = radius / (side / 4). */
+    const double zoom = std::log2(mm::metres_per_px(m_deviceLat, 0.0) * side / (4.0 * m_deviceAccuracyM));
+    if (!std::isfinite(zoom)) {
+        return kNear;
+    }
+    return std::max(kFar, std::min(kNear, zoom));
 }
 
 void
@@ -866,8 +893,8 @@ MapViewItem::followNow() {
      * track's marks or showing the other, the device's position, or the chips above (topInset) changing where centred
      * lies. The camera moves only when the target or that place changed, so an age tick or a zoom leaves it be. */
     mm::WorldPoint at{};
-    if (!followTarget(&at)) {
-        return;
+    if (!isVisible() || !followTarget(&at)) {
+        return; /* hidden: the kept view stays put (itemChange() re-arms it on return) */
     }
     if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
         return;

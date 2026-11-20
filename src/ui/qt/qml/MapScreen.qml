@@ -18,7 +18,9 @@ import "MapText.js" as MapText
 // the canvas itself is not in the accessibility tree.
 //
 // The tile settings, the age filter and the view are kept in this device's
-// prefs (map/*, never in a backup); follow is never saved.
+// prefs (map/*, never in a backup); follow is never saved. The map opens on
+// the user's own position when location is allowed, and a return keeps the
+// view as it was left.
 Item {
     id: screen
 
@@ -45,7 +47,8 @@ Item {
     // is kept between visits). A listener who keeps tiles off on purpose is
     // not asked again on every open.
     property bool tilesPromptDismissed: false
-    // Whether the camera was set up once; the view keeps its place after.
+    // Whether the camera was set up once: at the first open of the app's run.
+    // The screen is kept between visits, so the view keeps its place after.
     property bool cameraPlaced: false
     // Whether the app is in the foreground. On Android an Item stays visible
     // while the app is hidden, so the live position and the age clock follow
@@ -92,7 +95,6 @@ Item {
 
     onVisibleChanged: {
         if (visible) {
-            map.resetCameraUsedDevicePosition();
             Qt.callLater(screen.placeCamera);
             // With a screen reader on, the focus goes to Back, a node: TalkBack
             // follows only a focus change on one (issue #800, P9), so it no
@@ -109,22 +111,29 @@ Item {
         } else {
             positionSheet.visible = false;
             locator.stopFollow();
-            // Leaving puts back a view the device did not shape (the keeper),
-            // so the next press locates again rather than following.
+            // The view stays as it was left, but the next press locates
+            // again rather than following.
             locator.cameraMoved();
         }
     }
 
-    // The first open shows every radio (or the saved dot); later opens keep
-    // the view where it was left.
+    // The first open centres on the user when location is allowed: on the
+    // saved dot at once, then on a fresh fix asked for without a prompt.
+    // Without location it opens on the saved view, else every radio (or the
+    // saved dot). Later opens keep the view where it was left.
     function placeCamera() {
         if (cameraPlaced || !visible)
             return;
         cameraPlaced = true;
         if (pin)
             return;
-        if (!map.fitAll() && locator.deviceValid)
-            map.centerOnDevice();
+        var located = locator.allowed();
+        if (located && locator.deviceValid)
+            map.centerOnDevice(true);
+        else if (!keeper.restore() && !map.fitAll() && locator.deviceValid)
+            map.centerOnDevice(true);
+        if (located)
+            locator.locateQuietly();
     }
 
     // A History row's fix ("Show on map"): its pin, centred, on the map.
@@ -1041,12 +1050,17 @@ Item {
         objectName: "mapLocator"
         shown: screen.visible && screen.mapShown
         foreground: screen.appForeground
-        onLocated: {
+        onLocated: function (canFollow, opening) {
             screen.userMovedCamera();
             // A radio followed would take the camera back from the dot.
             map.followTrackId = 0;
-            locator.readyToFollow = true;
-            map.centerOnDevice();
+            // Follow needs precise location and a press that located: after
+            // the opening fix, or without precise location, the button stays
+            // Locate me, so every press finds the user again.
+            locator.readyToFollow = canFollow;
+            // The opening fix sets the zoom from its accuracy; Locate me keeps
+            // a closer zoom the user chose.
+            map.centerOnDevice(opening);
         }
         onFollowMeChanged: map.followDevice = followMe
     }
@@ -1061,6 +1075,7 @@ Item {
 
     // Spec 4.8: the age filter and the view are kept between visits.
     MapViewKeeper {
+        id: keeper
         screen: screen
         map: map
     }

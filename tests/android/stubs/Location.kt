@@ -26,6 +26,7 @@ interface LocationListener {
 // platform's "implicit" value, so a test sees whether it was set.
 class LocationRequest private constructor(
     val intervalMillis: Long, val minUpdateIntervalMillis: Long, val minUpdateDistanceMeters: Float, val quality: Int,
+    val durationMillis: Long,
 ) {
     companion object {
         const val QUALITY_HIGH_ACCURACY = 100
@@ -36,10 +37,12 @@ class LocationRequest private constructor(
         private var minUpdateIntervalMillis = -1L
         private var minUpdateDistanceMeters = 0f
         private var quality = QUALITY_BALANCED_POWER_ACCURACY
+        private var durationMillis = Long.MAX_VALUE
         fun setMinUpdateIntervalMillis(value: Long) = apply { minUpdateIntervalMillis = value }
         fun setMinUpdateDistanceMeters(value: Float) = apply { minUpdateDistanceMeters = value }
         fun setQuality(value: Int) = apply { quality = value }
-        fun build() = LocationRequest(intervalMillis, minUpdateIntervalMillis, minUpdateDistanceMeters, quality)
+        fun setDurationMillis(value: Long) = apply { durationMillis = value }
+        fun build() = LocationRequest(intervalMillis, minUpdateIntervalMillis, minUpdateDistanceMeters, quality, durationMillis)
     }
 }
 /** One continuous registration: the API 31 form fills [request] and [executor], the legacy form the rest. */
@@ -66,6 +69,8 @@ class LocationManager {
     val cacheReads = mutableListOf<String>()
     val callbacks = mutableMapOf<String, Consumer<Location?>>()
     val signals = mutableMapOf<String, CancellationSignal>()
+    // The API 31 one-shot form's request, per provider.
+    val currentRequests = mutableMapOf<String, LocationRequest>()
     val listeners = mutableMapOf<String, LocationListener>()
     val removedListeners = mutableListOf<LocationListener>()
     var callback: Consumer<Location?>? = null
@@ -78,6 +83,13 @@ class LocationManager {
         callback = receiver
         if (cancellation != null) signals[provider] = cancellation
         callbacks[provider] = receiver
+    }
+    fun getCurrentLocation(
+        provider: String, request: LocationRequest, cancellation: CancellationSignal?, executor: Executor,
+        receiver: Consumer<Location?>,
+    ) {
+        getCurrentLocation(provider, cancellation, executor, receiver)
+        currentRequests[provider] = request
     }
     fun requestSingleUpdate(provider: String, listener: LocationListener, looper: Looper) {
         callback = Consumer { if (it != null) listener.onLocationChanged(it) }

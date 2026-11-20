@@ -259,6 +259,25 @@ private fun settingsScreens() {
     check(activity.started.size == 2) { "a missing Settings screen is not an error" }
 }
 
+// Precise location allowed from the map's Locate me starts a stream roaming already holds with approximate access only:
+// the stream hears every real answer, whoever asked, not only roaming's own.
+private fun mapUpgradeStartsAStreamRoamingHolds() {
+    val activity = Activity()
+    startFeed(activity)
+    check(feed().optString("state") == "approximateOnly" && activity.manager.updates.isEmpty())
+    LocationSupport.requestPreciseLocation(activity, 520)
+    Handler.drain()
+    check(activity.permissionRequests == 1 && activity.requestedPermissions == PRECISE_AND_COARSE)
+    activity.grant(coarse = true, fine = true)
+    answer(activity, 0, 0)
+    check(feed().optString("state") == "ok" && LocationManager.GPS_PROVIDER in activity.manager.updates) {
+        "the map's precise grant starts the stream at once"
+    }
+    LocationSupport.cancelLocationRequest(520)
+    Handler.drain()
+    stopFeed()
+}
+
 fun main() {
     LocationStream.onActivityStart()
     requestCodes()
@@ -272,6 +291,7 @@ fun main() {
     alreadyPrecise()
     throwingPromptSettlesTheWaiters()
     settingsScreens()
+    mapUpgradeStartsAStreamRoamingHolds()
     println(
         "PASS: location prompt codes, precise and approximate answers, denial, cancellation, disable, sharing, " +
             "a prompt that cannot open, Settings"

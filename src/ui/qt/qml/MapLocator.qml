@@ -12,7 +12,10 @@ import QtQuick
 // and the screen hides the button.
 //
 // One button walks the three steps: Locate me, then (while the view is still
-// on the dot it found) Follow my position, then Stop following.
+// on the dot it found, and with precise location) Follow my position, then
+// Stop following. Locate me offers precise location when only approximate is
+// allowed; the map's opening fix never prompts (locateQuietly()), says
+// nothing, and leaves the button on Locate me.
 Item {
     id: locator
 
@@ -35,17 +38,22 @@ Item {
     // an explicit camera choice made meanwhile (a follow, Show on map, a fit,
     // a drag) keeps it (review r2). The answer still saves the dot.
     property bool moveOnAnswer: false
+    // The request in flight is the opening one: it shows no notice.
+    property bool quiet: false
     property double requestId: 0
     // A line for the screen's status column, and what its action opens
     // ("appSettings", "locationSettings" or "" for none).
     property string notice: ""
     property string noticeAction: ""
 
-    // The broker's answer centred the view (the screen does it).
-    signal located
+    // The broker's answer centres the view (the screen does it). canFollow:
+    // an explicit Locate me with precise location allowed, so Follow is the
+    // next step; opening: the map's opening fix, placed at the fix's own zoom.
+    signal located(bool canFollow, bool opening)
 
     readonly property bool supported: typeof decoderHost !== "undefined" && !!decoderHost && decoderHost.locationSupported === true
-    readonly property bool locating: requestId > 0
+    // A Locate me in flight (the opening fix does not hold the button).
+    readonly property bool locating: requestId > 0 && !quiet
     readonly property bool busyElsewhere: locationRequests.busy && locationRequests.pendingRequester !== "map"
     readonly property var record: locationFeed.record || ({})
     // The feed's record is the device's live fix whoever's lease runs it; the
@@ -96,6 +104,13 @@ Item {
         else
             locate();
     }
+    // What the platform allows now: "none", "approximate" or "precise".
+    function access() {
+        return supported && typeof decoderHost.locationAccess === "function" ? decoderHost.locationAccess() : "none";
+    }
+    function allowed() {
+        return access() !== "none";
+    }
     function locate() {
         if (!supported || busyElsewhere)
             return;
@@ -104,12 +119,23 @@ Item {
         if (requestId)
             locationRequests.cancel(requestId);
         moveOnAnswer = true;
-        requestId = locationRequests.requestSite("map");
+        quiet = false;
+        requestId = locationRequests.requestPrecise("map");
+    }
+    // The map's opening fix: only with location already allowed (no prompt),
+    // never over another screen's request, and silent whatever it answers.
+    function locateQuietly() {
+        if (!supported || busyElsewhere || locating || !allowed())
+            return;
+        moveOnAnswer = true;
+        quiet = true;
+        requestId = locationRequests.requestQuiet("map");
     }
     function cancelLocate() {
         if (requestId)
             locationRequests.cancel(requestId);
         requestId = 0;
+        quiet = false;
         if (notice === qsTr("Finding your location…"))
             notice = "";
     }
@@ -171,6 +197,11 @@ Item {
         if (!shown)
             cancelLocate();
     }
+    // The opening fix is for a map on screen: the app going away drops it.
+    onForegroundChanged: {
+        if (!foreground && quiet)
+            cancelLocate();
+    }
     Component.onDestruction: {
         locationFeed.release("map");
         if (requestId)
@@ -200,7 +231,7 @@ Item {
             return;
         }
         followMe = false;
-        noticeAction = state === "noPermission" ? "appSettings" : state === "locationOff" ? "locationSettings" : "";
+        noticeAction = state === "noPermission" || state === "approximateOnly" ? "appSettings" : state === "locationOff" ? "locationSettings" : "";
         notice = state === "approximateOnly" ? qsTr("Live position needs precise location.")
             : state === "noPermission" ? qsTr("Live position needs location permission.")
             : state === "locationOff" ? qsTr("Location is off on this device.")
@@ -213,24 +244,36 @@ Item {
         function onAnswered(requester, answeredId, result) {
             if (!locator.requestId || answeredId !== locator.requestId)
                 return;
+            var quiet = locator.quiet;
             locator.requestId = 0;
+            locator.quiet = false;
             if (result.fixOk) {
                 prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
-                locator.notice = "";
-                locator.noticeAction = "";
-                if (locator.moveOnAnswer) {
-                    locator.readyToFollow = true;
-                    locator.located();
+                var precise = locator.access() === "precise";
+                if (!quiet) {
+                    // An approximate fix after Locate me offered precise:
+                    // say how to get a closer one.
+                    locator.notice = precise ? "" : qsTr("Your location is approximate. Allow precise location for a closer fix.");
+                    locator.noticeAction = precise ? "" : "appSettings";
                 }
+                if (locator.moveOnAnswer)
+                    locator.located(precise && !quiet, quiet);
                 locator.moveOnAnswer = false;
-            } else {
-                locator.notice = prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.") : qsTr("Location unavailable. Check location access in your device settings.");
-                locator.noticeAction = prefs.lastFixAt > 0 ? "" : "appSettings";
+            } else if (!quiet) {
+                // Where to fix it: no access is the app's settings; location
+                // switched off is the device's.
+                var off = String(result.error || "").indexOf("provider unavailable") >= 0;
+                var denied = locator.access() === "none";
+                locator.noticeAction = denied ? "appSettings" : off ? "locationSettings" : "";
+                locator.notice = off && !denied ? qsTr("Location is off on this device.")
+                    : prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.")
+                    : qsTr("Location unavailable. Check location access in your device settings.");
             }
         }
         function onEnded(requester, endedId) {
             if (locator.requestId && endedId === locator.requestId) {
                 locator.requestId = 0;
+                locator.quiet = false;
                 if (locator.notice === qsTr("Finding your location…"))
                     locator.notice = "";
             }
