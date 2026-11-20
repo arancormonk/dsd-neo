@@ -13869,7 +13869,7 @@ Private per-protocol modules worth knowing about:
   (`dsd_state::m17_eot_pending`): any sync taken meanwhile drops them (`frame_sync_try_protocol_matches()`), and a
   window that is not the next word drops them and may start one afresh. `dsd_dispatch_handle_m17()` then drains the
   rest of the marker a word at a time (at most the 21 words left) up to the first word that is not the marker and hands
-  that word back to the hunt as its window's history (`dsd_frame_sync_resume_hunt_from_last_symbols()`, the carry a
+  that word back to the hunt as its window's history (`dsd_frame_sync_hand_back_symbols()`, the carry a
   no-sync exit keeps), so a sync word that began in it is still found; the blind 184-symbol skip it replaces ran into
   the next frame when the marker's first words were lost. Outside M17 the hunt pays one state check a window while M17
   is enabled, and nothing when it is not (`M17_FRAME_SYNC`, `M17_SYNC_DISPATCH`).

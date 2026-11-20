@@ -102,7 +102,7 @@ dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
 }
 
 void
-dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols) {
+dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
     (void)state;
     g_resume_calls++;
     g_resume_symbols = symbols;

@@ -3916,14 +3916,6 @@ dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
 }
 
 void
-dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols) {
-    if (state == NULL || symbols <= 0) {
-        return;
-    }
-    frame_sync_history_carry_symbols(state, symbols, 0);
-}
-
-void
 frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols) {
     dsd_frame_sync_history_carry* carry = &state->frame_sync_carry;
     int count = symbols < FRAME_SYNC_HISTORY_CAPACITY ? symbols : FRAME_SYNC_HISTORY_CAPACITY;

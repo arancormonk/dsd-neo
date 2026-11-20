@@ -235,7 +235,7 @@ run_m17_after_lsf_case(int lsf_type, uint8_t stream_mode, const char* pattern, i
 
 /* The hunt after an end-of-transmission marker, whose drain read one word past it (dispatch_m17.c): the word, the
    first eight signs of @p air, is read on the decode path and handed back
-   (dsd_frame_sync_resume_hunt_from_last_symbols()) when @p resume, and the hunt reads on from there. A sync word that
+   (dsd_frame_sync_hand_back_symbols()) when @p resume, and the hunt reads on from there. A sync word that
    began in the word is found where it ends. */
 static int
 run_m17_after_drain_case(const char* air, int resume, int expected_sync, const char* label) {
@@ -259,7 +259,7 @@ run_m17_after_drain_case(const char* air, int resume, int expected_sync, const c
         (void)getSymbol(&opts, &state, 1);
     }
     if (resume) {
-        dsd_frame_sync_resume_hunt_from_last_symbols(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+        dsd_frame_sync_hand_back_symbols(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
     }
     const int sync = getFrameSync(&opts, &state);
     clear_hooks();

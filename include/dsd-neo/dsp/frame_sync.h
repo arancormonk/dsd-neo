@@ -368,7 +368,8 @@ int getFrameSync(dsd_opts* opts, dsd_state* state);
  * read is matched where it ends. Dropped like any carry when something comes between (a read, a retune, a carrier
  * boundary, another profile or modulation). The rolling dibit buffers do not count as holding them (own_symbols 0):
  * DMR and X2-TDMA never decode a burst back from them. D-STAR reads the start of each resynchronization word this way,
- * to tell it from the end pattern (src/protocol/dstar/dstar.c). Decoder thread.
+ * to tell it from the end pattern (src/protocol/dstar/dstar.c), and M17 the word after its end-of-transmission marker
+ * (src/engine/dispatch/dispatch_m17.c). Decoder thread.
  */
 void dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols);
 
@@ -386,15 +387,6 @@ int dsd_frame_sync_m17_eot_word(const char* window, int inverted);
  * negative), from the symbol history (dsd_symbol_history_get_back()).
  */
 char dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back);
-
-/**
- * @brief Start the next getFrameSync() call from the last @p symbols symbols read, as the hunt slices them.
- *
- * For a frame handler that read symbols the frame did not need (the word after an M17 end-of-transmission marker): the
- * hunt takes them up as the history of its window, so a sync word that began in them and ends after them is still
- * found. Taken up only when nothing comes between this and the next call (no symbol read, tune, or input break).
- */
-void dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols);
 
 /**
  * @brief Emit diagnostic information about detected frame sync.
