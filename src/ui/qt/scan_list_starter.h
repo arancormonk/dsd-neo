@@ -68,9 +68,21 @@ class ScanListStarter : public QObject {
      * made; empty for neither. A saved edit changes neither: they are what the running session scans.
      */
     Q_INVOKABLE QString sessionCsvPath(const QVariantMap& list) const;
-    /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict().
-     *  The two are judged as one session: App default is 72 kHz when either has a TETRA DMO target. */
-    Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other) const;
+    /**
+     * @brief Why @p other cannot scan in one session with @p primary and the lists already switched on, @p chosen
+     * (the Scan with other lists sheet's), or empty; see session_args_scan_join_conflict(). They are judged as the one
+     * session the start would run (issue #890): App default is 72 kHz when any of them has a TETRA DMO target, so
+     * @p other is named for a bandwidth that differs from @p primary's, its own or one a chosen list's would set, and
+     * "TETRA DMO needs 72 kHz" when the session's bandwidth cannot decode the TETRA DMO targets
+     * (session_args_scan_list_rate_error()).
+     */
+    Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other,
+                                     const QVariantList& chosen = QVariantList()) const;
+    /**
+     * @brief Why @p list cannot start for its TETRA DMO targets (session_args_scan_list_rate_error(), the start's own
+     * refusal), or empty: the editor's note under the Bandwidth choice.
+     */
+    Q_INVOKABLE QString rateError(const QVariantMap& list) const;
     /**
      * @brief Whether @p list has a target the engine can visit that is TETRA DMO (issue #890, D3): an enabled entry
      * (a disabled one is left out of the CSV it builds) whose protocol is TETRA DMO, a frequency entry's or a saved

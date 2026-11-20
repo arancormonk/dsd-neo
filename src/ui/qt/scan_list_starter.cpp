@@ -582,9 +582,33 @@ ScanListStarter::draftRefusal() {
 }
 
 QString
-ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other) const {
-    return session_args_scan_join_conflict(primary, other, session_args_prefs(m_prefs),
-                                           hasTetraTargets(primary) || hasTetraTargets(other));
+ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other, const QVariantList& chosen) const {
+    /* The session the start would run: the primary, @p other, then each other chosen list (none twice). */
+    QVariantList session{primary, other};
+    const QString otherUid = other.value("uid").toString();
+    for (const QVariant& value : chosen) {
+        const QString uid = value.toMap().value("uid").toString();
+        if (uid != otherUid && uid != primary.value("uid").toString()) {
+            session << value;
+        }
+    }
+    const bool tetraTargets = sessionHasTetra(session);
+    const SessionArgPrefs prefs = session_args_prefs(m_prefs);
+    for (qsizetype i = 1; i < session.size(); ++i) {
+        const QString conflict = session_args_scan_join_conflict(primary, session.at(i).toMap(), prefs, tetraTargets);
+        if (!conflict.isEmpty()) {
+            return conflict;
+        }
+    }
+    /* Every list runs at the primary's bandwidth once they all join it. */
+    return session_args_scan_list_rate_error(primary, tetraTargets, prefs.bandwidthKhz).isEmpty()
+               ? QString()
+               : QStringLiteral("TETRA DMO needs 72 kHz");
+}
+
+QString
+ScanListStarter::rateError(const QVariantMap& list) const {
+    return session_args_scan_list_rate_error(list, hasTetraTargets(list), session_args_prefs(m_prefs).bandwidthKhz);
 }
 
 QString

@@ -1192,14 +1192,13 @@ Rectangle {
                         }
                     }
                     // Issue #890 (D3): a bandwidth TETRA cannot decode at, with a TETRA DMO target in
-                    // the list. The start refuses it, so the editor says so beside the choice, as the
-                    // wizard does for a TETRA system.
+                    // the list. The start refuses it, so the editor says so beside the choice, in the
+                    // start's own words, as the wizard does for a TETRA system.
                     ReadableText {
                         objectName: "scanTetraRateNote"
                         width: parent.width
                         visible: text.length > 0
-                        text: screen.tetraTargets && screen.bandwidthSet && sessionArgs.tetraRateError("-fT", screen.draft.sourceType || "usb", Number(screen.bandwidthText)).length > 0
-                            ? qsTr("TETRA DMO targets decode only at 72 kHz. Choose 72 kHz or App default.") : ""
+                        text: screen.tetraTargets ? scanListStarter.rateError(screen.selectedDraft()) : ""
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)

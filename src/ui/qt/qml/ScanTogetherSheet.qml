@@ -9,7 +9,8 @@ import QtQuick
 // order, all off; drafts are left out. A list whose receiver or scan settings
 // differ from the card's cannot run in the same session: its row is shown
 // disabled, naming the first setting that differs, as
-// scanListStarter.joinConflict() decides it. Every list starts switched on.
+// scanListStarter.joinConflict() decides it with the lists already switched
+// on (issue #890). Every list starts switched on.
 // A choice in progress, so only Cancel, Back or Escape close it.
 ModalSheet {
     id: sheet
@@ -20,8 +21,10 @@ ModalSheet {
     // The card's list, by uid: rows can move while the sheet is open.
     property string primaryUid: ""
     readonly property var primary: (revision, scanLists.getByUid(primaryUid))
-    // The other ready lists, each {uid, name, entryCount, reason}, in Home order.
-    readonly property var others: (revision, otherLists())
+    // The other ready lists, each {uid, name, entryCount, reason}, in Home order. A reason is
+    // judged with the lists already switched on (issue #890: a TETRA DMO target in any of them
+    // sets the whole session's bandwidth), so it follows the choice.
+    readonly property var others: (revision, chosen, otherLists())
     // The uids switched on here, in Home order.
     property var chosen: []
     readonly property int listCount: 1 + chosen.length
@@ -66,10 +69,16 @@ ModalSheet {
                 uid: list.uid,
                 name: list.name,
                 entryCount: scanLists.entryCount(list),
-                reason: scanListStarter.joinConflict(primary, list)
+                reason: scanListStarter.joinConflict(primary, list, chosenLists())
             });
         }
         return out;
+    }
+    // The lists switched on, as saved now.
+    function chosenLists() {
+        return chosen.map(function (uid) {
+            return scanLists.getByUid(uid);
+        });
     }
     function setChosen(uid, on) {
         var next = [];
@@ -78,7 +87,9 @@ ModalSheet {
             if (keep && other.reason.length === 0)
                 next.push(other.uid);
         }
-        chosen = next;
+        // Reasons follow the choice (others reads it), so an unchanged choice is not set again.
+        if (next.join() !== chosen.join())
+            chosen = next;
     }
     // A list that left, or can no longer join, leaves the choice with it.
     onOthersChanged: setChosen("", false)

@@ -275,24 +275,20 @@ keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
     return {};
 }
 
+/* The saved system's talkgroup file as a scoped -G option, quoted (its path holds no comma, quote or line break). */
+void
+appendGroupOption(const QVariantMap& sys, QStringList& options) {
+    const QString group = sys.value("groupCsvPath").toString();
+    if (!group.isEmpty()) {
+        options << QStringLiteral("-G") << (QStringLiteral("\"") + group + QStringLiteral("\""));
+    }
+}
+
+/* The key options of a row whose protocol takes keys (P25, DMR, NXDN, and dPMR's scrambler, whose other material
+   keyMatrixError() refused): its profile and direct key checked, then -G, the direct key, the profile's options and the
+   force choice. */
 QString
-buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
-    if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
-        options << QStringLiteral("-^");
-    }
-    const QString matrixError = keyMatrixError(sys, protocol);
-    if (!matrixError.isEmpty()) {
-        return matrixError;
-    }
-    /* A protocol with no keys of its own (YSF, D-STAR, TETRA DMO, M17) passes only the talkgroup file: whatever key
-       setting a saved system still holds has nothing to act on there (M17's were refused above). */
-    if (protocol.keys == ScanProtocolKeys::None || protocol.keys == ScanProtocolKeys::Session) {
-        const QString group = sys.value("groupCsvPath").toString();
-        if (!group.isEmpty()) {
-            options << QStringLiteral("-G") << (QStringLiteral("\"") + group + QStringLiteral("\""));
-        }
-        return {};
-    }
+buildKeyOptions(const QVariantMap& sys, QStringList& options) {
     if (!session_args_profile_compatible(sys)) {
         return QStringLiteral("The decryption profile protocol does not match this scan entry.");
     }
@@ -311,10 +307,7 @@ buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& 
     if (!forceOk || force < 0 || force > 2) {
         return session_args_error_text(SessionArgsError::ForceKey);
     }
-    QString group = sys.value("groupCsvPath").toString();
-    if (!group.isEmpty()) {
-        options << QStringLiteral("-G") << (QStringLiteral("\"") + group + QStringLiteral("\""));
-    }
+    appendGroupOption(sys, options);
     if (!keyType.isEmpty()) {
         const QMap<QString, QString> flags{{"basic", "-b"}, {"hex", "-H"}, {"rc4", "-1"}, {"scrambler", "-R"}};
         if (!flags.contains(keyType)) {
@@ -330,24 +323,57 @@ buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& 
 }
 
 QString
+buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
+    if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
+        options << QStringLiteral("-^");
+    }
+    const QString matrixError = keyMatrixError(sys, protocol);
+    if (!matrixError.isEmpty()) {
+        return matrixError;
+    }
+    /* A protocol with no keys of its own (YSF, D-STAR, TETRA DMO, M17) passes only the talkgroup file: whatever key
+       setting a saved system still holds has nothing to act on there (M17's were refused above). */
+    if (protocol.keys == ScanProtocolKeys::None || protocol.keys == ScanProtocolKeys::Session) {
+        appendGroupOption(sys, options);
+        return {};
+    }
+    return buildKeyOptions(sys, options);
+}
+
+/* The modulation @p target's row writes: the entry's own, else the saved system's Radio settings', else CQPSK for the
+   P25 Simulcast preset (-mq). An analog channel has no digital modulation: the editor hides the choice, so one left
+   from another protocol is not the entry's; issue #890: nor has a protocol whose class runs its own (dPMR, D-STAR, YSF,
+   M17, TETRA DMO), whose system's saved modulation is refused. */
+QString
+resolveModulation(const QVariantMap& entry, const QVariantMap& sys, Target& target) {
+    const bool offered = target.protocol->modulation;
+    target.modulation = offered ? entry.value("modulation").toString() : QString();
+    const auto radio = sys.value("radioSettings").toMap();
+    if (!radio.contains("modulation")) {
+        return {};
+    }
+    if (!offered) {
+        return target.analog ? QString()
+                             : QStringLiteral("%1 entries take no modulation: clear the modulation saved in this "
+                                              "system's Radio settings.")
+                                   .arg(QLatin1String(target.protocol->label));
+    }
+    if (target.modulation.isEmpty()) {
+        target.modulation = QStringList{"c4fm", "cqpsk", "gfsk"}.at(radio.value("modulation").toInt());
+    }
+    return {};
+}
+
+QString
 validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target) {
     for (const auto& field : {"dwellMs", "holdMs"}) {
         if (!timing(entry.value(field, 0))) {
             return QStringLiteral("Dwell and hold must be 250..600000 ms, or 0 to inherit.");
         }
     }
-    /* An analog channel has no digital modulation: the editor hides the choice, so one left from another protocol is
-       not the entry's. */
-    /* Issue #890: nor has a protocol whose class runs its own (dPMR, D-STAR, YSF, M17, TETRA DMO). */
-    target.modulation = target.protocol->modulation ? entry.value("modulation").toString() : QString();
-    const auto radio = sys.value("radioSettings").toMap();
-    if (!target.analog && !target.protocol->modulation && radio.contains("modulation")) {
-        return QStringLiteral("%1 entries take no modulation: clear the modulation saved in this system's Radio "
-                              "settings.")
-            .arg(QLatin1String(target.protocol->label));
-    }
-    if (target.protocol->modulation && target.modulation.isEmpty() && radio.contains("modulation")) {
-        target.modulation = QStringList{"c4fm", "cqpsk", "gfsk"}.at(radio.value("modulation").toInt());
+    const QString modulationError = resolveModulation(entry, sys, target);
+    if (!modulationError.isEmpty()) {
+        return modulationError;
     }
     if (target.modulation.isEmpty() && target.decode.split(QLatin1Char(' ')).contains(QStringLiteral("-mq"))) {
         target.modulation = QStringLiteral("cqpsk");

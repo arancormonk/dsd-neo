@@ -372,6 +372,45 @@ Item {
             prefs.onboardingDone = oldOnboarding;
         }
 
+        // Issue #890: the sheet judges a list with the ones already switched on, as the start
+        // would: a TETRA DMO list runs the session at 72 kHz, so an explicit 48 kHz list and it
+        // join the card's App default list each alone, not together, whichever comes first.
+        function test_scan_with_other_lists_judges_the_set() {
+            var app = appLoader.item;
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            testContext.setPrefs("bandwidthKhz", 48);
+            app.currentTab = 0;
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            scanLists.add({name: "Narrow", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, bandwidthKhz: 48,
+                entries: [{kind: "freq", name: "Ops", protocol: "p25", freqMhz: "852.5", enabled: true}]});
+            var narrow = scanLists.get(scanLists.count - 1);
+            scanLists.add({name: "Direct", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "DMO", protocol: "tetra_dmo", freqMhz: "430.5", enabled: true}]});
+            var direct = scanLists.get(scanLists.count - 1);
+            var menu = findChild(home, "scanListManageSheet");
+            menu.openFor(0);
+            menu.activate(1);
+            var sheet = findChild(home, "scanTogetherSheet");
+            tryCompare(sheet, "visible", true);
+            var narrowRow = findChild(sheet, "scanTogetherRow_" + narrow.uid);
+            var directRow = findChild(sheet, "scanTogetherRow_" + direct.uid);
+            verify(narrowRow.enabled && directRow.enabled);
+            narrowRow.activate();
+            compare(sheet.chosen.join(), narrow.uid);
+            tryCompare(findChild(sheet, "scanTogetherRow_" + direct.uid), "enabled", false);
+            compare(findChild(sheet, "scanTogetherRow_" + direct.uid).subtitle, "Different bandwidth");
+            findChild(sheet, "scanTogetherRow_" + narrow.uid).activate();
+            compare(sheet.chosen.length, 0);
+            findChild(sheet, "scanTogetherRow_" + direct.uid).activate();
+            compare(sheet.chosen.join(), direct.uid);
+            tryCompare(findChild(sheet, "scanTogetherRow_" + narrow.uid), "enabled", false);
+            compare(findChild(sheet, "scanTogetherRow_" + narrow.uid).subtitle, "Different bandwidth");
+            findChild(sheet, "scanTogetherCancel").clicked();
+            prefs.onboardingDone = oldOnboarding;
+        }
+
         function test_home_card_and_confirmed_start() {
             tryVerify(function () {
                 return visualChild(appLoader.item, "scanListCard") !== null;

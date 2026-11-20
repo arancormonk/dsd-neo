@@ -802,14 +802,21 @@ engineTakesSimplexTypes(const QTemporaryDir& dir) {
     const QString probe = dir.filePath("simplex-probe.csv");
     QFile file(probe);
     check(file.open(QIODevice::WriteOnly));
-    file.write("id,type,frequency_hz\n"
-               "y,ysf-conventional,430000000\nd,dstar-conventional,431000000\np,dpmr-conventional,432000000\n"
-               "m,m17-conventional,433000000\nt,tetra-dmo-conventional,434000000\n");
+    // The target loader's seven required columns (DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS), each row filling them.
+    file.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+               "y,ysf-conventional,430000000,,,,\nd,dstar-conventional,431000000,,,,\n"
+               "p,dpmr-conventional,432000000,,,,\nm,m17-conventional,433000000,,,,\n"
+               "t,tetra-dmo-conventional,434000000,,,,\n");
     file.close();
     int count = 0;
-    char error[256] = {};
-    return dsd_app_trunk_scan_validate_targets_csv(probe.toUtf8().constData(), &count, error, sizeof error) == 0
-           && count == 5;
+    char error[512] = {};
+    const bool taken =
+        dsd_app_trunk_scan_validate_targets_csv(probe.toUtf8().constData(), &count, error, sizeof error) == 0
+        && count == 5;
+    if (!taken) {
+        std::fprintf(stderr, "simplex type probe refused: %s\n", error);
+    }
+    return taken;
 }
 
 /* The DSP rate an argv's radio spec carries: its field after gain and PPM (":<f>M:<gain>:<ppm>:<bw>:"). */
@@ -878,6 +885,28 @@ checkTetraListRate(const QTemporaryDir& dir) {
     check(starter.joinConflict(listOf("a", {p25}, -1), listOf("b", {dmo}, -1)).isEmpty());
     check(starter.joinConflict(listOf("a", {p25}, 72), listOf("b", {dmo}, -1)).isEmpty());
     check(starter.joinConflict(listOf("a", {p25}, 48), listOf("b", {dmo}, -1)) == "Different bandwidth");
+    // ...and with the lists already switched on: Default P25 joins an explicit-48 P25 list and a Default TETRA list
+    // each alone, but not both, whichever was switched on first, as the start would refuse them together.
+    const QVariantMap primaryDefault = listOf("primary", {p25}, -1);
+    const QVariantMap narrowP25 = listOf("narrow", {p25}, 48);
+    const QVariantMap defaultDmo = listOf("direct", {dmo}, -1);
+    check(starter.joinConflict(primaryDefault, narrowP25, {}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultDmo, {}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultDmo, {narrowP25}) == "Different bandwidth");
+    check(starter.joinConflict(primaryDefault, narrowP25, {defaultDmo}) == "Different bandwidth");
+    // A list counts once: one already on is judged as itself, not twice.
+    check(starter.joinConflict(primaryDefault, defaultDmo, {defaultDmo, primaryDefault}).isEmpty());
+    // Two lists at the same explicit 48 kHz agree on the bandwidth, but TETRA cannot decode at it.
+    check(starter.joinConflict(listOf("p48", {p25}, 48), listOf("d48", {dmo}, 48), {}) == "TETRA DMO needs 72 kHz");
+    check(starter.joinConflict(listOf("p48", {p25}, 48), narrowP25, {}).isEmpty());
+    check(starter.rateError(listOf("d48", {dmo}, 48)) == refusal
+          && starter.rateError(listOf("d", {dmo}, -1)).isEmpty());
+    // The start refuses that set too: each list's own check comes first, so it names the list whose bandwidth TETRA
+    // cannot run, with the fix.
+    ArgvHost setHost;
+    check(starter.startLists({primaryDefault, narrowP25, defaultDmo}, &setHost).value("error").toString()
+              == QString::fromUtf8("\u201cnarrow\u201d: ") + refusal
+          && setHost.received.isEmpty());
     // A session-wide refusal: an explicit-48 P25 list started with a TETRA companion names the fix, before any file
     // is written.
     ArgvHost host;

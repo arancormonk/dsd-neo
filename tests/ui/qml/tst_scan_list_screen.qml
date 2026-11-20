@@ -614,9 +614,16 @@ Item {
                 + "dmo,tetra-dmo-conventional,430500000,,,,,\n"
                 + "fusion,ysf-conventional,145500000,,,,,\n"
                 + "dig,dmr-conventional,461000000,,,,,\n");
+            // Whether the engine's target parser takes the types (task B1): a one-entry YSF list
+            // validates only then. Once it does, the import has to take the file.
+            var probe = scanListStarter.validate({uid: "simplex-probe", name: "Probe", sourceType: "usb",
+                entries: [{uid: "probe", kind: "freq", protocol: "ysf", freqMhz: "430", enabled: true}]});
+            if (!probe.ok) {
+                verify(probe.error.indexOf("invalid target type 'ysf-conventional'") >= 0, probe.error);
+                skip("the engine's target parser does not take the issue #890 types yet (task B1)");
+            }
             var result = testContext.importNow(source, "trunkTargets");
-            if (!result.ok)
-                skip("the engine's target parser does not take the issue #890 types yet (task B1): " + (result.detail || ""));
+            verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
                 compare(screen.targetRows.length, 4);
@@ -1655,13 +1662,16 @@ Item {
             verify(rate.text.length === 0);
             chooseWidth("48 kHz");
             verify(rate.text.length > 0);
-            compare(rate.text, "TETRA DMO targets decode only at 72 kHz. Choose 72 kHz or App default.");
+            // The start's own refusal, word for word.
+            compare(rate.text, "This scan has TETRA DMO targets, which decode only at a bandwidth of 72 kHz. Set this list's bandwidth to 72 kHz or App default, or remove the TETRA DMO targets.");
             verify(!screen.validate());
             verify(screen.validationText.indexOf("decode only at a bandwidth of 72 kHz") >= 0, screen.validationText);
             chooseWidth("72 kHz");
             verify(rate.text.length === 0);
             chooseWidth("48 kHz");
-            screen.setEntry(0, "enabled", false);
+            control("scanEntryEnabled").toggle();
+            control("scanEntryEnabled").toggled();
+            compare(screen.entries[0].enabled, false);
             verify(!screen.tetraTargets && rate.text.length === 0);
         }
 
@@ -1772,7 +1782,7 @@ Item {
                 compare(screen.entries[0].systemUid, savedSystems.get(savedRow).uid);
                 verify(!control("scanFrequencyName").visible);
                 control("scanEntryEnabled").toggle();
-                screen.setEntry(0, "enabled", false);
+                control("scanEntryEnabled").toggled();
                 compare(screen.entries[0].enabled, false);
                 choose("scanEntryDecryptionScope", 1);
                 verify(control("scanEntryDecryptionProfile").visible);
