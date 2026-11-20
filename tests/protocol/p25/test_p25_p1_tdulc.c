@@ -451,9 +451,9 @@ lcw_from_octets(uint8_t lcw[72], uint8_t format, uint8_t mfid, const uint8_t oct
     }
 }
 
-/* A trunked voice channel whose call 0x010203 -> TG 0x1234 a hard-decoded Group Voice Channel User LC opened. */
-static uint64_t
-start_checked_call(dsd_opts* opts, dsd_state* state) {
+/* A trunked voice channel the grant of 0x010203 -> TG 0x1234 tuned. */
+static void
+tune_granted_channel(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -473,6 +473,15 @@ start_checked_call(dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(ctx, opts, state);
     p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
     p25_sm_event(ctx, opts, state, &grant);
+    g_rs_hard_result = 0;
+    g_rs_soft_result = 1;
+    g_gps_calls = 0;
+}
+
+/* A trunked voice channel whose call 0x010203 -> TG 0x1234 a hard-decoded Group Voice Channel User LC opened. */
+static uint64_t
+start_checked_call(dsd_opts* opts, dsd_state* state) {
+    tune_granted_channel(opts, state);
     const uint8_t user[7] = {0x00, 0x00, 0x12, 0x34, 0x01, 0x02, 0x03};
     uint8_t lcw[72];
     lcw_from_octets(lcw, 0x00, 0x00, user);
@@ -482,9 +491,6 @@ start_checked_call(dsd_opts* opts, dsd_state* state) {
         || call.ota_source_id != 0x010203U) {
         return 0U;
     }
-    g_rs_hard_result = 0;
-    g_rs_soft_result = 1;
-    g_gps_calls = 0;
     return call.epoch;
 }
 
@@ -562,6 +568,48 @@ test_terminator_gps(void) {
     g_rs_hard_result = 0;
     g_rs_soft_result = 1;
 
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Issue #800: a TDULC's GPS link control belongs only to the call that TDULC ended. On a trunked voice channel a header
+   can open the call before any voice frame: the trunk state machine follows no voice yet, declines the TDULC's end and
+   the call stays open. Neither half of an L3Harris update in such TDULCs, nor a Motorola APX report, is that call's;
+   successive TDULCs must not pair their halves against it. */
+static int
+test_terminator_gps_of_a_call_it_did_not_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t apx[7] = {0x00, 0x00, 0x2A, 0xAA, 0xAA, 0x15, 0x55};
+    int rc = 0;
+
+    tune_granted_channel(&opts, &state);
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    rc |= expect_eq_int("header call: tuned", ctx->state, P25_SM_TUNED);
+    // The header opens the call; no voice user has reached the trunk state machine.
+    rc |= expect_true("header call: opened", seed_active_call(&state, 0x1234, 0x010203, 0x00));
+    dsd_call_snapshot call;
+    const uint64_t epoch = dsd_call_state_get(&state, 0U, &call) > 0 ? call.epoch : 0U;
+    rc |= expect_eq_int("header call: no voice followed", ctx->slots[0].voice_active, 0);
+
+    g_gps_calls = 0;
+    build_lcw_words(0x2A, 0xA4, 0x00, 0x009E, (uint16_t)(22U << 8), 0x0080);
+    processTDULC(&opts, &state);
+    rc |= expect_true("header call: the TDULC did not end it", dsd_call_state_get(&state, 0U, &call) > 0
+                                                                   && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                                   && call.epoch == epoch);
+    rc |= expect_eq_u64("header call: the TDULC ended no call", state.p25_p1_terminator_end_epoch, 0U);
+    build_lcw_words(0x2B, 0xA4, 45, 0x1C20, 0x8400, 0x0315);
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("header call: TDULC halves never pair", g_gps_calls, 0);
+
+    build_lcw_words(0x06, 0x90, apx[0], (uint16_t)((apx[1] << 8) | apx[2]), (uint16_t)((apx[3] << 8) | apx[4]),
+                    (uint16_t)((apx[5] << 8) | apx[6]));
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("header call: APX dispatched", g_gps_calls, 1);
+    rc |= expect_true("header call: APX names no call", g_gps_ctx.call_epoch == 0U && g_gps_closing_epoch == 0U
+                                                            && g_gps_ctx.source_verified == 0U
+                                                            && g_gps_ctx.source_id == 0U);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -855,6 +903,7 @@ main(void) {
 
     // Case 8 (issue #800): GPS link controls in the terminator.
     rc |= test_terminator_gps();
+    rc |= test_terminator_gps_of_a_call_it_did_not_end();
     rc |= test_reused_state_forgets_checked_identity();
 
     dsd_state_ext_free_all(&state);

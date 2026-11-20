@@ -39,9 +39,11 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrec
  *
  * Voice-user metadata is retained, but cannot emit a new voice-start event
  * after the terminator has ended the current transmission. @p closing is the
- * call the terminator ended, captured (dsd_event_capture_closing_call()) just
- * before it did: a GPS link control in the terminator belongs to that call
- * (issue #800, spec N2). NULL when none was captured. The link control's other
+ * call open before the terminator's end ran, captured
+ * (dsd_event_capture_closing_call()) just before it: a GPS link control in the
+ * terminator belongs to that call only when the terminator ended it (its epoch
+ * is @p ended_epoch), and otherwise to no call, not even one still open (issue
+ * #800, spec N2). NULL when none was captured. The link control's other
  * talker lookups speak for the open P25 Phase 1 call, or for the ended one
  * whose epoch is @p ended_epoch: the call this TDULC ended, or the one the
  * TDULC it repeats ended (0: none). An older ended call the slot still holds is

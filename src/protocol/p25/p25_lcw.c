@@ -182,8 +182,8 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
 }
 
-/* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
- * else slot 0's ACTIVE Phase 1 call, never an ended one. */
+/* The call a GPS link control belongs to (issue #800, spec N2): from a TDULC, only the call that TDULC ended, captured
+ * just before its end (p25p1_tdulc.c); from an LDU1, slot 0's ACTIVE Phase 1 call. Never an ended call otherwise. */
 typedef struct {
     dsd_position_attribution_call view;    /* open 0: no call */
     const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
@@ -192,8 +192,15 @@ typedef struct {
 static void
 p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
-        out->closing = ctx->closing;
+    if (!ctx->allow_voice_start) {
+        /* A TDULC binds its call only when it ended the call it captured (ctx->ended_epoch is that call's). A TDULC the
+           trunk state machine declined to end (a header opened the call, no voice frame followed) leaves its call
+           open, and its link control is not shown to be that call's: no call, and no fallback to the open one. A
+           repeat of the end captures nothing. */
+        if (ctx->ended_epoch != 0U && ctx->closing != NULL && ctx->closing->epoch == ctx->ended_epoch
+            && dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
+            out->closing = ctx->closing;
+        }
         return;
     }
     /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
@@ -206,7 +213,7 @@ p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
 
 /* The voice-user evidence (issue #800, spec 2.2): p25_p1_lc_attribution, the record of who a later GPS link control
  * of the call names. A hard-decoded voice user naming a radio by a complete local address records it once the call
- * (the one p25_lcw_gps_call_get() names: a terminator's closing call, else slot 0's ACTIVE Phase 1 call) carries exactly
+ * (the one p25_lcw_gps_call_get() names: from a TDULC the call it ended, from an LDU1 slot 0's ACTIVE Phase 1 call) carries exactly
  * this target and source. Fail closed: any other voice user takes the record away unless it only repeats the record's
  * own source by a soft decode. That is one naming a special address in its source field (p25_source_id_is_subscriber():
  * no radio), a source that is not a complete local address (@p source_local 0: the Source ID Extension Required flag,
