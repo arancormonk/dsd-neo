@@ -2666,14 +2666,21 @@ channel is delayed.
     starts off (`--trunk-scan-off`, or `lists_off` in a config;
     `--trunk-scan-hold: target "ROK" is in lists that are off (list 2, conv; list 3, low); start one of them on`), and
     when the target's width does not fit the input, for example
-    `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)`. Without a
+    `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)`, or a TETRA
+    DMO target's receive chain cannot run there (`--trunk-scan-hold: target "dmo" cannot be visited: TETRA needs a 72
+    kHz DSP bandwidth, not 48 kHz; ...`). Without a
     trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option is refused, saying why none runs: an
     option on this command line turned off the config's scan, or the config's lists are off (`enabled = false`). The id
     is taken whatever it reads like, so an id that starts with `-` works in both spellings. The start logs whether the
     target is held, holds once its tune lands, or was refused or deferred; a hold that comes once the tune lands shows
     as `HOLD (y continues)` on the Trunk Scan row, with no `Holding:` message. It has no INI key and is never saved: a
     start that wants the hold gives it again.
-  - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
+  - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`. A start
+    none of whose targets can be visited on the input is refused, naming the first target and why: for example every
+    target is a TETRA DMO target and the DSP rate is not a TETRA rate or the input is a rigctl peer, or every target is
+    an NFM or AM target whose width the DSP rate cannot filter. A `tetra-dmo-conventional` target (and a `-Y` `tetra-dmo` row) needs a radio I/Q input at a
+    TETRA DSP rate (72 kHz), the channel filter on and no `--tetra-uplink`; otherwise it is skipped at every visit with
+    its reason ([TETRA DMO targets](trunk-scan.md#tetra-dmo-targets)).
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
     trunk targets that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.

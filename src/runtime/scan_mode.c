@@ -637,9 +637,11 @@ typedef enum { SCAN_ROW_STAGED = 0, SCAN_ROW_COMMITTED = 1 } scan_row_apply;
  * the profile the row is timed with. Returns 0 for a blank row, which runs the configured decoder with its timing. The
  * caller times the row (scan_scope_apply_timing()) once the modulation the row runs is decided: the preset's, the
  * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). A typed row of
- * any class but tetra-dmo runs no TETRA decoder: committed, it leaves TETRA as its preset does; staged, the TETRA
- * session stays whole until a commit (dsd_stage_decode_mode_preset()), so a transition that fails before one goes back
- * to it as it was. A tetra-dmo row runs the TETRA preset (issue #890), which keeps the TETRA decoder and what it holds.
+ * any class but tetra-dmo runs no TETRA decoder: committed, it leaves TETRA as its preset does (keeping the state
+ * allocated while a scan session with a TETRA DMO row holds it, dsd_state::tetra_ext_scan_held, issue #890); staged, the
+ * TETRA session stays whole until a commit (dsd_stage_decode_mode_preset()), so a transition that fails before one goes
+ * back to it as it was. A tetra-dmo row runs the TETRA preset (issue #890), which keeps the TETRA decoder and what it
+ * holds; the scan starts that state cold at the landing (tetra_scan_visit_reset()).
  */
 static int
 scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope, scan_row_apply how,

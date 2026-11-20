@@ -10455,6 +10455,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A tetra-dmo row's eligibility and the TETRA state's lifetime across its landings (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     # The typed-frequency match, which reads a row's effective width (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
@@ -10525,6 +10527,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A TETRA DMO target's eligibility and the TETRA state's lifetime across its landings (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
@@ -10653,6 +10657,17 @@ target_link_libraries(
     dsd-neo_test_engine_scan_entry
     PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
 )
+# The DSP rate a TETRA DMO row's eligibility reads (issue #890), set by the test through a GNU ld --wrap seam.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_scan_entry
+        PRIVATE DSD_TEST_WRAP_SCAN_DSP_RATE=1
+    )
+    target_link_options(
+        dsd-neo_test_engine_scan_entry
+        PRIVATE "LINKER:--wrap=dsd_engine_scan_dsp_rate_hz"
+    )
+endif()
 add_test(NAME ENGINE_SCAN_ENTRY COMMAND dsd-neo_test_engine_scan_entry)
 
 # A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
@@ -10787,6 +10802,8 @@ add_executable(
     engine/test_engine_channel_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A tetra-dmo row's eligibility, whose TED read is stubbed with the tune (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     # The row confirmed on air, which a typed frequency's go-to reads (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c

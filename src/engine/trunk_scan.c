@@ -82,6 +82,7 @@
 #include "scan_owner.h"
 #include "scan_quiet.h"
 #include "scan_step_untyped.h"
+#include "scan_tetra_internal.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -430,6 +431,16 @@ typedef struct {
     uint64_t entry_avoid_rev;
     uint32_t entry_edit_seq;
     double entry_recheck_s;
+    /* Whether any target is a TETRA DMO row (issue #890), counted once the targets are built, and what their shared
+       eligibility was when the entry reasons were last decided (dsd_engine_scan_tetra_row_check()), which a TED
+       override or --tetra-uplink moves without a rate change. */
+    int has_tetra;
+    int entry_tetra;
+    /* Why the TETRA DMO target on air cannot run its chain now (issue #890), DSD_ENGINE_TETRA_ROW_OK otherwise: judged
+       at its landing against what the stream applied and again at each tick, so a reopen, a rate change or a TED
+       override that makes it ineligible on air owes a departure as a list switched off does
+       (trunk_scan_active_out_of_rotation()). A rate the reopening radio has not published yet sends nothing away. */
+    int active_tetra_skip;
     /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
        judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
        failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
@@ -748,6 +759,20 @@ typedef struct {
 static int
 trunk_scan_type_is_analog(dsd_trunk_scan_target_type type) {
     return dsd_scan_mode_is_analog(trunk_scan_target_mode(type));
+}
+
+static int
+trunk_scan_type_is_tetra(dsd_trunk_scan_target_type type) {
+    return type == DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL;
+}
+
+/* Why the scan cannot visit TETRA DMO target @p type at DSP rate @p rate_hz, judged prospectively (issue #890,
+ * dsd_engine_scan_tetra_row_check(): the input, --tetra-uplink, the channel filter and the rate); OK for any other type.
+ * The same for every TETRA DMO target of the session. */
+static dsd_engine_tetra_row
+trunk_scan_type_tetra_skip(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type, int rate_hz) {
+    return trunk_scan_type_is_tetra(type) ? dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 0)
+                                          : DSD_ENGINE_TETRA_ROW_OK;
 }
 
 /* The type column's spellings, exact case, in the order a diagnostic lists them. */
@@ -3488,6 +3513,13 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
     }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
+        /* A TETRA DMO target whose chain cannot run is skipped at every visit, refused before any backend moves as an
+           analog width the rate cannot filter is (issue #890). */
+        if (trunk_scan_type_is_tetra(rt->target.type)
+            && dsd_engine_scan_tetra_row_check(opts, state, dsd_engine_scan_dsp_rate_hz(opts, state), 0)
+                   != DSD_ENGINE_TETRA_ROW_OK) {
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
         /* The landing the switch just resolved and applied (trunk_scan_apply_target_demod()): every digital class
            queues its own symbol profile with this TED, the simplex classes included (issue #890). */
         return dsd_engine_scan_tune_to_freq(opts, state, freq, rt->landing.samples_per_symbol, out_request_id);
@@ -3763,6 +3795,26 @@ trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
+/* Name a TETRA DMO target the scan skips at every visit at DSP rate @p rate_hz (issue #890), as an analog target's
+ * width is named, counting it in @p skipped for the status line. A rate the radio has not published yet is named once it
+ * is, should the target still be skipped then. */
+static void
+trunk_scan_warn_tetra_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                             int rate_hz, dsd_engine_scan_skipped* skipped) {
+    const dsd_engine_tetra_row why = trunk_scan_type_tetra_skip(opts, state, target->type, rate_hz > 0 ? rate_hz : 0);
+    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
+    char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
+    LOG_WARN("WARNING: Trunk scan target '%s': %s; it is skipped at every visit%s.\n", target->id, text,
+             why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    char label[96];
+    trunk_scan_analog_target_label(target, label, sizeof label);
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 1, text, sizeof text);
+    dsd_engine_scan_skipped_add(skipped, label, text);
+}
+
 /* The retune skips an analog target whose width the DSP rate cannot fit without a word (dsd_engine_scan_tune_to_freq()),
  * so the analog targets' widths are named again whenever that rate has changed since they were checked -- the operator
  * changed the RTL DSP bandwidth -- or first became known, and the widths of the targets that run the configured NFM or
@@ -3790,6 +3842,9 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_tr
             dsd_scan_option_values scratch;
             trunk_scan_warn_analog_width(opts, state, target, trunk_scan_target_values(&coord->targets[i], &scratch),
                                          rate_hz, same_rate ? configured_changed : 0U, &skipped);
+        } else if (!same_rate && trunk_scan_type_is_tetra(target->type)) {
+            /* A TETRA DMO target's chain follows the rate, not a configured width (issue #890). */
+            trunk_scan_warn_tetra_target(opts, state, target, rate_hz, &skipped);
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
@@ -3825,6 +3880,16 @@ trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, co
                                                 NULL, 0U);
 }
 
+/* Whether the scan skips @p rt at every visit, the rule every candidate walk and count applies: an analog target
+ * whose width the DSP rate at @p rate_hz cannot filter (trunk_scan_target_width_skipped()), or a TETRA DMO target
+ * whose chain cannot run (trunk_scan_type_tetra_skip(), issue #890). */
+static int
+trunk_scan_target_skipped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                          int rate_hz) {
+    return trunk_scan_target_width_skipped(opts, state, rt, rate_hz)
+           || trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz) != DSD_ENGINE_TETRA_ROW_OK;
+}
+
 /* Whether @p rt is in the rotation (issue #697): a list that holds it is switched on and the operator has not avoided
  * it. The one predicate every candidate walk and count below starts from; a target out of the rotation keeps
  * everything it learned and is passed over until both hold again. A target several lists hold stays in while any of
@@ -3837,17 +3902,24 @@ trunk_scan_target_in_rotation(const dsd_trunk_scan_coord* coord, const dsd_trunk
 /* Whether the target on air is out of the rotation, and so owes a departure (trunk_scan_service_departure()). */
 static int
 trunk_scan_active_out_of_rotation(const dsd_trunk_scan_coord* coord) {
-    return coord->active < coord->count && !trunk_scan_target_in_rotation(coord, &coord->targets[coord->active]);
+    if (coord->active >= coord->count) {
+        return 0;
+    }
+    /* A TETRA DMO target whose chain cannot run on air leaves as one out of the rotation does (issue #890). */
+    const dsd_engine_tetra_row skip = (dsd_engine_tetra_row)coord->active_tetra_skip;
+    return !trunk_scan_target_in_rotation(coord, &coord->targets[coord->active])
+           || (skip != DSD_ENGINE_TETRA_ROW_OK && !dsd_engine_scan_tetra_row_waits(skip));
 }
 
 /* Whether the advance would try @p alt in place of the target on air: in the rotation, not cooling down from a failed
- * retune, and not an analog target the retune skips at every visit for its width at the published @p rate_hz, which
- * the advance would only switch away and back for. */
+ * retune, and not a target the retune skips at every visit (trunk_scan_target_skipped(): an analog width the published
+ * @p rate_hz cannot filter, a TETRA DMO chain that cannot run), which the advance would only switch away and back
+ * for. */
 static int
 trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                   const dsd_trunk_scan_target_runtime* alt, int rate_hz, double now_m) {
     return trunk_scan_target_in_rotation(coord, alt) && alt->retry_until_m <= now_m
-           && !trunk_scan_target_width_skipped(opts, state, alt, rate_hz);
+           && !trunk_scan_target_skipped(opts, state, alt, rate_hz);
 }
 
 /* The first list at or after @p l (0-based) of mask @p lists (bit l for list l), or trunk_scan_list_end(). The
@@ -3933,7 +4005,7 @@ trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_
             const size_t i = entry->members[r];
             const dsd_trunk_scan_target_runtime* rt = i < coord->count ? &coord->targets[i] : NULL;
             usable += rt != NULL && i != except && !rt->avoided && !trunk_scan_member_seen(rt, l, lists)
-                      && !trunk_scan_target_width_skipped(opts, state, rt, rate_hz);
+                      && !trunk_scan_target_skipped(opts, state, rt, rate_hz);
         }
     }
     return usable;
@@ -3998,6 +4070,29 @@ trunk_scan_leave_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
+/* The switch makes target @p next the one on air, the receiver having left the outgoing carrier. A session with a TETRA
+   DMO target holds the TETRA state from its first park, and starts every visit from it cold (issue #890): a target of
+   another family leaves it dormant, never freed. The incoming target's TETRA chain is judged once it lands
+   (trunk_scan_judge_tetra_on_air()). */
+static void
+trunk_scan_enter_target(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next) {
+    dsd_engine_scan_tetra_landing(opts, state, coord->has_tetra);
+    coord->active = next;
+    coord->active_tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
+    coord->gain_editable = trunk_scan_gain_editable(opts);
+}
+
+/* Whether a failed retune of @p target was the scan's own skip, named already by the start's and the rate recheck's
+   warnings: a width the front end refuses at the rate (trunk_scan_analog_width_refused()), or a TETRA DMO chain that
+   cannot run (issue #890). The failed visit adds nothing then. */
+static int
+trunk_scan_retune_skip_named(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target) {
+    return trunk_scan_analog_width_refused(opts, state, target)
+           || (trunk_scan_type_is_tetra(target->type)
+               && dsd_engine_scan_tetra_row_check(opts, state, dsd_engine_scan_dsp_rate_hz(opts, state), 0)
+                      != DSD_ENGINE_TETRA_ROW_OK);
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -4046,8 +4141,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
     trunk_scan_leave_carrier(opts, state);
 
-    coord->active = next;
-    coord->gain_editable = trunk_scan_gain_editable(opts);
+    trunk_scan_enter_target(opts, state, coord, next);
     /* Before the retune, not after: a retune that fails still leaves the receiver parked
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
@@ -4082,7 +4176,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
-        if (!trunk_scan_analog_width_refused(opts, state, &rt->target)) {
+        if (!trunk_scan_retune_skip_named(opts, state, &rt->target)) {
             LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
         }
         return tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? TRUNK_SCAN_RETUNE_DEFERRED : -1;
@@ -4263,6 +4357,8 @@ trunk_scan_walk_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
 
     coord->active = original_active;
+    /* The receiver is back on the original, or never left it: its TETRA chain is judged again at the next tick. */
+    coord->active_tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
     if (!tried) {
         if (rotation) {
             /* Nothing was eligible (every alternate avoided, cooling down or skipped for its width): the receiver
@@ -4621,6 +4717,9 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
                          "stamps.\n",
                          target->id, target->row_options.squelch_db);
             }
+            if (trunk_scan_type_is_tetra(target->type)) {
+                trunk_scan_warn_tetra_target(opts, state, target, check_rate_hz, &skipped);
+            }
             continue;
         }
         char label[96];
@@ -4728,6 +4827,8 @@ trunk_scan_entry_park_landed(dsd_state* state, dsd_trunk_scan_coord* coord, cons
     }
 }
 
+static void trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord);
+
 static int
 trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                                   dsd_trunk_scan_target_runtime* rt, double now_m) {
@@ -4751,6 +4852,10 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
         trunk_scan_arm_visit(rt, completed_m);
         trunk_scan_arm_idle_at_landing(rt);
         trunk_scan_entry_park_landed(state, coord, rt, request_id);
+        /* A TETRA DMO target's landing is verified against what the stream applied (issue #890). */
+        if (rt == &coord->targets[coord->active]) {
+            trunk_scan_judge_tetra_on_air(opts, state, coord);
+        }
         return 1;
     }
 
@@ -5675,12 +5780,51 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
     rt->dwell_serviced_receive_keep = trunk_scan_receive_keeps_in_place(opts, state, coord, rt, now_m);
 }
 
+/* Judge the TETRA DMO target on air again (issue #890): once its park landed, against the TED timing the stream applied
+ * for it (dsd_engine_scan_tetra_row_check() with @c landed), which is the landing's verification; with no park in
+ * flight and none landed (a failed park, the fallback onto it), prospectively. A park still in flight is judged when it
+ * lands. A cause that makes it ineligible on air (a rate change, a reopen at another rate, a TED override, the channel
+ * filter, --tetra-uplink) is named once and owes the departure a target out of the rotation owes
+ * (trunk_scan_active_out_of_rotation()); a rate the reopening radio has not published yet sends nothing away. Cheap:
+ * a few loads, and only while a TETRA DMO target is on air. */
+static void
+trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    if (coord->active >= coord->count) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!trunk_scan_type_is_tetra(rt->target.type) || rt->tune_pending) {
+        return;
+    }
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const int landed = dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session);
+    const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, rate_hz, landed);
+    if ((int)why == coord->active_tetra_skip) {
+        return;
+    }
+    coord->active_tetra_skip = (int)why;
+    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
+    char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
+    LOG_WARN("WARNING: Trunk scan target '%s': %s; it is skipped at every visit until then.\n", rt->target.id, text);
+    char label[96];
+    trunk_scan_analog_target_label(&rt->target, label, sizeof label);
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 1, text, sizeof text);
+    dsd_engine_scan_skipped skipped = {0};
+    dsd_engine_scan_skipped_add(&skipped, label, text);
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
+    trunk_scan_arm_departure(coord);
+}
+
 /* The body above has a dozen early returns and can rotate; publishing here, once, means the
  * report always describes whichever target the tick actually left on air. */
 static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const double now_m = trunk_scan_now_m();
     const uint64_t tunes_before = opts->scan_skip_silent ? trunk_scan_quiet_tune_mark(state) : 0U;
+    trunk_scan_judge_tetra_on_air(opts, state, coord);
     /* A departure the target on air owes comes first, ahead of everything that could keep it (issue #697). */
     if (!trunk_scan_service_departure(opts, state, coord, now_m)) {
         trunk_scan_tick_targets_locked(opts, state, coord, now_m);
@@ -6652,24 +6796,80 @@ trunk_scan_attach_lists(dsd_trunk_scan_coord* coord, trunk_scan_merged_lists* me
     coord->ordinal_active = SIZE_MAX; /* counted at the first publication */
 }
 
-/* The target the scan starts on: the first in the rotation (one whose every list starts off is passed over) that the
-   DSP rate can filter, else the first in the rotation, whose park then fails over to the advance as any failed park
-   does. */
+/* The target the scan starts on: the first in the rotation (one whose every list starts off is passed over) the scan
+   can visit (trunk_scan_target_skipped(): a width the DSP rate can filter, a TETRA DMO chain that can run), else the
+   first that only waits for the radio to publish its DSP rate (a TETRA DMO target, whose park the retune refuses until
+   then, the cooldown's retry landing it once the rate is known). coord->count when the scan can visit none of them,
+   which refuses the start (issue #890 A3): it used to start on a target its park then refused, and run on nowhere. */
 static size_t
 trunk_scan_start_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    size_t first_on = coord->count;
+    size_t waiting = coord->count;
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
         if (!trunk_scan_target_in_rotation(coord, rt)) {
             continue;
         }
-        if (!trunk_scan_target_width_skipped(opts, state, rt, rate_hz)) {
+        if (!trunk_scan_target_skipped(opts, state, rt, rate_hz)) {
             return i;
         }
-        first_on = first_on < coord->count ? first_on : i;
+        if (waiting == coord->count
+            && dsd_engine_scan_tetra_row_waits(trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz))) {
+            waiting = i;
+        }
     }
-    return first_on < coord->count ? first_on : 0U;
+    return waiting;
+}
+
+/* Room for either reason trunk_scan_skip_text() writes. */
+#define TRUNK_SCAN_SKIP_TEXT_MAX                                                                                       \
+    (DSD_ANALOG_ERROR_TEXT_MAX > DSD_ENGINE_TETRA_ROW_TEXT_MAX ? DSD_ANALOG_ERROR_TEXT_MAX                             \
+                                                               : DSD_ENGINE_TETRA_ROW_TEXT_MAX)
+
+/* Why target @p rt is skipped at every visit at DSP rate @p rate_hz, in @p why: its TETRA DMO chain's reason (the full
+   text, @p brief 0, or the status line's), else its width's. */
+static void
+trunk_scan_skip_text(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt, int rate_hz,
+                     int brief, char* why, size_t why_size) {
+    const dsd_engine_tetra_row tetra = trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz);
+    if (tetra != DSD_ENGINE_TETRA_ROW_OK) {
+        dsd_engine_scan_tetra_row_text(opts, tetra, rate_hz, brief, why, why_size);
+        return;
+    }
+    dsd_scan_option_values scratch;
+    (void)dsd_engine_scan_analog_width_skipped(opts, state, trunk_scan_target_values(rt, &scratch),
+                                               dsd_scan_mode_analog_kind(trunk_scan_target_mode(rt->target.type)),
+                                               rate_hz, why, why_size);
+}
+
+/* A start none of whose targets in the rotation the scan can visit (trunk_scan_start_target()), refused in @p err with
+   the first one's reason and how many more there are. */
+static void
+trunk_scan_start_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, char* err,
+                         size_t err_sz) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const dsd_trunk_scan_target_runtime* first = NULL;
+    size_t skipped = 0U;
+    for (size_t i = 0; i < coord->count; i++) {
+        if (trunk_scan_target_in_rotation(coord, &coord->targets[i])) {
+            first = first ? first : &coord->targets[i];
+            skipped++;
+        }
+    }
+    if (!first) {
+        scan_set_error(err, err_sz, "--trunk-scan: no target is in a list that is on");
+        return;
+    }
+    char why[TRUNK_SCAN_SKIP_TEXT_MAX];
+    trunk_scan_skip_text(opts, state, first, rate_hz, 0, why, sizeof why);
+    if (skipped > 1U) {
+        scan_set_error(err, err_sz,
+                       "--trunk-scan: no target can be visited on this input; target \"%s\" (and %zu more): %s",
+                       first->target.id, skipped - 1U, why);
+        return;
+    }
+    scan_set_error(err, err_sz, "--trunk-scan: no target can be visited on this input; target \"%s\": %s",
+                   first->target.id, why);
 }
 
 /* What list @p l shares with the lists before it, for its start log line (issue #697): " (3 also in list 1)", or
@@ -6767,11 +6967,14 @@ trunk_scan_hold_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_
         trunk_scan_hold_lists_off(coord, rt, err, err_sz);
         return;
     }
-    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
-    dsd_scan_option_values scratch;
-    (void)dsd_engine_scan_analog_width_skipped(opts, state, trunk_scan_target_values(rt, &scratch),
-                                               dsd_scan_mode_analog_kind(trunk_scan_target_mode(rt->target.type)),
-                                               rate_hz, brief, sizeof brief);
+    char brief[TRUNK_SCAN_SKIP_TEXT_MAX];
+    if (reason != DSD_SCAN_ENTRY_WIDTH) {
+        /* A TETRA DMO target whose chain cannot run (issue #890). */
+        trunk_scan_skip_text(opts, state, rt, rate_hz, 0, brief, sizeof brief);
+        scan_set_error(err, err_sz, "--trunk-scan-hold: target \"%s\" cannot be visited: %s", id, brief);
+        return;
+    }
+    trunk_scan_skip_text(opts, state, rt, rate_hz, 1, brief, sizeof brief);
     scan_set_error(err, err_sz, "--trunk-scan-hold: target \"%s\"'s width does not fit (%s)", id, brief);
 }
 
@@ -6831,14 +7034,19 @@ trunk_scan_hold_started(dsd_state* state, dsd_trunk_scan_coord* coord, size_t in
 }
 
 /* The target this start parks first, into @p out: the one --trunk-scan-hold names (refused as
-   trunk_scan_hold_target() says), else trunk_scan_start_target()'s. The start takes the option, whatever comes of
-   its park. */
+   trunk_scan_hold_target() says), else trunk_scan_start_target()'s, the start refused when that finds none it can
+   visit (trunk_scan_start_refusal(), issue #890). The start takes the option, whatever comes of its park. */
 static int
 trunk_scan_pick_start(dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t* out, char* err,
                       size_t err_sz) {
     *out = trunk_scan_start_target(opts, state, coord);
-    const int rc =
-        opts->trunk_scan_hold_id[0] != '\0' ? trunk_scan_hold_target(opts, state, coord, out, err, err_sz) : 0;
+    int rc = 0;
+    if (opts->trunk_scan_hold_id[0] != '\0') {
+        rc = trunk_scan_hold_target(opts, state, coord, out, err, err_sz);
+    } else if (*out >= coord->count) {
+        trunk_scan_start_refusal(opts, state, coord, err, err_sz);
+        rc = -1;
+    }
     opts->trunk_scan_hold_id[0] = '\0';
     return rc;
 }
@@ -6893,6 +7101,9 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
         trunk_scan_init_release(opts, state, coord, &list);
         return -1;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        coord->has_tetra |= trunk_scan_type_is_tetra(coord->targets[i].target.type);
     }
     const int hold = opts->trunk_scan_hold_id[0] != '\0';
     size_t start = 0U;
@@ -7174,6 +7385,10 @@ trunk_scan_resume_from(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     coord->paused = 0;
     dsd_engine_scan_quiet_note_change(state);
     coord->active = at;
+    /* A TETRA DMO target whose chain cannot run now resumes on the targets after it, as one out of the rotation does
+       (issue #890). */
+    coord->active_tetra_skip = (int)trunk_scan_type_tetra_skip(opts, state, coord->targets[at].target.type,
+                                                               dsd_engine_scan_dsp_rate_hz(opts, state));
     trunk_scan_arm_departure(coord);
     /* The target re-parked as a revisit: scopes begun again around the session as it is now, its keys, policy, options
        and trunking installed, fresh visit and acquisition clocks. The operator hold stays. */
@@ -7234,7 +7449,8 @@ dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Why target @p rt is no pick for a typed frequency (issue #644 D5), or DSD_SCAN_ENTRY_OK: the rotation's own rules
-   (trunk_scan_target_in_rotation(), the width skip at @p rate_hz), but not its cooldown: the pick is explicit. */
+   (trunk_scan_target_in_rotation(), the width skip at @p rate_hz, a TETRA DMO target's chain, issue #890), but not its
+   cooldown: the pick is explicit. */
 static dsd_scan_entry_reason
 trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                         const dsd_trunk_scan_target_runtime* rt, int rate_hz) {
@@ -7244,13 +7460,18 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
     if ((rt->lists & coord->lists_on) == 0U) {
         return DSD_SCAN_ENTRY_LIST_OFF;
     }
+    const dsd_engine_tetra_row tetra = trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz);
+    if (tetra != DSD_ENGINE_TETRA_ROW_OK) {
+        return dsd_engine_scan_tetra_entry_reason(tetra);
+    }
     return trunk_scan_target_width_skipped(opts, state, rt, rate_hz) ? DSD_SCAN_ENTRY_WIDTH : DSD_SCAN_ENTRY_OK;
 }
 
 /* Publish whether a frequency typed by hand could pick each target (dsd_state::trunk_scan_entry_reasons, issue #644),
    as trunk_scan_entry_reason() decides it, so a frontend names the row the engine takes without deciding it again.
-   Decided again only when the DSP rate, the lists, the avoids or a session edit moved, or once a second (for what no
-   counter here follows: a configured width); stamped trunk_scan_entry_rev only when a byte or the count changed. The
+   Decided again only when the DSP rate, the lists, the avoids, a session edit or the TETRA DMO targets' eligibility
+   (issue #890) moved, or once a second (for what no counter here follows: a configured width); stamped
+   trunk_scan_entry_rev only when a byte or the count changed. The
    target the match would take as on air (dsd_engine_trunk_scan_target_confirmed()) is checked at every call, a few
    loads, and stamped the same way when it changes: a park landing, a pause. */
 static void
@@ -7270,13 +7491,16 @@ trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_tru
     trunk_scan_publish_entry_on_air(state, coord);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const double now_s = dsd_realtime_mono_s();
+    /* The TETRA DMO targets' eligibility moves with settings no counter here follows (issue #890). */
+    const int tetra = coord->has_tetra ? (int)dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 0) : 0;
     if (coord->entry_decided && coord->entry_rate_hz == rate_hz && coord->entry_lists_seq == coord->lists_seq
         && coord->entry_avoid_rev == state->trunk_scan_avoid_rev && coord->entry_edit_seq == coord->edit_seq
-        && now_s < coord->entry_recheck_s) {
+        && coord->entry_tetra == tetra && now_s < coord->entry_recheck_s) {
         return;
     }
     coord->entry_decided = 1;
     coord->entry_rate_hz = rate_hz;
+    coord->entry_tetra = tetra;
     coord->entry_lists_seq = coord->lists_seq;
     coord->entry_avoid_rev = state->trunk_scan_avoid_rev;
     coord->entry_edit_seq = coord->edit_seq;

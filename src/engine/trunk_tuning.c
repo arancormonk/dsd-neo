@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -1605,6 +1606,43 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
 #endif
     return 0;
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    if (override_sps) {
+        *override_sps = 0;
+    }
+    if (applied_sps) {
+        *applied_sps = 0;
+    }
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    int symbol_rate_hz = 0;
+    int channel_profile = 0;
+    int cqpsk = 0;
+    (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, &channel_profile);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+    /* The TED timing is the TETRA landing's only once the stream publishes the TETRA profile it came with, which sets
+       the TED and sets or clears the override; before that both are the last profile's, which say nothing about this
+       landing. */
+    if (!cqpsk || symbol_rate_hz != DSD_TETRA_SYMBOL_RATE_HZ || channel_profile != RTL_STREAM_CHANNEL_PROFILE_TETRA) {
+        return;
+    }
+    const int override = rtl_stream_get_ted_sps_override();
+    const int applied = rtl_stream_get_ted_sps();
+    if (override_sps && override > 0) {
+        *override_sps = override;
+    }
+    if (applied_sps && applied > 0) {
+        *applied_sps = applied;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
 }
 
 double

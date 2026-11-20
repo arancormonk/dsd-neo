@@ -33,6 +33,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/voice_chain.h>
@@ -63,10 +64,12 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -157,6 +160,35 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
     g_scan_dsp_rate_reads++;
     return g_scan_dsp_rate_hz;
+}
+
+/* --- Issue #890: the TETRA visit reset (protocol/tetra/tetra.c) and the TED timing the stream applied
+ * (trunk_tuning.c), which this fixture does not link: each reset counted, with whether the scan held the TETRA state
+ * then and what the frontends were shown (cleared, as the real one clears it); the TED timing is what a test sets. */
+static int g_tetra_visit_resets;
+static int g_tetra_visit_reset_held;
+static int g_tetra_ted_override;
+static int g_tetra_ted_applied;
+
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_tetra_visit_resets++;
+    g_tetra_visit_reset_held = state->tetra_ext_scan_held;
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    dsd_tetra_publication_reset(&state->tetra_pub);
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = g_tetra_ted_override;
+    }
+    if (applied_sps) {
+        *applied_sps = g_tetra_ted_applied;
+    }
 }
 
 /* When the RTL input came back from its last retune's mute (trunk_tuning.c): 0 none, -1 still muted. */
@@ -16792,6 +16824,434 @@ expect_entry_reasons(const dsd_state* state, const char* stage, uint8_t first, u
     return 0;
 }
 
+/* --- Issue #890: TETRA DMO targets: their eligibility, the start's refusal, the on-air check and the TETRA state's
+ * lifetime. --- */
+
+static void tick_at(dsd_opts* opts, dsd_state* state, double now_m);
+
+static const char k_tetra_mixed_targets[] = "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                            "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                            "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+
+/* The TETRA state extension a decoder would hold: a stand-in whose frees are counted. */
+static int g_fake_tetra_ext;
+static int g_fake_tetra_ext_frees;
+
+static void
+fake_tetra_ext_free(void* ptr) {
+    (void)ptr;
+    g_fake_tetra_ext_frees++;
+}
+
+static void
+fake_tetra_ext_install(dsd_state* state) {
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, &g_fake_tetra_ext, fake_tetra_ext_free);
+}
+
+static int
+fake_tetra_ext_present(const dsd_state* state) {
+    return dsd_state_ext_get_const(state, DSD_STATE_EXT_PROTO_TETRA) == &g_fake_tetra_ext;
+}
+
+/* A trunk scan over @p body (k_nfm_targets_header's columns) at DSP rate @p rate_hz, its start's log in @p log;
+ * returns the init's answer, its error in @p err. */
+static int
+tetra_rig_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz,
+                const char* body, int rate_hz, char* err, size_t err_sz, char* log, size_t log_sz) {
+    if (make_temp_dir(dir, dir_sz) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header, body, path, path_sz) != 0) {
+        return 2;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = rate_hz;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_scan_tune_watch_hz = 425000000L;
+    g_scan_tune_watch_calls = 0;
+    g_tetra_visit_resets = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 0;
+    g_fake_tetra_ext_frees = 0;
+    trunk_scan_test_set_now(0.0);
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetra") == 0;
+    const int rc = dsd_engine_trunk_scan_init(opts, state, err, err_sz);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        if (log && log_sz > 0U) {
+            log[0] = '\0';
+            (void)dsd_test_capture_stderr_read(&cap, log, log_sz);
+        } else {
+            (void)remove(cap.path); /* the read removes it otherwise */
+        }
+    }
+    return rc;
+}
+
+static void
+tetra_rig_finish(dsd_opts* opts, dsd_state* state, const char* dir, const char* path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    g_scan_dsp_rate_hz = 0;
+    g_scan_tune_watch_hz = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+}
+
+/* A TETRA DMO target needs a TETRA DSP rate (issue #890 D3): at 48 kHz the start names it, the status line says it is
+ * skipped at every visit, the rotation passes it over without a tune and a typed frequency is told why; at 72 kHz the
+ * rotation visits it, and a typed frequency picks it again at once. */
+static int
+test_tetra_dmo_target_skipped_off_a_tetra_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    char log[8192] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_tetra_mixed_targets, 48000, err,
+                             sizeof err, log, sizeof log)
+             != 0;
+    rc |= expect_active_target(&state, "a TETRA target at 48 kHz: the start", 0U);
+    if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA needs a 72 kHz DSP bandwidth, not 48 kHz") != 1
+        || count_text(log, "it is skipped at every visit until then.") != 1
+        || strstr(state.ui_msg, "Skipped at every visit: Trunk scan target 'dmo': TETRA DMO needs a 72 kHz DSP "
+                                "bandwidth, not 48 kHz")
+               == NULL) {
+        DSD_FPRINTF(stderr, "TETRA at 48 kHz: start log '%s', status '%s'\n", log, state.ui_msg);
+        rc = 1;
+    }
+    double now = 0.0;
+    for (int hop = 0; hop < 4; hop++) {
+        now += 0.3;
+        tick_at(&opts, &state, now);
+        rc |= dsd_engine_trunk_scan_active_index(&state) == 1U;
+    }
+    rc |= g_scan_tune_watch_calls != 0;
+    rc |= state.trunk_scan_entry_reason_count != 3U || state.trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_TETRA_RATE;
+    dsd_scan_entry_match_t match;
+    rc |= dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 0
+          || match.reason != DSD_SCAN_ENTRY_TETRA_RATE || match.row != 1;
+    g_scan_dsp_rate_hz = 72000;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= state.trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_OK;
+    rc |= dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 1 || match.row != 1;
+    int visited = 0;
+    for (int hop = 0; hop < 4 && !visited; hop++) {
+        now += 0.3;
+        tick_at(&opts, &state, now);
+        visited = dsd_engine_trunk_scan_active_index(&state) == 1U;
+    }
+    if (rc || !visited || g_scan_tune_watch_calls != 1) {
+        DSD_FPRINTF(stderr, "TETRA at 48 then 72 kHz: rc %d visited %d tunes %d reason %d\n", rc, visited,
+                    g_scan_tune_watch_calls, match.reason);
+        rc = 1;
+    }
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A start none of whose targets can be visited is refused, naming the first and why, with nothing tuned (issue #890
+ * A3): TETRA DMO targets at 48 kHz, on a rigctl peer behind audio input, under --tetra-uplink and with the channel filter
+ * forced off; and --trunk-scan-hold on a TETRA DMO target the scan cannot visit. A rate the radio has not published
+ * yet is no refusal: the start waits on it, tunes nothing, and parks once the rate is known. */
+static int
+test_tetra_dmo_start_refused_when_nothing_can_be_visited(void) {
+    static const char k_two[] = "a,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                "b,tetra-dmo-conventional,426000000,,250,250,,,,,,,\n";
+
+    static const struct {
+        const char* what;
+        int rate_hz;
+        int rigctl_audio;
+        int uplink;
+        int lpf_off;
+        const char* hold;
+        const char* body;
+        const char* want;
+    } k_cases[] = {
+        {"48 kHz", 48000, 0, 0, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA needs a 72 kHz DSP "
+         "bandwidth, not 48 kHz; dsd-neo does not change it on its own, so set it to 72 kHz "
+         "(-i rtl:dev:freq:gain:ppm:72)"},
+        {"a rigctl peer", 72000, 1, 0, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO needs a radio "
+         "I/Q input dsd-neo tunes (RTL-SDR, rtl_tcp, SoapySDR or Airspy); audio input, a rigctl peer, an I/Q replay or "
+         "an I/Q stream cannot run it"},
+        {"--tetra-uplink", 72000, 0, 1, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO decodes the "
+         "downlink chain, which --tetra-uplink turns off"},
+        {"the channel filter off", 72000, 0, 0, 1, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO needs the channel "
+         "filter, which DSD_NEO_CHANNEL_LPF=0 turns off"},
+        {"a held start", 48000, 0, 0, 0, "dmo", k_tetra_mixed_targets,
+         "--trunk-scan-hold: target \"dmo\" cannot be visited: TETRA needs a 72 kHz DSP bandwidth, not 48 kHz; dsd-neo "
+         "does not change it on its own, so set it to 72 kHz (-i rtl:dev:freq:gain:ppm:72)"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+        static dsd_opts opts;
+        static dsd_state state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_nfm_targets_header, k_cases[i].body, path, sizeof path) != 0) {
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+        opts.trunk_scan_list_count = 1;
+        if (k_cases[i].rigctl_audio) {
+            opts.audio_in_type = AUDIO_IN_PULSE;
+            opts.use_rigctl = 1;
+        }
+        opts.tetra_uplink = k_cases[i].uplink;
+        if (k_cases[i].lpf_off) {
+            (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+            dsd_neo_config_init();
+        }
+        if (k_cases[i].hold) {
+            DSD_SNPRINTF(opts.trunk_scan_hold_id, sizeof opts.trunk_scan_hold_id, "%s", k_cases[i].hold);
+        }
+        g_scan_dsp_rate_hz = k_cases[i].rate_hz;
+        g_scan_tune_watch_hz = 425000000L;
+        g_scan_tune_watch_calls = 0;
+        trunk_scan_test_set_now(0.0);
+        const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+        const int attached = dsd_engine_trunk_scan_target_count(&state) != 0U;
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        if (k_cases[i].lpf_off) {
+            (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
+            dsd_neo_config_init();
+        }
+        if (init_rc == 0 || attached || g_scan_tune_watch_calls != 0 || strcmp(err, k_cases[i].want) != 0) {
+            DSD_FPRINTF(stderr, "TETRA start refused (%s): rc %d attached %d tunes %d err '%s'\n", k_cases[i].what,
+                        init_rc, attached, g_scan_tune_watch_calls, err);
+            rc = 1;
+        }
+        g_scan_dsp_rate_hz = 0;
+        g_scan_tune_watch_hz = 0;
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, path, NULL);
+    }
+
+    /* The rate not known yet: the start waits on it. */
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    int wait_rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_two, 0, err, sizeof err, NULL, 0U);
+    const int waited_tunes = g_scan_tune_watch_calls;
+    g_scan_dsp_rate_hz = 72000;
+    int parked = 0;
+    for (int t = 1; t <= 40 && !parked; t++) {
+        tick_at(&opts, &state, 0.1 * t);
+        parked = g_scan_tune_watch_calls > 0 && dsd_engine_trunk_scan_target_confirmed(&state, 0);
+    }
+    if (wait_rc != 0 || waited_tunes != 0 || !parked) {
+        DSD_FPRINTF(stderr, "TETRA start with the rate unknown: rc %d (%s), tunes while unknown %d, parked %d\n",
+                    wait_rc, err, waited_tunes, parked);
+        rc = 1;
+    }
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* The TETRA DMO target on air is judged again (issue #890 A3): once its park landed, against the TED timing the stream
+ * applied, and whenever the rate moves. One whose chain cannot run leaves at once, ahead of an operator's hold, as a
+ * target out of the rotation does; a rate the reopening radio has not published yet keeps it. */
+static int
+test_tetra_dmo_target_on_air_judged_again(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    rc |= expect_active_target(&state, "the TETRA target first", 0U);
+    rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_tetra_ted_applied = 4; /* 72 kHz over 18000 symbols/s */
+    tick_at(&opts, &state, 0.1);
+    rc |= expect_active_target(&state, "the TED timing the rate's", 0U);
+    /* The radio reopening: no rate yet. */
+    g_scan_dsp_rate_hz = 0;
+    tick_at(&opts, &state, 0.2);
+    rc |= expect_active_target(&state, "the rate not known yet", 0U);
+    g_scan_dsp_rate_hz = 72000;
+    g_tetra_ted_applied = 5; /* a TED timing the 72 kHz chain does not run at */
+    dsd_test_capture_stderr cap;
+    char log[4096] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonair") == 0;
+    tick_at(&opts, &state, 0.3);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    rc |= expect_active_target(&state, "a TED timing that disagrees, held", 1U);
+    if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed at the DSP rate") != 1
+        || strstr(state.ui_msg, "TETRA DMO's TED timing does not fit the DSP rate") == NULL) {
+        DSD_FPRINTF(stderr, "TETRA TED on air: log '%s' status '%s'\n", log, state.ui_msg);
+        rc = 1;
+    }
+    /* Back on it with the timing right, then the rate changed under it. */
+    g_tetra_ted_applied = 4;
+    rc |= expect_control_rc("advance back",
+                            dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_active_target(&state, "back on the TETRA target", 0U);
+    tick_at(&opts, &state, 0.4);
+    rc |= expect_active_target(&state, "still on it", 0U);
+    g_scan_dsp_rate_hz = 48000;
+    g_tetra_ted_applied = 0;
+    tick_at(&opts, &state, 0.5);
+    rc |= expect_active_target(&state, "the rate moved to 48 kHz", 1U);
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* The TETRA state across a mixed list (issue #890 A4): a session with a TETRA DMO target holds the extension from its
+ * first park, so no hop frees or replaces it; every park starts it cold (the visit reset, TETRA after TETRA included);
+ * a pause into manual decoding and the stop let it go cold, freeing it when the settings in force run no TETRA. A
+ * configured -fT session's state is kept through a start whose parks all fail and the stop after it. */
+static int
+test_tetra_state_held_across_mixed_hops(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                 "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmo2,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    rc |= state.tetra_ext_scan_held != 1U || g_tetra_visit_resets != 1;
+    /* The decoder's state, made on the first TETRA burst. */
+    fake_tetra_ext_install(&state);
+    double now = 0.0;
+    int resets = g_tetra_visit_resets;
+    for (int hop = 0; hop < 8; hop++) {
+        now += 0.3;
+        tick_at(&opts, &state, now);
+        rc |= g_tetra_visit_resets != resets + 1 || !g_tetra_visit_reset_held;
+        resets = g_tetra_visit_resets;
+        const size_t on = dsd_engine_trunk_scan_active_index(&state);
+        rc |= (on == 1U || on == 2U) != (opts.frame_tetra == 1);
+    }
+    if (rc || !fake_tetra_ext_present(&state) || g_fake_tetra_ext_frees != 0) {
+        DSD_FPRINTF(stderr, "TETRA held across hops: rc %d present %d frees %d resets %d\n", rc,
+                    fake_tetra_ext_present(&state), g_fake_tetra_ext_frees, g_tetra_visit_resets);
+        rc = 1;
+    }
+    /* A pause into manual decoding (the configured DMR session): cold, then freed. */
+    p25_sm_tick_guard_enter();
+    rc |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
+    p25_sm_tick_guard_leave();
+    rc |= state.tetra_ext_scan_held != 0U || g_tetra_visit_resets != resets + 1 || fake_tetra_ext_present(&state)
+          || g_fake_tetra_ext_frees != 1 || opts.frame_tetra != 0;
+    /* A resume takes the hold again at its park. */
+    p25_sm_tick_guard_enter();
+    rc |= dsd_engine_trunk_scan_resume_locked(&opts, &state) < 0;
+    p25_sm_tick_guard_leave();
+    rc |= state.tetra_ext_scan_held != 1U;
+    tetra_rig_finish(&opts, &state, dir, path);
+    rc |= state.tetra_ext_scan_held != 0U;
+    if (rc) {
+        DSD_FPRINTF(stderr, "TETRA pause/resume: held %u resets %d frees %d frame_tetra %d\n",
+                    (unsigned)state.tetra_ext_scan_held, g_tetra_visit_resets, g_fake_tetra_ext_frees,
+                    opts.frame_tetra);
+    }
+
+    /* A configured -fT session, whose first parks fail: its state is held, reset, and kept for it at the stop. */
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                          "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                          "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n",
+                                          path, sizeof path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+    opts.trunk_scan_list_count = 1;
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+    fake_tetra_ext_install(&state);
+    state.tetra_pub.mcc = 460U;
+    g_fake_tetra_ext_frees = 0;
+    g_tetra_visit_resets = 0;
+    g_scan_dsp_rate_hz = 72000;
+    g_scan_tune_to_freq_failures_remaining = 2;
+    trunk_scan_test_set_now(0.0);
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafailed") == 0;
+    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path);
+    }
+    const int held = state.tetra_ext_scan_held;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (init_rc != 0 || held != 1 || g_tetra_visit_resets < 2 || !fake_tetra_ext_present(&state)
+        || g_fake_tetra_ext_frees != 0 || state.tetra_ext_scan_held != 0U || opts.frame_tetra != 1
+        || state.tetra_pub.mcc != 0U) {
+        DSD_FPRINTF(stderr,
+                    "configured -fT, failed parks: rc %d (%s) held %d resets %d present %d frees %d held after %u "
+                    "frame_tetra %d mcc %u\n",
+                    init_rc, err, held, g_tetra_visit_resets, fake_tetra_ext_present(&state), g_fake_tetra_ext_frees,
+                    (unsigned)state.tetra_ext_scan_held, opts.frame_tetra, (unsigned)state.tetra_pub.mcc);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* The published entry reasons follow what a TETRA DMO target's chain depends on beyond the rate (issue #890): a
+ * --tetra-uplink switched on, then off, republishes them at the next tick, not a second later. */
+static int
+test_tetra_entry_reasons_follow_the_chain(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                 "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= expect_entry_reasons(&state, "at 72 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    uint64_t rev = state.trunk_scan_entry_rev;
+    opts.tetra_uplink = 1;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= expect_entry_reasons(&state, "--tetra-uplink on", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_CHAIN);
+    rc |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    opts.tetra_uplink = 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= expect_entry_reasons(&state, "--tetra-uplink off", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    rc |= state.trunk_scan_entry_rev == rev;
+    g_scan_dsp_rate_hz = 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= expect_entry_reasons(&state, "the rate not known", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_WAIT);
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* Issue #644: the coordinator publishes whether a frequency typed by hand could pick each target, as the entry match
  * decides it, so a frontend names the row the engine takes: an nfm target whose 20 kHz the 16 kHz DSP rate cannot
  * filter reads WIDTH, and follows a width edit that fits, the edit dropped, and a rate raised to fit, each with a new
@@ -22052,12 +22512,11 @@ test_lists_departure_waits_for_the_soonest_cooldown(void) {
     return test_rc;
 }
 
-/* The startup park's fallback: with every target in the rotation skipped for its width (list one, whose target is
- * receivable, starts off), the scan starts on the first one in the rotation; the front end refuses that park before
- * any backend moves, with no "retune failed" line of the coordinator's own, and the advance after it finds nowhere to
- * go. */
+/* Issue #890 A3: a start none of whose targets in the rotation the scan can visit (here every one on is skipped for its
+ * width: list one, whose target is receivable, starts off) is refused, naming the first one and why, before anything is
+ * tuned; it used to start on that target, whose park the front end refused, and run on nowhere. */
 static int
-test_lists_start_on_an_unreachable_target_when_nothing_else_is_on(void) {
+test_lists_start_refused_when_no_target_can_be_visited(void) {
     static const char* const names[] = {"one", "two"};
     static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n",
                                          "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"};
@@ -22071,32 +22530,25 @@ test_lists_start_on_an_unreachable_target_when_nothing_else_is_on(void) {
     }
     reset_scan_opts_state(&opts, &state);
     scan_list_files_to_opts(&files, off, &opts);
-    dsd_test_capture_stderr cap;
-    char buf[8192] = {0};
-    if (dsd_test_capture_stderr_begin(&cap, "trunkscanstartfallback") != 0) {
-        scan_list_files_remove(&files);
-        return 1;
-    }
     g_scan_tune_refuses_unfit_width = 1;
     g_scan_tune_width_refusals = 0;
     g_scan_dsp_rate_hz = 16000;
     char err[512] = {0};
     trunk_scan_test_set_now(0.0);
     const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
-    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
+    const int attached = dsd_engine_trunk_scan_target_count(&state) != 0;
     const int refusals = g_scan_tune_width_refusals;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    (void)dsd_test_capture_stderr_end(&cap);
-    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     scan_list_files_remove(&files);
-    const int failed = count_text(buf, "Trunk scan target 'wide' retune failed");
-    if (rc != 0 || started_on != 1U || refusals != 1 || failed != 0) {
-        DSD_FPRINTF(stderr,
-                    "start fallback (rc=%d %s): started on %zu, refused %d, retune-failed %d; want 1, 1, 0\n%s\n", rc,
-                    err, started_on, refusals, failed, buf);
+    if (rc == 0 || attached || refusals != 0
+        || strcmp(err, "--trunk-scan: no target can be visited on this input; target \"wide\": NFM 20 kHz does not fit "
+                       "the 16 kHz DSP rate")
+               != 0) {
+        DSD_FPRINTF(stderr, "start with no target to visit: rc=%d attached=%d refused tunes %d, err '%s'\n", rc,
+                    attached, refusals, err);
         return 1;
     }
     return 0;
@@ -27721,18 +28173,24 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
 }
 
 /* Issue #890: a TETRA DMO target is never checked, and says so through the trunk scan's timing publication (No check:
-   mode, never the missing-width reason) with one WARN line however many ticks follow. */
+   mode, never the missing-width reason) with one WARN line however many ticks follow, and stays on air; with the -8
+   monitor beside its decoder too (@p monitor_nfm_hz >= 0), whose class a target with no class of its own never takes. */
 static int
-test_scan_quiet_trunk_tetra_dmo_says_no_check(void) {
+scan_quiet_trunk_tetra_dmo_says_no_check(int monitor_nfm_hz) {
     static const char k_targets[] = "n15,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 15000\n"
                                     "dmo,tetra-dmo-conventional,453000000,,2000,1000,,\n";
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
     dsd_state* const state_p = qt_shared_state();
-    if (qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+    g_qt_monitor_nfm_hz = monitor_nfm_hz;
+    const int failed = qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets);
+    g_qt_monitor_nfm_hz = -1;
+    if (failed != 0) {
         return 1;
     }
+    /* A TETRA DMO target is visited only at a TETRA DSP rate (issue #890 D3). */
+    g_scan_dsp_rate_hz = 72000;
     qt_warns_watch();
     qt_decode_at(10U);
     qt_pass(&opts, state_p);
@@ -27751,8 +28209,14 @@ test_scan_quiet_trunk_tetra_dmo_says_no_check(void) {
     rc |= qt_expect_warn("a TETRA DMO target: one line", 1, DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, 0, 0U, "dmo",
                          k_qt_hz_b, 0, 0U);
     rc |= qt_expect("a TETRA DMO target: nothing requested", g_tap.requests == requests);
+    rc |= qt_expect("a TETRA DMO target: still on air", dsd_engine_trunk_scan_active_index(state_p) == 1U);
     quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
+}
+
+static int
+test_scan_quiet_trunk_tetra_dmo_says_no_check(void) {
+    return scan_quiet_trunk_tetra_dmo_says_no_check(-1) | scan_quiet_trunk_tetra_dmo_says_no_check(12500);
 }
 
 /* Every no-check cause, through the trunk scan's timing publication: the -8 monitor with no width, an uncalibrated
@@ -28349,7 +28813,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_advance_reads_the_rate_once_per_walk);
     rc |= run_with_default_tune_hook(test_dwell_advance_cools_a_target_whose_switch_fails_to_prepare);
     rc |= run_with_default_tune_hook(test_lists_departure_waits_for_the_soonest_cooldown);
-    rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
+    rc |= run_with_default_tune_hook(test_lists_start_refused_when_no_target_can_be_visited);
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
     rc |= run_with_default_tune_hook(test_lists_switch_publishes_timing_under_the_guard);
     rc |= run_with_default_tune_hook(test_lists_alternate_walk_skips_a_list_off);
@@ -28552,6 +29016,12 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_entry_match_reads_the_targets_effective_width);
     rc |= run_with_default_tune_hook(test_entry_reasons_follow_the_rate_and_a_width_edit);
+    /* Issue #890: TETRA DMO targets. */
+    rc |= run_with_default_tune_hook(test_tetra_dmo_target_skipped_off_a_tetra_rate);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_start_refused_when_nothing_can_be_visited);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_target_on_air_judged_again);
+    rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
+    rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);

@@ -3670,6 +3670,12 @@ struct dsd_state {
      * frame sync and read by the TETRA decoder for the same burst. Decoder-thread private; never published.
      * The rest of the TETRA decoder state lives in its state extension (src/protocol/tetra/tetra_state.h). */
     dsd_tetra_sync_capture tetra_sync;
+    /* A scan session with a TETRA DMO row holds the TETRA state extension across its other rows (issue #890): while
+     * set, dsd_decode_mode_leave_tetra() turns the decoder off and clears its burst capture and publication but keeps
+     * the extension, so a mixed list's hops neither free nor allocate it. The scan sets it, starts every landing from a
+     * cold TETRA state while it holds it (tetra_scan_visit_reset()), and lets it go when it leaves its rows: a pause,
+     * a stop, a failed start (dsd_engine_scan_tetra_release()). Decoder thread; initState() clears it. */
+    uint8_t tetra_ext_scan_held;
     /* The frame sync's history from its last no-sync exit, for the next call (dsd_frame_sync_history_carry). */
     dsd_frame_sync_history_carry frame_sync_carry;
 

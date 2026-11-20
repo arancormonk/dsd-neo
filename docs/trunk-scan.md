@@ -1039,6 +1039,35 @@ The simplex digital types each scan one conventional channel of a mode DSD-neo a
 `-Y` channel maps take the matching row mode `tetra-dmo` beside `ysf`, `dstar`, `dpmr` and `m17` (see
 [csv-formats.md](csv-formats.md)).
 
+### TETRA DMO targets
+
+TETRA needs more of the receiver than the other simplex modes, so a `tetra-dmo-conventional` target (and a `tetra-dmo`
+row in a `-Y` map) is visited only where its receive chain can run. When it cannot, the scan skips it at every visit,
+says why once in the log and on the status line (`Skipped at every visit: ...`), and tells a typed frequency why it is
+no pick. Checking the list itself (Qt, `--validate-config`) does not look at the radio.
+
+| Needs | Otherwise |
+|-------|-----------|
+| A radio I/Q input DSD-neo tunes: RTL-SDR, rtl_tcp, SoapySDR or Airspy | Skipped for the session. Audio input, a rigctl peer behind audio input, an I/Q replay and an I/Q stream cannot run it. |
+| A TETRA DSP rate: a multiple of 18 kHz from 36 to 144 kHz, normally the 72 kHz DSP bandwidth (`-i rtl:dev:freq:gain:ppm:72`) | Skipped until the rate changes. dsd-neo never changes the bandwidth on its own. While the radio is opening or reopening and has no rate yet, the target waits for it. |
+| The channel filter on (no `DSD_NEO_CHANNEL_LPF=0`) and no `--tetra-uplink` | Skipped. |
+
+- **Checked again on air.** Once a TETRA DMO target is on air, the scan checks the timing the radio applied for it, and
+  checks again at every tick. If the rate changes, or the timing does not match it, the target leaves at once for the
+  next target that can be visited, even under a hold. A radio that is reopening keeps it.
+- **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is
+  a TETRA DMO target at the wrong rate, say, or an NFM target whose width the rate cannot filter), the scan does not
+  start: `--trunk-scan: no target can be visited on this input; target "a" (and 1 more): ...`, with the first target's
+  reason. `--trunk-scan-hold` on a TETRA DMO target that cannot be visited is refused with its reason too.
+- **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO target,
+  the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing shown.
+  So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and kept
+  between rows, so a mixed list costs nothing extra per hop. Pausing the scan or stopping it leaves the decoder cold
+  too; a session you started with `-fT` keeps decoding TETRA after it.
+- **Dwell.** A DMO call sends its synchronisation bursts in frames 6, 12 and 18, about every 340 ms. A dwell shorter
+  than about 400 ms can pass a busy channel without one, so give `tetra-dmo-conventional` targets a `dwell_ms` of 500
+  or more.
+
 ## Skipping silent channels
 
 Skip-silent lets a scan leave a silent conventional channel early (issue #834). When the receiver lands on a
@@ -1304,8 +1333,9 @@ frame even if none of its own checks pass. The frames after it only keep the hol
 - Phase 1 P25 decode captures are available for replay verification; a replay checks decoding, not live target
   rotation or conventional activity holds. P25 conventional target holds have not been verified on air, and
   Phase 2 conventional parking remains untested on air.
-- TETRA is not a target type. A TETRA site is followed on its own with `-fT -T`: its trunking state machine belongs to
-  the session, not to a target, and no target snapshot carries it.
+- Trunked TETRA is not a target type (`tetra-dmo-conventional` scans a direct mode channel). A TETRA site is followed on
+  its own with `-fT -T`: its trunking state machine belongs to the session, not to a target, and no target snapshot
+  carries it.
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.

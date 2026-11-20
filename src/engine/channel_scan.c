@@ -55,6 +55,7 @@
 #include "scan_owner.h"
 #include "scan_quiet.h"
 #include "scan_step_untyped.h"
+#include "scan_tetra_internal.h"
 
 /* One row's session edit (issue #518). */
 typedef struct {
@@ -145,6 +146,11 @@ typedef struct {
        restaged there (dsd_engine_channel_scan_stream_reopened()). */
     uint64_t stop_request;
     uint64_t stop_source_key;
+    /* Whether the list (lcn_list_rev tetra_rows_list) has a typed tetra-dmo row (issue #890 D5), counted once per list:
+       a scan of such a list holds the TETRA state across its rows (dsd_engine_scan_tetra_landing()). */
+    uint64_t tetra_rows_list;
+    int tetra_rows_counted;
+    int has_tetra_rows;
 } channel_scan;
 
 static void
@@ -374,6 +380,21 @@ channel_scan_restage(channel_scan* scan) {
     scan->left_carrier = 1;
 }
 
+/* Whether the list in force has a typed tetra-dmo row (issue #890 D5): counted at the first commit on a list, not per
+   step. */
+static int
+channel_scan_has_tetra_rows(const dsd_state* state, channel_scan* scan) {
+    if (!scan->tetra_rows_counted || scan->tetra_rows_list != state->lcn_list_rev) {
+        scan->tetra_rows_counted = 1;
+        scan->tetra_rows_list = state->lcn_list_rev;
+        scan->has_tetra_rows = 0;
+        for (int row = 0; row < state->lcn_freq_count && !scan->has_tetra_rows; row++) {
+            scan->has_tetra_rows = dsd_channel_mode_get(state, (size_t)row) == DSD_SCAN_MODE_TETRA_DMO;
+        }
+    }
+    return scan->has_tetra_rows;
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -398,6 +419,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->left_carrier = 0;
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
+    /* The TETRA state starts the row cold while the scan holds it, which a list with a tetra-dmo row takes (issue #890
+       D5); an untyped list under -fT keeps the decoding it always kept. */
+    dsd_engine_scan_tetra_landing(opts, state, channel_scan_has_tetra_rows(state, scan));
     if (dsd_scan_mode_enter(opts, state, scan->mode) != 0) {
         scan->retry = 1;
         return -1;
@@ -673,6 +697,30 @@ channel_scan_row_visited_analog(const dsd_state* state, int row) {
            && dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row));
 }
 
+/* Name typed tetra-dmo row @p row (issue #890 D5) when the scan skips it at every visit at @p dsp_rate_hz, counting it
+ * in @p skipped. A rate the radio has not published yet is named once it is, should the row still be skipped then; a
+ * placeholder row is never tuned. Before channel_scan_row_tetra_skip() is defined, so its rule is asked here. */
+static void
+channel_scan_warn_row_tetra(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz,
+                            dsd_engine_scan_skipped* skipped) {
+    if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
+        || dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO) {
+        return;
+    }
+    const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, dsp_rate_hz, 0);
+    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
+    char label[64];
+    char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
+    channel_scan_row_label(state, row, label, sizeof label);
+    dsd_engine_scan_tetra_row_text(opts, why, dsp_rate_hz, 0, text, sizeof text);
+    LOG_WARN("WARNING: %s: %s; it is skipped at every visit%s.\n", label, text,
+             why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    dsd_engine_scan_tetra_row_text(opts, why, dsp_rate_hz, 1, text, sizeof text);
+    dsd_engine_scan_skipped_add(skipped, label, text);
+}
+
 /* The widths the analog rows run, held to @p dsp_rate_hz: every row's, or, after only configured widths changed
  * (@p configured_changed, 1 << dsd_analog_demod per changed kind), those of the rows that run a changed one; any other
  * row was named at this rate already, so it is counted without being named again
@@ -683,6 +731,10 @@ static void
 channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, unsigned configured_changed) {
     dsd_engine_scan_skipped skipped = {0};
     for (int row = 0; row < state->lcn_freq_count; row++) {
+        /* A tetra-dmo row's chain follows the rate, not a configured width (issue #890 D5). */
+        if (configured_changed == 0U) {
+            channel_scan_warn_row_tetra(opts, state, row, dsp_rate_hz, &skipped);
+        }
         if (!channel_scan_row_visited_analog(state, row)) {
             continue;
         }
@@ -1023,6 +1075,21 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
     return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
 }
 
+/* Why the scan skips -Y row @p row at every visit as a TETRA DMO row (issue #890 D5): a typed tetra-dmo row whose chain
+   cannot run at @p dsp_rate_hz (dsd_engine_scan_tetra_row_check(), judged prospectively); OK for any other row, an
+   untyped row under a configured -fT included. */
+static dsd_engine_tetra_row
+channel_scan_row_tetra_skip(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
+    return dsd_channel_mode_get(state, (size_t)row) == DSD_SCAN_MODE_TETRA_DMO
+               ? dsd_engine_scan_tetra_row_check(opts, state, dsp_rate_hz, 0)
+               : DSD_ENGINE_TETRA_ROW_OK;
+}
+
+dsd_scan_entry_reason
+dsd_engine_channel_scan_row_tetra_reason(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
+    return dsd_engine_scan_tetra_entry_reason(channel_scan_row_tetra_skip(opts, state, row, dsp_rate_hz));
+}
+
 int
 dsd_engine_channel_scan_row_width_fits(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
     if (!channel_scan_row_visited_analog(state, row)) {
@@ -1040,7 +1107,8 @@ dsd_engine_channel_scan_row_width_fits(const dsd_opts* opts, const dsd_state* st
 static int
 channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
     return *dsd_state_trunk_lcn_slot_const(state, row) != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
-           && dsd_engine_channel_scan_row_width_fits(opts, state, row, dsp_rate_hz);
+           && dsd_engine_channel_scan_row_width_fits(opts, state, row, dsp_rate_hz)
+           && channel_scan_row_tetra_skip(opts, state, row, dsp_rate_hz) == DSD_ENGINE_TETRA_ROW_OK;
 }
 
 /* A tone policy as it judges (dsd_analog_tone_policy_configure()): a list policy with a list, else none (OFF and an
@@ -1315,6 +1383,21 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
     return result;
 }
 
+/* The staged row ends unlanded, its tune answering @p result (FAILED or DEFERRED), after the receiver moved when
+   @p moved. Returns -1, as channel_scan_start_row() does then. */
+static int
+channel_scan_row_unlanded(dsd_opts* opts, dsd_state* state, channel_scan* scan, dsd_trunk_tune_result result,
+                          int moved) {
+    channel_scan_note_unlanded_move(opts, state, scan, moved);
+    scan->start_failure =
+        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
+    channel_scan_end_calls(opts, state);
+    channel_scan_row_refused(state, scan, result);
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
+    scan->request = 0;
+    return -1;
+}
+
 /* The staged row's tune answered @p result: commit it (OK), wait for it (PENDING), or end it unlanded. Returns as
    channel_scan_start_row() does. */
 static int
@@ -1332,14 +1415,7 @@ channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
     /* A failed second backend may already have moved the first one. Keep the tune
      * ledger's frame gate closed until a subsequent successful request recovers.
      * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
-    channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
-    scan->start_failure =
-        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
-    channel_scan_end_calls(opts, state);
-    channel_scan_row_refused(state, scan, result);
-    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
-    scan->request = 0;
-    return -1;
+    return channel_scan_row_unlanded(opts, state, scan, result, dsd_engine_scan_tune_moved());
 }
 
 static int
@@ -1376,6 +1452,12 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     staging.attempt = scan->retry && scan->row == row ? scan->attempt : 0U;
     channel_scan_staging_swap(scan, &staging);
     channel_scan_staging_clear(&staging);
+    /* A tetra-dmo row whose chain cannot run is skipped at every visit (issue #890 D5): refused before any backend
+       moves, as an analog width the rate cannot filter is (dsd_engine_scan_tune_to_freq()). */
+    if (channel_scan_row_tetra_skip(opts, state, row, dsd_engine_scan_dsp_rate_hz(opts, state))
+        != DSD_ENGINE_TETRA_ROW_OK) {
+        return channel_scan_row_unlanded(opts, state, scan, DSD_TRUNK_TUNE_RESULT_FAILED, 0);
+    }
     return channel_scan_tune_outcome(opts, state, scan, channel_scan_tune_staged(opts, state, scan, &next));
 }
 
@@ -1654,6 +1736,9 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
     const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
     dsd_scan_mode_leave(opts, state);
+    /* With the configured settings back, the TETRA state the rows held goes cold, and goes unless they run TETRA
+       (issue #890). */
+    dsd_engine_scan_tetra_release(opts, state);
     int monitor_request = 0;
     if (active) {
         /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
