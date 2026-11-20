@@ -23679,6 +23679,69 @@ test_scan_quiet_evidence_hook_off_is_one_load(void) {
     return rc;
 }
 
+/* Issue #890: a transmission only its sync words confirmed (D-STAR's two exact resync words, SYNC_ONLY) is no heard
+   content. Through the runtime wrapper it stores nothing for the -Y step, with the setting off or on. To a quiet check
+   it is a verdict still open: a READY quiet result is held while such frames keep coming, never ended as activity, and
+   handed back once their hold runs out. A CRC-proven frame still ends the check. */
+static int
+test_scan_quiet_sync_only_is_no_content(void) {
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        opts.scan_skip_silent = on;
+        const uint32_t content = state_p->scan_y_content_seq;
+        const uint32_t partial = state_p->scan_y_partial_seq;
+        dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+        rc |= qt_expect(on ? "on: SYNC_ONLY stores no -Y content or open verdict"
+                           : "off: SYNC_ONLY stores no -Y content or open verdict",
+                        state_p->scan_y_content_seq == content && state_p->scan_y_partial_seq == partial);
+    }
+    dsd_state_ext_free_all(state_p);
+
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    const uint64_t activity = owner ? owner->activity_seq : 0U;
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    rc |= qt_expect_held(&opts, state_p, "a resync-confirmed frame: held");
+    rc |= qt_expect("a resync-confirmed frame is no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(10U + 420U + 839U);
+    rc |= qt_expect_held(&opts, state_p, "the next one renews the wait: held");
+    rc |= qt_expect("still no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U + 841U);
+    rc |= qt_expect("the frames stopped: the hunt hands back",
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the frames stopped: the tick skips", 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+
+    /* A CRC after the resync-confirmed frames still ends the check: nothing skips. */
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(430U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= qt_expect("a header CRC: no hand-back", dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "a header CRC: the target stays", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
 /* The notes feed the quiet check alone: with a coordinator on a conventional target, PROVEN and PARTIAL content moves
    neither the trunk scan's allowed activity nor the hangtime anchor nor the scan timing, and the target stays. */
 static int
@@ -27147,6 +27210,7 @@ test_scan_quiet_all(void) {
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
     rc |= test_scan_quiet_evidence_hook_off_is_one_load();
+    rc |= run_with_default_tune_hook(test_scan_quiet_sync_only_is_no_content);
     rc |= run_with_default_tune_hook(test_scan_quiet_rejected_sync_keeps_the_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_noise_frames_still_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_pending_verdict_holds_every_skip_point);

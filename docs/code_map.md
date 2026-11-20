@@ -833,9 +833,15 @@ Generated (do not edit/commit):
       evidence (`dmr_confidence_note_evidence()`: a lock, a burst matching it, a voice slot opening) and every data
       burst whose own 16- or 24-bit check proves it or whose RAS signature `-F` accepts (`dmr_dburst_proves_content()`
       in `dmr_data_burst_handler()`, beside the TDMA-carrier proof); NXDN and dPMR at their confirm-end points where a
-      Signal search hears the frame (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`); M17 and D-STAR inside
-      `m17_confirm_note_evidence()` and `dstar_confirm_note_evidence()` (strong evidence and completed weak streaks);
-      a YSF FICH and each DCH whose CRC passed. A P25 word accepted within a tolerance is pending like any sync; its
+      Signal search hears the frame (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`); M17 inside
+      `m17_confirm_note_evidence()` (strong evidence and completed weak streaks: a LICH is Golay-checked) and D-STAR
+      inside `dstar_confirm_note_evidence()` (strong evidence only, a header or D-PRS CRC); a YSF FICH and each DCH
+      whose CRC passed. SYNC_ONLY (issue #890): D-STAR's weak streak once it confirms, two exact resync words with no
+      CRC behind any content (840 ms each superframe). It still plays the audio, but it is no activity and no -Y
+      content. The quiet check takes it as PARTIAL, a wait: no quiet result is handed back while such superframes keep
+      coming, so a real carrier is never skipped sooner than when they counted as activity, and the check can finish
+      once they stop. The runtime wrapper stores nothing for it. A P25 word accepted within a tolerance is pending like
+      any sync; its
       frame's PROVEN note comes only from behind the strict NID or the window verdict, so a noise near-miss whose
       verdict fails ends no check. PARTIAL (a frame whose verdict a later frame completes, with the
       protocol's hold): NXDN's lone weak frame (two frames: 160 ms NXDN48/IDAS/DCR, 80 ms when NXDN96 runs alone),

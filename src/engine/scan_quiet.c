@@ -1830,6 +1830,12 @@ dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_m
     if (!owner) {
         return;
     }
+    /* A transmission its sync words alone confirmed (issue #890) is no activity: the check waits on it as on a verdict
+       still open, so frames that keep coming never let a quiet result be handed back sooner than activity would, and
+       the check completes once they stop. */
+    if (level == DSD_CONTENT_EVIDENCE_SYNC_ONLY) {
+        level = DSD_CONTENT_EVIDENCE_PARTIAL;
+    }
     if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
         /* Activity, once a frame however many of its checks pass; it dominates: nothing is waited for any more. */
         if (!owner->frame_pending || owner->frame_evidence != (uint8_t)DSD_CONTENT_EVIDENCE_PROVEN) {

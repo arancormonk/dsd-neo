@@ -1099,7 +1099,9 @@ turned it on).
   noise often does) no longer keeps a silent channel. A frame whose verdict is still open (one that passed part of its
   checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR frame type that carries
   no check of its own) holds the skip back while it waits; if the check's answer is more than a quarter of a second old
-  by then, the visit keeps its normal timing.
+  by then, the visit keeps its normal timing. A D-STAR transmission proved only by its sync words (two exact resync
+  words in a row, with no header or D-PRS CRC) plays, but it is no checked content: its superframes hold the skip back
+  while they keep coming, and the check can still skip the channel once they stop.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
@@ -1229,8 +1231,9 @@ passed since the radio started listening again after the retune: a retune mutes 
 second on a HackRF at its lowest rates), and a row is never left before it has been heard for `-t`. The Scan Timing
 countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
-such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice and X2-TDMA frames, which have
-no such check, keep the row while they keep coming. TETRA bursts keep it only when their checks passed on something
+such frame, so a late-joined D-STAR call waiting for its header is not cut. A D-STAR call's resync words alone are
+not checked content, so a call whose header and slow-data header never pass their CRC leaves the row once `-t` has
+passed, unless `--scan-voice-only` holds it on its decoded voice. ProVoice and X2-TDMA frames, which have no such check, keep the row while they keep coming. TETRA bursts keep it only when their checks passed on something
 the channel carries: trunked signalling or speech (an idle control channel included, under `-fT`), a direct mode call
 or short data message, an encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks,
 a direct mode burst of which only the first half decoded, and a direct mode channel reservation do not keep it, so a
