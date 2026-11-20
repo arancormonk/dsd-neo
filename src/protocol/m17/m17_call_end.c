@@ -16,8 +16,11 @@
 void
 m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only) {
     dsd_call_snapshot call;
-    if (state == NULL || dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_M17(call.protocol) || (data_only && call.kind != DSD_CALL_KIND_DATA)) {
+    /* An M17 call is handed to the call store ACTIVE or ended: one a fade ended (sync loss, recoverable) is made final
+       by its terminator, without moving its end time, so the station's next transmission is not merged into its row;
+       the store leaves any other ended call as it is. */
+    if (state == NULL || dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_M17(call.protocol)
+        || (data_only && call.kind != DSD_CALL_KIND_DATA)) {
         return;
     }
     if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {

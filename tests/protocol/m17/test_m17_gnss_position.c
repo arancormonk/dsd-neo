@@ -383,7 +383,8 @@ test_ip_stream_end_admits_next_stream(void) {
         write_bits(bits + 96, m17_compose_frame_info(1U, 1U, 0U, 1U, 5U, 0U, 0U), 16U);
         for (int stream = 0; stream < 2; stream++) {
             const uint64_t rev = dsd_position_last_rev();
-            for (uint16_t fn = 1U; fn <= 3U; fn++) {
+            /* A stream starts at frame 0: after EOTX or DISC that is what starts the stream ID again (issue #890). */
+            for (uint16_t fn = 0U; fn <= 2U; fn++) {
                 build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
                 /* Each stream's own voice: a byte-identical frame would be a copy of the last stream's, no new one. */
                 DSD_MEMSET(frame + 36, 0x40 + stream, 16U);
@@ -1065,7 +1066,9 @@ test_ip_duplicate_frame_is_a_repeat(void) {
     expect_int("a number going back is another stream", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 1);
     expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
     expect_int("a copy of the EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
-    expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 1);
+    /* After the EOT the stream ID starts again only at frame 0 (issue #890): any other frame of it is a late copy. */
+    expect_int("a late frame after the EOT is no new stream", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 0);
+    expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 0U, 0x57U, 0), 1);
     rig_close(&r);
 }
 

@@ -20,15 +20,16 @@ m17_confirm_reset_signature(dsd_state* state) {
     if (!state) {
         return;
     }
-    state->m17_signature_advertised = 0U;
     DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature_fold, 0, sizeof(state->m17_signature_fold));
     DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
     state->m17_signature_received_mask = 0U;
     state->m17_signature_complete = 0U;
     state->m17_signature_bad_sequence = 0U;
     state->m17_signature_verification_status = 0U;
-    state->m17_signature_fn_seen = 0U;
-    state->m17_signature_last_fn = 0U;
+    state->m17_signature_frames = 0U;
+    state->m17_signature_next_fn = 0U;
+    state->m17_signature_window = 0U;
 }
 
 void
@@ -37,6 +38,7 @@ m17_confirm_reset_link(dsd_state* state) {
         return;
     }
     state->m17_lsf_checked = 0U;
+    state->m17_signature_advertised = 0U;
     state->m17_ip_stream = DSD_M17_IP_STREAM_NONE;
     state->m17_ip_stream_sid = 0U;
     m17_confirm_reset_signature(state);

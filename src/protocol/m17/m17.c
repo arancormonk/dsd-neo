@@ -1258,32 +1258,39 @@ M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const
     return 1;
 }
 
-/* Where a stream frame's payload came from, for the stream signature (M17 spec 2.0.11, Digital Signatures). */
-typedef enum {
-    M17_STREAM_FROM_RF = 0,            /* an RF stream frame: read once, in order */
-    M17_STREAM_FROM_NET_CHECKED = 1,   /* an IP stream frame whose CRC passed: a network may deliver it twice */
-    M17_STREAM_FROM_NET_UNCHECKED = 2, /* an IP stream frame whose CRC failed: nothing in it is the stream's */
-} m17_stream_source;
-
-/* Whether a stream frame's payload enters the digest: every RF frame before the signature frames; an IP frame only when
-   its CRC passed and its frame number is past the last one counted, so each valid frame enters once (a copy that
-   arrives again, or late, is not counted twice). The digest is kept whether or not the signature is advertised yet: a
-   transmission whose LSF frame was lost learns it from a LICH rebuild later, and the digest covers the stream from
-   its start. */
+/* Count a stream frame's payload into the digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams): every
+   frame before the signature frames, RF or a network frame whose CRC passed, each frame number once and in its place
+   whatever order it arrives in (m17_signature_digest_fold()). A frame number already counted (a datagram a network
+   delivers twice, or a late copy) is not counted again. A frame more than 64 frames ahead moves the window on, and the
+   frames it passes over are never counted: the digest is then not the transmitter's and the signature fails, as it
+   does for any frame lost. The digest is kept whether or not the signature is advertised yet: a transmission whose LSF
+   frame was lost learns it from a LICH rebuild later, and the digest covers the stream from its start. */
 static void
-M17updateSignatureDigest(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number,
-                         m17_stream_source source) {
-    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0 || source == M17_STREAM_FROM_NET_UNCHECKED) {
+M17updateSignatureDigest(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number) {
+    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0 || payload_frame_number < state->m17_signature_next_fn) {
         return;
     }
-    if (source == M17_STREAM_FROM_NET_CHECKED) {
-        if (state->m17_signature_fn_seen != 0U && payload_frame_number <= state->m17_signature_last_fn) {
-            return;
-        }
-        state->m17_signature_fn_seen = 1U;
-        state->m17_signature_last_fn = payload_frame_number;
+    uint32_t offset = (uint32_t)payload_frame_number - state->m17_signature_next_fn;
+    if (offset >= 64U) {
+        const uint32_t shift = offset - 63U;
+        state->m17_signature_window = shift >= 64U ? 0U : state->m17_signature_window >> shift;
+        state->m17_signature_next_fn = (uint16_t)(state->m17_signature_next_fn + shift);
+        offset = 63U;
     }
-    m17_signature_digest_update(state->m17_signature_digest, payload_bytes);
+    const uint64_t bit = (uint64_t)1U << offset;
+    if ((state->m17_signature_window & bit) != 0U) {
+        return;
+    }
+    state->m17_signature_window |= bit;
+    while ((state->m17_signature_window & 1U) != 0U) {
+        state->m17_signature_window >>= 1U;
+        state->m17_signature_next_fn++;
+    }
+    m17_signature_digest_fold(state->m17_signature_fold, payload_frame_number, payload_bytes);
+    if ((uint32_t)payload_frame_number + 1U > state->m17_signature_frames) {
+        state->m17_signature_frames = (uint16_t)(payload_frame_number + 1U);
+    }
+    m17_signature_digest_from_fold(state->m17_signature_fold, state->m17_signature_frames, state->m17_signature_digest);
 }
 
 static void
@@ -1298,12 +1305,13 @@ M17processStreamPayloadBits(const dsd_opts* opts, dsd_state* state, const uint8_
     }
 }
 
+/* @p checked: the frame is checked content (m17_stream_frame_checked()). */
 static void
-m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
+m17_mark_stream_media(const dsd_opts* opts, dsd_state* state, int checked) {
     if (state->m17_str_dt != 2U && state->m17_str_dt != 3U) {
         return;
     }
-    if (!m17_confirm_is_confirmed(state)) {
+    if (!checked) {
         /* Nothing in this transmission has cleared a CRC yet, so there is no reason to believe
          * the callsign or the audio behind it. Opening a call here is what put invented M17
          * identity on screen under AUTO (#399). */
@@ -1325,37 +1333,24 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
 }
 
 /**
- * @brief Whether a stream frame's payload may be turned into audio.
+ * @brief Whether a stream frame is checked content, which alone marks media and plays (issue #890).
  *
  * Over the air, held behind the same evidence as the call record: an unconfirmed stream is an
  * alternating run that reached the LICH, and playing it is the audible half of the false
- * detection (#399). The UDP/IP path does not arrive by sync search and is not gated, and data
- * and reserved stream types still print.
+ * detection (#399). A network frame reaches here only when its own CRC passed
+ * (m17_ip_handle_stream_frame()), which is its check. Data and reserved stream types still print.
  */
 static int
-m17_stream_payload_may_play(const dsd_state* state, int update_media) {
-    if (update_media == 0 || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
-        return 1;
-    }
-    return m17_confirm_is_confirmed(state);
-}
-
-/* Whether a stream frame is a signature frame, consumed as one: its chunk collected, except from an IP frame whose CRC
-   failed, which would replace a good chunk and is no chunk, and no voice either (its payload is signature bits). */
-static int
-m17_stream_signature_frame_consumed(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
-                                    uint16_t frame_number, m17_stream_source source) {
-    if (source == M17_STREAM_FROM_NET_UNCHECKED) {
-        return m17_is_signature_frame(state, frame_number);
-    }
-    return M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0;
+m17_stream_frame_checked(const dsd_state* state, int network) {
+    return network != 0 || m17_confirm_is_confirmed(state);
 }
 
 /* A late copy of an ended network stream's frame (m17_ip_handle_stream_frame()): only a signature frame's chunk is
-   taken from it (the collector keeps the verdict it already reached), nothing else. */
+   taken from it, and only while the set is incomplete (a chunk that arrived after the stream's EOT completes it and
+   runs the verification; a complete set and its verdict stay), nothing else. */
 static void
 m17_collect_late_signature_chunk(dsd_state* state, const uint8_t* payload, uint16_t frame_number) {
-    if (!m17_is_signature_frame(state, frame_number)) {
+    if (state->m17_signature_complete != 0U || !m17_is_signature_frame(state, frame_number)) {
         return;
     }
     uint8_t payload_bytes[M17_SIGNATURE_DIGEST_BYTES];
@@ -1368,10 +1363,10 @@ m17_collect_late_signature_chunk(dsd_state* state, const uint8_t* payload, uint1
     (void)M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number);
 }
 
+/* @p network: an IP stream frame (whose CRC passed); 0 for RF. */
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
-                                     uint16_t frame_number, uint8_t* processed_payload, int update_media,
-                                     m17_stream_source source) {
+                                     uint16_t frame_number, uint8_t* processed_payload, int network) {
     if (opts == NULL || state == NULL || payload == NULL || processed_payload == NULL) {
         return M17_STREAM_INVALID;
     }
@@ -1386,12 +1381,12 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
                            sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
-    if (m17_stream_signature_frame_consumed(state, payload_bytes, trellis_buf, frame_number, source)) {
+    if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
         return M17_STREAM_SIGNATURE_CONSUMED;
     }
 
     const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
-    M17updateSignatureDigest(state, payload_bytes, payload_frame_number, source);
+    M17updateSignatureDigest(state, payload_bytes, payload_frame_number);
 
     if (!m17_can_matches_state(state)) {
         DSD_FPRINTF(stderr, " CAN Filtered;");
@@ -1406,10 +1401,9 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
 
     const uint8_t old_payload_decrypted = state->m17_payload_decrypted;
     state->m17_payload_decrypted = (state->m17_enc != 0U) ? 1U : 0U;
-    if (update_media != 0) {
-        m17_mark_stream_media(opts, state);
-    }
-    if (m17_stream_payload_may_play(state, update_media)) {
+    const int checked = m17_stream_frame_checked(state, network);
+    m17_mark_stream_media(opts, state, checked);
+    if (checked || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
         M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
     }
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
@@ -1424,8 +1418,7 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
 int
 m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                             uint8_t* processed_payload) {
-    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 1,
-                                                M17_STREAM_FROM_RF);
+    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 0);
 }
 
 /* Whether a parsed LSF's fields can be used at all (the reasons it cannot are logged). */
@@ -2692,12 +2685,7 @@ m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst,
     state->m17_enc_st = 0;
     state->m17_payload_decrypted = 0;
     state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
-    state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
+    m17_confirm_reset_signature(state);
     for (int i = 0; i < 16; i++) {
         state->m17_meta[i] = 0;
     }
@@ -4088,6 +4076,51 @@ m17_ip_copy_lsf_from_bits(dsd_state* state, const uint8_t* ip_bits) {
     }
 }
 
+/*
+ * A network stream frame whose CRC passed (M17 IP stream frame: stream ID, LSF, frame number with the EOT bit, payload).
+ * The stream's lifecycle is kept per stream ID, apart from its digest: a new stream ID opens a stream (and with it a new
+ * link setup and digest); after a stream's EOT, EOTX or DISC, a frame of its stream ID with frame number 0 starts it
+ * again (a new transmission). Any other frame of the ended stream is a late copy of it (its last frame heard again from
+ * a slower network path, or a reordered one): it does nothing but give a still incomplete signature set its chunk, so
+ * it opens no call, plays nothing and keeps the verdict, and nothing of the state is touched for it (no carrier, sync
+ * type, staged LSF or AES counter: the collector needs none of them). Accepted limit: a copy of a one-frame stream's
+ * frame 0 arriving after its EOT is taken for a restart and may open a second call row.
+ */
+static void
+m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, const uint8_t* ip_bits,
+                         const uint8_t* payload) {
+    const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
+    const uint16_t fn = (uint16_t)convert_bits_into_output(&ip_bits[273], 15);
+    const uint8_t eot = ip_bits[272];
+    const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
+    const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
+    const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
+    if (ended && same_sid && fn != 0U) {
+        m17_collect_late_signature_chunk(state, payload, stream_frame_number);
+        return;
+    }
+    if (!same_sid || ended) {
+        m17_confirm_reset_link(state);
+        state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
+        state->m17_ip_stream_sid = sid;
+    }
+    state->carrier = 1;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    m17_ip_copy_lsf_from_bits(state, ip_bits);
+    m17_store_current_aes_counter(state, stream_frame_number);
+    const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
+    (void)M17decodeLSF(opts, state, 1, &carrier);
+    uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
+    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, 1);
+    // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
+    if (eot != 0U) {
+        m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
+        /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until then. */
+        m17_gnss_tx_end(state);
+        state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
+    }
+}
+
 static void
 m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame) {
     uint8_t ip_bits[462];
@@ -4099,7 +4132,6 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
     const uint16_t fn = (uint16_t)convert_bits_into_output(&ip_bits[273], 15);
     const uint8_t eot = ip_bits[272];
-    const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
     DSD_FPRINTF(stderr, "\n M17 IP Stream: %04X; FN: %05d;", sid, fn);
     if (eot) {
         DSD_FPRINTF(stderr, " EOT;");
@@ -4111,50 +4143,11 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
-    const int crc_valid = crc_ext == crc_cmp;
-    /* Every frame of a network stream carries its LSF, and none of them begins the transmission: only another stream
-       does, and with it a new link setup and digest. That is a new stream ID, or the same one after its stream ended
-       (EOT, EOTX, DISC) starting again below the last frame number counted (frame 0 for a new transmission). A frame
-       of the ended stream at or past that number is a late copy of it (its last frame heard again, from a slower
-       network path): it is that stream's, and does nothing but give the signature collector its chunk, so it opens
-       no call, plays nothing and keeps the verdict; nothing of the state is touched for it before this either (no
-       carrier, sync type, staged LSF or AES counter: the collector needs none of them). Accepted limits: a reordered
-       older frame of the ended stream, below the last number counted, is taken for a restart; and a stream of one
-       frame (frame 0 with its EOT) restarting at frame 0 under the same ID cannot be told from that frame repeated,
-       so it is taken for the repeat. */
-    const int same_sid = state->m17_ip_stream != DSD_M17_IP_STREAM_NONE && state->m17_ip_stream_sid == sid;
-    const int ended = state->m17_ip_stream == DSD_M17_IP_STREAM_ENDED;
-    const int late_copy =
-        crc_valid && ended && same_sid && state->m17_signature_fn_seen != 0U && fn >= state->m17_signature_last_fn;
-    if (late_copy) {
-        m17_collect_late_signature_chunk(state, payload, stream_frame_number);
-    } else {
-        state->carrier = 1;
-        state->synctype = DSD_SYNC_M17_STR_POS;
-        m17_ip_copy_lsf_from_bits(state, ip_bits);
-        m17_store_current_aes_counter(state, stream_frame_number);
-        if (crc_valid) {
-            if (!same_sid || ended) {
-                m17_confirm_reset_link(state);
-                state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
-                state->m17_ip_stream_sid = sid;
-            }
-            const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
-            (void)M17decodeLSF(opts, state, 1, &carrier);
-        }
-        uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
-        (void)m17_dispatch_stream_payload_internal(
-            opts, state, payload, stream_frame_number, processed_payload, crc_valid,
-            crc_valid ? M17_STREAM_FROM_NET_CHECKED : M17_STREAM_FROM_NET_UNCHECKED);
-        // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
-        if (crc_valid && eot != 0U) {
-            m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
-            /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until
-               then. */
-            m17_gnss_tx_end(state);
-            state->m17_ip_stream = DSD_M17_IP_STREAM_ENDED;
-        }
+    if (crc_ext == crc_cmp) {
+        m17_ip_take_stream_frame(opts, state, ip_frame, ip_bits, payload);
     }
+    /* An IP frame whose CRC failed is nothing of the stream's: no stream state, no LSF, no media, no audio, no
+       signature chunk (issue #890). */
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n IP:");

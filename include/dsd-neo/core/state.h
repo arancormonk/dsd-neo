@@ -3266,13 +3266,18 @@ struct dsd_state {
      * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
      *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
      *   despite a failed CRC is then shown and never replaces them.
-     * m17_signature_fn_seen / m17_signature_last_fn: a network stream frame entered the digest, and the last one's frame
-     *   number: each valid IP frame enters it once, in order (a copy that arrives again is not counted twice).
-     * m17_ip_stream / m17_ip_stream_sid: the network stream the signature state is the transmission of
+     * m17_signature_fold / _frames / _next_fn / _window: the digest in any frame order (m17_signature_digest_fold()):
+     *   the fold of the frames counted, the frame count it is read at (the highest frame number counted, plus one),
+     *   the lowest frame number not yet counted, and which of the 64 frames from there were (bit i: _next_fn + i).
+     *   Each frame number is counted once, so a datagram a network delivers twice or out of order counts once, in its
+     *   place; m17_signature_digest is the digest read from the fold after each frame.
+     * m17_ip_stream / m17_ip_stream_sid: the network stream's lifecycle, apart from its digest
      *   (DSD_M17_IP_STREAM_NONE, _OPEN, or _ENDED by its EOT, EOTX or DISC, its verdict kept until another stream). */
     uint8_t m17_lsf_checked;
-    uint8_t m17_signature_fn_seen;
-    uint16_t m17_signature_last_fn;
+    uint8_t m17_signature_fold[16];
+    uint16_t m17_signature_frames;
+    uint16_t m17_signature_next_fn;
+    uint64_t m17_signature_window;
     uint8_t m17_ip_stream;
     uint16_t m17_ip_stream_sid;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled

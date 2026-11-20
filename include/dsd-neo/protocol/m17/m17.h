@@ -40,8 +40,8 @@ int m17_confirm_is_confirmed(const dsd_state* state);
  * @brief End the slot's call for an M17 end (the EOT marker, a stream frame's EOS bit, an IP stream's EOT, EOTX or
  * DISC, a packet's end) with @p reason, and sync its event.
  *
- * Only an ACTIVE M17 call ends, and with @p data_only only a data one: another protocol's call still open on the slot
- * is no transmission this end belongs to.
+ * Only an M17 call ends, and with @p data_only only a data one: another protocol's call on the slot is no transmission
+ * this end belongs to. An M17 call a fade already ended (recoverable) is made final by it (dsd_call_state_end_ex()).
  */
 void m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only);
 int encodeM17STR(dsd_opts* opts, dsd_state* state);

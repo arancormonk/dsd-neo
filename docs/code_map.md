@@ -13882,21 +13882,28 @@ Private per-protocol modules worth knowing about:
   LSF whose CRC passed set the live CAN (0 included), encryption, stream type and IV for this transmission, and while it
   stands a relaxed (`-F`) LSF is shown and replaces none of them. The digest and the signature chunks are the
   transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten only
-  at a boundary: an LSF frame (a checked one also replaces the link setup), an EOT, `noCarrier()`, a carrier boundary,
-  or another IP stream (a new stream ID, or any after the last one's EOT, EOTX or DISC). Every RF stream frame before
-  the signature frames enters the digest, advertised or not yet (a rebuild can advertise it late); an IP frame enters it
-  only when its CRC passed and its frame number is past the last one counted, and an IP frame whose CRC failed is never
-  a signature chunk (`M17updateSignatureDigest()`; `M17_STATE_DISPATCH`
-  `test_signed_rf_stream_verifies_across_lich_rebuilds`, `test_signed_ip_stream_verifies_with_duplicates`). A stream
-  frame's EOS bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17
-  one (`m17_end_call()`, `m17_call_end.c`, public in `<dsd-neo/protocol/m17/m17.h>`). After an IP stream's end a frame
-  of the same stream ID at or past the last frame number counted is that stream's late copy: it only gives the signature
-  collector its chunk (no LSF decode, media, call row or audio; its verdict stays), and one below it starts another
-  transmission (accepted limits: a reordered older frame counts as a restart, and a one-frame stream restarting at frame
-  0 under the same ID counts as that frame repeated); a CRC-failed IP frame at a signature frame number is consumed,
-  neither a chunk nor voice. The EOT also puts the slicer levels back where a lost carrier leaves them (`max`/`min`
-  +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer symbols of one sign to one of the other, and the
-  next transmission's hunt sliced and timed its preamble against the skewed centre it left (issue #834).
+  at a boundary: an LSF frame, an EOT, `noCarrier()`, a carrier boundary, or another IP stream. The signature
+  advertisement is the checked link setup's: a repeat LSF frame whose CRC failed resets the digest but keeps it. The
+  digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR each payload in, rotate left a byte, frame by
+  frame from frame 0) is order-dependent, so it is kept as a fold (`m17_signature_digest_fold()`: each payload rotated
+  right by its frame number, XORed in; the digest is the fold rotated left by the frame count) and every frame before
+  the signature frames, RF or a checked IP frame, is counted once at its own frame number whatever order it arrives in
+  (`M17updateSignatureDigest()`, a 64-frame window of frame numbers counted), advertised or not yet (a rebuild can
+  advertise it late). The signature set completes, and is verified, on whichever chunk fills it
+  (`m17_signature_collector_push()`). An IP stream frame whose CRC failed is nothing: no stream state, LSF, media, audio
+  or signature chunk. A checked IP frame is checked content of its own (its CRC) and plays and marks media without RF
+  confirmation (`m17_stream_frame_checked()`). The IP stream's lifecycle is kept per stream ID apart from the digest
+  (`m17_ip_take_stream_frame()`, `dsd_state::m17_ip_stream`): a new stream ID opens a stream; after its EOT, EOTX or
+  DISC, frame 0 of the same ID starts it again, and any other frame of it is a late copy that only gives a still
+  incomplete signature set its chunk (no LSF decode, media, call row or audio; the verdict stays). Accepted limit: a
+  copy of a one-frame stream's frame 0 after its EOT is taken for a restart and may open a second call row
+  (`M17_STATE_DISPATCH` `test_signed_ip_stream_verifies_reordered`, `test_ip_stream_id_reused_after_one_frame_call`,
+  `test_ip_late_copy_after_joining_on_signature_frames`, `test_ip_checked_and_crc_failed_voice`). A stream frame's EOS
+  bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an
+  M17 call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in
+  `<dsd-neo/protocol/m17/m17.h>`). The EOT also puts the slicer levels back where a lost carrier leaves them
+  (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer symbols of one sign to one of the
+  other, and the next transmission's hunt sliced and timed its preamble against the skewed centre it left (issue #834).
 - M17 end-of-transmission marker (M17 spec 2.0.11: 192 symbols of 0x555D, +3 six times, -3, +3). The hunt takes it
   (`frame_sync_try_m17_eot()`) only behind an M17 frame of a transmission with evidence and only on
   `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within

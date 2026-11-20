@@ -402,6 +402,31 @@ test_bert_dispatch(void) {
     assert(brt_calls == 1);
 }
 
+/* An M17 call a fade ended (sync loss) is finalized by the EOT marker heard after it: the end becomes a terminator. */
+static void
+test_eot_finalizes_a_sync_loss_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_M17_STR_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 1U,
+        .ota_source_id = 2U,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    set_air("");
+    state.synctype = DSD_SYNC_M17_EOT_POS;
+    (void)dsd_dispatch_handle_m17(&opts, &state);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == DSD_CALL_END_TERMINATOR);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -411,6 +436,7 @@ main(void) {
     test_payload_dispatch();
     test_eot_dispatch();
     test_eot_ends_only_m17_call();
+    test_eot_finalizes_a_sync_loss_end();
     test_bert_dispatch();
     printf("M17_SYNC_DISPATCH: OK\n");
     return 0;
