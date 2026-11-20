@@ -271,6 +271,29 @@ dsd_input_backlog_opening(dsd_socket_t sock, dsd_input_socket_arrived_fn arrived
     backlog_unlock();
 }
 
+/* @p seq, the attachment a mark was measured on, as the queue that went on from it (attachment @p to, after the
+   opening's connection @p from) while that queue is attachment @p now: a mark measured on a connection that was
+   opening stands on the queue that attached to it. Any other stays as it is. */
+static uint64_t
+backlog_continued_seq(const dsd_input_cut* cut, uint64_t from, uint64_t to, uint64_t now) {
+    return (cut->measured && to != 0U && cut->seq == from && now == to) ? now : cut->seq;
+}
+
+/* A post marked on an input since replaced or stopped (a reconnect, a switch): the input read now holds nothing of the
+   channel it left, and the decoder may have read the new channel already. Refused, so it drops nothing and moves no
+   timeline. One marked on the input an attach still in flight replaced is kept for that attach's failed start, which
+   makes that input the one read again (dsd_input_backlog_attach_failed()): a mark measured on the connection that
+   input's queue went on from stands on that queue, as on the attached one. */
+static void
+backlog_keep_for_failed_start_locked(dsd_input_cut held) {
+    held.seq = backlog_continued_seq(&held, s_undo_continued_from, s_undo_continued_to, s_undo_prior_seq);
+    if (s_undo_held && s_seq == s_undo_seq && held.seq == s_undo_prior_seq
+        && (!s_undo_post_held || held.order > s_undo_post.order)) {
+        s_undo_post = held;
+        s_undo_post_held = 1;
+    }
+}
+
 void
 dsd_input_backlog_post(const dsd_input_cut* cut) {
     if (cut == NULL) {
@@ -281,24 +304,9 @@ dsd_input_backlog_post(const dsd_input_cut* cut) {
     }
     dsd_input_cut held = *cut;
     /* Marked on a connection that was opening, whose queue has attached since and goes on from its count. */
-    if (held.measured && s_continued_to != 0U && held.seq == s_continued_from && s_seq == s_continued_to) {
-        held.seq = s_seq;
-    }
+    held.seq = backlog_continued_seq(&held, s_continued_from, s_continued_to, s_seq);
     if (held.seq != s_seq) {
-        /* Marked on an input since replaced or stopped (a reconnect, a switch): the input read now holds nothing of the
-           channel it left, and the decoder may have read the new channel already. Refused, so it drops nothing and moves
-           no timeline. One marked on the input an attach still in flight replaced is kept for that attach's failed
-           start, which makes that input the one read again (dsd_input_backlog_attach_failed()): a mark measured on
-           the connection that input's queue went on from stands on that queue, as above. */
-        if (held.measured && s_undo_continued_to != 0U && held.seq == s_undo_continued_from
-            && s_undo_prior_seq == s_undo_continued_to) {
-            held.seq = s_undo_prior_seq;
-        }
-        if (s_undo_held && s_seq == s_undo_seq && held.seq == s_undo_prior_seq
-            && (!s_undo_post_held || held.order > s_undo_post.order)) {
-            s_undo_post = held;
-            s_undo_post_held = 1;
-        }
+        backlog_keep_for_failed_start_locked(held);
         backlog_unlock();
         return;
     }
