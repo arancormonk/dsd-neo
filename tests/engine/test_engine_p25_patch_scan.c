@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "checked_media_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -89,18 +90,6 @@ seed_patch(dsd_state* st, uint16_t sg, const uint16_t* members, int count) {
         st->p25_patch_wgid[idx][k] = members[k];
     }
     dsd_p25_patch_touch_members(st, idx);
-}
-
-/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
-   both for a good frame; the voice-only scan credits only the checked media. */
-static int
-decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
-    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
-    dsd_call_snapshot call;
-    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
-        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
-    }
-    return rc;
 }
 
 /* A P25 Phase 1 group voice call on slot 0 to @p ota, judged on @p policy, with 0.5 s of voice from @p t. */

@@ -123,6 +123,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
+#include "checked_media_test_support.h"
 #include "engine_hooks_install.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -6356,18 +6357,6 @@ static void
 seed_visit_anchor(dsd_state* state, double anchor_m) {
     dsd_scan_voice_gate_note_retune(state, anchor_m);
     state->scan_visit_roll_seen = state->lcn_freq_roll;
-}
-
-/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
-   both for a good frame; the voice-only scan credits only the checked media. */
-static int
-decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
-    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
-    dsd_call_snapshot call;
-    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
-        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
-    }
-    return rc;
 }
 
 /*

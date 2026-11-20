@@ -1496,6 +1496,7 @@ run_vd_type2_frame_info(int refused) {
 
     g_ysf_info_count = 0;
     g_ysf_info_bad_calls = 0;
+    begin_test_ysf_call(&state);
     dsd_voice_chain_set_observer_for_test(ysf_info_observe, NULL);
     processYSF(&opts, &state);
     dsd_voice_chain_set_observer_for_test(NULL, NULL);
@@ -1511,6 +1512,16 @@ run_vd_type2_frame_info(int refused) {
         assert(g_ysf_info_seen[i].decodable == 1U);
         assert(g_ysf_info_seen[i].admitted == (refused ? 0U : 1U));
         assert(g_ysf_info_seen[i].talkspurt == 0U);
+    }
+    /* Issue #890: only the speech mbelib-neo returned is the call's checked media, the scan's voice credit, and only
+       for admitted traffic; the tone, the repeat, the mute and the failed frame are none, though they marked media. */
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.media_updated_m > 0.0);
+    if (refused) {
+        assert(call.checked_media_updated_m <= 0.0);
+    } else {
+        assert(call.checked_media_started_m > 0.0);
+        assert(fabs(call.checked_media_updated_m - call.checked_media_started_m) < 1e-9);
     }
     dsd_state_ext_free_all(&state);
 }

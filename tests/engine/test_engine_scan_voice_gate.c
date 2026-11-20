@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "checked_media_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -333,18 +334,6 @@ probe_voice(const gate_fixture* fix) {
     CHECK("probe succeeds", rc >= 0);
     CHECK("probe status matches retained media", rc == (result.retained_media_m >= 0.0 ? 1 : 0));
     return result;
-}
-
-/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
-   both for a good frame; the voice-only scan credits only the checked media. */
-static int
-decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
-    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
-    dsd_call_snapshot call;
-    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
-        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
-    }
-    return rc;
 }
 
 /* Open a voice epoch on one slot at time t with the given identity/crypto, then

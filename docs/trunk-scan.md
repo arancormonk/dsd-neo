@@ -1241,12 +1241,14 @@ second on a HackRF at its lowest rates), and a row is never left before it has b
 countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
 such frame, so a late-joined D-STAR call waiting for its header is not cut. A D-STAR call's resync words alone are
-not checked content, so a call whose header and slow-data header never pass their CRC leaves the row once `-t` has
-passed, unless `--scan-voice-only` holds it on its decoded voice. ProVoice and X2-TDMA frames, which have no such check, keep the row while they keep coming. TETRA bursts keep it only when their checks passed on something
-the channel carries: trunked signalling or speech (an idle control channel included, under `-fT`), a direct mode call
-or short data message, an encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks,
-a direct mode burst of which only the first half decoded, and a direct mode channel reservation do not keep it, so a
-reserved channel with no talker is left once `-t` has run out. DMR, P25, ProVoice and EDACS syncs restart the hangtime
+not checked content: the row leaves once `-t` has passed since the call's last header, slow-data header or D-PRS record
+whose CRC passed (since the landing when none did), however long its superframes keep coming, unless
+`--scan-voice-only` holds it on its decoded voice. ProVoice and X2-TDMA frames, which have no such check, keep the row
+while they keep coming. TETRA bursts keep it only when their checks passed on something the channel carries: trunked
+signalling or speech (an idle control channel included, under `-fT`), a direct mode call or short data message, an
+encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks, a direct mode burst of which
+only the first half decoded, and a direct mode channel reservation do not keep it, so a reserved channel with no talker
+is left once `-t` has run out. DMR, P25, ProVoice and EDACS syncs restart the hangtime
 themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
 check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
 control-channel checks. The one exception is the start of an NXDN48 call whose first frame passed a strong check on

@@ -826,8 +826,10 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
             state->errs2 = result.total_errors;
             mbe_formatProcessResult(state->err_str, sizeof(state->err_str), &result);
         }
-        /* What mbelib-neo made of the block, not the mark before it, is the scan's voice credit (issue #890). */
-        if (dsd_voice_media_of_mbe(ret, result.flags) == DSD_VOICE_MEDIA_SPEECH) {
+        /* What mbelib-neo made of the block, not the mark before it, is the scan's voice credit (issue #890), for
+           traffic the receive policy admits. */
+        if (dsd_voice_media_of_mbe(ret, result.flags) == DSD_VOICE_MEDIA_SPEECH
+            && dsd_receive_current_allows(opts, state, 0)) {
             (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_YSF_POS, 0.0);
         }
 

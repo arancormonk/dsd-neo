@@ -82,6 +82,8 @@ dstar_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, dstar_eviden
     }
     if (state->dstar_confirm_weak_streak >= DSTAR_CONFIRM_WEAK_OBSERVES) {
         state->dstar_confirmed = 1;
+        /* A Signal search still names the detection D-STAR from the streak: identifying a protocol on a frequency is
+           not a scan hold, and the search's own evidence rules decide what it keeps. */
         dsd_signal_search_note_evidence(state, "D-STAR", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
         /* Two exact resync words confirm the audio, but no CRC checked any content (issue #890): to a scan this is a
