@@ -76,6 +76,16 @@ int dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_s
                             time_t opened, time_t started, int* api_queued);
 
 /**
+ * As dsd_rdio_export_call_ex(), with @p allow_fallback (issue #888): when nonzero, a digital call with no talkgroup
+ * number is exported under dsd_rdio_call_talkgroup()'s fallback number, labelled by its service name, else its channel
+ * label, else "<protocol> <access code> <MHz> MHz" with the unknown parts left out. The earlier entries pass 0, so they
+ * never give a digital call a synthetic number. A call with no number is not exported (-1, no sidecar): the caller asks
+ * dsd_rdio_call_talkgroup() with the same @p allow_fallback first to skip such a call quietly.
+ */
+int dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                                  time_t opened, time_t started, int allow_fallback, int* api_queued);
+
+/**
  * When a per-call recording began, the one rule the rdio-scanner sidecar's start_time and the recording journal
  * (issue #708) share: @p started when it is above 0, the decode time of the recording's first sample as its recorder
  * stamped it (the NFM call, issue #668); else the row's event_start_time, or @p opened (the decode time the WAV was
@@ -92,6 +102,18 @@ time_t dsd_rdio_recording_start(const Event_History* event, time_t opened, time_
  * Worked out at export time only, never stored on the row: Event_History::target_id stays 0 for analog calls.
  */
 uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event);
+
+/**
+ * The rdio-scanner talkgroup a call is exported under, 0 when it has none (it is then not exported); NULL @p event
+ * gives 0. Worked out at export time only, never stored on the row: history, journal, file name and policy keep the
+ * decoded target.
+ * - An analog row (DSD_SYNC_ANALOG): dsd_rdio_analog_talkgroup(), whatever @p allow_fallback says.
+ * - A digital row: its target_id when above 0, as decoded (an ID above 2147483647 included). Else, only when
+ *   @p allow_fallback is nonzero and the row's category is DSD_EVENT_CATEGORY_VOICE (issue #888 D2, D7): the frequency
+ *   it was heard on in whole kHz, rounded down, when that is 1..2147483647 (signed 32-bit, as rdio-scanner's databases
+ *   store it), else @p opts->rdio_unknown_talkgroup when above 0 (audio input), else 0.
+ */
+uint32_t dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int allow_fallback);
 
 /**
  * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p

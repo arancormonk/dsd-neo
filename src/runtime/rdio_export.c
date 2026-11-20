@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -795,7 +796,7 @@ typedef struct {
     int emergency;
     const char* talkgroup_tag;
     const char* short_name;
-    char analog_tag[64]; /* an analog call's frequency tag, when talkgroup_tag names it */
+    char generated_tag[64]; /* an analog call's frequency tag, or a fallback call's generated one (issue #888 D3) */
 } dsd_rdio_meta_fields;
 
 /* The Hz the sidecar's freq and freqList carry (issue #888 B5, B13, D8): from 1 MHz (included) up to what the signed
@@ -866,6 +867,35 @@ dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event) {
     return (opts && opts->rdio_analog_talkgroup > 0) ? (uint32_t)opts->rdio_analog_talkgroup : 0U;
 }
 
+/* A digital row's frequency in whole kHz, rounded down, when that fits rdio-scanner's signed 32-bit talkgroup columns
+   (1..2147483647, issue #888 D2), else 0. The analog rule keeps its own range (dsd_rdio_analog_talkgroup()). */
+static uint32_t
+dsd_rdio_digital_khz(int64_t freq_hz) {
+    const int64_t khz = freq_hz / 1000;
+    return (khz > 0 && khz <= (int64_t)INT32_MAX) ? (uint32_t)khz : 0U;
+}
+
+uint32_t
+dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int allow_fallback) {
+    if (!event) {
+        return 0U;
+    }
+    if (event->systype == DSD_SYNC_ANALOG) {
+        return dsd_rdio_analog_talkgroup(opts, event);
+    }
+    if (event->target_id > 0U) {
+        return event->target_id;
+    }
+    if (!allow_fallback || event->category != DSD_EVENT_CATEGORY_VOICE) {
+        return 0U;
+    }
+    const uint32_t khz = dsd_rdio_digital_khz(event->freq_hz);
+    if (khz > 0U) {
+        return khz;
+    }
+    return (opts && opts->rdio_unknown_talkgroup > 0) ? (uint32_t)opts->rdio_unknown_talkgroup : 0U;
+}
+
 int
 dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event) {
     if (!opts) {
@@ -899,6 +929,126 @@ dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t start
     return dsd_decode_time();
 }
 
+/* "<MHz> MHz" for a positive @p freq_hz: whole 100 Hz, rounded, as 4 decimals of MHz. */
+static void
+dsd_rdio_format_mhz(int64_t freq_hz, char* out, size_t out_size) {
+    const int64_t units = freq_hz / 100 + (freq_hz % 100 >= 50 ? 1 : 0);
+    DSD_SNPRINTF(out, out_size, "%lld.%04lld MHz", (long long)(units / 10000), (long long)(units % 10000));
+}
+
+/* An access code as the app's views spell it (src/app_control/access_code_view.c, which runtime cannot call): "RAN 9",
+   "CC 3", "CAN 15" in decimal, "NAC 2A3" as three uppercase hex digits, each only within the values its protocol
+   carries (a NAC from 001 to FFE: dsd-neo takes no 000 or FFF). "" for a code out of range or of a kind not known. */
+static void
+dsd_rdio_format_access_code(uint8_t kind, uint16_t code, char* out, size_t out_size) {
+    out[0] = '\0';
+    const unsigned value = (unsigned)code;
+    switch (kind) {
+        case DSD_ACCESS_CODE_COLOR_CODE:
+            if (value <= 63U) {
+                DSD_SNPRINTF(out, out_size, "CC %u", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_NAC:
+            if (value >= 0x001U && value <= 0xFFEU) {
+                DSD_SNPRINTF(out, out_size, "NAC %03X", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_RAN:
+            if (value <= 63U) {
+                DSD_SNPRINTF(out, out_size, "RAN %u", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_CAN:
+            if (value <= 15U) {
+                DSD_SNPRINTF(out, out_size, "CAN %u", value);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* Append @p part to the space-separated words in @p out; an empty part adds nothing. */
+static void
+dsd_rdio_tag_append(char* out, size_t out_size, const char* part) {
+    if (part[0] == '\0') {
+        return;
+    }
+    const size_t used = strlen(out);
+    if (used + 1U >= out_size) {
+        return;
+    }
+    DSD_SNPRINTF(out + used, out_size - used, "%s%s", used > 0U ? " " : "", part);
+}
+
+/* The label of a call exported under the fallback number (issue #888 D3): its service name, else its channel label,
+   else "<protocol> <access code> <MHz> MHz" with the unknown parts left out ("NXDN RAN 9", "D-STAR 145.6700 MHz",
+   "X2-TDMA"). Never per-call identity text or PRIVATE/GROUP: rdio-scanner can relabel a talkgroup with each call's tag,
+   and every unnumbered call on one frequency shares its talkgroup. */
+static void
+dsd_rdio_fallback_tag(const Event_History* event, dsd_rdio_meta_fields* out) {
+    if (dsd_rdio_tag_usable(event->service_label)) {
+        out->talkgroup_tag = event->service_label;
+        return;
+    }
+    if (dsd_rdio_tag_usable(event->channel_label)) {
+        out->talkgroup_tag = event->channel_label;
+        return;
+    }
+    char code[16];
+    dsd_rdio_format_access_code(event->access_code_kind, event->access_code, code, sizeof code);
+    out->generated_tag[0] = '\0';
+    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, dsd_rdio_protocol_word(event->systype));
+    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, code);
+    if (dsd_rdio_digital_khz(event->freq_hz) > 0U) {
+        char mhz[32];
+        dsd_rdio_format_mhz(event->freq_hz, mhz, sizeof mhz);
+        dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, mhz);
+    }
+    out->talkgroup_tag = out->generated_tag;
+}
+
+/* A numbered call's label: its first name (service, talkgroup name, target text, channel label; "-" is none, B10),
+   else PRIVATE for a private call (gi 1), GROUP for a group call (gi 0). A call of no known kind (gi -1: NXDN's other
+   call types, EDACS without a group or individual flag, TETRA before its setup, X2-TDMA) keeps an empty tag, which
+   rdio-scanner ignores as a label: it names the talkgroup by its number rather than calling every such call private. */
+static const char*
+dsd_rdio_numbered_tag(const Event_History* event) {
+    if (dsd_rdio_tag_usable(event->service_label)) {
+        return event->service_label;
+    }
+    if (dsd_rdio_tag_usable(event->t_name)) {
+        return event->t_name;
+    }
+    if (dsd_rdio_tag_usable(event->tgt_str)) {
+        return event->tgt_str;
+    }
+    if (dsd_rdio_tag_usable(event->channel_label)) {
+        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the receiver was parked on
+        // a named channel. That name is what the operator would recognise the upload by; "GROUP" is not.
+        return event->channel_label;
+    }
+    if (event->gi == 1) {
+        return "PRIVATE";
+    }
+    return event->gi == 0 ? "GROUP" : "";
+}
+
+/* A digital call: the decoded target, or with @p allow_fallback a VOICE row's fallback number
+   (dsd_rdio_call_talkgroup()), which takes the fallback label; the decoded source and encryption. */
+static void
+dsd_rdio_digital_meta_fields(const dsd_opts* opts, const Event_History* event, int allow_fallback,
+                             dsd_rdio_meta_fields* out) {
+    out->talkgroup = dsd_rdio_call_talkgroup(opts, event, allow_fallback);
+    out->source = event->source_id;
+    out->encrypted = event->enc ? 1 : 0;
+    if (event->target_id == 0U && out->talkgroup != 0U) {
+        dsd_rdio_fallback_tag(event, out);
+    } else {
+        out->talkgroup_tag = dsd_rdio_numbered_tag(event);
+    }
+}
+
 /* A conventional analog call (issue #668): a kHz talkgroup, or the user's for a call with no frequency, labelled by the
    channel's name, else by its frequency, else by the mode alone. Never by the per-tone service name: rdio-scanner can
    relabel a talkgroup with each call's tag, and the services on one frequency share its talkgroup. No radio, never
@@ -912,11 +1062,10 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
     if (dsd_rdio_tag_usable(event->channel_label)) {
         out->talkgroup_tag = event->channel_label;
     } else if (event->freq_hz > 0) {
-        // Whole 100 Hz, rounded: 4 decimals of MHz.
-        const int64_t units = event->freq_hz / 100 + (event->freq_hz % 100 >= 50 ? 1 : 0);
-        DSD_SNPRINTF(out->analog_tag, sizeof out->analog_tag, "%s %lld.%04lld MHz", mode, (long long)(units / 10000),
-                     (long long)(units % 10000));
-        out->talkgroup_tag = out->analog_tag;
+        char mhz[32];
+        dsd_rdio_format_mhz(event->freq_hz, mhz, sizeof mhz);
+        DSD_SNPRINTF(out->generated_tag, sizeof out->generated_tag, "%s %s", mode, mhz);
+        out->talkgroup_tag = out->generated_tag;
     } else {
         out->talkgroup_tag = mode;
     }
@@ -924,7 +1073,7 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
 
 static void
 dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event, time_t opened, time_t started,
-                                dsd_rdio_meta_fields* out) {
+                                int allow_fallback, dsd_rdio_meta_fields* out) {
     if (!out) {
         return;
     }
@@ -937,7 +1086,7 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->emergency = 0;
     out->talkgroup_tag = "";
     out->short_name = "";
-    out->analog_tag[0] = '\0';
+    out->generated_tag[0] = '\0';
 
     if (!event) {
         return;
@@ -954,30 +1103,7 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
         dsd_rdio_analog_meta_fields(opts, event, out);
         return;
     }
-    out->talkgroup = event->target_id;
-    out->source = event->source_id;
-    out->encrypted = event->enc ? 1 : 0;
-
-    if (dsd_rdio_tag_usable(event->service_label)) {
-        out->talkgroup_tag = event->service_label;
-    } else if (dsd_rdio_tag_usable(event->t_name)) {
-        out->talkgroup_tag = event->t_name;
-    } else if (dsd_rdio_tag_usable(event->tgt_str)) {
-        out->talkgroup_tag = event->tgt_str;
-    } else if (dsd_rdio_tag_usable(event->channel_label)) {
-        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
-        // receiver was parked on a named channel. That name is what the operator would recognise
-        // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
-        // dsd_rdio_write_trunk_recorder_meta() skips those outright.
-        out->talkgroup_tag = event->channel_label;
-    } else if (event->gi == 1) {
-        out->talkgroup_tag = "PRIVATE";
-    } else if (event->gi == 0) {
-        out->talkgroup_tag = "GROUP";
-    }
-    // A call of no known kind (gi -1: NXDN's other call types, EDACS without a group or individual flag, TETRA before
-    // its setup, X2-TDMA) keeps an empty tag, which rdio-scanner ignores as a label: it names the talkgroup by its
-    // number rather than calling every such call private.
+    dsd_rdio_digital_meta_fields(opts, event, allow_fallback, out);
 }
 
 static int
@@ -1064,7 +1190,7 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
 
 static int
 dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened,
-                                   time_t started, const char* wav_path, char* out_meta_path,
+                                   time_t started, int allow_fallback, const char* wav_path, char* out_meta_path,
                                    size_t out_meta_path_size) {
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
@@ -1077,7 +1203,8 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
 
     const Event_History* event = dsd_rdio_staged_row(event_struct);
     dsd_rdio_meta_fields fields;
-    dsd_rdio_meta_fields_from_event(opts, event, opened, started, &fields);
+    dsd_rdio_meta_fields_from_event(opts, event, opened, started, allow_fallback, &fields);
+    // A backstop: the WAV close asks dsd_rdio_call_talkgroup() first, and exports only a call it gives a number.
     if (fields.talkgroup == 0U) {
         LOG_WARN("Rdio export: skipped %s (missing talkgroup/target ID)\n", wav_path);
         return -1;
@@ -1391,6 +1518,12 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
 int
 dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
                         time_t started, int* api_queued) {
+    return dsd_rdio_export_call_fallback(opts, event_struct, wav_path, opened, started, 0, api_queued);
+}
+
+int
+dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                              time_t opened, time_t started, int allow_fallback, int* api_queued) {
     if (api_queued) {
         *api_queued = 0;
     }
@@ -1408,7 +1541,8 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
     }
 
     char meta_path[DSD_RDIO_PATH_MAX];
-    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, wav_path, meta_path, sizeof(meta_path))
+    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, allow_fallback, wav_path, meta_path,
+                                           sizeof(meta_path))
         != 0) {
         return -1;
     }

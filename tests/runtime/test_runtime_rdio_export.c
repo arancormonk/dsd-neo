@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1202,52 +1203,6 @@ test_export_guards_and_invalid_mode_are_noops(void) {
 }
 
 static int
-test_missing_talkgroup_rejects_sidecar(void) {
-    char dir_template[DSD_TEST_PATH_MAX] = {0};
-    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_missing_tg")) {
-        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
-        return 1;
-    }
-
-    char wav_path[DSD_TEST_PATH_MAX] = {0};
-    char json_path[DSD_TEST_PATH_MAX] = {0};
-    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call.wav") != 0
-        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call.json") != 0) {
-        DSD_FPRINTF(stderr, "path join failed\n");
-        remove_empty_dir(dir_template);
-        return 1;
-    }
-
-    if (write_dummy_wav(wav_path) != 0) {
-        remove_empty_dir(dir_template);
-        return 1;
-    }
-
-    static dsd_opts opts;
-    static Event_History_I hist;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&hist, 0, sizeof(hist));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 48;
-    hist.Event_History_Items[0].event_time = (time_t)1700000300;
-
-    int rc = 0;
-    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) == 0) {
-        DSD_FPRINTF(stderr, "export accepted missing talkgroup\n");
-        rc = 1;
-    }
-    if (file_exists(json_path)) {
-        DSD_FPRINTF(stderr, "missing talkgroup should not create sidecar\n");
-        (void)remove(json_path);
-        rc = 1;
-    }
-
-    (void)remove(wav_path);
-    remove_empty_dir(dir_template);
-    return rc;
-}
-
-static int
 test_sidecar_escapes_strings_and_tgt_fallback(void) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_escape")) {
@@ -1475,10 +1430,11 @@ test_sidecar_channel_label_fallback(void) {
 // Export one row's sidecar into a fresh directory under @p with_opts (NULL: DirWatch, no system) and return the sidecar's
 // body in @p body, or -1 when the export was refused (-2 if it left a sidecar anyway). The recording is an 8 kHz WAV
 // @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at
-// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
+// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not). A negative
+// @p allow_fallback exports through dsd_rdio_export_call_ex(), else through dsd_rdio_export_call_fallback() with it.
 static int
-export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
-                         time_t started, char* body, size_t body_size) {
+export_sidecar_body_full(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
+                         time_t started, int allow_fallback, char* body, size_t body_size) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1499,9 +1455,12 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    const dsd_opts* use = with_opts ? with_opts : &opts;
+    const int exported =
+        allow_fallback < 0 ? dsd_rdio_export_call_ex(use, hist, wav_path, opened, started, NULL)
+                           : dsd_rdio_export_call_fallback(use, hist, wav_path, opened, started, allow_fallback, NULL);
     int rc = 0;
-    if (dsd_rdio_export_call_ex(with_opts ? with_opts : &opts, hist, wav_path, opened, started, NULL) != 0
-        || read_file(json_path, body, body_size) != 0) {
+    if (exported != 0 || read_file(json_path, body, body_size) != 0) {
         rc = -1;
     }
     // A refused export leaves no sidecar behind.
@@ -1513,6 +1472,12 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
     return rc;
+}
+
+static int
+export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
+                         time_t started, char* body, size_t body_size) {
+    return export_sidecar_body_full(with_opts, hist, wav_seconds, opened, started, -1, body, body_size);
 }
 
 static int
@@ -2125,6 +2090,279 @@ test_sidecar_strings_are_valid_utf8(void) {
         DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", cases[i].want);
         rc |= expect_body_has(cases[i].label, body, want);
     }
+    return rc;
+}
+
+// A digital voice row with no talkgroup number, heard on @p freq_hz with access code @p kind/@p code.
+static void
+unnumbered_row(Event_History_I* hist, int systype, int64_t freq_hz, uint8_t kind, uint16_t code) {
+    DSD_MEMSET(hist, 0, sizeof(*hist));
+    Event_History* item = &hist->Event_History_Items[0];
+    item->systype = (int8_t)systype;
+    item->category = DSD_EVENT_CATEGORY_VOICE;
+    item->gi = -1;
+    item->event_start_time = (time_t)1700002000;
+    item->event_time = (time_t)1700002003;
+    item->freq_hz = freq_hz;
+    item->access_code_kind = kind;
+    item->access_code = code;
+}
+
+// Issue #888: a digital call with no talkgroup number is never exported through the entries that predate the fallback,
+// nor through the new one with the fallback off: no sidecar is written, whatever the row and options hold.
+static int
+test_unnumbered_digital_call_without_fallback_writes_nothing(void) {
+    static Event_History_I hist;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 48;
+    opts.rdio_unknown_talkgroup = 9000;
+    opts.rdio_analog_talkgroup = 8000;
+    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist.Event_History_Items[0].source_id = 1234U;
+    char body[4096];
+    int rc = 0;
+    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, -1, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "dsd_rdio_export_call_ex() gave an unnumbered digital call a talkgroup\n");
+        rc = 1;
+    }
+    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 0, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "the fallback entry with the fallback off exported an unnumbered digital call\n");
+        rc = 1;
+    }
+    if (dsd_rdio_call_talkgroup(&opts, &hist.Event_History_Items[0], 0) != 0U) {
+        DSD_FPRINTF(stderr, "dsd_rdio_call_talkgroup() gave a number with the fallback off\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 D2: the number dsd_rdio_call_talkgroup() exports a call under. A decoded target always; for a digital
+// voice row without one, with the fallback on, the frequency in whole kHz (rounded down, 1..2147483647), else
+// --rdio-unknown-talkgroup, else none. Analog rows keep their own rule (#668), whose kHz range runs to UINT32_MAX.
+static int
+test_call_talkgroup_number(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        uint8_t category;
+        uint32_t target;
+        int64_t freq_hz;
+        int allow;
+        int option;
+        uint32_t want;
+    } cases[] = {
+        {"decoded target", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 452312500, 1, 9000, 77U},
+        {"decoded target, fallback off", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_DATA, 77U, 0, 0, 0, 77U},
+        {"target above the signed range", DSD_SYNC_M17_STR_POS, DSD_EVENT_CATEGORY_VOICE, 0xFFFFFFF0U, 0, 1, 0,
+         0xFFFFFFF0U},
+        {"kHz", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 0, 452312U},
+        {"kHz over the option", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312999, 1, 9000, 452312U},
+        {"no frequency: the option", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 9000U},
+        {"no frequency, no option", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 0, 0U},
+        {"999 Hz: the option", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 999, 1, 9000, 9000U},
+        {"999 Hz, no option", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 999, 1, 0, 0U},
+        {"1000 Hz", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1000, 1, 9000, 1U},
+        {"kHz at the signed limit", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(2147483647999), 1, 0,
+         2147483647U},
+        {"kHz over the signed limit", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(2147483648000), 1,
+         9000, 9000U},
+        {"negative frequency", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, -452312500, 1, 0, 0U},
+        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 0, 9000, 0U},
+        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 452312500, 1, 9000, 0U},
+        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 452312500, 1, 9000, 0U},
+        {"analog kHz", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 154437500, 0, 9000, 154437U},
+        {"analog kHz past the signed range", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(3000000000000), 1,
+         9000, 3000000000U},
+        {"analog never takes the digital option", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 0U},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        hist.Event_History_Items[0].category = cases[i].category;
+        hist.Event_History_Items[0].target_id = cases[i].target;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.rdio_unknown_talkgroup = cases[i].option;
+        const uint32_t got = dsd_rdio_call_talkgroup(&opts, &hist.Event_History_Items[0], cases[i].allow);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: talkgroup %u, want %u\n", cases[i].label, (unsigned)got, (unsigned)cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_call_talkgroup(&opts, NULL, 1) != 0U) {
+        DSD_FPRINTF(stderr, "no row, no talkgroup\n");
+        rc = 1;
+    }
+    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist.Event_History_Items[0], 1) != 452312U) {
+        DSD_FPRINTF(stderr, "no options: still the kHz\n");
+        rc = 1;
+    }
+    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist.Event_History_Items[0], 1) != 0U) {
+        DSD_FPRINTF(stderr, "no options and no frequency: no talkgroup\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 D3: a call exported under the fallback number is labelled by its service name, else its channel label,
+// else "<protocol> <access code> <MHz> MHz" with the unknown parts left out; never by per-call identity text (talkgroup
+// name, target or source text) nor PRIVATE/GROUP. "-" is no label at any step (B10). Access codes are spelled and
+// bounded as the app's views spell them: RAN, CC and CAN in decimal from 0, NAC as three uppercase hex digits from 001
+// to FFE; a code out of its range, or of a kind not known, is left out.
+static int
+test_fallback_call_label(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        int64_t freq_hz;
+        uint8_t kind;
+        uint16_t code;
+        int gi;
+        const char* service;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {"NXDN", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9, -1, "", "", "NXDN RAN 9 452.3125 MHz"},
+        {"DMR service name", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "Yard Crew",
+         "Base", "Yard Crew"},
+        {"channel label", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "", "Base", "Base"},
+        {"dash everywhere", DSD_SYNC_DMR_MS_VOICE, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "-", "-",
+         "DMR CC 3 452.3125 MHz"},
+        {"unaddressed NXDN group call", DSD_SYNC_NXDN_NEG, 452312500, DSD_ACCESS_CODE_RAN, 9, 0, "", "",
+         "NXDN RAN 9 452.3125 MHz"},
+        {"source-only private call", DSD_SYNC_DMR_BS_VOICE_NEG, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, 1, "", "",
+         "DMR CC 3 452.3125 MHz"},
+        {"valid RAN 0", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 0, -1, "", "", "NXDN RAN 0 452.3125 MHz"},
+        {"RAN out of range", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 64, -1, "", "", "NXDN 452.3125 MHz"},
+        {"P25 phase 1 NAC", DSD_SYNC_P25P1_POS, 851012500, DSD_ACCESS_CODE_NAC, 0x2A3, -1, "", "",
+         "P25 NAC 2A3 851.0125 MHz"},
+        {"P25 phase 2 NAC", DSD_SYNC_P25P2_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0x001, -1, "", "",
+         "P25 NAC 001 851.0125 MHz"},
+        {"NAC out of range", DSD_SYNC_P25P1_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0xFFF, -1, "", "", "P25 851.0125 MHz"},
+        {"NAC 000", DSD_SYNC_P25P1_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0x000, -1, "", "", "P25 851.0125 MHz"},
+        {"DMR CC 0", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 0, -1, "", "",
+         "DMR CC 0 452.3125 MHz"},
+        {"colour code out of range", DSD_SYNC_TETRA_NDB_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 64, -1, "", "",
+         "TETRA 452.3125 MHz"},
+        {"TETRA CC 63", DSD_SYNC_TETRA_SB_NEG, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 63, -1, "", "",
+         "TETRA CC 63 452.3125 MHz"},
+        {"M17 CAN 15", DSD_SYNC_M17_STR_POS, 433475000, DSD_ACCESS_CODE_CAN, 15, -1, "", "", "M17 CAN 15 433.4750 MHz"},
+        {"CAN out of range", DSD_SYNC_M17_LSF_NEG, 433475000, DSD_ACCESS_CODE_CAN, 16, -1, "", "", "M17 433.4750 MHz"},
+        {"unknown code kind", DSD_SYNC_DPMR_FS2_POS, 446106250, 9, 3, -1, "", "", "dPMR 446.1063 MHz"},
+        {"D-STAR", DSD_SYNC_DSTAR_VOICE_POS, 145670000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "D-STAR 145.6700 MHz"},
+        {"YSF", DSD_SYNC_YSF_NEG, 145670000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "YSF 145.6700 MHz"},
+        {"EDACS", DSD_SYNC_EDACS_POS, 851012500, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "EDACS 851.0125 MHz"},
+        {"ProVoice", DSD_SYNC_PROVOICE_NEG, 851012500, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "ProVoice 851.0125 MHz"},
+        {"protocol only", DSD_SYNC_X2TDMA_VOICE_POS, 0, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "X2-TDMA"},
+        {"protocol and code only", DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_RAN, 9, -1, "", "", "NXDN RAN 9"},
+        {"1000 Hz", DSD_SYNC_DSTAR_VOICE_NEG, 1000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "D-STAR 0.0010 MHz"},
+        {"2.4 GHz", DSD_SYNC_M17_STR_NEG, INT64_C(2400000000), DSD_ACCESS_CODE_NONE, 0, -1, "", "",
+         "M17 2400.0000 MHz"},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, cases[i].kind, cases[i].code);
+        Event_History* item = &hist.Event_History_Items[0];
+        item->gi = (int8_t)cases[i].gi;
+        item->source_id = 4321U;
+        DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", cases[i].service);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        // Per-call identity text, never a fallback label.
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "Some Name");
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "CQCQCQ");
+        DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", "N0CALL");
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_unknown_talkgroup = 9000;
+        char body[4096];
+        if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+        rc |= expect_body_has(cases[i].label, body, "\"srcList\": [{\"pos\":0,\"src\":4321}],");
+    }
+    return rc;
+}
+
+// Issue #888 D2/D3/D5/D8: the whole sidecar of a fallback call. The kHz number, the generated label, the row's start,
+// its Hz in freq and freqList, the row's own system (never the analog override), a protocol short_name when the row has
+// no system string, and the rest as for a numbered call. With no frequency (audio input) --rdio-unknown-talkgroup is
+// the number, freq is 0 and freqList is left out. A numbered row exported with the fallback on is unchanged.
+static int
+test_fallback_call_sidecar(void) {
+    static Event_History_I hist;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 5;
+    opts.rdio_analog_system_id = 9;
+    opts.rdio_unknown_talkgroup = 9000;
+    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist.Event_History_Items[0].enc = 1;
+    char body[4096];
+    if (export_sidecar_body_full(&opts, &hist, 2, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "fallback sidecar: export failed\n");
+        return 1;
+    }
+    int rc = 0;
+    rc |= expect_body_has("fallback sidecar", body, "\"talkgroup\": 452312,");
+    rc |= expect_body_has("fallback sidecar", body, "\"talkgroup_tag\": \"NXDN RAN 9 452.3125 MHz\",");
+    rc |= expect_body_has("fallback sidecar", body, "\"srcList\": [],");
+    rc |= expect_body_has("fallback sidecar", body, "\"freq\": 452312500,");
+    rc |= expect_body_has("fallback sidecar", body, "\"freqList\": [{\"pos\": 0, \"freq\": 452312500}],");
+    rc |= expect_body_has("fallback sidecar", body, "\"system\": 5,");
+    rc |= expect_body_has("fallback sidecar", body, "\"short_name\": \"NXDN\",");
+    rc |= expect_body_has("fallback sidecar", body, "\"encrypted\": true");
+    rc |= expect_sidecar_times("fallback sidecar", body, 1700002000LL, 1700002002LL);
+    if (hist.Event_History_Items[0].target_id != 0U) {
+        DSD_FPRINTF(stderr, "fallback sidecar: the export number was stored on the row\n");
+        rc = 1;
+    }
+
+    unnumbered_row(&hist, DSD_SYNC_YSF_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    DSD_SNPRINTF(hist.Event_History_Items[0].sysid_string, sizeof hist.Event_History_Items[0].sysid_string, "%s",
+                 "YSF_DG-ID_0");
+    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "audio-input fallback sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("audio-input fallback", body, "\"talkgroup\": 9000,");
+    rc |= expect_body_has("audio-input fallback", body, "\"talkgroup_tag\": \"YSF\",");
+    rc |= expect_body_has("audio-input fallback", body, "\"freq\": 0,");
+    rc |= expect_body_has("audio-input fallback", body, "\"short_name\": \"YSF_DG-ID_0\",");
+    if (strstr(body, "freqList") != NULL) {
+        DSD_FPRINTF(stderr, "audio-input fallback: freqList without a usable frequency\n%s\n", body);
+        rc = 1;
+    }
+
+    opts.rdio_unknown_talkgroup = 0;
+    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "no frequency and no option: a fallback call was exported\n");
+        rc = 1;
+    }
+
+    unnumbered_row(&hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
+    hist.Event_History_Items[0].target_id = 77U;
+    hist.Event_History_Items[0].gi = 0;
+    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "numbered row with the fallback on: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("numbered row, fallback on", body, "\"talkgroup\": 77,");
+    rc |= expect_body_has("numbered row, fallback on", body, "\"talkgroup_tag\": \"GROUP\",");
     return rc;
 }
 
@@ -3192,6 +3430,65 @@ analog_api_upload(const char* label, int mode, int journaled, int fail, int want
 #endif
 }
 
+// Issue #888: an API upload of a fallback call carries the same number and label in its meta part, and the row's
+// system in its system part.
+static int
+test_api_fallback_call_meta_and_system(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_export_fallback_api")
+        || dsd_test_path_join(wav_path, sizeof(wav_path), dir, "fallback_api.wav") != 0
+        || write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: setup failed\n");
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_id = 5;
+    opts->rdio_analog_system_id = 9;
+    unnumbered_row(hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
+
+    int rc = 0;
+    int queued = 0;
+    if (dsd_rdio_export_call_fallback(opts, hist, wav_path, 0, 0, 1, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "fallback API upload: the upload was not queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: the server did not receive a complete upload\n");
+        rc = 1;
+    }
+    if (strcmp(server.system, "5") != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: form system part '%s', want 5\n", server.system);
+        rc = 1;
+    }
+    rc |= expect_body_has("fallback API upload", server.meta, "\"talkgroup\": 452312,");
+    rc |= expect_body_has("fallback API upload", server.meta, "\"talkgroup_tag\": \"DMR CC 3 452.3125 MHz\",");
+    rc |= expect_body_has("fallback API upload", server.meta, "\"system\": 5,");
+    (void)remove(wav_path);
+    remove_empty_dir(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 static int
 test_analog_api_upload_contract(void) {
     int rc = 0;
@@ -3285,7 +3582,6 @@ main(void) {
     rc |= test_duration_uses_zero_for_missing_or_truncated_wav();
     rc |= test_export_guards_and_invalid_mode_are_noops();
     rc |= test_sidecar_service_name_keeps_numeric_identity();
-    rc |= test_missing_talkgroup_rejects_sidecar();
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
@@ -3300,10 +3596,15 @@ main(void) {
     rc |= test_sidecar_short_name_falls_back_to_the_protocol();
     rc |= test_sidecar_dash_tag_is_absent();
     rc |= test_sidecar_strings_are_valid_utf8();
+    rc |= test_unnumbered_digital_call_without_fallback_writes_nothing();
+    rc |= test_call_talkgroup_number();
+    rc |= test_fallback_call_label();
+    rc |= test_fallback_call_sidecar();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_journaled_upload_keeps_the_wav();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
+    rc |= test_api_fallback_call_meta_and_system();
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();
     rc |= test_api_cancel_during_drain_returns_promptly();
