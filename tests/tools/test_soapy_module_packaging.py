@@ -465,8 +465,8 @@ class SoapyModulePackaging(unittest.TestCase):
         self.assertEqual(component["pin"], "CODEC2_SHA")
         self.assertIn("DIRECTORY LICENSES/", read("CMakeLists.txt"))
         # The APK staging copies LICENSES/ whole into its fresh documentation folder, which becomes assets/doc/dsd-neo.
-        self.assertIn('file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_fresh_dir}/licenses")',
-                      read("cmake/stage_android_package.cmake"))
+        self.assertRegex(read("cmake/stage_android_package.cmake"),
+                         r'file\(\s*COPY "\$\{REPO_DIR\}/LICENSES/"\s+DESTINATION "\$\{_fresh_dir\}/licenses"[\s\w{}$]*\)')
         appimage = re.search(r"required=\(([^\n]+)\)", read(".github/workflows/linux-appimage.yaml")).group(1).split()
         android = list(component["android_release"]["notices"])
         self.assertIn("tools/check_release_notices.py --platform android", read(".github/workflows/android-ci.yaml"))
