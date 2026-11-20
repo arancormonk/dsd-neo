@@ -9389,7 +9389,8 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
-# Issue #888: the per-call WAV size probe measures a recording past 2 GiB (a sparse file) as its real 64-bit size.
+# Issue #888: the per-call WAV size probe measures a recording past 2 GiB (a sparse file) as its real 64-bit size. It
+# exists for Windows, where long is 32 bits; the sparse case exits 77 (skipped) where the filesystem cannot make one.
 add_executable(dsd-neo_test_core_wav_size_probe core/test_core_wav_size_probe.c)
 target_include_directories(
     dsd-neo_test_core_wav_size_probe
@@ -9419,6 +9420,7 @@ else()
     )
 endif()
 add_test(NAME CORE_WAV_SIZE_PROBE COMMAND dsd-neo_test_core_wav_size_probe)
+set_tests_properties(CORE_WAV_SIZE_PROBE PROPERTIES SKIP_RETURN_CODE 77)
 
 # Speech level parity (issue #518): one deterministic talker (test_support/speech_synth.h) played as digital voice and
 # as analog FM and AM comes out at the speech AGC's -20 dBFS active speech level (P.56), digital and analog alike. The

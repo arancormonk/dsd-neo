@@ -197,12 +197,6 @@ SNDFILE* close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out
                                           const dsd_analog_wav_name* name);
 
 /**
- * Size in bytes of the regular file @p filename, as a 64-bit value (a recording can pass 2 GiB, which a Windows `long`
- * cannot hold); -1 when it is missing, not a regular file or its size cannot be read.
- */
-int64_t dsd_wav_file_size_or_negative(const char* filename);
-
-/**
  * Discard a conventional analog reception's temporary recording that is never published (issue #667: it ended before
  * it counted as a call). It closes through the per-call segment table, so a short write's latch goes with it, and the
  * temp file is removed, even after a failed close: no rename, no journal record, no rdio export. What its open or a

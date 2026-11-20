@@ -79,6 +79,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "wav_journal.h"
 #include "wav_segment.h"
+#include "wav_size_test_support.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
