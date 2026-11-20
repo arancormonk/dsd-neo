@@ -1294,6 +1294,14 @@ dsd_rdio_digital_khz(int64_t freq_hz) {
     return (khz > 0 && khz <= (int64_t)INT32_MAX) ? (uint32_t)khz : 0U;
 }
 
+int
+dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallback) {
+    // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
+    // the system from short_name, could pick none.
+    return allow_fallback && event != NULL && event->systype != DSD_SYNC_ANALOG && event->target_id == 0U
+           && event->category == DSD_EVENT_CATEGORY_VOICE && dsd_rdio_protocol_word(event->systype)[0] != '\0';
+}
+
 uint32_t
 dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int allow_fallback) {
     if (!event) {
@@ -1305,10 +1313,7 @@ dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int al
     if (event->target_id > 0U) {
         return event->target_id;
     }
-    // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
-    // the system from short_name, could pick none.
-    if (!allow_fallback || event->category != DSD_EVENT_CATEGORY_VOICE
-        || dsd_rdio_protocol_word(event->systype)[0] == '\0') {
+    if (!dsd_rdio_call_fallback_eligible(event, allow_fallback)) {
         return 0U;
     }
     const uint32_t khz = dsd_rdio_digital_khz(event->freq_hz);

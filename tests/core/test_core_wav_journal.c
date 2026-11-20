@@ -34,6 +34,8 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -52,6 +54,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#endif
 #include "../test_support/radio_policy_test.h"
 #include "analog_call_test_support.h"
 #include "commands_internal.h"
@@ -2925,6 +2933,508 @@ test_trunk_scan_retry_park_ends_the_call_left(void) {
     return rc;
 }
 
+/* --- Issue #888 D7: which closes give a digital voice row with no talkgroup the fallback number. --- */
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_CAPTURE 1
+
+/* A stand-in rdio-scanner API on the loopback that keeps the one upload it is sent. */
+typedef struct {
+    dsd_socket_t sock;
+    dsd_thread_t thread;
+    char url[64];
+    char request[65536];
+    size_t used;
+    int got;
+} capture_server;
+
+static const char*
+find_bytes(const char* hay, size_t hay_len, const char* needle) {
+    const size_t n = strlen(needle);
+    for (size_t i = 0; n > 0U && i + n <= hay_len; i++) {
+        if (memcmp(hay + i, needle, n) == 0) {
+            return hay + i;
+        }
+    }
+    return NULL;
+}
+
+/* Read the request until its Content-Length is in, answering curl's "Expect: 100-continue" at once. */
+static void
+capture_read(capture_server* s, dsd_socket_t client) {
+    size_t body_at = 0;
+    long length = -1;
+    int continued = 0;
+    while (s->used < sizeof s->request - 1U) {
+        const int n = dsd_socket_recv(client, s->request + s->used, sizeof s->request - 1U - s->used, 0);
+        if (n <= 0) {
+            return;
+        }
+        s->used += (size_t)n;
+        s->request[s->used] = '\0';
+        const char* end = body_at == 0 ? strstr(s->request, "\r\n\r\n") : NULL;
+        if (end) {
+            body_at = (size_t)(end - s->request) + 4U;
+            const char* cl = strstr(s->request, "Content-Length:");
+            char* stop = NULL;
+            length = cl ? strtol(cl + strlen("Content-Length:"), &stop, 10) : -1;
+            if (cl && stop == cl + strlen("Content-Length:")) {
+                length = -1;
+            }
+        }
+        if (body_at != 0 && !continued && strstr(s->request, "100-continue") != NULL) {
+            static const char k_continue[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            (void)dsd_socket_send(client, k_continue, strlen(k_continue), 0);
+            continued = 1;
+        }
+        if (body_at != 0 && length >= 0 && s->used >= body_at + (size_t)length) {
+            s->got = 1;
+            return;
+        }
+    }
+}
+
+static DSD_THREAD_RETURN_TYPE
+capture_thread(void* arg) {
+    capture_server* s = (capture_server*)arg;
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(s->sock, &readfds);
+    struct timeval tv = {5, 0};
+    if (select(s->sock + 1, &readfds, NULL, NULL, &tv) > 0) {
+        dsd_socket_t client = dsd_socket_accept(s->sock, NULL, NULL);
+        if (client != DSD_INVALID_SOCKET) {
+            (void)dsd_socket_set_recv_timeout(client, 5000);
+            capture_read(s, client);
+            static const char k_ok[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+            (void)dsd_socket_send(client, k_ok, strlen(k_ok), 0);
+            (void)dsd_socket_close(client);
+        }
+    }
+    (void)dsd_socket_close(s->sock);
+    DSD_THREAD_RETURN;
+}
+
+static int
+capture_start(capture_server* s) {
+    DSD_MEMSET(s, 0, sizeof *s);
+    if (dsd_socket_init() != 0) {
+        return 1;
+    }
+    s->sock = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (s->sock == DSD_INVALID_SOCKET) {
+        return 1;
+    }
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = (socklen_t)sizeof addr;
+    if (dsd_socket_bind(s->sock, (const struct sockaddr*)&addr, (int)sizeof addr) != 0
+        || dsd_socket_listen(s->sock, 1) != 0 || getsockname(s->sock, (struct sockaddr*)&addr, &len) != 0
+        || dsd_thread_create(&s->thread, capture_thread, s) != 0) {
+        (void)dsd_socket_close(s->sock);
+        return 1;
+    }
+    DSD_SNPRINTF(s->url, sizeof s->url, "http://127.0.0.1:%u", (unsigned int)ntohs(addr.sin_port));
+    return 0;
+}
+
+/* Whether the captured upload holds @p text (its multipart `meta` and `system` parts are plain text). */
+static int
+capture_has(const capture_server* s, const char* text) {
+    return s->got && find_bytes(s->request, s->used, text) != NULL;
+}
+#endif
+
+/* Rdio export on, DirWatch unless @p mode says otherwise, with --rdio-unknown-talkgroup 4242. */
+static void
+rdio_fallback_on(rig* r, int mode) {
+    r->opts->rdio_mode = mode;
+    r->opts->rdio_system_id = 48;
+    r->opts->rdio_unknown_talkgroup = 4242;
+    r->opts->rdio_upload_timeout_ms = 1000;
+    r->opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(r->opts->rdio_api_url, sizeof r->opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+    DSD_SNPRINTF(r->opts->rdio_api_key, sizeof r->opts->rdio_api_key, "%s", "test-key");
+}
+
+static void
+rdio_fallback_off(rig* r) {
+    r->opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    r->opts->rdio_unknown_talkgroup = 0;
+}
+
+/* A call on @p slot of @p kind, @p tg and @p src (0: none), heard on @p freq_hz (0: unknown). */
+static void
+begin_kind_call_on(rig* r, uint8_t slot, int protocol, dsd_call_kind kind, uint32_t tg, uint32_t src, int64_t freq_hz) {
+    const dsd_call_observation call = {.protocol = protocol,
+                                       .slot = slot,
+                                       .kind = kind,
+                                       .ota_target_id = tg,
+                                       .policy_target_id = tg,
+                                       .ota_source_id = src,
+                                       .frequency_hz = freq_hz};
+    (void)dsd_call_state_observe(r->state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(r->opts, r->state, slot);
+}
+
+/* The publish record of journal id @p id, or NULL. */
+static const char*
+publish_of(const char* id) {
+    const char* line = NULL;
+    for (int i = 0; (line = record(&g_j, "publish", i)) != NULL; i++) {
+        if (strcmp(field_s(line, "id"), id) == 0) {
+            return line;
+        }
+    }
+    return NULL;
+}
+
+/* Recording @p id is published, and exported under talkgroup @p talkgroup (0: kept local, no sidecar). */
+static int
+expect_export(const char* what, const rig* r, const char* id, unsigned talkgroup) {
+    char tag[200];
+    const char* pub = publish_of(id);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: published", what);
+    int rc = expect_true(tag, pub != NULL);
+    char body[4096];
+    read_published_sidecar(r, pub, body, sizeof body);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: %s", what, talkgroup ? "a sidecar under the fallback number" : "no sidecar");
+    if (talkgroup == 0U) {
+        rc |= expect_str(tag, body, "");
+    } else {
+        char want[64];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", talkgroup);
+        rc |= expect_true(tag, strstr(body, want) != NULL);
+    }
+    return rc;
+}
+
+/* A WAV stop mid-call: a call that names its source (an NXDN unaddressed group call) is exported under its frequency
+   in kHz, or the option's number with none; a call heard with no identity at all is not (its keep verdict is not known
+   at the stop). */
+static int
+test_d7_wav_stop_mid_call(void) {
+    static const struct {
+        const char* label;
+        int protocol;
+        uint32_t src;
+        int64_t freq_hz;
+        unsigned want;
+    } cases[] = {
+        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 452312U},
+        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U},
+        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U},
+        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_stop");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_kind_call_on(&r, 0U, cases[i].protocol, DSD_CALL_KIND_GROUP_VOICE, 0U, cases[i].src, cases[i].freq_hz);
+        voice_frames(&r, 0, 2);
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        reload(&r);
+        rc |= expect_export(cases[i].label, &r, id, cases[i].want);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* A faded identity-less DMR call, its row held for the reacquisition window, owns the slot file still: a WAV stop and
+   the orphan flush each close it unexported, though the option would number it. */
+static int
+test_d7_held_fade_stays_local(void) {
+    int rc = 0;
+    for (int flush = 0; flush <= 1; flush++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_held");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_kind_call_on(&r, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, 0U, 0);
+        voice_frames(&r, 0, 3);
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        end_call(&r, DSD_CALL_END_SYNC_LOSS);
+        reload(&r);
+        rc |= expect_int("the faded call's row is held", count_records(&g_j, "publish"), 0);
+        if (flush) {
+            dsd_event_flush_orphan_recordings(r.opts, r.state);
+        } else {
+            submit(&r, DSD_APP_CMD_WAV_STOP);
+        }
+        reload(&r);
+        rc |= expect_export(flush ? "held fade, orphan flush" : "held fade, WAV stop", &r, id, 0U);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* The engine's shutdown order: the slots end as sync loss and commit, then the leftover files close early. A
+   source-only NXDN call commits with its recording, exported under the fallback; an identity-less one is held, and the
+   leftover close does not export it. */
+static int
+test_d7_shutdown_commit(void) {
+    int rc = 0;
+    for (int named = 0; named <= 1; named++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_shutdown");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_kind_call_on(&r, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, named ? 1234U : 0U, 0);
+        voice_frames(&r, 0, 3);
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        end_call(&r, DSD_CALL_END_SYNC_LOSS);
+        dsd_event_sync_slot(r.opts, r.state, 0);
+        r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                       r.opts->wav_out_dir, r.opts->wav_out_open_time);
+        reload(&r);
+        rc |= expect_export(named ? "shutdown, source-only NXDN call" : "shutdown, identity-less NXDN call", &r, id,
+                            named ? 4242U : 0U);
+        if (named) {
+            const char* pub = publish_of(id);
+            rc |= expect_true("the commit published it under its row", pub && strcmp(field_s(pub, "row"), "null") != 0);
+        }
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* A cleared history leaves no row for a WAV stop to name the call by: the call's recording stays local. */
+static int
+test_d7_cleared_history_stays_local(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_d7_cleared");
+    rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_kind_call_on(&r, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, 1234U, 0);
+    voice_frames(&r, 0, 2);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    dsd_event_history_reset(r.state);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_export("clear history, then WAV stop", &r, id, 0U);
+    rdio_fallback_off(&r);
+    rig_close(&r);
+    return rc;
+}
+
+/* A trunk-scan hop restores the next target's empty row: audio heard there with no call, closed by a WAV stop, stays
+   local. */
+static int
+test_d7_restored_scan_row_stays_local(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_d7_scan");
+    rc |= scan_rig_start(&r);
+    rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    voice_frames(&r, 0, 2);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    rc |= expect_int("the dwell hopped to b", (long long)dsd_engine_trunk_scan_active_index(r.state), 1);
+    voice_frames(&r, 0, 2);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_export("restored empty scan row, WAV stop", &r, id, 0U);
+    rdio_fallback_off(&r);
+    scan_rig_stop(&r);
+    rig_close(&r);
+    return rc;
+}
+
+/* The EDACS rotation closes the slot file early (close_and_publish_call_wav(), as edacs_prepare_voice_wav_output()
+   does at a grant): a system all-call that names its caller is exported under the fallback, and an identity-less row's
+   file, audio already in it before the row, is not. */
+static int
+test_d7_edacs_rotation(void) {
+    int rc = 0;
+    for (int named = 0; named <= 1; named++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_edacs");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        static short analog[3][960];
+        for (int i = 0; i < 960; i++) {
+            analog[0][i] = (short)(i * 8);
+            analog[1][i] = (short)(-i * 8);
+            analog[2][i] = (short)(i * 4);
+        }
+        if (!named) {
+            edacs_write_analog_wav(r.opts, r.state, analog[0], analog[1], analog[2]);
+        }
+        begin_kind_call_on(&r, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, named ? 1234U : 0U, 0);
+        edacs_write_analog_wav(r.opts, r.state, analog[0], analog[1], analog[2]);
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                       r.opts->wav_out_dir, r.opts->wav_out_open_time);
+        reload(&r);
+        rc |= expect_export(named ? "EDACS all-call naming its caller" : "EDACS identity-less, prefilled", &r, id,
+                            named ? 4242U : 0U);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* Both slots at a WAV stop, each judged on its own row: the slot whose call names its source is exported, the other
+   not, whichever slot it is. */
+static int
+test_d7_both_slots(void) {
+    int rc = 0;
+    for (int named_slot = 0; named_slot <= 1; named_slot++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_slots");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        for (uint8_t slot = 0; slot < 2U; slot++) {
+            begin_kind_call_on(&r, slot, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 0U,
+                               slot == named_slot ? 4321U : 0U, 0);
+            voice_frames(&r, slot, 2);
+        }
+        char id[2][64];
+        slot_id(&r, 0, id[0], sizeof id[0]);
+        slot_id(&r, 1, id[1], sizeof id[1]);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        reload(&r);
+        rc |= expect_export(named_slot == 0 ? "slot 1 named" : "slot 1 identity-less", &r, id[0],
+                            named_slot == 0 ? 4242U : 0U);
+        rc |= expect_export(named_slot == 1 ? "slot 2 named" : "slot 2 identity-less", &r, id[1],
+                            named_slot == 1 ? 4242U : 0U);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* The journal's `rdio` says whether an API job was queued for a fallback call: off and DirWatch never, API and both
+   when it was (the upload carrying the fallback number and the system), an API config the queue refuses never, which
+   leaves the pair; without libcurl never, with the sidecar still written. */
+static int
+test_d7_fallback_journal_rdio_flag(void) {
+    static const struct {
+        const char* label;
+        int mode;
+        int no_key;
+        int sidecar; /* the public pair keeps its sidecar after the upload ends */
+        int queued;  /* with libcurl */
+    } cases[] = {
+        {"off", DSD_RDIO_MODE_OFF, 0, 0, 0},
+        {"dirwatch", DSD_RDIO_MODE_DIRWATCH, 0, 1, 0},
+        {"api", DSD_RDIO_MODE_API, 0, 0, 1},
+        {"both", DSD_RDIO_MODE_BOTH, 0, 1, 1},
+        {"api with no key", DSD_RDIO_MODE_API, 1, 1, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_flag");
+        rdio_fallback_on(&r, cases[i].mode);
+        if (cases[i].no_key) {
+            r.opts->rdio_api_key[0] = '\0';
+        }
+#ifdef RDIO_CAPTURE
+        capture_server server;
+        int capturing = 0;
+        if (cases[i].queued) {
+            capturing = capture_start(&server) == 0;
+            rc |= expect_true("capture server", capturing);
+            if (capturing) {
+                DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", server.url);
+            }
+        }
+#endif
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_kind_call_on(&r, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, 1234U, 0);
+        voice_frames(&r, 0, 2);
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        dsd_rdio_upload_shutdown();
+        reload(&r);
+        const char* pub = publish_of(id);
+        char tag[160];
+#ifdef USE_CURL
+        const int queued = cases[i].queued;
+        const int sidecar = cases[i].sidecar;
+#else
+        const int queued = 0;
+        const int sidecar = cases[i].mode != DSD_RDIO_MODE_OFF;
+#endif
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the journal's rdio flag", cases[i].label);
+        rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", queued ? "true" : "false");
+        DSD_SNPRINTF(tag, sizeof tag, "%s", cases[i].label);
+        rc |= expect_export(tag, &r, id, sidecar ? 4242U : 0U);
+#ifdef RDIO_CAPTURE
+        if (capturing) {
+            (void)dsd_thread_join(server.thread);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the upload carries the fallback number and the system", cases[i].label);
+            rc |=
+                expect_true(tag, capture_has(&server, "\"talkgroup\": 4242,") && capture_has(&server, "name=\"system\"")
+                                     && capture_has(&server, "\r\n\r\n48\r\n"));
+        }
+#endif
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* The stream verdict holds over the fallback: a PRIVATE call from a radio set stream=off, and a source-only call whose
+   radio is turned stream=off just before the WAV stop, stay local; with the radio's stream on the call is exported. */
+static int
+test_d7_stream_off_stays_local(void) {
+    static const struct {
+        const char* label;
+        dsd_call_kind kind;
+        int before; /* the radio row is installed before the call begins */
+        int stream;
+        unsigned want;
+    } cases[] = {
+        {"source-blocked PRIVATE call", DSD_CALL_KIND_PRIVATE_VOICE, 1, 0, 0U},
+        {"radio turned stream=off before the stop", DSD_CALL_KIND_GROUP_VOICE, 0, 0, 0U},
+        {"radio left stream=on", DSD_CALL_KIND_GROUP_VOICE, 0, 1, 4242U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_d7_stream");
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        if (cases[i].before) {
+            rc |= expect_int("radio row", dsd_test_install_radio_policy(r.state, 42U, "A", 1, 1, cases[i].stream), 0);
+        }
+        begin_kind_call_on(&r, 0U, DSD_SYNC_NXDN_POS, cases[i].kind, 0U, 42U, 0);
+        voice_frames(&r, 0, 2);
+        if (!cases[i].before) {
+            rc |= expect_int("radio row", dsd_test_install_radio_policy(r.state, 42U, "A", 1, 1, cases[i].stream), 0);
+        }
+        char id[64];
+        slot_id(&r, 0, id, sizeof id);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        reload(&r);
+        rc |= expect_export(cases[i].label, &r, id, cases[i].want);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -2980,6 +3490,15 @@ main(void) {
     rc |= test_orphan_flush_serialized_with_commit();
     rc |= test_trunk_scan_switch_flushes_orphans();
     rc |= test_trunk_scan_retry_park_ends_the_call_left();
+    rc |= test_d7_wav_stop_mid_call();
+    rc |= test_d7_held_fade_stays_local();
+    rc |= test_d7_shutdown_commit();
+    rc |= test_d7_cleared_history_stays_local();
+    rc |= test_d7_restored_scan_row_stays_local();
+    rc |= test_d7_edacs_rotation();
+    rc |= test_d7_both_slots();
+    rc |= test_d7_fallback_journal_rdio_flag();
+    rc |= test_d7_stream_off_stays_local();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

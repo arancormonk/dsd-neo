@@ -522,17 +522,16 @@ watchdog_event_is_data_event(const Event_History* item) {
                && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
 }
 
-/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported when @p export_recording), and open
-   the next one. A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and
-   a failed open marks the slot for the next one (issue #708). */
+/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported as @p export_mode, a
+   dsd_wav_export_mode), and open the next one. A slot whose last open failed (a full disk) opens again here, so the
+   next call records when it can, and a failed open marks the slot for the next one (issue #708). */
 static void
-watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_recording,
+watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_mode,
                                const dsd_wav_owner* owner) {
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
         if (opts->wav_out_f != NULL) {
-            opts->wav_out_f =
-                close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir, event_struct,
-                                             opts->wav_out_open_time, export_recording, owner);
+            opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
+                                                           event_struct, opts->wav_out_open_time, export_mode, owner);
         }
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
@@ -544,7 +543,7 @@ watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_stru
         if (opts->wav_out_fR != NULL) {
             opts->wav_out_fR =
                 close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                             event_struct, opts->wav_out_open_timeR, export_recording, owner);
+                                             event_struct, opts->wav_out_open_timeR, export_mode, owner);
         }
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_timeR = dsd_decode_time();
@@ -553,8 +552,8 @@ watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_stru
 }
 
 static void
-watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
-                                    int export_recording, const dsd_wav_owner* owner) {
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_mode,
+                                    const dsd_wav_owner* owner) {
     if (opts->static_wav_file != 0) {
         return;
     }
@@ -564,7 +563,7 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
     if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
         return;
     }
-    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_recording, owner);
+    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_mode, owner);
 }
 
 /* Under the call-state lock: whether slot @p slot's canonical call is active. */
@@ -598,7 +597,7 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
         const uint64_t epoch = dsd_call_state_pending_row_epoch_locked(ext, slot);
         const dsd_wav_owner owner = {epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE, slot, 0U, epoch};
         const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
-        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &owner);
+        watchdog_event_rotate_slot_wav(opts, event_struct, slot, DSD_WAV_EXPORT_NONE, &owner);
     }
     dsd_call_state_ext_unlock(ext);
 }
@@ -658,7 +657,9 @@ watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History
                                  dsd_event_end_disposition end_disposition, int alert_on_final, int last_event_is_data,
                                  const dsd_wav_owner* owner) {
     if (end_disposition != DSD_EVENT_END_NONE) {
-        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final, owner);
+        /* A kept row's rotation is a commit (issue #888 D7); the drop path's exports nothing. */
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot,
+                                            alert_on_final ? DSD_WAV_EXPORT_COMMITTED : DSD_WAV_EXPORT_NONE, owner);
     }
     // Read before the clear below: the alert is the outgoing row's.
     const int analog = watchdog_event_row_is_analog(&event_struct->Event_History_Items[0]);

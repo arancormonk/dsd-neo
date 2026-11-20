@@ -213,10 +213,10 @@ write_silent_pcm16_wav(const char* path, uint32_t sample_rate, uint32_t seconds)
 }
 
 // Export the closing recording through the real rdio-scanner exporter, as close_and_rename_wav_file_ex() does, and
-// keep the sidecar it wrote.
+// keep the sidecar it wrote. A commit rotation (DSD_WAV_EXPORT_COMMITTED) allows the fallback talkgroup (issue #888 D7).
 static void
-close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened, int index,
-                         close_wav_capture* capture) {
+close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened, int export_mode,
+                         int index, close_wav_capture* capture) {
     char name[32];
     char wav_path[DSD_TEST_PATH_MAX];
     char json_path[DSD_TEST_PATH_MAX];
@@ -229,7 +229,9 @@ close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_stru
         return;
     }
     if (write_silent_pcm16_wav(wav_path, 8000U, CLOSE_WAV_SECONDS) == 0
-        && dsd_rdio_export_call(opts, event_struct, wav_path, opened) == 0) {
+        && dsd_rdio_export_call_fallback(opts, event_struct, wav_path, opened, 0,
+                                         export_mode == DSD_WAV_EXPORT_COMMITTED, NULL)
+               == 0) {
         FILE* f = fopen(json_path, "rb");
         if (f != NULL) {
             const size_t n = fread(capture->sidecar, 1, sizeof capture->sidecar - 1U, f);
@@ -254,14 +256,14 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const Event_History_I* event_struct, time_t opened, int export_mode,
                              const dsd_wav_owner* owner) {
     UNUSED(wav_file);
     UNUSED(wav_out_filename);
     UNUSED(dir);
     UNUSED(owner);
     g_close_wav_count++;
-    if (export_call) {
+    if (export_mode != DSD_WAV_EXPORT_NONE) {
         g_close_wav_export_count++;
     }
     if (event_struct != NULL && g_close_wav_capture_count < CLOSE_WAV_CAPTURE_MAX) {
@@ -270,11 +272,12 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         capture->event_time = event_struct->Event_History_Items[0].event_time;
         capture->stream_export = event_struct->Event_History_Items[0].stream_blocked == 0U;
         capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
-        capture->export_call = export_call;
+        capture->export_call = export_mode;
         capture->journal_start = dsd_rdio_recording_start(&event_struct->Event_History_Items[0], opened, 0);
         capture->sidecar[0] = '\0';
-        if (export_call && capture->stream_export != 0U && opts != NULL && g_close_wav_export_dir[0] != '\0') {
-            close_wav_export_sidecar(opts, event_struct, opened, index, capture);
+        if (export_mode != DSD_WAV_EXPORT_NONE && capture->stream_export != 0U && opts != NULL
+            && g_close_wav_export_dir[0] != '\0') {
+            close_wav_export_sidecar(opts, event_struct, opened, export_mode, index, capture);
         }
     }
     return NULL;
@@ -8978,7 +8981,7 @@ expect_stream_close(const char* label, int closes, int want_export, uint32_t wan
     }
     const close_wav_capture* capture = &g_close_wav_captures[g_close_wav_capture_count - 1];
     DSD_SNPRINTF(tag, sizeof tag, "%s: the event layer asks for the export", label);
-    rc |= expect_int(tag, capture->export_call, 1);
+    rc |= expect_int(tag, capture->export_call, DSD_WAV_EXPORT_COMMITTED);
     DSD_SNPRINTF(tag, sizeof tag, "%s: export verdict", label);
     rc |= expect_int(tag, capture->stream_export, want_export);
     if (want_target != 0U) {
@@ -9367,7 +9370,7 @@ test_unjudged_recordings_export(void) {
     rc |= expect_int("NFM call under the allow list: not blocked from the export", (int)staged->stream_blocked, 0);
     close_wav_capture capture;
     DSD_MEMSET(&capture, 0, sizeof capture);
-    close_wav_export_sidecar(&opts, &event_history[0], 0, 0, &capture);
+    close_wav_export_sidecar(&opts, &event_history[0], 0, DSD_WAV_EXPORT_EARLY, 0, &capture);
     rc |= expect_has_substr("NFM call exported under its frequency in kHz", capture.sidecar, "\"talkgroup\": 154437,");
     rc |= expect_u64("the export id is not stored on the row", staged->target_id, 0U);
     const int closes = g_close_wav_capture_count;

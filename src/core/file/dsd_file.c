@@ -1410,28 +1410,57 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
     }
 }
 
+/* Whether a close in @p export_mode may give @p row the fallback talkgroup (issue #888 D7): a commit rotation's row,
+   which the event layer has kept; an early close's only when it names a call, as a number or text. An identity-less
+   row vouches for itself only by media and a positive end, a verdict not known before its commit. */
+static int
+wav_close_allows_fallback(int export_mode, const Event_History* row) {
+    if (export_mode == DSD_WAV_EXPORT_COMMITTED) {
+        return 1;
+    }
+    return export_mode == DSD_WAV_EXPORT_EARLY && row != NULL && row->category == DSD_EVENT_CATEGORY_VOICE
+           && (row->target_id != 0U || row->source_id != 0U || row->src_str[0] != '\0' || row->tgt_str[0] != '\0');
+}
+
+/* A row with no talkgroup, not exported: said once a run per class while rdio export is on, with no failure line. An
+   analog call with no frequency (issue #668); a digital call the fallback would number but has nothing to number it
+   by (issue #888 B3). A row the fallback never numbers says nothing, and leaves the line for one that it would. */
+static void
+wav_close_note_rdio_skip(const dsd_opts* opts, const Event_History* row, int allow_fallback) {
+    if (row == NULL || opts->rdio_mode == DSD_RDIO_MODE_OFF) {
+        return;
+    }
+    if (row->systype == DSD_SYNC_ANALOG) {
+        if (wav_recording_analog_rdio_skip_first_this_run()) {
+            LOG_WARN("Rdio export: analog calls with no channel frequency (an audio input has none) are not exported; "
+                     "set --rdio-analog-talkgroup to export them under one talkgroup\n");
+        }
+    } else if (dsd_rdio_call_fallback_eligible(row, allow_fallback)
+               && wav_recording_digital_rdio_skip_first_this_run()) {
+        LOG_WARN("Rdio export: digital calls with no talkgroup and no channel frequency (an audio input has none) are "
+                 "not exported; set --rdio-unknown-talkgroup to export them under one talkgroup\n");
+    }
+}
+
 /* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
    (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
-   upload. A row the event layer never judged allows it. A conventional NFM row is exported under its frequency in kHz,
-   or the user's --rdio-analog-talkgroup when it has none, or one under 1 kHz that names no channel (issue #668,
-   dsd_rdio_analog_talkgroup()); with neither it is not exported, said once a run while rdio export is on, with no
-   failure line. A digital row without a talkgroup still warns. */
+   upload. A row the event layer never judged allows it. The talkgroup is dsd_rdio_call_talkgroup()'s: a conventional
+   NFM row's frequency in kHz or --rdio-analog-talkgroup (issue #668), a digital row's target, else, when
+   @p export_mode allows the fallback (wav_close_allows_fallback()), its frequency in kHz or --rdio-unknown-talkgroup
+   (issue #888). A row with none is not exported, without a failure line (wav_close_note_rdio_skip()). */
 static int
 wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
-                      const char* path, time_t opened, time_t started) {
+                      const char* path, time_t opened, time_t started, int export_mode) {
     int rdio_queued = 0;
     if (event_item != NULL && event_item->stream_blocked != 0U) {
         return 0;
     }
-    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG
-        && dsd_rdio_analog_talkgroup(opts, event_item) == 0U) {
-        if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_analog_rdio_skip_first_this_run()) {
-            LOG_WARN("Rdio export: analog calls with no channel frequency (an audio input has none) are not exported; "
-                     "set --rdio-analog-talkgroup to export them under one talkgroup\n");
-        }
+    const int allow_fallback = wav_close_allows_fallback(export_mode, event_item);
+    if (dsd_rdio_call_talkgroup(opts, event_item, allow_fallback) == 0U) {
+        wav_close_note_rdio_skip(opts, event_item, allow_fallback);
         return 0;
     }
-    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, started, &rdio_queued) != 0) {
+    if (dsd_rdio_export_call_fallback(opts, event_struct, path, opened, started, allow_fallback, &rdio_queued) != 0) {
         LOG_WARN("Rdio export failed for %s\n", path);
     }
     return rdio_queued;
@@ -1440,7 +1469,7 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
 /* @p analog_name names an NFM recording that has no row (its teardown, issue #668); NULL for every other close. */
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                      const Event_History_I* event_struct, time_t opened, time_t started, int export_call,
+                      const Event_History_I* event_struct, time_t opened, time_t started, int export_mode,
                       const dsd_analog_wav_name* analog_name, const dsd_wav_owner* owner) {
     /* Only a close with options is journaled: the analog teardown's (no options, no row) writes nothing. */
     wav_close_journal journal;
@@ -1489,9 +1518,10 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return wav_file;
     }
 
-    const int rdio_queued = (export_call && opts && final_size > 44)
-                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started)
-                                : 0;
+    const int rdio_queued =
+        (export_mode != DSD_WAV_EXPORT_NONE && opts && final_size > 44)
+            ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started, export_mode)
+            : 0;
     if (journal.on) {
         wav_journal_published(journal.id, new_filename, dir, event_struct,
                               dsd_rdio_recording_start(event_item, opened, started), journal.duration_ms, journal.rate,
@@ -1504,9 +1534,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const Event_History_I* event_struct, time_t opened, int export_mode,
                              const dsd_wav_owner* owner) {
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_call, NULL,
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_mode, NULL,
                                  owner);
 }
 
@@ -1515,7 +1545,8 @@ close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename
                                  const dsd_analog_wav_name* name) {
     /* With no parts kept, the name has none: ANALOG_FREQ_UNKNOWN. The date and time are the close's, as with no row. */
     static const dsd_analog_wav_name k_no_name = {0};
-    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 0, name ? name : &k_no_name, NULL);
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, DSD_WAV_EXPORT_NONE,
+                                 name ? name : &k_no_name, NULL);
 }
 
 SNDFILE*
@@ -1544,7 +1575,9 @@ close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state
         owner.epoch = dsd_call_state_pending_row_epoch(state, slot);
         owner.kind = owner.epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE;
     }
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started, 1, NULL, &owner);
+    /* Before the row's keep verdict: the fallback only for a row that names a call (issue #888 D7). */
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started,
+                                 DSD_WAV_EXPORT_EARLY, NULL, &owner);
 }
 
 SNDFILE*

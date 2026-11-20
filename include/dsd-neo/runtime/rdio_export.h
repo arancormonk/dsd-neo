@@ -117,6 +117,16 @@ uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* ev
 uint32_t dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int allow_fallback);
 
 /**
+ * 1 when dsd_rdio_call_talkgroup() with the same @p allow_fallback numbers @p event by the fallback, or would with a
+ * frequency or --rdio-unknown-talkgroup: a digital row with no target_id whose category is DSD_EVENT_CATEGORY_VOICE and
+ * whose sync type names a protocol, with @p allow_fallback nonzero. 0 for every other row, NULL and analog rows
+ * included.
+ * The WAV close asks it to tell a call skipped for want of a number (said once a run) from one the fallback never
+ * numbers (issue #888 B3).
+ */
+int dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallback);
+
+/**
  * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p
  * opts->rdio_analog_system_id for an analog row when it is set, else @p opts->rdio_system_id. 0 for a NULL @p opts.
  */

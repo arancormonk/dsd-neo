@@ -132,19 +132,38 @@ typedef struct {
 } dsd_wav_owner;
 
 /**
- * Close a per-call WAV, name it from @p event_struct's staged row (Items[0]) and, when `export_call` is set, export it
- * to rdio-scanner. `opened` is the decode time the file was opened (opts->wav_out_open_time or wav_out_open_timeR),
- * 0 when unknown; see dsd_rdio_export_call(). The recording journal records it as @p owner's (NULL: no row's).
- * The event layer's rotation passes the row it committed or merged into, and on its drop path, which rotates the
- * recording of an epoch that gets no history row or log line, no export: that would upload audio tagged with all-zero
- * metadata that the operator has nothing local to correlate against.
+ * Whether, and how, a per-call recording's close exports it to rdio-scanner (issue #888 D7). Only the export of a
+ * digital voice row with no talkgroup number differs between the two export modes: such a row is exported under the
+ * fallback number (dsd_rdio_call_talkgroup()) only when the event layer has kept it, or when an early close finds a row
+ * that names a call. Analog rows follow their own rule (issue #668) in both.
+ */
+typedef enum {
+    /** Not exported: the event layer's drop path and orphan flush, and a close with no row. */
+    DSD_WAV_EXPORT_NONE = 0,
+    /** A commit rotation: the event layer kept the row, so a voice row with no talkgroup takes the fallback. */
+    DSD_WAV_EXPORT_COMMITTED = 1,
+    /** A close before the row's keep verdict (a WAV stop, the EDACS rotation, the engine's last close, the NFM call's
+        end): a voice row with no talkgroup takes the fallback only when it names a call (a target or source, as a
+        number or text). */
+    DSD_WAV_EXPORT_EARLY = 2,
+} dsd_wav_export_mode;
+
+/**
+ * Close a per-call WAV, name it from @p event_struct's staged row (Items[0]) and export it to rdio-scanner as
+ * `export_mode` (a dsd_wav_export_mode) says. `opened` is the decode time the file was opened (opts->wav_out_open_time
+ * or wav_out_open_timeR), 0 when unknown; see dsd_rdio_export_call(). The recording journal records it as @p owner's
+ * (NULL: no row's). The event layer's rotation passes the row it committed or merged into with
+ * DSD_WAV_EXPORT_COMMITTED, and on its drop path, which rotates the recording of an epoch that gets no history row or
+ * log line, DSD_WAV_EXPORT_NONE: that would upload audio tagged with all-zero metadata that the operator has nothing
+ * local to correlate against.
  */
 SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                       const char* dir, const Event_History_I* event_struct, time_t opened,
-                                      int export_call, const dsd_wav_owner* owner);
+                                      int export_mode, const dsd_wav_owner* owner);
 /**
  * Close and publish slot @p slot's per-call WAV before its call's row commits (the NFM call's end, a WAV stop
- * mid-call, the EDACS analog rotation, the engine's last close), named from the slot's staged row and exported.
+ * mid-call, the EDACS analog rotation, the engine's last close), named from the slot's staged row and exported as
+ * DSD_WAV_EXPORT_EARLY.
  * The journal records it as pending on the slot's current call epoch, which that epoch's commit links to its row
  * (issue #708); with no call open on the slot, or its row already committed, as no row's. @p state may be NULL.
  */

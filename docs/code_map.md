@@ -2643,22 +2643,31 @@ suite runs under this compiler.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
   call. `wav_close_and_publish()` (`dsd_file.c`), the one export call site, which every close path reaches (the event
   rotation through `close_and_rename_wav_file_ex()`, and `close_and_publish_call_wav()` for WAV stop, analog calls,
-  EDACS and the last close) with the slot's staged row, exports only when `export_call` and the row's verdict allow
-  it. `close_and_publish_call_wav()` first re-judges the verdict (`dsd_event_refresh_stream_verdict()`, the call's own
-  staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
-  (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built
-  (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional analog calls,
-  M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue #667) also needs
-  an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when `dsd_rdio_analog_talkgroup()` gives one
-  (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it with no failure line, logging one
-  LOG_WARN per decoder run while `--rdio-mode` is on (`wav_recording_analog_rdio_skip_first_this_run()`, reset by
-  `dsd_wav_recording_session_reset()` at engine start). Its tag and `short_name` take the row's mode word
-  (`sysid_string`: `NFM`, `AM` or `ANALOG`). A digital row without a talkgroup still warns ("skipped", then "export
-  failed"). An analog export keeps the #708 contract: the upload is queued before the journal's `publish` record (its
-  `rdio` flag), the queue holds the file, and a journal suppresses delete-after-upload. Neither field is shown,
-  persisted or part of the control API's row fingerprint; exports already queued are not recalled. Tests:
-  `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
-  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  EDACS and the last close) with the slot's staged row, exports only when its export mode (`dsd_wav_export_mode`,
+  `<dsd-neo/core/file_io.h>`) and the row's verdict allow it. `close_and_publish_call_wav()` first re-judges the verdict
+  (`dsd_event_refresh_stream_verdict()`, the call's own staged row only), so a policy import or edit applied in the same
+  command drain as a WAV stop counts (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however
+  it was built (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional
+  analog calls, M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue
+  #667) also needs an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when
+  `dsd_rdio_analog_talkgroup()` gives one (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it
+  with no failure line, logging one LOG_WARN per decoder run while `--rdio-mode` is on
+  (`wav_recording_analog_rdio_skip_first_this_run()`, reset by `dsd_wav_recording_session_reset()` at engine start). Its
+  tag and `short_name` take the row's mode word (`sysid_string`: `NFM`, `AM` or `ANALOG`). The export talkgroup is
+  `dsd_rdio_call_talkgroup()`'s (issue #888 D7): a digital row's target, else the fallback (its frequency in kHz, else
+  `--rdio-unknown-talkgroup`) for a VOICE row only when the close allows it. The export mode is none on the event
+  layer's drop path and orphan flush, committed on a kept row's rotation (`watchdog_event_retire_staged_row()`), and
+  early for `close_and_publish_call_wav_ex()`, which allows the fallback only for a row that names a call (a target or
+  source, number or text): an identity-less row's keep verdict (media plus a positive end) is not known before its
+  commit, so a WAV stop mid-call, a held fade, a cleared history or a trunk-scan target's empty row never exports under
+  a fallback number. A digital row with no number is skipped with no failure line; the one LOG_WARN per run
+  (`wav_recording_digital_rdio_skip_first_this_run()`, reset with the analog latch) is spent only by a row the fallback
+  would number had it a frequency or the option (`dsd_rdio_call_fallback_eligible()`). An analog export keeps the #708
+  contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file, and
+  a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
+  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
+  `CORE_WAV_JOURNAL` (the close paths, `test_d7_*`), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
