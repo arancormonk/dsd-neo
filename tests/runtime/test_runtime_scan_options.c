@@ -1052,6 +1052,9 @@ check_key_matrix_options(void) {
     assert(dsd_scan_options_parse("-R 32767", DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error)) == 0);
     assert(parsed.scalar == 32767U);
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    assert(dsd_scan_options_parse("-R 0", DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.scalar == 0U);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
     assert(dsd_scan_options_parse("-R 32768", DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error)) < 0);
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
     /* The legacy NXDN-scrambler system's whole option text, as the Qt scan list writes it for a dPMR row. */

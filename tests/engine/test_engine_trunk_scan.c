@@ -5946,6 +5946,73 @@ test_simplex_targets_merge_across_lists(void) {
     return rc;
 }
 
+/* Issue #890 B3 review ruling: an opaque DM-2-C DSB and a D-PRS record inside DV with no header-named call are known
+   non-data presence, so under the defaults (--no-data-calls among them) they hold their target; DM-2-C stays known
+   encrypted, so under --enc-lockout it holds nothing. The identities are those the protocols report
+   (tetra_calls.c, dstar_slow_data.c). */
+static int
+run_presence_case(const char* type, int protocol, const dsd_trunk_scan_activity_identity* id, int enc_lockout,
+                  int want_held) {
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,461000000,,250,250,\nb,%s,462000000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_tune_enc_calls = enc_lockout ? 0 : 1;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s presence: init failed: %s\n", type, err);
+        test_rc = 1;
+    } else {
+        if (opts.trunk_tune_data_calls != 0) {
+            DSD_FPRINTF(stderr, "%s presence: the defaults follow data calls\n", type);
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(0.10);
+        dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, protocol, -1, id);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        if ((dsd_engine_trunk_scan_active_index(&state) == 0) != want_held) {
+            DSD_FPRINTF(stderr, "%s presence (enc lockout %d): active %zu, want %s\n", type, enc_lockout,
+                        dsd_engine_trunk_scan_active_index(&state), want_held ? "held" : "rotated");
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_presence_reports_hold_under_the_defaults(void) {
+    dsd_trunk_scan_activity_identity dm2c;
+    DSD_MEMSET(&dm2c, 0, sizeof dm2c);
+    dm2c.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    dm2c.encrypted = 1U;
+    dsd_trunk_scan_activity_identity dprs;
+    DSD_MEMSET(&dprs, 0, sizeof dprs);
+    dprs.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    int rc = run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &dm2c, 0, 1);
+    rc |= run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &dm2c, 1, 0);
+    rc |= run_presence_case("dstar-conventional", DSD_SYNC_DSTAR_VOICE_POS, &dprs, 0, 1);
+    rc |= run_presence_case("dstar-conventional", DSD_SYNC_DSTAR_VOICE_POS, &dprs, 1, 1);
+    /* What they were before the ruling, data unknown: withheld under the defaults (F9). */
+    dsd_trunk_scan_activity_identity unknown = dm2c;
+    unknown.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    rc |= run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &unknown, 0, 0);
+    return rc;
+}
+
 static int
 test_conventional_activity_after_a_stream_restart(void) {
     int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
@@ -29367,6 +29434,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_live_key_changes_follow_the_key_matrix);
     rc |= run_with_default_tune_hook(test_keyed_dpmr_alternates_with_m17);
     rc |= run_with_default_tune_hook(test_simplex_targets_merge_across_lists);
+    rc |= run_with_default_tune_hook(test_presence_reports_hold_under_the_defaults);
     rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
     rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);

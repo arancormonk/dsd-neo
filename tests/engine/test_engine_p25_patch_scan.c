@@ -176,6 +176,15 @@ test_voice_check(void) {
    but may not be followed (here an encryption lockout of its own, with encrypted calls not tuned) does not hold the
    channel even when a lower-priority member could be followed; an encrypted call with encrypted tuning off never
    does. */
+static void
+set_crypto(dsd_state* st, dsd_call_crypto_state classification, double t) {
+    dsd_call_crypto_update update;
+    DSD_MEMSET(&update, 0, sizeof(update));
+    update.classification = classification;
+    update.observed_m = t;
+    (void)dsd_call_state_update_crypto(st, 0U, DSD_SYNC_P25P1_POS, &update);
+}
+
 static int
 test_voice_tune_verdict(void) {
     fixture f;
@@ -185,6 +194,10 @@ test_voice_tune_verdict(void) {
     const uint16_t members[] = {30, 31};
     seed_patch(f.st, 520, members, 2);
     open_voice(f.st, 520, 520, 100.0);
+    /* Issue #890: with encrypted calls not tuned, a patched call whose encryption is not known yet holds nothing,
+       before the patch resolver is asked (the policy table's restrictions, as for every call). */
+    rc |= expect_true("tune: unknown encryption under the lockout counts nothing", !voice_counts(f.opts, f.st));
+    set_crypto(f.st, DSD_CALL_CRYPTO_CLEAR, 100.5);
     rc |= expect_true("tune: the playing member followed", voice_counts(f.opts, f.st));
     rc |= expect_true("tune: lockout armed", dsd_enc_lockout_note(f.st, 30, 1, 0x84, 0x1234) == 1);
     rc |= expect_true("tune: the playing member may not be followed", !voice_counts(f.opts, f.st));
@@ -193,6 +206,7 @@ test_voice_tune_verdict(void) {
     update.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     update.observed_m = 100.6;
     open_voice(f.st, 520, 31, 101.0);
+    set_crypto(f.st, DSD_CALL_CRYPTO_CLEAR, 101.5);
     rc |= expect_true("tune: a clear call on the other member", voice_counts(f.opts, f.st));
     (void)dsd_call_state_update_crypto(f.st, 0U, DSD_SYNC_P25P1_POS, &update);
     rc |= expect_true("tune: encrypted with encrypted tuning off", !voice_counts(f.opts, f.st));

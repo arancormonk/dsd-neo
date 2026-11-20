@@ -294,6 +294,10 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
        list or a block on its known source. */
     dsd_trunk_scan_activity_identity identity;
     scan_voice_call_identity(call, &identity);
+    /* The data, encryption and party restrictions hold for a patched call too, before the patch resolver judges it. */
+    if (!scan_activity_restrictions_allow(opts, &identity)) {
+        return 0;
+    }
     const uint32_t patch_sg = scan_voice_call_patch_sg(state, call);
     if (patch_sg != 0U) {
         return scan_voice_patch_allows(opts, state, call, patch_sg, identity.source, identity.encrypted);
