@@ -41,6 +41,23 @@ QString scan_list_settings_error(const QVariantMap& list);
  * digital entry. @p systemDecodeFlag is the saved system's decodeFlag for a system entry, ignored otherwise. An analog
  * entry carries no keys, talkgroups, decryption profile or modulation. */
 int scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag);
+/** The width option of analog demodulator @p kind (dsd_analog_demod): --am-bandwidth-hz for AM, else
+ * --nfm-bandwidth-hz, as the CLI and a target's options column spell it. */
+QString scan_list_width_option_name(int kind);
+
+/** One occurrence of a width option among Extra arguments (scan_list_width_options()): @p tokens it spans, 2 for
+ * `--name N` and 1 for `--name=N` (or a `--name` with nothing after it), and its value, @p hz, when that is whole Hz
+ * (digits only), else 0. */
+struct ScanListWidthOption {
+    int hz = 0;
+    qsizetype tokens = 0;
+};
+
+/** Issue #526/#890: every occurrence, in order, of @p kind's width option (scan_list_width_option_name()) in
+ * @p extraArgs, split at blanks as a session splits its Extra arguments; @p tokenCount (when not NULL) receives the
+ * number of tokens. Which occurrence counts is the caller's: the configured width is the last one, as on the command
+ * line; a saved system's own width is its only token (scan_list_saved_system_width_hz()). */
+QList<ScanListWidthOption> scan_list_width_options(const QString& extraArgs, int kind, qsizetype* tokenCount);
 /** Issue #890: the channel width in Hz a saved analog system of demodulator @p kind (dsd_analog_demod) carries into a
  * manual scan list, from its Extra arguments @p extraArgs, which must be exactly that kind's one width option
  * (--nfm-bandwidth-hz N for NFM, --am-bandwidth-hz N for AM, or the --name=N form) in whole Hz within the range a

@@ -76,6 +76,7 @@
 #include "known_frequency_index.h"
 #include "pending_export.h"
 #include "saved_systems_model.h"
+#include "scan_list_targets.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_export.h"
@@ -2754,6 +2755,40 @@ main(int argc, char** argv) {
     assert(saved.value(QStringLiteral("port")).toInt() == 1235);
     assert(saved.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fA"));
     assert(saved.value(QStringLiteral("searchUnresolved")).toBool());
+    // Issue #890: an unconfirmed (RF-only) detection's saved map, as Save as system stores it, joins a manual scan list
+    // at its measured width, NFM and AM alike: the list's row carries the width the save keeps.
+    auto rfOnlyAm = frozen;
+    rfOnlyAm[QStringLiteral("am")] = true;
+    rfOnlyAm[QStringLiteral("width")] = 8333;
+
+    const struct {
+        QVariantMap system;
+        QByteArray type;
+        QByteArray options;
+    } rfOnly[] = {
+        {saved, "nfm-conventional,463552100,",
+         "\"Found\",--nfm-bandwidth-hz " + QByteArray::number(frozen.value(QStringLiteral("width")).toInt()) + "\n"},
+        {model.systemForHit(rfOnlyAm, {}), "am-conventional,463552100,", "\"Found\",--am-bandwidth-hz 8333\n"}};
+
+    for (const auto& found : rfOnly) {
+        QVariantMap system = found.system;
+        system[QStringLiteral("uid")] = QStringLiteral("found");
+        system[QStringLiteral("name")] = QStringLiteral("Found");
+        const QVariantMap foundEntry{{QStringLiteral("uid"), QStringLiteral("found-entry")},
+                                     {QStringLiteral("kind"), QStringLiteral("system")},
+                                     {QStringLiteral("systemUid"), QStringLiteral("found")},
+                                     {QStringLiteral("enabled"), true}};
+        const auto listed = dsd_qt::scan_list_targets({{QStringLiteral("uid"), QStringLiteral("found-list")},
+                                                       {QStringLiteral("sourceType"), QStringLiteral("usb")},
+                                                       {QStringLiteral("entries"), QVariantList{foundEntry}}},
+                                                      QVariantList{system});
+        const bool carried = listed.ok && listed.csv.contains(found.type) && listed.csv.endsWith(found.options);
+        if (!carried) {
+            std::fprintf(stderr, "Signal search save in a scan list: %s / %s\n", qPrintable(listed.error),
+                         listed.csv.constData());
+        }
+        assert(carried);
+    }
     // The checked site, slot and encryption, the access code and the received tone reach the screens as they were
     // published, live and from history too (issue #802: a Recent detections row shows the access code and tone).
     const auto shown = model.history().front().toMap();

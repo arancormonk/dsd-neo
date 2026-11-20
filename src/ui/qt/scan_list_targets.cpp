@@ -86,12 +86,6 @@ analogKindForFlag(const QString& decodeFlag) {
     return flag == QStringLiteral("-fM") ? DSD_ANALOG_DEMOD_AM : -1;
 }
 
-/* The width option of analog demodulator @p kind, as the CLI and a target's options column spell it. */
-QString
-widthOptionName(int kind) {
-    return kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
-}
-
 /* Whether a manual list can carry saved system @p sys's Extra arguments: none, or (issue #890) exactly the width option
    of its analog kind @p kind (-1 for a digital system), as a Signal search save keeps its measured width. That width
    becomes @p target's own. */
@@ -362,7 +356,7 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
         return sys.value("name").toString() + QStringLiteral(": ") + error;
     }
     if (target.widthHz > 0) {
-        options << widthOptionName(analogKindForFlag(target.decode)) << QString::number(target.widthHz);
+        options << scan_list_width_option_name(analogKindForFlag(target.decode)) << QString::number(target.widthHz);
     }
     const auto radio = sys.value("radioSettings").toMap();
     if (radio.contains("squelch")) {
@@ -406,28 +400,50 @@ scan_list_settings_error(const QVariantMap& list) {
     return {};
 }
 
+QString
+scan_list_width_option_name(int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
+}
+
+QList<ScanListWidthOption>
+scan_list_width_options(const QString& extraArgs, int kind, qsizetype* tokenCount) {
+    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
+    const QString option = scan_list_width_option_name(kind);
+    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QList<ScanListWidthOption> found;
+    for (qsizetype i = 0; i < tokens.size(); ++i) {
+        QString value;
+        qsizetype span = 1;
+        if (tokens.at(i) == option) {
+            span = i + 1 < tokens.size() ? 2 : 1;
+            value = span == 2 ? tokens.at(i + 1) : QString();
+        } else if (tokens.at(i).startsWith(option + QLatin1Char('='))) {
+            value = tokens.at(i).mid(option.size() + 1);
+        } else {
+            continue;
+        }
+        found.append({wholeHz.match(value).hasMatch() ? value.toInt() : 0, span});
+    }
+    if (tokenCount != nullptr) {
+        *tokenCount = tokens.size();
+    }
+    return found;
+}
+
 int
 scan_list_saved_system_width_hz(const QString& extraArgs, int kind) {
     if (kind != DSD_ANALOG_DEMOD_FM && kind != DSD_ANALOG_DEMOD_AM) {
         return 0;
     }
-    /* Split at blanks as a standalone session splits its Extra arguments, so a quoted value is no width here either. */
-    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    const QString option = widthOptionName(kind);
-    QString value;
-    if (tokens.size() == 2 && tokens.at(0) == option) {
-        value = tokens.at(1);
-    } else if (tokens.size() == 1 && tokens.at(0).startsWith(option + QLatin1Char('='))) {
-        value = tokens.at(0).mid(option.size() + 1);
-    } else {
-        return 0;
-    }
-    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
-    if (!wholeHz.match(value).hasMatch()) {
+    /* Exactly one option, which is every token: a quoted value is no width here either, as in a standalone session. */
+    qsizetype tokenCount = 0;
+    const QList<ScanListWidthOption> found = scan_list_width_options(extraArgs, kind, &tokenCount);
+    if (found.size() != 1 || found.front().tokens != tokenCount || found.front().hz <= 0) {
         return 0;
     }
     /* The bounds are the target options parser's own, which reads the row this width is written to. */
-    const QByteArray text = (option + QLatin1Char(' ') + value).toUtf8();
+    const QByteArray text =
+        (scan_list_width_option_name(kind) + QLatin1Char(' ') + QString::number(found.front().hz)).toUtf8();
     const unsigned int mode = kind == DSD_ANALOG_DEMOD_AM ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM;
     dsd_scan_options parsed;
     DSD_MEMSET(&parsed, 0, sizeof parsed);

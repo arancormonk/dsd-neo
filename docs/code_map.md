@@ -21722,7 +21722,9 @@ A manual list refuses a saved system with Extra arguments, with one exception (i
 Extra arguments are exactly its own kind's width option (`--nfm-bandwidth-hz N` for `-fA`, `--am-bandwidth-hz N` for
 `-fM`, or the `=N` form), which is how a Signal search save keeps its measured width.
 `scan_list_saved_system_width_hz()` reads that width, checked by the target options parser
-(`dsd_scan_options_parse()`) so its bounds are the row's own. The generator writes it to the row's `options` column,
+(`dsd_scan_options_parse()`) so its bounds are the row's own. It shares its token matching
+(`scan_list_width_options()`) with the starter's configured width (`configuredAnalogWidthHz()`): the saved width must be
+the only option and fill every token, while the configured width is the last option, as on the command line. The generator writes it to the row's `options` column,
 and the starter's DSP-rate warning (`analogRateWarning()`) holds the entry to it. Any other text, the other kind's
 option, or a digital system with any Extra arguments stays refused (`UI_QT_SCAN_LIST_TARGETS`,
 `UI_QT_SCAN_LIST_ROUNDTRIP`). A standalone start passes the same text through unchanged.
