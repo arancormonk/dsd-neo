@@ -84,17 +84,22 @@ p25_sm_tick_guard_busy(void) {
     return atomic_load(&g_p25_sm_tick_lock) != 0;
 }
 
+/* Whether a recovery tick has anything to run. A startup control-channel hunt is the decoder thread's own
+   (p25_sm_cold_start_tick_locked(), issue #703), which also ends it once validated control has named an owner: no tick
+   touches it. */
+static int
+p25_sm_tick_eligible(const dsd_opts* opts, const dsd_state* state) {
+    return !p25_sm_get_ctx()->cold_start_hunt && dsd_trunk_p25_recovery_allowed(opts, state);
+}
+
 /* One recovery tick, the caller holding the guard. */
 static void
 p25_sm_tick_locked(dsd_opts* opts, dsd_state* state) {
-    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    /* A startup control-channel hunt is the decoder thread's own (p25_sm_cold_start_tick_locked(), issue #703), which
-       also ends it once validated control has named an owner: this tick never touches it. */
-    if (!ctx->cold_start_hunt && dsd_trunk_p25_recovery_allowed(opts, state)) {
+    if (p25_sm_tick_eligible(opts, state)) {
         /* Only one tick runs at a time across all callers. */
         atomic_store(&g_p25_sm_in_tick, 1);
         // Drive the high-level trunk SM tick
-        p25_sm_tick_ctx(ctx, opts, state);
+        p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
         atomic_store(&g_p25_sm_in_tick, 0);
     }
 }
@@ -164,6 +169,12 @@ p25_sm_watchdog_tick_wanted(void) {
 int
 p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || atomic_load(&g_p25_sm_tick_wanted) == 0) {
+        return 0;
+    }
+    /* A beat with no recovery to run (trunking off, -Y scanning, no P25 to follow, a startup hunt) is let go: its
+       tick could tune nothing, so it never hands a read back, even behind queued work. */
+    if (!p25_sm_tick_eligible(opts, state)) {
+        atomic_store(&g_p25_sm_tick_wanted, 0);
         return 0;
     }
     /* Shutdown or queued work (a command, a put-off publication) comes first: the beat stands, and no tune starts on a

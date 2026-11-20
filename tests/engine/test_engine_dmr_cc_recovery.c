@@ -893,9 +893,9 @@ watchdog_ownership_thread(void) {
      * late the watchdog thread is scheduled, and serviced at once. */
     const double fixture_deadline_s = dsd_realtime_mono_s() + 60.0;
     p25_sm_watchdog_start(&g_opts, &g_state);
-    /* Acquisition changes these hints between the beats; the tick each beat asks for runs here, on the decoder thread,
-     * and a DMR owner excludes P25 recovery whatever they say. */
-    int ticks = 0;
+    /* Acquisition changes these hints between the beats; each beat is serviced here, on the decoder thread, and a DMR
+     * owner excludes P25 recovery whatever they say: the service lets the beat go and runs no tick. */
+    int let_go = 0;
     for (int i = 0; i < 3; ++i) {
         g_state.synctype = (i & 1) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
         g_state.lastsynctype = g_state.synctype;
@@ -903,17 +903,17 @@ watchdog_ownership_thread(void) {
         if (!wait_for_watchdog_beat(fixture_deadline_s)) {
             break;
         }
-        ticks += p25_sm_watchdog_service(&g_opts, &g_state);
+        let_go += p25_sm_watchdog_service(&g_opts, &g_state) == 0;
     }
     p25_sm_watchdog_stop();
-    int rc = expect(ticks == 3, "each observed watchdog beat asks the decoder thread for a tick it runs");
+    int rc = expect(let_go == 3, "each observed watchdog beat is let go on the decoder thread under a DMR owner");
     rc |=
         expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9, "watchdog-paced ticks exclude DMR despite changing raw hints");
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_NONE;
     g_state.p25_cc_is_tdma = 0;
     dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
     p25_sm_watchdog_start(&g_opts, &g_state);
-    ticks = wait_for_watchdog_beat(fixture_deadline_s) ? p25_sm_watchdog_service(&g_opts, &g_state) : 0;
+    const int ticks = wait_for_watchdog_beat(fixture_deadline_s) ? p25_sm_watchdog_service(&g_opts, &g_state) : 0;
     p25_sm_watchdog_stop();
     rc |= expect(ticks == 1, "the positive control's observed beat is serviced");
     rc |= expect(p25->t_hunt_try_m > old_try, "watchdog-paced tick positive control drives P25 recovery");

@@ -326,6 +326,28 @@ check_engine_tick_spends_the_beat(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* A beat with no P25 recovery to run (trunking off) is let go at once, even behind a queued command: its tick could
+   tune nothing, so it never hands a hunt read back, and a read cut short for it would lose a partial symbol before the
+   command's own wait (a stream pause) is up. */
+static int
+check_ineligible_beat_never_defers(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    opts->trunk_enable = 0;
+    dsd_runtime_set_controls_pending(fake_controls_pending);
+    g_controls_queued = 1;
+    p25_sm_watchdog_request_tick();
+    const int answer = p25_sm_watchdog_service(opts, state);
+    if (answer != 0 || p25_sm_watchdog_tick_wanted()) {
+        DSD_FPRINTF(stderr, "FAIL: a beat with no recovery to run answered %d behind a queued command (wanted %d)\n",
+                    answer, p25_sm_watchdog_tick_wanted());
+        failed = 1;
+    }
+    g_controls_queued = 0;
+    dsd_runtime_set_controls_pending(NULL);
+    opts->trunk_enable = 1;
+    return failed;
+}
+
 int
 main(void) {
     if (dsd_test_setenv("DSD_NEO_P25_WD_MS", "20", 1) != 0) {
@@ -359,6 +381,7 @@ main(void) {
     failed |= check_busy_guard_keeps_the_beat(opts, state);
     failed |= check_beat_order_and_boundary(opts, state);
     failed |= check_engine_tick_spends_the_beat(opts, state);
+    failed |= check_ineligible_beat_never_defers(opts, state);
 
     dsd_engine_set_decoder_thread(0);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
