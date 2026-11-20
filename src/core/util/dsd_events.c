@@ -2566,7 +2566,7 @@ watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, 
     char site_str[64];
     watchdog_event_edacs_site_text(ctx, ea, site_str, sizeof(site_str));
     if (ea) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; %s%s;", datestr, timestr,
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07u; SRC: %07u; LCN: %02d; %s%s;", datestr, timestr,
                      sys_string, ctx->target_id, ctx->source_id, ctx->channel, site_str, sup_str);
         return;
     }
@@ -2685,7 +2685,7 @@ watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, co
     char cc_buf[12];
     const char* cc = watchdog_event_code_text(
         cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; ", datestr, timestr, sys_string,
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; CC: %s; ", datestr, timestr, sys_string,
                  ctx->target_id, ctx->source_id, cc);
     watchdog_event_append_dmr_site(ctx, event_string, event_size);
 
@@ -2767,7 +2767,7 @@ watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, co
                                        const char* sys_string, char* event_string, size_t event_size) {
     char nac_buf[8];
     const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, ctx->access_code_kind, ctx->access_code);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; NAC: %s; ", datestr, timestr, sys_string,
                  ctx->target_id, ctx->source_id, nac);
     watchdog_event_append_p25_site(ctx, event_string, event_size);
 
@@ -2788,7 +2788,7 @@ static void
 watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx, const char* datestr,
                                           const char* timestr, const char* sys_string, char* event_string,
                                           size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; ", datestr, timestr, sys_string,
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; ", datestr, timestr, sys_string,
                  ctx->target_id, ctx->source_id);
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
     watchdog_event_append_call_kind(ctx, event_string, event_size);
@@ -2825,7 +2825,7 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     char ran_buf[12];
     const char* ran = watchdog_event_code_text(
         ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; ", datestr, timestr, sys_string,
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; RAN: %s; ", datestr, timestr, sys_string,
                  ctx->target_id, ctx->source_id, ran);
     watchdog_event_append_nxdn_site(ctx, event_string, event_size);
 

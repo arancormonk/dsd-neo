@@ -1875,6 +1875,51 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     return rc;
 }
 
+// Issue #888 B17: the event line prints a row's 32-bit IDs unsigned, at the same minimum width: an ID above 2147483647
+// (an SDRTrunk import, or a test row like these) is never shown negative. DMR, P25, NXDN and X2-TDMA print 8 digits,
+// EDACS extended addressing 7.
+static int
+test_event_line_prints_wide_ids_unsigned(void) {
+    static const struct {
+        const char* label;
+        int sync;
+        int ea;
+        const char* want;
+    } cases[] = {
+        {"dmr", DSD_SYNC_DMR_BS_VOICE_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; CC: "},
+        {"p25", DSD_SYNC_P25P1_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; NAC: "},
+        {"nxdn", DSD_SYNC_NXDN_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; RAN: "},
+        {"x2-tdma", DSD_SYNC_X2TDMA_VOICE_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; "},
+        {"edacs ea", DSD_SYNC_EDACS_POS, 1, "TEST TGT: 4294967295; SRC: 3000000000; LCN: "},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = cases[i].sync;
+        state.ea_mode = cases[i].ea;
+        assert(observe_test_call(&state, 0U, cases[i].sync, DSD_CALL_KIND_GROUP_VOICE, 4294967295ULL, 3000000000ULL, 0U,
+                                 0U, DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        watchdog_event_current(&opts, &state, 0);
+        const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+        rc |= expect_has_substr(cases[i].label, item->event_string, cases[i].want);
+    }
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 61U, 7U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_has_substr("small ids keep their width", state.event_history_s[0].Event_History_Items[0].event_string,
+                            "TEST TGT: 00000061; SRC: 00000007; CC: ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_source_less_current_event_updates_history_metadata(void) {
     static dsd_opts opts;
@@ -9576,6 +9621,7 @@ main(void) {
     rc |= test_edacs_service_string_appends_past_pointer_size();
     rc |= test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening();
     rc |= test_p25_event_string_keeps_full_prefix_after_sprintf_hardening();
+    rc |= test_event_line_prints_wide_ids_unsigned();
     rc |= test_source_less_current_event_updates_history_metadata();
     rc |= test_event_log_writes_optional_metadata_lines();
     rc |= test_event_log_unstamped_row_keeps_bare_detail_lines();
