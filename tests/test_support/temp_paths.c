@@ -8,9 +8,10 @@
  * links this through the test support include folder.
  *
  * A test removes what it creates. This catches the paths it misses: when the process ends normally, and when a failed
- * assert() aborts it before its own cleanup runs. A folder goes with everything in it, which covers the files the code
- * under test wrote there. A test that ends normally with one left fails, so a miss on a passing path is fixed in the
- * test, not left to this. Nothing here runs until the first path is tracked, so a test that makes no temp path is
+ * assert() aborts it before its own cleanup runs. At a normal end a folder goes with everything in it, which covers the
+ * files the code under test wrote there, and the test fails, so a miss on a passing path is fixed in the test, not left
+ * to this. The abort handler may make only calls that are safe in a signal handler, which cannot list a folder: it
+ * removes the tracked files and the tracked folders that are empty by then, and names any folder it has to leave. Nothing here runs until the first path is tracked, so a test that makes no temp path is
  * untouched. Each path belongs to the process that created it: a forked child that exits removes only its own.
  *
  * Plain C and the OS calls only: it links into every test executable, including those that link nothing else.
@@ -26,6 +27,7 @@
 #include <string.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
+#include <io.h>
 #include <process.h>
 #include <wchar.h>
 #include <windows.h>
@@ -160,6 +162,27 @@ remove_tree(const char* path) {
     }
 }
 
+/* One path, not walked into: a file, or a folder only when it is empty. */
+static void
+remove_one(const char* path) {
+    wchar_t wide[TEMP_PATHS_LEN];
+    DWORD attrs = 0;
+    if (widen(path, wide, TEMP_PATHS_LEN) != 0) {
+        return;
+    }
+    const temp_path_kind kind = kind_of_wide(wide, &attrs);
+    if (kind == TEMP_PATH_DIR || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0U) {
+        (void)RemoveDirectoryW(wide);
+    } else if (kind == TEMP_PATH_FILE) {
+        (void)DeleteFileW(wide);
+    }
+}
+
+static void
+say(const char* text) {
+    (void)_write(2, text, (unsigned int)strlen(text));
+}
+
 #else
 
 static temp_path_kind
@@ -225,6 +248,23 @@ remove_tree(const char* path) {
     remove_tree_at(path, 0);
 }
 
+/* One path, not walked into: a file, or a folder only when it is empty. Calls only what a signal handler may. */
+static void
+remove_one(const char* path) {
+    const temp_path_kind kind = kind_of(path);
+    if (kind == TEMP_PATH_FILE) {
+        (void)unlink(path);
+    } else if (kind == TEMP_PATH_DIR) {
+        (void)rmdir(path);
+    }
+}
+
+static void
+say(const char* text) {
+    const ssize_t written = write(2, text, strlen(text));
+    (void)written;
+}
+
 #endif
 
 /* Remove this process's tracked paths that still exist, newest first, so a file goes before the folder it is in.
@@ -262,9 +302,25 @@ remove_at_exit(void) {
     _Exit(EXIT_FAILURE);
 }
 
+/* After a failed assert(): this process's tracked files, and its tracked folders that are empty by then, newest
+   first, through calls a signal handler may make (no folder listing, no formatted output). */
 static void
 remove_on_abort(int sig) {
-    remove_left_behind("after the test aborted");
+    if (!g_cleaning) {
+        g_cleaning = 1;
+        const long pid = current_pid();
+        for (size_t i = g_count; i-- > 0;) {
+            const char* path = g_paths[i].path;
+            if (g_paths[i].pid != pid || !path_exists(path)) {
+                continue;
+            }
+            remove_one(path);
+            const int left = path_exists(path);
+            say(left ? "test temp cleanup: left " : "test temp cleanup: removed ");
+            say(path);
+            say(left ? " after the test aborted: it is not empty\n" : ", after the test aborted\n");
+        }
+    }
     void (*prev)(int) = g_prev_abort;
     (void)signal(sig, (prev == SIG_ERR || prev == SIG_IGN || prev == NULL) ? SIG_DFL : prev);
     (void)raise(sig);

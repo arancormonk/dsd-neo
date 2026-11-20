@@ -9,13 +9,15 @@
  *
  *   remove   create, then remove everything itself: nothing is left, no cleanup line is printed, and it exits 0
  *   leave    create and return 0 without removing anything: the cleanup removes it all and the run fails
- *   abort    create, then abort() before any cleanup
+ *   abort    a file, an empty folder and a folder holding a file of its own, then abort() before any cleanup: the
+ *            first two are removed, and the third, which a signal handler cannot empty, is named and left
  *   many     create and remove more files than the tracker holds at once, then leave one
  *   link     (POSIX) leave a folder holding a symbolic link to argv[2], which must survive the cleanup */
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,6 +111,27 @@ run_many(void) {
     return 0;
 }
 
+/* What the abort handler can remove, a file and an empty folder, beside a folder it cannot: one holding a file it
+   was never told about. */
+static int
+run_abort(void) {
+    char file[DSD_TEST_PATH_MAX];
+    char empty[DSD_TEST_PATH_MAX];
+    char full[DSD_TEST_PATH_MAX];
+    char inner[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(file, sizeof file, "dsdneo_temp_paths_file");
+    if (fd < 0) {
+        return fail("mkstemp failed");
+    }
+    (void)dsd_close(fd);
+    if (!dsd_test_mkdtemp(empty, sizeof empty, "dsdneo_temp_paths_empty")
+        || !dsd_test_mkdtemp(full, sizeof full, "dsdneo_temp_paths_full")
+        || dsd_test_path_join(inner, sizeof inner, full, "inner.txt") != 0 || write_file(inner, "inner\n") != 0) {
+        return fail("abort setup failed");
+    }
+    abort();
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
 /* A folder left behind that holds a link to @p target: the cleanup removes the link, never what it points to. */
 static int
@@ -130,6 +153,9 @@ main(int argc, char** argv) {
     if (strcmp(mode, "many") == 0) {
         return run_many();
     }
+    if (strcmp(mode, "abort") == 0) {
+        return run_abort();
+    }
 #if !DSD_PLATFORM_WIN_NATIVE
     if (strcmp(mode, "link") == 0) {
         return argc > 2 ? run_link(argv[2]) : fail("link needs a target");
@@ -143,9 +169,6 @@ main(int argc, char** argv) {
     }
     if (strcmp(mode, "leave") == 0) {
         return 0;
-    }
-    if (strcmp(mode, "abort") == 0) {
-        abort();
     }
     return fail("unknown mode");
 }

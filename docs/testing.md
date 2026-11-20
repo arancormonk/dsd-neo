@@ -4123,13 +4123,15 @@ send stderr to the null device and write no file.
 
 `dsd_test_mkstemp()` and `dsd_test_mkdtemp()` also record each path they create
 (`tests/test_support/temp_paths.c`, through `dsd_test_temp_track()`). When the
-test process ends, normally or through `abort()`, each recorded path that still
-exists is removed, a directory with everything in it, and a
-`test temp cleanup: removed ...` line on stderr names it. That is a safety net
-for the exit paths a test's own cleanup misses, such as a failed `assert()`, not
-a replacement for that cleanup: a test that ends normally with one of its paths
-still there exits with a failure, whatever `main()` returned. It does not run
-when a test crashes or CTest kills it at its timeout.
+test process ends normally, each recorded path that still exists is removed, a
+directory with everything in it, a `test temp cleanup: removed ...` line on
+stderr names it, and the test exits with a failure, whatever `main()` returned:
+this is a safety net, not a replacement for the test's own cleanup. When a failed
+`assert()` aborts the test, its `SIGABRT` handler removes the recorded files and
+the recorded directories that are empty by then. A signal handler may not list a
+directory, so one the code under test filled stays, and a
+`test temp cleanup: left ...` line names it. Nothing runs when a test crashes or
+CTest kills it at its timeout.
 
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what

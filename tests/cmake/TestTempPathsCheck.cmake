@@ -21,7 +21,9 @@ set(_failures "")
 
 # Run @p mode (extra arguments after it) in its own folder; @p want_rc is 0 or
 # "fail"; @p want_err and @p refuse_err are regular expressions stderr must and
-# must not match ("" for none).
+# must not match ("" for none). The folder must be empty afterwards, except in
+# abort mode, where the one folder the abort handler cannot empty must be left
+# with its file and nothing else.
 function(_run_mode mode want_rc want_err refuse_err)
     set(_dir "${WORK}/${mode}")
     file(MAKE_DIRECTORY "${_dir}")
@@ -53,7 +55,20 @@ function(_run_mode mode want_rc want_err refuse_err)
         RELATIVE "${_dir}"
         "${_dir}/*"
     )
-    if(_left)
+    if(mode STREQUAL "abort")
+        if(
+            NOT _left
+                MATCHES
+                "^dsdneo_temp_paths_full_[A-Za-z0-9]+;dsdneo_temp_paths_full_[A-Za-z0-9]+/inner.txt$"
+        )
+            list(
+                APPEND _problems
+                "expected only the full folder left, found: ${_left}"
+            )
+        endif()
+        file(REMOVE_RECURSE "${_dir}")
+        file(MAKE_DIRECTORY "${_dir}")
+    elseif(_left)
         list(APPEND _problems "left behind: ${_left}")
     endif()
     if(_problems)
@@ -77,7 +92,7 @@ _run_mode(
 _run_mode(
     abort
     fail
-    "${_line}dsdneo_temp_paths_dir_[^\n]*after the test aborted.*${_line}dsdneo_temp_paths_file_[^\n]*after the test aborted"
+    "test temp cleanup: left [^\n]*dsdneo_temp_paths_full_[^\n]* after the test aborted: it is not empty\n${_line}dsdneo_temp_paths_empty_[^\n]*after the test aborted\n${_line}dsdneo_temp_paths_file_[^\n]*after the test aborted"
     "could not be removed"
 )
 _run_mode(
