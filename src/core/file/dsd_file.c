@@ -1188,6 +1188,18 @@ wav_rename_analog_from(const Event_History* event_item, const dsd_analog_wav_nam
     }
 }
 
+/* A row's target or source as the history shows it: the text, else the number, else nothing. */
+static void
+wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) {
+    if (text && text[0] != '\0') {
+        (void)DSD_SNPRINTF(out, out_size, "%s", text);
+    } else if (id != 0U) {
+        (void)DSD_SNPRINTF(out, out_size, "%u", (unsigned int)id);
+    } else {
+        out[0] = '\0';
+    }
+}
+
 /* Names the file from @p event_item, its row; without a row from @p analog_name, the analog call's own parts (its
    teardown, issue #668), or else as no row's. */
 static void
@@ -1218,8 +1230,15 @@ wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_
     int8_t gi = event_item ? event_item->gi : 0;
     if (event_item) {
         DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
-        DSD_SNPRINTF(metadata->src_str, sizeof(metadata->src_str), "%s", event_item->src_str);
-        DSD_SNPRINTF(metadata->tgt_str, sizeof(metadata->tgt_str), "%s", event_item->tgt_str);
+        /* With text on either endpoint, each is named as the history shows it: its text, else its number, else nothing
+           (issue #888 B9). A wholly numeric row keeps TGT_<n>_SRC_<n>. */
+        metadata->is_string = (event_item->src_str[0] != '\0' || event_item->tgt_str[0] != '\0') ? 1 : 0;
+        if (metadata->is_string) {
+            wav_journal_identity(metadata->src_str, sizeof(metadata->src_str), event_item->src_str,
+                                 event_item->source_id);
+            wav_journal_identity(metadata->tgt_str, sizeof(metadata->tgt_str), event_item->tgt_str,
+                                 event_item->target_id);
+        }
         /* The name's copies only: an M17 or D-STAR callsign can hold a '/', which would name a folder and fail the
            publish (issue #708). The row, and the rdio-scanner sidecar built from it, keep the identity as received. */
         wav_rename_sanitize_component(metadata->sys_str);
@@ -1231,7 +1250,6 @@ wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_
     } else if (gi == 1) {
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
     }
-    metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
     if (metadata->is_analog) {
         wav_rename_analog_from(event_item, analog_name, metadata);
     }
@@ -1250,9 +1268,9 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
                      metadata->src_str);
     } else {
-        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%u_SRC_%u.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str,
-                     metadata->target_id, metadata->source_id);
+                     (unsigned int)metadata->target_id, (unsigned int)metadata->source_id);
     }
 }
 
@@ -1297,18 +1315,6 @@ wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* di
         wav_rename_build_final_filename(to, to_size, dir, metadata);
     }
     return 0;
-}
-
-/* A row's target or source as the history shows it: the text, else the number, else nothing. */
-static void
-wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) {
-    if (text && text[0] != '\0') {
-        (void)DSD_SNPRINTF(out, out_size, "%s", text);
-    } else if (id != 0U) {
-        (void)DSD_SNPRINTF(out, out_size, "%u", (unsigned int)id);
-    } else {
-        out[0] = '\0';
-    }
 }
 
 /* The segment's length and rate from libsndfile, read before the close finalizes it; 0 when unknown. */

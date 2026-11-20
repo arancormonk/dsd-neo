@@ -3637,6 +3637,78 @@ test_close_and_rename_wav_replaces_unsafe_identity_characters(void) {
     return rc;
 }
 
+/*
+ * Issue #888 B9 and B14: how a digital recording names its two endpoints. When either endpoint has text, each one is
+ * its text, else its number when it has one, else empty: a dPMR row with called-ID text and no source text is named by
+ * that text, not TGT_0_SRC_0. A wholly numeric row keeps TGT_<n>_SRC_<n>, 0 included, and prints a 32-bit ID unsigned.
+ */
+typedef struct {
+    const char* label;
+    const char* tgt;
+    const char* src;
+    uint32_t target_id;
+    uint32_t source_id;
+    const char* want_tail;
+} endpoint_name_case;
+
+static int
+endpoint_name_case_run(const endpoint_name_case* c) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_endpoints")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true(c->label, wav != NULL && write_wav_test_samples(wav));
+    if (wav) {
+        static Event_History_I history;
+        DSD_MEMSET(&history, 0, sizeof history);
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_time = (time_t)1700004000;
+        item->gi = 0;
+        item->target_id = c->target_id;
+        item->source_id = c->source_id;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "SYS");
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", c->tgt);
+        DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", c->src);
+        rc |= expect_true(c->label, close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 0, NULL) == NULL);
+        dir_files_ctx files;
+        DSD_MEMSET(&files, 0, sizeof files);
+        files.dir = dir;
+        (void)dsd_dir_list(dir, collect_dir_file, &files);
+        const int one = files.count == 1 && has_suffix(files.names[0], c->want_tail);
+        if (!one) {
+            DSD_FPRINTF(stderr, "%s: want one recording ending %s, have %d (%s)\n", c->label, c->want_tail, files.count,
+                        files.count > 0 ? files.names[0] : "");
+            rc = 1;
+        }
+    }
+    remove_dir_tree(dir);
+    return rc;
+}
+
+static int
+test_close_and_rename_wav_names_each_endpoint(void) {
+    static const endpoint_name_case cases[] = {
+        {"dPMR called-ID text, no source", "1234567", "", 0U, 0U, "_SYS_GROUP_TGT_1234567_SRC_.wav"},
+        {"target text, numeric source", "CQCQCQ", "", 0U, 4021U, "_SYS_GROUP_TGT_CQCQCQ_SRC_4021.wav"},
+        {"source text, numeric target", "", "N0CALL", 100U, 0U, "_SYS_GROUP_TGT_100_SRC_N0CALL.wav"},
+        {"text over a number", "ROOM", "N0CALL", 100U, 7U, "_SYS_GROUP_TGT_ROOM_SRC_N0CALL.wav"},
+        {"text beside the top 32-bit ID", "ROOM", "", 0U, 4294967295U, "_SYS_GROUP_TGT_ROOM_SRC_4294967295.wav"},
+        {"wholly numeric, zero", "", "", 0U, 0U, "_SYS_GROUP_TGT_0_SRC_0.wav"},
+        {"wholly numeric, top 32-bit IDs", "", "", 4294967295U, 2147483648U,
+         "_SYS_GROUP_TGT_4294967295_SRC_2147483648.wav"},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= endpoint_name_case_run(&cases[i]);
+    }
+    return rc;
+}
+
 static int
 test_close_and_rename_wav_exports_rdio_sidecar(void) {
     int rc = close_and_rename_rdio_case("recording opened before the call starts at the call", (time_t)1700001900,
@@ -4417,6 +4489,7 @@ main(void) {
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
     rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
+    rc |= test_close_and_rename_wav_names_each_endpoint();
     rc |= test_close_and_rename_wav_stream_off_skips_export();
     rc |= test_close_and_rename_wav_names_an_nfm_recording();
 
