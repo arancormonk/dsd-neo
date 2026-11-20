@@ -167,6 +167,8 @@ test_guard_and_wrap_contracts(void) {
     return rc;
 }
 
+namespace {
+
 /* What the commit seam saw, between a conditional commit's check and its publication. */
 struct commit_seam_probe {
     struct input_ring_state* ring;
@@ -174,6 +176,8 @@ struct commit_seam_probe {
     std::thread purge;       /* a purge requested there */
     std::atomic<uint64_t> produced_at_purge{UINT64_MAX};
 };
+
+} // namespace
 
 static void
 commit_seam(void* arg) {
