@@ -18052,8 +18052,11 @@ Qt Quick frontend (`src/ui/qt`):
   (`LocationSupport.onActivityStart()`/`onActivityStop()`, called from `DsdNeoActivity` and checked by
   `location_wiring`), and a stop ends one in flight as cancelled. With no provider to ask, the answer is
   `LOCATION_OFF_ERROR` when the device's location switch is off (also for a request that ends with no fix after the
-  switch went off) and `PROVIDER_ERROR` otherwise (approximate access on
-  Android 10-11 with the network provider off). A prompt's answer resumes only the request that
+  switch went off), `PRECISE_NEEDED_ERROR` for approximate access with no provider but GPS (Android 10-11 with the
+  network provider off; the map points to App info), and `PROVIDER_ERROR` otherwise. Locate me offers no precise
+  upgrade with the switch off. Every answer's `fixAtMs` is the phone's wall time less the fix's age on the elapsed
+  clock, not the provider's own `time` (GPS or network time, which a phone clock set ahead or behind does not match,
+  while Qt ages the saved fix on the phone's clock). A prompt's answer resumes only the request that
   asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
   so precise location allowed from the map starts a stream roaming already holds. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
@@ -19270,7 +19273,8 @@ Qt Quick frontend (`src/ui/qt`):
     `fitAll(false)`), and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
     the background): it shows no notice, does not hold the button or arm Follow, starts only while the map shows in
     the foreground, and its answer moves only a view nobody moved. Every answer is saved as the shared fix (the map's
-    own measurement, newest for the map; decided limit: it can replace a fix another screen saved moments before).
+    own measurement, newest for the map; decided limit: it can replace a fix another screen saved moments before), unless
+    location was switched off or revoked while it waited: then it is not used at all.
     `MapLocator.access()` reads `DecoderHost::locationAccess()`: "none", "off" (permission kept, the device's
     location switched off: no opening fix, no placement on the saved dot), "approximate" or "precise".
     `AppPrefs::setLocationFix()` stores a stamp ahead of the wall clock as now, so a fix is never expired (and the one
@@ -19287,9 +19291,12 @@ Qt Quick frontend (`src/ui/qt`):
     where it is when it hides, no follow step moves it while hidden (`followNow()`), so the dot going back from a live fix to the saved
     one cannot carry it. The canvas's top follows the tiles prompt's own condition (`tilesPrompt.shown`), not its
     visibility, which turns false with the whole screen as it closes. A size change clamps from the view last asked
-    for (`m_asked`), not the clamped one, and starts no follow over while hidden (`rearmFollow()`). On return the view
-    is fitted to the canvas and a follow still on catches up at the user's zoom; a move to it cut short by the hiding
-    is finished (`m_followCatchUp`), or done again as a first centring when it was the first (`m_followStepFirst`). A History pin opening
+    for (`m_asked`), not the clamped one; a follow re-centres after it at its own zoom, never raised as a first centring
+    would (`rearmFollow()`), and not while hidden. On return the view is fitted to the canvas and a follow still on
+    catches up at the user's zoom (a mark that moved, a canvas resized while hidden, a follow move cut short by the
+    hiding (`m_animFollow`, `m_followCatchUp`), or a first centring cut short, done again as a first
+    (`m_followStepFirst`)); the screen calls `recentreFollow()` once the chips are laid out again, and lays them out
+    before centring a located dot under a new notice. A History pin opening
     the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device

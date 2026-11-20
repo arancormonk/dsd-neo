@@ -524,8 +524,9 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no
          * follow step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as
          * the map closes cannot carry the camera with it. A follow's move cut short is finished on return. */
-        if (m_camera->state() == QAbstractAnimation::Running && following()) {
-            /* A first centring cut short is done again as a first; a later step is finished at the user's zoom. */
+        if (m_camera->state() == QAbstractAnimation::Running && m_animFollow && following()) {
+            /* A follow's move cut short (not a zoom button's): a first centring is done again as a first, a later
+             * step is finished at the user's zoom. */
             if (m_followStepFirst) {
                 m_followedSet = false;
             } else {
@@ -533,10 +534,15 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
             }
         }
         stopCamera();
+        m_hiddenSize = size();
     }
     if (change == ItemVisibleHasChanged && value.boolValue) {
         /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a
-         * mark that moved meanwhile (or a move cut short), at the zoom the user left it at (not a first centring). */
+         * mark that moved meanwhile, a move cut short, or a canvas resized while hidden (a rotation), at the zoom the
+         * user left it at. The screen calls recentreFollow() again once the chips above have their height. */
+        if (size() != m_hiddenSize) {
+            m_followCatchUp = true;
+        }
         setViewport(m_asked);
         followNow();
     }
@@ -559,6 +565,7 @@ MapViewItem::stopCamera() {
 void
 MapViewItem::moveCamera(const mm::Viewport& target) {
     m_camera->stop();
+    m_animFollow = false; /* followNow() marks its own moves */
     mm::Viewport to = target;
     to.width = width();
     to.height = height();
@@ -927,6 +934,17 @@ MapViewItem::followNow() {
         markUsedDevice();
     }
     moveCamera(centredOn(cameraBase(), at, first));
+    m_animFollow = true;
+}
+
+void
+MapViewItem::recentreFollow() {
+    /* Centred below the chips as they are now (the screen has just laid them out), at the user's zoom. */
+    if (!following()) {
+        return;
+    }
+    m_followCatchUp = true;
+    followNow();
 }
 
 void
@@ -937,7 +955,9 @@ MapViewItem::rearmFollow() {
     if (!following() || !isVisible()) {
         return;
     }
-    m_followedSet = false;
+    /* At the zoom the follow has: a layout change (the tiles prompt going as the List shows) is no reason to raise a
+     * zoom the user pinched out to, as a first centring would. */
+    m_followCatchUp = true;
     followNow();
 }
 

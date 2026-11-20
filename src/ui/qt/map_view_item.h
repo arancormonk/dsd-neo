@@ -51,6 +51,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QSet>
+#include <QSizeF>
 #include <QString>
 #include <QTimer>
 #include <QVariant>
@@ -333,6 +334,9 @@ class MapViewItem : public QQuickItem {
     /** @brief Forget that the device's position placed the camera, as a new item starts (tests begin each case from
      *  one). The screen never calls it: the view it keeps between visits still derives from the device. */
     Q_INVOKABLE void resetCameraUsedDevicePosition();
+    /** @brief Centre a running follow's mark again at the user's zoom: below the chips as they are now (the screen calls
+     *  it once they are laid out on return). Nothing without a follow. */
+    Q_INVOKABLE void recentreFollow();
 
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief The node tree updatePaintNode() builds on an RHI window, built in @p window without one (as the
@@ -583,6 +587,10 @@ class MapViewItem : public QQuickItem {
     bool m_followCatchUp = false;
     /* The follow's latest step was its first centring (one cut short is done again as a first). */
     bool m_followStepFirst = false;
+    /* The camera move running is a follow step's (not a zoom button's). */
+    bool m_animFollow = false;
+    /* The canvas's size when it hid: a different one on return (a rotation) re-centres a follow. */
+    QSizeF m_hiddenSize;
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;

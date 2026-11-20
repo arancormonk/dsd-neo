@@ -99,6 +99,14 @@ Item {
     onVisibleChanged: {
         if (visible) {
             Qt.callLater(screen.placeCamera);
+            // A radio followed while away is centred below the chips once
+            // they are laid out again (the canvas caught up before they were).
+            Qt.callLater(function () {
+                if (!screen.visible)
+                    return;
+                status.forceLayout();
+                map.recentreFollow();
+            });
             // With a screen reader on, the focus goes to Back, a node: TalkBack
             // follows only a focus change on one (issue #800, P9), so it no
             // longer stays a moment on the covered control that opened the
@@ -1070,7 +1078,9 @@ Item {
             // Locate me, so every press finds the user again.
             locator.readyToFollow = canFollow;
             // At the fix's own zoom: the streets around a precise fix, the
-            // whole circle of an approximate one.
+            // whole circle of an approximate one. Below the chips as the
+            // answer just changed them (an approximate fix's notice).
+            status.forceLayout();
             map.centerOnDevice();
         }
         onFollowMeChanged: map.followDevice = followMe

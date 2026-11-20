@@ -1049,6 +1049,31 @@ test_hidden_canvas_keeps_its_view() {
     assert(std::fabs(mark.x() - 200.0) < 1.0e-6 && std::fabs(mark.y() - 150.0) < 1.0e-6);
     f.map->setFollowTrackId(0U);
 
+    /* A rotation while hidden (a size that lasts): on return the follow centres its mark for the new canvas, at the
+     * user's zoom. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(300.0, 400.0));
+    f.map->setVisible(true);
+    const QPointF turned = f.map->markerPoint(polar).toPointF();
+    assert(std::fabs(turned.x() - 150.0) < 1.0e-6 && std::fabs(turned.y() - 200.0) < 1.0e-6
+           && std::fabs(f.map->zoom() - 6.0) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+    f.map->setSize(QSizeF(400.0, 300.0));
+
+    /* A zoom button's move cut short while following is left where it stopped, not replayed as a follow step. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->setCameraDurationMs(250);
+    f.map->zoomIn();
+    f.map->setVisible(false);
+    const double stoppedZoom = f.map->zoom();
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - stoppedZoom) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+
     /* The List shown (the canvas hidden) and the layout changing meanwhile does not start a follow over. */
     f.map->centerOn(65.0, -40.0, 6.0);
     f.map->setFollowTrackId(polar);
@@ -1058,6 +1083,10 @@ test_hidden_canvas_keeps_its_view() {
     f.map->setSize(QSizeF(400.0, 900.0));
     f.map->setSize(QSizeF(400.0, 300.0));
     f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - out) < 1.0e-9);
+    /* Nor while shown: the tiles prompt can go (the List) before the canvas hides. */
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
     assert(std::fabs(f.map->zoom() - out) < 1.0e-9);
     f.map->setFollowTrackId(0U);
 }
@@ -1077,19 +1106,23 @@ test_follow_recentres_after_resize_and_restore() {
     assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6);
     f.map->setFollowTrackId(0U);
 
-    /* Following the device at 51.5 N from the world's zoom: the first centring raised the zoom for a 300 px canvas;
-     * on an 800 px one (a rotation) that zoom pins the centre again, and the follow centres the dot anew. */
+    /* Following the device at 51.5 N from the world's zoom: the first centring raised the zoom for a 300 px canvas.
+     * On an 800 px one (a rotation) the follow centres the dot again at that zoom, not a raised one: only a first
+     * centring raises a zoom (a layout change must not undo a zoom the user pinched out to). Where the projection's
+     * edge stops the centre, the dot is as near it as the canvas allows, and in view. */
     f.map->setZoom(0.0);
     f.map->setDeviceLatitude(51.5);
     f.map->setDeviceLongitude(20.0);
     f.map->setDeviceValid(true);
     f.map->setFollowDevice(true);
+    const double raised = f.map->zoom();
     f.map->setSize(QSizeF(400.0, 800.0));
+    assert(std::fabs(f.map->zoom() - std::max(raised, f.map->minimumZoom())) < 1.0e-9);
     const mm::Viewport vp = mm::clamp_viewport(mm::Viewport{
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).x,
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 800.0});
     const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
-    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 400.0) < 1.0e-6);
+    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && dot.y >= 0.0 && dot.y <= 800.0);
     f.map->setFollowDevice(false);
     f.map->setSize(QSizeF(400.0, 300.0));
 }

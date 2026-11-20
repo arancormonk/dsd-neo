@@ -71,7 +71,10 @@ private fun recentCacheAvoidsThrottledRequest() {
         check(activity.manager.callbacks.isEmpty()) { "usable cache must not wait for a throttled live fix" }
         val result = geocodeResult()
         check(result.optDouble("lat") == cached.latitude && result.optDouble("accuracyM") == 2_000.0)
-        check(result.optLong("fixAtMs") == cached.time) { "cached fix must retain its original timestamp" }
+        // Its own age, on the phone's wall clock: two minutes old, not now (nor its provider's clock).
+        check(kotlin.math.abs(result.optLong("fixAtMs") - (System.currentTimeMillis() - 2 * 60 * 1000L)) < 5_000L) {
+            "cached fix must keep its age"
+        }
     }
     Build.VERSION.SDK_INT = 30
 }
@@ -547,7 +550,24 @@ private fun locationOffIsNotAMissingProvider() {
     noNetwork.manager.disabledProviders.add(LocationManager.NETWORK_PROVIDER)
     LocationSupport.requestSiteLocation(noNetwork, 231) // approximate access on Android 10: the network provider only
     Handler.drain()
-    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.PROVIDER_ERROR)
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.PRECISE_NEEDED_ERROR) {
+        "GPS is there, for precise access"
+    }
+
+    val none = Activity()
+    none.manager.disabledProviders.addAll(listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER))
+    LocationSupport.requestSiteLocation(none, 232)
+    Handler.drain()
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.PROVIDER_ERROR) {
+        "no provider precise access would open either"
+    }
+
+    // Approximate access with the switch off: Locate me offers no upgrade, which could not help.
+    val offApproximate = Activity().apply { manager.isLocationEnabled = false }
+    LocationSupport.requestPreciseLocation(offApproximate, 233)
+    Handler.drain()
+    check(offApproximate.permissionRequests == 0)
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.LOCATION_OFF_ERROR)
 }
 
 // The map's opening fix is for a map on screen: one that reaches the main looper after onStop asks nothing, and onStop

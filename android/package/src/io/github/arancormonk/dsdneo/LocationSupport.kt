@@ -76,6 +76,7 @@ object LocationSupport {
     // The two "no provider" answers. The map reads which one it got: keep them as they are.
     internal const val LOCATION_OFF_ERROR = "Location is off; use Browse."
     internal const val PROVIDER_ERROR = "Location provider unavailable; use Browse."
+    internal const val PRECISE_NEEDED_ERROR = "Location needs precise access here; use Browse."
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
@@ -134,6 +135,8 @@ object LocationSupport {
                 // The app left the foreground before this ran (Qt's call can come just after onStop): nothing to report.
                 prompt == Prompt.NEVER && !visible -> finish(request, false, "", "", "", cancelled = true)
                 coarse && (fine || prompt != Prompt.PRECISE) -> locate(request)
+                // Precise location would not help with the device's location switched off: no upgrade prompt.
+                coarse && locationOff(request.manager) -> finish(request, false, "", "", LOCATION_OFF_ERROR)
                 prompt == Prompt.NEVER -> finish(request, false, "", "", "Location permission not granted.")
                 else -> {
                     // A prompt already open answers this request too; the broker opens no second one.
@@ -196,7 +199,12 @@ object LocationSupport {
         if (providers.isEmpty()) {
             // Location switched off for the whole device, or on with no provider this access may use (approximate
             // access on Android 10-11 with the network provider off): the map sends each to its own settings.
-            finish(request, false, "", "", if (locationOff(request.manager)) LOCATION_OFF_ERROR else PROVIDER_ERROR)
+            finish(request, false, "", "", when {
+                locationOff(request.manager) -> LOCATION_OFF_ERROR
+                // Approximate access on Android 10-11 asks the network provider only; GPS is there, for precise access.
+                !fine && gpsEnabled(request.manager) -> PRECISE_NEEDED_ERROR
+                else -> PROVIDER_ERROR
+            })
             return
         }
         // With GPS asked, only its own cache is a measurement: the fused provider's last location can be the position
@@ -259,8 +267,19 @@ object LocationSupport {
         }
     }
 
+    /**
+     * When [fix] was measured, on this phone's wall clock: now less its age on the elapsed clock. A provider's own
+     * `time` is GPS or network time, which a phone clock set ahead or behind does not match, and Qt ages the saved fix
+     * on the phone's clock (24 hours), so a fresh fix stamped in the other clock could expire as it is saved.
+     */
+    private fun wallTimeOf(fix: Location): Long =
+        System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos) / 1_000_000L
+
     /** A request ending without a fix: [error], unless the device's location was switched off meanwhile. */
     private fun noFix(request: Request, error: String) = if (locationOff(request.manager)) LOCATION_OFF_ERROR else error
+
+    private fun gpsEnabled(manager: LocationManager): Boolean =
+        try { manager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
 
     /** Whether the device's location switch is off (Android 9 and later say so directly). */
     private fun locationOff(manager: LocationManager): Boolean =
@@ -401,7 +420,7 @@ object LocationSupport {
         val fix = request.fix
         val record = JSONObject().put("id", request.id).put("fixOk", fix != null)
             .put("lat", fix?.latitude ?: 0.0).put("lon", fix?.longitude ?: 0.0)
-            .put("accuracyM", fix?.accuracy?.toDouble() ?: 0.0).put("fixAtMs", fix?.time ?: 0L)
+            .put("accuracyM", fix?.accuracy?.toDouble() ?: 0.0).put("fixAtMs", fix?.let { wallTimeOf(it) } ?: 0L)
             .put("geocodeOk", geocodeOk).put("postalCode", postal).put("countryCode", country).put("error", error)
             .put("cancelled", cancelled)
         release(request)

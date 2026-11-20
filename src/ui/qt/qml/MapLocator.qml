@@ -250,9 +250,10 @@ Item {
             var quiet = locator.quiet;
             locator.requestId = 0;
             locator.quiet = false;
-            if (result.fixOk) {
+            var access = locator.access();
+            if (result.fixOk && access !== "off" && access !== "none") {
                 prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
-                var precise = locator.access() === "precise";
+                var precise = access === "precise";
                 if (!quiet) {
                     // An approximate fix after Locate me offered precise:
                     // say how to get a closer one.
@@ -263,12 +264,15 @@ Item {
                     locator.located(precise && !quiet);
                 locator.moveOnAnswer = false;
             } else if (!quiet) {
-                // Where to fix it: no permission is the app's settings, the
-                // location switch off is the device's.
-                var access = locator.access();
-                locator.noticeAction = access === "none" ? "appSettings" : access === "off" ? "locationSettings" : "";
+                // Where to fix it: no permission (or approximate access with
+                // no provider but GPS, Android 10-11) is the app's settings,
+                // the location switch off is the device's. A fix that came
+                // as location was switched off or revoked is not used.
+                var preciseNeeded = String(result.error || "").indexOf("Location needs precise access") === 0;
+                locator.noticeAction = access === "none" || preciseNeeded ? "appSettings" : access === "off" ? "locationSettings" : "";
                 locator.notice = access === "off" ? qsTr("Location is off on this device.")
                     : access === "none" ? qsTr("Location unavailable. Check location access in your device settings.")
+                    : preciseNeeded ? qsTr("Location here needs precise access. Allow precise location in Settings.")
                     : prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.")
                     : qsTr("Location unavailable. Try again in a moment.");
             }

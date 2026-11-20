@@ -409,6 +409,60 @@ Item {
             compare(item("mapLocator").noticeAction, "locationSettings");
         }
 
+        // A fix that comes after location was switched off (or revoked) while the request waited is not used: it neither
+        // moves the map nor is saved, and Locate me says location is off.
+        function test_04l_a_fix_after_location_went_off_is_not_used() {
+            restart();
+            var opening = pendingLocate();
+            testContext.setLocationAccess("off");
+            decoderHost.locationResult(opening, true, devicePlace.latitude, devicePlace.longitude, 8, savedSystems.realtimeNowMs(), false, "", "", "");
+            verify(prefs.lastFixAt === 0, "not saved");
+            testContext.setLocationAccess("precise");
+            item("mapLocate").activate();
+            var id = pendingLocate();
+            testContext.setLocationAccess("off");
+            var before = canvasView();
+            decoderHost.locationResult(id, true, devicePlace.latitude, devicePlace.longitude, 8, savedSystems.realtimeNowMs(), false, "", "", "");
+            verify(sameView(canvasView(), before.latitude, before.longitude, before.zoom), "the map stays");
+            compare(item("mapLocator").notice, "Location is off on this device.");
+            compare(item("mapLocator").noticeAction, "locationSettings");
+        }
+
+        // Approximate access on Android 10-11 with no network provider but GPS: Locate me says precise access is needed
+        // and offers the app's settings.
+        function test_04m_approximate_access_with_only_gps() {
+            testContext.setLocationAccess("approximate");
+            restart();
+            item("mapLocate").activate();
+            decoderHost.locationResult(pendingLocate(), false, 0, 0, 0, 0, false, "", "", "Location needs precise access here; use Browse.");
+            compare(item("mapLocator").notice, "Location here needs precise access. Allow precise location in Settings.");
+            compare(item("mapLocator").noticeAction, "appSettings");
+        }
+
+        // The List and back with the tiles prompt showing (it goes with the List, resizing the canvas) keeps a radio
+        // follow at the zoom the user pinched out to.
+        function test_04n_the_list_keeps_a_follow_zoom() {
+            testContext.setLocationAccess("none");
+            testContext.pushPosition({source: 1001, lat: 65.0, lon: -40.0, label: "Engine 7"});
+            restart();
+            verify(item("mapTilesPrompt").visible, "the tiles prompt shows");
+            var id = 0;
+            for (var i = 1; i < 20000 && id === 0; i++) {
+                if (positions.trackFor(i).label === "Engine 7")
+                    id = i;
+            }
+            verify(id > 0);
+            screen.follow(id);
+            canvas().zoomAbout(canvas().minimumZoom, canvas().width / 2, canvas().height / 2);
+            var out = canvas().zoom;
+            screen.mapShown = false;
+            waitForRendering(screen);
+            screen.mapShown = true;
+            waitForRendering(screen);
+            compare(canvas().followTrackId, id, "still following");
+            verify(near(canvas().zoom, out, 1e-6), "the user's zoom: " + canvas().zoom + " vs " + out);
+        }
+
         // Close while following a live fix that is not the saved one: letting the lease go moves the dot back to the
         // saved fix, and that must not re-centre the camera after the close: the view stays where it was followed to.
         // With and without animation, on the host that runs the live feed.
