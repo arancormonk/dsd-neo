@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -715,27 +716,73 @@ dsd_rdio_wav_duration_s(const char* wav_path) {
 }
 
 static void
+dsd_rdio_json_write_ascii(FILE* fp, unsigned char c) {
+    switch (c) {
+        case '"': fputs("\\\"", fp); break;
+        case '\\': fputs("\\\\", fp); break;
+        case '\b': fputs("\\b", fp); break;
+        case '\f': fputs("\\f", fp); break;
+        case '\n': fputs("\\n", fp); break;
+        case '\r': fputs("\\r", fp); break;
+        case '\t': fputs("\\t", fp); break;
+        default:
+            if (iscntrl(c)) {
+                DSD_FPRINTF(fp, "\\u%04x", (unsigned int)c);
+            } else {
+                fputc((int)c, fp);
+            }
+            break;
+    }
+}
+
+/* The bytes of the maximal ill-formed run at @p s (Unicode's "maximal subpart"): a lead byte and the continuation
+   bytes after it that could still begin its character, else the one byte. At least 1; @p avail is at least 1. */
+static size_t
+dsd_rdio_utf8_ill_formed_len(const char* s, size_t avail) {
+    unsigned char lo;
+    unsigned char hi;
+    const size_t len = dsd_utf8_lead((unsigned char)s[0], &lo, &hi);
+    size_t n = 1;
+    while (n < len && n < avail) {
+        const unsigned char c = (unsigned char)s[n];
+        if (c < (n == 1U ? lo : 0x80U) || c > (n == 1U ? hi : 0xBFU)) {
+            break;
+        }
+        n++;
+    }
+    return n;
+}
+
+/* A JSON string's content (issue #888 B11): well-formed UTF-8 as it is, ASCII escaped where JSON needs it, and each
+   ill-formed run (a name cut mid-character) as one U+FFFD, so the sidecar is always valid UTF-8. */
+static void
 dsd_rdio_json_write_escaped(FILE* fp, const char* s) {
     const char* text = s ? s : "";
-    for (size_t i = 0; text[i] != '\0'; i++) {
-        unsigned char c = (unsigned char)text[i];
-        switch (c) {
-            case '"': fputs("\\\"", fp); break;
-            case '\\': fputs("\\\\", fp); break;
-            case '\b': fputs("\\b", fp); break;
-            case '\f': fputs("\\f", fp); break;
-            case '\n': fputs("\\n", fp); break;
-            case '\r': fputs("\\r", fp); break;
-            case '\t': fputs("\\t", fp); break;
-            default:
-                if (iscntrl(c)) {
-                    DSD_FPRINTF(fp, "\\u%04x", (unsigned int)c);
-                } else {
-                    fputc((int)c, fp);
-                }
-                break;
+    const size_t len = strlen(text);
+    size_t i = 0;
+    while (i < len) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c < 0x80U) {
+            dsd_rdio_json_write_ascii(fp, c);
+            i++;
+            continue;
+        }
+        const size_t n = dsd_utf8_sequence_len(text + i, len - i);
+        if (n > 0U) {
+            (void)fwrite(text + i, 1, n, fp);
+            i += n;
+        } else {
+            fputs("\xEF\xBF\xBD", fp);
+            i += dsd_rdio_utf8_ill_formed_len(text + i, len - i);
         }
     }
+}
+
+/* Whether @p tag names something rdio-scanner keeps as a label (issue #888 B10): not empty and not "-", which both
+   servers discard. A "-" tag gives way to the next candidate. */
+static int
+dsd_rdio_tag_usable(const char* tag) {
+    return tag[0] != '\0' && strcmp(tag, "-") != 0;
 }
 
 typedef struct {
@@ -862,7 +909,7 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
     out->source = 0U;
     out->encrypted = 0;
     const char* mode = event->sysid_string[0] != '\0' ? event->sysid_string : "NFM";
-    if (event->channel_label[0] != '\0') {
+    if (dsd_rdio_tag_usable(event->channel_label)) {
         out->talkgroup_tag = event->channel_label;
     } else if (event->freq_hz > 0) {
         // Whole 100 Hz, rounded: 4 decimals of MHz.
@@ -911,13 +958,13 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->source = event->source_id;
     out->encrypted = event->enc ? 1 : 0;
 
-    if (event->service_label[0] != '\0') {
+    if (dsd_rdio_tag_usable(event->service_label)) {
         out->talkgroup_tag = event->service_label;
-    } else if (event->t_name[0] != '\0') {
+    } else if (dsd_rdio_tag_usable(event->t_name)) {
         out->talkgroup_tag = event->t_name;
-    } else if (event->tgt_str[0] != '\0') {
+    } else if (dsd_rdio_tag_usable(event->tgt_str)) {
         out->talkgroup_tag = event->tgt_str;
-    } else if (event->channel_label[0] != '\0') {
+    } else if (dsd_rdio_tag_usable(event->channel_label)) {
         // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
         // receiver was parked on a named channel. That name is what the operator would recognise
         // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:

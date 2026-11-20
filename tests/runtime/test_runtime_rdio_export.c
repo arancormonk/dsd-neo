@@ -2022,6 +2022,112 @@ test_sidecar_short_name_falls_back_to_the_protocol(void) {
     return rc;
 }
 
+// Issue #888 B10: rdio-scanner discards a tag of exactly "-", so "-" is no name at any step of the chain: the next
+// candidate labels the call. An analog channel label of "-" gives way to the frequency tag.
+static int
+test_sidecar_dash_tag_is_absent(void) {
+    static const struct {
+        const char* label;
+        const char* service;
+        const char* t_name;
+        const char* tgt_str;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {"dash service name", "-", "Ops", "", "", "\"talkgroup_tag\": \"Ops\","},
+        {"dash talkgroup name", "", "-", "TG-A", "", "\"talkgroup_tag\": \"TG-A\","},
+        {"dash target text", "", "", "-", "Dispatch", "\"talkgroup_tag\": \"Dispatch\","},
+        {"dash everywhere", "-", "-", "-", "-", "\"talkgroup_tag\": \"GROUP\","},
+        {"a name that starts with a dash", "-East", "Ops", "", "", "\"talkgroup_tag\": \"-East\","},
+    };
+
+    static Event_History_I hist;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        Event_History* item = &hist.Event_History_Items[0];
+        item->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+        item->event_time = (time_t)1700001400;
+        item->target_id = 77U;
+        item->gi = 0;
+        DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", cases[i].service);
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        char body[4096];
+        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, cases[i].want);
+    }
+    analog_row(&hist, 154437500);
+    DSD_SNPRINTF(hist.Event_History_Items[0].channel_label, sizeof hist.Event_History_Items[0].channel_label, "%s",
+                 "-");
+    char body[4096];
+    if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+        return 1;
+    }
+    rc |= expect_body_has("analog dash channel label", body, "\"talkgroup_tag\": \"NFM 154.4375 MHz\",");
+    return rc;
+}
+
+// Issue #888 B11: sidecar strings are JSON, which is UTF-8. A name cut mid-character (a CSV import) or any other byte
+// that is no part of a well-formed character becomes U+FFFD, one for each maximal ill-formed run; well-formed text,
+// multibyte characters included, is written untouched.
+static int
+test_sidecar_strings_are_valid_utf8(void) {
+    static const struct {
+        const char* label;
+        const char* in;
+        const char* want;
+    } cases[] = {
+        {"well-formed text", "Caf\xC3\xA9 \xE6\x97\xA5 \xF0\x9F\x93\xBB", "Caf\xC3\xA9 \xE6\x97\xA5 \xF0\x9F\x93\xBB"},
+        {"cut two-byte character", "Caf\xC3", "Caf\xEF\xBF\xBD"},
+        {"cut three-byte character",
+         "A\xE6\x97"
+         "B",
+         "A\xEF\xBF\xBD"
+         "B"},
+        {"lone continuation byte",
+         "A\x80"
+         "B",
+         "A\xEF\xBF\xBD"
+         "B"},
+        {"overlong form", "\xC0\xAF", "\xEF\xBF\xBD\xEF\xBF\xBD"},
+        {"surrogate", "\xED\xA0\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD"},
+        {"past U+10FFFF",
+         "\xF4\x90\x80\x80"
+         "Z",
+         "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD"
+         "Z"},
+        {"escape after a bad byte", "\xFF\"", "\xEF\xBF\xBD\\\""},
+    };
+
+    static Event_History_I hist;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&hist, 0, sizeof(hist));
+        Event_History* item = &hist.Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->event_time = (time_t)1700001500;
+        item->target_id = 77U;
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].in);
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].in);
+        char body[4096];
+        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        char want[256];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+    }
+    return rc;
+}
+
 static int
 test_api_shutdown_drains_queue(void) {
 #ifndef USE_CURL
@@ -3192,6 +3298,8 @@ main(void) {
     rc |= test_sidecar_tag_of_unknown_kind_is_empty();
     rc |= test_sidecar_emergency_from_the_row();
     rc |= test_sidecar_short_name_falls_back_to_the_protocol();
+    rc |= test_sidecar_dash_tag_is_absent();
+    rc |= test_sidecar_strings_are_valid_utf8();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_journaled_upload_keeps_the_wav();
