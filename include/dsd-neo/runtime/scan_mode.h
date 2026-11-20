@@ -31,12 +31,16 @@ typedef enum {
     /** Analog narrowband FM monitor (issue #526): the -fA receive path, one channel width per row. */
     DSD_SCAN_MODE_NFM,
     /** Analog AM monitor (issue #526): the -fM receive path (AM envelope detector), one channel width per row. */
-    DSD_SCAN_MODE_AM
+    DSD_SCAN_MODE_AM,
+    /** TETRA Direct Mode (issue #890): the -fT decoder (pi/4-DQPSK, 18 ksym/s, 25 kHz; EN 300 396-2 clauses 5.3 and
+     * 6.2) on one simplex channel. A digital class; which content may hold a row of it is the scanners' rule (DMO
+     * content only, never TMO). */
+    DSD_SCAN_MODE_TETRA_DMO
 } dsd_scan_mode;
 
 /** The last scan class: the bound every range check uses instead of a literal class. Appending a
  * class moves it, so stored values and MODE_BIT() option masks keep their meaning. */
-#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_AM
+#define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_TETRA_DMO
 
 /** Target modulation precedence shared by scope reapplication and trunk entry. */
 typedef enum {
@@ -208,7 +212,12 @@ int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 int dsd_scan_mode_updating(const dsd_state* state);
 /** Retain target modulation precedence across configured-setting updates. */
 void dsd_scan_mode_target_modulation(const dsd_state* state, dsd_scan_modulation modulation);
-/** Apply target flags/locks only; AUTO starts P25 on C4FM and other trunk classes on GFSK. */
+/** The modulation (dsd_state::rf_mod: 0 C4FM, 1 QPSK, 2 GFSK) a target's modulation AUTO starts class @p mode on (issue
+ * #890): C4FM for P25 (which a P25 target then learns), YSF, M17 and dPMR; GFSK for DMR, NXDN at either rate and
+ * D-STAR (two-level GMSK); QPSK for TETRA DMO. GFSK for INHERIT, and C4FM for an analog class or a value out of range,
+ * where it decides nothing. The one table dsd_scan_mode_apply_modulation() and the engine's landing profile share. */
+int dsd_scan_mode_auto_rf_mod(dsd_scan_mode mode);
+/** Apply target flags/locks only; AUTO starts the class on its own modulation (dsd_scan_mode_auto_rf_mod()). */
 void dsd_scan_mode_apply_modulation(dsd_opts* opts, dsd_scan_mode mode, dsd_scan_modulation modulation);
 /** Snapshot configured settings, even while a row override is active. */
 void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
@@ -329,8 +338,9 @@ int dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* stat
  * under modulation=auto, which the resume puts back before it times the row), and the republish after it lands there
  * (svc_publish_symbol_profile() decides by this row's decision and asks for the landing). DSD_NEO_CQPSK decides that
  * CQPSK state when set, unless the scope is a --trunk-scan target that makes its own choice (issue #583,
- * dsd_scan_mode_cqpsk_explicit()): P25 with a modulation value (auto, c4fm or cqpsk), whose @p cqpsk stands, or DMR or
- * NXDN at either rate, which lands CQPSK off whatever @p cqpsk says, as the engine lands it.
+ * dsd_scan_mode_cqpsk_explicit()): P25 with a modulation value (auto, c4fm or cqpsk), whose @p cqpsk stands, or any
+ * other digital class, which lands its class's CQPSK state whatever @p cqpsk says (off for DMR, NXDN at either rate,
+ * dPMR, D-STAR, YSF and M17, on for TETRA DMO, issue #890), as the engine lands it.
  *
  * Under a scan scope this times the scope's row and records the landing decision it used
  * (dsd_scan_mode_timed_digital_family()), as the scope's own timing of a row does (dsd_scan_mode_enter(),
@@ -354,14 +364,15 @@ int dsd_scan_mode_timed_digital_family(const dsd_state* state);
  * as with dsd_scan_mode_target_modulation(). Decoder thread only, with the live state. */
 int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
 /** Whether the scan scope's row is a --trunk-scan target that makes its own CQPSK choice (issue #583): P25 with a
- * modulation value (auto, c4fm or cqpsk), or DMR or NXDN at either rate; and the CQPSK state the row lands with, in
- * @p out_cqpsk (may be NULL). A P25 target's own state is the modulation its decoder runs (state->rf_mod == 1, which
- * the scanner sets from the target's modulation, or an auto target's learned one); a DMR or NXDN target's is CQPSK off,
- * whatever rf_mod a -mq lock left a target with no modulation on, as the engine's GFSK chain lands it. That CQPSK state
+ * modulation value (auto, c4fm or cqpsk), or any other digital class (issue #890); and the CQPSK state the row lands
+ * with, in @p out_cqpsk (may be NULL). A P25 target's own state is the modulation its decoder runs (state->rf_mod == 1,
+ * which the scanner sets from the target's modulation, or an auto target's learned one); every other digital target's
+ * is its class's, whatever rf_mod a -m lock left a target with no modulation on, as the engine's landing profile lands
+ * it: CQPSK off for DMR, NXDN at either rate, dPMR, D-STAR, YSF and M17, on for TETRA DMO. That CQPSK state
  * stands over DSD_NEO_CQPSK where a landing on the digital family puts it: the row's timing predicts the landing with
  * it (dsd_scan_mode_symbol_timing_rate_hz(), which takes it over its caller's CQPSK state), the engine's retune for the
- * target carries it (dsd_engine_trunk_scan_cqpsk_explicit(), the same rule, and the GFSK chain's CQPSK off), and a live
- * republish of the row times the decoder, asks for the landing and publishes its symbol profile with it
+ * target carries it (dsd_engine_trunk_scan_cqpsk_explicit(), the same rule, and the landing profile's CQPSK state),
+ * and a live republish of the row times the decoder, asks for the landing and publishes its symbol profile with it
  * (svc_publish_symbol_profile()). Returns 0 without opts or a scope, for a -Y row (no --trunk-scan), and for a P25
  * target with no modulation, which land where an open of the mode would: @p out_cqpsk is then the decoder's
  * (state->rf_mod == 1), which DSD_NEO_CQPSK overrides at a landing when set. */

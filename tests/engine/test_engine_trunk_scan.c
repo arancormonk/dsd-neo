@@ -14501,7 +14501,7 @@ static int
 test_nfm_target_parse_and_row_diagnostics(void) {
     int test_rc = 0;
     dsd_trunk_scan_target_list list;
-    char err[256] = {0};
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
     if (load_nfm_targets("fire,nfm-conventional,154430000,,1500,2000,county fire,,20,,,"
                          "--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 5000,\n"
                          "dmr,dmr-conventional,461000000,,1500,1200,,gfsk,,,,,\n",
@@ -14532,8 +14532,9 @@ test_nfm_target_parse_and_row_diagnostics(void) {
         {"a,nfm,154430000,,,,,,,,,,\n", "row 2 has invalid target type 'nfm' (use nfm-conventional)"},
         {"a,NFM-conventional,154430000,,,,,,,,,,\n",
          "row 2 has invalid target type 'NFM-conventional'; expected p25-trunk, p25-conventional, dmr-trunk, "
-         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk, nfm-conventional or "
-         "am-conventional"},
+         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk, nfm-conventional, "
+         "am-conventional, ysf-conventional, dstar-conventional, dpmr-conventional, m17-conventional or "
+         "tetra-dmo-conventional"},
         {"a,nfm-conventional,154430000,,,,,auto,,,,,\n", "row 2: an analog target takes no modulation"},
         {"a,nfm-conventional,154430000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
         {"a,nfm-conventional,154430000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
@@ -15960,9 +15961,10 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
 }
 
 /* The decoder's side of the rule (issue #583): a trunk-scan target's scope says its CQPSK choice is its own when it is
- * P25 with a modulation value (auto, c4fm or cqpsk) or DMR/NXDN at either rate, and the landing rate is asked with
- * cqpsk_explicit set then. A P25 target without a modulation, and a -Y row of any of those modes, are asked without it:
- * they land where an open of the mode would, as DSD_NEO_CQPSK says. */
+ * P25 with a modulation value (auto, c4fm or cqpsk) or any other digital class (DMR/NXDN at either rate, and the
+ * simplex classes, issue #890: dPMR, D-STAR, YSF and M17 with CQPSK off, TETRA DMO with it on, whatever the caller's
+ * CQPSK state), and the landing rate is asked with cqpsk_explicit set then. A P25 target without a modulation, and a -Y row
+ * of any of those modes, are asked without it: they land where an open of the mode would, as DSD_NEO_CQPSK says. */
 static int
 test_symbol_timing_explicit_follows_the_scope(void) {
     static dsd_opts opts;
@@ -15980,19 +15982,26 @@ test_symbol_timing_explicit_follows_the_scope(void) {
         dsd_scan_mode mode;
         dsd_scan_modulation modulation;
         int want_explicit;
+        int want_cqpsk;
     } rows[] = {
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_C4FM, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0},
-        {1, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 1},
-        {1, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_GFSK, 1},
-        {1, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_AUTO, 1},
-        {1, DSD_SCAN_MODE_DPMR, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0},
-        {0, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_C4FM, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {1, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_GFSK, 1, 0},
+        {1, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_DPMR, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_DSTAR, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_M17, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 1, 1},
+        {0, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0, 0},
+        {0, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 0, 0},
     };
 
     int test_rc = 0;
@@ -16006,12 +16015,16 @@ test_symbol_timing_explicit_follows_the_scope(void) {
         }
         dsd_scan_mode_target_modulation(&state, rows[i].modulation);
         g_fake_family_last_explicit = -1;
+        g_fake_family_last_cqpsk = -1;
         const int rate_hz = dsd_scan_mode_symbol_timing_rate_hz(&opts, &state, 4800, 0);
-        if (rate_hz != 24000 || g_fake_family_last_explicit != rows[i].want_explicit) {
+        if (rate_hz != 24000 || g_fake_family_last_explicit != rows[i].want_explicit
+            || g_fake_family_last_cqpsk != rows[i].want_cqpsk) {
             DSD_FPRINTF(stderr,
-                        "timing scope row %zu (%s, %s, modulation %d): rate=%d explicit=%d, want 24000 and %d\n", i,
-                        rows[i].trunk_scan ? "--trunk-scan" : "-Y", dsd_scan_mode_name(rows[i].mode),
-                        (int)rows[i].modulation, rate_hz, g_fake_family_last_explicit, rows[i].want_explicit);
+                        "timing scope row %zu (%s, %s, modulation %d): rate=%d explicit=%d cqpsk=%d, want 24000, %d "
+                        "and %d\n",
+                        i, rows[i].trunk_scan ? "--trunk-scan" : "-Y", dsd_scan_mode_name(rows[i].mode),
+                        (int)rows[i].modulation, rate_hz, g_fake_family_last_explicit, g_fake_family_last_cqpsk,
+                        rows[i].want_explicit, rows[i].want_cqpsk);
             test_rc = 1;
         }
     }
@@ -16019,6 +16032,506 @@ test_symbol_timing_explicit_follows_the_scope(void) {
     g_fake_family_analog = 0;
     dsd_rtl_stream_metrics_hooks_set(NULL);
     reset_scan_opts_state(&opts, &state);
+    return test_rc;
+}
+
+/* --- Issue #890: the simplex digital target types --- */
+
+_Static_assert(DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL == 10 && DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL == 11
+                   && DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL == 12 && DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL == 13
+                   && DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL == 14,
+               "the simplex target types are appended as 10..14");
+
+/* The five simplex types parse by their one spelling into conventional targets of their class, with an empty or auto
+ * modulation; every other modulation, a channel map, a band plan and a -trunk spelling are refused with a row
+ * diagnostic that says what to do. */
+static int
+test_simplex_target_types_parse_and_diagnostics(void) {
+    static const struct {
+        const char* name;
+        dsd_trunk_scan_target_type type;
+        dsd_scan_mode mode;
+    } types[] = {
+        {"ysf-conventional", DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, DSD_SCAN_MODE_YSF},
+        {"dstar-conventional", DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL, DSD_SCAN_MODE_DSTAR},
+        {"dpmr-conventional", DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL, DSD_SCAN_MODE_DPMR},
+        {"m17-conventional", DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL, DSD_SCAN_MODE_M17},
+        {"tetra-dmo-conventional", DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, DSD_SCAN_MODE_TETRA_DMO},
+    };
+
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list;
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+    char body[512];
+    for (size_t i = 0; i < sizeof types / sizeof types[0]; i++) {
+        DSD_SNPRINTF(body, sizeof body,
+                     "a,%s,145500000,,1500,2000,,,,,,,\n"
+                     "b,%s,145525000,,,,,auto,,,,,\n",
+                     types[i].name, types[i].name);
+        if (load_nfm_targets(body, &list, err, sizeof err) != 0 || list.count != 2
+            || list.targets[0].type != types[i].type || list.targets[1].type != types[i].type
+            || list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_UNSET
+            || list.targets[1].modulation != DSD_TRUNK_SCAN_MODULATION_AUTO
+            || strcmp(dsd_trunk_scan_target_type_name(types[i].type), types[i].name) != 0) {
+            DSD_FPRINTF(stderr, "%s rows: rc/err '%s', count %zu\n", types[i].name, err, list.count);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+        dsd_trunk_scan_landing landing;
+        if (dsd_trunk_scan_type_landing(types[i].type, &landing) != 1 || landing.mode != types[i].mode) {
+            DSD_FPRINTF(stderr, "%s: no landing of its class\n", types[i].name);
+            test_rc = 1;
+        }
+
+        static const char* const modulations[] = {"c4fm", "cqpsk", "gfsk", "Auto", "qpsk"};
+        for (size_t m = 0; m < sizeof modulations / sizeof modulations[0]; m++) {
+            DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,%s,,,,,\n", types[i].name, modulations[m]);
+            char want[160];
+            DSD_SNPRINTF(want, sizeof want, "row 2 has modulation '%s'; a %s target takes only auto or an empty cell",
+                         modulations[m], types[i].name);
+            DSD_MEMSET(err, 0, sizeof err);
+            if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want) != 0) {
+                DSD_FPRINTF(stderr, "%s modulation %s: err '%s', want '%s'\n", types[i].name, modulations[m], err,
+                            want);
+                test_rc = 1;
+                dsd_trunk_scan_target_list_reset(&list);
+            }
+        }
+
+        const struct {
+            const char* rest;
+            const char* want;
+        } refused[] = {
+            {",145500000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
+            {",145500000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
+        };
+
+        for (size_t r = 0; r < sizeof refused / sizeof refused[0]; r++) {
+            DSD_SNPRINTF(body, sizeof body, "a,%s%s", types[i].name, refused[r].rest);
+            DSD_MEMSET(err, 0, sizeof err);
+            if (load_nfm_targets(body, &list, err, sizeof err) != -1 || !strstr(err, refused[r].want)) {
+                DSD_FPRINTF(stderr, "%s row '%s': err '%s', want '%s'\n", types[i].name, body, err, refused[r].want);
+                test_rc = 1;
+                dsd_trunk_scan_target_list_reset(&list);
+            }
+        }
+        /* The -trunk spelling of the family. */
+        char family[32];
+        const size_t family_len = strlen(types[i].name) - strlen("-conventional");
+        DSD_MEMCPY(family, types[i].name, family_len);
+        family[family_len] = '\0';
+        DSD_SNPRINTF(body, sizeof body, "a,%s-trunk,145500000,,,,,,,,,,\n", family);
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "row 2: %s targets are conventional only (use %s)", family, types[i].name);
+        DSD_MEMSET(err, 0, sizeof err);
+        if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want) != 0) {
+            DSD_FPRINTF(stderr, "%s-trunk: err '%s', want '%s'\n", family, err, want);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
+        }
+    }
+    /* One frequency, two types: each type keeps its own (type, frequency) pair. */
+    if (load_nfm_targets("y,ysf-conventional,145500000,,,,,,,,,,\n"
+                         "m,m17-conventional,145500000,,,,,,,,,,\n",
+                         &list, err, sizeof err)
+            != 0
+        || list.count != 2) {
+        DSD_FPRINTF(stderr, "ysf and m17 on one frequency refused: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    return test_rc;
+}
+
+/* Issue #890 B1: an unknown type names every accepted spelling, however long the cell: the list loader's message holds
+ * the whole list after a cell cut to 48 bytes, and so does the session start's after a long list path, which the CLI
+ * logs whole. The app validator says the same. */
+static const char k_every_type[] =
+    "expected p25-trunk, p25-conventional, dmr-trunk, dmr-conventional, nxdn-trunk, nxdn-conventional, "
+    "nxdn48-conventional, nxdn48-trunk, nfm-conventional, am-conventional, ysf-conventional, dstar-conventional, "
+    "dpmr-conventional, m17-conventional or tetra-dmo-conventional";
+
+static int
+test_invalid_type_names_every_type(void) {
+    int test_rc = 0;
+    char cell[301];
+    DSD_MEMSET(cell, 'x', sizeof cell - 1U);
+    cell[sizeof cell - 1U] = '\0';
+    char body[512];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,,,,,,\n", cell);
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+    dsd_trunk_scan_target_list list;
+    char want_cell[64];
+    DSD_SNPRINTF(want_cell, sizeof want_cell, "'%.48s...'", cell);
+    if (load_nfm_targets(body, &list, err, sizeof err) != -1 || !strstr(err, k_every_type) || !strstr(err, want_cell)) {
+        DSD_FPRINTF(stderr, "long invalid type: err '%s'\n", err);
+        test_rc = 1;
+        dsd_trunk_scan_target_list_reset(&list);
+    }
+
+    /* The session start: a list path near the 1024 bytes a list path holds, then the row's message. */
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char name[201];
+    DSD_MEMSET(name, 'n', sizeof name - 1U);
+    name[sizeof name - 1U] = '\0';
+    DSD_SNPRINTF(name + sizeof name - 5U, 5U, "%s", ".csv");
+    char content[1024];
+    DSD_SNPRINTF(content, sizeof content, "%s%s", k_nfm_targets_header, body);
+    if (dsd_test_path_join(target_path, sizeof target_path, dir, name) != 0
+        || write_text_file(target_path, content) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char init_err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+    if (dsd_engine_trunk_scan_init(&opts, &state, init_err, sizeof init_err) == 0 || !strstr(init_err, target_path)
+        || !strstr(init_err, k_every_type)) {
+        DSD_FPRINTF(stderr, "session start with a long path: err '%s'\n", init_err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The class part of every type's landing (dsd_trunk_scan_type_landing()): rate, levels, hunt profile, the class's own
+ * modulation, the chain and its filter; none for an analog type. And the TETRA chain's TED rule: an explicit override
+ * that gives the rate's samples per symbol is honoured, one that disagrees, or an applied TED that disagrees, or an
+ * unknown or inexact complex rate, is not. */
+static int
+test_type_landing_and_ted_rule(void) {
+    static const struct {
+        dsd_trunk_scan_target_type type;
+        int rate;
+        int levels;
+        int hunt;
+        int rf_mod;
+        int cqpsk;
+        int profile;
+    } want[] = {
+        {DSD_TRUNK_SCAN_TARGET_P25_TRUNK, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM},
+        {DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL, 4800, 2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, 18000, 4, DSD_FRAME_SYNC_SPS_PROFILE_18000_4, 1, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        dsd_trunk_scan_landing l;
+        if (dsd_trunk_scan_type_landing(want[i].type, &l) != 1 || l.symbol_rate_hz != want[i].rate
+            || l.levels != want[i].levels || l.sps_hunt_idx != want[i].hunt || l.rf_mod != want[i].rf_mod
+            || l.cqpsk != want[i].cqpsk || l.channel_profile != want[i].profile || l.output_rate_hz != 0
+            || l.samples_per_symbol != 0 || l.complex_rate_hz != 0 || l.ted_sps != 0) {
+            DSD_FPRINTF(stderr, "type %d landing: rate %d levels %d hunt %d rf_mod %d cqpsk %d profile %d\n",
+                        (int)want[i].type, l.symbol_rate_hz, l.levels, l.sps_hunt_idx, l.rf_mod, l.cqpsk,
+                        l.channel_profile);
+            test_rc = 1;
+        }
+    }
+    dsd_trunk_scan_landing analog;
+    if (dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL, &analog) != 0
+        || analog.mode != DSD_SCAN_MODE_NFM || analog.symbol_rate_hz != 0
+        || dsd_trunk_scan_type_landing((dsd_trunk_scan_target_type)99, &analog) != 0
+        || dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, NULL) != 0) {
+        DSD_FPRINTF(stderr, "an analog or unknown type has a landing\n");
+        test_rc = 1;
+    }
+
+    dsd_trunk_scan_landing tetra;
+    (void)dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, &tetra);
+    tetra.complex_rate_hz = 72000;
+    tetra.ted_sps = 4;
+
+    static const struct {
+        int override_sps;
+        int applied;
+        int agrees;
+    } ted[] = {
+        {0, 0, 1}, {0, 4, 1}, {4, 0, 1}, {4, 4, 1}, {5, 4, 0}, {0, 5, 0}, {4, 5, 0}, {3, 0, 0},
+    };
+
+    for (size_t i = 0; i < sizeof ted / sizeof ted[0]; i++) {
+        if (dsd_trunk_scan_landing_ted_agrees(&tetra, ted[i].override_sps, ted[i].applied) != ted[i].agrees) {
+            DSD_FPRINTF(stderr, "TETRA TED override %d applied %d: want %d\n", ted[i].override_sps, ted[i].applied,
+                        ted[i].agrees);
+            test_rc = 1;
+        }
+    }
+    dsd_trunk_scan_landing inexact = tetra;
+    inexact.complex_rate_hz = 64000; /* not a multiple of 18 kHz */
+    inexact.ted_sps = 4;
+    dsd_trunk_scan_landing unknown = tetra;
+    unknown.complex_rate_hz = 0;
+    unknown.ted_sps = 0;
+    if (dsd_trunk_scan_landing_ted_agrees(&inexact, 0, 0) != 0 || dsd_trunk_scan_landing_ted_agrees(&unknown, 0, 0) != 0
+        || dsd_trunk_scan_landing_ted_agrees(&analog, 0, 0) != 0
+        || dsd_trunk_scan_landing_ted_agrees(NULL, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "TETRA TED rule agreed with no usable complex rate\n");
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+/* The front end's rates for the landing tests: the analog monitor delivers 48 kHz, the digital family the 72 kHz DSP
+ * rate, and a retune that switches family lands the CQPSK output at 72 kHz and the FSK discriminator resampled to
+ * 48 kHz. */
+static unsigned int
+landing_output_rate_hz(void) {
+    return g_fake_family_analog ? 48000U : 72000U;
+}
+
+static unsigned int
+landing_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)symbol_rate_hz;
+    g_fake_family_last_cqpsk = cqpsk_enable;
+    g_fake_family_last_explicit = cqpsk_explicit;
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        return 48000U;
+    }
+    return cqpsk_enable ? 72000U : 48000U;
+}
+
+/* One expected landing. */
+typedef struct {
+    size_t target;
+    dsd_scan_mode mode;
+    int rate;
+    int levels;
+    int hunt;
+    int rf_mod;
+    int rf_mod_locked; /* under a -mq lock */
+    int cqpsk;
+    int profile;
+    int output_rate; /* 48000 after the analog target, else the live 72000 */
+} landing_want;
+
+static int
+expect_class_landing(const dsd_opts* opts, const dsd_state* state, const landing_want* w, int locked,
+                     const char* stage) {
+    dsd_trunk_scan_landing l;
+    const int rf_mod = locked ? w->rf_mod_locked : w->rf_mod;
+    const int sps = dsd_opts_compute_sps_rate(opts, w->rate, w->output_rate);
+    const int ted = dsd_opts_compute_sps_rate(opts, w->rate, 72000);
+    const int have = dsd_engine_trunk_scan_active_landing(state, &l);
+    if (dsd_engine_trunk_scan_active_index(state) != w->target || !have || l.mode != w->mode
+        || l.symbol_rate_hz != w->rate || l.levels != w->levels || l.cqpsk != w->cqpsk
+        || l.channel_profile != w->profile || l.rf_mod != rf_mod || l.output_rate_hz != w->output_rate
+        || l.samples_per_symbol != sps || l.complex_rate_hz != 72000 || l.ted_sps != ted
+        || state->samplesPerSymbol != sps || state->symbolCenter != dsd_opts_symbol_center(sps)
+        || state->rf_mod != rf_mod || state->sps_hunt_idx != w->hunt || g_scan_tune_to_freq_ted_sps != sps) {
+        DSD_FPRINTF(stderr,
+                    "%s (lock %d): target %zu mode %d rate %d levels %d cqpsk %d profile %d rf_mod %d out %d sps %d "
+                    "ted %d; state sps %d rf_mod %d hunt %d; tune ted %d; want target %zu rf_mod %d sps %d\n",
+                    stage, locked, dsd_engine_trunk_scan_active_index(state), (int)l.mode, l.symbol_rate_hz, l.levels,
+                    l.cqpsk, l.channel_profile, l.rf_mod, l.output_rate_hz, l.samples_per_symbol, l.ted_sps,
+                    state->samplesPerSymbol, state->rf_mod, state->sps_hunt_idx, g_scan_tune_to_freq_ted_sps, w->target,
+                    rf_mod, sps);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #890 B3: each landing runs its class's profile, whatever ran before it: NFM -> YSF (out of the analog family),
+ * YSF -> M17 on the same frequency, NXDN48 -> D-STAR (4800 sym/s over two levels in 6.25 kHz), dPMR (2400/4), into and
+ * out of TETRA DMO at a 72 kHz DSP rate (CQPSK, the TETRA filter, 4 samples per symbol at the complex rate), and DMR
+ * after it. The retune carries the landing's timing as its TED (no class lands without one, which would keep the chain
+ * the target before it left), and a command's resume keeps the landing. The target's own snapshot (saved with whatever
+ * the decoder ran when it was left) never replaces its class's timing or modulation. Under a -mq lock, auto lands the
+ * class's own modulation (B2: never GFSK for a class without it) and an empty column keeps the lock's slicer, while the
+ * chain stays the class's. */
+static int
+test_simplex_targets_land_their_class_profile(void) {
+    static const landing_want want[] = {
+        {1U, DSD_SCAN_MODE_YSF, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 48000},
+        {2U, DSD_SCAN_MODE_M17, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 72000},
+        {3U, DSD_SCAN_MODE_NXDN48, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 2, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {4U, DSD_SCAN_MODE_DSTAR, 4800, 2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 2, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {5U, DSD_SCAN_MODE_DPMR, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 0, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {6U, DSD_SCAN_MODE_TETRA_DMO, 18000, 4, DSD_FRAME_SYNC_SPS_PROFILE_18000_4, 1, 1, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA, 72000},
+        {7U, DSD_SCAN_MODE_DMR, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 72000},
+    };
+    int test_rc = 0;
+    for (int locked = 0; locked <= 1; locked++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        static dsd_opts opts;
+        static dsd_state state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                              "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                              "ysf,ysf-conventional,145500000,,250,250,,auto,,,,,\n"
+                                              "m17,m17-conventional,145500000,,250,250,,,,,,,\n"
+                                              "n48,nxdn48-conventional,461556250,,250,250,,,,,,,\n"
+                                              "dst,dstar-conventional,145670000,,250,250,,,,,,,\n"
+                                              "dpm,dpmr-conventional,446006250,,250,250,,auto,,,,,\n"
+                                              "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                              "dmr,dmr-conventional,461000000,,250,250,,gfsk,,,,,\n",
+                                              target_path, sizeof target_path)
+                   != 0) {
+            cleanup_paths(dir, NULL, NULL);
+            return 1;
+        }
+        reset_scan_opts_state(&opts, &state);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+        opts.trunk_scan_list_count = 1;
+        if (locked) {
+            opts.mod_cli_lock = 1;
+            opts.mod_qpsk = 1;
+            state.rf_mod = 1;
+        }
+        dsd_rtl_stream_metrics_hooks hooks = {0};
+        hooks.output_rate_hz = landing_output_rate_hz;
+        hooks.analog_family_active = fake_family_analog_active;
+        hooks.output_rate_for_family = landing_rate_for_family;
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        g_fake_family_tracking = 1;
+        g_fake_family_analog = 0;
+        g_scan_tune_to_freq_failures_remaining = 0;
+        g_scan_dsp_rate_hz = 72000;
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "simplex landing init failed: %s\n", err);
+            test_rc = 1;
+        }
+        test_rc |= expect_active_target(&state, "simplex landing init", 0U);
+        if (dsd_engine_trunk_scan_active_landing(&state, NULL) != 0 || g_fake_family_analog != 1) {
+            DSD_FPRINTF(stderr, "the nfm target has a landing profile or did not land the analog family\n");
+            test_rc = 1;
+        }
+        double now = 0.0;
+        for (int round = 0; round < 2; round++) {
+            for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+                now += 0.26;
+                g_fake_family_last_cqpsk = -1;
+                g_fake_family_last_explicit = -1;
+                g_scan_tune_to_freq_ted_sps = 0;
+                trunk_scan_test_set_now(now);
+                dsd_engine_trunk_scan_tick(&opts, &state);
+                test_rc |=
+                    expect_class_landing(&opts, &state, &want[i], locked, round == 0 ? "landing" : "second landing");
+                if (i == 0
+                    && (g_fake_family_last_cqpsk != 0 || g_fake_family_last_explicit != 1 || g_fake_family_analog != 0
+                        || opts.frame_ysf != 1 || opts.mod_c4fm != 1 || opts.mod_gfsk != 0)) {
+                    DSD_FPRINTF(stderr,
+                                "ysf after nfm: cqpsk asked %d explicit %d analog %d frame_ysf %d c4fm %d gfsk %d\n",
+                                g_fake_family_last_cqpsk, g_fake_family_last_explicit, g_fake_family_analog,
+                                opts.frame_ysf, opts.mod_c4fm, opts.mod_gfsk);
+                    test_rc = 1;
+                }
+                if (want[i].mode == DSD_SCAN_MODE_M17 && (opts.frame_m17 != 1 || opts.frame_ysf != 0)) {
+                    DSD_FPRINTF(stderr, "m17 on the ysf frequency runs ysf=%d m17=%d\n", opts.frame_ysf,
+                                opts.frame_m17);
+                    test_rc = 1;
+                }
+                if (want[i].mode == DSD_SCAN_MODE_TETRA_DMO && (opts.frame_tetra != 1 || opts.frame_dmr != 0)) {
+                    DSD_FPRINTF(stderr, "the TETRA DMO target runs tetra=%d dmr=%d\n", opts.frame_tetra,
+                                opts.frame_dmr);
+                    test_rc = 1;
+                }
+                /* A command under the target: the resume keeps the landing. */
+                (void)dsd_scan_mode_suspend(&opts, &state);
+                (void)dsd_scan_mode_resume(&opts, &state);
+                test_rc |= expect_class_landing(&opts, &state, &want[i], locked, "resume");
+                if (round == 0 && want[i].mode == DSD_SCAN_MODE_YSF) {
+                    /* What the decoder runs when the target is left goes into its snapshot: another class's timing. */
+                    state.samplesPerSymbol = 4;
+                    state.symbolCenter = 1;
+                    state.rf_mod = 1;
+                    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+                }
+            }
+            now += 0.26;
+            g_scan_tune_to_freq_ted_sps = -1;
+            trunk_scan_test_set_now(now);
+            dsd_engine_trunk_scan_tick(&opts, &state);
+            test_rc |= expect_active_target(&state, "the analog target again", 0U);
+            if (g_scan_tune_to_freq_ted_sps != 0 || g_fake_family_analog != 1
+                || dsd_engine_trunk_scan_active_landing(&state, NULL) != 0) {
+                DSD_FPRINTF(stderr, "nfm after dmr: ted %d analog %d\n", g_scan_tune_to_freq_ted_sps,
+                            g_fake_family_analog);
+                test_rc = 1;
+            }
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        g_fake_family_tracking = 0;
+        g_fake_family_analog = 0;
+        g_scan_dsp_rate_hz = 0;
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
+    return test_rc;
+}
+
+/* A tetra-dmo row or target has no width class for the quiet check: its facts give the unsupported-mode reason and its
+ * own WARN line, never the missing-NFM-width one, whatever the -8 monitor beside it; an untyped row under -fT keeps the
+ * decoders' reason. */
+static int
+test_scan_quiet_tetra_dmo_reason(void) {
+    int test_rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    scan_quiet_eligibility e;
+    DSD_MEMSET(&e, 0, sizeof(e));
+    e.classes = scan_quiet_mode_classes(DSD_SCAN_MODE_TETRA_DMO);
+    if (e.classes != 0U
+        || scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_TETRA_DMO)
+               != (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        DSD_FPRINTF(stderr, "tetra-dmo facts: classes %u, not the unsupported-mode reason\n", (unsigned)e.classes);
+        test_rc = 1;
+    }
+    opts.monitor_input_audio = 1; /* the -8 monitor with no NFM width */
+    if (scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_TETRA_DMO)
+        != (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        DSD_FPRINTF(stderr, "tetra-dmo facts beside -8: not the unsupported-mode reason\n");
+        test_rc = 1;
+    }
+    opts.monitor_input_audio = 0;
+    opts.frame_tetra = 1;
+    if (scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_INHERIT) != (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
+        DSD_FPRINTF(stderr, "an untyped row under -fT lost the decoders' reason\n");
+        test_rc = 1;
+    }
+    char line[384];
+    (void)scan_quiet_format_warn(line, sizeof line, (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, 0, 0U, "dmo", 0,
+                                 425000000U, 0, 0U);
+    if (strcmp(line,
+               "WARNING: scan: silent channel skip cannot check dmo 425.000000 MHz: it has no check for TETRA DMO "
+               "channels. Normal scan timing applies.\n")
+        != 0) {
+        DSD_FPRINTF(stderr, "tetra-dmo WARN line: '%s'\n", line);
+        test_rc = 1;
+    }
     return test_rc;
 }
 
@@ -18007,7 +18520,7 @@ test_paused_scan_gates_every_consumer(void) {
     int cqpsk = -1;
     if (dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL
         || dsd_trunk_scan_hook_active_chan_csv(&state) != NULL
-        || dsd_engine_trunk_scan_active_gfsk_symbol_rate(&state) != 0
+        || dsd_engine_trunk_scan_active_landing(&state, NULL) != 0
         || dsd_engine_trunk_scan_active_is_p25_class(&state) != 0
         || dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk) != 0 || cqpsk != -1) {
         DSD_FPRINTF(stderr, "gates: a paused target still answered for the receiver\n");
@@ -27126,6 +27639,41 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
     return rc;
 }
 
+/* Issue #890: a TETRA DMO target is never checked, and says so through the trunk scan's timing publication (No check:
+   mode, never the missing-width reason) with one WARN line however many ticks follow. */
+static int
+test_scan_quiet_trunk_tetra_dmo_says_no_check(void) {
+    static const char k_targets[] = "n15,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 15000\n"
+                                    "dmo,tetra-dmo-conventional,453000000,,2000,1000,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+        return 1;
+    }
+    qt_warns_watch();
+    qt_decode_at(10U);
+    qt_pass(&opts, state_p);
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
+    (void)quiet_service_after(&opts, state_p, 10U);
+    qt_pass(&opts, state_p);
+    const int requests = g_tap.requests;
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
+    for (int pass = 0; pass < 3; pass++) {
+        qt_decode_at(20U + 10U * (uint64_t)pass);
+        qt_pass(&opts, state_p);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+    }
+    int rc = qt_expect_quiet(state_p, "a TETRA DMO target", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                             DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE);
+    rc |= qt_expect_warn("a TETRA DMO target: one line", 1, DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, 0, 0U, "dmo",
+                         k_qt_hz_b, 0, 0U);
+    rc |= qt_expect("a TETRA DMO target: nothing requested", g_tap.requests == requests);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
 /* Every no-check cause, through the trunk scan's timing publication: the -8 monitor with no width, an uncalibrated
    rate and analog width at the capture, an input with no check (outranking the target's reason); each WARN line once.
    A quiet result held for a frame's verdict is still Quiet check; a held target and a trunked one say nothing. */
@@ -27629,6 +28177,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_tetra_dmo_says_no_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
@@ -27912,6 +28461,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
+    rc |= test_simplex_target_types_parse_and_diagnostics();
+    rc |= test_invalid_type_names_every_type();
+    rc |= test_type_landing_and_ted_rule();
+    rc |= run_with_default_tune_hook(test_simplex_targets_land_their_class_profile);
+    rc |= test_scan_quiet_tetra_dmo_reason();
     rc |= run_with_default_tune_hook(test_symbol_timing_explicit_follows_the_scope);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);

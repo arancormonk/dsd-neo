@@ -62,13 +62,13 @@ Column behavior:
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Short name, unique within the file (the same id in another list names the same target; see [Several lists](#several-lists)), shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](#receive-admission-and-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Keep it under 64 bytes, in UTF-8. |
-| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel, held on carrier) or `am-conventional` (one analog AM channel, held on carrier); see [Analog NFM and AM targets](#analog-nfm-and-am-targets). |
+| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel, held on carrier), `am-conventional` (one analog AM channel, held on carrier), or one of the simplex digital types `ysf-conventional`, `dstar-conventional`, `dpmr-conventional`, `m17-conventional` and `tetra-dmo-conventional`; see [Analog NFM and AM targets](#analog-nfm-and-am-targets) and [Simplex digital targets](#simplex-digital-targets). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
-| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
+| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25, both conventional NXDN types, the analog types and the simplex digital types. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
-| `activity_hold_ms` | No | Conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold for this target, and an analog target's hold after its carrier drops. Empty uses the CLI/config default. Valid range: `250..600000`. |
+| `activity_hold_ms` | No | A conventional digital target's activity hold (DMR, P25, NXDN96 and NXDN48, and the simplex digital types), and an analog target's hold after its carrier drops. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
-| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. An analog (`nfm-conventional`, `am-conventional`) target takes none. |
+| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. A simplex digital target takes only `auto`, its class's own modulation (C4FM for YSF, M17 and dPMR, GMSK for D-STAR, pi/4-DQPSK for TETRA DMO). An analog (`nfm-conventional`, `am-conventional`) target takes none. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the configured gain, including one set live during the scan. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. An analog target decrypts nothing and rejects this and the other key columns. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
@@ -116,8 +116,12 @@ Target list limits and validation:
   header is rejected, and a band plan that fails to load fails the whole import. A global `--p25-bandplan`/`[trunking]
   p25_bandplan_csv` is rejected in this mode like `-C`.
 - `modulation` values are target-type specific: `cqpsk`/`c4fm` are valid for both P25 types, and `gfsk` is valid for
-  DMR and both NXDN target rates, not P25. An analog target rejects any `modulation` value, and every key column,
-  without echoing a key.
+  DMR and both NXDN target rates, not P25. A simplex digital target (`ysf-conventional`, `dstar-conventional`,
+  `dpmr-conventional`, `m17-conventional`, `tetra-dmo-conventional`) rejects anything but `auto` or an empty cell. An
+  analog target rejects any `modulation` value, and every key column, without echoing a key.
+- The simplex digital types are conventional only: `ysf-trunk`, `dstar-trunk`, `dpmr-trunk`, `m17-trunk` and
+  `tetra-dmo-trunk` are refused with `conventional only (use <family>-conventional)`. An unknown type is refused with
+  the list of every accepted spelling.
 - `nxdn-trunk`/`nxdn48-trunk` and `nxdn-conventional`/`nxdn48-conventional` are distinct types, so the same frequency
   may appear once as each.
 - `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
@@ -172,8 +176,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 
 - `--trunk-scan-dwell-ms <ms>` sets the default idle dwell for targets whose `dwell_ms` column is empty. Default:
   `3000`.
-- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
-  (NXDN96 and NXDN48 alike). Default: `1200`.
+- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional digital activity (DMR,
+  P25, NXDN96 and NXDN48 alike, and the simplex digital types). Default: `1200`.
 - `--scan-max-visit-ms <ms>` caps how long one visit to a target may last: `0` disables it, any other value is
   `1000..3600000` milliseconds. Default: `0`, so nothing changes unless you ask for it. Config: `[trunking]
   scan_max_visit_ms`. There is no dedicated CSV column; a target overrides the cap from its `options` column. In a
@@ -246,14 +250,16 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 
 Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
 `p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class
-and rate; an `nfm-conventional` or `am-conventional` target runs the analog FM or AM monitor instead of a digital
-decoder ([Analog NFM and AM targets](#analog-nfm-and-am-targets)). Mixed lists, including both NXDN rates and analog
+and rate; a simplex digital target runs its own decoder ([Simplex digital targets](#simplex-digital-targets)); an
+`nfm-conventional` or `am-conventional` target runs the analog FM or AM monitor instead of a digital decoder
+([Analog NFM and AM targets](#analog-nfm-and-am-targets)). Mixed lists, including both NXDN rates and analog
 targets, work without `-fa`. The target's `modulation` column keeps its existing precedence: an explicit value,
 including `auto`, overrides global modulation handling, `DSD_NEO_CQPSK` included, and it does so on every visit, the
 first one after an `nfm-conventional` or `am-conventional` target too. An empty value preserves an explicit global
 modulation lock; after an analog target, a P25 target without one lands on the CQPSK state `DSD_NEO_CQPSK` names when
-it is set, as a stream opened for it would. DMR and NXDN targets run the FSK discriminator whatever `DSD_NEO_CQPSK`
-or a global `-mq` lock says, also when a command made while the target is on air publishes its profile again.
+it is set, as a stream opened for it would. DMR and NXDN targets, and the YSF, D-STAR, dPMR and M17 ones, run the FSK
+discriminator whatever `DSD_NEO_CQPSK` or a global `-mq` lock says, and a TETRA DMO target the CQPSK chain, also when a
+command made while the target is on air publishes its profile again.
 Modes declared in a target's `chan_csv` do not override its type. NXDN48 targets do not require an outer `-fi`. Audio
 retains the startup output layout, with mono NXDN voice duplicated into both channels when the output is stereo.
 A `p25-conventional` target disables trunking and parks on its fixed frequency without a P25 trunking state-machine
@@ -1005,6 +1011,34 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   refused while it is parked. `nfm-trunk` and `am-trunk` are refused with `analog targets are conventional only`, and
   `nfm`, `am` or the analog FM spellings (`fm-conventional`, ...) with a hint naming the conventional type to use.
 
+## Simplex digital targets
+
+The simplex digital types each scan one conventional channel of a mode DSD-neo already decodes:
+
+| Type | Decoder | Symbols | Receive profile |
+|------|---------|---------|-----------------|
+| `ysf-conventional` | YSF (`-fy`) | 4800 sym/s C4FM | 12.5 kHz |
+| `dstar-conventional` | D-STAR (`-fd`) | 4800 bit/s two-level GMSK | 6.25 kHz |
+| `dpmr-conventional` | dPMR (`-fm`) | 2400 sym/s 4FSK | 6.25 kHz |
+| `m17-conventional` | M17 (`-fz`) | 4800 sym/s 4FSK | 12.5 kHz |
+| `tetra-dmo-conventional` | TETRA (`-fT`) | 18000 sym/s pi/4-DQPSK | 25 kHz, the TETRA channel filter on the CQPSK chain |
+
+- **One landing per visit.** Every time the scan parks on a target, its type decides the symbol rate, the slicer
+  levels, the modulation, the chain and its channel filter, and the symbol timing, whatever the target before it ran
+  (an NFM channel, an NXDN48 one, a TETRA one) and whatever that target left behind. The decoder is timed for the rate
+  the front end delivers once the retune lands, and the front end's symbol timing for the radio's own sample rate:
+  TETRA's 18000 sym/s at a 72 kHz DSP bandwidth is 4 samples per symbol.
+- **Modulation.** Each class has one modulation, so the `modulation` column takes only `auto` or an empty cell.
+  `auto` lands the class's own modulation even under a global `-m` lock; an empty cell leaves a lock's slicer setting
+  in force, as for DMR and NXDN, while the chain stays the class's.
+- **What it refuses.** No `chan_csv` or `p25_bandplan_csv`, and no `-trunk` form.
+- **Skipping silent channels.** YSF and M17 are checked as 12.5 kHz channels, dPMR and D-STAR as 6.25 kHz ones. A TETRA
+  DMO target gets no check: the Scan Timing row shows `No check: mode` and the log says once that TETRA DMO channels
+  have no check.
+
+`-Y` channel maps take the matching row mode `tetra-dmo` beside `ysf`, `dstar`, `dpmr` and `m17` (see
+[csv-formats.md](csv-formats.md)).
+
 ## Skipping silent channels
 
 Skip-silent lets a scan leave a silent conventional channel early (issue #834). When the receiver lands on a
@@ -1149,6 +1183,8 @@ brackets below), and the log says how to fix it; see
   (the row's `--nfm-bandwidth-hz`, or the configured `--nfm-bandwidth-hz`) to give it the check. An AM channel with no
   width set is checked at its 6 kHz default. The same goes for the `-8` analog monitor beside a digital decoder: with
   no NFM width set, the rows and targets it plays on get no check.
+- A `tetra-dmo` row or `tetra-dmo-conventional` target (`mode`): the check has no TETRA calibration, and nothing set on
+  the row gives it one.
 - An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
   the check (`modes`). TETRA frames are still checked for the `-Y` hangtime (see below); only this quiet check has no
   TETRA width. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
@@ -1163,9 +1199,9 @@ app show where the check stands, in place of `Idle dwell`, the voice gate's `Qua
 
 - `Quiet check`: the check is running on this channel. If it finds the channel silent, the scan moves on early. If
   the channel reads busy, the usual phrase comes back and the channel keeps its normal timing.
-- `No check: input`, `No check: tuner`, `No check: rate`, `No check: width` or `No check: modes`: this channel cannot
-  be checked, for the reason named in the list above, and keeps its normal timing. On a `-Y` scan it shows while the
-  channel the receiver is on has carried no call, and goes once a call is heard there, a digital call or an analog
+- `No check: input`, `No check: tuner`, `No check: rate`, `No check: width`, `No check: modes` or `No check: mode`
+  (a TETRA DMO row or target): this channel cannot be checked, for the reason named in the list above, and keeps its
+  normal timing. On a `-Y` scan it shows while the channel the receiver is on has carried no call, and goes once a call is heard there, a digital call or an analog
   call that passed the squelch and any tone check: on a row, from the moment the scan landed on it; before the first
   row, or after a channel change that failed or an input switch, from that moment.
 

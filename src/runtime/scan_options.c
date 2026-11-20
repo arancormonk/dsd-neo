@@ -26,8 +26,10 @@
 #define DPMR          MODE_BIT(DSD_SCAN_MODE_DPMR)
 #define NFM           MODE_BIT(DSD_SCAN_MODE_NFM)
 #define AM            MODE_BIT(DSD_SCAN_MODE_AM)
-/* Blank rows and every digital class (INHERIT through M17). */
-#define DIGITAL_MODES 0x1FFU
+#define TETRA_DMO     MODE_BIT(DSD_SCAN_MODE_TETRA_DMO)
+/* Blank rows and every digital class: INHERIT through M17, and TETRA DMO, appended after the analog classes (issue
+ * #890), so the mask skips their bits. */
+#define DIGITAL_MODES (0x1FFU | TETRA_DMO)
 /* The analog classes (issue #526): no frames, keys, talkgroups or voice verdicts. */
 #define ANALOG_MODES  (NFM | AM)
 /* Every class a row or target can declare. An option that is meaningful whatever the class

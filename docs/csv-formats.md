@@ -127,8 +127,9 @@ Notes:
   `relevant_CLI_switches` alias. This preserves legacy free-text note columns, including notes with commas.
 - Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
   Longer rows reject the import with an error; they are never split into additional channels.
-- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) and
-  `am` (analog AM), case-insensitively and trimmed. Empty or missing values inherit the configured global decoder
+- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `tetra-dmo` (TETRA Direct Mode, the
+  TETRA decoder on one simplex channel), `nfm` (analog narrowband FM) and `am` (analog AM), case-insensitively and
+  trimmed. Empty or missing values inherit the configured global decoder
   settings. Invalid nonempty values reject the import with file and row diagnostics, including on rows whose channel
   number is invalid; the diagnostic lists the accepted modes. There are no aliases: `fm`, `analog`, `wfm`, `nbfm` and
   `fm-conventional` are rejected with the hint `use nfm`.

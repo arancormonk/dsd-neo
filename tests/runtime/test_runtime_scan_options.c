@@ -950,8 +950,42 @@ check_recording_switches_refused(void) {
     }
 }
 
+/* Issue #890: the tetra-dmo class takes the digital row options through its own mask bit, appended past the analog
+ * classes, and that bit gives the analog classes nothing: an nfm or am row still refuses every digital switch. */
+static void
+check_tetra_dmo_options(void) {
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    static const char* const digital[] = {"--strict-crc", "--scan-voice-only", "--no-data-calls", "--enc-lockout",
+                                          "--no-force-key"};
+    for (size_t i = 0; i < sizeof(digital) / sizeof(digital[0]); i++) {
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        if (dsd_scan_options_parse(digital[i], DSD_SCAN_MODE_TETRA_DMO, 1, &parsed, error, sizeof(error)) != 0) {
+            DSD_FPRINTF(stderr, "tetra-dmo refused '%s': %s\n", digital[i], error);
+            assert(0);
+        }
+        for (unsigned int analog = DSD_SCAN_MODE_NFM; analog <= DSD_SCAN_MODE_AM; analog++) {
+            DSD_MEMSET(&parsed, 0, sizeof(parsed));
+            assert(dsd_scan_options_parse(digital[i], analog, 1, &parsed, error, sizeof(error)) < 0);
+            assert(strstr(error, "not supported for this mode/target") != NULL);
+        }
+    }
+    assert(dsd_scan_options_fields_for_mode(DSD_SCAN_MODE_TETRA_DMO, 1) & DSD_SCAN_OPT_VOICE);
+    assert((dsd_scan_options_fields_for_mode(DSD_SCAN_MODE_NFM, 1) & DSD_SCAN_OPT_VOICE) == 0U);
+    assert((dsd_scan_options_fields_for_mode(DSD_SCAN_MODE_AM, 1) & DSD_SCAN_OPT_CRC) == 0U);
+    /* The analog switches and the protocol-specific ones of other classes stay off it. */
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--nfm-bandwidth-hz 12500", DSD_SCAN_MODE_TETRA_DMO, 1, &parsed, error, sizeof(error))
+           < 0);
+    assert(strcmp(error, "--nfm-bandwidth-hz: needs mode nfm") == 0);
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("-F", DSD_SCAN_MODE_TETRA_DMO, 1, &parsed, error, sizeof(error)) < 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+}
+
 int
 main(void) {
+    check_tetra_dmo_options();
     check_recording_switches_refused();
     check_tone_options();
     check_tone_summary();

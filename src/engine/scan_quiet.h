@@ -120,7 +120,8 @@ typedef struct {
     uint32_t analog_width_hz; /**< the analog class's configured width; 0 without it */
     uint32_t dsp_rate_hz;     /**< the DSP rate in force */
     uint32_t frequency_hz;    /**< where the visit lands */
-    /** Why the facts give the visit no check (dsd_scan_quiet_reason: MODES or NO_WIDTH, scan_quiet_facts_reason()),
+    /** Why the facts give the visit no check (dsd_scan_quiet_reason: MODES, NO_WIDTH or UNSUPPORTED_MODE,
+        scan_quiet_facts_reason()),
         NONE when they give one, and for a trunked target, which is never checked by design. */
     uint8_t reason;
     scan_quiet_revisions revisions;
@@ -165,12 +166,13 @@ int scan_quiet_decoder_set_unchecked(const dsd_opts* opts);
  * left as they are without it); a monitor at no definite width (an unset NFM width) makes the set 0, no check. */
 uint8_t scan_quiet_monitor_classes(const dsd_opts* opts, uint8_t digital, int* analog_kind, uint32_t* analog_width_hz);
 
-/** Why the facts @p e give a conventional row or target no check (dsd_scan_quiet_reason), with its classes and analog
- * width worked out: NONE when they give one; for no class, or the analog class at no definite width, MODES when the
- * classes are the decoder set's (@p decoder_set: an untyped -Y row, or a typed one inheriting it) and the set holds a
- * mode with no known width (X2-TDMA, ProVoice, TETRA), the M17 encoder, or no mode of a class at all, else NO_WIDTH (an
- * NFM channel, or the -8 monitor, with no width set). */
-uint8_t scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, int decoder_set);
+/** Why the facts @p e give a conventional row or target of class @p mode no check (dsd_scan_quiet_reason), with its
+ * classes and analog width worked out: NONE when they give one; for no class, or the analog class at no definite width,
+ * UNSUPPORTED_MODE for a class the check has no calibration for (tetra-dmo, issue #890), MODES when the classes are the
+ * decoder set's (@p mode INHERIT: an untyped -Y row, or a typed one inheriting it) and the set holds a mode with no
+ * known width (X2-TDMA, ProVoice, TETRA), the M17 encoder, or no mode of a class at all, else NO_WIDTH (an NFM channel,
+ * or the -8 monitor, with no width set). */
+uint8_t scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, dsd_scan_mode mode);
 
 /** Whether the session can make a check at all: the setting on, a radio build, an RTL-family input that is no I/Q
  * replay (neither the stream nor the decode clock). */

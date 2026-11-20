@@ -2903,7 +2903,7 @@ test_nfm_channel_map_rows(void) {
         {"1,154430000,Analog,\n", "row 2: invalid mode 'Analog' (use nfm)"},
         {"1,154430000,wfm,\n", "row 2: invalid mode 'wfm' (use nfm)"},
         {"1,154430000,typo,\n",
-         "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am "
+         "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am, tetra-dmo "
          "or an empty cell"},
     };
 
@@ -2983,7 +2983,7 @@ test_am_channel_map_rows(void) {
         {"1,461000000,dmr,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
         {"1,461000000,,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
         {"1,118300000,am-conventional,\n", "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, "
-                                           "m17, nfm, am or an empty cell"},
+                                           "m17, nfm, am, tetra-dmo or an empty cell"},
     };
 
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {

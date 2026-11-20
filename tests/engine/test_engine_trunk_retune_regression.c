@@ -28,6 +28,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -164,7 +165,9 @@ static int g_rtl_complex_rate_hz = 48000;
  * (dsd_scan_mode_take_timed_digital_family(), issue #583). No row by default. */
 static int g_scan_row_timed_digital_family = 0;
 static size_t g_trunk_scan_target_count = 0;
-static int g_trunk_scan_active_gfsk_symbol_rate = 0;
+/* The parked trunk-scan target's landing profile (dsd_engine_trunk_scan_active_landing(), issue #890), as the
+ * coordinator would resolve it: a symbol rate of 0 is none. */
+static dsd_trunk_scan_landing g_trunk_scan_active_landing;
 static int g_trunk_scan_saved_autogain_is_set = 0;
 static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
@@ -452,9 +455,37 @@ dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on) 
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state) {
+dsd_engine_trunk_scan_active_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
     (void)state;
-    return g_trunk_scan_active_gfsk_symbol_rate;
+    if (out) {
+        *out = g_trunk_scan_active_landing;
+    }
+    return g_trunk_scan_active_landing.symbol_rate_hz > 0 ? 1 : 0;
+}
+
+/* Park a target of class @p mode, whose landing runs @p symbol_rate_hz over @p levels on the CQPSK chain (@p cqpsk) or
+ * the FSK discriminator, with @p channel_profile: the class facts the coordinator resolves
+ * (dsd_trunk_scan_type_landing()). A rate of 0 parks nothing. */
+static void
+park_landing(dsd_scan_mode mode, int symbol_rate_hz, int levels, int cqpsk, int channel_profile) {
+    DSD_MEMSET(&g_trunk_scan_active_landing, 0, sizeof(g_trunk_scan_active_landing));
+    if (symbol_rate_hz <= 0) {
+        return;
+    }
+    g_trunk_scan_active_landing.mode = mode;
+    g_trunk_scan_active_landing.symbol_rate_hz = symbol_rate_hz;
+    g_trunk_scan_active_landing.levels = levels;
+    g_trunk_scan_active_landing.cqpsk = cqpsk;
+    g_trunk_scan_active_landing.rf_mod = cqpsk ? 1 : 2;
+    g_trunk_scan_active_landing.channel_profile = channel_profile;
+}
+
+/* A parked four-level GFSK target at @p symbol_rate_hz: DMR or NXDN96 at 4800 sym/s in 12.5 kHz, NXDN48 at 2400 in
+ * 6.25 kHz; 0 parks nothing. */
+static void
+park_gfsk(int symbol_rate_hz) {
+    park_landing(symbol_rate_hz == 2400 ? DSD_SCAN_MODE_NXDN48 : DSD_SCAN_MODE_DMR, symbol_rate_hz, 4, 0,
+                 symbol_rate_hz == 2400 ? RTL_STREAM_CHANNEL_PROFILE_6K25 : RTL_STREAM_CHANNEL_PROFILE_12K5);
 }
 
 int
@@ -969,6 +1000,86 @@ dsd_neo_get_config(void) {
 }
 
 #ifdef USE_RADIO
+/* Issue #890 B3: a parked simplex target's retune queues the chain its landing profile names, whatever chain the
+ * target before it left on the front end and whatever rf_mod a -m lock leaves the decoder on: YSF and M17 4800 sym/s
+ * over four levels in 12.5 kHz, D-STAR 4800 over two levels in 6.25 kHz (after an NXDN48 target's 2400/4 chain), dPMR
+ * 2400/4 in 6.25 kHz, TETRA DMO 18000/4 on CQPSK with its own filter, and DMR after TETRA back on the FSK
+ * discriminator. The TED is timed for the 72 kHz complex rate the front end runs at (TETRA: 4 samples per symbol). With
+ * the digital family attached (after an analog target), each says the CQPSK state is its own. */
+static void
+test_simplex_targets_queue_their_landing_chain(dsd_opts* opts, dsd_state* state) {
+    static const struct {
+        dsd_scan_mode mode;
+        int rate;
+        int levels;
+        int cqpsk;
+        int profile;
+        int rf_mod;
+    } targets[] = {
+        {DSD_SCAN_MODE_NXDN48, 2400, 4, 0, RTL_STREAM_CHANNEL_PROFILE_6K25, 2},
+        {DSD_SCAN_MODE_DSTAR, 4800, 2, 0, RTL_STREAM_CHANNEL_PROFILE_6K25, 2},
+        {DSD_SCAN_MODE_YSF, 4800, 4, 0, RTL_STREAM_CHANNEL_PROFILE_12K5, 0},
+        {DSD_SCAN_MODE_M17, 4800, 4, 0, RTL_STREAM_CHANNEL_PROFILE_12K5, 1},
+        {DSD_SCAN_MODE_DPMR, 2400, 4, 0, RTL_STREAM_CHANNEL_PROFILE_6K25, 0},
+        {DSD_SCAN_MODE_TETRA_DMO, 18000, 4, 1, RTL_STREAM_CHANNEL_PROFILE_TETRA, 1},
+        {DSD_SCAN_MODE_DMR, 4800, 4, 0, RTL_STREAM_CHANNEL_PROFILE_12K5, 2},
+        {DSD_SCAN_MODE_TETRA_DMO, 18000, 4, 1, RTL_STREAM_CHANNEL_PROFILE_TETRA, 0},
+    };
+
+    const int complex_before = g_rtl_complex_rate_hz;
+    for (int after_analog = 0; after_analog <= 1; after_analog++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->trunk_scan_enabled = 1;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        g_trunk_scan_target_count = 2;
+        g_trunk_scan_active_p25_target = 0;
+        g_rtl_complex_rate_hz = 72000;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        g_rtl_family_landing_after_pending = after_analog;
+        /* The previous target's chain: P25 CQPSK. */
+        g_rtl_cqpsk_enable = 1;
+        g_rtl_symbol_rate_hz = 4800;
+        g_rtl_symbol_levels = 4;
+        g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+        for (size_t i = 0; i < sizeof targets / sizeof targets[0]; i++) {
+            park_landing(targets[i].mode, targets[i].rate, targets[i].levels, targets[i].cqpsk, targets[i].profile);
+            state->rf_mod = targets[i].rf_mod;
+            g_rtl_pending_active = 0;
+            g_rtl_ted_sps_override = 0;
+            g_rtl_analog_prepare_calls = 0;
+            DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
+            const int decoder_sps = dsd_opts_compute_sps_rate(opts, targets[i].rate, 48000);
+            assert(dsd_engine_scan_tune_to_freq(opts, state, 145500000 + (long)i * 25000, decoder_sps, NULL)
+                   == DSD_TRUNK_TUNE_RESULT_OK);
+            if (g_rtl_cqpsk_enable != targets[i].cqpsk || g_rtl_symbol_rate_hz != targets[i].rate
+                || g_rtl_symbol_levels != targets[i].levels || g_rtl_channel_profile != targets[i].profile
+                || g_rtl_ted_sps != dsd_opts_compute_sps_rate(opts, targets[i].rate, 72000)
+                || g_rtl_ted_sps_override != 0 || state->rf_mod != targets[i].rf_mod) {
+                DSD_FPRINTF(stderr,
+                            "landing %zu (class %d): cqpsk %d rate %d levels %d profile %d ted %d override %d rf_mod "
+                            "%d\n",
+                            i, (int)targets[i].mode, g_rtl_cqpsk_enable, g_rtl_symbol_rate_hz, g_rtl_symbol_levels,
+                            g_rtl_channel_profile, g_rtl_ted_sps, g_rtl_ted_sps_override, state->rf_mod);
+                assert(0);
+            }
+            if (after_analog) {
+                assert(g_rtl_analog_prepare_calls == 1 && g_rtl_analog_prepared.family == DSD_RX_FAMILY_DIGITAL
+                       && g_rtl_analog_prepared.cqpsk_explicit == 1);
+            } else {
+                assert(g_rtl_analog_prepare_calls == 0);
+            }
+        }
+        assert(g_rtl_ted_sps == 4); /* TETRA at 72 kHz */
+    }
+    park_landing(DSD_SCAN_MODE_INHERIT, 0, 0, 0, 0);
+    g_trunk_scan_target_count = 0;
+    g_rtl_family_landing_after_pending = 0;
+    g_rtl_complex_rate_hz = complex_before;
+    rtl_stream_clear_pending_retune_profile();
+}
+
 /* Issue #583 item 3 through the trunked path: a p25-trunk target's control-channel tune after an analog target, with
  * DSD_NEO_CQPSK forcing CQPSK off and the target asking for CQPSK. Its retune attaches the digital family, and says the
  * CQPSK request queued with it is the target's own, so the stream lands it on CQPSK as it would after a digital
@@ -1015,7 +1126,7 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     /* A DMR trunk target under DSD_NEO_CQPSK=1: the GFSK chain's CQPSK off stands. */
     g_runtime_config.cqpsk_enable = 1;
     g_trunk_scan_active_p25_target = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    park_gfsk(4800);
     g_trunk_scan_target_count = 1;
     g_rtl_rate_for_family_explicit = -1;
     g_rtl_analog_prepare_calls = 0;
@@ -1027,7 +1138,7 @@ test_trunked_targets_after_an_analog_target_keep_their_cqpsk(dsd_opts* opts, dsd
     assert(g_rtl_rate_for_family_explicit == -1);
     assert(g_rtl_ted_sps == dsd_opts_compute_sps_rate(opts, 4800, g_rtl_complex_rate_hz));
 
-    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    park_gfsk(0);
     g_trunk_scan_target_count = 0;
     g_rtl_family_landing_after_pending = 0;
     g_runtime_config_is_set = 0;
@@ -3551,7 +3662,7 @@ main(void) {
     state->rtl_ctx = (RtlSdrContext*)state;
     state->rf_mod = 2;
     g_trunk_scan_target_count = 2;
-    g_trunk_scan_active_gfsk_symbol_rate = 2400;
+    park_gfsk(2400);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_cqpsk_enable = 1;
     g_rtl_symbol_rate_hz = 4800;
@@ -3590,7 +3701,7 @@ main(void) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     g_trunk_scan_target_count = 2;
     g_trunk_scan_active_p25_target = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 2400;
+    park_gfsk(2400);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_symbol_rate_hz = 4800;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
@@ -3617,7 +3728,7 @@ main(void) {
     opts->use_rigctl = 0;
 
     /* A parked 4800-class scan target keeps the 12.5 kHz chain. */
-    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    park_gfsk(4800);
     g_rtl_symbol_rate_hz = 2400;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_rtl_ted_sps = 20;
@@ -3629,7 +3740,7 @@ main(void) {
 
     /* Outside trunk scan the coordinator answers 0 and the rf_mod == 2 gate still picks 4800. */
     g_trunk_scan_target_count = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    park_gfsk(0);
     g_rtl_symbol_rate_hz = 2400;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_rtl_ted_sps = 20;
@@ -3653,7 +3764,7 @@ main(void) {
     state->rf_mod = 0;
     g_trunk_scan_target_count = 2;
     g_trunk_scan_active_p25_target = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    park_gfsk(4800);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_cqpsk_enable = 0;
     g_rtl_symbol_rate_hz = 2400;
@@ -3684,7 +3795,7 @@ main(void) {
     state->rf_mod = 1;
     g_trunk_scan_target_count = 2;
     g_trunk_scan_active_p25_target = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    park_gfsk(4800);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_cqpsk_enable = 1;
     g_rtl_symbol_rate_hz = 4800;
@@ -3711,7 +3822,7 @@ main(void) {
     state->rf_mod = 0;
     g_trunk_scan_target_count = 0;
     g_trunk_scan_active_p25_target = 0;
-    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    park_gfsk(0);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_cqpsk_enable = 0;
     g_rtl_symbol_rate_hz = 4800;
@@ -4227,6 +4338,7 @@ main(void) {
 
 #ifdef USE_RADIO
     test_trunked_targets_after_an_analog_target_keep_their_cqpsk(opts, state);
+    test_simplex_targets_queue_their_landing_chain(opts, state);
     test_gfsk_retune_decides_its_family_once(opts, state);
     test_chain_comparison_in_flight_tunes_on_the_leading_chain(opts, state);
     test_chain_comparison_watchdog_tune_leaves_it_to_the_decoder(opts, state);

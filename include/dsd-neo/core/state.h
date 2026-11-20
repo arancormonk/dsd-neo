@@ -1302,7 +1302,8 @@ typedef enum {
  * or a build without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the
  * shift off). RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known
  * channel width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM
- * channel with no width set, so no definite channel to judge. */
+ * channel with no width set, so no definite channel to judge. UNSUPPORTED_MODE (issue #890): a row or target whose own
+ * class has no check at all (tetra-dmo), whatever is set; a channel reason like MODES. */
 typedef enum {
     DSD_SCAN_QUIET_REASON_NONE = 0,
     DSD_SCAN_QUIET_REASON_INPUT = 1,
@@ -1311,6 +1312,7 @@ typedef enum {
     DSD_SCAN_QUIET_REASON_MODES = 4,
     DSD_SCAN_QUIET_REASON_WIDTH = 5,
     DSD_SCAN_QUIET_REASON_NO_WIDTH = 6,
+    DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE = 7,
 } dsd_scan_quiet_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline

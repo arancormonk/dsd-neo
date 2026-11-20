@@ -7,8 +7,9 @@
  * @file
  * @brief Runtime hook table for single-tuner trunk scan coordination.
  *
- * Protocol code can report periodic scan ticks and decoded conventional DMR
- * and NXDN activity without depending on engine-owned scan coordinator headers.
+ * Protocol code can report periodic scan ticks and decoded conventional activity (DMR, NXDN, P25 and the simplex
+ * digital families YSF, D-STAR, dPMR, M17 and TETRA DMO, issue #890) without depending on engine-owned scan
+ * coordinator headers.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_

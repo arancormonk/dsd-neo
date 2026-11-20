@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -238,6 +239,9 @@ typedef struct {
      * snapshot: the switch applies it through the scan key swap instead. */
     dsd_key_set keys;
     dsd_scan_row_profile* profile;
+    /* The receive profile its last landing resolved (trunk_scan_apply_target_demod(), issue #890): what its retune and
+       the tuning layer's chain land. */
+    dsd_trunk_scan_landing landing;
     p25_sm_ctx_t p25_ctx;
     dmr_sm_ctx_t dmr_ctx;
     /* The monotonic instant the receiver actually parked on this target: the one anchor the
@@ -561,25 +565,101 @@ scan_parse_ms_field(const char* s, int default_ms, int* out) {
     return 0;
 }
 
-/* Single home for the type axes the coordinator dispatches on, so a new target type is
- * classified in one place instead of in every `type == A || type == B` chain. Each axis is an
- * exhaustive switch with no default: adding a target type must fail the build here rather than
- * silently inherit whichever answer the chain happened to fall through to. */
+/* Which conventional family a target belongs to, i.e. which protocol's activity reports may claim its park. The NXDN
+ * protocol hooks cannot tell NXDN48 from NXDN96 -- the sync word and every element are identical, only the symbol rate
+ * differs -- so both NXDN conventional types answer to the same entry point. The simplex digital families (issue
+ * #890) are one per type. */
+typedef enum {
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE =
+        -1, /* trunked, or analog: its carrier holds it (trunk_scan_refresh_activity()) */
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR = 0,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN = 1,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_P25 = 2,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF = 3,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR = 4,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR = 5,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_M17 = 6,
+    TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO = 7,
+} trunk_scan_conventional_family;
+
+/* Whose carrier a forced advance hands back before the receiver moves (trunk_scan_release_active_carrier()): a trunked
+ * state machine's, or only the shared call state (NXDN trunking keeps no coordinator-visible machine, and a
+ * conventional row is never tuned away from its own frequency). */
+typedef enum {
+    TRUNK_SCAN_CARRIER_SHARED = 0,
+    TRUNK_SCAN_CARRIER_P25_SM = 1,
+    TRUNK_SCAN_CARRIER_DMR_SM = 2,
+} trunk_scan_carrier_owner;
+
+/* What a target type is on every axis the coordinator dispatches on. */
+typedef struct {
+    dsd_scan_mode mode;     /* the decoder class it runs (trunk_scan_target_mode()) */
+    uint8_t conventional;   /* one fixed frequency, no trunking */
+    uint8_t p25_class;      /* the P25 demodulation class (c4fm/cqpsk modulation), not a P25 SM */
+    uint8_t nxdn_trunk;     /* follows Type-C RCCH grants or Type-D SCCH busy-repeater signalling, owns a diag ledger */
+    uint8_t anchors_p25_cc; /* its control channel lives in state->p25_cc_freq (see below) */
+    uint8_t takes_gfsk;     /* its modulation column takes gfsk */
+    uint8_t simplex;        /* a simplex digital type (issue #890): modulation empty or auto only */
+    int8_t family;          /* trunk_scan_conventional_family */
+    uint8_t carrier;        /* trunk_scan_carrier_owner */
+} trunk_scan_type_axes;
+
+/* Single home for the type axes, so a new target type is classified in one place instead of in every `type == A ||
+ * type == B` chain: one row per type, at its enum value. Types are appended, never renumbered, so a type appended
+ * without its row (DSD_TRUNK_SCAN_TARGET_LAST moved past the table) fails the build at the assert below rather than
+ * silently inherit whichever answer a chain happened to fall through to.
+ *
+ * NXDN trunking reads and writes p25_cc_freq the same way P25 does (anchors_p25_cc); DMR trunking keeps it at 0 and
+ * uses trunk_cc_freq alone, which is what stops a stray NXDN element from moving a DMR target's control channel. */
+static const trunk_scan_type_axes k_trunk_scan_type_axes[] = {
+    [DSD_TRUNK_SCAN_TARGET_P25_TRUNK] = {DSD_SCAN_MODE_P25, 0, 1, 0, 1, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
+                                         TRUNK_SCAN_CARRIER_P25_SM},
+    [DSD_TRUNK_SCAN_TARGET_DMR_TRUNK] = {DSD_SCAN_MODE_DMR, 0, 0, 0, 0, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
+                                         TRUNK_SCAN_CARRIER_DMR_SM},
+    [DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL] = {DSD_SCAN_MODE_DMR, 1, 0, 0, 0, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR,
+                                                TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK] = {DSD_SCAN_MODE_NXDN96, 0, 0, 1, 1, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
+                                          TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL] = {DSD_SCAN_MODE_NXDN96, 1, 0, 0, 0, 1, 0,
+                                                 TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL] = {DSD_SCAN_MODE_NXDN48, 1, 0, 0, 0, 1, 0,
+                                                   TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN, TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK] = {DSD_SCAN_MODE_NXDN48, 0, 0, 1, 1, 1, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
+                                            TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL] = {DSD_SCAN_MODE_P25, 1, 1, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_P25,
+                                                TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL] = {DSD_SCAN_MODE_NFM, 1, 0, 0, 0, 0, 0,
+                                                TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE, TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL] = {DSD_SCAN_MODE_AM, 1, 0, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE,
+                                               TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL] = {DSD_SCAN_MODE_YSF, 1, 0, 0, 0, 0, 1, TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF,
+                                                TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL] = {DSD_SCAN_MODE_DSTAR, 1, 0, 0, 0, 0, 1,
+                                                  TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR, TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL] = {DSD_SCAN_MODE_DPMR, 1, 0, 0, 0, 0, 1,
+                                                 TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR, TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL] = {DSD_SCAN_MODE_M17, 1, 0, 0, 0, 0, 1, TRUNK_SCAN_CONVENTIONAL_FAMILY_M17,
+                                                TRUNK_SCAN_CARRIER_SHARED},
+    [DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL] = {DSD_SCAN_MODE_TETRA_DMO, 1, 0, 0, 0, 0, 1,
+                                                      TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO,
+                                                      TRUNK_SCAN_CARRIER_SHARED},
+};
+
+_Static_assert(sizeof(k_trunk_scan_type_axes) / sizeof(k_trunk_scan_type_axes[0])
+                   == (size_t)DSD_TRUNK_SCAN_TARGET_LAST + 1U,
+               "every trunk scan target type needs its row of axes");
+
+/* The axes of @p type; a value no row can have is in no class, conventional or trunked. */
+static const trunk_scan_type_axes*
+trunk_scan_type_axes_of(dsd_trunk_scan_target_type type) {
+    static const trunk_scan_type_axes none = {
+        DSD_SCAN_MODE_INHERIT, 0, 0, 0, 0, 0, 0, TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE, TRUNK_SCAN_CARRIER_SHARED};
+    return (unsigned)type <= (unsigned)DSD_TRUNK_SCAN_TARGET_LAST ? &k_trunk_scan_type_axes[type] : &none;
+}
+
 static int
 trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 0;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 1;
-    }
-    return 0;
+    return trunk_scan_type_axes_of(type)->conventional;
 }
 
 static int
@@ -589,84 +669,36 @@ trunk_scan_target_is_trunked(dsd_trunk_scan_target_type type) {
 
 static int
 trunk_scan_type_is_p25_class(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return 1;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 0;
-    }
-    return 0;
+    return trunk_scan_type_axes_of(type)->p25_class;
 }
 
-/* NXDN trunk targets follow Type-C RCCH grants or Type-D SCCH busy-repeater signalling
- * and own an nxdn_trunk_diag ledger. */
 static int
 trunk_scan_type_is_nxdn_trunk(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK: return 1;
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 0;
-    }
-    return 0;
+    return trunk_scan_type_axes_of(type)->nxdn_trunk;
 }
 
-/* Target types whose control channel is anchored in state->p25_cc_freq. NXDN trunking reads and
- * writes that field the same way P25 does; DMR trunking keeps it at 0 and uses trunk_cc_freq
- * alone, which is what stops a stray NXDN element from moving a DMR target's control channel. */
 static int
 trunk_scan_type_anchors_p25_cc_freq(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 1;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 0;
-    }
-    return 0;
+    return trunk_scan_type_axes_of(type)->anchors_p25_cc;
 }
 
-/* Symbol rate of a target's four-level GFSK demod profile, or 0 for the P25 class and for an analog
- * target, which has no symbol clock at all. DMR and NXDN96 share 4800 sym/s; NXDN48 runs the same
- * four-level GFSK demodulator at 2400 sym/s, which is the only axis that separates it from an
- * nxdn-conventional target. */
+/* The types whose modulation column takes gfsk: the four-level GFSK family, DMR and NXDN at either rate. The P25 class
+ * takes c4fm and cqpsk instead; an analog type takes none, and the simplex digital types only auto. */
 static int
-trunk_scan_type_gfsk_symbol_rate(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 0;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return 4800;
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 2400;
-    }
-    return 0;
+trunk_scan_type_takes_gfsk(dsd_trunk_scan_target_type type) {
+    return trunk_scan_type_axes_of(type)->takes_gfsk;
 }
 
+/* The simplex digital types (issue #890), whose modulation column takes only empty or auto: each has one modulation,
+ * its class's own (dsd_scan_mode_auto_rf_mod()). */
 static int
-trunk_scan_type_is_gfsk_family(dsd_trunk_scan_target_type type) {
-    return trunk_scan_type_gfsk_symbol_rate(type) > 0;
+trunk_scan_type_is_simplex_digital(dsd_trunk_scan_target_type type) {
+    return trunk_scan_type_axes_of(type)->simplex;
+}
+
+static dsd_scan_mode
+trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
+    return trunk_scan_type_axes_of(type)->mode;
 }
 
 typedef struct {
@@ -687,8 +719,6 @@ typedef struct {
     char* err;
     size_t err_sz;
 } dsd_trunk_scan_row_parse;
-
-static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
 
 /* An analog target (issue #526): no frames, keys, talkgroups or symbol clock; its carrier is its activity. */
 static int
@@ -711,7 +741,22 @@ static const struct {
     {"nxdn48-trunk", DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK},
     {"nfm-conventional", DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL},
     {"am-conventional", DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL},
+    {"ysf-conventional", DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL},
+    {"dstar-conventional", DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL},
+    {"dpmr-conventional", DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL},
+    {"m17-conventional", DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL},
+    {"tetra-dmo-conventional", DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL},
 };
+
+const char*
+dsd_trunk_scan_target_type_name(dsd_trunk_scan_target_type type) {
+    for (size_t i = 0; i < sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]); i++) {
+        if (k_trunk_scan_types[i].type == type) {
+            return k_trunk_scan_types[i].name;
+        }
+    }
+    return "";
+}
 
 static int
 scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
@@ -745,20 +790,61 @@ scan_type_analog_hint(const char* s) {
     return NULL;
 }
 
-/* An unknown type column. A spelling that names an analog class is pointed at the one type that carries
- * it, and a trunked analog type is told why it does not exist; anything else gets the accepted list. */
-static void
-scan_report_invalid_type(const dsd_trunk_scan_row_parse* parse, const char* type_s) {
+/* The most of an unknown type cell a diagnostic repeats. */
+#define TRUNK_SCAN_TYPE_ECHO_MAX 48U
+
+/* A type spelled `<family>-trunk` for a family that has only a conventional type: an analog class (told why it does
+ * not exist) or a simplex digital family (issue #890), each pointed at its conventional type. Returns 1 when it said
+ * so. */
+static int
+scan_report_trunked_type(const dsd_trunk_scan_row_parse* parse, const char* type_s) {
     const char* dash = strrchr(type_s, '-');
     char head[32] = "";
-    if (dash && strcmp(dash, "-trunk") == 0 && (size_t)(dash - type_s) < sizeof head) {
-        DSD_MEMCPY(head, type_s, (size_t)(dash - type_s));
-        head[dash - type_s] = '\0';
+    if (!dash || strcmp(dash, "-trunk") != 0 || (size_t)(dash - type_s) >= sizeof head || dash == type_s) {
+        return 0;
     }
-    const char* trunked_hint = head[0] != '\0' ? scan_type_analog_hint(head) : NULL;
-    if (trunked_hint) {
+    DSD_MEMCPY(head, type_s, (size_t)(dash - type_s));
+    head[dash - type_s] = '\0';
+    const char* analog = scan_type_analog_hint(head);
+    if (analog) {
         scan_set_error(parse->err, parse->err_sz, "row %u: analog targets are conventional only (use %s)", parse->row,
-                       trunked_hint);
+                       analog);
+        return 1;
+    }
+    char conventional[48];
+    DSD_SNPRINTF(conventional, sizeof conventional, "%s-conventional", head);
+    dsd_trunk_scan_target_type named = DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
+    if (scan_parse_type(conventional, &named) != 0 || !trunk_scan_type_is_simplex_digital(named)) {
+        return 0;
+    }
+    scan_set_error(parse->err, parse->err_sz, "row %u: %s targets are conventional only (use %s)", parse->row, head,
+                   conventional);
+    return 1;
+}
+
+/* Every type column spelling, in the order a diagnostic lists them ("p25-trunk, ..., m17-conventional or
+ * tetra-dmo-conventional"), into @p names. */
+static void
+scan_type_names_list(char* names, size_t size) {
+    size_t used = 0;
+    names[0] = '\0';
+    const size_t count = sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]);
+    for (size_t i = 0; i < count && used < size; i++) {
+        const char* separator = i == 0 ? "" : (i + 1 == count ? " or " : ", ");
+        const int n = DSD_SNPRINTF(names + used, size - used, "%s%s", separator, k_trunk_scan_types[i].name);
+        if (n < 0) {
+            break;
+        }
+        used += (size_t)n;
+    }
+}
+
+/* An unknown type column. A spelling that names an analog class is pointed at the one type that carries
+ * it, and a trunked spelling of a conventional-only family is told why it does not exist; anything else gets the
+ * accepted list. */
+static void
+scan_report_invalid_type(const dsd_trunk_scan_row_parse* parse, const char* type_s) {
+    if (scan_report_trunked_type(parse, type_s)) {
         return;
     }
     const char* hint = scan_type_analog_hint(type_s);
@@ -767,19 +853,15 @@ scan_report_invalid_type(const dsd_trunk_scan_row_parse* parse, const char* type
                        hint);
         return;
     }
-    char names[256] = "";
-    size_t used = 0;
-    const size_t count = sizeof(k_trunk_scan_types) / sizeof(k_trunk_scan_types[0]);
-    for (size_t i = 0; i < count && used < sizeof names; i++) {
-        const char* separator = i == 0 ? "" : (i + 1 == count ? " or " : ", ");
-        const int n = DSD_SNPRINTF(names + used, sizeof names - used, "%s%s", separator, k_trunk_scan_types[i].name);
-        if (n < 0) {
-            break;
-        }
-        used += (size_t)n;
-    }
-    scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%s'; expected %s", parse->row, type_s,
-                   names);
+    /* The whole list, every type named (issue #890: fifteen spellings, 258 bytes). */
+    char names[384];
+    scan_type_names_list(names, sizeof names);
+    /* The cell is echoed up to TRUNK_SCAN_TYPE_ECHO_MAX bytes, so a long one cannot push the list it is told to choose
+       from out of the message (DSD_TRUNK_SCAN_ROW_ERROR_MAX holds the longest). */
+    const size_t len = strlen(type_s);
+    const int shown = (int)(len > TRUNK_SCAN_TYPE_ECHO_MAX ? TRUNK_SCAN_TYPE_ECHO_MAX : len);
+    scan_set_error(parse->err, parse->err_sz, "row %u has invalid target type '%.*s%s'; expected %s", parse->row, shown,
+                   type_s, len > TRUNK_SCAN_TYPE_ECHO_MAX ? "..." : "", names);
 }
 
 int
@@ -864,7 +946,7 @@ scan_parse_modulation(const char* s, dsd_trunk_scan_target_type type, dsd_trunk_
         *out = DSD_TRUNK_SCAN_MODULATION_CQPSK;
         return 0;
     }
-    if (strcmp(s, "gfsk") == 0 && trunk_scan_type_is_gfsk_family(type)) {
+    if (strcmp(s, "gfsk") == 0 && trunk_scan_type_takes_gfsk(type)) {
         *out = DSD_TRUNK_SCAN_MODULATION_GFSK;
         return 0;
     }
@@ -938,6 +1020,14 @@ scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_
                             const char* modulation_s, const char* rtl_gain_s) {
     if (trunk_scan_type_is_analog(target->type) && modulation_s[0] != '\0') {
         scan_set_error(parse->err, parse->err_sz, "row %u: an analog target takes no modulation", parse->row);
+        return -1;
+    }
+    /* One modulation per simplex class (issue #890): auto names it; anything else is a setting the class lacks. */
+    if (trunk_scan_type_is_simplex_digital(target->type) && modulation_s[0] != '\0'
+        && strcmp(modulation_s, "auto") != 0) {
+        scan_set_error(parse->err, parse->err_sz,
+                       "row %u has modulation '%s'; a %s target takes only auto or an empty cell", parse->row,
+                       modulation_s, dsd_trunk_scan_target_type_name(target->type));
         return -1;
     }
     if (scan_parse_modulation(modulation_s, target->type, &target->modulation) != 0) {
@@ -2967,70 +3057,129 @@ trunk_scan_p25_cc_sps(const dsd_opts* opts, const dsd_state* state) {
     return dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
 }
 
-/* 0 (no TED override) for a type without a four-level GFSK symbol clock, the P25 class and an analog
- * target, so a symbol rate of 0 never reaches the SPS division whichever branch asked. */
-static int
-trunk_scan_gfsk_sps(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type) {
-    const int symbol_rate_hz = trunk_scan_type_gfsk_symbol_rate(type);
-    if (symbol_rate_hz <= 0) {
+/* The chain a class runs and its channel filter (dsd_rtl_channel_profile_for()): the P25 class the CQPSK chain when its
+ * decoder runs CQPSK (its P25 CQPSK or C4FM filter, as the engine's P25 chain asks for them), TETRA DMO the CQPSK chain
+ * with the TETRA filter, every other class the FSK discriminator with its rate's filter: 12.5 kHz at 4800 sym/s over
+ * four levels (DMR, NXDN96, YSF, M17), 6.25 kHz at 2400 sym/s (NXDN48, dPMR) or two levels (D-STAR). */
+static void
+trunk_scan_landing_chain(dsd_trunk_scan_landing* l) {
+    if (l->mode == DSD_SCAN_MODE_P25) {
+        l->cqpsk = l->rf_mod == 1;
+        l->channel_profile =
+            l->cqpsk ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+        return;
+    }
+    l->cqpsk = l->mode == DSD_SCAN_MODE_TETRA_DMO;
+    l->channel_profile = dsd_rtl_channel_profile_for(NULL, l->symbol_rate_hz, l->levels, l->cqpsk ? 1 : 2);
+}
+
+int
+dsd_trunk_scan_type_landing(dsd_trunk_scan_target_type type, dsd_trunk_scan_landing* out) {
+    if (!out) {
         return 0;
     }
-    const int demod_rate = dsd_scan_mode_symbol_timing_rate_hz(opts, state, symbol_rate_hz, 0);
-    return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->mode = trunk_scan_target_mode(type);
+    if (out->mode == DSD_SCAN_MODE_INHERIT || dsd_scan_mode_is_analog(out->mode)) {
+        return 0;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_profile(out->mode);
+    out->symbol_rate_hz = profile.symbol_rate_hz;
+    out->levels = profile.levels;
+    out->sps_hunt_idx = (int)profile.sps_profile_index;
+    out->rf_mod = dsd_scan_mode_auto_rf_mod(out->mode);
+    trunk_scan_landing_chain(out);
+    return 1;
 }
 
-/* The four-level GFSK family spans two symbol rates, and the SPS hunt profile is the only thing
- * that tells the NXDN sync search which one to look for (dsd_frame_sync_active_nxdn_variant()
- * reads it back to label the variant when -fa enables both). */
+int
+dsd_trunk_scan_landing_ted_agrees(const dsd_trunk_scan_landing* landing, int ted_sps_override, int applied_ted_sps) {
+    if (!landing || landing->symbol_rate_hz <= 0 || landing->complex_rate_hz <= 0 || landing->ted_sps <= 0
+        || landing->complex_rate_hz % landing->symbol_rate_hz != 0) {
+        return 0;
+    }
+    const int effective = ted_sps_override > 0 ? ted_sps_override : applied_ted_sps;
+    if (effective > 0 && effective != landing->ted_sps) {
+        return 0;
+    }
+    return applied_ted_sps <= 0 || applied_ted_sps == landing->ted_sps;
+}
+
+/* The decoder's modulation for a landing of @p target: a P25 target's own modulation, or under auto (or with no -m
+ * lock) the one it learned on this site (CQPSK for Phase 2 or a validated CQPSK Phase 1), a GFSK target's gfsk, every
+ * other class's own under auto or with no lock (dsd_scan_mode_auto_rf_mod()); otherwise a -m lock's, which the
+ * decoder already runs (state->rf_mod), as the lock keeps owning symbol slicing whatever chain the class lands. */
 static int
-trunk_scan_gfsk_sps_hunt_profile(int symbol_rate_hz) {
-    return symbol_rate_hz == 2400 ? DSD_FRAME_SYNC_SPS_PROFILE_2400_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-}
-
-static void
-trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
-    state->sps_hunt_idx =
-        state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state->sps_hunt_counter = 0;
-    /* The modulation first: a front end leaving the analog family lands on the CQPSK output or the FSK one, whose
-       rates can differ, and the timing below is for the one this target runs. */
-    if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
-        state->rf_mod = 1;
-    } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
-        state->rf_mod = 0;
-    } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
-        state->rf_mod = (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
+trunk_scan_landing_rf_mod(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                          const dsd_trunk_scan_landing* l) {
+    if (l->mode == DSD_SCAN_MODE_P25) {
+        if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
+            return 1;
+        }
+        if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
+            return 0;
+        }
+        if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
+            return (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
+        }
+        return state->rf_mod;
     }
-    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
-    state->samplesPerSymbol = p25_sps;
-    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
-}
-
-static void
-trunk_scan_apply_gfsk_class_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
-    state->sps_hunt_idx = trunk_scan_gfsk_sps_hunt_profile(trunk_scan_type_gfsk_symbol_rate(target->type));
-    state->sps_hunt_counter = 0;
-    int gfsk_sps = trunk_scan_gfsk_sps(opts, state, target->type);
-    state->samplesPerSymbol = gfsk_sps;
-    state->symbolCenter = dsd_opts_symbol_center(gfsk_sps);
-    if (target->modulation == DSD_TRUNK_SCAN_MODULATION_GFSK || target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO
-        || !opts->mod_cli_lock) {
-        state->rf_mod = 2;
+    if (target->modulation == DSD_TRUNK_SCAN_MODULATION_GFSK) {
+        return 2;
     }
+    if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
+        return l->rf_mod;
+    }
+    return state->rf_mod;
 }
 
+/* The landing profile of @p target now (dsd_trunk_scan_landing): the class's facts, then what this landing decides
+ * from the live decoder: the P25 class's rate (Phase 2 on a TDMA control channel) and learned modulation, the
+ * modulation a -m lock keeps, and the two rates and their timings. The decoder is timed for the rate the tune lands on
+ * (dsd_scan_mode_symbol_timing_rate_hz(), which records that decision on the scan scope for the retune to spend), and
+ * the TED for the complex rate the front end runs. An analog target gets an empty profile: no symbol clock. */
 static void
-trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
-    if (!opts || !state || !target) {
+trunk_scan_resolve_landing(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
+                           dsd_trunk_scan_landing* out) {
+    if (!dsd_trunk_scan_type_landing(target->type, out)) {
         return;
     }
-    if (trunk_scan_target_is_p25(target)) {
-        trunk_scan_apply_p25_target_demod(opts, state, target);
+    if (out->mode == DSD_SCAN_MODE_P25 && state->p25_cc_is_tdma == 1) {
+        out->symbol_rate_hz = 6000;
+        out->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    }
+    out->rf_mod = trunk_scan_landing_rf_mod(opts, state, target, out);
+    trunk_scan_landing_chain(out);
+    out->output_rate_hz = dsd_scan_mode_symbol_timing_rate_hz(opts, state, out->symbol_rate_hz, out->cqpsk);
+    out->samples_per_symbol = dsd_opts_compute_sps_rate(opts, out->symbol_rate_hz, out->output_rate_hz);
+    out->symbol_center = dsd_opts_symbol_center(out->samples_per_symbol);
+    const int complex_rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    if (complex_rate_hz > 0) {
+        out->complex_rate_hz = complex_rate_hz;
+        out->ted_sps = dsd_opts_compute_sps_rate(opts, out->symbol_rate_hz, complex_rate_hz);
+    }
+}
+
+/* Resolve the landing of @p rt and put it in force on the decoder: the hunt profile, the modulation and the timing.
+ * The one place a landing writes them, after the target's snapshot is restored (which carries the timing the target
+ * left with, under whatever class was on air then), so the incoming class's own always wins. Kept on @p rt for its
+ * retune and for the tuning layer's chain (dsd_engine_trunk_scan_active_landing()). An analog target keeps the timing
+ * in force: it has no symbol clock. */
+static void
+trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    if (!opts || !state || !rt) {
         return;
     }
-    if (trunk_scan_type_is_gfsk_family(target->type)) {
-        trunk_scan_apply_gfsk_class_target_demod(opts, state, target);
+    trunk_scan_resolve_landing(opts, state, &rt->target, &rt->landing);
+    const dsd_trunk_scan_landing* l = &rt->landing;
+    if (l->symbol_rate_hz <= 0) {
+        return;
     }
+    state->sps_hunt_idx = l->sps_hunt_idx;
+    state->sps_hunt_counter = 0;
+    state->rf_mod = l->rf_mod;
+    state->samplesPerSymbol = l->samples_per_symbol;
+    state->symbolCenter = l->symbol_center;
 }
 
 static void
@@ -3052,8 +3201,8 @@ trunk_scan_apply_target_mod_opts(dsd_opts* opts, const dsd_trunk_scan_target* ta
     if (!target) {
         return;
     }
-    dsd_scan_mode_apply_modulation(opts, trunk_scan_target_is_p25(target) ? DSD_SCAN_MODE_P25 : DSD_SCAN_MODE_DMR,
-                                   (dsd_scan_modulation)target->modulation);
+    /* The target's own class decides what auto means (issue #890), not DMR's GFSK for every class but P25. */
+    dsd_scan_mode_apply_modulation(opts, trunk_scan_target_mode(target->type), (dsd_scan_modulation)target->modulation);
 }
 
 static void
@@ -3076,18 +3225,7 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord,
     trunk_scan_apply_target_mod_opts(opts, target);
     trunk_scan_apply_target_gain_opts(opts, rt);
     opts->trunk_is_tuned = 0;
-    switch (target->type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: opts->trunk_enable = 1; break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: opts->trunk_enable = 0; break;
-    }
+    opts->trunk_enable = trunk_scan_target_is_trunked(target->type) ? 1 : 0;
 }
 
 static void
@@ -3235,7 +3373,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         trunk_scan_restore_saved_mod_gain_opts(opts, coord);
         trunk_scan_restore_snapshot(state, empty_snapshot);
         trunk_scan_apply_target_opts(opts, coord, rt);
-        trunk_scan_apply_target_demod(opts, state, &rt->target);
+        trunk_scan_apply_target_demod(opts, state, rt);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
             return -1;
@@ -3318,9 +3456,9 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
     }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
-        const int ted_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
-                                                                  : trunk_scan_gfsk_sps(opts, state, rt->target.type);
-        return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, out_request_id);
+        /* The landing the switch just resolved and applied (trunk_scan_apply_target_demod()): every digital class
+           queues its own symbol profile with this TED, the simplex classes included (issue #890). */
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, rt->landing.samples_per_symbol, out_request_id);
     }
     /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
        for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or
@@ -3328,8 +3466,9 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
        (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. */
     state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
     state->trunk_cc_freq = freq;
-    const int cc_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
-                                                             : trunk_scan_gfsk_sps(opts, state, rt->target.type);
+    /* A P25 control channel is timed for the rate its anchor's TDMA flag gives now. */
+    const int cc_sps =
+        trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state) : rt->landing.samples_per_symbol;
     dsd_trunk_tuning_caller_judges_begin();
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
     dsd_trunk_tuning_caller_judges_end();
@@ -3424,23 +3563,6 @@ trunk_scan_share_peer_idens(const dsd_trunk_scan_coord* coord, dsd_state* state,
     }
 }
 
-static dsd_scan_mode
-trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return DSD_SCAN_MODE_P25;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return DSD_SCAN_MODE_DMR;
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return DSD_SCAN_MODE_NXDN96;
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return DSD_SCAN_MODE_NXDN48;
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return DSD_SCAN_MODE_NFM;
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return DSD_SCAN_MODE_AM;
-    }
-    return DSD_SCAN_MODE_INHERIT;
-}
-
 /*
  * Per-target keys ride the scan key swap: a keyed target installs its set, an
  * unkeyed one hands the foreground keyring back to the globals. Trunk scan
@@ -3502,25 +3624,11 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     if (!opts || !state || !rt) {
         return;
     }
-    /* Exhaustive, no default: a new target type must say here whether it owns a carrier the
-     * coordinator has to hand back. */
-    switch (rt->target.type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-            p25_sm_abandon_carrier(&rt->p25_ctx, opts, state, "scan-visit-limit");
-            break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-            dmr_sm_abandon_carrier(&rt->dmr_ctx, opts, state, "scan-visit-limit");
-            break;
-        /* NXDN trunking keeps no coordinator-visible state machine, and a conventional row is
-         * never tuned away from its own frequency: the shared release below is all they owe. */
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: break;
+    /* Whose carrier it is, from the type's axes: a trunked state machine's, or the shared call state alone. */
+    switch ((trunk_scan_carrier_owner)trunk_scan_type_axes_of(rt->target.type)->carrier) {
+        case TRUNK_SCAN_CARRIER_P25_SM: p25_sm_abandon_carrier(&rt->p25_ctx, opts, state, "scan-visit-limit"); break;
+        case TRUNK_SCAN_CARRIER_DMR_SM: dmr_sm_abandon_carrier(&rt->dmr_ctx, opts, state, "scan-visit-limit"); break;
+        case TRUNK_SCAN_CARRIER_SHARED: break;
     }
     dsd_engine_release_tuned_call_state(opts, state);
     rt->last_allowed_activity_m = 0.0;
@@ -3924,7 +4032,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_engine_scan_ensure_output(opts, state);
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
-    trunk_scan_apply_target_demod(opts, state, &rt->target);
+    trunk_scan_apply_target_demod(opts, state, rt);
     trunk_scan_sync_active_sm_mode(state, rt);
     dsd_frame_sync_reset_acquisition(opts, state, 0);
 
@@ -4048,7 +4156,7 @@ trunk_scan_walk_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord*
     (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
     dsd_scan_groups_enter(state, rt->profile);
     (void)dsd_scan_maps_enter(state, rt->profile);
-    trunk_scan_apply_target_demod(opts, state, &rt->target);
+    trunk_scan_apply_target_demod(opts, state, rt);
     trunk_scan_sync_active_sm_mode(state, rt);
 }
 
@@ -5283,7 +5391,7 @@ trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd
         scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
     /* Why these facts give the target no check, if they give none (issue #834 R6). */
-    e->reason = scan_quiet_facts_reason(opts, e, 0);
+    e->reason = scan_quiet_facts_reason(opts, e, mode);
 }
 
 /* The visit of the target on air: its landing in this session, or its park still in flight. 0 for neither. */
@@ -6031,33 +6139,11 @@ dsd_engine_trunk_scan_active_dmr_ctx(void) {
     return &rt->dmr_ctx;
 }
 
-typedef enum {
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR = 0,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN = 1,
-    TRUNK_SCAN_CONVENTIONAL_FAMILY_P25 = 2,
-} trunk_scan_conventional_family;
-
-/* Which conventional family a target belongs to, i.e. which protocol's activity reports may claim
- * its park. Exhaustive switch with no default: the NXDN protocol hooks cannot tell NXDN48 from
- * NXDN96 -- the sync word and every element are identical, only the symbol rate differs -- so both
- * NXDN conventional types answer to the same entry point, and a new type must be classified here
- * rather than silently belonging to no family. */
+/* Whether @p type is of the conventional @p family whose protocol's activity reports may claim its park
+ * (trunk_scan_conventional_family). */
 static int
 trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_scan_conventional_family family) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 0;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR;
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_P25;
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NXDN;
-        /* No protocol reports claim an analog channel: its carrier holds it (trunk_scan_refresh_activity()). */
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL:
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return 0;
-    }
-    return 0;
+    return trunk_scan_type_axes_of(type)->family == (int8_t)family;
 }
 
 /* Whether policy lets the reported call hold its target. A P25 group call on a live patch's supergroup is judged by the
@@ -6358,7 +6444,7 @@ trunk_scan_list_name(const char* path, char* out, size_t out_size) {
 static int
 trunk_scan_load_list_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                          size_t err_sz) {
-    char detail[512];
+    char detail[DSD_TRUNK_SCAN_ROW_ERROR_MAX];
     detail[0] = '\0';
     if (dsd_trunk_scan_load_targets_csv(path, opts, out, detail, sizeof detail) == 0) {
         return 0;
@@ -7520,15 +7606,22 @@ dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandpl
 }
 
 int
-dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state) {
-    if (!state) {
-        return 0;
+dsd_engine_trunk_scan_active_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof(*out));
     }
-    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
     if (!coord || coord->paused || coord->active >= coord->count) {
         return 0;
     }
-    return trunk_scan_type_gfsk_symbol_rate(coord->targets[coord->active].target.type);
+    const dsd_trunk_scan_landing* landing = &coord->targets[coord->active].landing;
+    if (landing->symbol_rate_hz <= 0) {
+        return 0;
+    }
+    if (out) {
+        *out = *landing;
+    }
+    return 1;
 }
 
 int

@@ -2581,7 +2581,8 @@ channel is delayed.
   frequency also appears on the next row "hops" to the same frequency, ending the call as an explicit hop rather than
   moving the receiver, and a low `-t` already steps a quiet row about a second after its last sync, so the cap only
   changes what happens on a row that keeps syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`,
-  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the
+  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `tetra-dmo` (TETRA Direct Mode), `nfm` (analog narrowband FM) or `am`
+  (analog AM) for each row. See [the
   mixed-mode example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
   rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
@@ -2643,8 +2644,10 @@ channel is delayed.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
-    (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`) and analog NFM and AM conventional
-    (`nfm-conventional`, `am-conventional`, held on carrier) targets. Full guide: `docs/trunk-scan.md`.
+    (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`), analog NFM and AM conventional
+    (`nfm-conventional`, `am-conventional`, held on carrier) and simplex digital (`ysf-conventional`,
+    `dstar-conventional`, `dpmr-conventional`, `m17-conventional`, `tetra-dmo-conventional`) targets. Full guide:
+    `docs/trunk-scan.md`.
   - Several lists: repeat `--trunk-scan <file>` to scan the targets of several files in one session (at most 8), and
     give `--trunk-scan-off <file>` for a list that starts switched off; both also take the `=FILE` form. Lists are
     numbered in command-line order across both options, and a list's name is its file name without folder and
@@ -2675,12 +2678,13 @@ channel is delayed.
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
     trunk targets that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
+    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`; DMR and NXDN `auto` or `gfsk`; the simplex digital
+    types only `auto`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
     `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
     Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR/P25/NXDN activity hold (both NXDN rates), and an analog target's hold after its carrier
-    drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
+  - Conventional digital activity hold (DMR, P25, both NXDN rates and the simplex digital types), and an analog
+    target's hold after its carrier drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
   - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
     Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
     rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would

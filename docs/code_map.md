@@ -957,9 +957,55 @@ Key public headers:
 ### Single-Tuner Trunk Scan
 
 `src/engine/trunk_scan.c` owns the coordinator that rotates one retunable receiver across the explicit targets of a
-target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 trunk/conventional, and analog
-`nfm-conventional` and `am-conventional`). Operator-facing behavior, the CSV columns, and the CLI/config options live in
-`docs/trunk-scan.md`; `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
+target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 trunk/conventional, analog
+`nfm-conventional` and `am-conventional`, and the simplex digital `ysf-conventional`, `dstar-conventional`,
+`dpmr-conventional`, `m17-conventional` and `tetra-dmo-conventional`). Operator-facing behavior, the CSV columns, and
+the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
+
+- Target types (`dsd_trunk_scan_target_type`, appended and never renumbered): 0-9 the P25, DMR, NXDN and analog types,
+  10 `ysf-conventional`, 11 `dstar-conventional`, 12 `dpmr-conventional`, 13 `m17-conventional`, 14
+  `tetra-dmo-conventional` (issue #890); `DSD_TRUNK_SCAN_TARGET_LAST` is the bound. The type axes (conventional, P25
+  class, NXDN trunk, `p25_cc_freq` anchor, takes `gfsk`, simplex, the scan class `trunk_scan_target_mode()`, the
+  conventional family and whose carrier a forced advance hands back) are one table, `k_trunk_scan_type_axes[]`, a row
+  per type at its enum value, read by `trunk_scan_type_is_conventional()` and its siblings; a type appended without its
+  row fails the build at the table's size assert. The trunking flag a parked target sets is `!conventional`. `k_trunk_scan_types[]` is the one spelling table: the parser,
+  the invalid-type list and `dsd_trunk_scan_target_type_name()` (which app-control's document inspector uses) read it.
+  The simplex types are conventional only: `chan_csv` and `p25_bandplan_csv` are refused as for every conventional
+  type, a `<family>-trunk` spelling is told `conventional only (use <family>-conventional)`, and the modulation column
+  takes only empty or `auto` (anything else: `a <type> target takes only auto or an empty cell`). The conventional
+  families `TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF` .. `_TETRA_DMO` (3-7) name each simplex type's own family; no
+  protocol reports for them yet.
+- Diagnostics (issue #890 B1): `DSD_TRUNK_SCAN_ROW_ERROR_MAX` (512) holds any row message, the unknown-type one with
+  every spelling (258 bytes) after a cell echoed to 48 bytes; `DSD_TRUNK_SCAN_ERROR_MAX` (2048) holds that after a list
+  path. The list loaders (`trunk_scan_load_list_csv()`, app-control's `validate_load_list()`) and the CLI start
+  (`live_scanner_start_trunk_scan_if_needed()` in `engine.c`) size their buffers with them.
+- Landing profile (issue #890, `dsd_trunk_scan_landing`): one receive decision per landing on a target, made from its
+  scan class by `trunk_scan_apply_target_demod()` (`trunk_scan_resolve_landing()`) at the initial seeding of every
+  target, at every park (`trunk_scan_switch_to()`: rotations, retries, go-to, resume) and at a walk's rollback, always
+  after the target's snapshot is restored, so a snapshot saved under another class cannot leave its timing or `rf_mod`
+  behind. It holds the class's symbol rate, levels and hunt profile (`dsd_scan_mode_profile()`), the decoder's `rf_mod`
+  (the target's modulation; under `auto` or with no `-m` lock the class's own, `dsd_scan_mode_auto_rf_mod()`, or for
+  P25 the one learned on the site; otherwise the lock's, which keeps owning symbol slicing), the chain (`cqpsk`: P25 by
+  its `rf_mod`, TETRA DMO on, every other class off) and its channel filter (`dsd_rtl_channel_profile_for()`: 12.5 kHz
+  for DMR, NXDN96, YSF and M17, 6.25 kHz for NXDN48, dPMR and D-STAR, the TETRA filter for TETRA DMO), and two rates:
+  `output_rate_hz`, the decoder-output rate the landing delivers (`dsd_scan_mode_symbol_timing_rate_hz()`, the digital
+  family's landing when the tune switches family), with `samples_per_symbol`/`symbol_center` timed for it, and
+  `complex_rate_hz` (`dsd_engine_scan_dsp_rate_hz()`, 0 when no stream publishes one) with `ted_sps` timed for that
+  (TETRA: 72 kHz / 18000 = 4). The profile is applied to `dsd_state` (`sps_hunt_idx`, `rf_mod`, `samplesPerSymbol`,
+  `symbolCenter`) and kept on the target runtime (`rt->landing`); the retune passes its `samples_per_symbol` as the TED
+  (every digital class, the simplex ones included, so `dsd_engine_prepare_scan_profile()` always queues the class's
+  chain), and the tuning layer builds the RTL chain of every non-P25 target from
+  `dsd_engine_trunk_scan_active_landing()` (`dsd_engine_prepare_landing_rtl_chain()` in `trunk_tuning.c`: rate, levels, CQPSK state and filter, the TED from the
+  complex rate), which replaced the GFSK-only `dsd_engine_trunk_scan_active_gfsk_symbol_rate()` and its hard-coded four
+  levels and `rf_mod` 2. P25 keeps its own chain (`dsd_engine_prepare_p25_cc_rtl_chain()`, learned modulation) and
+  DMR/NXDN land exactly as before. The live reapply after a command (`dsd_scan_mode_resume()`) times the row from the
+  same class table and CQPSK rule (`scan_scope_cqpsk_choice()`), and the republish asks for the same chain
+  (`svc_publish_symbol_profile()`). `dsd_trunk_scan_type_landing()` gives the class part for any type with no live
+  state (rates 0), for a prospective check. `dsd_trunk_scan_landing_ted_agrees()` is the TETRA chain's TED rule
+  (issue #890 F5, the DSP's `dsd_demod_tetra_chain_wanted()`): the effective TED samples per symbol (an explicit
+  override, else the applied ones) and the applied ones must equal the landing's `ted_sps`; an override that gives the
+  rate's samples per symbol is honoured, and an unknown or inexact complex rate never agrees. The eligibility of a
+  TETRA DMO target (session rate, verification at tune completion) builds on these two.
 
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
   `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the target count is bounded by a memory
@@ -1081,7 +1127,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   scan runs on the no-op defaults.
 - Active-target queries used by the tuning layer and protocol code: `dsd_engine_trunk_scan_active_p25_ctx()`,
   `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
-  `dsd_engine_trunk_scan_active_gfsk_symbol_rate()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
+  `dsd_engine_trunk_scan_active_landing()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
   `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
 - Configured tuner gain and autogain: the coordinator owns the gain and autogain a target without its own `rtl_gain`
   runs, captured at scan start. The gain is restored at every switch and at shutdown; the autogain is applied by every
@@ -1448,9 +1494,20 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 
 - Core owns positional channel-map modes through `core/channel_mode.h`, implemented beside the LCN heap stores in
   `core/util/dsd_state_trunk_lcn.c`. Extension slot 5 transfers with map adoption and is cleared on map teardown.
-- Classes: `dsd_scan_mode` runs INHERIT..M17 and the analog `DSD_SCAN_MODE_NFM` (9) and `DSD_SCAN_MODE_AM` (10, issue
-  #526), whose presets are the analog FM monitor (`DSDCFG_MODE_ANALOG`) and the AM monitor (`DSDCFG_MODE_AM`);
-  `dsd_scan_mode_analog_kind()` names the demodulator an analog class runs (-1 for a digital class).
+- Classes: `dsd_scan_mode` runs INHERIT..M17, the analog `DSD_SCAN_MODE_NFM` (9) and `DSD_SCAN_MODE_AM` (10, issue
+  #526), whose presets are the analog FM monitor (`DSDCFG_MODE_ANALOG`) and the AM monitor (`DSDCFG_MODE_AM`), and the
+  digital `DSD_SCAN_MODE_TETRA_DMO` (11, `tetra-dmo`, issue #890), whose preset is TETRA's (`DSDCFG_MODE_TETRA`,
+  18000/4 on the CQPSK chain), so a tetra-dmo row keeps the TETRA decoder every other typed row leaves;
+  `dsd_scan_mode_analog_kind()` names the demodulator an analog class runs (-1 for a digital class). The option masks
+  (`scan_options.c`) give TETRA DMO the digital options through its own bit, appended past the analog bits 9 and 10,
+  which keep none. `dsd_scan_mode_auto_rf_mod()` is what modulation `auto` lands for a class (C4FM for P25, YSF, M17
+  and dPMR, GFSK for DMR, NXDN and D-STAR, QPSK for TETRA DMO), shared by `dsd_scan_mode_apply_modulation()` and the
+  trunk-scan landing profile; `scan_scope_cqpsk_choice()` gives every --trunk-scan digital class but an unmodulated
+  P25 its own CQPSK state (TETRA DMO on, the others off). An inherited row parked on the 18000/4 hunt profile recovers
+  TETRA's profile (`dsd_scan_mode_effective_profile()`). The scan quiet check has no TETRA class
+  (`scan_quiet_mode_classes()` 0); a tetra-dmo row or target publishes `DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE` (7,
+  "No check: mode" in both frontends, through `scan_timing_view.c`) and its own WARN line, never the missing-width
+  text. The terminal's sync readout parks a tetra-dmo row on the TETRA synchronisation burst.
   `DSD_SCAN_MODE_LAST` is the one bound every range check uses (the option parser, `dsd_channel_mode_set()`),
   `dsd_scan_mode_is_analog()` the one analog predicate (key compatibility, the importer, trunk-scan target classes), and
   appending a class keeps stored values and `MODE_BIT()` masks stable. `dsd_scan_mode_alias_hint()` names the class to

@@ -1673,7 +1673,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
     /* Why these facts give the row no check, if they give none (issue #834 R6). */
-    e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
+    e->reason = scan_quiet_facts_reason(opts, e, mode);
 }
 
 /* The -Y scan's conditions for checking the landed row @p row: the row on air from a landing in this
@@ -4262,7 +4262,7 @@ live_scanner_start_trunk_scan_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_scan_enabled != 1) {
         return 0;
     }
-    char scan_err[256] = {0};
+    char scan_err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
     if (dsd_engine_trunk_scan_init(opts, state, scan_err, sizeof scan_err) != 0) {
         LOG_ERROR("Trunk scan: %s\n", scan_err[0] ? scan_err : "initialization failed");
         return -1;

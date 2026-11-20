@@ -89,6 +89,9 @@ scan_quiet_mode_classes(dsd_scan_mode mode) {
         case DSD_SCAN_MODE_DSTAR: return QUIET_CLASS_6K25;
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM: return QUIET_CLASS_ANALOG;
+        /* No class: the check has no TETRA calibration (a decided limit, issue #890), so a tetra-dmo row or target is
+           never checked and says why (DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE). */
+        case DSD_SCAN_MODE_TETRA_DMO:
         case DSD_SCAN_MODE_INHERIT: return 0U;
     }
     return 0U;
@@ -204,10 +207,16 @@ scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row, ui
 }
 
 uint8_t
-scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, int decoder_set) {
+scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, dsd_scan_mode mode) {
     if (!e || (e->classes != 0U && !((e->classes & QUIET_CLASS_ANALOG) && e->analog_width_hz == 0U))) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
+    /* A class the check has no calibration for: nothing set on the row would give it one, so neither the width's text
+       nor the decoders' applies (issue #890). */
+    if (mode == DSD_SCAN_MODE_TETRA_DMO) {
+        return (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE;
+    }
+    const int decoder_set = mode == DSD_SCAN_MODE_INHERIT;
     /* No class from the decoder set itself: a mode with no known width, the encoder, or no mode of a class. An analog
        session, or a digital set whose -8 monitor has no width, is the width's. */
     if (decoder_set && opts && !dsd_opts_is_analog_family(opts)
@@ -386,6 +395,12 @@ quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, uint8_t de
                           int kind, uint32_t width_hz) {
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
         return quiet_format_modes_warn(out, out_size, detail, who, mhz);
+    }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz: it has no check for TETRA DMO "
+                            "channels. Normal scan timing applies.\n",
+                            who, mhz);
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH && (detail & SCAN_QUIET_WARN_MONITOR)) {
         return DSD_SNPRINTF(out, out_size,
@@ -1480,7 +1495,8 @@ quiet_capture_reason(uint8_t reason) {
 static int
 quiet_channel_reason(uint8_t reason) {
     return reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES || reason == (uint8_t)DSD_SCAN_QUIET_REASON_WIDTH
-           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH;
+           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH
+           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE;
 }
 
 /* Log the receiver's WARN line for the capture's verdict @p reason (TUNER or RATE), once per key. */
