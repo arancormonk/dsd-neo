@@ -492,7 +492,7 @@ dmr_data_header_opened_lane_call(const dsd_state* state, const dmr_data_sync_ctx
    comes back, since the terminal judges that lane by the proof, not by the slot the burst was heard on. The proof comes
    back only onto the carrier it was proven on (a boundary during the burst, a replay retune, forgot it for good), and a
    voice LC header the call on its lane took (dmr_data_header_opened_lane_call()) applies the mono-slot rule on top of
-   it. */
+   it. Under trunking (-fr -T) no proof comes back. */
 static void
 dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_data_sync_ctx* ctx, uint8_t mono_slot,
                             uint8_t mono_candidate) {
@@ -501,6 +501,13 @@ dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_da
     }
     if (ctx->cach_okay == 1 && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
         state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
+    }
+    if (opts->dmr_mono == 1 && opts->trunk_enable == 1) {
+        /* Under trunking the single-slot decoder runs a repeater's bursts on both slots (dmr_bootstrap_mono()): a lane
+           proof left from conventional decoding (trunking turned on without a retune) is gone, its candidate too, as
+           dmrBSBootstrap() forgets it, so it never names the slot of a call this burst opened on its own slot. */
+        dmr_mono_slot_forget(state);
+        return;
     }
     state->dmr_mono_rx_slot = mono_slot;
     state->dmr_mono_rx_candidate = mono_candidate;

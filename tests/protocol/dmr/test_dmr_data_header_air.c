@@ -439,6 +439,52 @@ send_trunked_headers_beside_a_call(dsd_opts* opts, dsd_state* state) {
     return kept && state->dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE ? 1 : 0;
 }
 
+/* Issue #637: trunking turned on without a retune after -fr proved a slot. Two conventional TS2 headers prove TS2 for
+   the single-slot lane; with trunking on, a TS1 header opens a TS1 call, decoded on both slots, and the conventional
+   proof does not come back after it: the TS1 call keeps its receive slot when frame sync refreshes it, with no receive
+   filter. 1 when the TS1 call is still open on TS1 with no lane proof, 0 otherwise, -1 for anything else. */
+static int
+send_trunked_header_after_a_conventional_proof(dsd_opts* opts, dsd_state* state) {
+    trunked_mono_fixture(opts, state);
+    opts->trunk_enable = 0;
+    for (int i = 0; i < 2; i++) {
+        if (!send_trunked_header(state, opts, 1U, 1001U)) {
+            return -1;
+        }
+    }
+    if (state->dmr_mono_rx_slot != DSD_DMR_MONO_RX_TS2) {
+        DSD_FPRINTF(stderr, "\n-fr: two TS2 headers proved no TS2 (lane proof %u)\n",
+                    (unsigned)state->dmr_mono_rx_slot);
+        return -1;
+    }
+    opts->trunk_enable = 1;
+    if (!send_trunked_header(state, opts, 0U, 3003U)) {
+        return -1;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id != 3003U
+        || call.receive_identity.slot != 1U) {
+        DSD_FPRINTF(stderr, "\n-fr then -T: the TS1 header opened no TS1 call\n");
+        return -1;
+    }
+    const uint64_t epoch = call.epoch;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    const int kept = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                     && call.epoch == epoch && call.receive_identity.slot == 1U;
+    if (!kept) {
+        DSD_FPRINTF(stderr, "\n-fr then -T: TS1 call phase %d slot %u; lane proof %u\n", (int)call.phase,
+                    (unsigned)call.receive_identity.slot, (unsigned)state->dmr_mono_rx_slot);
+    }
+    const int cleared =
+        state->dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE && state->dmr_mono_rx_candidate == DSD_DMR_MONO_RX_NONE;
+    opts->dmr_mono = 0;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    return kept && cleared ? 1 : 0;
+}
+
 /* Issue #800 with -fr -T: under trunking the single-slot decoder decodes a repeater's standalone bursts and its voice
    on both slots, as the two-slot decoder does (dmr_mono_folds_standalone_burst(), dmr_bootstrap_mono()). A checked
    standalone voice LC header on TS2 (the real dmr_data_sync() the engine dispatches it to), then the embedded GPS LC of
@@ -560,6 +606,11 @@ main(void) {
     const int trunked = send_trunked_mono_header_then_gps(&opts, &state);
     if (trunked != 1) {
         DSD_FPRINTF(stderr, "\n-fr -T, TS2 voice LC header then its embedded GPS on TS2: got %d, want 1\n", trunked);
+        failed = 1;
+    }
+    const int after_proof = send_trunked_header_after_a_conventional_proof(&opts, &state);
+    if (after_proof != 1) {
+        DSD_FPRINTF(stderr, "\n-fr proving TS2, then -T and a TS1 voice LC header: got %d, want 1\n", after_proof);
         failed = 1;
     }
     const int beside = send_trunked_headers_beside_a_call(&opts, &state);

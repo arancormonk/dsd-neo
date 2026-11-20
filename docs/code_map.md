@@ -3874,8 +3874,9 @@ suite runs under this compiler.
   decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
   (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Its burst
   sets no lane proof, neither while it dispatches nor after (`dsd_state::dmr_mono_rx_slot` stays clear,
-  `dmr_data_collect_cach()`; a header proves a slot only where it folds, `dmr_data_restore_voice_lane()`), as
-  `dmrBSBootstrap()` sets none for the voice that follows. So header and voice carry one slot identity
+  `dmr_data_collect_cach()`; a header proves a slot only where it folds, `dmr_data_restore_voice_lane()`, and a
+  proof left from conventional decoding, trunking turned on without a retune, is forgotten with its candidate, not put
+  back), as `dmrBSBootstrap()` sets none for the voice that follows. So header and voice carry one slot identity
   (`dsd_position_dmr_air()`) and a checked header's source names the call's embedded GPS (issue #800), and headers
   for one slot leave the receive slot of the other slot's call alone (test `DMR_DATA_HEADER_AIR`). Without
   trunking the single-slot decoder is as on main: it folds every slot 2 LC onto lane 0, where both slots' voice is
