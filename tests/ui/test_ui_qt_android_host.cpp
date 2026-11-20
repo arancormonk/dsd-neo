@@ -2977,6 +2977,12 @@ check_queued_share_holds_its_recording() {
     // Each case: a recording under no limit, an export holding the worker, the share queued behind it, then the limit.
     int next = 1;
     const auto queue_share = [&](DecoderHostAndroid& host) {
+        // This test writes the journal as the decoder would, but outside a session, which is what keeps the store from
+        // compacting a journal the decoder is writing. So it lets the store's pass in progress end first: the previous
+        // case's limit removal is followed in the same pass by a compaction that writes the journal anew and renames
+        // the copy over it, and a line appended meanwhile is lost. On a filesystem where the copy's fdatasync() takes
+        // a while (btrfs) the next case's line landed in that window.
+        store.waitForPassForTest();
         const QString path =
             published_recording(folder, QStringLiteral("00000000000000AA-%1").arg(next),
                                 QStringLiteral("c%1.wav").arg(next), 1754705000 + next, qint64{1200000});
