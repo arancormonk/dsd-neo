@@ -415,7 +415,12 @@ Generated (do not edit/commit):
     on it. A report of a frame read on the visit before, one decoded while the park is in flight (the coordinator
     publishes the incoming index before the tune lands), and one an interruption or a carrier boundary cut hold
     nothing, also between two rows of one family on one frequency; an ordinary sync loss moves neither the visit nor the
-    carrier count, so the tail a visit earned stays. Tests: `ENGINE_TRUNK_SCAN`
+    carrier count, so the tail a visit earned stays. A radio stream start forgets every landing
+    (`dsd_engine_note_stream_source()`): a conventional target that had landed, with no park in flight, when a restart
+    stopped the stream (a gain, bandwidth or device change) lands again under a new visit when the stream reopens on
+    the same source and its frequency (`dsd_engine_trunk_scan_stream_reopened()`), so traffic after the restart holds
+    it and reads from before it do not. A rigctl connect forgets the landing for good: nothing was sent on the new
+    connection, so the peer's frequency is unconfirmed until the next park. Tests: `ENGINE_TRUNK_SCAN`
     (`test_conventional_activity_binds_its_visit`, `test_conventional_voice_gate_media_binds_its_visit`),
     `ENGINE_SCAN_VOICE_GATE` (`test_unchecked_media_never_qualifies`, `test_probe_binds_media_to_its_visit`),
     `CORE_MBE_TRANSFORM_CONTEXT` (`test_process_mbe_frame_dstar_checked_media_follows_the_decode`),

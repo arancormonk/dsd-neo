@@ -2076,7 +2076,7 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
 /* Tell the scans where the stream a restart stopped opened again, if at all (issue #644): a tune the stop dropped lands
    when the new stream opened on its target, and the note goes either way. */
 static void
-svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int rc) {
+svc_rtl_scans_stream_reopened(const dsd_opts* opts, dsd_state* state, int rc) {
     const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
     dsd_engine_manual_tune_stream_reopened(opts, state, opened);
     dsd_engine_channel_scan_stream_reopened(opts, state, opened);

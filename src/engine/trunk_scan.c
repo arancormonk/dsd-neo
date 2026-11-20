@@ -412,6 +412,10 @@ typedef struct {
     size_t stop_target;
     uint32_t stop_hz;
     uint64_t stop_source_key;
+    /* A conventional target landed on its frequency, with no park in flight, when the stream stopped (issue #890):
+       the stream start forgets every landing, and a reopen on the same source and frequency lands it again
+       (dsd_engine_trunk_scan_stream_reopened()), so traffic after the restart is the visit's. */
+    int stop_landed;
     /* What the published entry reasons (dsd_state::trunk_scan_entry_reasons, issue #644) were last decided from: the
        DSP rate, the lists, the avoids and the session edits (edit_seq moves at every edit installed), and when they
        are next decided again whatever moved (a configured width, which nothing here counts, reaches them then). */
@@ -7863,10 +7867,19 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
         return;
     }
     coord->stop_request = 0U;
+    coord->stop_landed = 0;
     if (!opts || coord->paused || coord->active >= coord->count) {
         return;
     }
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!rt->tune_pending && trunk_scan_type_is_conventional(rt->target.type) && rt->target.frequency_hz != 0U
+        && dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session)) {
+        coord->stop_landed = 1;
+        coord->stop_target = coord->active;
+        coord->stop_hz = rt->target.frequency_hz;
+        coord->stop_source_key = state->carrier_source_key;
+        return;
+    }
     if (!trunk_scan_park_live(rt) || rt->tune_hz == 0U) {
         return;
     }
@@ -7877,9 +7890,22 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
 }
 
 void
-dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, int opened) {
     dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
     if (!coord) {
+        return;
+    }
+    const int landed = coord->stop_landed;
+    coord->stop_landed = 0;
+    if (landed) {
+        /* The target landed before the stop and the stream reopened where it was (issue #890): it lands again, under
+           a new visit, so what was read before the restart stays the old visit's and traffic after it holds the
+           target. The visit's clocks and the hold it earned go on. */
+        if (opened && !coord->paused && coord->active == coord->stop_target && coord->active < coord->count
+            && !coord->targets[coord->active].tune_pending
+            && dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz)) {
+            trunk_scan_note_landing(state, coord, &coord->targets[coord->active], 0U);
+        }
         return;
     }
     const uint64_t request = coord->stop_request;

@@ -87,6 +87,7 @@
 #include <unistd.h>
 #endif
 #include "analog_tone_policy.h"
+#include "checked_media_test_support.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -5050,18 +5051,6 @@ test_nxdn48_conventional_activity_hold(void) {
     return test_rc;
 }
 
-/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
-   both for a good frame; the voice-only scan credits only the checked media. */
-static int
-decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
-    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
-    dsd_call_snapshot call;
-    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
-        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
-    }
-    return rc;
-}
-
 /*
  * Voice-gated scan (issue #381): seed an ACTIVE media-active voice epoch on slot 0 with
  * explicit media times, so the gate's probe sees decoded voice without running a decoder.
@@ -5291,6 +5280,119 @@ run_conventional_activity_origin_case(const char* tag, const char* body, convent
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
+}
+
+/* Issue #890: a restart of the radio stream (a gain, bandwidth or device change) while a conventional target is landed
+ * forgets every landing at the stream's start; when the new stream opens on the same source and the target's frequency
+ * the target lands again under a new visit: a frame read before the restart holds nothing, and its own traffic after
+ * the restart holds it. With @p elsewhere the stream opens on another centre: no landing, nothing holds the target. */
+static int
+run_conventional_activity_after_restart_case(int elsewhere) {
+    const char* tag = elsewhere ? "restart elsewhere" : "restart on the target";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_before = state.scan_landing_visit;
+    const uint32_t carrier_before = state.carrier_seq;
+    state.carrier_source_key = 1U;
+    trunk_scan_test_set_now(0.05);
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    /* The stream start (dsd_engine_note_stream_source()): the same source's reopen is a stream gap, and every landing
+       is forgotten. */
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    opts.rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (elsewhere ? state.scan_landing_visit != 0U
+                  : (state.scan_landing_visit == 0U || state.scan_landing_visit == visit_before
+                     || !dsd_engine_trunk_scan_target_confirmed(&state, 0))) {
+        DSD_FPRINTF(stderr, "%s: visit %llu after the reopen (before %llu)\n", tag,
+                    (unsigned long long)state.scan_landing_visit, (unsigned long long)visit_before);
+        test_rc = 1;
+    }
+    /* A frame read before the restart reports now: nothing. Then the target's own traffic after it. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_before;
+    state.frame_dispatch_scan_visit = visit_before;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, tag, elsewhere ? 1U : 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a visit that is stale while the carrier count is unchanged (a trunk-scan rotation between two targets
+ * moves no carrier boundary): a frame dispatched under the visit before, its carrier the current one, holds nothing. */
+static int
+test_conventional_activity_stale_visit_same_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "stale visit: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: on b", 1U);
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq; /* the carrier count is the current one */
+    state.frame_dispatch_scan_visit = visit_a;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: a's report held nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_activity_after_a_stream_restart(void) {
+    return run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
 }
 
 static int
@@ -27587,6 +27689,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
     rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
+    rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
