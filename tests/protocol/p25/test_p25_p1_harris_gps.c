@@ -416,6 +416,49 @@ send_terminator_lc(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octet
     p25_lcw_from_tdulc(f->opts, f->st, lcw, 0, closing, closing->epoch);
 }
 
+/* Issue #800: a TDULC that ended no call binds its GPS link control to no call. On a trunked voice channel a header can
+ * open a call that names no source before any voice frame; the trunk state machine declines the TDULC's end and the
+ * call stays open (closing captured, ended epoch 0). A Motorola APX report in that TDULC still counts, anonymous, in
+ * the feed and the location file, but no history row takes it: the open call's row is not its call's, though an
+ * anonymous fix would pass the typed-source rule on a call that names no source. */
+static void
+test_terminator_that_ended_no_call(void) {
+    fixture f;
+    fixture_open(&f);
+    const dsd_call_observation header = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = TG_A,
+        .policy_target_id = TG_A,
+        .observed_m = 1.0,
+    };
+    expect_true("unbound terminator: header call opened",
+                dsd_call_state_observe(f.st, &header, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_event_sync_slot(f.opts, f.st, 0U);
+    dsd_event_closing_call closing;
+    expect_true("unbound terminator: call captured", dsd_event_capture_closing_call(f.st, 0U, &closing) == 1);
+    const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+    uint8_t bytes[9] = {0x06, 0x90, apx_lc[0], apx_lc[1], apx_lc[2], apx_lc[3], apx_lc[4], apx_lc[5], apx_lc[6]};
+    uint8_t lcw[72];
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    p25_lcw_from_tdulc(f.opts, f.st, lcw, 0, &closing, 0U);
+    dsd_position_fix fix;
+    expect_true("unbound terminator: anonymous record kept",
+                feed_next(&f, &fix) && fix.source_id == 0U && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+    char last[256];
+    expect_true("unbound terminator: location row", lrrp_rows(&f, last) == 1);
+    dsd_call_snapshot call;
+    expect_true("unbound terminator: the call still open", dsd_call_state_get(f.st, 0U, &call) > 0
+                                                               && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                               && call.epoch == closing.epoch);
+    expect_true("unbound terminator: the open call's row takes nothing",
+                row0(&f)->pos.valid == 0U && row0(&f)->gps_s[0] == '\0');
+    fixture_close(&f);
+}
+
 /* The call's committed row: the one that names @p src, wherever the end pushed it. */
 static const Event_History*
 row_of(const fixture* f, uint32_t src) {
@@ -1196,6 +1239,7 @@ main(void) {
     test_alias_between_halves();
     test_ended_call();
     test_terminator();
+    test_terminator_that_ended_no_call();
     test_reception_change();
     test_phase_change();
     test_event_log_one_label();

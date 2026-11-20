@@ -886,10 +886,14 @@ gps_report_print_prefix(const dsd_gps_report_ctx* ctx) {
 }
 
 /* Write an admitted report into its call's history row: the call the terminator just ended (spec N2), the call of the
- * epoch the report was bound to, or else the slot's ACTIVE call. The writer's typed-source rule decides. */
+ * epoch the report was bound to, or else the slot's ACTIVE call. The writer's typed-source rule decides. A report shown
+ * to belong to no call (ctx->no_call_row: a TDULC that ended none) writes no row: the call still open is not its. */
 static void
 gps_report_write_history(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_gps_report_ctx* ctx,
                          const dsd_position_fix* fix, const char* text) {
+    if (ctx->no_call_row) {
+        return;
+    }
     if (ctx->closing != NULL && ctx->closing->valid) {
         (void)dsd_event_enrich_position_closing(opts, state, ctx->closing, fix, text);
     } else if (ctx->call_epoch != 0U) {

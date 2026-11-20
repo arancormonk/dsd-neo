@@ -962,6 +962,9 @@ p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int
     out->protocol = DSD_SYNC_IS_P25P1(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P1_POS;
     out->slot = 0U;
     out->pos_verified = pos_verified ? 1U : 0U;
+    /* A TDULC's report bound to no call (p25_lcw_gps_call_get()) has no history row: falling back to the slot's
+       ACTIVE call would put it on a call that TDULC did not end. */
+    out->no_call_row = (uint8_t)(!ctx->allow_voice_start && !call->view.open);
     dsd_position_attribution granted;
     if (dsd_position_attribution_grant(ctx->state, &ctx->state->p25_p1_lc_attribution, &call->view, out->protocol,
                                        &granted)

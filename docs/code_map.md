@@ -2188,7 +2188,8 @@ suite runs under this compiler.
   a TDULC binds only to the call that TDULC itself ended (`p25_lcw_from_tdulc()`'s `closing`, captured before the end,
   and only when its epoch is the nonzero `ended_epoch`, issue #800): a TDULC whose end the trunk state machine declined
   (a header opened the call, no voice frame followed) or that repeats an earlier end binds no call, never the call
-  still open, so L3Harris halves in successive TDULCs never pair.
+  still open, so L3Harris halves in successive TDULCs never pair, and a report it carries still counts (anonymous) in
+  the feed and the location file but takes no history row (`dsd_gps_report_ctx::no_call_row`), not the open call's.
   Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
   `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`, `DMR_LIP_CARRIERS`, `P25_P1_HARRIS_GPS`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
@@ -3010,7 +3011,8 @@ suite runs under this compiler.
     Every Phase 1 LC verdict (identity events, preemption candidates, the checked-identity record, the GPS position)
     depends on that hard decode (`p25_lcw_ctx.lc_hard`). A terminator's GPS LC belongs to the call that terminator
     ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`, kept only when `p25p1_terminator_note_end()`
-    names its epoch), else to no call (`p25_lcw_gps_call_get()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
+    names its epoch), else to no call (`p25_lcw_gps_call_get()`) and no history row
+    (`dsd_gps_report_ctx::no_call_row`, `gps_report_write_history()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
     and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
     `p25_sm_checked_call_identity()` (P25 SM below), by the attribution rule below: never from a Phase 1 call still
     open on the slot, never across a reception change.
