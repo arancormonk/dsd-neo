@@ -3705,6 +3705,7 @@ tetra_first_rig(rig* r, tetra_first_kind kind) {
     r->opts->audio_out = 0;
     r->opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
     r->opts->rdio_system_id = 48;
+    r->opts->rdio_unknown_talkgroup = 4242; /* the rig's input knows no frequency (issue #888 D2) */
     r->state->synctype = DSD_SYNC_TETRA_NDB_POS;
     tetra_state_t* ts = tetra_st(r->state);
     ts->tdma_valid = 1;
@@ -3747,10 +3748,11 @@ typedef struct {
     const char* dir;
     sf_count_t prefill_frames;
     sf_count_t call_frames;
-    int prefill;         /* recordings @c prefill_frames long */
-    int prefill_sidecar; /* of those, with an rdio-scanner sidecar */
-    int call;            /* recordings @c call_frames long */
-    int other;           /* any other length: the call's audio with the earlier audio in front */
+    int prefill;             /* recordings @c prefill_frames long */
+    int prefill_sidecar;     /* of those, with an rdio-scanner sidecar */
+    int call;                /* recordings @c call_frames long */
+    char call_sidecar[1024]; /* the call's rdio-scanner sidecar, empty when it has none */
+    int other;               /* any other length: the call's audio with the earlier audio in front */
 } tetra_first_files;
 
 static int
@@ -3781,6 +3783,14 @@ tetra_first_files_cb(const char* name, void* user) {
         }
     } else if (info.frames == files->call_frames) {
         files->call++;
+        char sidecar[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(sidecar, sizeof sidecar, "%.*s.json", (int)(strlen(path) - 4), path);
+        FILE* s = dsd_fopen_existing_regular_file(sidecar, "rb");
+        if (s != NULL) {
+            const size_t got = fread(files->call_sidecar, 1, sizeof files->call_sidecar - 1U, s);
+            files->call_sidecar[got] = '\0';
+            (void)fclose(s);
+        }
     } else {
         files->other++;
     }
@@ -3854,7 +3864,22 @@ test_tetra_first_call_leaves_unowned_audio(void) {
             rc |= expect_int(tag, files.call, 1);
             DSD_SNPRINTF(tag, sizeof tag, "%s: no recording mixes the two", k_kind[kind]);
             rc |= expect_int(tag, files.other, 0);
+            /* Issue #888: once admitted, the call is exported. The anonymous call names no talkgroup and is exported
+               under --rdio-unknown-talkgroup, labelled by its protocol; the direct-mode call under its own. */
+            const int anon = kind == TETRA_FIRST_ANON;
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the call is exported under %s", k_kind[kind],
+                         anon ? "the fallback talkgroup" : "its talkgroup");
+            rc |= expect_true(tag, strstr(files.call_sidecar, anon ? "\"talkgroup\": 4242," : "\"talkgroup\": 1234,")
+                                       != NULL);
+            if (anon) {
+                DSD_SNPRINTF(tag, sizeof tag, "%s: labelled by its protocol", k_kind[kind]);
+                rc |= expect_true(tag, strstr(files.call_sidecar, "\"talkgroup_tag\": \"TETRA\",") != NULL);
+            }
+            if (rc != 0) {
+                DSD_FPRINTF(stderr, "  %s sidecar: %s\n", k_kind[kind], files.call_sidecar);
+            }
             r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+            r.opts->rdio_unknown_talkgroup = 0;
             rig_close(&r);
         }
     }
@@ -4070,16 +4095,16 @@ enum {
    falls two seconds on, in second k_stamped_first_ms / 1000 + 2. */
 static const uint64_t k_stamped_first_ms = 1600000000250ULL;
 
-/* An SDRTrunk export as SDRTrunk writes it: a clear DMR group call, every voice frame with its own Unix-millisecond
-   "time" (a JSON number) before its "hex". */
+/* An SDRTrunk export as SDRTrunk writes it: a clear DMR group call from 5678 to @p to, every voice frame with its own
+   Unix-millisecond "time" (a JSON number) before its "hex". */
 static int
-stamped_write_export(const char* path) {
+stamped_write_export(const char* path, const char* to) {
     static char json[STAMPED_FRAMES * 64 + 256];
     size_t len = 0;
-    int n =
-        DSD_SNPRINTF(json, sizeof json,
-                     "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
-                     "\"encrypted\":false,\"frames\":[");
+    int n = DSD_SNPRINTF(json, sizeof json,
+                         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"%s\","
+                         "\"encrypted\":false,\"frames\":[",
+                         to);
     if (n <= 0) {
         return 1;
     }
@@ -4146,9 +4171,9 @@ test_playback_export_starts_at_its_first_frame(void) {
     r.opts->rdio_system_id = 48;
     submit(&r, DSD_APP_CMD_WAV_START);
     char path[DSD_TEST_PATH_MAX * 2];
-    rc |=
-        expect_int("-r export start: input written",
-                   dsd_test_path_join(path, sizeof path, r.dir, "named.mbe") == 0 ? stamped_write_export(path) : 1, 0);
+    rc |= expect_int(
+        "-r export start: input written",
+        dsd_test_path_join(path, sizeof path, r.dir, "named.mbe") == 0 ? stamped_write_export(path, "1234") : 1, 0);
     char* argv[2] = {"dsd-neo", path};
     r.state->optind = 1;
     playMbeFiles(r.opts, r.state, 2, argv);
@@ -4178,6 +4203,79 @@ test_playback_export_starts_at_its_first_frame(void) {
     }
     r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
     rig_close(&r);
+    return rc;
+}
+
+/* Issue #888: -P -r unnumbered.mbe, an export of a call from 5678 that names no talkgroup, played while the receiver
+   sits on 452.3125 MHz with colour code 3 decoded. A played row takes no tuner frequency or code, so with
+   --rdio-unknown-talkgroup the commit exports it under that number, labelled by its protocol alone, at the recording's
+   first frame, with freq 0 and no freqList; without the option it is published and kept local. Through playMbeFiles(),
+   the run's end and the real close and export. */
+static int
+test_playback_unnumbered_call_export(void) {
+    int rc = 0;
+    for (int with_option = 1; with_option >= 0; with_option--) {
+        char tag[160];
+        const char* leg = with_option ? "-r unnumbered, option set" : "-r unnumbered, no option";
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_unnumbered");
+        r.opts->audio_out = 0;
+        r.opts->playfiles = 1;
+        r.opts->audio_in_type = AUDIO_IN_RTL;
+        r.opts->rtlsdr_center_freq = 452312500U;
+        r.state->dmr_color_code = 3U;
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_system_id = 48;
+        r.opts->rdio_unknown_talkgroup = with_option ? 4242 : 0;
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char path[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: input written", leg);
+        rc |= expect_int(
+            tag,
+            dsd_test_path_join(path, sizeof path, r.dir, "unnumbered.mbe") == 0 ? stamped_write_export(path, "0") : 1,
+            0);
+        char* argv[2] = {"dsd-neo", path};
+        r.state->optind = 1;
+        playMbeFiles(r.opts, r.state, 2, argv);
+        playback_end_run(&r);
+
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: one recording published under the call's row", leg);
+        rc |= expect_true(tag, pub != NULL && record(&g_j, "publish", 1) == NULL
+                                   && strcmp(field_s(pub, "row"), "null") != 0);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row keeps no talkgroup", leg);
+        rc |= expect_str(tag, pub ? field_s(pub, "target") : "?", "");
+        static char body[4096];
+        read_sidecar_of(&r, pub, body, sizeof body);
+        if (!with_option) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: no sidecar", leg);
+            rc |= expect_str(tag, body, "");
+        } else {
+            static const char* const k_want[] = {
+                "\"talkgroup\": 4242,",
+                "\"talkgroup_tag\": \"DMR\",",
+                "\"srcList\": [{\"pos\":0,\"src\":5678}],",
+                "\"freq\": 0,",
+            };
+            for (size_t i = 0; i < sizeof k_want / sizeof k_want[0]; i++) {
+                DSD_SNPRINTF(tag, sizeof tag, "%s: the sidecar holds %s", leg, k_want[i]);
+                rc |= expect_true(tag, strstr(body, k_want[i]) != NULL);
+            }
+            DSD_SNPRINTF(tag, sizeof tag, "%s: no freqList", leg);
+            rc |= expect_true(tag, strstr(body, "freqList") == NULL);
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)(k_stamped_first_ms / 1000ULL));
+            DSD_SNPRINTF(tag, sizeof tag, "%s: filed at the recording's first frame", leg);
+            rc |= expect_true(tag, strstr(body, want) != NULL);
+        }
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "  %s sidecar: %s\n", leg, body);
+        }
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        r.opts->rdio_unknown_talkgroup = 0;
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -4374,6 +4472,7 @@ main(void) {
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
     rc |= test_playback_two_calls_in_one_file();
+    rc |= test_playback_unnumbered_call_export();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

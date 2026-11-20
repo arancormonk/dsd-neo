@@ -6248,6 +6248,94 @@ test_rdio_sidecar_files_each_recording_at_its_start(void) {
     return rc;
 }
 
+// Issue #888: M17 calls through the real observation, render and commit rotation to the rdio-scanner sidecar, by the
+// width of their encoded addresses. A destination up to UINT32_MAX is the call's talkgroup as decoded, labelled by its
+// callsign. One above it, and the broadcast address, leave the row with no number (the row keeps none), so the call is
+// exported under its frequency in kHz and labelled by protocol, CAN and MHz, never by the per-call callsign text. A
+// source above UINT32_MAX lists no radio. Callsigns are invented.
+static int
+test_m17_rdio_export_by_address_width(void) {
+    static const struct {
+        const char* label;
+        uint64_t dst;
+        const char* dst_text;
+        uint64_t src;
+        const char* src_text;
+        uint32_t want_tg;
+        const char* want_tag;
+        const char* want_src;
+    } cases[] = {
+        {"M17 destination at UINT32_MAX", 0xFFFFFFFFULL, "N0CALL", 2748U, "N0SRC", 4294967295U, "N0CALL",
+         "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 destination above UINT32_MAX", 0x100000000ULL, "N0WIDE", 2748U, "N0SRC", 433475U,
+         "M17 CAN 3 433.4750 MHz", "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 broadcast", 0xFFFFFFFFFFFFULL, "BROADCAST", 2748U, "N0SRC", 433475U, "M17 CAN 3 433.4750 MHz",
+         "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 source above UINT32_MAX", 1234U, "N0CALL", 0x100000000ULL, "N0WIDE", 1234U, "N0CALL", "\"srcList\": [],"},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = DSD_SYNC_M17_STR_POS;
+        opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+        g_open_wav_result = &wav_sentinel;
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_system_id = 48;
+        if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_m17")) {
+            DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the M17 rdio test\n");
+            return 1;
+        }
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_M17_STR_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+            .ota_target_id = cases[i].dst,
+            .ota_source_id = cases[i].src,
+            .service_options = 3U, /* the CAN */
+            .has_service_metadata = 1U,
+            .frequency_hz = 433475000,
+            .observed_m = g_observed_m,
+        };
+        DSD_SNPRINTF(observation.target_text, sizeof observation.target_text, "%s", cases[i].dst_text);
+        DSD_SNPRINTF(observation.source_text, sizeof observation.source_text, "%s", cases[i].src_text);
+        g_observed_m += 0.1;
+        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the commit closes and exports its recording", cases[i].label);
+        rc |= expect_int(tag, g_close_wav_capture_count, 1);
+        const close_wav_capture* capture = &g_close_wav_captures[0];
+        rc |= expect_int(tag, capture->export_call, DSD_WAV_EXPORT_COMMITTED);
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", cases[i].want_tg);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: talkgroup", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, want);
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want_tag);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: label", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, want);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: radio", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, cases[i].want_src);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: frequency", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, "\"freqList\": [{\"pos\": 0, \"freq\": 433475000}],");
+        const Event_History* row = &event_history[0].Event_History_Items[1];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row keeps the target it decoded", cases[i].label);
+        rc |= expect_u64(tag, row->target_id, cases[i].dst <= UINT32_MAX ? cases[i].dst : 0U);
+
+        (void)dsd_test_rmdir(g_close_wav_export_dir);
+        g_close_wav_export_dir[0] = '\0';
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // An identity-less audible row faded by a sync loss is held, not dropped, for one reacquisition
 // window on the decode clock, and dropped once decode time alone has passed its due time.
 static int
@@ -9699,6 +9787,7 @@ main(void) {
     rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_end_alert_due_runs_on_the_decode_clock();
     rc |= test_rdio_sidecar_files_each_recording_at_its_start();
+    rc |= test_m17_rdio_export_by_address_width();
     rc |= test_drop_hold_due_runs_on_the_decode_clock();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();
