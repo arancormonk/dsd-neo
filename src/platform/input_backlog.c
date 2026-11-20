@@ -288,7 +288,12 @@ dsd_input_backlog_post(const dsd_input_cut* cut) {
         /* Marked on an input since replaced or stopped (a reconnect, a switch): the input read now holds nothing of the
            channel it left, and the decoder may have read the new channel already. Refused, so it drops nothing and moves
            no timeline. One marked on the input an attach still in flight replaced is kept for that attach's failed
-           start, which makes that input the one read again (dsd_input_backlog_attach_failed()). */
+           start, which makes that input the one read again (dsd_input_backlog_attach_failed()): a mark measured on
+           the connection that input's queue went on from stands on that queue, as above. */
+        if (held.measured && s_undo_continued_to != 0U && held.seq == s_undo_continued_from
+            && s_undo_prior_seq == s_undo_continued_to) {
+            held.seq = s_undo_prior_seq;
+        }
         if (s_undo_held && s_seq == s_undo_seq && held.seq == s_undo_prior_seq
             && (!s_undo_post_held || held.order > s_undo_post.order)) {
             s_undo_post = held;

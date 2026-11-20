@@ -708,6 +708,36 @@ test_failed_start_restores_the_replaced_queues_post(void) {
     dsd_input_backlog_retire();
 }
 
+/* A mark taken while a TCP input opened stands on the reader that attached to its connection. Confirmed only after a
+   switch's queue attached in the reader's place, it is no drop of that queue; but if the switch's start fails, the
+   reader is read again with the old channel's audio its connection held, so the post comes back on it. */
+static void
+test_failed_start_restores_a_late_post_from_an_opening(void) {
+    static uint64_t reader = 80U;
+    static uint64_t failed = 90U;
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening");
+    dsd_input_backlog_retire();
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_cut on_opening;
+    dsd_input_backlog_mark(&on_opening);
+    check(on_opening.measured == 1U, "a mark on the opening is measured on its connection");
+    dsd_input_backlog_attach(&reader, fake_queue_arrived);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_post(&on_opening);
+    check(dsd_input_backlog_take(NULL) == 0, "the opening's late post is no drop of the switch's queue");
+    dsd_input_backlog_post(&on_opening);
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_opening.order
+              && dsd_input_backlog_cut_applies(&held, &reader),
+          "a failed start gives the reader the post marked while its connection opened");
+    dsd_input_backlog_detach(&reader);
+    dsd_input_backlog_retire();
+    socket_pair_close(&pair);
+}
+
 /* Issue #834: a watchdog marks the input, sends its tune, and posts the mark only when the peer confirms. If the input
    was replaced in between (a TCP reconnect: the old connection's queue detached, the new one attached, and the decoder
    forgot the posts then pending, of which there was none yet), the late post is no drop of the new input: it is
@@ -835,6 +865,7 @@ main(void) {
     test_failed_start_puts_back_the_replaced_queue();
     test_failed_start_restores_a_device_post();
     test_failed_start_restores_the_replaced_queues_post();
+    test_failed_start_restores_a_late_post_from_an_opening();
     test_late_post_from_a_replaced_input();
     test_later_mark_is_held();
     dsd_socket_cleanup();
