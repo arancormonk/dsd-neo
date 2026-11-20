@@ -3439,6 +3439,250 @@ test_d7_stream_off_stays_local(void) {
     return rc;
 }
 
+/* --- Issue #888 B18: an EDACS grant closes the slot file's audio before it observes the incoming call. --- */
+
+/* A grant on the frequency the receiver is on (the stand-in tuner flushes nothing, as a tune that moves nothing):
+   LCN 4, analog voice read from an input EDACS takes none from, so the call's loop ends at once and the test writes its
+   audio itself. */
+static void
+edacs_grant_rig(rig* r) {
+    r->opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    r->opts->rdio_system_id = 48;
+    r->opts->trunk_enable = 1;
+    r->opts->trunk_tune_group_calls = 1;
+    r->opts->trunk_tune_private_calls = 1;
+    r->opts->use_rigctl = 1;
+    r->opts->audio_in_type = AUDIO_IN_NULL;
+    r->state->ea_mode = 0;
+    r->state->edacs_cc_lcn = 1;
+    r->state->edacs_tuned_lcn = -1;
+    r->state->trunk_lcn_freq[0] = 452312500L;
+    r->state->trunk_lcn_freq[3] = 452412500L;
+    r->state->trunk_cc_freq = r->state->trunk_lcn_freq[0];
+    r->state->synctype = DSD_SYNC_EDACS_POS;
+    g_tune_refused = 0;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = tune, .tune_to_cc_request = tune, .return_to_cc_request = return_to_cc});
+}
+
+static void
+edacs_grant_rig_close(rig* r) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    r->opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(r);
+}
+
+typedef enum {
+    EDACS_GRANT_GROUP = 0, /* a standard analog group call: TG 321, LID 1234 */
+    EDACS_GRANT_ALL_CALL,  /* a standard analog all-call: no target, LID 1010 */
+    EDACS_GRANT_DIGITAL,   /* a standard digital (ProVoice) individual call: target 4321, source 2345 */
+} edacs_grant_kind;
+
+/* The grant's message pair, on LCN 4, as the control channel sends it. */
+static void
+edacs_grant_send(rig* r, edacs_grant_kind kind) {
+    unsigned long long msg1 = 0ULL;
+    unsigned long long msg2 = 0ULL;
+    if (kind == EDACS_GRANT_GROUP) {
+        msg1 = ((1234ULL & 0x3F80ULL) << 11U) | (4ULL << 12U) | (1ULL << 11U) | 321ULL;
+        msg2 = (1234ULL & 0x7FULL) << 17U;
+    } else if (kind == EDACS_GRANT_ALL_CALL) {
+        msg1 = (7ULL << 25U) | (7ULL << 22U) | (0x0FULL << 17U) | (4ULL << 12U) | (1ULL << 9U) | (1010ULL & 0x7FULL);
+        msg2 = ((1010ULL >> 7U) & 0x7FULL) << 1U;
+    } else {
+        msg1 = (7ULL << 25U) | (5ULL << 22U) | (1ULL << 21U) | (4ULL << 15U) | (1ULL << 14U) | 4321ULL;
+        msg2 = 2345ULL;
+    }
+    edacs_process_valid_frame(r->opts, r->state, msg1, msg2);
+}
+
+/* What names the incoming call's recording: a part only its row puts in a file name. */
+static const char*
+edacs_grant_name_part(edacs_grant_kind kind) {
+    if (kind == EDACS_GRANT_GROUP) {
+        return "_TGT_321_";
+    }
+    return kind == EDACS_GRANT_ALL_CALL ? "_SRC_LID_1010" : "_TGT_4321_";
+}
+
+/* A published recording in the rig's folder, read back. */
+typedef struct {
+    const char* dir;
+    const char* part; /* the incoming call's name part */
+    int under_incoming;
+    sf_count_t incoming_frames; /* of the one named for the incoming call */
+    int prefill;                /* published recordings holding the prefill: 8 kHz, @c prefill_frames long */
+    int prefill_named;          /* of those, named for the incoming call */
+    int prefill_sidecar;        /* of those, with an rdio-scanner sidecar */
+    sf_count_t prefill_frames;
+} edacs_grant_files;
+
+static int
+edacs_grant_files_cb(const char* name, void* user) {
+    edacs_grant_files* files = (edacs_grant_files*)user;
+    const size_t len = strlen(name);
+    if (len < 4 || strcmp(name + len - 4, ".wav") != 0 || strncmp(name, "TEMP_", 5) == 0) {
+        return 0;
+    }
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, files->dir, name) != 0) {
+        return 0;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    SNDFILE* f = sf_open(path, SFM_READ, &info);
+    if (f != NULL) {
+        (void)sf_close(f);
+    }
+    const int named = strstr(name, files->part) != NULL;
+    if (named) {
+        files->under_incoming++;
+        files->incoming_frames = info.frames;
+    }
+    if (info.samplerate == 8000 && info.frames == files->prefill_frames) {
+        files->prefill++;
+        files->prefill_named += named;
+        char sidecar[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(sidecar, sizeof sidecar, "%.*s.json", (int)(strlen(path) - 4), path);
+        FILE* s = dsd_fopen_existing_regular_file(sidecar, "rb");
+        if (s != NULL) {
+            files->prefill_sidecar++;
+            (void)fclose(s);
+        }
+    }
+    return 0;
+}
+
+static edacs_grant_files
+edacs_grant_list(const rig* r, edacs_grant_kind kind, sf_count_t prefill_frames) {
+    edacs_grant_files files;
+    DSD_MEMSET(&files, 0, sizeof files);
+    files.dir = r->dir;
+    files.part = edacs_grant_name_part(kind);
+    files.prefill_frames = prefill_frames;
+    (void)dsd_dir_list(r->dir, edacs_grant_files_cb, &files);
+    return files;
+}
+
+/* The incoming call's own audio, written after its grant: one analog triplet into the 48 kHz file the grant opened, or
+   three 20 ms ProVoice frames into the slot file. */
+static void
+edacs_grant_incoming_audio(rig* r, edacs_grant_kind kind) {
+    if (kind == EDACS_GRANT_DIGITAL) {
+        voice_frames(r, 0, 3);
+        return;
+    }
+    static short analog[3][960];
+    for (int i = 0; i < 960; i++) {
+        analog[0][i] = (short)(i * 8);
+        analog[1][i] = (short)(-i * 8);
+        analog[2][i] = (short)(i * 4);
+    }
+    edacs_write_analog_wav(r->opts, r->state, analog[0], analog[1], analog[2]);
+}
+
+/* Audio in slot 1's file that no call owns (100 ms at 8 kHz), then a grant on the carrier the receiver is on: the grant
+   closes that audio as no row's, unexported, before it observes the incoming call, which records only its own audio
+   under its row. Without it the grant's row named the earlier audio, and the analog rotation (or the digital call's
+   commit) published and exported it as the incoming call's. With the journal on and off. */
+static int
+test_edacs_grant_closes_unowned_audio_first(void) {
+    static const char* const k_kind[] = {"edacs group grant", "edacs all-call grant", "edacs digital grant"};
+    int rc = 0;
+    for (int kind = EDACS_GRANT_GROUP; kind <= EDACS_GRANT_DIGITAL; kind++) {
+        for (int with_journal = 1; with_journal >= 0; with_journal--) {
+            char tag[160];
+            rig r;
+            rc |= rig_open_ex(&r, "dsdneo_journal_edacs_grant", with_journal);
+            edacs_grant_rig(&r);
+            submit(&r, DSD_APP_CMD_WAV_START);
+            char prefill[64];
+            slot_id(&r, 0, prefill, sizeof prefill);
+            voice_frames(&r, 0, 5);
+            clock_at(g_now_s + 1);
+            edacs_grant_send(&r, (edacs_grant_kind)kind);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the grant made its call", k_kind[kind]);
+            const uint64_t epoch = call_epoch(&r);
+            rc |= expect_true(tag, epoch != 0U);
+            char incoming[64];
+            slot_id(&r, 0, incoming, sizeof incoming);
+            edacs_grant_incoming_audio(&r, (edacs_grant_kind)kind);
+            clock_at(g_now_s + 2);
+            end_call(&r, DSD_CALL_END_EXPLICIT);
+
+            const int digital = kind == EDACS_GRANT_DIGITAL;
+            if (with_journal) {
+                reload(&r);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier audio", k_kind[kind]);
+                const char* left = NULL;
+                const char* own = NULL;
+                const char* pub = NULL;
+                for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+                    if (strcmp(field_s(pub, "id"), prefill) == 0) {
+                        left = pub;
+                    } else if (strcmp(field_s(pub, "id"), incoming) == 0) {
+                        own = pub;
+                    }
+                }
+                rc |= expect_orphan(tag, left, 0, 100);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: the incoming call's recording", k_kind[kind]);
+                rc |= expect_true(tag, own != NULL);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: holds only its own audio", k_kind[kind]);
+                rc |= expect_int(tag, own ? field_ll(own, "duration_ms") : -9, 60);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: at its own rate", k_kind[kind]);
+                rc |= expect_int(tag, own ? field_ll(own, "rate") : -9, digital ? 8000 : EDACS_ANALOG_RATE_HZ);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: under its row", k_kind[kind]);
+                rc |= expect_int(tag, own ? field_ll(own, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+            }
+            const edacs_grant_files files = edacs_grant_list(&r, (edacs_grant_kind)kind, 800);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier audio is published once", k_kind[kind]);
+            rc |= expect_int(tag, files.prefill, 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: not under the incoming call's name", k_kind[kind]);
+            rc |= expect_int(tag, files.prefill_named, 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: and not exported", k_kind[kind]);
+            rc |= expect_int(tag, files.prefill_sidecar, 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: one recording names the incoming call", k_kind[kind]);
+            rc |= expect_int(tag, files.under_incoming, 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: and holds its audio alone", k_kind[kind]);
+            rc |= expect_int(tag, (long long)files.incoming_frames, digital ? 480 : EDACS_ANALOG_TRIPLET_SAMPLES);
+            edacs_grant_rig_close(&r);
+        }
+    }
+    return rc;
+}
+
+/* The outgoing call is still active at the next grant: its audio is its own, closed under its row by the commit the
+   incoming call's observation brings, and exported with it, as before. */
+static int
+test_edacs_grant_leaves_owned_audio_to_its_row(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_edacs_grant_owned");
+    edacs_grant_rig(&r);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char outgoing[64];
+    slot_id(&r, 0, outgoing, sizeof outgoing);
+    begin_call(&r, DSD_SYNC_EDACS_POS, 100U, 50U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 5);
+    clock_at(g_now_s + 1);
+    edacs_grant_send(&r, EDACS_GRANT_GROUP);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("owned: the outgoing call's audio", pub && strcmp(field_s(pub, "id"), outgoing) == 0);
+    rc |= expect_int("owned: under the outgoing row", pub ? field_ll(pub, "row") : -9,
+                     (long long)r.state->event_history_s[0].push_seq);
+    rc |= expect_true("owned: that row is the outgoing call's",
+                      r.state->event_history_s[0].Event_History_Items[1].target_id == 100U);
+    rc |= expect_str("owned: not pending", pub ? field_s(pub, "pending") : "", "false");
+    const edacs_grant_files files = edacs_grant_list(&r, EDACS_GRANT_GROUP, 800);
+    rc |= expect_int("owned: published once", files.prefill, 1);
+    rc |= expect_int("owned: exported with its row", files.prefill_sidecar, 1);
+    rc |= expect_int("owned: not under the incoming call's name", files.prefill_named, 0);
+    edacs_grant_rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -3503,6 +3747,8 @@ main(void) {
     rc |= test_d7_both_slots();
     rc |= test_d7_fallback_journal_rdio_flag();
     rc |= test_d7_stream_off_stays_local();
+    rc |= test_edacs_grant_closes_unowned_audio_first();
+    rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

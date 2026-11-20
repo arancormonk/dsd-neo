@@ -2541,7 +2541,11 @@ suite runs under this compiler.
     EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
     trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
-    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
+    nothing. An accepted EDACS voice grant (`edacs_try_tune_voice_call()`) runs the flush itself before it observes the
+    granted call, whatever its tune moved (issue #888): the grant's row would otherwise name the audio no call owns, and
+    the analog rotation after the sync (or a ProVoice call's commit) would publish and export it as the granted call's.
+    An outgoing call still active keeps its file, which the commit that the incoming observation brings closes under
+    its row. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
     `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
     this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
     anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
@@ -2621,8 +2625,11 @@ suite runs under this compiler.
   session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a zero id;
   the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending and
   unlinked at its drop, one close and one publish beside a commit on another thread), not of an empty file, a static
-  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, and a retry park
-  ending the call heard since a failed park; the write and pending-list seams in
+  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, a retry park
+  ending the call heard since a failed park, and at an EDACS grant on the carrier the receiver is on (an analog group
+  call, an analog all-call and a ProVoice call, journal on and off: the earlier audio published once as no row's and
+  unexported, the granted call's recording only its own; an outgoing call still active keeps its audio under its
+  row, exported); the write and pending-list seams in
   `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
   control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
   carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
