@@ -2297,6 +2297,14 @@ struct dsd_state {
 
     //NXDN DES and AES, signal new VCALL_IV and new IV
     uint8_t nxdn_new_iv; //1 when a new IV comes in, else 0
+    /* NXDN's working register, its own (P25 Phase 2 and DMR keep slot 2's MI in payload_miN, which NXDN once shared):
+       the Scramble LFSR (dPMR's too), loaded from the key and run on, or the DES/AES IV a VCALL_IV carried. No other
+       protocol reads or writes it, so a key-derived value here never reaches another protocol's metadata. */
+    unsigned long long int nxdn_payload_mi;
+    /* 1 while nxdn_payload_mi holds the IV a CRC-verified VCALL_IV carried over the air; 0 once anything else wrote it
+       (a key load, a scrambler step: nxdn_reset_payload_seed_if_forced(), LFSRN(); a reset). Only such an IV is ever an
+       NXDN call's MI (nxdn_published_mi()): the key-loaded register never is. */
+    uint8_t nxdn_iv_on_air;
     uint16_t nxdn_pn95_seed;
 
     /* NXDN's (and P25 Phase 1's) own "encrypted and no key" flag for slot 0, kept for NXDN's lockout. The audio,

@@ -92,7 +92,8 @@ nxdn_note_received_ran(dsd_state* state, int ran) {
 void
 nxdn_reset_payload_seed_if_forced(dsd_state* state) {
     if ((state->nxdn_cipher_type == 1 || state->M == 1) && dsd_key_scalar_present(state, 0)) {
-        state->payload_miN = state->R;
+        state->nxdn_payload_mi = state->R;
+        state->nxdn_iv_on_air = 0U; /* loaded from the key: never an MI */
     }
 }
 
@@ -309,14 +310,16 @@ nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_
     state->nxdn_part_of_frame = 0;
 }
 
-static void
+/* Returns the superframe position + 1 a CRC-verified segment gives its frame (nxdn_channel_result::seed_part), else 0. */
+static uint8_t
 nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint8_t crc, uint8_t check) {
     const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
     const int part_of_frame = nxdn_sacch_part_of_frame(sf);
+    uint8_t seed_part = 0U;
     if (state->nxdn_frame_foreign) {
         nxdn_handle_sacch_superframe_foreign(state, part_of_frame, crc, check);
-        return;
+        return 0U;
     }
     const int valid_sequence =
         nxdn_sacch_segment_sequence_is_valid((uint8_t)(crc == check), state->nxdn_part_of_frame, part_of_frame);
@@ -332,9 +335,11 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
     } else {
         DSD_FPRINTF(stderr, "PF X/4");
     }
-    nxdn_prepare_sacch_payload_seed(state, part_of_frame);
-
     if (crc == check) {
+        /* Only a verified segment places the register, and only once, by the frame (nxdn_frame()), after its
+           signalling chose the cipher and key: a VCALL this segment completes may select Scramble or its key. A failed
+           segment places nothing, and the register runs on. */
+        seed_part = (uint8_t)(part_of_frame + 1);
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         if (nxdn_confirm_is_confirmed(state)) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
@@ -366,11 +371,13 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
             DSD_FPRINTF(stderr, " CRC ERR - %02X %02X", crc, check);
         }
     }
+    return seed_part;
 }
 
-void
+nxdn_channel_result
 nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                   uint8_t check) {
+    nxdn_channel_result result = {0U, 0U};
     if (crc != check) {
         nxdn_reset_sacch_segments(state);
     }
@@ -378,8 +385,9 @@ nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, 
     if (state->nxdn_sacch_non_superframe == 1) {
         nxdn_handle_sacch_non_superframe(opts, state, trellis_buf, m_data, crc, check);
     } else if (state->nxdn_sacch_non_superframe == 0) {
-        nxdn_handle_sacch_superframe(opts, state, trellis_buf, m_data, crc, check);
+        result.seed_part = nxdn_handle_sacch_superframe(opts, state, trellis_buf, m_data, crc, check);
     }
+    return result;
 }
 
 static void
@@ -800,7 +808,8 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
 static void
 nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
-        state->payload_miN = 0;
+        state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U; /* the register reloads from the key: no IV held */
     }
     if (!nxdn_sacch2_crc_ok(fields)) {
         return;
@@ -835,7 +844,8 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
     }
     if (fields->sf_fb) {
-        state->payload_miN = 0;
+        state->nxdn_payload_mi = 0;
+        state->nxdn_iv_on_air = 0U; /* the register reloads from the key: no IV held */
     }
 }
 
@@ -852,7 +862,8 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                          : DSD_CALL_CRYPTO_UNKNOWN,
         .algid = cipher,
         .kid = 0U,
-        .mi = state->payload_miN,
+        /* DCR carries no IV; the working register a scrambled call loads from the key is never an MI. */
+        .mi = nxdn_published_mi(state),
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
@@ -1302,7 +1313,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
  * Soft-decision SACCH depermute/decode path.
  * Uses per-bit reliability values to weight the convolution decoder.
  */
-void
+nxdn_channel_result
 nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     uint8_t deperm[60];
     uint8_t deperm_rel[60];
@@ -1340,7 +1351,7 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
         check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6U);
     }
 
-    nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
+    return nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
 }
 
 void
@@ -1512,8 +1523,9 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
 /*
  * Soft-decision SCCH depermute/decode path.
  */
-void
+nxdn_channel_result
 nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
+    nxdn_channel_result result = {0U, 0U};
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " SCCH");
 
@@ -1551,16 +1563,23 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
     }
 
-    const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
-    const int part_of_frame = nxdn_sacch_part_of_frame(sf);
-
-    if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1) {
-        nxdn_reset_payload_seed_if_forced(state);
-    }
-
     if (crc == check) {
-        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        nxdn_confirm_note_scch(state);
+        /* Content TS 1-E does not define (a reserved prefix, an INFO1 with its Spare bit set) is printed, but is no
+           evidence of a transmission and changes nothing past its frame (nxdn_scch_content_valid()). */
+        const int valid = nxdn_scch_content_valid(trellis_buf, direction);
+        /* The scrambler register is loaded from the key at each superframe's first SCCH and runs on across its four
+           frames, four 49-bit VCH slots each, a FACCH1-stolen slot included (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a
+           verified SCCH's structure places the frame. The position is kept for the frame, which sets the register
+           there once this frame's signalling chose the cipher and key (nxdn_frame()); a failed SCCH places nothing,
+           and the register runs on. */
+        if (valid) {
+            const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
+            result.seed_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
+            nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+            nxdn_confirm_note_scch(state);
+        } else {
+            result.scch_invalid = 1U;
+        }
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
 
@@ -1577,6 +1596,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
             DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
+    return result;
 }
 
 /*

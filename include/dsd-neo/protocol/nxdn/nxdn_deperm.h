@@ -23,12 +23,25 @@
 extern "C" {
 #endif
 
+/**
+ * @brief What a frame's SCCH or superframe SACCH tells the rest of its frame (nxdn_frame()): frame-local, never kept.
+ */
+typedef struct nxdn_channel_result {
+    /** The superframe position + 1 a CRC-verified, valid SCCH or a CRC-verified superframe SACCH segment gave (0: none),
+        where the frame places the scrambler register once its signalling chose the cipher and key. */
+    uint8_t seed_part;
+    /** A CRC-passing SCCH whose content NXDN TS 1-E does not define (nxdn_scch_content_valid()): the Type-D layout it
+        names stays with this frame. */
+    uint8_t scch_invalid;
+} nxdn_channel_result;
+
 void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);
 
 void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
                             uint8_t frame);
 
-void nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
+nxdn_channel_result nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60],
+                                           const uint8_t reliab[60]);
 
 void nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
@@ -41,8 +54,8 @@ void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits
 void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
                                    uint8_t type);
 
-void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
-                           uint8_t direction);
+nxdn_channel_result nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
+                                          uint8_t direction);
 
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 

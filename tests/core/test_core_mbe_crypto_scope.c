@@ -278,7 +278,7 @@ static void
 key_nxdn_cipher2(dsd_state* s) {
     s->nxdn_cipher_type = 0x02;
     s->nxdn_new_iv = 1;
-    s->payload_miN = 0x0102030405060708ULL;
+    s->nxdn_payload_mi = 0x0102030405060708ULL;
     s->R = 0x0123456789ABCDULL;
 }
 
@@ -447,7 +447,7 @@ test_ysf_ehr_gets_no_nxdn_cipher(void) {
     reset_state(DSD_SYNC_NXDN_POS, 0);
     key_forced_scrambler(&g_state);
     run_ambe(DSD_VOICE_PROTOCOL_YSF, 4);
-    rc |= expect_int("ysf ehr leaves the nxdn mi alone", (long long)g_state.payload_miN, 0);
+    rc |= expect_int("ysf ehr leaves the nxdn mi alone", (long long)g_state.nxdn_payload_mi, 0);
 
     // Scrambled dPMR halves borrow the same decoder and keep their scrambler.
     rc |= capture_ambe(DSD_SYNC_NXDN_POS, 0, DSD_VOICE_PROTOCOL_DPMR, NULL, 8, &g_base);
@@ -1444,7 +1444,7 @@ test_nxdn_cipher23_session_exhaustion(void) {
         uint8_t ks[240];
         const int discard = k == 0 ? 8 : 16;
         if (k == 0) {
-            des_ofb_keystream_output(g_state.payload_miN, g_state.R, ks, 26);
+            des_ofb_keystream_output(g_state.nxdn_payload_mi, g_state.R, ks, 26);
         } else {
             aes_ofb_keystream_output(g_state.aes_iv, g_state.aes_key, ks, DSD_AES_KEY_256, 15);
         }

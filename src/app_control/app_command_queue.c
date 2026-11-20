@@ -3614,6 +3614,8 @@ reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
     state->payload_algid = state->payload_algidR = 0;
     state->payload_keyid = state->payload_keyidR = 0;
     state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     if (clear_trunk_vc) {

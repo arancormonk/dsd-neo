@@ -660,6 +660,69 @@ nxdn_run_scch_termination_case(void) {
     return rc;
 }
 
+/* Repeater in Use / Go to Repeater 31 ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4
+ * (EOT)": structure 00b or 10b): the call ends either way. Once the voice window has run out, an INFO4 EOT returns the
+ * tuner to the frequency repeater 31 maps to, as on main. An INFO2 EOT retunes nothing, as on main: the receiver is not
+ * marked as following a voice channel, and the release the frame's FACCH1 carries still runs. */
+static int
+nxdn_run_scch_info2_termination_returns_case(void) {
+    const nxdn_case termination = {
+        "type-d-scch-info2-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
+    };
+    int rc = 0;
+    for (int info2 = 0; info2 < 2; info2++) {
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        nxdn_setup_fixture(&termination);
+        nxdn_install_hooks();
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = termination.scch_id,
+        };
+        (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        uint8_t message[32];
+        build_scch(message, &termination);
+        write_bits_u32(message, 0U, info2 ? 2U : 0U, 2U);
+        NXDN_decode_scch(&g_opts, &g_state, message, 1);
+        dsd_call_snapshot call;
+        rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ENDED,
+                          termination.name, info2 ? "info2" : "info4", "the call ended");
+        if (info2) {
+            rc |= nxdn_expect(g_tune_count == 0 && g_tune_cc_count == 0 && g_opts.trunk_is_tuned == 0, termination.name,
+                              "info2", "an INFO2 EOT retunes nothing and follows no voice channel");
+        } else {
+            rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == termination.expected_freq, termination.name,
+                              "info4", "an INFO4 EOT returns the tuner, as on main");
+        }
+    }
+    return rc;
+}
+
+/* A busy INFO4 or INFO2 naming the Null ID (TS 1-E Tables 6.6-5, 6.6-6) on a mapped repeater, with no voice heard
+ * lately: it names no call, so it tunes nowhere, whatever its G/U bit (test_type_d_null_id_names_no_destination() covers
+ * its recent activity). */
+static int
+nxdn_run_scch_null_destination_case(void) {
+    const nxdn_case null_id = {
+        "type-d-scch-null-destination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 5U, 3U, 0U, 852512500L,
+    };
+    int rc = 0;
+    for (int variant = 0; variant < 4; variant++) {
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        nxdn_setup_fixture(&null_id);
+        nxdn_install_hooks();
+        uint8_t message[32];
+        build_scch(message, &null_id);
+        write_bits_u32(message, 0U, (variant & 1) ? 2U : 0U, 2U);
+        message[24] = (variant & 2) ? 1U : 0U;
+        NXDN_decode_scch(&g_opts, &g_state, message, 1);
+        rc |= nxdn_expect(g_tune_count == 0 && g_tune_cc_count == 0, null_id.name, (variant & 1) ? "info2" : "info4",
+                          "no tune for the null destination");
+    }
+    return rc;
+}
+
 /* An SCCH that passed its 7-bit CRC on a transmission nothing has confirmed (a false IDAS sync) moves nothing: no
  * control channel from the map, no tune, no call end. On a confirmed one its termination still ends an NXDN call
  * only, never another protocol's call on slot 0. */
@@ -2321,6 +2384,7 @@ nxdn_run_type_d_private_after_group_case(void) {
     at_seconds(9200.4);
     voice_live();
     build_scch_identity(message, 2U, 6U, 1450U); /* INFO2 target 1450 on the receiver's repeater */
+    message[24] = 1U;                            /* G/U: a unit (NXDN TS 1-E §6.5.3.3, INFO4's format) */
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1450U
                           && g_state.nxdn_call.private_call == 1U,
@@ -2385,10 +2449,9 @@ nxdn_run_type_d_private_info3_source_case(void) {
 }
 
 /* A Type-D private call to 1450 is on the receiver's repeater when an INFO2 target message there names another
- * destination, 1460: the call it names is not the private one, and INFO2 carries no class, so it is of no known class
- * until a classified message names it. The private class never moves to the new target, which would ignore the
- * priority-100 group range over it and let a p50 preempting group displace it: a held call of unknown class yields only
- * to Hold. */
+ * destination, 1460, a group by its G/U bit (INFO2 has INFO4's format, NXDN TS 1-E §6.5.3.3): the call it names is
+ * that group, never the private call's class, which would ignore the priority-100 group range over it and let a p50
+ * preempting group displace it. Held as the group it is, it yields only to Hold. */
 static int
 nxdn_run_type_d_info2_new_target_case(void) {
     static const char* const name = "type-d-info2-new-target";
@@ -2424,9 +2487,11 @@ nxdn_run_type_d_info2_new_target_case(void) {
     build_scch_identity(message, 2U, 6U, 1460U); /* INFO2 target 1460 on the receiver's repeater */
     NXDN_decode_scch(&g_opts, &g_state, message, 1U);
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.policy_target_id == 1460U
-                          && call.kind != DSD_CALL_KIND_PRIVATE_VOICE,
-                      name, "info2", "the call INFO2 names takes no private class from the previous call");
-    rc |= nxdn_expect(g_state.nxdn_call.valid == 0U, name, "info2", "the held call is of no known class");
+                          && call.kind == DSD_CALL_KIND_GROUP_VOICE,
+                      name, "info2", "the call INFO2 names takes its own G/U class, not the previous call's");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1460U
+                          && g_state.nxdn_call.private_call == 0U,
+                      name, "info2", "the held call is the group INFO2 names");
 
     nxdn_case other = held;
     other.scch_gu = 0U;
@@ -2503,6 +2568,8 @@ main(void) {
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
     rc |= nxdn_run_scch_termination_case();
+    rc |= nxdn_run_scch_info2_termination_returns_case();
+    rc |= nxdn_run_scch_null_destination_case();
     rc |= nxdn_run_unconfirmed_scch_case();
     rc |= nxdn_run_scch_busy_enrich_case("tuned-there", NXDN_RX_TUNED_THERE, 1);
     rc |= nxdn_run_scch_busy_enrich_case("tuned-elsewhere", NXDN_RX_TUNED_ELSEWHERE, 0);
