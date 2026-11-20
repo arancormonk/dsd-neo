@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -161,10 +162,16 @@ dpmr_message_type_name(uint32_t mt) {
     }
 }
 
+/* The service options a header publishes (dsd_call_observation::service_options), as an FS2 frame's checked half does. */
+static uint16_t
+dpmr_header_service_options(const dpmr_header* header) {
+    return (uint16_t)((header->version << 8U) | (header->mode << 4U) | header->format);
+}
+
 /* The call a Communications_Start header opens, published once: its called and calling IDs (Table 5.4), its service
    and its kind, the channel code read with it and the scrambling its Version signals. */
 static void
-dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* header) {
+dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* header, int continues) {
     char called[8];
     char calling[8];
     dpmr_convert_air_interface_id(header->called_id, called);
@@ -174,7 +181,7 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
         .protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : DSD_SYNC_DPMR_FS1_POS,
         .slot = 0U,
         .kind = dpmr_call_kind_for_mode(header->mode),
-        .service_options = (uint16_t)((header->version << 8U) | (header->mode << 4U) | header->format),
+        .service_options = dpmr_header_service_options(header),
         .emergency = (uint8_t)(header->emergency != 0U),
         .has_service_metadata = 1U,
     };
@@ -182,8 +189,9 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
                   sizeof(observation.target_text) - 1U);
     dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), calling,
                   sizeof(observation.source_text) - 1U);
-    /* A header opens its transmission (dsd_call_boundary: a voice header is per-transmission evidence). */
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    /* A header opens its transmission (dsd_call_boundary: a voice header is per-transmission evidence); a repeat of the
+       header that opened it goes on with it. */
+    (void)dsd_call_state_observe(state, &observation, continues ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
     /* The transmission's scrambling, as a CRC-verified CCH half's Version would set it (issue #655). */
     const int scrambled = header->version == 3U;
     state->dpmr_scrambled = scrambled ? 2U : 1U;
@@ -199,18 +207,71 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     }
 }
 
+/* Whether the header being dispatched is the next message frame after the last call header, on the same stream. */
+static int
+dpmr_header_follows_call_header(const dsd_state* state) {
+    const dsd_dpmr_sync_mark* last = &state->dpmr_sync.call_header;
+    if (last->kind != DSD_DPMR_SYNC_FRAME_HEADER || last->epoch != state->symbol_clock_epoch
+        || last->carrier_seq != state->carrier_seq || last->input != state->symbol_clock_input
+        || state->symbol_clock < last->clock) {
+        return 0;
+    }
+    /* Back to back: the next message frame, within the symbol a frame may slip. */
+    const uint64_t since = state->symbol_clock - last->clock;
+    return since + 1U >= DSD_DPMR_MESSAGE_FRAME_SYMBOLS && since <= DSD_DPMR_MESSAGE_FRAME_SYMBOLS + 1U;
+}
+
+/* Whether the open dPMR call is the one @p header names: its called and calling IDs, service and colour code. */
+static int
+dpmr_header_names_open_call(const dsd_state* state, const dpmr_header* header) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DPMR(call.protocol) || call.has_service_metadata == 0U
+        || call.service_options != dpmr_header_service_options(header)) {
+        return 0;
+    }
+    char called[8];
+    char calling[8];
+    dpmr_convert_air_interface_id(header->called_id, called);
+    dpmr_convert_air_interface_id(header->calling_id, calling);
+    return strcmp(call.target_text, called) == 0 && strcmp(call.source_text, calling) == 0
+           && (header->color_code < 0 || header->color_code == state->dpmr_color_code);
+}
+
+int
+dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header) {
+    return state != NULL && dpmr_header_opens_call(header) && dpmr_header_follows_call_header(state)
+           && dpmr_header_names_open_call(state, header);
+}
+
+static void
+dpmr_note_call_header(dsd_state* state) {
+    dsd_dpmr_sync_mark* mark = &state->dpmr_sync.call_header;
+    mark->clock = state->symbol_clock;
+    mark->epoch = state->symbol_clock_epoch;
+    mark->input = state->symbol_clock_input;
+    mark->carrier_seq = state->carrier_seq;
+    mark->sps_hunt_idx = state->sps_hunt_idx;
+    mark->kind = DSD_DPMR_SYNC_FRAME_HEADER;
+}
+
 void
-dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header) {
+dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header, int continues) {
     if (state == NULL || header == NULL) {
         return;
     }
     DSD_FPRINTF(stderr, "%s%s%s", KYEL, dpmr_message_type_name(header->message_type), KNRM);
+    if (header->mi_type == 7U) {
+        /* A powersave wake-up header: WU (MI_DET's low four bits) more follow before the normal one (Table 5.71). */
+        DSD_FPRINTF(stderr, " Powersave WU=%u", (unsigned)(header->mi_detail & 0xFU));
+    }
     /* A checked MI stands behind an exact 24-symbol FS1 (one noise window in 2^24), and a noise copy passes its ten
        Hamming words and CRC-8 about once in 2000: it confirms the transmission at once, as both CCH halves do. */
     dpmr_confirm_begin_frame(state);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     if (dpmr_header_opens_call(header)) {
-        dpmr_publish_header_call(opts, state, header);
+        dpmr_publish_header_call(opts, state, header, continues);
+        dpmr_note_call_header(state);
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
     } else {

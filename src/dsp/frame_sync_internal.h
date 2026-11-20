@@ -195,9 +195,10 @@ void frame_sync_dpmr_keystream(uint8_t* out, int count);
 /** One 120-bit MI copy in wire order to its 72 information bits in @p info: 1 when all ten Hamming(12,8) words are
  * correctable and the CRC-8 matches (7.6, 11.5), else 0 and @p info untouched. */
 int frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info);
-/** One 36-bit END copy in wire order to its 17 information bits in @p info: 1 when its three Hamming(12,8) words are
- * correctable and the CRC-7 matches (7.7, 11.6), else 0 and @p info untouched. */
-int frame_sync_dpmr_decode_end(const uint8_t* wire, uint8_t* info);
+/** One 36-bit END copy in wire order to its 17 information bits in @p info, descrambled with the scrambler's bits from
+ * @p key_offset on (0 or 36: a fresh scrambler, or the second half of one 72-bit run): 1 when its three Hamming(12,8)
+ * words are correctable and the CRC-7 matches (7.7, 11.6), else 0 and @p info untouched. */
+int frame_sync_dpmr_decode_end(const uint8_t* wire, int key_offset, uint8_t* info);
 /** The pending header or end frame (dsd_dpmr_frame_sync::pending), once its last symbol is the newest: read back and
  * checked, the synctype to accept when it passed (its contents in dsd_dpmr_frame_sync::checked_*), else
  * DSD_SYNC_NONE. A candidate whose stream broke, or whose position the hunt passed, is dropped. */

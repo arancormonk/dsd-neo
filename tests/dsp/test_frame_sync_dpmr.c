@@ -149,13 +149,17 @@ put_fs2_frame(const char* fs2) {
     put_filler(FS2_BODY);
 }
 
-/* An end frame: FS3 and two END copies of @p info17; @p flip0/@p flip1 as for put_header(). */
+/* The two layouts of an end frame's second copy: one 72-bit scrambler run (7.7, the off-air recording's), or a fresh
+   scrambler for each copy (11.6). */
+enum { END_ONE_RUN = 0, END_FRESH_COPIES = 1 };
+
+/* An end frame: FS3 and two END copies of @p info17 in @p layout; @p flip0/@p flip1 as for put_header(). */
 static void
-put_end(const char* fs3, const uint8_t* info17, int flip0, int flip1) {
+put_end(const char* fs3, const uint8_t* info17, int layout, int flip0, int flip1) {
     uint8_t end0[DPMR_SPEC_END_WIRE];
     uint8_t end1[DPMR_SPEC_END_WIRE];
-    dpmr_spec_encode_end(info17, end0);
-    dpmr_spec_encode_end(info17, end1);
+    dpmr_spec_encode_end(info17, 0, end0);
+    dpmr_spec_encode_end(info17, layout == END_ONE_RUN ? DPMR_SPEC_END_WIRE : 0, end1);
     for (int i = 0; i < flip0; i++) {
         end0[i] ^= 1U;
     }
@@ -302,16 +306,50 @@ test_wire_codecs(void) {
     uint8_t end_wire[DPMR_SPEC_END_WIRE];
     uint8_t end_out[DPMR_SPEC_END_BITS];
     end_info(end);
-    dpmr_spec_encode_end(end, end_wire);
-    assert(frame_sync_dpmr_decode_end(end_wire, end_out) == 1 && memcmp(end_out, end, sizeof end) == 0);
+    dpmr_spec_encode_end(end, 0, end_wire);
+    assert(frame_sync_dpmr_decode_end(end_wire, 0, end_out) == 1 && memcmp(end_out, end, sizeof end) == 0);
     for (int bit = 0; bit < DPMR_SPEC_END_WIRE; bit++) {
         end_wire[bit] ^= 1U;
-        assert(frame_sync_dpmr_decode_end(end_wire, end_out) == 1 && memcmp(end_out, end, sizeof end) == 0);
+        assert(frame_sync_dpmr_decode_end(end_wire, 0, end_out) == 1 && memcmp(end_out, end, sizeof end) == 0);
         end_wire[bit] ^= 1U;
     }
     end_wire[0] ^= 1U;
     end_wire[1] ^= 1U;
-    assert(frame_sync_dpmr_decode_end(end_wire, end_out) == 0);
+    assert(frame_sync_dpmr_decode_end(end_wire, 0, end_out) == 0);
+    /* The second copy of one 72-bit run reads on the run's bits 36 to 71, not on a fresh scrambler's. */
+    dpmr_spec_encode_end(end, DPMR_SPEC_END_WIRE, end_wire);
+    assert(frame_sync_dpmr_decode_end(end_wire, DPMR_SPEC_END_WIRE, end_out) == 1);
+    assert(memcmp(end_out, end, sizeof end) == 0);
+    assert(frame_sync_dpmr_decode_end(end_wire, 0, end_out) == 0);
+}
+
+/* The CRC conventions, on what the off-air sigidwiki recording behind tests/fixtures/iq/dpmr.iq sent (DPMR.zip,
+   SDRSharp_20160101_231640Z_12kHz_IQ.wav): its first header's MI, 057FFFF57FFFF02708 with CRC-8 E6 (all 18 MI copies
+   of its 9 headers pass with a zero preset and fail with all ones), and its end frame's END 00200 with CRC-7 16. The
+   copies are built with the CRCs the radio sent, not computed ones, so the decoder's CRC registers are checked against
+   the air. */
+static void
+test_crc_conventions_off_air(void) {
+    static const uint8_t k_mi_hex[18] = {0, 5, 7, 15, 15, 15, 15, 5, 7, 15, 15, 15, 15, 0, 2, 7, 0, 8};
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    uint8_t wire[DPMR_SPEC_MI_WIRE];
+    uint8_t out[DPMR_SPEC_MI_BITS];
+    for (int i = 0; i < 18; i++) {
+        dpmr_spec_put(info, i * 4, 4, k_mi_hex[i]);
+    }
+    assert(dpmr_spec_crc8(info) == 0xE6U);
+    dpmr_spec_encode_mi_crc(info, 0xE6U, wire);
+    assert(frame_sync_dpmr_decode_mi(wire, out) == 1 && memcmp(out, info, sizeof out) == 0);
+    dpmr_spec_encode_mi_crc(info, 0xE9U, wire); /* the CRC an all-ones preset gives */
+    assert(frame_sync_dpmr_decode_mi(wire, out) == 0);
+
+    uint8_t end[DPMR_SPEC_END_BITS];
+    uint8_t end_wire[DPMR_SPEC_END_WIRE];
+    uint8_t end_out[DPMR_SPEC_END_BITS];
+    dpmr_spec_put(end, 0, DPMR_SPEC_END_BITS, 0x00200U);
+    assert(dpmr_spec_crc7(end) == 0x16U);
+    dpmr_spec_encode_end_crc(end, 0x16U, 0, end_wire);
+    assert(frame_sync_dpmr_decode_end(end_wire, 0, end_out) == 1 && memcmp(end_out, end, sizeof end) == 0);
 }
 
 /* A header is FS1 on its last symbol, in either polarity, read whole and checked: both copies passed. */
@@ -443,11 +481,13 @@ test_fs1_fs4_alias(void) {
     free_state_buffers(&state);
 }
 
-/* A transmission in both polarities: header, a superframe (two FS2 frames), end frame. The FS3 one FS2 frame after the
-   last FS2 is the end frame, checked. */
+/* A transmission in both polarities and both end frame layouts: header, a superframe (two FS2 frames), end frame. The
+   FS3 one FS2 frame after the last FS2 is the end frame, checked, both copies passing. */
 static void
 test_transmission_ends_on_its_end_frame(void) {
-    for (int inverted = 0; inverted <= 1; inverted++) {
+    for (int run = 0; run < 4; run++) {
+        const int inverted = run & 1;
+        const int layout = run >> 1;
         static dsd_opts opts;
         static dsd_state state;
         uint8_t info[DPMR_SPEC_MI_BITS];
@@ -462,7 +502,7 @@ test_transmission_ends_on_its_end_frame(void) {
         put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
         put_fs2_frame(DPMR_FRAME_SYNC_2);
         put_fs2_frame(DPMR_FRAME_SYNC_2);
-        put_end(DPMR_FRAME_SYNC_3, end, 0, 0);
+        put_end(DPMR_FRAME_SYNC_3, end, layout, 0, 0);
         const int end_at = g_len;
         put_filler(200);
         const int fs1 = inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
@@ -484,7 +524,7 @@ test_transmission_ends_on_its_end_frame(void) {
 }
 
 /* An unsolicited status (4.1.5.1.2 b, Table 5.3 note 2): a Communications_Start header for data straight followed by an
-   end frame, its FS3 twelve symbols after the header (F8). One END copy is enough. */
+   end frame, its FS3 twelve symbols after the header (F8). One END copy is enough: the second alone, in either layout. */
 static void
 test_status_header_then_end_frame(void) {
     static dsd_opts opts;
@@ -496,18 +536,21 @@ test_status_header_then_end_frame(void) {
     status.mi_type = 1U;
     dpmr_spec_header_bits(&status, info);
     end_info(end);
-    setup(&opts, &state, MODE_DPMR, 0);
-    stream_reset();
-    put_filler(80);
-    put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
-    put_end(DPMR_FRAME_SYNC_3, end, 2, 0);
-    const int end_at = g_len;
-    put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS3_POS);
-    assert(g_pos == end_at);
-    assert(state.dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
-    free_state_buffers(&state);
+    for (int layout = END_ONE_RUN; layout <= END_FRESH_COPIES; layout++) {
+        setup(&opts, &state, MODE_DPMR, 0);
+        stream_reset();
+        put_filler(80);
+        put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
+        put_end(DPMR_FRAME_SYNC_3, end, layout, 2, 0);
+        const int end_at = g_len;
+        put_filler(200);
+        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS3_POS);
+        assert(g_pos == end_at);
+        assert(state.dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
+        assert(checked_bits_equal(&state, end, DPMR_SPEC_END_BITS));
+        free_state_buffers(&state);
+    }
 
     /* A header whose message type no END follows (an ACK, Table 5.3): no FS3 is looked for behind it. */
     dpmr_spec_header ack = k_voice_header;
@@ -517,7 +560,7 @@ test_status_header_then_end_frame(void) {
     stream_reset();
     put_filler(80);
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
-    put_end(DPMR_FRAME_SYNC_3, end, 0, 0);
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
     put_filler(200);
     assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
     assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
@@ -536,7 +579,7 @@ test_unchecked_or_misplaced_end_frames(void) {
     stream_reset();
     put_filler(80);
     put_fs2_frame(DPMR_FRAME_SYNC_2);
-    put_end(DPMR_FRAME_SYNC_3, end, 2, 2);
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 2, 2);
     put_filler(200);
     assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS2_POS);
     read_fs2_body(&opts, &state);
@@ -546,8 +589,48 @@ test_unchecked_or_misplaced_end_frames(void) {
     setup(&opts, &state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
-    put_end(DPMR_FRAME_SYNC_3, end, 0, 0);
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
     put_filler(200);
+    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(&state);
+}
+
+/* The off-air recording's key-up (tests/fixtures/iq/dpmr.iq): nine Communications_Start headers back to back, one
+   message frame (192 symbols, its preamble included) apart: eight powersave wake-up headers (MI_TYPE 111, WU counting
+   8 down to 1, TS 102 658 5.5.19.1 Table 5.71) and the normal header (WU 0, MI_TYPE 000). Each is a header of its
+   own, accepted on its last symbol. */
+static void
+test_powersave_headers_back_to_back(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t info[9][DPMR_SPEC_MI_BITS];
+    int ends[9];
+    setup(&opts, &state, MODE_DPMR, 1);
+    stream_reset();
+    g_inverted = 1;
+    put_filler(80);
+    for (int h = 0; h < 9; h++) {
+        dpmr_spec_header header = {
+            .mt = 0U,
+            .called = 0x57FFFFU,
+            .calling = 0x57FFFFU,
+            .mode = 0U,
+            .version = 0U,
+            .format = 1U,
+        };
+        header.mi_type = h < 8 ? 7U : 0U;
+        header.mi_detail = h < 8 ? (uint32_t)(8 - h) : 0U;
+        dpmr_spec_header_bits(&header, info[h]);
+        put_header(DPMR_FRAME_SYNC_1, info[h], NULL, 0, 0);
+        ends[h] = g_len;
+    }
+    put_filler(200);
+    for (int h = 0; h < 9; h++) {
+        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_NEG);
+        assert(g_pos == ends[h]);
+        assert(h == 0 || ends[h] - ends[h - 1] == 192);
+        assert(checked_bits_equal(&state, info[h], DPMR_SPEC_MI_BITS));
+    }
     assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
     free_state_buffers(&state);
 }
@@ -644,6 +727,8 @@ test_noise_accepts_no_header_or_end(void) {
 int
 main(void) {
     test_wire_codecs();
+    test_crc_conventions_off_air();
+    test_powersave_headers_back_to_back();
     test_header_both_polarities();
     test_header_copies();
     test_header_cut_by_an_interruption();

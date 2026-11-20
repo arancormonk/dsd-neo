@@ -98,11 +98,22 @@ int dpmr_take_checked_end(dsd_state* state, dpmr_end_frame* out);
 int dpmr_header_opens_call(const dpmr_header* header);
 
 /**
+ * @brief Whether a checked header that opens a call is a repeat of the header that opened the open dPMR call, in the
+ * same key-up: one message frame (DSD_DPMR_MESSAGE_FRAME_SYMBOLS) after the last such header on the same stream, with
+ * the same called and calling IDs, service and colour code. A radio sends its Communications_Start header several
+ * times when it wakes powersaving receivers first (TS 102 658 5.5.19.1, Table 5.71: powersave headers, MI_TYPE 111,
+ * WU counting down to the normal header, "the other fields may remain as the normal header"); MI_TYPE and MI_DET are
+ * not compared.
+ */
+int dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header);
+
+/**
  * @brief Act on a checked header: it confirms the transmission and, when it opens a call (dpmr_header_opens_call()),
  * publishes that call with its checked identity and service, colour code and scrambling, once. The caller ends the
- * previous call and forgets its scrambling first.
+ * previous call and forgets its scrambling first, unless the header goes on with it (@p continues,
+ * dpmr_header_continues_call()): then the call is the same one, observed again.
  */
-void dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header);
+void dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header, int continues);
 
 /** @brief Report a checked end frame (printed, and to a scan quiet check and a signal search as checked content). */
 void dpmr_process_end(const dsd_opts* opts, dsd_state* state, const dpmr_end_frame* end);

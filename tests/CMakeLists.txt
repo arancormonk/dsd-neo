@@ -23435,11 +23435,11 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
         PROPERTIES LABELS "iq-decode" TIMEOUT 240
     )
-    # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
-    # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
-    # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
-    # noise-equivalent bits, not a decode (#407). It still syncs, so it still exercises
-    # the matcher and the frame reader; what it pins now is that a frame which proves
+    # The off-air dpmr capture read in the default polarity, which it is not received at
+    # (DECODE_IQ_DPMR_OFF_AIR reads it with -xd): its bits are the wrong way up, so the
+    # Src=1601621 this case used to assert was dpmr_ids_are_strong()'s Hamming fallback
+    # firing on them, not a decode (#407). It still syncs, so it still exercises the
+    # matcher and the frame reader; what it pins now is that a frame which proves
     # nothing publishes nothing.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_DPMR_MARGINAL
@@ -23447,6 +23447,29 @@ if(DSD_HAS_RADIO)
         -fm
         "dPMR Frame Sync 2"
         "Src=[0-9]"
+    )
+    # The same capture at its own polarity (-xd, issue #890): one key-up's nine Communications_Start headers back to
+    # back, eight powersave headers (WU 8 down to 1) and the normal one, each with both MI copies passing the CRC-8,
+    # called and calling 3939*5* (0x57FFFF), channel code 2; then its superframes, whose CCH halves pass the CRC-7
+    # (-Z prints each frame's two verdicts: 56 of 57 pass both). The headers open one call, not nine: one event row. The
+    # end frame lies past the capture's 10 s.
+    add_test(
+        NAME DECODE_IQ_DPMR_OFF_AIR
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=-fm -xd -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/dpmr.iq.json"
+            "-DEXPECTED=Comms Start[^\n]* TG=3939[*]5[*] Src=3939[*]5[*][^\n]* Channel Code=02"
+            -DMIN_MATCHES=9 "-DEXPECTED2=CCH OK/OK" -DMIN_MATCHES2=50
+            "-DEXPECTED3=Powersave WU=1[^0-9]"
+            "-DEVENT_EXPECTED=dPMR CC: 02; TGT: 3939[*]5[*]; SRC: 3939[*]5[*];"
+            "-DEVENT_COUNT_REGEX=dPMR CC:" -DEVENT_COUNT=1
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_DPMR_OFF_AIR"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_DPMR_OFF_AIR
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
 

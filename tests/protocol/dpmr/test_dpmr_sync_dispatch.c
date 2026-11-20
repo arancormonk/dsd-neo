@@ -538,6 +538,53 @@ test_dispatch_unchecked_frames_are_partial(void) {
     }
 }
 
+/* Issue #890: a radio waking powersaving receivers sends its Communications_Start header nine times back to back, one
+   message frame (192 symbols) apart: eight powersave headers (MI_TYPE 111, WU 8 down to 1, TS 102 658 5.5.19.1 Table
+   5.71) and the normal one, as the off-air dpmr fixture does. That is one call, not nine: one row, its capture closed
+   once. A header one frame on that names another caller, and the same header after a gap, open calls of their own. */
+static void
+test_dispatch_powersave_headers_open_one_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.mbe_out_f = stdout;
+    state.dpmr_color_code = -1;
+    g_close_calls = 0;
+    uint64_t epoch = 0U;
+    for (int h = 0; h < 9; h++) {
+        state.symbol_clock = 1000U + (192U * (uint64_t)h);
+        plant_checked_header(&state, 0x0U, 0U, 0U);
+        put_bits(state.dpmr_sync.checked_bits, 61, 3, h < 8 ? 7U : 0U);
+        put_bits(state.dpmr_sync.checked_bits, 64, 8, h < 8 ? (uint32_t)(8 - h) : 0U);
+        assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        if (h == 0) {
+            epoch = call.epoch;
+        }
+        assert(call.epoch == epoch);
+        assert(g_close_calls == 1);
+    }
+
+    /* One frame on, another caller: a call of its own. */
+    state.symbol_clock += 192U;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_bits, 28, 24, 11206075U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != epoch);
+    assert(strcmp(call.source_text, "7654321") == 0);
+    epoch = call.epoch;
+
+    /* The same header again after a gap: a new key-up. */
+    state.symbol_clock += 192U * 5U;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_bits, 28, 24, 11206075U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != epoch);
+    assert(g_close_calls == 3);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -549,6 +596,7 @@ main(void) {
     test_dispatch_end_sync_tightens_sync_loss_end();
     test_dispatch_unchecked_end_keeps_the_call();
     test_dispatch_checked_header_opens_its_call();
+    test_dispatch_powersave_headers_open_one_call();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();

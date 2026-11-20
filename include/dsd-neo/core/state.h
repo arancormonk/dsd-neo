@@ -282,13 +282,14 @@ enum {
     DSD_DPMR_SYNC_FRAME_END = 2,    /* FS3: an End_Frame (Table 5.44) */
 };
 
-#define DSD_DPMR_HEADER_MI_BITS 72 /* MT, PARMS: one MI copy's information bits before its CRC-8 (11.5) */
-#define DSD_DPMR_HEADER_CC_BITS 24 /* the channel code between MI0 and MI1 */
-#define DSD_DPMR_END_INFO_BITS  17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
-#define DSD_DPMR_HEADER_DIBITS  132
-#define DSD_DPMR_END_DIBITS     36
-#define DSD_DPMR_SYNC_COPY_0    0x1U
-#define DSD_DPMR_SYNC_COPY_1    0x2U
+#define DSD_DPMR_HEADER_MI_BITS        72 /* MT, PARMS: one MI copy's information bits before its CRC-8 (11.5) */
+#define DSD_DPMR_HEADER_CC_BITS        24 /* the channel code between MI0 and MI1 */
+#define DSD_DPMR_END_INFO_BITS         17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
+#define DSD_DPMR_HEADER_DIBITS         132
+#define DSD_DPMR_MESSAGE_FRAME_SYMBOLS 192 /* a whole Message_Frame on air: preamble 36, FS1 24, MI0 + CC + MI1 132 */
+#define DSD_DPMR_END_DIBITS            36
+#define DSD_DPMR_SYNC_COPY_0           0x1U
+#define DSD_DPMR_SYNC_COPY_1           0x2U
 
 /* Where a dPMR sync word ended on the stream (dsd_state::symbol_clock at its last symbol), and the stream it was read
  * on; or, for dsd_dpmr_frame_sync::fs3_at, where an FS3 word may end. kind is a DSD_DPMR_SYNC_FRAME_* value, NONE when
@@ -320,6 +321,9 @@ typedef struct {
     /* A header's MT and PARMS (DSD_DPMR_HEADER_MI_BITS), or an END's information bits (DSD_DPMR_END_INFO_BITS). */
     uint8_t checked_bits[DSD_DPMR_HEADER_MI_BITS];
     uint8_t checked_cc[DSD_DPMR_HEADER_CC_BITS]; /* a header's channel code bits, as received */
+    /* The dPMR decoder's own: where the last checked header that opened or went on with a call was accepted
+       (src/protocol/dpmr/dpmr_header.c, dpmr_header_continues_call()), kind DSD_DPMR_SYNC_FRAME_HEADER when set. */
+    dsd_dpmr_sync_mark call_header;
 } dsd_dpmr_frame_sync;
 
 /* The NAC the P25 Phase 1 NIDs on the carrier being received established, and a NAC change held for corroboration

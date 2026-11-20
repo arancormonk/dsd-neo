@@ -114,7 +114,8 @@ dpmr_unchecked_frame(const dsd_opts* opts, dsd_state* state, const char* label) 
 
 /* FS1: a header (ETSI TS 102 658 V2.6.1 5.2). Its CRC and its message type come before every side effect (issue #890,
  * A6): only a Communications_Start header for voice or data begins a transmission, so only it ends the call before it,
- * forgets that call's scrambling and closes its capture. */
+ * forgets that call's scrambling and closes its capture; and not when it repeats the header that opened the open call
+ * in the same key-up (the powersave headers before the normal one, dpmr_header_continues_call()). */
 static dsd_frame_verdict
 dpmr_handle_header_frame(dsd_opts* opts, dsd_state* state) {
     dpmr_header header;
@@ -123,12 +124,13 @@ dpmr_handle_header_frame(dsd_opts* opts, dsd_state* state) {
     }
     DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " HEADER       ");
-    if (dpmr_header_opens_call(&header)) {
+    const int continues = dpmr_header_continues_call(state, &header);
+    if (dpmr_header_opens_call(&header) && !continues) {
         dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
         dpmr_scrambling_reset(state);
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     }
-    dpmr_process_header(opts, state, &header);
+    dpmr_process_header(opts, state, &header, continues);
     return dpmr_checked_frame_verdict(state);
 }
 

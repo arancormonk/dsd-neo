@@ -9133,10 +9133,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   a newer FS1 replaces the candidate. Only FS2 and FS3 stand down inside it. Once the frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
-  10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy descrambled from a fresh
-  scrambler (11.6: "for each scrambler block the scrambler is re-initialized"), three Hamming(12,8) words and the
-  CRC-7. A copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with
-  different contents are no frame. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
+  10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy through three
+  Hamming(12,8) words and the CRC-7. The specification contradicts itself on the END scrambling: 7.7 scrambles "the
+  total 72 bits" as one run, 11.6 re-initializes the scrambler for each copy. The first copy is the same either way;
+  the second is read as the run's bits 36 to 71 (what the off-air recording behind `tests/fixtures/iq/dpmr.iq` sends)
+  and, failing that, from a fresh scrambler, each CRC-checked. A copy passes when every word is correctable and its
+  CRC matches; one copy is enough, two that pass with different contents are no frame. Both CRCs run MSB first from a
+  zero register with no final inversion, which the spec does not say but the same recording (sigidwiki DPMR.zip,
+  `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI copies of its 9 headers pass the CRC-8 so and none
+  with a preset of all ones; its end frame's first copy and its CCH halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
   (lock and `lastsynctype`, no warm start), with its bits in `checked_*`; the stream must be the one the word was read
   on (clock epoch, input, carrier count, SPS profile, polarity) and an input interruption forgets the candidate
   (`frame_sync_dpmr_forget()`). On non-dPMR input the matcher's added cost is one 24-symbol compare per window while
@@ -14021,7 +14026,12 @@ Private per-protocol modules worth knowing about:
   ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
   its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
   010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
-  status messages) confirms the transmission and reports PROVEN content without a call. A checked end frame reports
+  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the
+  open call's (same called/calling IDs, service options and colour code) one message frame (192 symbols) after the
+  last call header on the same stream goes on with that call (`dpmr_header_continues_call()`, CONTINUE, no end or
+  capture close): a radio waking powersaving receivers sends its header several times back to back (TS 102 658
+  5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
+  `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
   PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
   (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing
   else ends a call as a terminator. Both return `DSD_FRAME_VERDICT_PROFILE_PROVEN`. On FS2 frames the dispatcher

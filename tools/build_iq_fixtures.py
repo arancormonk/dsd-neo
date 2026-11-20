@@ -641,12 +641,13 @@ THEN_NOISE_CAPTURE_STARTED_UTC = "2026-07-30T00:00:58Z"
 
 # A dPMR signal synthesized from the CCH reference vectors (issue #407).
 #
-# The one off-air dPMR recording available to this project carries no recoverable
-# CCH: its Hamming syndromes are at the random rate and its 4FSK eye is closed, so
-# nothing it produces is a decode, and no integrity check can be validated against
-# it. This fixture is modulated from tests/protocol/dpmr/fixtures, the same vectors
-# DPMR_REFERENCE_VECTORS decodes, so the tree has one dPMR sample that is correct
-# by construction: every CCH CRC-7 in it passes.
+# The one off-air dPMR recording available to this project (the "dpmr" fixture) was
+# long thought to carry no recoverable CCH; it is received at inverted polarity, and
+# under -xd its headers, CCH and end frame pass their CRCs (issue #890,
+# DECODE_IQ_DPMR_OFF_AIR). This fixture is modulated from tests/protocol/dpmr/fixtures,
+# the same vectors DPMR_REFERENCE_VECTORS decodes, so the tree also has a dPMR sample
+# that is correct by construction, in the default polarity: every CCH CRC-7 in it
+# passes.
 #
 # dPMR is 4FSK at 2400 baud, symbol deviations +/-1050 Hz and +/-350 Hz
 # (ETSI TS 102 658). The dibit-to-deviation map is dsd-neo's own slicer convention

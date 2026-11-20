@@ -11,7 +11,8 @@
  *    from the generator matrix (Table 7.2), the 12 x 10 interleave written column by column and read out row by row
  *    (Table 7.4), the scrambler (7.3); copied after the channel code.
  *  - END (7.7, 11.6, Figure 11.9): 17 bits, CRC-7 X^7 + X^3 + 1, three Hamming(12,8) words, each 36-bit copy scrambled
- *    from a fresh scrambler.
+ *    with the scrambler's bits from a given offset: 0 for a fresh scrambler (11.6), 36 for the second copy of one
+ *    72-bit run (7.7, and the off-air recording behind tests/fixtures/iq/dpmr.iq).
  *
  * The scrambler's sequence is the committed 72-bit golden of DPMR_SCRAMBLER (from the X^9 + X^5 + 1 polynomial and its
  * all-ones preset, and the keystream the CCH reference vectors were cross-derived with), carried on by the
@@ -92,15 +93,26 @@ dpmr_spec_hamming(const uint8_t* data8, uint8_t* word12) {
     }
 }
 
-/* One MI copy on the wire from its 72 bits. */
-static inline void
-dpmr_spec_encode_mi(const uint8_t* info72, uint8_t* wire120) {
+static inline uint32_t
+dpmr_spec_crc8(const uint8_t* info72) {
     static const uint8_t crc8[9] = {1, 0, 0, 0, 0, 0, 1, 1, 1}; /* X^8 + X^2 + X + 1 */
+    return dpmr_spec_crc(info72, 72, crc8, 8);
+}
+
+static inline uint32_t
+dpmr_spec_crc7(const uint8_t* info17) {
+    static const uint8_t crc7[8] = {1, 0, 0, 0, 1, 0, 0, 1}; /* X^7 + X^3 + 1 */
+    return dpmr_spec_crc(info17, 17, crc7, 7);
+}
+
+/* One MI copy on the wire from its 72 bits and the CRC-8 @p crc it is sent with. */
+static inline void
+dpmr_spec_encode_mi_crc(const uint8_t* info72, uint32_t crc, uint8_t* wire120) {
     uint8_t data[80];
     uint8_t coded[120];
     uint8_t key[120];
     memcpy(data, info72, 72);
-    dpmr_spec_put(data, 72, 8, dpmr_spec_crc(info72, 72, crc8, 8));
+    dpmr_spec_put(data, 72, 8, crc);
     for (int w = 0; w < 10; w++) {
         dpmr_spec_hamming(data + (w * 8), coded + (w * 12));
     }
@@ -113,21 +125,32 @@ dpmr_spec_encode_mi(const uint8_t* info72, uint8_t* wire120) {
     }
 }
 
-/* One END copy on the wire from its 17 bits. */
+/* One MI copy on the wire from its 72 bits. */
 static inline void
-dpmr_spec_encode_end(const uint8_t* info17, uint8_t* wire36) {
-    static const uint8_t crc7[8] = {1, 0, 0, 0, 1, 0, 0, 1}; /* X^7 + X^3 + 1 */
+dpmr_spec_encode_mi(const uint8_t* info72, uint8_t* wire120) {
+    dpmr_spec_encode_mi_crc(info72, dpmr_spec_crc8(info72), wire120);
+}
+
+/* One END copy on the wire from its 17 bits and the CRC-7 @p crc, scrambled with the bits from @p key_offset on. */
+static inline void
+dpmr_spec_encode_end_crc(const uint8_t* info17, uint32_t crc, int key_offset, uint8_t* wire36) {
     uint8_t data[24];
-    uint8_t key[36];
+    uint8_t key[72];
     memcpy(data, info17, 17);
-    dpmr_spec_put(data, 17, 7, dpmr_spec_crc(info17, 17, crc7, 7));
-    dpmr_spec_keystream(key, 36);
+    dpmr_spec_put(data, 17, 7, crc);
+    dpmr_spec_keystream(key, 72);
     for (int w = 0; w < 3; w++) {
         dpmr_spec_hamming(data + (w * 8), wire36 + (w * 12));
     }
     for (int i = 0; i < 36; i++) {
-        wire36[i] ^= key[i];
+        wire36[i] ^= key[key_offset + i];
     }
+}
+
+/* One END copy on the wire from its 17 bits. */
+static inline void
+dpmr_spec_encode_end(const uint8_t* info17, int key_offset, uint8_t* wire36) {
+    dpmr_spec_encode_end_crc(info17, dpmr_spec_crc7(info17), key_offset, wire36);
 }
 
 /* Header MT and PARMS (Table 5.4). */

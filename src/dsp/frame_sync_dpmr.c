@@ -23,13 +23,17 @@
  *    The two copies are the same bits (the scrambled MI is repeated after the channel code), so each is descrambled
  *    from a fresh scrambler, in wire order, before it is deinterleaved.
  *  - END (7.7, 11.6, Figure 11.9): 17 information bits, CRC-7 (X^7 + X^3 + 1) to 24, three Hamming(12,8) words, no
- *    interleave, scrambled; "for each scrambler block the scrambler is re-initialized therefore the two scrambled END
- *    DATA blocks are bit exact copies", so each 36-bit copy is descrambled from a fresh scrambler too.
+ *    interleave, two copies, scrambled. The specification contradicts itself on how: 7.7 has "the total 72 bits"
+ *    scrambled as one run (the second copy takes keystream bits 36 to 71), 11.6 has "for each scrambler block the
+ *    scrambler is re-initialized therefore the two scrambled END DATA blocks are bit exact copies". The off-air
+ *    sigidwiki recording behind tests/fixtures/iq/dpmr.iq (DPMR.zip, SDRSharp_20160101_231640Z_12kHz_IQ.wav, inverted
+ *    polarity) sends one run. The first copy is the same either way; the second is read both ways, each CRC-checked.
  * A copy passes when all its Hamming words are correctable and its CRC matches. One copy passing is enough; two that
  * pass with different contents are no frame. The specification gives the CRC polynomials but not the register's
- * preset or bit order. Both CRCs here run MSB first from a zero register, the convention of the CCH CRC-7 that the
- * DSDcc-derived CCH reference vectors verify (tests/protocol/dpmr/fixtures); that the MI CRC-8 and the END CRC-7 use
- * it too is assumed, not verified: no off-air header or end frame has been checked against it.
+ * preset or bit order: both CRCs here run MSB first from a zero register, with no final inversion. That recording
+ * confirms it: all 18 MI copies of its 9 headers pass the CRC-8 so (a preset of all ones fails every one), and its end
+ * frame's first copy passes the CRC-7 so, as do the CCH halves (as also in the DSDcc-derived CCH reference vectors,
+ * tests/protocol/dpmr/fixtures).
  */
 
 #include <dsd-neo/core/opts.h>
@@ -124,13 +128,13 @@ dpmr_hamming_12_8(const uint8_t* word, uint8_t* out) {
     return syndrome == 8U || syndrome == 4U || syndrome == 2U || syndrome == 1U;
 }
 
-/* Descramble @p count wire bits from a fresh scrambler into @p out. */
+/* Descramble @p count wire bits into @p out with the scrambler's bits from @p key_offset on, from its preset. */
 static void
-dpmr_descramble(const uint8_t* wire, uint8_t* out, int count) {
+dpmr_descramble(const uint8_t* wire, uint8_t* out, int count, int key_offset) {
     uint8_t key[DPMR_MI_WIRE_BITS];
-    frame_sync_dpmr_keystream(key, count);
+    frame_sync_dpmr_keystream(key, key_offset + count);
     for (int i = 0; i < count; i++) {
-        out[i] = (uint8_t)((wire[i] ^ key[i]) & 1U);
+        out[i] = (uint8_t)((wire[i] ^ key[key_offset + i]) & 1U);
     }
 }
 
@@ -139,7 +143,7 @@ frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info) {
     uint8_t clear[DPMR_MI_WIRE_BITS];
     uint8_t coded[DPMR_MI_WIRE_BITS];
     uint8_t data[DPMR_MI_CODED_BITS];
-    dpmr_descramble(wire, clear, DPMR_MI_WIRE_BITS);
+    dpmr_descramble(wire, clear, DPMR_MI_WIRE_BITS, 0);
     /* The transmitter writes the coded bits down the 12 rows column by column and sends the matrix row by row
        (Table 7.4): coded bit 12c + r goes out at 10r + c. */
     for (int r = 0; r < 12; r++) {
@@ -161,10 +165,13 @@ frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info) {
 }
 
 int
-frame_sync_dpmr_decode_end(const uint8_t* wire, uint8_t* info) {
+frame_sync_dpmr_decode_end(const uint8_t* wire, int key_offset, uint8_t* info) {
     uint8_t coded[DPMR_END_WIRE_BITS];
     uint8_t data[DPMR_END_CODED_BITS];
-    dpmr_descramble(wire, coded, DPMR_END_WIRE_BITS);
+    if (key_offset < 0 || key_offset > DPMR_END_WIRE_BITS) {
+        return 0;
+    }
+    dpmr_descramble(wire, coded, DPMR_END_WIRE_BITS, key_offset);
     int correctable = 1;
     for (int w = 0; w < 3; w++) {
         correctable &= dpmr_hamming_12_8(coded + ((size_t)w * 12U), data + ((size_t)w * 8U));
@@ -323,8 +330,11 @@ dpmr_check_end(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     uint8_t info0[DSD_DPMR_END_INFO_BITS];
     uint8_t info1[DSD_DPMR_END_INFO_BITS];
     dpmr_read_back_bits(state, levels, inverted, DSD_DPMR_END_DIBITS, bits);
-    const int ok0 = frame_sync_dpmr_decode_end(bits, info0);
-    const int ok1 = frame_sync_dpmr_decode_end(bits + DPMR_END_WIRE_BITS, info1);
+    const int ok0 = frame_sync_dpmr_decode_end(bits, 0, info0);
+    /* The second copy as one 72-bit run's second half (7.7, and the off-air recording), else from a fresh scrambler
+       (11.6). */
+    const int ok1 = frame_sync_dpmr_decode_end(bits + DPMR_END_WIRE_BITS, DPMR_END_WIRE_BITS, info1)
+                    || frame_sync_dpmr_decode_end(bits + DPMR_END_WIRE_BITS, 0, info1);
     const uint8_t copies = dpmr_pick_copy(ok0, info0, ok1, info1, DSD_DPMR_END_INFO_BITS, sync->checked_bits);
     if (copies == 0U) {
         return DSD_SYNC_NONE;

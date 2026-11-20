@@ -530,6 +530,10 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_extract_superframe_part(&ctx, &part);
     dpmr_update_superframe_part(opts, state, &part);
     dpmr_print_ids(state);
+    if (opts->payload == 1) {
+        /* Each CCH half's CRC-7 verdict (-Z). */
+        DSD_FPRINTF(stderr, " CCH %s/%s", ctx.CrcOk[0] != 0U ? "OK" : "ERR", ctx.CrcOk[1] != 0U ? "OK" : "ERR");
+    }
     dpmr_print_scrambler_state(opts, state);
     dpmr_publish_call(opts, state);
     if (dpmr_confirm_is_confirmed(state)) {

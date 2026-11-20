@@ -829,12 +829,13 @@ every frame of the transmission; they differ only in the superframe behind the h
 `dpmr_synth` is the exception to all of that: it is modulated from the CCH
 reference vectors in `tests/protocol/dpmr/fixtures`, the same vectors
 `DPMR_REFERENCE_VECTORS` decodes, as continuous-phase 4FSK at 2400 baud with
-dPMR's ±1050/±350 Hz deviations. It exists because the off-air `dpmr` recording
-carries no recoverable CCH — its Hamming syndromes sit at the random rate and its
-4FSK eye is closed — so nothing decoded from it is a decode, and no integrity
-check could be validated against it (issue #407). `dpmr_synth` is correct by
-construction: every CCH CRC-7 in it passes, and `DECODE_IQ_DPMR_SYNTH` asserts
-the identity the vectors encode. Its voice payload is deterministic filler, so
+dPMR's ±1050/±350 Hz deviations. It was made because the off-air `dpmr` recording
+was thought to carry no recoverable CCH (issue #407); the recording is received at
+inverted polarity, and read with `-xd` it decodes (issue #890: its nine headers,
+all 18 MI copies, pass the CRC-8 from a zero register, and 56 of its 57 CCH frames
+pass both CRC-7 halves; `DECODE_IQ_DPMR_OFF_AIR`). `dpmr_synth` is correct by
+construction, in the default polarity: every CCH CRC-7 in it passes, and
+`DECODE_IQ_DPMR_SYNTH` asserts the identity the vectors encode. Its voice payload is deterministic filler, so
 the run reports vocoder errors; the CCH is what it pins.
 
 `m17_lsf_weak` (`M17_SYNTH`, 233 kB) is synthetic as well: four M17 voice transmissions, each a preamble, a link setup
@@ -2021,9 +2022,12 @@ Known gaps and caveats:
   `TETRA_VOICE_CODEC` and `DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` check that mbelib-neo's decoder plays, not how the
   speech sounds. The uplink is not decoded.
 - **X2-TDMA** has no usable public sample and is untested here.
-- **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
-  it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
-  it still syncs and still publishes no identity; `DECODE_IQ_DPMR_SYNTH` is the accept case.
+- **dPMR** decodes only what its CRCs verify (issues #407, #890). The `dpmr` off-air capture is received at inverted
+  polarity: under `-xd` it decodes (`DECODE_IQ_DPMR_OFF_AIR`: the nine powersave and normal Communications_Start
+  headers of one key-up, called and calling `3939*5*`, channel code 2, one call row, the CCH CRC-7 passing), and its
+  end frame lies past the capture's 10 s. Read in the default polarity it carries nothing checkable, which is why the
+  CRC was once thought to be broken: `DECODE_IQ_DPMR_MARGINAL` pins that it still syncs and publishes no identity
+  then. `DECODE_IQ_DPMR_SYNTH` is the synthetic accept case.
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
 - Call-state timers run on the capture's clock under replay (issue #572), so an
