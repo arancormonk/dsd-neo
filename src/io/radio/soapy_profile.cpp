@@ -619,6 +619,10 @@ range_point_within(const SoapyRange& range, double requested, double max_rate, d
        rounding boundary, stepped down while it rounds over the cap. Each grid point is the setter's own
        minimum + index * step. A grid finer than a double resolves at that magnitude has no distinguishable point below
        the boundary to step to; its largest representable value below the boundary stands for it. */
+    /* A step so fine that the range's step count overflows a double names no grid point the setter could keep. */
+    if (!std::isfinite((range.maximum - range.minimum) / range.step)) {
+        return false;
+    }
     double top = range_last_point(range);
     if (!(top < cap_boundary)) {
         double index = std::floor((cap_boundary - range.minimum) / range.step);

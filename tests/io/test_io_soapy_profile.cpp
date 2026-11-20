@@ -279,6 +279,11 @@ test_nearest_rate_within_limit(void) {
     rc |= expect_double("so is one up to the largest double",
                         dsdneo::soapy_nearest_sample_rate_within(3e6, 2e6, {}, widest, &found), 2e6);
     rc |= expect_true("and its point is found", found);
+    /* A step so fine that the range's step count overflows a double has no grid point a write could keep: the
+       bounded query refuses the range, as the setter cannot program its answer. */
+    const std::vector<dsdneo::SoapyRange> overflowing = {{1e6, DBL_MAX, DBL_MIN}};
+    (void)dsdneo::soapy_nearest_sample_rate_within(1.5e6, 2e6, {}, overflowing, &found);
+    rc |= expect_true("a range whose step count overflows has no point within the cap", !found);
     /* A point below the cap is the grid point the setter itself computes (minimum + index * step), so a write of the
        answer programs it, for steps a double holds only approximately. */
     const std::vector<dsdneo::SoapyRange> inexact_a = {{1000000.5, 5000000.0, 249999.99999999994}};
