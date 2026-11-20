@@ -15,6 +15,9 @@ import java.util.concurrent.FutureTask
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
+/** Coordinates and metres compared with a tolerance (AGENTS.md: no exact floating-point compares). */
+private fun near(actual: Double, expected: Double, tolerance: Double = 1e-6) = kotlin.math.abs(actual - expected) <= tolerance
+
 private fun request(activity: Activity, id: Long) {
     LocationSupport.requestCurrentLocation(activity, id)
     Handler.drain()
@@ -338,7 +341,7 @@ private fun siteFixWaitsForGpsOverAnEarlyFusedAnswer() {
         check(LocationSupport.pollResult().isEmpty()) { "an early fused answer must not settle while GPS is out" }
         activity.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { latitude = 41.5; accuracy = 5f })
         val found = JSONObject(LocationSupport.pollResult())
-        check(found.optLong("id") == 160L && found.optDouble("lat") == 41.5 && found.optDouble("accuracyM") == 5.0)
+        check(found.optLong("id") == 160L && near(found.optDouble("lat"), 41.5) && near(found.optDouble("accuracyM"), 5.0))
         check(Handler.timeouts.isEmpty() && activity.manager.signals.values.all { it.cancelled })
 
         // GPS's own fix wins over an earlier answer that only claims to be more accurate.
@@ -347,7 +350,7 @@ private fun siteFixWaitsForGpsOverAnEarlyFusedAnswer() {
         Handler.drain()
         claimed.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { latitude = 40.0; accuracy = 3f })
         claimed.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { latitude = 41.5; accuracy = 8f })
-        check(JSONObject(LocationSupport.pollResult()).optDouble("lat") == 41.5)
+        check(near(JSONObject(LocationSupport.pollResult()).optDouble("lat"), 41.5))
 
         // GPS silent (indoors): the early answer is used once the grace ends, not at the 20 s deadline.
         val indoors = Activity().apply { finePermission = 0 }
@@ -358,7 +361,7 @@ private fun siteFixWaitsForGpsOverAnEarlyFusedAnswer() {
         check(LocationSupport.pollResult().isEmpty())
         Handler.advanceBy(1)
         val graced = JSONObject(LocationSupport.pollResult())
-        check(graced.optBoolean("fixOk") && graced.optDouble("lat") == 40.0 && Handler.timeouts.isEmpty())
+        check(graced.optBoolean("fixOk") && near(graced.optDouble("lat"), 40.0) && Handler.timeouts.isEmpty())
         check(indoors.manager.signals.values.all { it.cancelled })
 
         // GPS answering nothing ends the wait at once.
@@ -368,7 +371,7 @@ private fun siteFixWaitsForGpsOverAnEarlyFusedAnswer() {
         noFix.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 30f })
         noFix.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(null)
         noFix.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(null)
-        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 30.0 && Handler.timeouts.isEmpty())
+        check(near(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM"), 30.0) && Handler.timeouts.isEmpty())
 
         // Approximate location: no GPS, the balanced default, and the first close-enough answer settles.
         val coarse = Activity()
@@ -405,7 +408,7 @@ private fun preciseRequestOffersTheUpgrade() {
     check(LocationSupport.onRequestPermissionsResult(upgraded, 4303, intArrayOf(0, 0)))
     check(LocationManager.GPS_PROVIDER in upgraded.manager.callbacks) { "precise allowed: GPS is asked" }
     upgraded.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { accuracy = 4f })
-    check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 4.0)
+    check(near(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM"), 4.0))
 
     val precise = Activity().apply { finePermission = 0 }
     LocationSupport.requestPreciseLocation(precise, 172)
@@ -460,10 +463,9 @@ private fun aStaleBestGivesWayToAFreshAnswer() {
         activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(ageing)
         activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { accuracy = 50f })
         check(LocationSupport.pollResult().isEmpty()) { "GPS is still owed its grace" }
-        ageing.elapsedRealtimeNanos -= 10_000_000_000L // the grace's ten seconds pass on the fix's clock too
         Handler.advanceBy(LocationSupport.GPS_GRACE_MS)
         val settled = JSONObject(LocationSupport.pollResult())
-        check(settled.optBoolean("fixOk") && settled.optDouble("accuracyM") == 50.0) { "the fresh answer: $settled" }
+        check(settled.optBoolean("fixOk") && near(settled.optDouble("accuracyM"), 50.0)) { "the fresh answer: $settled" }
     } finally { Build.VERSION.SDK_INT = 30 }
 }
 
@@ -477,7 +479,7 @@ private fun theGraceRunsFromTheStart() {
         Handler.advanceBy(LocationSupport.GPS_GRACE_MS)
         check(LocationSupport.pollResult().isEmpty()) { "nothing in hand at the grace's end: wait on" }
         activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { accuracy = 30f })
-        check(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM") == 30.0) { "a late answer settles at once" }
+        check(near(JSONObject(LocationSupport.pollResult()).optDouble("accuracyM"), 30.0)) { "a late answer settles at once" }
         check(Handler.timeouts.isEmpty())
     } finally { Build.VERSION.SDK_INT = 30 }
 }
@@ -497,6 +499,55 @@ private fun theQuietRequestNeverPrompts() {
     check(approximate.permissionRequests == 0 && approximate.manager.callback != null) { "approximate: no upgrade offer" }
     approximate.manager.callback!!.accept(Location().apply { accuracy = 2_000f })
     check(JSONObject(LocationSupport.pollResult()).optBoolean("fixOk"))
+}
+
+// An answer dated ahead of the clock is refused on arrival, and does not become usable later while GPS is awaited.
+private fun aFutureDatedAnswerIsNeverKept() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(activity, 210)
+        Handler.drain()
+        activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply {
+            latitude = 40.0; accuracy = 6f; elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos() + 5_000_000_000L
+        })
+        activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { accuracy = 10f })
+        Handler.advanceBy(LocationSupport.GPS_GRACE_MS)
+        val settled = JSONObject(LocationSupport.pollResult())
+        check(near(settled.optDouble("lat"), 41.0) && near(settled.optDouble("accuracyM"), 10.0)) { "the valid answer: $settled" }
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+// GPS ends the wait at once, but a more accurate network measurement still fresh is used over it; a fused answer is
+// not (it may be the provider's held position).
+private fun gpsEndsTheWaitWithTheBestMeasurement() {
+    Build.VERSION.SDK_INT = 31
+    try {
+        val activity = Activity().apply { finePermission = 0 }
+        LocationSupport.requestSiteLocation(activity, 220)
+        Handler.drain()
+        activity.manager.callbacks.getValue(LocationManager.FUSED_PROVIDER).accept(Location().apply { latitude = 38.0; accuracy = 2f })
+        activity.manager.callbacks.getValue(LocationManager.NETWORK_PROVIDER).accept(Location().apply { latitude = 39.0; accuracy = 5f })
+        activity.manager.callbacks.getValue(LocationManager.GPS_PROVIDER).accept(Location().apply { latitude = 40.0; accuracy = 99f })
+        val result = JSONObject(LocationSupport.pollResult())
+        check(near(result.optDouble("lat"), 39.0) && near(result.optDouble("accuracyM"), 5.0)) { "the network measurement: $result" }
+        check(Handler.timeouts.isEmpty())
+    } finally { Build.VERSION.SDK_INT = 30 }
+}
+
+// No provider to ask: location switched off for the device, or on with none this access may use; the map tells them
+// apart by these two answers.
+private fun locationOffIsNotAMissingProvider() {
+    val off = Activity().apply { manager.enabled = false; manager.isLocationEnabled = false }
+    LocationSupport.requestSiteLocation(off, 230)
+    Handler.drain()
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.LOCATION_OFF_ERROR)
+
+    val noNetwork = Activity()
+    noNetwork.manager.disabledProviders.add(LocationManager.NETWORK_PROVIDER)
+    LocationSupport.requestSiteLocation(noNetwork, 231) // approximate access on Android 10: the network provider only
+    Handler.drain()
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.PROVIDER_ERROR)
 }
 
 private fun timeoutWithFixAndLateReplacement() {
@@ -579,6 +630,9 @@ fun main() {
         aStaleBestGivesWayToAFreshAnswer()
         theGraceRunsFromTheStart()
         theQuietRequestNeverPrompts()
+        aFutureDatedAnswerIsNeverKept()
+        gpsEndsTheWaitWithTheBestMeasurement()
+        locationOffIsNotAMissingProvider()
         timeoutWithFixAndLateReplacement()
         pollSharesTheWritersLock()
         println("PASS: location permission, cache freshness, provider fallback, legacy callbacks, deadlines and cancellation")

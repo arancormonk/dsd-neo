@@ -755,8 +755,8 @@ sent no PNG tiles the map can use. Check Map settings.**
 
 ### Your own position
 
-When location is allowed, the map opens on your position, close enough to see the streets around you: on your saved
-location at once, then on a fresh fix it asks for without a prompt. **Locate me** asks for your location again, puts
+When location is allowed, the map opens on your position, close enough to see the streets around you: with precise
+location on your saved location at once, then on a fresh fix it asks for without a prompt. **Locate me** asks for your location again, puts
 the dot there and zooms in to it. If DSD-neo only has approximate location, Locate me first offers precise location; kept
 approximate, the map zooms to show the whole area you may be in and says **Your location is approximate. Allow precise
 location for a closer fix.**, with a Settings button. The fix is saved like the nearby-site chooser's and dropped after

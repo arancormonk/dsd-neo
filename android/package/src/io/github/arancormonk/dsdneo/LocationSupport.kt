@@ -73,6 +73,9 @@ object LocationSupport {
     // new, so the first answer is often not a new measurement: taken at once, every Locate me after the first came back
     // where the first one was.
     internal const val GPS_GRACE_MS = 10_000L
+    // The two "no provider" answers. The map reads which one it got: keep them as they are.
+    internal const val LOCATION_OFF_ERROR = "Location is off; use Browse."
+    internal const val PROVIDER_ERROR = "Location provider unavailable; use Browse."
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
@@ -176,7 +179,9 @@ object LocationSupport {
             try { request.manager.isProviderEnabled(provider) } catch (_: Exception) { false }
         }
         if (providers.isEmpty()) {
-            finish(request, false, "", "", "Location provider unavailable; use Browse.")
+            // Location switched off for the whole device, or on with no provider this access may use (approximate
+            // access on Android 10-11 with the network provider off): the map sends each to its own settings.
+            finish(request, false, "", "", if (locationOff(request.manager)) LOCATION_OFF_ERROR else PROVIDER_ERROR)
             return
         }
         // With GPS asked, only its own cache is a measurement: the fused provider's last location can be the position
@@ -239,6 +244,10 @@ object LocationSupport {
         }
     }
 
+    /** Whether the device's location switch is off (Android 9 and later say so directly). */
+    private fun locationOff(manager: LocationManager): Boolean =
+        try { !manager.isLocationEnabled } catch (_: Exception) { false }
+
     private fun usableFix(location: Location?, forSites: Boolean = false): Boolean {
         if (location == null || !location.latitude.isFinite() || location.latitude !in -90.0..90.0
             || !location.longitude.isFinite() || location.longitude !in -180.0..180.0
@@ -252,13 +261,17 @@ object LocationSupport {
     private fun providerResult(request: Request, provider: String, location: Location?) {
         if (active !== request || request.fix != null || !request.pendingProviders.remove(provider)) return
         if (request.forSites) {
+            // An answer unusable on arrival (none, too rough, too old, dated ahead of the clock) is never kept.
+            if (usableFix(location, true)) request.answers[provider] = location!!
             if (provider == LocationManager.GPS_PROVIDER && usableFix(location, true)
                 && location!!.accuracy <= SITE_TARGET_ACCURACY_M) {
-                // A new measurement, so it beats an earlier answer that only claimed to be more accurate.
-                gotFix(request, location)
+                // A new measurement settles at once. It beats a fused answer that only claimed to be more accurate
+                // (see GPS_GRACE_MS), but not a more accurate network measurement still fresh.
+                val measured = request.answers.filterKeys { it != LocationManager.FUSED_PROVIDER }.values
+                    .filter { usableFix(it, true) }.minWithOrNull(BETTER_FIX)
+                gotFix(request, measured ?: location)
                 return
             }
-            if (location != null) request.answers[provider] = location
             settleSite(request)
             return
         }
@@ -266,10 +279,12 @@ object LocationSupport {
         else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", "No location fix available; use Browse.")
     }
 
+    /** The more accurate fix first, then the newer. */
+    private val BETTER_FIX = compareBy<Location> { it.accuracy }.thenByDescending { it.elapsedRealtimeNanos }
+
     /** The most accurate answer still fresh enough now (then the newest), or null. */
     private fun bestSiteFix(request: Request): Location? =
-        request.answers.values.filter { usableFix(it, true) }
-            .minWithOrNull(compareBy<Location> { it.accuracy }.thenByDescending { it.elapsedRealtimeNanos })
+        request.answers.values.filter { usableFix(it, true) }.minWithOrNull(BETTER_FIX)
 
     /**
      * A site request settles on its best answer once every provider has answered, or once that answer is close enough

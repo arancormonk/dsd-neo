@@ -979,6 +979,39 @@ test_follow_keeps_a_pinched_out_zoom() {
     assert(std::fabs(f.map->zoom() - zoom) < 1.0e-9);
 }
 
+/* The screen keeps the canvas between visits (the user's report: the view was lost on Back). While hidden: no follow
+ * step moves it, a size the layout passes through clamps nothing, and on return a follow catches up at the zoom the user
+ * left it at, not as a first centring. */
+void
+test_hidden_canvas_keeps_its_view() {
+    Fixture f;
+    push(4011U, 60.0, 20.0);
+    f.model.poll();
+    f.map->centerOn(60.0, 20.0, 12.0);
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    assert(id != 0U);
+    f.map->setFollowTrackId(id);
+    f.map->zoomAbout(f.map->minimumZoom(), 200.0, 150.0); /* pinched right out */
+    const double zoom = f.map->zoom();
+    f.map->setVisible(false);
+    push(4011U, 60.0, 21.0); /* the radio moves while hidden */
+    f.model.poll();
+    assert(std::fabs(f.map->centerLongitude() - 20.0) < 1.0e-6); /* no step while hidden */
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - zoom) < 1.0e-9);            /* the user's zoom, not a first centring's */
+    assert(std::fabs(f.map->centerLongitude() - 21.0) < 1.0e-6); /* caught up with the move */
+    f.map->setFollowTrackId(0U);
+
+    /* North at zoom 2 on a 300 px canvas; a taller canvas while hidden would pin the centre further south. */
+    f.map->centerOn(64.0, 0.0, 2.0);
+    const double north = f.map->centerLatitude();
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->centerLatitude() - north) < 1.0e-9);
+}
+
 /* Independent review M2/M3: a new canvas size, or a view restored through the camera properties, re-centres a running
  * follow at once rather than leaving the mark where those put it until it moves. */
 void
@@ -1035,7 +1068,7 @@ test_centring_raises_a_zoom_that_cannot() {
 }
 
 /* Locate me's zoom: the streets around a precise fix, and an approximate fix's whole circle (about half the shorter
- * side across), never wider than a town. The view is 400 x 300. */
+ * side across), however wide. The view is 400 x 300. */
 void
 test_device_zoom_follows_the_accuracy() {
     Fixture f;
@@ -1050,8 +1083,9 @@ test_device_zoom_follows_the_accuracy() {
     const double approximate = f.map->deviceZoom();
     const double radius_px = 2000.0 / mm::metres_per_px(51.5, approximate);
     assert(approximate > 11.0 && approximate < 15.0 && std::fabs(radius_px - 75.0) < 1.0e-6);
-    f.map->setDeviceAccuracyM(50000.0);
-    assert(std::fabs(f.map->deviceZoom() - 11.0) < 1.0e-9);
+    f.map->setDeviceAccuracyM(10000.0); /* the widest fix a request keeps: its whole circle still shows */
+    const double wide = f.map->deviceZoom();
+    assert(wide < 11.0 && std::fabs((10000.0 / mm::metres_per_px(51.5, wide)) - 75.0) < 1.0e-6);
     f.map->setZoom(2.0);
     f.map->setDeviceAccuracyM(2000.0);
     assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - approximate) < 1.0e-9);
@@ -1135,6 +1169,7 @@ main(int argc, char** argv) {
     test_chips_never_move_the_camera();
     test_pinch_during_a_follow_step();
     test_follow_keeps_a_pinched_out_zoom();
+    test_hidden_canvas_keeps_its_view();
     test_follow_recentres_after_resize_and_restore();
     test_centring_raises_a_zoom_that_cannot();
     test_device_zoom_follows_the_accuracy();

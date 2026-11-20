@@ -41,6 +41,9 @@ Item {
 
     // Which view shows: the map (true) or the List.
     property bool mapShown: true
+    // The List stops a Locate me still on its way where it is (MapView), so
+    // the next press locates again rather than following.
+    onMapShownChanged: if (!mapShown) locator.cameraMoved()
     // A History row's saved fix dropped as one pin ("Show on map"), or null.
     property var pin: null
     // The tiles prompt set aside: for the rest of the app's run (the screen
@@ -50,6 +53,10 @@ Item {
     // Whether the camera was set up once: at the first open of the app's run.
     // The screen is kept between visits, so the view keeps its place after.
     property bool cameraPlaced: false
+    // Whether the zoom shown is one the user chose (buttons, pinch, wheel, a
+    // saved view): Locate me keeps a closer one; a zoom the map set itself
+    // gives way to the fix's own.
+    property bool zoomChosen: false
     // Whether the app is in the foreground. On Android an Item stays visible
     // while the app is hidden, so the live position and the age clock follow
     // the application's state, not only `visible`. Inactive (a dialog on top)
@@ -111,28 +118,32 @@ Item {
         } else {
             positionSheet.visible = false;
             locator.stopFollow();
-            // The view stays as it was left, but the next press locates
-            // again rather than following.
+            // A Locate me still on its way stops where it is (MapView), so
+            // the next press locates again rather than following.
             locator.cameraMoved();
         }
     }
 
     // The first open centres on the user when location is allowed: on the
-    // saved dot at once, then on a fresh fix asked for without a prompt.
-    // Without location it opens on the saved view, else every radio (or the
-    // saved dot). Later opens keep the view where it was left.
+    // saved dot at once with precise location, then on a fresh fix asked for
+    // without a prompt. Otherwise it opens on the saved view, else every
+    // radio. A saved dot places nothing without precise location: it may be
+    // a precise fix from before access was lowered, and the tile server would
+    // see the streets around it. Later opens keep the view where it was left.
     function placeCamera() {
         if (cameraPlaced || !visible)
             return;
         cameraPlaced = true;
         if (pin)
             return;
-        var located = locator.allowed();
-        if (located && locator.deviceValid)
+        var access = locator.access();
+        if (access === "precise" && locator.deviceValid)
             map.centerOnDevice(true);
-        else if (!keeper.restore() && !map.fitAll() && locator.deviceValid)
-            map.centerOnDevice(true);
-        if (located)
+        else if (keeper.restore())
+            zoomChosen = true;
+        else
+            map.fitAll(false);
+        if (access !== "none")
             locator.locateQuietly();
     }
 
@@ -142,6 +153,9 @@ Item {
             return;
         pin = record;
         mapShown = true;
+        // A first visit starts from the saved view's zoom, as an open would.
+        if (!cameraPlaced && keeper.restore())
+            zoomChosen = true;
         cameraPlaced = true;
         map.selectedTrackId = 0;
         // A one-shot move: a follow left on would take the camera back on its
@@ -529,6 +543,7 @@ Item {
                 onActiveChanged: {
                     if (active) {
                         startZoom = map.zoom;
+                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                     }
@@ -543,6 +558,7 @@ Item {
                 enabled: Navigation.allows(map)
                 target: null
                 onWheel: function (event) {
+                    screen.zoomChosen = true;
                     screen.userMovedCamera();
                     locator.keepView();
                     map.zoomAbout(map.zoom + event.angleDelta.y / 240, wheel.point.position.x, wheel.point.position.y);
@@ -793,6 +809,7 @@ Item {
                     accessibleName: qsTr("Zoom in")
                     enabled: map.zoom < map.maximumZoom - 0.01
                     onClicked: {
+                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                         map.zoomIn();
@@ -814,6 +831,7 @@ Item {
                     accessibleName: qsTr("Zoom out")
                     enabled: map.zoom > map.minimumZoom + 0.01
                     onClicked: {
+                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                         map.zoomOut();
@@ -826,6 +844,7 @@ Item {
                 accessibleName: qsTr("Show every radio")
                 enabled: map.markerCount > 0 || locator.deviceValid || screen.pin !== null
                 onClicked: {
+                    screen.zoomChosen = false;
                     screen.userMovedCamera();
                     locator.keepView();
                     if (screen.pin)
@@ -875,7 +894,7 @@ Item {
                 screen.endFollows();
                 screen.mapShown = true;
                 screen.userMovedCamera();
-                map.centerOnDevice();
+                map.centerOnDevice(!screen.zoomChosen);
             }
         }
 
@@ -1058,9 +1077,9 @@ Item {
             // the opening fix, or without precise location, the button stays
             // Locate me, so every press finds the user again.
             locator.readyToFollow = canFollow;
-            // The opening fix sets the zoom from its accuracy; Locate me keeps
-            // a closer zoom the user chose.
-            map.centerOnDevice(opening);
+            // The fix's own zoom, unless the user chose a closer one (not for
+            // the opening fix, which nobody asked for).
+            map.centerOnDevice(opening || !screen.zoomChosen);
         }
         onFollowMeChanged: map.followDevice = followMe
     }

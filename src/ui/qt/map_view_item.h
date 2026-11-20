@@ -308,8 +308,9 @@ class MapViewItem : public QQuickItem {
     /** @brief One whole zoom step in or out about the centre, animated (the accessible zoom buttons). */
     Q_INVOKABLE void zoomIn();
     Q_INVOKABLE void zoomOut();
-    /** @brief Show every marker drawn, and the device's dot when valid, animated. False when there is nothing. */
-    Q_INVOKABLE bool fitAll();
+    /** @brief Show every marker drawn, and the device's dot when valid and @p withDevice (the map's opening leaves out
+     *  a saved fix it cannot trust), animated. False when there is nothing. */
+    Q_INVOKABLE bool fitAll(bool withDevice = true);
     /** @brief fitAll() with (@p lat, @p lon) shown too: a pin the screen draws over the map (a History row's fix). */
     Q_INVOKABLE bool fitAllWith(double lat, double lon);
     /** @brief Centre on track @p trackId's marker (its current position, else its open ring), animated. */
@@ -318,8 +319,8 @@ class MapViewItem : public QQuickItem {
      *  The zoom goes in to at least deviceZoom(), keeping a closer one, or with @p exactZoom (a placement nobody chose,
      *  as the map opening) to deviceZoom() itself. False while it is not valid. */
     Q_INVOKABLE bool centerOnDevice(bool exactZoom = false);
-    /** @brief The zoom centerOnDevice() goes in to: the streets around the dot, with its accuracy circle about half the
-     *  view's shorter side across, from 11 (a wide approximate fix) to 15. */
+    /** @brief The zoom centerOnDevice() goes in to: the streets around the dot (15 at most), with its accuracy circle
+     *  about half the view's shorter side across, however wide an approximate fix's circle is. */
     Q_INVOKABLE double deviceZoom() const;
     /** @brief Centre on (@p lat, @p lon) at @p level (negative: keep the zoom), animated. */
     Q_INVOKABLE void centerOn(double lat, double lon, double level = -1.0);
@@ -528,7 +529,7 @@ class MapViewItem : public QQuickItem {
 
     std::vector<map_math::WorldPoint> markerPoints() const;
     /** @brief Fit @p points and the device's dot when valid (fitAll()'s body). */
-    bool fitPoints(std::vector<map_math::WorldPoint> points);
+    bool fitPoints(std::vector<map_math::WorldPoint> points, bool takeDevice = true);
     /** @brief @p vp with its centre moved so what it centres sits in the middle of the part below topInset. */
     map_math::Viewport belowTopInset(map_math::Viewport vp) const;
     map_math::Viewport centredOn(map_math::Viewport vp, map_math::WorldPoint at, bool raiseZoom = true) const;

@@ -18042,12 +18042,16 @@ Qt Quick frontend (`src/ui/qt`):
   `QUALITY_HIGH_ACCURACY` (API 31+); with GPS asked, only GPS's own cache counts, and another provider's answer within
   100 m settles only once `GPS_GRACE_MS` (10 s from the request's start) has passed: Google's fused provider answers a
   new request at once with the position it already holds, stamped as new, so taking it at once made every Locate me
-  after the first come back where the first one was. A GPS fix within 100 m settles at once. Each provider's newest
-  answer is kept, and the one used is the most accurate still fresh when the request settles (every provider answered,
+  after the first come back where the first one was. A GPS fix within 100 m settles at once, on itself or on a more
+  accurate network answer still fresh (never a fused one). Each provider's newest usable answer is kept (one unusable
+  on arrival, a future-dated one included, never is), and the one used is the most accurate still fresh when the request settles (every provider answered,
   the grace, or the deadline). `requestPreciseLocation` (the map's Locate me) is a site request that first asks for
   precise and approximate together when only approximate is allowed (Android's upgrade prompt; after two refusals
   Android 11 and later answer at once and the request goes on with approximate); `requestQuietLocation` (the map's
-  opening fix) never prompts and ends at once without permission. A prompt's answer resumes only the request that
+  opening fix) never prompts and ends at once without permission. With no provider to ask, the answer is
+  `LOCATION_OFF_ERROR` when the device's location switch is off and `PROVIDER_ERROR` otherwise (approximate access on
+  Android 10-11 with the network provider off); the map sends the first to the location settings and the second to
+  App info. A prompt's answer resumes only the request that
   asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
   so precise location allowed from the map starts a stream roaming already holds. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
@@ -19180,8 +19184,9 @@ Qt Quick frontend (`src/ui/qt`):
     for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
     The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
-    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()` (zoomed in to at least `deviceZoom()`: the
-    streets around the dot, the accuracy circle about half the shorter side across, 11 to 15), `centerOn()`,
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice(exactZoom)` (at `deviceZoom()`: the streets
+    around the dot, the accuracy circle about half the shorter side across, 15 at most; without `exactZoom` a closer
+    zoom is kept), `centerOn()`,
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
@@ -19258,9 +19263,14 @@ Qt Quick frontend (`src/ui/qt`):
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
     refreshes as requester "map" (`requestPrecise()`, disabled while another requester's request runs) and centres at
     `deviceZoom()`. The first open of a run with location allowed (`MapLocator.allowed()`) centres on the saved dot at
-    once and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
-    the background): it shows no notice, does not hold the button or arm Follow, and its answer moves only a view
-    nobody moved, at the fix's own zoom (`centerOnDevice(true)`). The second press after an explicit Locate me, with
+    once only with precise access (a saved dot may be a precise fix from before access was lowered, and the tile
+    server would see the streets around it; otherwise the saved view, else the radios without the dot,
+    `fitAll(false)`), and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
+    the background): it shows no notice, does not hold the button or arm Follow, starts only while the map shows in
+    the foreground, and its answer moves only a view nobody moved, at the fix's own zoom (`centerOnDevice(true)`).
+    Locate me keeps a closer zoom only when the user chose it (`MapScreen.zoomChosen`: the zoom buttons, a pinch, the
+    wheel or a restored saved view). An answer older than the saved fix (another screen saved a newer one since)
+    leaves it. The second press after an explicit Locate me, with
     the view still on the found dot and precise location allowed, is Follow my position; with approximate location the button stays Locate me (each
     press finds the user again) and an explicit answer says "Your location is approximate. Allow precise location for a
     closer fix." with a Settings action; a failed Locate me offers App info without access and the location settings
@@ -19268,10 +19278,12 @@ Qt Quick frontend (`src/ui/qt`):
     precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
     when the lease is taken, since the host repeats nothing). A stream fix is live while at most
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
-    stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
-    Follow step and keeps the view as it was left: the canvas stops a running camera move where it is when it hides,
-    and no follow step moves it while hidden (`followNow()`), so the dot going back from a live fix to the saved one
-    cannot carry it; a follow still on re-centres on return (`rearmFollow()`). Every explicit one-shot move (Show on map
+    stays on it as the last known position and following says "Finding your position…". Leaving the map (or switching
+    to the List) clears the Follow step and keeps the view as it was left: the canvas stops a running camera move
+    where it is when it hides, no follow step moves it while hidden (`followNow()`), and a size the layout passes
+    through while hidden clamps nothing, so the dot going back from a live fix to the saved one cannot carry it; on
+    return the view is fitted to the canvas and a follow still on catches up at the user's zoom. A History pin opening
+    the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device
     row, a fit, the zoom buttons, the wheel, a drag or pinch) keeps the view: its answer saves the dot but neither

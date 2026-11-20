@@ -61,6 +61,8 @@ class LocationManager {
         const val GPS_PROVIDER = "gps"
     }
     var enabled = true
+    // The device's location switch (isLocationEnabled, Android 9 and later).
+    var isLocationEnabled = true
     val allProviders = mutableListOf(NETWORK_PROVIDER, FUSED_PROVIDER, GPS_PROVIDER)
     val updates = mutableMapOf<String, LocationUpdates>()
     val disabledProviders = mutableSetOf<String>()

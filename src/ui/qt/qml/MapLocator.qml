@@ -125,7 +125,7 @@ Item {
     // The map's opening fix: only with location already allowed (no prompt),
     // never over another screen's request, and silent whatever it answers.
     function locateQuietly() {
-        if (!supported || busyElsewhere || locating || !allowed())
+        if (!supported || !shown || !foreground || busyElsewhere || locating || !allowed())
             return;
         moveOnAnswer = true;
         quiet = true;
@@ -248,7 +248,10 @@ Item {
             locator.requestId = 0;
             locator.quiet = false;
             if (result.fixOk) {
-                prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
+                // A cached answer can be older than a fix another screen saved
+                // since: the newer one stays, and the dot shows it.
+                if (!(prefs.lastFixAt > result.fixAtMs))
+                    prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
                 var precise = locator.access() === "precise";
                 if (!quiet) {
                     // An approximate fix after Locate me offered precise:
@@ -260,12 +263,17 @@ Item {
                     locator.located(precise && !quiet, quiet);
                 locator.moveOnAnswer = false;
             } else if (!quiet) {
-                // Where to fix it: no access is the app's settings; location
-                // switched off is the device's.
-                var off = String(result.error || "").indexOf("provider unavailable") >= 0;
-                var denied = locator.access() === "none";
-                locator.noticeAction = denied ? "appSettings" : off ? "locationSettings" : "";
-                locator.notice = off && !denied ? qsTr("Location is off on this device.")
+                // Where to fix it: no access, or approximate access with no
+                // provider it may use, is the app's settings; location
+                // switched off is the device's. (The two errors are
+                // LocationSupport.kt's own fixed texts.)
+                var error = String(result.error || "");
+                var off = error.indexOf("Location is off") === 0;
+                var noProvider = error.indexOf("Location provider unavailable") === 0;
+                var access = locator.access();
+                locator.noticeAction = access === "none" || (noProvider && access === "approximate") ? "appSettings" : off ? "locationSettings" : "";
+                locator.notice = off && access !== "none" ? qsTr("Location is off on this device.")
+                    : noProvider && access === "approximate" ? qsTr("Location unavailable with approximate location. Allow precise location to use GPS.")
                     : prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.")
                     : qsTr("Location unavailable. Check location access in your device settings.");
             }

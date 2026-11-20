@@ -499,6 +499,12 @@ void
 MapViewItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
     QQuickItem::geometryChange(new_geometry, old_geometry);
     if (new_geometry.size() != old_geometry.size()) {
+        if (!isVisible()) {
+            /* Hidden (the map closed with its screen kept): the layout around it may change for a while, as the
+             * screen's bands hide; the view kept is the one last shown, so nothing is clamped to that passing size.
+             * Showing it again fits it to the size it then has (itemChange()). */
+            return;
+        }
         /* The centre stays where it was; the zoom floor may rise with the width. A followed mark is centred again: where
          * centring puts it depends on the canvas's size. */
         setViewport(m_vp);
@@ -523,7 +529,10 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         stopCamera();
     }
     if (change == ItemVisibleHasChanged && value.boolValue) {
-        rearmFollow(); /* a follow still on catches up with its mark */
+        /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a
+         * mark that moved meanwhile, at the zoom the user left it at (not a first centring). */
+        setViewport(m_vp);
+        followNow();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
         catchUpScene();
@@ -655,9 +664,9 @@ MapViewItem::findTrack(qulonglong trackId) const {
 }
 
 bool
-MapViewItem::fitAll() {
+MapViewItem::fitAll(bool withDevice) {
     ensureScene();
-    return fitPoints(markerPoints());
+    return fitPoints(markerPoints(), withDevice);
 }
 
 bool
@@ -671,12 +680,12 @@ MapViewItem::fitAllWith(double lat, double lon) {
 }
 
 bool
-MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
+MapViewItem::fitPoints(std::vector<mm::WorldPoint> points, bool takeDevice) {
     /* A fit ends any follow first: ending live follow gives the device dot back its saved fix (the screen releases the
      * live position), and the fit must take in the dot that will be drawn, not the one that was. */
     stopFollowing();
     mm::WorldPoint device{};
-    const bool withDevice = deviceWorld(&device);
+    const bool withDevice = takeDevice && deviceWorld(&device);
     if (withDevice) {
         points.push_back(device);
     }
@@ -724,7 +733,6 @@ MapViewItem::centerOnDevice(bool exactZoom) {
 double
 MapViewItem::deviceZoom() const {
     constexpr double kNear = 15.0; /* a few streets either way on a phone */
-    constexpr double kFar = 11.0;  /* a town: an approximate fix's circle, kilometres across */
     const double side = std::min(width(), height());
     if (!(side > 0.0) || !(m_deviceAccuracyM > 0.0) || !std::isfinite(m_deviceAccuracyM)
         || !std::isfinite(m_deviceLat)) {
@@ -736,7 +744,8 @@ MapViewItem::deviceZoom() const {
     if (!std::isfinite(zoom)) {
         return kNear;
     }
-    return std::max(kFar, std::min(kNear, zoom));
+    /* No floor but the projection's: an approximate fix's circle can be kilometres across, and all of it shows. */
+    return std::max(mm::kMinZoom, std::min(kNear, zoom));
 }
 
 void
