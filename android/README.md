@@ -931,6 +931,24 @@ every other release asset. `cmake/stage_android_package.cmake` copies
 notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 `android/package/` reach the APK without re-running CMake. Add new package files
 to `android/package/` as usual — never to the staged copy, which is overwritten.
+Keep them real files: a symbolic link in `android/package/assets/doc/dsd-neo/`,
+or on the way to it, `android/package/` or the staged package folder itself
+included, fails the staging, which writes nothing through a link. So does a link
+among the notices it copies (the repository's `legal/` and `LICENSES/` and
+mbelib's installed notices).
+A file there at the path of a staged notice, or under it, is left out: the
+notices always come from the repository, the build and mbelib, whatever the
+file's timestamp.
+The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
+file in that folder; the app's "Open source licenses" screen lists the files it
+names, after the location of the Qt source code, and opens one at a time; a
+package file at that path or under it is left out. The
+folder is staged afresh on every build, so a notice dropped from a record's map
+leaves an incremental build's APK and index as it leaves a clean build's.
+
+Release builds (`Release`, `RelWithDebInfo`, `MinSizeRel`) leave Qt's QML debugger
+and profiler plugins (`qmltooling`) out of the APK; a `Debug` build keeps them for
+QML debugging.
 
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.
@@ -1835,7 +1853,8 @@ vendored copy, like the librtlsdr ones.
   keeps handling events until each has been called back, so `airspy_close()`
   never frees, and a restart (a retune's stop and start) never resubmits, a
   transfer libusb still owns. A start whose submission fails gives back the slots
-  of the transfers it never submitted, and the stop after it waits for the rest.
+  of the transfers it never submitted, waits for the rest and switches the
+  receiver off again before it returns, so a start can follow at once.
   A stream that ended by itself is reaped the same way before a start or a
   packing change reuses its transfers. `streaming` and `stop_requested` become
   atomic too, since the library's own threads share them.

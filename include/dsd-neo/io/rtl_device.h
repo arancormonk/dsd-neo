@@ -278,6 +278,20 @@ int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
 int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
 
 /**
+ * @brief Set device sample rate and report the rate written.
+ *
+ * As rtl_device_set_sample_rate(), with the rate the device was given in @p out_written_hz on success: for SoapySDR
+ * the advertised rate nearest @p samp_rate, which a driver that lists a few rates can snap to; for the other backends
+ * @p samp_rate itself.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param samp_rate Sample rate in Hz.
+ * @param out_written_hz The rate written (optional).
+ * @return 0 on success, negative on failure.
+ */
+int rtl_device_set_sample_rate_written(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz);
+
+/**
  * @brief Report the sample rate the backend would deliver for a requested rate.
  *
  * Pure query; the device is not reconfigured. Backends with a fixed rate grid answer
@@ -290,6 +304,36 @@ int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
  * @return 0 on success, negative when the backend cannot answer.
  */
 int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual);
+
+/**
+ * @brief Report the rate rtl_device_set_sample_rate() would write for a requested rate.
+ *
+ * Pure query; the device is not reconfigured. A SoapySDR device answers with the advertised rate nearest
+ * @p requested, without the profile's preferred rate that rtl_device_nearest_supported_rate() plans with; other
+ * backends, a native Airspy included (which rtl_device_nearest_supported_rate() answers with the rate it runs), with
+ * @p requested.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param requested Rate in Hz.
+ * @param out_written Receives the rate the write would program, in Hz.
+ * @return 0 on success, negative when the backend cannot answer.
+ */
+int rtl_device_rate_written_for(struct rtl_device* dev, uint32_t requested, uint32_t* out_written);
+
+/**
+ * @brief Report the rate to write for a requested rate, among those not above a limit.
+ *
+ * Pure query; the device is not reconfigured. A SoapySDR device answers with the advertised rate nearest
+ * @p requested among the advertised rates at or below @p max_hz (each a rate a write of it keeps), without the
+ * profile's preferred rate; other backends with @p requested when it is at or below @p max_hz.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param requested Rate in Hz.
+ * @param max_hz The highest rate to answer with, in Hz.
+ * @param out_written Receives the rate to write, in Hz.
+ * @return 0 on success, negative when the backend cannot answer or advertises nothing at or below @p max_hz.
+ */
+int rtl_device_rate_written_within(struct rtl_device* dev, uint32_t requested, uint32_t max_hz, uint32_t* out_written);
 
 /**
  * @brief The rate planner's backend for @p dev (issue #806, <dsd-neo/io/rate_plan.h>).
@@ -346,7 +390,9 @@ int32_t rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shif
  *
  * USB backend returns the actual rate reported by librtlsdr
  * (which may differ slightly from the requested value). The rtl_tcp
- * backend returns the last programmed value.
+ * backend returns the last programmed value. A SoapySDR read-back of
+ * INT_MAX Hz or more returns INT_MAX, a rate above every capture ceiling,
+ * so it is refused rather than taken for a device that reported none.
  *
  * @param dev RTL-SDR device handle.
  * @return Sample rate in Hz (non-negative) or negative on error.
@@ -716,6 +762,13 @@ int rtl_device_control_unavailable(const struct rtl_device* dev);
  *              rounded up so the muted span always covers whole I/Q pairs.
  */
 void rtl_device_mute(struct rtl_device* dev, int bytes);
+
+/**
+ * @brief Samples a device's driver can still hand over from before a retune, at most: a SoapySDR driver whose receive
+ * queue the device bounds (dsdneo::soapy_driver_stream_queue()) holds that queue and its transfers in flight. 0 when the
+ * bound is not known (every other device); the retune mute then follows its time window alone.
+ */
+uint64_t rtl_device_retune_backlog_samples(const struct rtl_device* dev);
 
 /**
  * @brief Enable or disable the RTL-SDR bias tee.

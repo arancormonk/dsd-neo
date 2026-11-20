@@ -3924,6 +3924,16 @@ suite runs under this compiler.
     whether one sits at the read position) however the two split the stream. Marks a purge discarded around are dropped,
     a second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
     Test: `RUNTIME_INPUT_RING_GAP` (arbitrary short blocks on one thread and two, purge, duplicate, full queue).
+    A producer commit that depends on the discard generation (`input_ring_commit_if_generation()`) and a purge
+    request (`input_ring_request_discard()`) both hold `generation_m`, so a purge falls wholly before or after such
+    a commit (`test_commit_hook` lets a test act between the check and the commit). The SoapySDR reader takes the
+    generation under `soapy_lock` right before `readStream()`, the native Airspy reader as its callback starts; both
+    record a read in the I/Q capture under the same lock, only while the generation holds (a purge comes before the
+    retune's RETUNE record), and a stale read leaves a `retune_reconfigure` MUTE of its length there instead. A
+    stale read is dropped whole: counted and stepped over by the Fs/4 rotation, with no gap mark. A replay restarts
+    its Fs/4 rotation at a RESET; the SoapySDR reader restarts its own before its first record after one, which
+    `rtl_device_record_capture_reset()` records under `generation_m` (`capture_reset_seq`), so its reads and MUTEs
+    fall wholly before or after the RESET. Test: `RUNTIME_INPUT_RING_INIT`, `IO_RTL_REPLAY_EOF_AND_CF32`.
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
     `dsd_decode_now_realtime_s()`) with SYSTEM (platform clocks, default), REPLAY (`anchor + media_ns`, anchor floored
@@ -4598,7 +4608,18 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
-  after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
+  after it. On an RTL-family input the dwell starts no earlier than the input's return from the retune's mute
+  (`trunk_scan_listening_dwell_start()`, `dsd_engine_scan_input_listening_since_m()`, `rtl_stream_input_listening_since_ns()`:
+  when the demodulator first takes a sample the reader committed after the post-retune mute was armed, or a second
+  past the mute's end at the rate if none comes), and every reader of the dwell (the tick, the hunt's
+  `dsd_engine_trunk_scan_dwell_due()`, the timing report) holds it unstarted while the input is muted: a HackRF's
+  backlog mute is over half a second at 2 MS/s. The first tick that sees the input back latches that start for the
+  armed dwell (`trunk_scan_latch_listening()`, before the state machine runs), so a later retune on the same target (a
+  control channel probe) neither moves nor pauses the dwell. The -Y hangtime rule does the same
+  (`no_carrier_hangtime_ran_out()` in `engine.c`): not run out while the input is muted, and, when the input came back
+  after the hangtime anchor, `-t` counts from then as well. The -Y countdown
+  (`scan_y_timing_fill_hangtime()`) publishes the same deadline: no window while the input is muted, and `-t` from
+  its return when that ends later than the wall-clock rule. A dwell disarmed in between stays disarmed, and every disarm records its cause
   (`trunk_scan_disarm_dwell()`, `trunk_scan_dwell_disarm`): a conventional activity hold (the activity callback, and
   the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
   the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
@@ -8908,6 +8929,95 @@ Key public headers:
     `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
     `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
     meter's level the same).
+  - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: the
+    plan's call, `rtl_device_nearest_supported_rate()`, goes through `dsdneo::soapy_profile_sample_rate()`: the
+    advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: the listed rate
+    or range point `minimum + k * step` closest to it within 1 Hz, both neighbouring steps considered, an exact one
+    winning whatever the order and, of two equally close, the one that rounds to the rate asked for, and for the
+    preference only one that rounds to it or below, since 10 MS/s is the capture ceiling too), else the nearest rate as
+    before. Only the HackRF profile has
+    one (10 MS/s); the request stays RTL-shaped, so the planner sees a device-forced rate and steps from it as for an
+    Airspy, and `soapy_profile = "generic"` keeps the nearest rate. The write, `rtl_device_set_sample_rate()`, programs
+    the rate it is asked for when the list or a range holds it (`dsdneo::soapy_nearest_sample_rate()`: a driver may
+    list a few rates and advertise a range too), else the nearest listed or range rate, and never the preference: the
+    stream asks for the planned rate, and a refused retune's rollback (`controller_restore_refused_capture()`) for the
+    rate the device delivered before the retune (`capture_snapshot_restore_rate_hz()`), which must not become the
+    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. The rollback
+    reads that write back first; only when it did not bring the capture's rate back (the device refused the write, or
+    wrote another rate for it that delivers something else) does it write the rate that capture was programmed with
+    (`capture_write_restore_rate()`). The plan is made for the rate written (`rtl_device_set_sample_rate_written()`),
+    checked by the read-back. The start and every retune likewise judge the read-back against the rate written, not
+    the rate staged (`controller_take_initial_readback()`, `program_capture_frequency_and_rate()`), while the capture
+    frequency stays placed for the staged rate until the read-back moves it. Every rate and
+    bandwidth these helpers return is a point a range holds (a step, or for a range with no step a value within its
+    ends), never above its maximum (`range_last_point()`: the last whole step at or below it; the 1 Hz tolerance only
+    compares a request with a point), never the preference or the floor itself. Profile detection
+    names an Airspy HF+ (`airspyhf`, `airspy hf`) before the `airspy` keyword and gives it the generic profile; a key
+    that names a profile ends the search. Filter: while the capture runs the Fs/4 shift (`fs4_shift_capture_active()`;
+    not with `DSD_NEO_DISABLE_FS4_SHIFT=1`), a profile's default bandwidth that the device would snap below
+    `soapy_fs4_channel_floor_hz()` (rate / 2 plus the widest DSP bandwidth, 72 kHz) opens to `soapy_floor_bandwidth()`,
+    the narrowest the device admits at or above it (within the 0.5 Hz the warning allows, `kSoapyFloorToleranceHz`, so
+    the filter chosen is never one the warning flags), or its widest (`soapy_open_default_bandwidth()`); an explicit
+    `soapy_bandwidth_hz` or tuner bandwidth is applied as the device takes it; 0 stays driver-automatic and a device
+    with no bandwidth range gets none. Notices come after the write took and judge the filter the driver reports
+    (`soapy_bandwidth_readback_locked()`: `getBandwidth()`, else the value written, a non-finite report included, checked
+    with `rtl_is_finite()` since `rtl_device.cpp` keeps fast-math; the read-back is made only while a notice can apply,
+    `soapy_bandwidth_notice_applies()`, so with the Fs/4 shift off a retune pays no driver round trip for it): an opened default that keeps the
+    channel says so, and any filter narrower than the floor (explicit, kept by the driver, or the widest it has) is
+    warned about, each once per filter and rate (`soapy_note_bandwidth()`). SoapySDR rewrites the rate on every retune
+    (`rtl_device_capture_settings_generation()`), and the bandwidth follows each rate the chain accepts, a failed
+    write's read-back included (`capture_rate_write_failed()`). Ceiling and ring: the capture ceiling is per rate-plan
+    backend (`capture_rate_ceiling_hz()`): 10 MS/s (`kMaxDeviceCaptureRateHz`, a native Airspy's
+    `DSD_AIRSPY_MAX_RATE`) for SoapySDR and the native Airspy, `kMaxCaptureRateHz` (3.2 MS/s) for RTL-SDR and rtl_tcp;
+    `kMaxCaptureRateHz` still bounds the request planner and the raw I/Q stream. The open's
+    `stream_open_validate_device_capture_rate()` checks an advertised rate early for every backend but SoapySDR, whose
+    drivers may deliver another; for the same reason a provisional plan refused on a SoapySDR device's advertised rate
+    is deferred (`capture_provisional_plan()`: the chain runs the request's own plan until the read-back's final plan
+    validates the rate delivered), and a rate whose capture frequency would be out of range, or, on a retune, that is
+    above the rate the running input ring holds, is not staged when an advertised rate fits both
+    (`capture_provisional_rate()`, `rtl_device_rate_written_within()`: the advertised rate nearest the request among
+    those at or below the limit in whole hertz, as `llround()` programs and reads a rate back, listed rates and range
+    points compared with one another (`soapy_nearest_sample_rate_within()`), without the preference; the capture is placed for it and moved again for the rate the
+    device delivers). When no advertised rate's capture frequency fits, a SoapySDR device is tuned to the centre itself
+    until the read-back, whose rate places the capture or refuses it (`capture_stage_provisional_plan()`;
+    `apply_actual_capture_rate()` judges the capture after every read-back, even one that did not move the rate). `rtl_device_rate_written_for()`, with no limit, answers with the setter's own choice
+    (`soapy_nearest_sample_rate()`, which prefers a listed rate when neither the list nor a range holds the request); for a native Airspy it answers
+    with the rate asked for, as the setter writes it, while the planning query answers with the rate the Airspy runs. A final plan refused on the rate written is made again on a SoapySDR
+    read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
+    3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and
+    the device as having forced its rate when that differs from the request. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
+    a SoapySDR rate of `INT_MAX` Hz or more as `INT_MAX`, which every ceiling refuses, never as no read-back; with no
+    usable read-back the rate written stands for it, bounded the same way (rates are rounded with `llround()`, since
+    `long` is 32 bits on Windows). The binding
+    check is `capture_rate_within_limits()` on the rate a device delivers
+    (read-back, else programmed), at the start (`controller_take_initial_readback()`) and on every later read-back
+    (`apply_actual_capture_rate()`, refused as a rate-plan refusal with the existing rollback). The input ring holds the
+    default ring's time at the capture rate (`input_ring_capacity_for_rate()`: `kInputRingDefaultFloats` doubled until
+    it does): a native Airspy's is sized from its rate at open (`stream_open_init_airspy_input()`, which also keeps
+    `airspy_info` and `centered_iq`), and every radio's again for the delivered rate once the start is programmed
+    (`stream_open_size_input_for_capture()`, before any thread starts). Resizing goes through
+    `input_ring_reallocate()` (`runtime/input_ring.cpp`), which allocates the new buffer before releasing the old and
+    keeps the ring's lock and conditions, so a failed size leaves the teardown a ring to signal; the raw I/Q stream's
+    ring (`stream_open_size_net_input()`) is replaced the same way. `g_input_ring_rate_hz` records the rate the ring
+    holds; the ring is never resized under the stream's threads, so a later read-back above it is refused. Retune
+    backlog: a driver whose receive queue dsd-neo bounds (`dsdneo::soapy_driver_stream_queue()`, by driver key: a HackRF
+    gets `buffers=4` at `setupStream()`, `soapy_stream_args_for()`) reports what it can still hold after a retune
+    (`rtl_device_retune_backlog_samples()`: that queue, libhackrf's 4 transfers and the one MTU block a reader paused
+    between its read and the mute holds, 1,179,648 samples), and the default
+    retune mute never ends inside it (`retune_mute_bytes()`); an explicit `DSD_NEO_RETUNE_MUTE_MS` is kept. Tests:
+    `IO_SOAPY_PROFILE` (helpers, Airspy HF+ detection, advertised points), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay,
+    ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists and ranges: rate planned and written, a
+    rollback to the saved rate, to the rate delivered, to the rate written and to the request that gave it, a usable
+    read-back of an unusable advertised rate and its forced flag, a preferred rate out of tuning range, a read-back
+    judged against the rate written, a rollback that stops once restored or retries after a refused write, a 2.4 GS/s
+    rate written, opened filters, notices on the driver's read-back (an infinite one
+    included) and after the write, no read-back with the Fs/4 shift off, a stream open's capture and ring, an advertised
+    rate above the ceiling or one the chain cannot use, a 2.4 GS/s read-back at the open and on a hop, a failed ring
+    size, the filter on retunes and after a failed rate write), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the advertised rate, a
+    retune above the ring refused and rolled back), `IO_RTL_STREAM_START_FAILURE` (a native Airspy open: centred I/Q,
+    no shift, ring for 10 MS/s), `DECODE_IQ_TETRA_CALL_SOAPY_156K` (the 576/625 step after the last half-band pass,
+    its cell identity the native-rate recording's), `IO_SOAPY_STREAM_LOSS` (the retune mute covers a HackRF's whole
+    bounded backlog and a reader's held block at 10 and 2 MS/s).
   - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
     setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
     else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode
@@ -13687,12 +13797,39 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
   (option `DSD_ENABLE_QT_UI`, default OFF)
-- Legal resources: `DecoderHost::licenseNotices()` reads the retained project and
-  dependency notices, including `legal/status.md` and the selected mbelib installation's
-  unresolved disclosures. `cmake/MbelibNotices.cmake` requires those dependency records;
-  the root CMake `legal` install component and `cmake/stage_android_package.cmake` carry
-  them into portable packages and Android assets. `tools/legal_inventory.py` checks
-  retained notice hashes and supplements release SBOMs without asserting legal clearance.
+- Legal resources: the licences screen (`LicensesScreen.qml`) first shows where the source
+  code of the Qt version the app is built with is (`DecoderHost::qtSourceNotice()`: Qt's
+  archive URLs for qtbase, qtdeclarative and qtsvg, from `QT_VERSION_*`, and a pointer to
+  `licenses/Qt-SOURCE.txt`, the release's directions with the Public Suffix List's pinned source, which
+  `android/CMakeLists.txt` writes with `tools/android_source_directions.py` from the build's Qt kit and the `qt`
+  record's `android_release` map stages), then lists by name
+  every file that the package's notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo`
+  in the APK, none in the base host) names in its `notice-index.txt`, in that order
+  (`licenseFiles()`). A file's text is read and laid out only when it is opened, one at a
+  time (`licenseFileText()`; Back returns to the list): together they are near a megabyte.
+  A name the index does not give, a path out of the folder or a file the package lacks
+  reads as missing. `cmake/stage_android_package.cmake` writes the index from the folder as
+  staged (LICENSE, COPYRIGHT and THIRD_PARTY.md first, then the rest sorted), so a notice an
+  `android_release` map adds reaches the screen with no app change. The UI library compiles
+  in no notices. `cmake/MbelibNotices.cmake` requires the selected mbelib installation's
+  records; the root CMake `legal` install component and `cmake/stage_android_package.cmake`
+  carry them into portable packages and Android assets. Each record in `legal/components.json`
+  names the notices a package carries for it in a per-platform map (`windows_release`,
+  `android_release`, `macos_release`); `cmake/stage_release_notices.cmake` stages a
+  platform's map (the APK and the macOS DMG), `tools/legal_inventory.py --release-notices
+  <platform>` lists it, and `tools/check_release_notices.py` checks a package's
+  documentation folder against it, text included (the DMG's staged tree and mounted image,
+  and the folder `android-ci` unpacks from the finished APK). The desktop maps also list the
+  files each component is in (`binaries`: Windows file names; for the DMG, the executable's
+  name or a library's name without its version and `.dylib`), and the check refuses a file in
+  the mounted DMG's `bin/` or `lib/` that no record lists. `tools/legal_inventory.py` checks the maps
+  and retained notice hashes and supplements release SBOMs without asserting legal clearance.
+  `legal/android-runtime-lock.json` holds what the `qt`, `ndk-runtime`, `androidx`, `kotlin` and `project` records
+  were reviewed for (Qt version and kit SBOM namespaces, NDK revision, the Gradle release runtime classpath, the SHA-256
+  of the Qt Java libraries in the generated Gradle project's `libs/`, the APK's `lib/arm64-v8a/` files, and the SHA-256
+  of each Qt one in the reviewed kit, whose files matched the SHA-1 the kit's build SBOMs record); `tools/check_android_runtime_lock.py` fails android-ci's APK job
+  when the build differs, so a Qt, NDK or Gradle dependency update lands only with the records and the lock reviewed
+  together.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Status rows that never wrap (issue #669): `ui_row.{h,c}` builds a row from atomic fields and draws it whole, or cut

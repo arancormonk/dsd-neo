@@ -20,6 +20,8 @@ CASES = (
     ("linux-appimage.yaml", "publish-appimage", "dsd-neo-linux-aarch64-portable", ".AppImage"),
     ("android-ci.yaml", "publish-apk", "dsd-neo-android-arm64-app", ".apk"),
 )
+# Files a publisher uploads beside its package and SBOM: the APK's Qt source directions.
+EXTRAS = {"publish-apk": (".qt-source.txt",)}
 
 
 def steps(source):
@@ -42,12 +44,12 @@ def script(step):
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "publishers run in Bash")
 class ReleaseSbomFilenames(unittest.TestCase):
-    def check_publication(self, pipeline, values, work, package, version):
+    def check_publication(self, pipeline, values, work, package, version, extras=()):
+        assets = [package, package + ".spdx.json"] + [package + extra for extra in extras]
         if version == "nightly":
             upload = next(step for step in pipeline if "uses: softprops/action-gh-release@" in step)
             files = re.search(r"(?m)^          files: \|\n((?: {12}[^\n]*\n)+)", upload)[1]
-            self.assertEqual(expand(textwrap.dedent(files), values).splitlines(),
-                             [package, package + ".spdx.json"])
+            self.assertEqual(expand(textwrap.dedent(files), values).splitlines(), assets)
             return
         binaries = work / "bin"
         binaries.mkdir()
@@ -73,8 +75,7 @@ class ReleaseSbomFilenames(unittest.TestCase):
                                 cwd=work, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((calls / "upload").read_text().splitlines(),
-                         ["release", "upload", version, package, package + ".spdx.json",
-                          "--repo", "arancormonk/dsd-neo", "--clobber"])
+                         ["release", "upload", version, *assets, "--repo", "arancormonk/dsd-neo", "--clobber"])
 
     def replay(self, case, version, missing=None):
         workflow, job, stem, extension = case
@@ -117,6 +118,9 @@ class ReleaseSbomFilenames(unittest.TestCase):
                 (destination / basename).write_bytes(contents)
             if missing != "package":
                 (work / package).write_bytes(b"package fixture\n")
+            for extra in EXTRAS.get(job, ()):
+                if missing != "extra":
+                    (work / (package + extra)).write_bytes(b"file beside the package\n")
             commands = [expand(script(step), values) for step in pipeline[download + 1:verify + 1]]
             self.assertTrue(commands[-1], "Publisher must verify its downloaded files")
             result = subprocess.run(["bash", "-eu", "-o", "pipefail", "-c", "\n".join(commands)], cwd=work,
@@ -127,7 +131,7 @@ class ReleaseSbomFilenames(unittest.TestCase):
             else:
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((work / (package + ".spdx.json")).read_bytes(), contents)
-                self.check_publication(pipeline, values, work, package, version)
+                self.check_publication(pipeline, values, work, package, version, EXTRAS.get(job, ()))
 
     def test_uploaded_basename_reaches_nightly_and_tag_publishers(self):
         for case in CASES:
@@ -137,7 +141,7 @@ class ReleaseSbomFilenames(unittest.TestCase):
 
     def test_missing_or_misnamed_files_block_publication(self):
         for case in CASES:
-            for missing in ("package", "sbom", "package-basename"):
+            for missing in ("package", "sbom", "package-basename") + (("extra",) if case[1] in EXTRAS else ()):
                 with self.subTest(workflow=case[0], package=case[2], missing=missing):
                     self.replay(case, "v1.2.3", missing)
 

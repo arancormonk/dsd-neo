@@ -4,14 +4,14 @@
  */
 
 /*
- * Makes the I/Q recordings the DECODE_IQ_*_AIRSPY_* replay cases decode (issue #806), in the build tree, from the
- * committed fixtures; nothing it writes is committed.
+ * Makes the I/Q recordings the DECODE_IQ_*_AIRSPY_* and DECODE_IQ_*_SOAPY_* replay cases decode (issue #806), in the
+ * build tree, from the committed fixtures; nothing it writes is committed.
  *
  *   dsd-neo_test_iq_forced_rate_fixture_tool <tests/fixtures/iq> <out_dir>
  *
- * Each recording is a committed 48 or 72 kHz fixture as an Airspy at a forced rate would capture it
- * (forced_rate_input.h: upsampled with dsd_iq_resampler, receiver noise each side, cu8), with the sidecar a live
- * capture of that chain writes: the device's rate as the nominal one, forced, and the I/Q rate step to the DSP
+ * Each recording is a committed 48 or 72 kHz fixture as an Airspy, or a SoapySDR device, at a forced rate would
+ * capture it (forced_rate_input.h: upsampled with dsd_iq_resampler, receiver noise each side, cu8), with the sidecar a
+ * live capture of that chain writes: the device's rate as the nominal one, forced, and the I/Q rate step to the DSP
  * bandwidth rate after the half-band passes. A replay keeps that chain and runs the step, as the live stream does. Each
  * goes to a directory of its own, <out_dir>/<name>/<name>.iq and .iq.json, one per test that reads it.
  */
@@ -28,19 +28,24 @@
 typedef struct {
     const char* name;
     dsd_test_forced_rate_spec spec;
+    const char* source_backend; /* the backend the sidecar names: the live stream that would capture it */
 } forced_rate_fixture;
 
 /* 50 ms of noise each side: far past every chain's tail bound (about 2 ms), and short next to the excerpt. */
 #define PAD_S 0.05
 
 static const forced_rate_fixture kFixtures[] = {
-    {"p25p1_cqpsk_cc_airspy_312k", {"p25p1_cqpsk_cc", 0.0, 0.0, 312500U, 48000U, PAD_S}},
-    {"p25p1_cqpsk_vc_airspy_375k_det", {"p25p1_cqpsk_vc", 0.0, 0.0, 375000U, 48000U, PAD_S}},
-    {"p25p1_cqpsk_vc_airspy_375k_sink", {"p25p1_cqpsk_vc", 0.0, 0.0, 375000U, 48000U, PAD_S}},
-    {"p25p1_cqpsk_simulcast_airspy_375k", {"p25p1_cqpsk_cc_simulcast", 0.0, 0.0, 375000U, 48000U, PAD_S}},
-    {"p25p2_cc_airspy_375k", {"p25p2_cc", 0.0, 0.0, 375000U, 48000U, PAD_S}},
-    {"dmr_voice_airspy_312k", {"dmr_voice_synth", 0.0, 2.0, 312500U, 48000U, PAD_S}},
-    {"tetra_call_airspy_375k", {"tetra_call_real_air_72k", 0.0, 2.0, 375000U, 72000U, PAD_S}},
+    {"p25p1_cqpsk_cc_airspy_312k", {"p25p1_cqpsk_cc", 0.0, 0.0, 312500U, 48000U, PAD_S}, "airspy"},
+    {"p25p1_cqpsk_vc_airspy_375k_det", {"p25p1_cqpsk_vc", 0.0, 0.0, 375000U, 48000U, PAD_S}, "airspy"},
+    {"p25p1_cqpsk_vc_airspy_375k_sink", {"p25p1_cqpsk_vc", 0.0, 0.0, 375000U, 48000U, PAD_S}, "airspy"},
+    {"p25p1_cqpsk_simulcast_airspy_375k", {"p25p1_cqpsk_cc_simulcast", 0.0, 0.0, 375000U, 48000U, PAD_S}, "airspy"},
+    {"p25p2_cc_airspy_375k", {"p25p2_cc", 0.0, 0.0, 375000U, 48000U, PAD_S}, "airspy"},
+    {"dmr_voice_airspy_312k", {"dmr_voice_synth", 0.0, 2.0, 312500U, 48000U, PAD_S}, "airspy"},
+    {"tetra_call_airspy_375k", {"tetra_call_real_air_72k", 0.0, 2.0, 375000U, 72000U, PAD_S}, "airspy"},
+    /* A HackRF at 10 MS/s through SoapySDR at 72 kHz, recorded after the six half-band passes that take 10 MS/s to
+       156,250 Hz: the replay runs the last pass (to 78,125 Hz) and the 576/625 step. It covers that ratio, not the
+       live 10 MS/s ingest or the Fs/4 tuning before it. */
+    {"tetra_call_soapy_156k", {"tetra_call_real_air_72k", 0.0, 2.0, 156250U, 72000U, PAD_S}, "soapy"},
 };
 
 static int
@@ -89,7 +94,7 @@ write_sidecar(const char* path, const char* name, const forced_rate_fixture* fx,
         "  \"muted_bytes_excluded\": true,\n"
         "  \"contains_retunes\": false,\n"
         "  \"capture_retune_count\": 0,\n"
-        "  \"source_backend\": \"airspy\",\n"
+        "  \"source_backend\": \"%s\",\n"
         "  \"source_args\": \"fixture\",\n"
         "  \"capture_started_utc\": \"1970-01-01T00:00:00Z\",\n"
         "  \"data_file\": \"%s.iq\",\n"
@@ -102,7 +107,7 @@ write_sidecar(const char* path, const char* name, const forced_rate_fixture* fx,
         (unsigned)in->device_rate_hz, (unsigned long long)in->center_frequency_hz,
         (unsigned long long)in->center_frequency_hz, (unsigned)(fx->spec.dsp_rate_hz / 1000U), base,
         (unsigned)(in->device_rate_hz / base), (unsigned)in->device_rate_hz, (unsigned)fx->spec.dsp_rate_hz, in->step_l,
-        in->step_m, name, (unsigned long long)(in->pairs * 2U), fx->spec.fixture, fx->spec.start_s,
+        in->step_m, fx->source_backend, name, (unsigned long long)(in->pairs * 2U), fx->spec.fixture, fx->spec.start_s,
         (unsigned)in->device_rate_hz);
     if (n <= 0 || (size_t)n >= sizeof(text)) {
         return -1;

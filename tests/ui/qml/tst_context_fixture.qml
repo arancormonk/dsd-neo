@@ -14,7 +14,9 @@ TestCase {
 
     function test_host_support_methods() {
         testContext.useLifecycleHost(false);
-        compare(decoderHost.licenseNotices(), "License notices fixture");
+        compare(decoderHost.qtSourceNotice(), "Qt source fixture");
+        compare(decoderHost.licenseFiles(), ["LICENSE"]);
+        compare(decoderHost.licenseFileText("LICENSE"), "License notices fixture");
         compare(decoderHost.copyText("fixture"), false);
     }
 

@@ -355,6 +355,7 @@ jobs:
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_import_names \
             dsd-neo_test_ui_qt_import_transport \
+            dsd-neo_test_ui_qt_license_notices \
             dsd-neo_test_ui_qt_restart_closer \
             dsd-neo_test_ui_qt_import_service \
             dsd-neo_test_ui_qt_replay_store \
@@ -633,8 +634,11 @@ jobs:
           # AAB" step names that target — which it does on every publishable
           # run (release tags, pushes to main/master, and workflow_dispatch),
           # not only on tags.
+          # The APK's Qt source directions name the source it is built from,
+          # as the copy published beside it does.
           cmake --preset android-app -G Ninja \
             -DQT_ANDROID_SIGN_AAB=ON \
+            -DDSD_ANDROID_SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
           grep -F "Codec2 available: ON (M17 voice)" "$log"
@@ -684,6 +688,24 @@ jobs:
           python3 tools/check_android_r8.py "$APK_PATH" \
             --dexdump "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/dexdump" \
             --mapping build/android-app/android/android-build/build/outputs/mapping/release/mapping.txt
+
+      # The qt, ndk-runtime, androidx and kotlin records were reviewed for one Qt kit,
+      # one NDK, one Gradle release runtime classpath (with the Java libraries the
+      # generated project takes from libs/, which Gradle's report leaves out) and one
+      # set of native libraries: a build that differs fails here until the records
+      # and the lock are reviewed.
+      - name: Check Qt, the NDK runtime and the Gradle libraries against the legal records
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.apk.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/release-runtime-classpath.txt"
+          (cd build/android-app/android/android-build \
+            && ./gradlew --offline --quiet dependencies --configuration releaseRuntimeClasspath) > "$report"
+          python3 tools/check_android_runtime_lock.py --build-dir build/android-app \
+            --gradle-dependencies "$report" --apk "$APK_PATH" \
+            --gradle-libs build/android-app/android/android-build/libs
 
       - name: Prepare artifact naming and the publish gate
         id: names
@@ -884,40 +906,37 @@ jobs:
         shell: bash
         env:
           APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+          # Where the APK staging took its build: and vcpkg: notices from
+          # (android/CMakeLists.txt), so their text can be compared.
+          APK_NOTICE_BUILD_DIR: build/android-app
+          APK_NOTICE_VCPKG_SHARE: build/android-app/vcpkg_installed/arm64-android-static/share
         run: |
           set -euo pipefail
           docdir="assets/doc/dsd-neo"
+          # The project's legal files and mbelib's records. The check adds every
+          # notice the android_release maps in legal/components.json name, and
+          # compares each one's text with its source, as the DMG job does: the
+          # general legal files with the repository, mbelib's with the notice
+          # folder the build selected. The licences screen lists the files
+          # notice-index.txt names, so it must name every other file.
           required=(
             LICENSE
             COPYRIGHT
             THIRD_PARTY.md
             legal/status.md
             legal/components.json
-            licenses/ISC.txt
-            licenses/Unlicense.txt
-            licenses/gqrx-scanner-MIT.txt
-            licenses/LicenseRef-BCH3-Noncommercial.txt
-            licenses/LicenseRef-Simon-Rockliff.txt
-            licenses/mbelib-neo/ISC.txt
-            licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt
             licenses/mbelib-neo/legal/status.md
             licenses/mbelib-neo/legal/patents.md
-            licenses/ezpwd-LGPL-2.1-or-later.txt
-            licenses/pffft-LICENSE.txt
-            licenses/pffft-NOTICES.txt
-            licenses/tetra_crypto-LICENSE.txt
-            licenses/libusb-LGPL-2.1-or-later.txt
-            licenses/librtlsdr-GPL-2.0-or-later.txt
-            licenses/ibm-plex-OFL-1.1.txt
           )
-          for f in "${required[@]}"; do
-            # unzip exits 11 when the pattern matches no entry.
-            if ! unzip -l "$APK_PATH" "$docdir/$f" > /dev/null 2>&1; then
-              echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
-              exit 1
-            fi
-          done
-          echo "All required license files are packaged."
+          # Check the files of the finished APK, not the staged tree: unpack its
+          # documentation folder into an empty directory.
+          extracted="$RUNNER_TEMP/apk-notices"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          unzip -q "$APK_PATH" "$docdir/*" -d "$extracted"
+          python3 tools/check_release_notices.py --platform android --doc-dir "$extracted/$docdir" \
+            --build-dir "$APK_NOTICE_BUILD_DIR" --vcpkg-share "$APK_NOTICE_VCPKG_SHARE" --require "${required[@]}" \
+            --index notice-index.txt
 
       - name: Verify the APK's launcher and Qt loader resources
         shell: bash
@@ -976,11 +995,30 @@ jobs:
           done
           echo "Launcher identity and Qt loader resources OK."
 
+      # Qt's LGPL source obligation is met by directions to Qt's official
+      # source archives for the Qt version this build installed (GPL 3 section
+      # 6(d)); every published APK carries them as a file beside it, and a
+      # release's notes carry them too.
+      - name: Write the Qt source directions
+        shell: bash
+        env:
+          ART_NAME: ${{ steps.names.outputs.ART_NAME }}
+        run: |
+          set -euo pipefail
+          python3 tools/android_source_directions.py directions \
+            --qt-version "$ANDROID_QT_VERSION" --qt-kit "$QT_ANDROID_ROOT" --apk "${ART_NAME}.apk" \
+            --dsd-source "https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}" \
+            --output "dist/${ART_NAME}.apk.qt-source.txt"
+          cat "dist/${ART_NAME}.apk.qt-source.txt"
+
       - name: Upload APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.names.outputs.ART_NAME }}
-          path: ${{ steps.names.outputs.APK_PATH }}
+          path: |
+            ${{ steps.names.outputs.APK_PATH }}
+            dist/${{ steps.names.outputs.ART_NAME }}.apk.qt-source.txt
+          if-no-files-found: error
           retention-days: 7
 
       # Capture these before the AAB invocation re-runs Gradle. Retracing a
@@ -1412,6 +1450,7 @@ jobs:
           set -euo pipefail
           test -f "${APK_PATH}"
           test -f "${APK_PATH}.spdx.json"
+          test -s "${APK_PATH}.qt-source.txt"
 
       - name: Wait for release metadata
         if: startsWith(github.ref, 'refs/tags/v')
@@ -1434,8 +1473,27 @@ jobs:
           gh release upload "${RELEASE_TAG}" \
             "${APK_PATH}" \
             "${APK_PATH}.spdx.json" \
+            "${APK_PATH}.qt-source.txt" \
             --repo "${RELEASE_REPOSITORY}" \
             --clobber
+
+      # Only this job edits a tagged release's notes, after the release
+      # workflow created them; a re-run replaces its earlier copy.
+      - name: Add the Qt source directions to the release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes"
+          mkdir -p "$notes"
+          gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" --json body --jq .body > "$notes/body.md"
+          python3 tools/android_source_directions.py notes --body "$notes/body.md" \
+            --directions "${APK_PATH}.qt-source.txt" --output "$notes/notes.md"
+          gh release edit "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" --notes-file "$notes/notes.md"
 
       # The job-level gate already restricts this job to publishable refs, so
       # "not a tag" is all that distinguishes a nightly here.
@@ -1451,6 +1509,7 @@ jobs:
           files: |
             ${{ needs.build-apk.outputs.apk_path }}
             ${{ needs.build-apk.outputs.apk_path }}.spdx.json
+            ${{ needs.build-apk.outputs.apk_path }}.qt-source.txt
           overwrite_files: true
           fail_on_unmatched_files: true
           token: ${{ github.token }}

@@ -86,6 +86,34 @@ tools/check_vcpkg_overlay_pins.sh
 
 Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
+`tools/check_vcpkg_overlay_pins.sh` covers every overlay with a GitHub source: `mbe-neo` (and its PFFFT),
+`codec2`, `rtlsdr`, `airspy`, `portaudio`, and the SoapySDR load path the Windows ZIP ships:
+
+| Overlay | Upstream | Pins | Pinned to |
+| --- | --- | --- | --- |
+| `portaudio` | `PortAudio/portaudio` | `PORTAUDIO_SHA`, `PORTAUDIO_TARBALL_SHA512` | the `v19.7.0` tag, the release vcpkg's port builds at port-version 8 |
+| `soapysdr` | `pothosware/SoapySDR` | `SOAPY_SDR_SHA`, `SOAPY_SDR_TARBALL_SHA512` | the `soapy-sdr-0.8.1` tag (the AppImage builds the same commit) |
+| `soapy-airspy` | `pothosware/SoapyAirspy` | `SOAPY_AIRSPY_SHA`, `SOAPY_AIRSPY_TARBALL_SHA512` | the `soapy-airspy-0.2.1` tag |
+| `soapy-hackrf` | `pothosware/SoapyHackRF` | `SOAPY_HACKRF_SHA`, `SOAPY_HACKRF_TARBALL_SHA512` | the `soapy-hackrf-0.3.6` tag |
+| `hackrf` | `greatscottgadgets/hackrf` | `HACKRF_SHA`, `HACKRF_TARBALL_SHA512` | the `v2026.01.3` release |
+
+The `ncurses` overlay, which the macOS DMG builds, has no GitHub source: it is vcpkg's builtin port at the manifest
+baseline, with the same release archive and SHA512 (`ncurses-6.5.tar.gz` from invisible-island.net), changed to install
+the terminal database in the layout macOS reads. `NCURSES_VERSION` and `NCURSES_TARBALL_SHA512` pin that archive: the
+overlay's `vcpkg.json` version names it (`ncurses-${VERSION}.tar.gz`) and its portfile's SHA512 must match, which
+`tools/check_vcpkg_overlay_pins.sh` checks (`--fix` rewrites both from the pins). When the baseline moves, diff the
+builtin port against the overlay, carry its changes over (including a new archive: update both pins), and recheck the
+notices the DMG ships for ncurses and its database.
+
+For a tag, pin the commit it points to (`git ls-remote https://github.com/<repo> 'refs/tags/<tag>^{}'`, or the plain
+tag ref for a lightweight tag) and hash that commit's archive with the recipe above. The `hackrf` overlay builds the
+library with its own `CMakeLists.txt` instead of upstream's; when `HACKRF_SHA` moves, update the `LIBRARY_VERSION`
+and `LIBRARY_RELEASE` values in `vcpkg-ports/hackrf/CMakeLists.txt` as well, and recheck the library's source list and
+the notices in each overlay's `copyright`, which the Windows ZIP ships. When `CODEC2_SHA` or `PORTAUDIO_SHA` moves,
+or the vcpkg baseline moves a library the ZIP or the APK carries, recheck the notices `legal/components.json` names
+for it against the new sources (`LICENSES/codec2-NOTICES.txt`, `LICENSES/*-NOTICES.txt`,
+`packaging/windows/*-NOTICES.txt` and the like), for every platform the record lists.
+
 ### Patched USB libraries
 
 The `airspy` and `rtlsdr` overlays also apply dsd-neo's USB transfer patches from
@@ -97,14 +125,16 @@ hit reuses the old package; `tools/check_vcpkg_overlay_pins.sh`, in the guardrai
 catches a stale digest. After changing a patch, run `tools/check_vcpkg_overlay_pins.sh --fix` to record the new digest.
 The check also fails when a portfile stops listing the series or stops passing it to `vcpkg_from_github(... PATCHES)`.
 
-The AppImage and macOS release jobs apply the same series between fetch and configure, record each digest in their
-dependency manifest and cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
+The AppImage and macOS release jobs apply the same series between fetch and configure (the macOS job builds both
+against vcpkg's libusb and for the triplet's deployment target), record each digest in their dependency manifest and
+cache key, and check the libraries they bundle with `tools/check_patched_usb_libs.sh` (a
 libairspy that never imports `usleep()` or a librtlsdr without the reader's "no transfer left" message was built
 without the patches). The Windows ZIP job checks its `rtlsdr.dll` for the same message; a Windows libairspy build has
 no such mark. The libairspy probe holds only while upstream `airspy.c` itself never calls `usleep()`: recheck that when
 `AIRSPY_SHA` moves (`TOOLS_AIRSPY_PACKAGING` builds the pinned upstream source and expects the probe to reject it).
-All three release packages ship librtlsdr's GPL text and `packaging/librtlsdr-PATCHES.txt`, which names the patches;
-update that note when the series or `RTL_SDR_SHA` changes. The patch files are checked out with LF line endings
+All three release packages ship librtlsdr's GPL text, `packaging/librtlsdr-PATCHES.txt`, which names the patches, and
+`LICENSES/librtlsdr-NOTICES.txt`, the holder lines of the compiled sources; update the two notes when the series or
+`RTL_SDR_SHA` changes. The patch files are checked out with LF line endings
 everywhere (`.gitattributes`), so the digests agree on Windows.
 
 ## Vulnerability Scanning

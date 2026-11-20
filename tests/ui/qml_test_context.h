@@ -568,6 +568,17 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
     }
 
+    /* The project's LICENSE and the index naming it and a file the package lacks, compiled in by tests/CMakeLists.txt;
+     * none while a case has taken them away (useLicenseNotices()). */
+    QString
+    noticeDirectory() const override {
+        return licenseNoticesPresent ? QStringLiteral(":/dsdneo/test-notices") : QString();
+    }
+
+  public:
+    bool licenseNoticesPresent = true;
+
+  protected:
   public:
     /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
     static QVariantMap
@@ -3218,8 +3229,18 @@ class ReadingMap : public QQmlPropertyMap {
     explicit ReadingMap(QObject* parent) : QQmlPropertyMap(this, parent) {}
 
     Q_INVOKABLE QString
-    licenseNotices() const {
-        return QStringLiteral("License notices fixture");
+    qtSourceNotice() const {
+        return QStringLiteral("Qt source fixture");
+    }
+
+    Q_INVOKABLE QStringList
+    licenseFiles() const {
+        return {QStringLiteral("LICENSE")};
+    }
+
+    Q_INVOKABLE QString
+    licenseFileText(const QString& name) const {
+        return name == QLatin1String("LICENSE") ? QStringLiteral("License notices fixture") : QString();
     }
 
     /* Issue #830: what each copy asked to put on the clipboard, oldest first (resetHostPlayback() forgets them); the
@@ -5392,6 +5413,14 @@ class Setup : public QObject {
     Q_INVOKABLE bool
     fileExists(const QString& path) const {
         return QFileInfo(path).isFile();
+    }
+
+    /** The licences screen's files on both lifecycle hosts: present (the default), or a package that carries none. */
+    Q_INVOKABLE void
+    useLicenseNotices(bool present) {
+        for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
+            host->licenseNoticesPresent = present;
+        }
     }
 
     /** Use real QObject signals and QSettings for initialization bookkeeping tests;

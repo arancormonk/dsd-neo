@@ -5538,6 +5538,38 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_import_transport
     )
 
+    # The licences screen's text: where the source code of the Qt version built with is, then every file the
+    # package's notice index names, in its order (missing ones shown as missing).
+    add_executable(
+        dsd-neo_test_ui_qt_license_notices
+        ui/test_ui_qt_license_notices.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_license_notices
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LICENSE_NOTICES
+        COMMAND dsd-neo_test_ui_qt_license_notices
+    )
+
     # Closing the app so a drive opens after a restart (#830): refused while a copy runs, the session stopped and
     # awaited before the quit, a stop that never settles and a refused quit.
     add_executable(
@@ -6419,11 +6451,24 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
         )
+        # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
+        # an index naming it and a file the folder lacks, as the APK staging writes one.
+        set(_dsd_test_notice_dir "${CMAKE_CURRENT_BINARY_DIR}/qml-notices")
+        file(
+            WRITE "${_dsd_test_notice_dir}/notice-index.txt"
+            "LICENSE\nlicenses/gone.txt\n"
+        )
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
-            PREFIX "/dsdneo/notices"
+            PREFIX "/dsdneo/test-notices"
             BASE "${PROJECT_SOURCE_DIR}"
             FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+        )
+        qt_add_resources(
+            dsd-neo_test_ui_qt_qml "test_license_notice_index"
+            PREFIX "/dsdneo/test-notices"
+            BASE "${_dsd_test_notice_dir}"
+            FILES "${_dsd_test_notice_dir}/notice-index.txt"
         )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS
@@ -8945,6 +8990,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_analog_profile"
             "-Wl,--wrap=rtl_stream_get_request_rate_hz"
             "-Wl,--wrap=rtl_stream_get_complex_rate_hz"
+            "-Wl,--wrap=rtl_stream_input_listening_since_ns"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
@@ -19444,6 +19490,30 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
 
+    # The rate and tuner filter a SoapySDR device runs (a HackRF's preferred rate, profile filters opened for the
+    # Fs/4 offset, the explicit-bandwidth warning) and what a stream open on one sizes, through the device's own
+    # calls on a stand-in driver. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        io/test_io_rtl_device_soapy_rate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_DEVICE_SOAPY_RATE
+        COMMAND dsd-neo_test_io_rtl_device_soapy_rate
+    )
+
     # The SoapySDR reader's CS16 conversion, grouped fs/4 rotation included, bit for
     # bit against the per-sample rotation. Skips in a build without SoapySDR.
     add_executable(
@@ -21364,16 +21434,21 @@ if(DSD_HAS_RADIO)
     # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
     # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
     # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
-    # through a resampled replay (288 kHz), not the recorded chain.
+    # through a resampled replay (288 kHz), not the recorded chain. TETRA_CALL_SOAPY_156K is the same TETRA excerpt as a
+    # HackRF at 10 MS/s through SoapySDR leaves it after six half-band passes (156,250 Hz): one more pass to 78,125 Hz
+    # and the 576/625 step, a ratio no other case runs. It covers that part of the chain only, not the live 10 MS/s
+    # ingest or the Fs/4 tuning. Its cell identity is the one the same recording decodes at its native rate
+    # (REFERENCE_FIXTURE in iq_decode_check.cmake): every identity it decodes must be that one.
     foreach(
         _forced_case
         IN
         ITEMS
-            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
+            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125@@-"
+            "TETRA_CALL_SOAPY_156K@@tetra_call_soapy_156k@@-fT -Z@@\\[TETRA BSCH\\] MCC=[0-9]+ MNC=[0-9]+ CC=0x[0-9a-f]+@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=156250 Hz, base_decim=2, I/Q step L/M=576/625@@tetra_call_real_air_72k"
     )
         string(REPLACE "@@" ";" _forced_fields "${_forced_case}")
         list(GET _forced_fields 0 _forced_name)
@@ -21384,11 +21459,18 @@ if(DSD_HAS_RADIO)
         list(GET _forced_fields 5 _forced_expected2)
         list(GET _forced_fields 6 _forced_min2)
         list(GET _forced_fields 7 _forced_chain)
+        list(GET _forced_fields 8 _forced_reference)
         set(_forced_second)
         if(NOT _forced_expected2 STREQUAL "-")
             set(_forced_second
                 "-DEXPECTED2=${_forced_expected2}"
                 "-DMIN_MATCHES2=${_forced_min2}"
+            )
+        endif()
+        if(NOT _forced_reference STREQUAL "-")
+            list(
+                APPEND _forced_second
+                "-DREFERENCE_FIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${_forced_reference}.iq.json"
             )
         endif()
         add_test(
@@ -25795,6 +25877,55 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_legal_inventory.py
     )
+    # The release notice check: a package's documentation folder holds every
+    # notice its records' <platform>_release maps name, with its source's content.
+    add_test(
+        NAME TOOLS_CHECK_RELEASE_NOTICES
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_release_notices.py
+    )
+    # The APK's Qt kit, NDK runtime, Gradle release runtime classpath and native
+    # libraries against legal/android-runtime-lock.json, with fake builds.
+    add_test(
+        NAME TOOLS_CHECK_ANDROID_RUNTIME_LOCK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_android_runtime_lock.py
+    )
+    # The directions to Qt's source that go beside every APK: generated from the
+    # Qt kit the build used, published with the APK and in a release's notes.
+    add_test(
+        NAME TOOLS_ANDROID_SOURCE_DIRECTIONS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_android_source_directions.py
+    )
+    # The macOS DMG's dependency check, with fake otool and codesign: every staged
+    # file is built for the triplet's deployment target and loads only staged
+    # libraries. The check and its fakes are bash scripts, so it registers only
+    # where bash is (not Windows).
+    if(NOT WIN32 AND DSD_NEO_BASH_EXECUTABLE)
+        add_test(
+            NAME TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
+        )
+        set_tests_properties(
+            TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            PROPERTIES ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+        )
+    endif()
+    # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
+    # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4).
+    add_test(
+        NAME TOOLS_SOAPY_MODULE_PACKAGING
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_soapy_module_packaging.py
+            SoapyModulePackaging
+    )
     add_test(
         NAME TOOLS_CI_SCHEDULING
         COMMAND
@@ -26099,6 +26230,58 @@ if(Python3_Interpreter_FOUND)
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
+    endif()
+    # tools/windows/stage_runtime_dlls.ps1 under pwsh, with fake dumpbin, llvm-readobj
+    # and objdump tools. The fakes are POSIX scripts, so this registers off Windows
+    # wherever pwsh is installed; the Windows release jobs run the script with the real
+    # dumpbin.
+    find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
+    if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
+        # The tests' folders, and the scripts' own, go under the build tree, not the
+        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
+        # from the root down, so each resolution under a temp folder that holds many
+        # thousand entries costs a full read of it.
+        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
+        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
+        # About 30 runs of the script under pwsh: a busy machine can take minutes, so
+        # the class runs as two entries that ctest -j runs side by side. Each keeps
+        # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
+        # every test runs in exactly one.
+        foreach(_dsd_shard RANGE 1 2)
+            add_test(
+                NAME TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
+            )
+            set_tests_properties(
+                TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 300
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
+            )
+        endforeach()
+        # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
+        # verify_release_tree.ps1 over a fake release tree, and the readers it uses fed
+        # output that Windows builds of SoapySDRUtil and dsd-neo printed under Wine. The
+        # fakes are POSIX scripts here too. About 80 script runs under pwsh, as four
+        # entries of the SoapyReleaseScripts class, sharded as above.
+        foreach(_dsd_shard RANGE 1 4)
+            add_test(
+                NAME TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_soapy_module_packaging.py
+            )
+            set_tests_properties(
+                TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 600
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
+            )
+        endforeach()
     endif()
     # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
     # The model imports numpy and scipy, so it registers only where the tests' Python

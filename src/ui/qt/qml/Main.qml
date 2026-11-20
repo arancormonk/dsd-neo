@@ -958,7 +958,7 @@ Window {
         id: licensesLayer
         surface: licensesScreen
         active: mainRoot.licensesOpen
-        onLeave: mainRoot.licensesOpen = false
+        onLeave: licensesScreen.requestClose()
     }
     NavigationLayer {
         id: callRecordingsLayer

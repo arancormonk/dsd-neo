@@ -1,6 +1,20 @@
 # Android app shell: Qt Quick UI + JNI lifecycle glue around the engine.
 # Built only for ANDROID with DSD_ENABLE_QT_UI=ON (see the root CMakeLists).
 
+# Release packages leave out Qt's QML debugger plugins by CMAKE_BUILD_TYPE (below), which a
+# multi-config generator leaves empty: its --config Release APK would keep them.
+get_property(
+    _dsd_android_multi_config
+    GLOBAL
+    PROPERTY GENERATOR_IS_MULTI_CONFIG
+)
+if(_dsd_android_multi_config)
+    message(
+        FATAL_ERROR
+        "The Android app is packaged with a single-configuration generator (Ninja, as android-ci uses with the android-app preset) and CMAKE_BUILD_TYPE; ${CMAKE_GENERATOR} would keep Qt's QML debugger plugins in a release APK."
+    )
+endif()
+
 find_package(
     Qt6
     REQUIRED
@@ -26,6 +40,14 @@ qt_add_executable(
 )
 
 set_target_properties(dsd-neo-app PROPERTIES AUTOMOC ON)
+
+# Qt's QML debugger and profiler back ends (the qmltooling plugins) serve only a debugging
+# session that a debug build opens; nothing in the app loads them. Release packages leave
+# them out, debug packages keep them. androiddeployqt deploys the plugins this command
+# selects, and it takes the same configurations as release that Qt's own deployment does.
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    qt_import_plugins(dsd-neo-app EXCLUDE_BY_TYPE qmltooling)
+endif()
 
 # display_scale.cpp re-announces the display density Qt's Android plugin changes without an event; no
 # public API raises those events, so it uses Qt's platform API.
@@ -67,15 +89,71 @@ target_link_options(dsd-neo-app PRIVATE "-Wl,-z,max-page-size=16384")
 # edits to android/package/ still reach the APK without re-running CMake.
 set(dsd_neo_android_package_dir "${CMAKE_CURRENT_BINARY_DIR}/package")
 
+# The app links vcpkg's static libraries (vcpkg-triplets/arm64-android-static.cmake), so the
+# package carries the copyright file each port installs.
+if(NOT DEFINED VCPKG_INSTALLED_DIR OR NOT DEFINED VCPKG_TARGET_TRIPLET)
+    message(
+        FATAL_ERROR
+        "The Android app is built with vcpkg (the android-app preset): its package carries the notices of the libraries vcpkg installs"
+    )
+endif()
+set(dsd_neo_vcpkg_share_dir
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share"
+)
+
+# The directions to the source of the Qt this APK carries, as the release publishes them beside
+# every APK, written by the same tool from the build's own Qt kit: the archives of its
+# version and the Public Suffix List's source at the commit its SBOM names. The qt record's
+# android_release map stages this file into the APK, where the licences screen lists it.
+# They also say where the source and build scripts of this APK are: android-ci passes the
+# repository at the commit it builds, as the published copy names it.
+set(DSD_ANDROID_SOURCE_URL
+    ""
+    CACHE STRING
+    "Where the source and build scripts of this APK are, at the revision it is built from"
+)
+if(DSD_ANDROID_SOURCE_URL)
+    set(dsd_neo_source "${DSD_ANDROID_SOURCE_URL}")
+else()
+    set(dsd_neo_source
+        "https://github.com/arancormonk/dsd-neo (this APK was built locally, and the revision it was built from is not recorded)"
+    )
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+get_filename_component(dsd_neo_qt_kit "${Qt6Core_DIR}/../../.." ABSOLUTE)
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/qt-source")
+execute_process(
+    COMMAND
+        ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/android_source_directions.py directions
+        --qt-version "${Qt6Core_VERSION}" --qt-kit "${dsd_neo_qt_kit}" --apk
+        "this app" --dsd-source "${dsd_neo_source}" --output
+        "${PROJECT_BINARY_DIR}/qt-source/qt-source.txt"
+    COMMAND_ERROR_IS_FATAL ANY
+)
+# Written at configure time, so a change to the tool or to the kit's files it reads
+# configures again.
+set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY
+        CMAKE_CONFIGURE_DEPENDS
+            "${PROJECT_SOURCE_DIR}/tools/android_source_directions.py"
+            "${dsd_neo_qt_kit}/mkspecs/qconfig.pri"
+            "${dsd_neo_qt_kit}/sbom/qtbase-${Qt6Core_VERSION}.spdx.json"
+            "${dsd_neo_qt_kit}/sbom/qtdeclarative-${Qt6Core_VERSION}.spdx.json"
+            "${dsd_neo_qt_kit}/sbom/qtsvg-${Qt6Core_VERSION}.spdx.json"
+)
+
 # Stage once at configure time as well, so the directory androiddeployqt is pointed at
 # already exists when Qt writes the deployment settings.
 execute_process(
     COMMAND
         ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
-        -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
-        -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
+        -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMAND_ERROR_IS_FATAL ANY
@@ -86,9 +164,9 @@ add_custom_target(
     COMMAND
         ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
-        -DPFFFT_LICENSE_DIR=${DSD_PFFFT_LICENSE_DIR}
-        -DTETRA_CRYPTO_LICENSE_DIR=${DSD_TETRA_CRYPTO_LICENSE_DIR}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DMBELIB_NOTICE_DIR=${DSD_MBELIB_NOTICE_DIR}
+        -DVCPKG_SHARE_DIR=${dsd_neo_vcpkg_share_dir}
         -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
         ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
     COMMENT "Staging the Android package source with license files"

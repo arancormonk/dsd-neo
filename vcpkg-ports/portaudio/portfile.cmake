@@ -1,3 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+# This file, vcpkg.json, jack.diff and fix-guid-linker-errors.patch (PortAudio's
+# own upstream commits) are copied from vcpkg's builtin port, ports/portaudio at
+# port-version 8 (git tree 47dce0abd35ae2790f4fa16d09279a80f601db93, the last
+# without the asio feature), Copyright (c) Microsoft Corporation, MIT license in
+# vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (PA_USE_ASIO=OFF on Windows,
+# PA_USE_ASIOSDK declared MAYBE_UNUSED_VARIABLES, which keeps vcpkg from warning
+# about it, the formatting and these comments) are GPL-3.0-or-later.
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO PortAudio/portaudio
@@ -19,7 +28,11 @@ string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" PA_BUILD_STATIC)
 
 vcpkg_list(SET options)
 if(VCPKG_TARGET_IS_WINDOWS)
+    # PortAudio 19.7 turns ASIO on whenever it finds the Steinberg ASIO SDK, which
+    # has its own license; PA_USE_ASIOSDK does nothing in this release. Setting
+    # PA_USE_ASIO keeps ASIO out of portaudio.dll whatever the build machine holds.
     vcpkg_list(APPEND options
+        -DPA_USE_ASIO=OFF
         -DPA_USE_ASIOSDK=OFF
         -DPA_DLL_LINK_WITH_STATIC_RUNTIME=${PA_DLL_LINK_WITH_STATIC_RUNTIME}
         -DPA_LIBNAME_ADD_SUFFIX=OFF

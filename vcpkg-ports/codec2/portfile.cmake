@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Pinned for reproducible Windows/vcpkg builds. See docs/supply-chain-guardrails.md
 # for the refresh process.
 vcpkg_from_github(

@@ -1,0 +1,65 @@
+PDCurses (https://pdcurses.org/, https://github.com/wmcbrine/PDCurses) release 3.9 (archive
+https://github.com/wmcbrine/PDCurses/archive/3.9.tar.gz, SHA512
+4fd7c1221c5f34d94069a563dda7a796653148d903bc9023afe134b0f13bdc8b5d30000dfc80ab800e46e58b395ac2fb494d1316b80914998de5bacf0d7f3558).
+The Windows pdcurses.dll is built from the files of pdcurses/, wincon/ and common/
+(wincon/Makefile.vc). Their status, reproduced unmodified from the upstream files named:
+
+----- README.md, lines 13-26 -----
+
+Legal Stuff
+-----------
+
+The core package is in the public domain, but small portions of PDCurses
+are subject to copyright under various licenses.  Each directory
+contains a README.md file, with a section titled "Distribution Status"
+which describes the status of the files in that directory.
+
+If you use PDCurses in an application, an acknowledgement would be
+appreciated, but is not mandatory. If you make corrections or
+enhancements to PDCurses, please forward them to the current maintainer
+for the benefit of other users.
+
+This software is provided AS IS with NO WARRANTY whatsoever.
+
+----- README.md, lines 46-50 -----
+
+Distribution Status
+-------------------
+
+All files in this directory (not including subdirectories) are released
+to the public domain.
+
+----- pdcurses/README.md, lines 15-25 -----
+
+Distribution Status
+-------------------
+
+The files in this directory are released to the public domain.
+
+
+Acknowledgements
+----------------
+
+The panel library was originally provided by
+Warren Tucker <wht@n4hgf.mt-park.ga.us>
+
+----- wincon/README.md, lines 66-76 -----
+
+Distribution Status
+-------------------
+
+The files in this directory are released to the public domain.
+
+
+Acknowledgements
+----------------
+
+Windows console port was originally provided by Chris Szurgot
+<szurgot@itribe.net>
+
+----- common/README.md, lines 8-11 -----
+
+Distribution Status
+-------------------
+
+The files in this directory are released to the public domain.

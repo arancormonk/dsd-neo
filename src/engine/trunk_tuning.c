@@ -1455,6 +1455,24 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+double
+dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        uint64_t since_ns = 0U;
+        const int rc = rtl_stream_input_listening_since_ns(&since_ns);
+        if (rc < 0) {
+            return -1.0;
+        }
+        return rc > 0 ? (double)since_ns / 1e9 : 0.0;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return 0.0;
+}
+
 uint32_t
 dsd_engine_scan_family_requests(const dsd_opts* opts) {
 #ifdef USE_RADIO

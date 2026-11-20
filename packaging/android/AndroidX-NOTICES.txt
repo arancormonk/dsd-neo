@@ -1,0 +1,23 @@
+AndroidX and other Java libraries in the dsd-neo APK: notices
+
+classes.dex contains, shrunk and optimised by R8, the following Maven artifacts, which the Android
+Gradle plugin 9.0.0 resolves from android/package/build.gradle (androidx.core:core:1.17.0) and its
+built-in Kotlin support. All are under the Apache License 2.0 (licenses/Apache-2.0.txt); the POM of each
+declares it. None of these projects ships a NOTICE file.
+
+  androidx.core:core:1.17.0, androidx.core:core-viewtree:1.0.0,
+  androidx.annotation:annotation-jvm:1.8.1, androidx.annotation:annotation-experimental:1.4.1,
+  androidx.arch.core:core-common:2.2.0, androidx.arch.core:core-runtime:2.2.0,
+  androidx.collection:collection-jvm:1.4.2, androidx.concurrent:concurrent-futures:1.1.0,
+  androidx.interpolator:interpolator:1.0.0, androidx.lifecycle:lifecycle-common:2.6.2,
+  androidx.lifecycle:lifecycle-runtime:2.6.2, androidx.profileinstaller:profileinstaller:1.3.0,
+  androidx.startup:startup-runtime:1.1.1, androidx.tracing:tracing:1.2.0,
+  androidx.versionedparcelable:versionedparcelable:1.1.1
+      Copyright (C) 2009-2025 The Android Open Source Project
+      Source: https://android.googlesource.com/platform/frameworks/support
+  com.google.guava:listenablefuture:1.0
+      Copyright (C) 2007 The Guava Authors
+      Source: https://github.com/google/guava
+  org.jspecify:jspecify:1.0.0
+      Copyright 2018-2022 The JSpecify Authors (Google LLC, SpotBugs Team; jspecify AUTHORS at v1.0.0)
+      Source: https://github.com/jspecify/jspecify

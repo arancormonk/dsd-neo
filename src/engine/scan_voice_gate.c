@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 
@@ -592,12 +593,24 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
     if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {
         return;
     }
+    /* The step rule's deadline (no_carrier_hangtime_ran_out() in engine.c): no window while a retune's mute still
+       holds the input, and -t from the input's return when that came after the anchor and ends later. */
+    const double listening_m = dsd_engine_scan_input_listening_since_m(opts, state);
+    if (listening_m < 0.0) {
+        return;
+    }
     out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
     /* noCarrier compares whole seconds with strict >. The next integer after
      * -t is the first wall-clock tick that permits a hop, including for -t 0. */
     const double span_s = floor((double)opts->trunk_hangtime) + 1.0;
     out->deadline_m = out->started_m + span_s;
     out->span_ms = scan_y_timing_span_ms(span_s);
+    const double listened_until_m = listening_m + (double)opts->trunk_hangtime;
+    if (listening_m > state->last_cc_sync_time_m && listened_until_m > out->deadline_m) {
+        out->started_m = listening_m;
+        out->deadline_m = listened_until_m;
+        out->span_ms = scan_y_timing_span_ms((double)opts->trunk_hangtime);
+    }
 }
 
 void

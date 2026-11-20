@@ -1,0 +1,28 @@
+Microsoft Visual C++ runtime files in the dsd-neo Windows package
+
+The files in bin\ named concrt140.dll, msvcp140*.dll, vccorlib140.dll and
+vcruntime140*.dll, as many of them as this package carries, are Microsoft's
+Visual C++ runtime. They are Microsoft Corporation's, not dsd-neo's. dsd-neo
+redistributes them unmodified, as part of dsd-neo, under the Distributable Code
+terms of the Microsoft Software License Terms for Visual Studio
+(https://visualstudio.microsoft.com/license-terms/) and Microsoft's list of the
+files those terms let a licensed Visual Studio user distribute
+(https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution).
+
+These files are not licensed under the GNU General Public License. By using or
+distributing them you agree to these terms, which apply to these files only:
+
+- Do not modify them.
+- Do not reverse engineer, decompile or disassemble them.
+- Distribute them only unmodified, as part of dsd-neo, and under these same
+  terms.
+
+These terms do not limit any right the GNU General Public License gives you
+for dsd-neo or for any other part of this package.
+
+Microsoft, Visual Studio and Visual C++ are trademarks of Microsoft. dsd-neo is
+not made, endorsed or supported by Microsoft; Microsoft's names appear here
+only to identify these files.
+
+Microsoft also publishes this runtime as the Visual C++ Redistributable:
+https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist

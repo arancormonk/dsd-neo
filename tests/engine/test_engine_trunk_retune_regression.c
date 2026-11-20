@@ -832,6 +832,13 @@ rtl_stream_get_request_rate_hz(void) {
     return 48000;
 }
 
+/* No retune here arms a mute, so the input has nothing to come back from. */
+int
+rtl_stream_input_listening_since_ns(uint64_t* out_ns) {
+    (void)out_ns;
+    return 0;
+}
+
 int
 rtl_stream_get_complex_rate_hz(void) {
     return g_rtl_complex_rate_hz;

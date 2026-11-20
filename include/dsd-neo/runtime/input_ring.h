@@ -14,6 +14,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
 
 #include <atomic>
+#include <mutex>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -35,6 +36,17 @@ struct input_ring_state {
     std::atomic<uint64_t> producer_drops{0U}; /* bytes dropped when full */
     std::atomic<uint64_t> read_timeouts{0U};  /* waits for data */
     std::atomic<uint64_t> discard_generation{0U};
+    /* Held to move discard_generation and by a producer's commit that depends on it
+       (input_ring_commit_if_generation()), so a purge request falls wholly before or after such a commit. */
+    std::mutex generation_m;
+    /* A test's seam: input_ring_commit_if_generation() calls it, with test_commit_arg, between its check and its
+       commit, holding generation_m. Unset (NULL) outside tests. */
+    void (*test_commit_hook)(void* arg) = nullptr;
+    void* test_commit_arg = nullptr;
+    /* Likewise for input_ring_request_discard(): called, with test_discard_arg, right before it moves
+       discard_generation, holding generation_m. */
+    void (*test_discard_hook)(void* arg) = nullptr;
+    void* test_discard_arg = nullptr;
     /* Stream positions in floats, counted since init: what the producer committed and what the consumer released
        (read, committed or discarded). The consumer is at stream position consumed_total, the sample at tail. */
     std::atomic<uint64_t> produced_total{0U};
@@ -88,6 +100,10 @@ input_ring_request_discard(struct input_ring_state* r) {
     if (!r) {
         return;
     }
+    std::lock_guard<std::mutex> lock(r->generation_m);
+    if (r->test_discard_hook) {
+        r->test_discard_hook(r->test_discard_arg);
+    }
     (void)r->discard_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -108,6 +124,16 @@ input_ring_discard_generation_matches(const struct input_ring_state* r, uint64_t
 }
 
 /**
+ * @brief Commit @p produced reserved floats if the producer discard generation is still @p generation.
+ *
+ * The check and the commit hold generation_m, as input_ring_request_discard() does, so a purge requested while a
+ * producer finishes its reservation either drops it (returns 0, nothing committed) or comes after it is committed.
+ *
+ * @return 1 when committed, 0 when the generation moved (the caller accounts for the reservation).
+ */
+int input_ring_commit_if_generation(struct input_ring_state* r, size_t produced, uint64_t generation);
+
+/**
  * @brief Initialize input ring storage and synchronization primitives.
  *
  * @param r Input ring state.
@@ -115,6 +141,19 @@ input_ring_discard_generation_matches(const struct input_ring_state* r, uint64_t
  * @return 0 on success, -1 on invalid args or allocation/init failure.
  */
 int input_ring_init(struct input_ring_state* r, size_t capacity);
+
+/**
+ * @brief Give an initialized ring a new, empty buffer of @p capacity floats, keeping its lock and conditions.
+ *
+ * The new buffer is allocated before the old one is released, so on failure the ring is left as it was, still
+ * usable and still destroyable. Call only while no producer or consumer uses the ring. Space notifications start
+ * disabled and the counters at zero, as after input_ring_init().
+ *
+ * @param r Initialized input ring state.
+ * @param capacity Number of float elements in the new buffer (must be > 0).
+ * @return 0 on success, -1 on invalid args or allocation failure.
+ */
+int input_ring_reallocate(struct input_ring_state* r, size_t capacity);
 
 /**
  * @brief Destroy an initialized input ring.

@@ -396,7 +396,12 @@ During scanning:
   even when the hold runs out between the scan's checks; after a `Y` hold or another stay it starts at the scan's
   next check. The tone filter's check is the exception: it holds the target while its carrier
   lasts but is not activity, so the dwell keeps running through it.
-  The dwell runs from the instant the target's retune lands. On a silent frequency the decoder checks it every 300
+  The dwell runs from the instant the target's retune lands, or, on an RTL-SDR, SoapySDR or Airspy input, from when
+  the first samples on the new frequency arrive if that is later: after a retune dsd-neo throws away what the radio
+  still delivers from the old frequency, which takes over half a second on a HackRF at its lowest rates. A `-Y` row's
+  `-t` hangtime counts the same way: it does not run out before those first samples, and then runs from them. A radio
+  that delivers nothing counts as listening from a second after that discard should have ended, whenever its first
+  samples then arrive. On a silent frequency the decoder checks it every 300
   symbols of its sync search (62.5 ms at 4800 symbols/s, 125 ms at the 2400 symbols/s of NXDN48 and dPMR), so a
   target rotates up to that much after its dwell ends, not at the end of the search's 1800-symbol pass (375 ms or
   750 ms) as before. While frames keep arriving, the dwell is checked after every frame.
@@ -1073,7 +1078,8 @@ turned it on).
 On these the scan keeps its normal timing, as if the setting were off:
 
 - A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs. An Airspy through
-  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s.
+  SoapySDR is checked at 2.5, 3, 6 and 10 MS/s, and a HackRF through SoapySDR at the 10 MS/s it normally runs (a HackRF
+  moved to a lower rate near the top of the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
   which also removes that shift.
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
@@ -1081,7 +1087,8 @@ On these the scan keeps its normal timing, as if the setting were off:
 - `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off.
 - A sample rate the calibration did not cover. Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536, 1.6, 1.8,
   1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream runs 1.024,
-  1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at any other.
+  1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at any other. An
+  Airspy HF+ through SoapySDR runs its own rates below 1 MS/s and gets no check.
 - Audio inputs (rigctl with TCP, UDP or Pulse audio, files), I/Q replay, and builds without radio support.
 - An analog width the calibration did not cover. Checked NFM widths are 8, 11.25, 12.5, 16, 20 and 25 kHz; checked AM
   widths are 5, 6, 8, 10, 15 and 20 kHz, exactly. Any other width gets no check, for example NFM 10 or 15 kHz or AM

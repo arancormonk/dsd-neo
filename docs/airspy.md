@@ -3,7 +3,17 @@
 DSD-neo can receive directly from Airspy R2 and Airspy Mini devices using
 libairspy. This backend does not require SoapySDR or an SDR application running
 alongside the decoder. Airspy HF+ devices use a different driver and are not
-supported by this backend.
+supported by this backend. Read one through SoapySDR with the SoapyAirspyHF
+module, which the Windows release zip does not include: add it yourself
+([soapysdr.md](soapysdr.md) section 0a) and use `-i soapy:driver=airspyhf`.
+
+The Windows release zip also has the SoapySDR Airspy module, so an Airspy R2 or
+Mini runs through SoapySDR too: `-i soapy:driver=airspy`. Both inputs use the
+same `airspy.dll`, and only one can hold the radio at a time. Through SoapySDR
+it runs the radio's rate nearest what dsd-neo asks for (2.5 MS/s on an R2,
+3 MS/s on a Mini) where the native input runs the highest, and Skip silent
+channels can check it ([trunk-scan.md](trunk-scan.md)), which it cannot do on
+the native input.
 
 ## Build and install
 

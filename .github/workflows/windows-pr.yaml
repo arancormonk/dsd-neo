@@ -130,6 +130,21 @@ jobs:
         run: |
           & $env:SCCACHE_PATH --show-stats
 
+      # The release job's staging and checks, on the pull request: the DLL closure,
+      # notices, hardening and the bundled SoapySDR modules, loaded without hardware.
+      # Nothing is archived or uploaded here.
+      - name: Stage release tree (MSVC)
+        shell: pwsh
+        run: >-
+          ./tools/windows/stage_release_tree.ps1
+          -BuildDir build/win-msvc-release
+          -StageDir "$env:RUNNER_TEMP/dsd-neo-msvc"
+          -InstalledDir "$env:GITHUB_WORKSPACE/vcpkg_installed/$env:VCPKG_TARGET_TRIPLET"
+
+      - name: Verify release tree (MSVC)
+        shell: pwsh
+        run: ./tools/windows/verify_release_tree.ps1 -Root "$env:RUNNER_TEMP/dsd-neo-msvc"
+
   # Debug build plus the full ctest suite under MSVC and the debug CRT. The
   # release jobs build with tests off, so without this job no test ever ran on
   # Windows. Pull requests may restore vcpkg binaries but never write them;

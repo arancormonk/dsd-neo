@@ -327,6 +327,9 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_ANALYTICS: "1"
+      # The DMG's general legal files; tools/check_release_notices.py takes every
+      # component notice from the macos_release maps in legal/components.json.
+      DMG_REQUIRED_DOCS: LICENSE COPYRIGHT THIRD_PARTY.md legal/status.md legal/components.json
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -347,28 +350,40 @@ jobs:
           set -euo pipefail
           {
             source tools/ci-dependency-pins.env
-            echo "mbe_sha=$MBELIB_NEO_SHA"
-            echo "codec2_sha=$CODEC2_SHA"
             echo "rtlsdr_sha=$RTL_SDR_SHA"
             echo "airspy_sha=$AIRSPY_SHA"
             # dsd-neo's libairspy and librtlsdr patches (tools/usb_dependency_patches.sh).
             echo "airspy_patches=$(tools/usb_dependency_patches.sh digest libairspy)"
             echo "rtlsdr_patches=$(tools/usb_dependency_patches.sh digest librtlsdr)"
+            # The patched libraries link vcpkg's libusb and take the triplet's deployment target.
+            echo "vcpkg_key=${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-osx-dynamic-release.cmake', 'vcpkg-ports/**') }}"
           } >> "$GITHUB_OUTPUT"
 
+      # Every library the DMG bundles comes from vcpkg (vcpkg.json at its builtin-baseline,
+      # the overlays in vcpkg-ports/ and this triplet), except librtlsdr and libairspy,
+      # which the job builds from their pins with dsd-neo's patches. Homebrew supplies
+      # build tools only, so nothing from it is on a search path.
       - name: Prepare dependency environment
         shell: bash
         run: |
           set -euxo pipefail
-          # Homebrew locations (arm64=/opt/homebrew, x86_64=/usr/local)
-          HB_PREFIX=$(brew --prefix)
+          triplet=arm64-osx-dynamic-release
+          target=$(sed -n 's/^set(VCPKG_OSX_DEPLOYMENT_TARGET "\([0-9.]*\)")$/\1/p' "vcpkg-triplets/$triplet.cmake")
+          test -n "$target"
           {
             echo "DEPS_PREFIX=${GITHUB_WORKSPACE}/.deps"
-            echo "HB_PREFIX=$HB_PREFIX"
-            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig:${GITHUB_WORKSPACE}/.deps/lib64/pkgconfig:${HB_PREFIX}/lib/pkgconfig:/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps:${HB_PREFIX}:/usr/local:${CMAKE_PREFIX_PATH:-}"
-            echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib:${GITHUB_WORKSPACE}/.deps/lib64:${DYLD_LIBRARY_PATH:-}"
+            echo "VCPKG_TRIPLET=$triplet"
+            echo "VCPKG_TRIPLET_DIR=${GITHUB_WORKSPACE}/vcpkg_installed/$triplet"
+            # The infocmp built with the ncurses the DMG bundles, which reads the
+            # terminal database exactly as the bundled library does.
+            echo "DSD_MACOS_INFOCMP=${GITHUB_WORKSPACE}/vcpkg_installed/$triplet/tools/ncurses/bin/infocmp"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=${GITHUB_WORKSPACE}/.vcpkg-archives"
+            echo "DSD_MACOS_DEPLOYMENT_TARGET=$target"
+            echo "PKG_CONFIG_PATH=${GITHUB_WORKSPACE}/.deps/lib/pkgconfig"
+            echo "CMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/.deps"
+            echo "DYLD_LIBRARY_PATH=${GITHUB_WORKSPACE}/.deps/lib"
           } >> "$GITHUB_ENV"
+          mkdir -p "${GITHUB_WORKSPACE}/.vcpkg-archives"
 
       # Its own key family: this tree holds the patched libairspy and librtlsdr,
       # which the test job's cache does not.
@@ -376,9 +391,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEPS_PREFIX }}
-          key: deps-dmg-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.airspy_sha }}-${{ steps.dep-shas.outputs.rtlsdr_patches }}-${{ steps.dep-shas.outputs.airspy_patches }}
+          key: deps-dmg-vcpkg-${{ runner.os }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.airspy_sha }}-${{ steps.dep-shas.outputs.rtlsdr_patches }}-${{ steps.dep-shas.outputs.airspy_patches }}-${{ steps.dep-shas.outputs.vcpkg_key }}
           restore-keys: |
-            deps-dmg-${{ runner.os }}-
+            deps-dmg-vcpkg-${{ runner.os }}-
 
       - name: Validate dependency cache
         shell: bash
@@ -387,12 +402,11 @@ jobs:
           mf="$DEPS_PREFIX/.manifest"
           if [ -d "$DEPS_PREFIX" ]; then
             if [ -f "$mf" ] &&
-               grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
-               grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
                grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf" &&
                grep -Fxq "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}" "$mf" &&
                grep -Fxq "rtlsdr_patches=${{ steps.dep-shas.outputs.rtlsdr_patches }}" "$mf" &&
-               grep -Fxq "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}" "$mf"; then
+               grep -Fxq "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}" "$mf" &&
+               grep -Fxq "vcpkg_key=${{ steps.dep-shas.outputs.vcpkg_key }}" "$mf"; then
               echo "Dependency cache manifest matches requested SHAs"
             else
               echo "Dependency cache manifest is missing or stale; clearing $DEPS_PREFIX"
@@ -401,17 +415,15 @@ jobs:
           fi
           mkdir -p "$DEPS_PREFIX"
 
-      - name: Install base toolchain + libs (Homebrew)
+      - name: Install build tools (Homebrew)
         shell: bash
         run: |
           set -euxo pipefail
-          # Many deps we build from source (cached) to align with Linux/Windows flows.
-          # libairspy and librtlsdr are built below with dsd-neo's transfer patches,
-          # so their bottles are not installed: only the patched builds can be found.
-          brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb ncurses soapysdr
-          # Prefer Homebrew packages when available
-          brew install codec2 || true
+          # Build tools only: vcpkg's autotools ports (libusb, ncurses) need autoconf,
+          # automake and libtool, libusb's autoreconf also needs autoconf-archive's
+          # macros, and vcpkg finds pkg-config on the PATH. No library the DMG
+          # bundles comes from Homebrew.
+          brew install cmake ninja pkg-config ccache autoconf autoconf-archive automake libtool
           brew --version
           cmake --version
           pkg-config --version
@@ -447,59 +459,73 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
-      - name: Build and install mbelib-neo (required, cached)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.mbe_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/libmbe-neo.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/libmbe-neo.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^mbe_sha=$want_sha$" "$mf"; then
-              echo "Using cached mbelib-neo in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached mbelib-neo does not match desired SHA; rebuilding"
-          fi
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$want_sha" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DMBELIB_ENABLE_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
+      # Keyed like the Android jobs' vcpkg cache: the manifest, its configuration, the
+      # triplet and the overlay ports. vcpkg checks each archive's ABI hash itself, so a
+      # partial restore only saves the ports that did not change.
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-osx-dynamic-release-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-osx-dynamic-release.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-osx-dynamic-release-
 
-      - name: Ensure codec2 (cached fallback if not found)
+      # vcpkg's bootstrap fetches the vcpkg-tool binary with `curl --retry 3`,
+      # but curl only spends that retry budget on timeouts and 5xx/429
+      # responses: a connection-level failure -- curl 35, "Recv failure:
+      # Connection reset by peer" -- aborts on the first attempt and fails the
+      # job before any of our code is built. --retry-all-errors extends the
+      # existing budget to those resets. It goes in a curlrc because run-vcpkg
+      # invokes bootstrap-vcpkg.sh itself, so there is no command line of ours
+      # to add it to, and because it then also covers the curl calls vcpkg
+      # makes for port sources.
+      - name: Make curl retry connection resets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.curlrc" << 'EOF'
+          retry = 3
+          retry-all-errors
+          retry-delay = 5
+          EOF
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9eec002df1cd109f8f104cd966a763daf9751489"
+
+      # The compilers, not ccache: vcpkg keys its archives on the compiler it detects.
+      - name: Install vcpkg dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          mf="$DEPS_PREFIX/.manifest"
-          want_sha='${{ steps.dep-shas.outputs.codec2_sha }}'
-          pc1="$DEPS_PREFIX/lib/pkgconfig/codec2.pc"
-          pc2="$DEPS_PREFIX/lib64/pkgconfig/codec2.pc"
-          if [ -f "$pc1" ] || [ -f "$pc2" ]; then
-            if [ -f "$mf" ] && grep -q "^codec2_sha=$want_sha$" "$mf"; then
-              echo "Using cached codec2 in $DEPS_PREFIX"
-              exit 0
-            fi
-            echo "Cached codec2 does not match desired SHA; rebuilding"
-          else
-            if pkg-config --exists codec2; then
-              echo "Using system codec2"
-              exit 0
-            fi
-          fi
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/codec2 "$want_sha" /tmp/codec2
-          cmake -S /tmp/codec2 -B /tmp/codec2/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-          cmake --build /tmp/codec2/build -j
-          cmake --install /tmp/codec2/build
+          env -u CC -u CXX "$VCPKG_ROOT/vcpkg" install \
+            --triplet "$VCPKG_TRIPLET" \
+            --overlay-triplets "$GITHUB_WORKSPACE/vcpkg-triplets" \
+            --x-manifest-root "$GITHUB_WORKSPACE" \
+            --x-install-root "$GITHUB_WORKSPACE/vcpkg_installed"
+          test -f "$VCPKG_TRIPLET_DIR/lib/libusb-1.0.0.dylib"
+          # -A reads only the named database, never macOS's own: an entry the
+          # overlay did not install, or installed empty, fails here.
+          for term in xterm-256color tmux-256color; do
+            "$DSD_MACOS_INFOCMP" -A "$VCPKG_TRIPLET_DIR/share/ncurses/terminfo" "$term" > /dev/null
+          done
+
+      # Pull requests restore the archives main saved and never save their own,
+      # for the reason given at "Save ccache".
+      - name: Save vcpkg binary cache
+        if: github.event_name != 'pull_request' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       # The pinned sources with dsd-neo's transfer patches (tools/usb_dependency_patches.sh),
-      # never a system copy: these are the libraries the DMG bundles.
+      # never a system copy: these are the libraries the DMG bundles. They link vcpkg's
+      # libusb, the one dsd-neo loads, and are built for the triplet's deployment target.
       - name: Build patched librtlsdr and libairspy (cached)
         shell: bash
         env:
@@ -520,16 +546,27 @@ jobs:
               return
             fi
             tools/usb_dependency_patches.sh fetch "$lib" "/tmp/$lib"
-            cmake -S "/tmp/$lib" -B "/tmp/$lib/build" -G Ninja \
+            PKG_CONFIG_PATH="$VCPKG_TRIPLET_DIR/lib/pkgconfig" \
+              cmake -S "/tmp/$lib" -B "/tmp/$lib/build" -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
-              -DCMAKE_OSX_ARCHITECTURES=arm64 "$@"
+              -DCMAKE_PREFIX_PATH="$VCPKG_TRIPLET_DIR" \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET="$DSD_MACOS_DEPLOYMENT_TARGET" "$@"
             cmake --build "/tmp/$lib/build" -j
             cmake --install "/tmp/$lib/build"
           }
           build_patched librtlsdr librtlsdr rtlsdr "$RTLSDR_SHA" "$RTLSDR_PATCHES" -DDETACH_KERNEL_DRIVER=ON
           build_patched libairspy libairspy airspy "$AIRSPY_SHA" "$AIRSPY_PATCHES" \
             -DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          # Each must load the libusb vcpkg built, not one a runner image happens to carry.
+          for dylib in "$DEPS_PREFIX"/lib/librtlsdr.0.dylib "$DEPS_PREFIX"/lib/libairspy.0.dylib; do
+            usb=$(otool -L "$dylib" | awk 'NR > 1 && /libusb-1\.0/ { print $1 }')
+            case "$usb" in
+              @rpath/libusb-1.0.0.dylib | "$VCPKG_TRIPLET_DIR"/lib/libusb-1.0.0.dylib) ;;
+              *) echo "ERROR: $dylib loads '$usb', not vcpkg's libusb" >&2; exit 1 ;;
+            esac
+          done
 
       - name: Update deps manifest
         shell: bash
@@ -538,12 +575,11 @@ jobs:
           mkdir -p "$DEPS_PREFIX"
           mf="$DEPS_PREFIX/.manifest"
           {
-            echo "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}"
-            echo "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}"
             echo "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}"
             echo "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}"
             echo "rtlsdr_patches=${{ steps.dep-shas.outputs.rtlsdr_patches }}"
             echo "airspy_patches=${{ steps.dep-shas.outputs.airspy_patches }}"
+            echo "vcpkg_key=${{ steps.dep-shas.outputs.vcpkg_key }}"
             echo "updated=$(date -u +%FT%TZ)"
           } > "$mf"
 
@@ -551,27 +587,36 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          pkg-config --modversion codec2 || true
+          "$VCPKG_ROOT/vcpkg" list \
+            --x-manifest-root "$GITHUB_WORKSPACE" \
+            --x-install-root "$GITHUB_WORKSPACE/vcpkg_installed" || true
           pkg-config --modversion librtlsdr || true
-          pkg-config --modversion SoapySDR || true
-          pkg-config --modversion libpulse || true
-          pkg-config --modversion sndfile || true
 
-      - name: Configure (Release preset)
+      - name: Configure (macos-arm64-release preset)
         shell: bash
         run: |
+          set -euo pipefail
           # No curses overrides on purpose: this is the discovery path a user
           # gets, and pinning it here is what kept issue #339 out of CI.
-          cmake --preset dev-release -G Ninja \
-            -DDSD_ENABLE_LTO=OFF -DDSD_ENABLE_NATIVE=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
-            -DBUILD_TESTING=OFF
+          # VCPKG_MANIFEST_INSTALL=OFF: the step above installed the manifest
+          # with the plain compilers; installing again here, with ccache as CC,
+          # would give every port a new ABI hash and build them all again.
+          log="$RUNNER_TEMP/configure-macos.log"
+          cmake --preset macos-arm64-release -G Ninja \
+            -DVCPKG_MANIFEST_INSTALL=OFF \
+            -DDSD_ENABLE_LTO=OFF -DDSD_ENABLE_NATIVE=OFF 2>&1 | tee "$log"
+          # The preset requires these, so configure already failed if one was
+          # missing; assert the outcome a user hears and sees too.
+          grep -F "Audio backend: PortAudio" "$log"
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          grep -F "expat available: ON (RadioReference import)" "$log"
 
       - name: Verify dsd-neo links the patched libairspy and librtlsdr
         shell: bash
         run: |
           set -euo pipefail
-          cache=build/dev-release/CMakeCache.txt
+          cache=build/macos-arm64-release/CMakeCache.txt
           airspy=$(sed -n 's/^AIRSPY_LIBRARY:FILEPATH=//p' "$cache")
           rtlsdr=$(sed -n 's/^RTLSDR_LIBRARY:FILEPATH=//p' "$cache")
           for lib in "$airspy" "$rtlsdr"; do
@@ -582,30 +627,37 @@ jobs:
           done
           tools/check_patched_usb_libs.sh --airspy "$airspy" --rtlsdr "$rtlsdr"
 
-      - name: Verify curses selection
+      - name: Verify curses and codec2 selection
         shell: bash
         run: |
           set -euo pipefail
           # Discovery is unpinned here on purpose, so assert the outcome: the
-          # portable DMG is built against Homebrew's wide ncurses, and a silent
-          # downgrade to the SDK's narrow curses must not pass unnoticed.
-          lib=$(sed -n 's/^CURSES_NCURSES_LIBRARY:[A-Z]*=//p' build/dev-release/CMakeCache.txt)
-          echo "CURSES_NCURSES_LIBRARY=$lib"
-          case "$lib" in
+          # portable DMG is built against vcpkg's wide ncurses and the pinned
+          # codec2, and a silent fall-back to the SDK's narrow curses or to any
+          # other copy must not pass unnoticed.
+          cache=build/macos-arm64-release/CMakeCache.txt
+          for var in CURSES_NCURSES_LIBRARY CODEC2_LIBRARY; do
+            lib=$(sed -n "s/^$var:[A-Z]*=//p" "$cache")
+            echo "$var=$lib"
+            case "$lib" in
+              "$VCPKG_TRIPLET_DIR"/*) ;;
+              *) echo "ERROR: $var is '$lib', not from $VCPKG_TRIPLET_DIR" >&2; exit 1 ;;
+            esac
+          done
+          case "$(sed -n 's/^CURSES_NCURSES_LIBRARY:[A-Z]*=//p' "$cache")" in
             *ncursesw*) ;;
-            *) echo "ERROR: expected a wide ncurses, got '$lib'" >&2; exit 1 ;;
+            *) echo "ERROR: expected a wide ncurses" >&2; exit 1 ;;
           esac
 
       - name: Build
         shell: bash
         run: |
-          cmake --build --preset dev-release -j
+          cmake --build --preset macos-arm64-release -j
 
       - name: Smoke test - show CLI help
         shell: bash
         run: |
-          ./build/dev-release/apps/dsd-cli/dsd-neo -h || true
-
+          ./build/macos-arm64-release/apps/dsd-cli/dsd-neo -h || true
       - name: Stage portable tree
         if: github.event_name != 'pull_request'
         id: stage
@@ -613,7 +665,8 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          EXE="build/dev-release/apps/dsd-cli/dsd-neo"
+          BUILD="build/macos-arm64-release"
+          EXE="$BUILD/apps/dsd-cli/dsd-neo"
           test -f "$EXE"
           STAGE="dist/dsd-neo-macos"
           mkdir -p "$STAGE/bin" "$STAGE/lib"
@@ -623,48 +676,41 @@ jobs:
           cp -f packaging/macos/README-macos.txt "$STAGE/" || true
           cp -f packaging/macos/dsd-neo.sh "$STAGE/" || true
           chmod +x "$STAGE/dsd-neo.sh" || true
-          # Homebrew ncurses needs its terminfo database at runtime. The
+          # The bundled ncurses reads its terminal database at runtime. The
           # database is data rather than a dylib, so otool-based dependency
-          # staging will not discover it.
-          TERMINFO_SRC=""
-          for candidate in \
-            "$HB_PREFIX/opt/ncurses/share/terminfo" \
-            "$HB_PREFIX/share/terminfo" \
-            /usr/share/terminfo; do
-            if [ -d "$candidate" ]; then
-              TERMINFO_SRC="$candidate"
-              break
-            fi
-          done
-          if [ -z "$TERMINFO_SRC" ]; then
-            echo "ERROR: could not locate ncurses terminfo database" >&2
+          # staging will not discover it. vcpkg-ports/ncurses installs it from
+          # the same ncurses source, in the hexadecimal layout macOS uses.
+          TERMINFO_SRC="$VCPKG_TRIPLET_DIR/share/ncurses/terminfo"
+          if [ ! -d "$TERMINFO_SRC" ]; then
+            echo "ERROR: vcpkg's ncurses installed no terminfo database at $TERMINFO_SRC" >&2
             exit 1
           fi
           rm -rf "$STAGE/share/terminfo"
           mkdir -p "$STAGE/share/terminfo"
           cp -a "$TERMINFO_SRC"/. "$STAGE/share/terminfo"/
-          if ! find "$STAGE/share/terminfo" -type f -name xterm-256color -print -quit | grep -q .; then
-            echo "ERROR: staged terminfo database is missing xterm-256color" >&2
-            exit 1
-          fi
-
-          # Bundle license/notice files
-          cmake --install build/dev-release --prefix dist/dsd-neo-macos --component legal
-          DOCDIR="$STAGE/share/doc/dsd-neo"
-          mkdir -p "$DOCDIR/licenses"
-          cp -f LICENSE COPYRIGHT THIRD_PARTY.md "$DOCDIR/"
-          cp -f src/third_party/ezpwd/lesser.txt "$DOCDIR/licenses/ezpwd-LGPL-2.1-or-later.txt"
-          cp -f build/dev-release/pffft-licenses/pffft-{LICENSE,NOTICES}.txt "$DOCDIR/licenses/"
-          cp -f build/dev-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt "$DOCDIR/licenses/"
-          # The bundled librtlsdr is GPL-2.0-or-later and built here with the dsd-neo patches.
-          cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/licenses/librtlsdr-GPL-2.0-or-later.txt"
-          cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/licenses/librtlsdr-PATCHES.txt"
-          for f in LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-LICENSE.txt licenses/pffft-NOTICES.txt licenses/tetra_crypto-LICENSE.txt licenses/libairspy-LICENSE.txt licenses/librtlsdr-GPL-2.0-or-later.txt licenses/librtlsdr-PATCHES.txt legal/status.md legal/components.json licenses/ISC.txt licenses/Unlicense.txt licenses/gqrx-scanner-MIT.txt licenses/LicenseRef-BCH3-Noncommercial.txt licenses/LicenseRef-Simon-Rockliff.txt licenses/mbelib-neo/ISC.txt licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt licenses/mbelib-neo/legal/status.md licenses/mbelib-neo/legal/patents.md; do
-            if [ ! -f "$DOCDIR/$f" ]; then
-              echo "ERROR: missing required license file $f in $DOCDIR" >&2
+          # -A reads only the staged database, with no fallback to macOS's own.
+          for term in xterm-256color tmux-256color; do
+            if ! "$DSD_MACOS_INFOCMP" -A "$STAGE/share/terminfo" "$term" > /dev/null; then
+              echo "ERROR: the staged terminfo database has no readable $term entry" >&2
               exit 1
             fi
           done
+
+          # Bundle license/notice files
+          cmake --install "$BUILD" --prefix dist/dsd-neo-macos --component legal
+          DOCDIR="$STAGE/share/doc/dsd-neo"
+          mkdir -p "$DOCDIR/licenses"
+          cp -f LICENSE COPYRIGHT THIRD_PARTY.md "$DOCDIR/"
+          # The notices of every component the DMG carries, as each record's
+          # macos_release map in legal/components.json names them: repository
+          # files, the build tree's PFFFT and TETRA_crypto notices, and the
+          # copyright file each vcpkg port installs.
+          cmake -DPLATFORM=macos -DREPO_DIR="$GITHUB_WORKSPACE" -DBUILD_DIR="$BUILD" \
+            -DDOC_DIR="$DOCDIR" -DVCPKG_SHARE_DIR="$VCPKG_TRIPLET_DIR/share" \
+            -P cmake/stage_release_notices.cmake
+          read -ra required_docs <<< "$DMG_REQUIRED_DOCS"
+          python3 tools/check_release_notices.py --platform macos --doc-dir "$DOCDIR" \
+            --build-dir "$BUILD" --vcpkg-share "$VCPKG_TRIPLET_DIR/share" --require "${required_docs[@]}"
 
           list_rpaths() {
             local file="$1"
@@ -696,6 +742,17 @@ jobs:
                 return 0
               fi
             done < <(list_rpaths "$file")
+
+            # A vcpkg dylib loads its neighbours through @loader_path, which
+            # for the staged copy is $STAGE/lib, where they may not be yet: look
+            # in the trees the build linked against.
+            for resolved in "$VCPKG_TRIPLET_DIR/lib" "$DEPS_PREFIX/lib"; do
+              candidate="$resolved/$suffix"
+              if [ -f "$candidate" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+            done
 
             return 1
           }
@@ -742,9 +799,17 @@ jobs:
               # Prefer copied version if we already staged it
               if [ ! -f "$STAGE/lib/$base" ]; then
                 # Resolve @rpath/@loader_path dependencies and potential symlinks.
-                if resolved=$(resolve_dep_path "$file" "$lib"); then
-                  cp -f "$resolved" "$STAGE/lib/$base"
+                if ! resolved=$(resolve_dep_path "$file" "$lib"); then
+                  echo "ERROR: cannot resolve $lib, which $file loads" >&2
+                  exit 1
                 fi
+                # Only vcpkg's tree and the patched librtlsdr and libairspy
+                # may reach the DMG, never a library from the runner image.
+                case "$resolved" in
+                  "$VCPKG_TRIPLET_DIR"/lib/* | "$DEPS_PREFIX"/lib/*) ;;
+                  *) echo "ERROR: $file loads $resolved, outside vcpkg's tree and $DEPS_PREFIX" >&2; exit 1 ;;
+                esac
+                cp -f "$resolved" "$STAGE/lib/$base"
               fi
             done
           }
@@ -870,12 +935,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tools/check_release_hardening.sh dist/dsd-neo-macos/bin/dsd-neo build/dev-release
+          tools/check_release_hardening.sh dist/dsd-neo-macos/bin/dsd-neo build/macos-arm64-release
           find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name '*.dylib' -print0 |
             while IFS= read -r -d '' lib; do
-              tools/check_release_hardening.sh "$lib" build/dev-release
+              tools/check_release_hardening.sh "$lib" build/macos-arm64-release
             done
-          tools/check_macos_portable_deps.sh dist/dsd-neo-macos
+          tools/check_macos_portable_deps.sh dist/dsd-neo-macos "$DSD_MACOS_DEPLOYMENT_TARGET"
 
       - name: Smoke test staged binary
         shell: bash
@@ -883,17 +948,6 @@ jobs:
           set -euo pipefail
           STAGE="dist/dsd-neo-macos"
           "$STAGE/dsd-neo.sh" -h
-
-      - name: Verify bundled terminfo
-        shell: bash
-        run: |
-          set -euo pipefail
-          STAGE="dist/dsd-neo-macos"
-          if command -v infocmp > /dev/null 2>&1; then
-            TERMINFO_DIRS="$STAGE/share/terminfo:/usr/share/terminfo" infocmp xterm-256color > /dev/null
-          else
-            echo "infocmp not available; terminfo payload checked by tools/check_macos_portable_deps.sh"
-          fi
 
       - name: Create DMG
         id: dmg
@@ -936,6 +990,13 @@ jobs:
           trap 'hdiutil detach "$mnt" -force || true' EXIT
           # Run help from inside the mounted DMG
           "$mnt/dsd-neo-macos/dsd-neo.sh" -h || (echo 'Running help from DMG failed' >&2; exit 1)
+          # The DMG as a user gets it carries every notice its records name, and its bin/
+          # and lib/ hold only files a record's macos_release map lists under binaries.
+          read -ra required_docs <<< "$DMG_REQUIRED_DOCS"
+          python3 tools/check_release_notices.py --platform macos \
+            --doc-dir "$mnt/dsd-neo-macos/share/doc/dsd-neo" --build-dir build/macos-arm64-release \
+            --vcpkg-share "$VCPKG_TRIPLET_DIR/share" --require "${required_docs[@]}" \
+            --binary-dir "$mnt/dsd-neo-macos/bin" "$mnt/dsd-neo-macos/lib"
           hdiutil detach "$mnt" -force
           trap - EXIT
 

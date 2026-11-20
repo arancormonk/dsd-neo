@@ -203,7 +203,8 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertIn("tools/check_patched_usb_libs.sh", text)
 
     def test_t15_desktop_librtlsdr_notices(self):
-        """The release packages bundle a librtlsdr built with dsd-neo's patches: its GPL text and a note naming them."""
+        """The release packages bundle a librtlsdr built with dsd-neo's patches: its GPL text, a note naming them and
+        the holder lines of its compiled sources."""
         note = (ROOT / "packaging/librtlsdr-PATCHES.txt").read_text()
         series = run([str(USB_PATCHES), "series", "librtlsdr"])
         self.assert_success(series)
@@ -215,30 +216,42 @@ class AirspyPackaging(unittest.TestCase):
         self.assertIn(pins["RTL_SDR_SHA"], note)
 
         gpl, patches = "licenses/librtlsdr-GPL-2.0-or-later.txt", "licenses/librtlsdr-PATCHES.txt"
+        # LICENSES/ reaches every package whole (the legal install component and the APK staging).
+        holders = "licenses/librtlsdr-NOTICES.txt"
         appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text()
         required = re.search(r"required=\(([^\n]+)\)", appimage).group(1).split()
         self.assertIn(gpl, required)
         self.assertIn(patches, required)
+        self.assertIn(holders, required)
         self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$docdir/{gpl}"', appimage)
         self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$docdir/{patches}"', appimage)
-        macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
-        self.assertIn(f'cp -f android/third_party/librtlsdr/COPYING "$DOCDIR/{gpl}"', macos)
-        self.assertIn(f'cp -f packaging/librtlsdr-PATCHES.txt "$DOCDIR/{patches}"', macos)
-        self.assertIn(f" {gpl} {patches} ", macos)
-        windows = (ROOT / ".github/workflows/windows-ci.yaml").read_text()
-        self.assertIn("Copy-Item -Force 'android/third_party/librtlsdr/COPYING' "
-                      "(Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop", windows)
-        self.assertIn("Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' "
-                      "(Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop", windows)
-        self.assertIn(f"'{gpl}','{patches}'", windows)
-        self.assertIn("no transfer left, canceling", windows)
+        # The DMG's staging copies the notices of the record's macos_release map.
+        self.assert_macos_stages_the_maps()
+        macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                     if c["id"] == "desktop-rtl")["macos_release"]
+        self.assertEqual(macos, {"binaries": ["librtlsdr"],
+                                 "notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
+                                             patches: "repo:packaging/librtlsdr-PATCHES.txt",
+                                             holders: "repo:LICENSES/librtlsdr-NOTICES.txt"}})
+        # The Windows staging copies the notices the record of each staged file names.
+        windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                       if c["id"] == "desktop-rtl")["windows_release"]
+        self.assertEqual(windows, {"binaries": ["rtlsdr.dll"],
+                                   "notices": {gpl: "repo:android/third_party/librtlsdr/COPYING",
+                                               patches: "repo:packaging/librtlsdr-PATCHES.txt",
+                                               holders: "repo:LICENSES/librtlsdr-NOTICES.txt"}})
+        notices = (ROOT / "tools/windows/release_tree_checks.psm1").read_text()
+        self.assertIn(f"'{gpl}','{patches}'", notices)
+        self.assertIn("no transfer left, canceling", (ROOT / "tools/windows/verify_release_tree.ps1").read_text())
+        self.assert_windows_release_scripts()
 
         component = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
                          if c["id"] == "desktop-rtl")
         self.assertEqual(sorted(component["platforms"]), ["linux", "macos", "windows"])
         self.assertEqual(component["license_concluded"], "GPL-2.0-or-later")
         self.assertEqual(component["notices"],
-                         ["android/third_party/librtlsdr/COPYING", "packaging/librtlsdr-PATCHES.txt"])
+                         ["android/third_party/librtlsdr/COPYING", "packaging/librtlsdr-PATCHES.txt",
+                          "LICENSES/librtlsdr-NOTICES.txt"])
         for name in series.stdout.split():
             self.assertIn("android/third_party/patches/" + name, component["paths"])
         self.assertEqual(component["pin"], "RTL_SDR_SHA")
@@ -266,15 +279,25 @@ class AirspyPackaging(unittest.TestCase):
         source = self.work / "package"
         source.mkdir()
         stage = self.work / "stage"
-        fft_notices = self.work / "pffft-licenses"
-        fft_notices.mkdir()
+        build = self.work / "build"
+        fft_notices = build / "pffft-licenses"
+        fft_notices.mkdir(parents=True)
         for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt"):
             (fft_notices / name).write_text("FFT notice fixture\n")
-        tea_notices = self.work / "tetra_crypto-licenses"
+        tea_notices = build / "tetra_crypto-licenses"
         tea_notices.mkdir()
         (tea_notices / "tetra_crypto-LICENSE.txt").write_text("TEA notice fixture\n")
-        result = run(["cmake", f"-DPFFFT_LICENSE_DIR={fft_notices}", f"-DTETRA_CRYPTO_LICENSE_DIR={tea_notices}",
+        # The directions to Qt's source the Android configure writes from its kit (tools/android_source_directions.py).
+        (build / "qt-source").mkdir()
+        (build / "qt-source" / "qt-source.txt").write_text("Qt source directions fixture\n")
+        share = self.work / "vcpkg-share"
+        for port in ("openssl", "curl", "zlib", "expat", "libsndfile", "libflac", "libogg", "libvorbis", "opus",
+                     "mp3lame", "mpg123"):
+            (share / port).mkdir(parents=True)
+            (share / port / "copyright").write_text("Port copyright fixture\n")
+        result = run(["cmake", f"-DBUILD_DIR={build}",
                       f"-DMBELIB_NOTICE_DIR={mbelib_notice_fixture(self.work / 'mbelib-notices')}",
+                      f"-DVCPKG_SHARE_DIR={share}",
                       f"-DREPO_DIR={ROOT}", f"-DSOURCE_DIR={source}",
                       f"-DSTAGE_DIR={stage}", "-P", str(ROOT / "cmake/stage_android_package.cmake")])
         self.assert_success(result)
@@ -289,12 +312,31 @@ class AirspyPackaging(unittest.TestCase):
         build_dep = next(line for line in appimage.splitlines()
                          if "build_dep https://github.com/airspy/airspyone_host " in line)
         self.assertIn("-DCMAKE_POLICY_VERSION_MINIMUM=3.5", build_dep)
+        self.assert_macos_stages_the_maps()
+        macos = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                     if c["id"] == "airspy")["macos_release"]
+        self.assertEqual(macos, {"binaries": ["libairspy"],
+                                 "notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
+        self.assertIn("'licenses/" + NOTICE + "'", (ROOT / "tools/windows/release_tree_checks.psm1").read_text())
+        windows = next(c for c in json.loads((ROOT / "legal/components.json").read_text())["components"]
+                       if c["id"] == "airspy")["windows_release"]
+        self.assertEqual(windows, {"binaries": ["airspy.dll"],
+                                   "notices": {"licenses/" + NOTICE: "repo:android/third_party/libairspy/LICENSE"}})
+        self.assert_windows_release_scripts()
+
+    def assert_macos_stages_the_maps(self):
+        """The DMG job stages each component's notices from its record's macos_release map."""
         macos = (ROOT / ".github/workflows/macos-ci.yaml").read_text()
-        self.assertIn(" licenses/" + NOTICE + " ", macos)
-        windows = (ROOT / ".github/workflows/windows-ci.yaml").read_text()
-        self.assertIn("'licenses/" + NOTICE + "'", windows)
-        self.assertIn("Copy-Item -Force 'android/third_party/libairspy/LICENSE' "
-                      "(Join-Path $licenseDir '" + NOTICE + "') -ErrorAction Stop", windows)
+        self.assertIn("cmake -DPLATFORM=macos ", macos)
+        self.assertIn("-P cmake/stage_release_notices.cmake", macos)
+
+    def assert_windows_release_scripts(self):
+        """The Windows release job and the pull-request Release build stage and check the tree with the scripts."""
+        for workflow in ("windows-ci.yaml", "windows-pr.yaml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            for script in ("./tools/windows/stage_release_tree.ps1", "./tools/windows/verify_release_tree.ps1"):
+                with self.subTest(workflow=workflow, script=script):
+                    self.assertIn(script, text)
 
     @unittest.skipUnless(shutil.which("clang-format"), "clang-format is required")
     def test_b2_upstream_format_is_ignored(self):
@@ -351,7 +393,7 @@ class AirspyPackaging(unittest.TestCase):
                 self.assertIn(expected, packages)
                 self.assertNotIn("airspy-dev", packages)
 
-    def test_m8_overlay_drift_is_rejected_and_repaired(self):
+    def copy_overlay_pin_check(self):
         for name in ("tools/ci-dependency-pins.env", "tools/check_vcpkg_overlay_pins.sh",
                      "tools/usb_dependency_patches.sh"):
             dest = self.work / name
@@ -359,35 +401,71 @@ class AirspyPackaging(unittest.TestCase):
             shutil.copy2(ROOT / name, dest)
         shutil.copytree(ROOT / "vcpkg-ports", self.work / "vcpkg-ports")
         shutil.copytree(PATCHES, self.work / "android/third_party/patches")
-        command = ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
+        return ["bash", str(self.work / "tools/check_vcpkg_overlay_pins.sh")]
+
+    def test_ncurses_archive_drift_is_rejected_and_repaired(self):
+        # The ncurses overlay downloads a release archive, not a GitHub commit: its
+        # manifest's version names the archive and its SHA512 pins it.
+        command = self.copy_overlay_pin_check()
         self.assert_success(run(command, cwd=self.work))
-        port = self.work / "vcpkg-ports/airspy/portfile.cmake"
-        original = port.read_text()
-        for key, length in (("REF", 40), ("SHA512", 128)):
-            with self.subTest(key=key):
-                port.write_text(re.sub(rf"(?m)^(\s*{key} )\S+", rf"\g<1>{'0' * length}", original))
+        port = self.work / "vcpkg-ports/ncurses/portfile.cmake"
+        manifest = self.work / "vcpkg-ports/ncurses/vcpkg.json"
+        port_text = port.read_text()
+        manifest_text = manifest.read_text()
+        self.assertIn('/ncurses-${VERSION}.tar.gz"', port_text)
+        cases = (
+            (port, port_text, re.sub(r"(?m)^(\s*SHA512 )\S+", rf"\g<1>{'0' * 128}", port_text),
+             "vcpkg-ports/ncurses/portfile.cmake: SHA512"),
+            (manifest, manifest_text, manifest_text.replace('"version": "6.5"', '"version": "6.6"'),
+             "vcpkg-ports/ncurses/vcpkg.json: version 6.6 does not match NCURSES_VERSION"),
+        )
+        for path, original, drifted, message in cases:
+            with self.subTest(path=path.name):
+                self.assertNotEqual(drifted, original)
+                path.write_text(drifted)
                 rejected = run(command, cwd=self.work)
                 self.assertEqual(rejected.returncode, 1, rejected.stdout)
-                self.assertIn(f"airspy/portfile.cmake: {key}", rejected.stdout)
+                self.assertIn(message, rejected.stdout)
                 self.assert_success(run(command + ["--fix"], cwd=self.work))
-                self.assertEqual(port.read_text(), original)
+                self.assertEqual(path.read_text(), original)
                 self.assert_success(run(command, cwd=self.work))
+
+    def test_m8_overlay_drift_is_rejected_and_repaired(self):
+        command = self.copy_overlay_pin_check()
+        self.assert_success(run(command, cwd=self.work))
+        for port_name in ("airspy", "rtlsdr", "soapysdr", "soapy-airspy", "hackrf", "soapy-hackrf", "codec2",
+                          "portaudio"):
+            port = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
+            original = port.read_text()
+            for key, length in (("REF", 40), ("SHA512", 128)):
+                with self.subTest(port=port_name, key=key):
+                    drifted = re.sub(rf"(?m)^(\s*{key} )\S+", rf"\g<1>{'0' * length}", original)
+                    self.assertNotEqual(drifted, original)
+                    port.write_text(drifted)
+                    rejected = run(command, cwd=self.work)
+                    self.assertEqual(rejected.returncode, 1, rejected.stdout)
+                    self.assertIn(f"vcpkg-ports/{port_name}/portfile.cmake: {key}", rejected.stdout)
+                    self.assert_success(run(command + ["--fix"], cwd=self.work))
+                    self.assertEqual(port.read_text(), original)
+                    self.assert_success(run(command, cwd=self.work))
         # A changed patch: its port's recorded digest is stale until --fix records the new one.
-        for port_name, patch_name in (("airspy", "0001-libairspy-wait-for-cancelled-transfers.patch"),
-                                      ("rtlsdr", "0003-librtlsdr-account-for-every-transfer.patch")):
+        android = "android/third_party/patches/"
+        for port_name, patch_name in (("airspy", android + "0001-libairspy-wait-for-cancelled-transfers.patch"),
+                                      ("rtlsdr", android + "0003-librtlsdr-account-for-every-transfer.patch")):
             with self.subTest(patch=patch_name):
-                patch = self.work / "android/third_party/patches" / patch_name
-                patch_text = patch.read_text()
+                patch = self.work / patch_name
+                # Bytes, so the patch's line endings stay as they are.
+                patch_bytes = patch.read_bytes()
                 portfile = self.work / "vcpkg-ports" / port_name / "portfile.cmake"
                 port_text = portfile.read_text()
-                patch.write_text(patch_text + "\n")
+                patch.write_bytes(patch_bytes + b"\n")
                 rejected = run(command, cwd=self.work)
                 self.assertEqual(rejected.returncode, 1, rejected.stdout)
                 self.assertIn(f"{port_name}/portfile.cmake: DSD_NEO_PATCH_SERIES_SHA256", rejected.stdout)
                 self.assert_success(run(command + ["--fix"], cwd=self.work))
                 self.assertNotEqual(portfile.read_text(), port_text)
                 self.assert_success(run(command, cwd=self.work))
-                patch.write_text(patch_text)
+                patch.write_bytes(patch_bytes)
                 portfile.write_text(port_text)
         # A port that stops passing the series to vcpkg_from_github() fails, whatever the recorded series says.
         for port_name in ("airspy", "rtlsdr"):

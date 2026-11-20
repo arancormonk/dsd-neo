@@ -1,16 +1,17 @@
 #
 # vcpkg dependency contract check (cross-platform, CMake-only).
 #
-# The Android and Windows presets take Codec2, libcurl and expat from the vcpkg
-# manifest and require all three. Codec2, libcurl and expat are otherwise silent
-# auto-detections that still link when absent, so losing one degrades M17 voice,
-# rdio uploads or RadioReference import with nothing failing: on Android nothing
-# on the build host can
-# smoke-test the APK, and on Windows the same regression would only show up in
-# a user's hands. Pin the manifest filters and the preset settings here. The
-# Windows presets must also use Ninja with an external compiler environment, so
-# they build with the Visual Studio in use rather than the one a Visual Studio
-# generator names.
+# The Android, Windows and macOS DMG presets take Codec2, libcurl and expat from
+# the vcpkg manifest and require all three. Codec2, libcurl and expat are
+# otherwise silent auto-detections that still link when absent, so losing one
+# degrades M17 voice, rdio uploads or RadioReference import with nothing
+# failing: on Android nothing on the build host can smoke-test the APK, and on
+# Windows and macOS the same regression would only show up in a user's hands.
+# Pin the manifest filters and the preset settings here. The Windows presets
+# must also use Ninja with an external compiler environment, so they build with
+# the Visual Studio in use rather than the one a Visual Studio generator names.
+# The macOS DMG preset must build with PortAudio, which the DMG bundles, and for
+# the deployment target its vcpkg triplet builds every library for.
 #
 # Usage:
 #   cmake -P cmake/vcpkg_dependency_contract.cmake
@@ -82,7 +83,8 @@ foreach(_adc_i RANGE 0 ${_ADC_DEP_LAST})
     endif()
 endforeach()
 
-# Codec2 must reach Android and must stay off Linux/macOS, which use the system
+# Codec2 must reach Android and the macOS DMG, which bundle the pinned fork
+# built by the codec2 overlay, and must stay off Linux, which uses the system
 # package. Windows shares the manifest, so it has to remain listed there too.
 if(_ADC_CODEC2_PLATFORM STREQUAL "<absent>")
     _adc_error("vcpkg.json: codec2 is not declared; the Android and Windows builds require it")
@@ -94,6 +96,13 @@ elseif(NOT _ADC_CODEC2_PLATFORM MATCHES "android")
 elseif(_ADC_CODEC2_PLATFORM MATCHES "!android")
     _adc_error(
         "vcpkg.json: codec2 platform \"${_ADC_CODEC2_PLATFORM}\" excludes android."
+    )
+elseif(
+    NOT _ADC_CODEC2_PLATFORM MATCHES "osx"
+    OR _ADC_CODEC2_PLATFORM MATCHES "!osx"
+)
+    _adc_error(
+        "vcpkg.json: codec2 has platform \"${_ADC_CODEC2_PLATFORM}\", which does not include osx; the macOS DMG bundles the pinned codec2 for M17 voice (USE_CODEC2)."
     )
 endif()
 
@@ -119,10 +128,71 @@ elseif(NOT _ADC_EXPAT_PLATFORM STREQUAL "")
     )
 endif()
 
+# The macOS DMG preset: PortAudio (the DMG bundles no PulseAudio), the DMG's
+# triplet, and that triplet's deployment target, so dsd-neo is built for the
+# same oldest macOS as every library it loads.
+function(_adc_check_macos_preset name cache)
+    foreach(
+        _adc_pair
+        "DSD_AUDIO_BACKEND=portaudio"
+        "VCPKG_TARGET_TRIPLET=arm64-osx-dynamic-release"
+        "CMAKE_OSX_ARCHITECTURES=arm64"
+    )
+        string(REPLACE "=" ";" _adc_pair "${_adc_pair}")
+        list(GET _adc_pair 0 _adc_var)
+        list(GET _adc_pair 1 _adc_want)
+        string(
+            JSON _adc_value
+            ERROR_VARIABLE _adc_value_err
+            GET "${cache}"
+            ${_adc_var}
+        )
+        if(_adc_value_err OR NOT _adc_value STREQUAL _adc_want)
+            _adc_error(
+                "CMakePresets.json: preset ${name} must set ${_adc_var}=${_adc_want}"
+            )
+        endif()
+    endforeach()
+
+    set(_adc_triplet
+        "${_ADC_ROOT_DIR}/vcpkg-triplets/arm64-osx-dynamic-release.cmake"
+    )
+    set(_adc_triplet_target "")
+    if(EXISTS "${_adc_triplet}")
+        file(
+            STRINGS "${_adc_triplet}"
+            _adc_triplet_lines
+            REGEX "^set\\(VCPKG_OSX_DEPLOYMENT_TARGET "
+        )
+        if(_adc_triplet_lines MATCHES "\"([0-9.]+)\"")
+            set(_adc_triplet_target "${CMAKE_MATCH_1}")
+        endif()
+    endif()
+    if(_adc_triplet_target STREQUAL "")
+        _adc_error(
+            "vcpkg-triplets/arm64-osx-dynamic-release.cmake must set VCPKG_OSX_DEPLOYMENT_TARGET"
+        )
+    else()
+        string(
+            JSON _adc_value
+            ERROR_VARIABLE _adc_value_err
+            GET "${cache}"
+            CMAKE_OSX_DEPLOYMENT_TARGET
+        )
+        if(_adc_value_err OR NOT _adc_value STREQUAL _adc_triplet_target)
+            _adc_error(
+                "CMakePresets.json: preset ${name} must set CMAKE_OSX_DEPLOYMENT_TARGET=${_adc_triplet_target}, the deployment target of its vcpkg triplet"
+            )
+        endif()
+    endif()
+    set(_ADC_ERRORS "${_ADC_ERRORS}" PARENT_SCOPE)
+endfunction()
+
 # ---------------------------------------------------------------------------
 # CMakePresets.json: every vcpkg-driven preset must demand what the manifest
-# ships. Only the Android and Windows presets use the vcpkg toolchain; Linux and
-# macOS resolve these from system packages and stay auto-detected.
+# ships. Only the Android, Windows and macOS DMG presets use the vcpkg
+# toolchain; the other Linux and macOS presets resolve these from system
+# packages and stay auto-detected.
 # ---------------------------------------------------------------------------
 set(_ADC_PRESETS "${_ADC_ROOT_DIR}/CMakePresets.json")
 if(NOT EXISTS "${_ADC_PRESETS}")
@@ -143,7 +213,7 @@ foreach(_adc_i RANGE 0 ${_ADC_PRESET_LAST})
         ${_adc_i}
     )
     string(JSON _adc_preset_name GET "${_adc_preset}" name)
-    if(NOT _adc_preset_name MATCHES "^(android|win-msvc)")
+    if(NOT _adc_preset_name MATCHES "^(android|win-msvc|macos)")
         continue()
     endif()
     list(APPEND _ADC_SEEN_PRESETS "${_adc_preset_name}")
@@ -211,6 +281,10 @@ foreach(_adc_i RANGE 0 ${_ADC_PRESET_LAST})
         endif()
     endforeach()
 
+    if(_adc_preset_name MATCHES "^macos")
+        _adc_check_macos_preset("${_adc_preset_name}" "${_adc_cache}")
+    endif()
+
     # The require options and the disable switch are mutually exclusive; setting
     # both in a preset would fail configure for a confusing reason.
     foreach(
@@ -240,6 +314,7 @@ foreach(
     android-app
     win-msvc-debug
     win-msvc-release
+    macos-arm64-release
 )
     # list(FIND) rather than IN_LIST: this runs under `cmake -P`, where CMP0057
     # is unset and IN_LIST is a hard error on CMake 3.x.

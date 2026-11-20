@@ -24,15 +24,37 @@
     },
     {
       "name": "soapysdr",
+      "platform": "windows | (osx & !static)",
+      "features": [
+        {
+          "name": "tools",
+          "platform": "windows"
+        }
+      ]
+    },
+    {
+      "name": "soapy-airspy",
+      "platform": "windows"
+    },
+    {
+      "name": "soapy-hackrf",
       "platform": "windows"
     },
     {
       "name": "codec2",
-      "platform": "windows | android"
+      "platform": "windows | android | osx"
     },
     {
       "name": "pdcurses",
       "platform": "windows"
+    },
+    {
+      "name": "ncurses",
+      "platform": "osx"
+    },
+    {
+      "name": "libusb",
+      "platform": "osx"
     },
     {
       "name": "airspy",
