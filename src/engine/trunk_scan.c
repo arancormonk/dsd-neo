@@ -1281,22 +1281,32 @@ scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, int w
     return rc;
 }
 
-/* An analog target decrypts nothing, so a key column that would load material for it is refused; the
- * cell itself never reaches the diagnostic. */
+/* A target whose class takes no key columns refuses one that would load material for it; the cell itself never reaches
+ * the diagnostic. An analog target decrypts nothing, and so (issue #890 key matrix, dsd_scan_mode_key_capability()) do
+ * D-STAR, YSF and TETRA DMO; an M17 target takes the session's keys; a dPMR target takes its scrambler key in its
+ * options cell (-R) alone: no key file, and no single key column, which loads no scrambler key. */
 static int
-scan_reject_analog_key_columns(const dsd_trunk_scan_target* target, char** fields, size_t count,
-                               const dsd_trunk_scan_row_parse* parse) {
-    if (!trunk_scan_type_is_analog(target->type)) {
+scan_reject_unkeyed_key_columns(const dsd_trunk_scan_target* target, char** fields, size_t count,
+                                const dsd_trunk_scan_row_parse* parse) {
+    const dsd_scan_mode mode = trunk_scan_target_mode(target->type);
+    const char* why = dsd_scan_mode_key_refusal(mode);
+    if (why == NULL) {
         return 0;
     }
     const int columns[] = {parse->keys_hex_idx, parse->keys_dec_idx, parse->single_key_hex_idx,
                            parse->single_key_dec_idx};
     for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
-        if (scan_optional_field(fields, count, columns[i])[0] != '\0') {
+        if (scan_optional_field(fields, count, columns[i])[0] == '\0') {
+            continue;
+        }
+        if (trunk_scan_type_is_analog(target->type)) {
             scan_set_error(parse->err, parse->err_sz, "row %u: key columns are not supported for an analog target",
                            parse->row);
-            return -1;
+        } else {
+            scan_set_error(parse->err, parse->err_sz, "row %u: key columns are not supported for a %s target: %s",
+                           parse->row, dsd_trunk_scan_target_type_name(target->type), why);
         }
+        return -1;
     }
     return 0;
 }
@@ -1309,7 +1319,7 @@ scan_reject_analog_key_columns(const dsd_trunk_scan_target* target, char** field
 static int
 scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t count,
                             const dsd_trunk_scan_row_parse* parse, const char* chan_csv, int have_options) {
-    if (scan_reject_analog_key_columns(target, fields, count, parse) != 0) {
+    if (scan_reject_unkeyed_key_columns(target, fields, count, parse) != 0) {
         return -1;
     }
     const char* keys_hex_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_hex_idx);
@@ -6194,10 +6204,25 @@ dsd_engine_trunk_scan_departure_due(const dsd_opts* opts, const dsd_state* state
     return trunk_scan_now_m() >= coord->depart_due_m;
 }
 
+/* A live key change for a target of @p type (issue #890 key matrix, dsd_scan_mode_key_capability()): a class that takes
+   no keys of its own (D-STAR, YSF, TETRA DMO, M17, analog) refuses every one, a force choice or a map alone included;
+   dPMR takes its scrambler key and a force choice of 0 or 1 (-4), as its options cell does. */
+static int
+target_decryption_capable(unsigned int mode, uint32_t fields, int force) {
+    const dsd_scan_key_capability capability = dsd_scan_mode_key_capability((dsd_scan_mode)mode);
+    if (capability == DSD_SCAN_KEYS_NONE || capability == DSD_SCAN_KEYS_SESSION) {
+        return 0;
+    }
+    return capability != DSD_SCAN_KEYS_SCRAMBLER || (fields & DSD_TRUNK_KEY_FORCE) == 0U || force == 0 || force == 1;
+}
+
 static int
 validate_target_decryption(dsd_trunk_scan_target_type type, uint32_t fields, const dsd_key_set* keys,
                            const dsd_dmr_key_map* map, int force) {
     const unsigned int mode = (unsigned int)trunk_scan_target_mode(type);
+    if (!target_decryption_capable(mode, fields, force)) {
+        return DSD_TRUNK_KEY_INVALID;
+    }
     if (((fields & DSD_TRUNK_KEY_MATERIAL) && !dsd_scan_keys_compatible(keys, mode))
         || ((fields & DSD_TRUNK_KEY_MAP) && map->count && mode != DSD_SCAN_MODE_DMR)) {
         return DSD_TRUNK_KEY_INVALID;

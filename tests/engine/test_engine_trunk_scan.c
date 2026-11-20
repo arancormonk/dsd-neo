@@ -5491,6 +5491,265 @@ test_conventional_activity_stale_visit_same_carrier(void) {
     return test_rc;
 }
 
+/* ---- Issue #890: the simplex key matrix at the target list ---- */
+
+static int load_nfm_targets(const char* body, dsd_trunk_scan_target_list* list, char* err, size_t err_sz);
+
+/* The key matrix at the target list's own entry points (issue #890): a type whose class takes no key columns refuses
+   each legacy key column, with its class's reason and never the cell; the options cell refuses a key switch the class
+   does not take, naming why; dPMR takes the scoped -R and what a legacy NXDN-scrambler system carries with it. */
+static int
+test_simplex_targets_follow_the_key_matrix(void) {
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list;
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+
+    static const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"a,ysf-conventional,433000000,,,,,,,keys.csv,,,\n",
+         "row 2: key columns are not supported for a ysf-conventional target: it decrypts nothing"},
+        {"a,dstar-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a dstar-conventional target: it decrypts nothing"},
+        {"a,tetra-dmo-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a tetra-dmo-conventional target: it decrypts nothing"},
+        {"a,m17-conventional,433000000,,,,,,,keys.csv,,,\n",
+         "row 2: key columns are not supported for a m17-conventional target: it takes no keys of its own: the "
+         "session's keys apply"},
+        {"a,dpmr-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a dpmr-conventional target: it takes only an -R scrambler key in "
+         "its options"},
+        {"a,dpmr-conventional,433000000,,,,,,,keys.csv,,-R 17,\n",
+         "row 2: key columns are not supported for a dpmr-conventional target"},
+        {"a,m17-conventional,433000000,,,,,,,,,--key-profile-ref m17-ref,\n",
+         "row 2: --key-profile-ref: a m17 row or target takes no key setting: it takes no keys of its own"},
+        {"a,m17-conventional,433000000,,,,,,,,,--no-decryption-keys,\n",
+         "row 2: --no-decryption-keys: a m17 row or target takes no key setting"},
+        {"a,ysf-conventional,433000000,,,,,,,,,--no-force-key,\n",
+         "row 2: --no-force-key: a ysf row or target takes no key setting: it decrypts nothing"},
+        {"a,tetra-dmo-conventional,433000000,,,,,,,,,-R 17,\n",
+         "row 2: -R: a tetra-dmo row or target takes no key setting: it decrypts nothing"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-R 32768,\n", "row 2: -R: invalid value"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-K keys.csv,\n", "row 2: -K: not supported for this mode/target"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-0,\n", "row 2: -0: not supported for this mode/target"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        DSD_MEMSET(err, 0, sizeof err);
+        const int rc = load_nfm_targets(refused[i].row, &list, err, sizeof err);
+        if (rc != -1 || !strstr(err, refused[i].diagnostic) || strstr(err, "12345") || strstr(err, "keys.csv")) {
+            DSD_FPRINTF(stderr, "key matrix row '%s': rc=%d err='%s', want '%s'\n", refused[i].row, rc, err,
+                        refused[i].diagnostic);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+    }
+    /* What the Qt scan list writes for a legacy NXDN-scrambler dPMR system, and an M17 row's talkgroup file alone. */
+    if (load_nfm_targets("a,dpmr-conventional,433000000,,,,,,,,,-R 17 -4 --key-profile-ref legacy-ref,\n"
+                         "b,dpmr-conventional,433100000,,,,,,,,,--no-decryption-keys --no-force-key,\n"
+                         "c,m17-conventional,433200000,,,,,,,,,--strict-crc --enc-lockout,\n",
+                         &list, err, sizeof err)
+        != 0) {
+        DSD_FPRINTF(stderr, "key matrix: legacy dPMR rows refused: %s\n", err);
+        return 1;
+    }
+    const dsd_trunk_scan_target* a = &list.targets[0];
+    if (list.count != 3 || a->single_key_scalars.R != 17U || !a->single_keys_present || a->row_options.force != 1
+        || strcmp(a->row_options.key_profile_ref, "legacy-ref") != 0
+        || (list.targets[1].row_options.present & DSD_SCAN_OPT_CLEAR_KEYS) == 0U) {
+        DSD_FPRINTF(stderr, "key matrix: legacy dPMR rows parsed wrong\n");
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    return test_rc;
+}
+
+/* A live key change for the target on air (dsd_trunk_scan_hook_decryption_apply()), by material and operation: a YSF,
+   D-STAR, TETRA DMO or M17 target refuses every one, a force choice alone and a clear-keys input included; a dPMR target
+   takes its scrambler key, a clear-keys input and a force of 0 or 1, and refuses a key loader, AES, a -1 multi-scalar
+   key, a DMR key map and an ALG ID force. */
+static int
+run_live_key_change_case(const char* type, int keyed) {
+    char body[192];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,433000000,,250,250,\nb,%s,433100000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: live keys init failed: %s\n", type, err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    dsd_dmr_key_map no_map;
+    DSD_MEMSET(&no_map, 0, sizeof no_map);
+
+    enum { OP_SCRAMBLER, OP_CLEAR, OP_FORCE_ON, OP_FORCE_OFF, OP_FORCE_ALG, OP_LOADER, OP_AES, OP_MULTI, OP_COUNT };
+
+    /* Taken by a keyed (dPMR) target; never by an unkeyed one. */
+    static const int k_keyed_takes[OP_COUNT] = {1, 1, 1, 1, 0, 0, 0, 0};
+    for (int op = 0; op < OP_COUNT; op++) {
+        dsd_key_set keys;
+        DSD_MEMSET(&keys, 0, sizeof keys);
+        uint32_t fields = DSD_TRUNK_KEY_MATERIAL;
+        int force = 0;
+        switch (op) {
+            case OP_SCRAMBLER:
+                keys.present = 1U;
+                keys.scalars.R = 17U;
+                keys.scalars.scalar_key_present[0] = 1U;
+                break;
+            case OP_CLEAR: keys.present = 1U; break;
+            case OP_FORCE_ON:
+                fields = DSD_TRUNK_KEY_FORCE;
+                force = 1;
+                break;
+            case OP_FORCE_OFF: fields = DSD_TRUNK_KEY_FORCE; break;
+            case OP_FORCE_ALG:
+                fields = DSD_TRUNK_KEY_FORCE;
+                force = 0x21;
+                break;
+            case OP_LOADER:
+                keys.present = 1U;
+                keys.keyloader = 1;
+                break;
+            case OP_AES:
+                keys.present = 1U;
+                keys.scalars.aes_key_loaded[0] = 1;
+                keys.scalars.aes_key_segments[0] = 4U;
+                break;
+            case OP_MULTI:
+            default:
+                keys.present = 1U;
+                keys.scalars.R = 0x1111111111ULL;
+                keys.scalars.RR = 0x1111111111ULL;
+                keys.scalars.scalar_key_present[0] = 1U;
+                keys.scalars.scalar_key_present[1] = 1U;
+                break;
+        }
+        const int want = keyed && k_keyed_takes[op] ? DSD_TRUNK_KEY_APPLIED : DSD_TRUNK_KEY_INVALID;
+        const int got =
+            dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", generation, fields, &keys, &no_map, force);
+        if (got != want) {
+            DSD_FPRINTF(stderr, "%s: live key op %d: %d, want %d\n", type, op, got, want);
+            test_rc = 1;
+        }
+        DSD_SECURE_ZERO(&keys, sizeof keys);
+    }
+    dsd_dmr_key_map map;
+    DSD_MEMSET(&map, 0, sizeof map);
+    map.count = 1U;
+    dsd_key_set none;
+    DSD_MEMSET(&none, 0, sizeof none);
+    if (dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", generation, DSD_TRUNK_KEY_MAP, &none, &map, 0)
+        != DSD_TRUNK_KEY_INVALID) {
+        DSD_FPRINTF(stderr, "%s: a DMR key map was taken\n", type);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_live_key_changes_follow_the_key_matrix(void) {
+    int rc = run_live_key_change_case("dpmr-conventional", 1);
+    rc |= run_live_key_change_case("m17-conventional", 0);
+    rc |= run_live_key_change_case("ysf-conventional", 0);
+    rc |= run_live_key_change_case("dstar-conventional", 0);
+    rc |= run_live_key_change_case("tetra-dmo-conventional", 0);
+    return rc;
+}
+
+/* A keyed dPMR target alternating with an M17 one (issue #890): M17 reads the shared scrambler register (state->R) as
+   its session key, so the dPMR target's -R must never be in it while M17 is on air. Landing on dPMR installs its key,
+   M17 gets the session's back, a pause on dPMR hands the manual session its own key, and a failed switch to M17 leaves
+   dPMR's in force (its rollback), the next successful one the session's. */
+static int
+test_keyed_dpmr_alternates_with_m17(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "d,dpmr-conventional,446100000,,250,,keyed,-R 17 -4\n"
+                                       "m,m17-conventional,433475000,,250,,session,\n",
+                                       path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    state.R = 0x1234U; /* the session's M17 scrambler seed */
+    state.M = 0;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
+    if (!failed) {
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U || state.M != 1;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 1 || state.R != 0x1234U || state.M != 0;
+        trunk_scan_test_set_now(0.52);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 rotation: active %zu R %llu M %d\n",
+                        dsd_engine_trunk_scan_active_index(&state), (unsigned long long)state.R, state.M);
+        }
+        /* Paused on dPMR: the manual session runs its own keys. Resumed: dPMR's again. */
+        failed |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0;
+        failed |= state.R != 0x1234U || state.M != 0;
+        failed |= dsd_engine_trunk_scan_resume_locked(&opts, &state) != 0;
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 pause: R %llu M %d\n", (unsigned long long)state.R, state.M);
+        }
+        /* A switch to M17 that fails keeps dPMR on air with its own key; the retry lands with the session's. */
+        g_scan_tune_to_freq_failures_remaining = 1;
+        trunk_scan_test_set_now(0.90);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        /* The switch was tried (its one failure spent) and rolled back. */
+        failed |= g_scan_tune_to_freq_failures_remaining != 0;
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U || state.M != 1;
+        g_scan_tune_to_freq_failures_remaining = 0;
+        trunk_scan_test_set_now(4.00);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        failed |= dsd_engine_trunk_scan_active_index(&state) != 1 || state.R != 0x1234U || state.M != 0;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 failed switch: active %zu R %llu M %d\n",
+                        dsd_engine_trunk_scan_active_index(&state), (unsigned long long)state.R, state.M);
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        failed |= state.R != 0x1234U || state.M != 0;
+    } else {
+        DSD_FPRINTF(stderr, "dpmr/m17 init failed: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(&state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
 static int
 test_conventional_activity_after_a_stream_restart(void) {
     int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
@@ -28901,6 +29160,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
     rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_simplex_targets_follow_the_key_matrix);
+    rc |= run_with_default_tune_hook(test_live_key_changes_follow_the_key_matrix);
+    rc |= run_with_default_tune_hook(test_keyed_dpmr_alternates_with_m17);
     rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
     rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);

@@ -464,6 +464,36 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
 
+dsd_scan_key_capability
+dsd_scan_mode_key_capability(dsd_scan_mode mode) {
+    switch (mode) {
+        case DSD_SCAN_MODE_INHERIT:
+        case DSD_SCAN_MODE_P25:
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SCAN_KEYS_FULL;
+        case DSD_SCAN_MODE_DPMR: return DSD_SCAN_KEYS_SCRAMBLER;
+        case DSD_SCAN_MODE_M17: return DSD_SCAN_KEYS_SESSION;
+        case DSD_SCAN_MODE_DSTAR:
+        case DSD_SCAN_MODE_YSF:
+        case DSD_SCAN_MODE_NFM:
+        case DSD_SCAN_MODE_AM:
+        case DSD_SCAN_MODE_TETRA_DMO:
+        default: return DSD_SCAN_KEYS_NONE;
+    }
+}
+
+const char*
+dsd_scan_mode_key_refusal(dsd_scan_mode mode) {
+    switch (dsd_scan_mode_key_capability(mode)) {
+        case DSD_SCAN_KEYS_SCRAMBLER: return "it takes only an -R scrambler key in its options";
+        case DSD_SCAN_KEYS_SESSION: return "it takes no keys of its own: the session's keys apply";
+        case DSD_SCAN_KEYS_NONE: return "it decrypts nothing";
+        case DSD_SCAN_KEYS_FULL:
+        default: return NULL;
+    }
+}
+
 dsd_decode_mode_profile
 dsd_scan_mode_profile(dsd_scan_mode mode) {
     return dsd_decode_mode_profile_for(

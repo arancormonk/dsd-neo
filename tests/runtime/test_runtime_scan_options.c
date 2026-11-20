@@ -956,8 +956,8 @@ static void
 check_tetra_dmo_options(void) {
     dsd_scan_options parsed = {0};
     char error[192] = {0};
-    static const char* const digital[] = {"--strict-crc", "--scan-voice-only", "--no-data-calls", "--enc-lockout",
-                                          "--no-force-key"};
+    /* Not a key switch: TETRA DMO decrypts nothing, so the key matrix refuses those (check_key_matrix_options()). */
+    static const char* const digital[] = {"--strict-crc", "--scan-voice-only", "--no-data-calls", "--enc-lockout"};
     for (size_t i = 0; i < sizeof(digital) / sizeof(digital[0]); i++) {
         DSD_MEMSET(&parsed, 0, sizeof(parsed));
         if (dsd_scan_options_parse(digital[i], DSD_SCAN_MODE_TETRA_DMO, 1, &parsed, error, sizeof(error)) != 0) {
@@ -983,9 +983,112 @@ check_tetra_dmo_options(void) {
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
 }
 
+/* Issue #890 key matrix (dsd_scan_mode_key_capability()), switch by switch and class by class: dPMR takes its scoped
+   15-bit -R scrambler key and what a legacy NXDN-scrambler system carries with it (-4, --no-force-key, a profile
+   reference, --no-decryption-keys) and nothing else; M17 takes no key setting (the session's keys apply); YSF, D-STAR
+   and TETRA DMO none (they decrypt nothing). Each refusal names why; the untyped and keyed classes are unchanged. */
+static void
+check_key_matrix_options(void) {
+    static const struct {
+        const char* text;
+        int dpmr; /* 1 when a dPMR row takes it */
+        int nxdn; /* 1 when an NXDN row takes it (unchanged, for the legacy-scrambler comparison) */
+    } switches[] = {
+        {"-R 17", 1, 1},
+        {"-4", 1, 1},
+        {"--no-force-key", 1, 1},
+        {"--no-decryption-keys", 1, 1},
+        {"--key-profile-ref legacy-ref", 1, 1},
+        {"-b 1", 0, 0},
+        {"-H 0000001f00", 0, 0}, /* NXDN takes a 64-digit Hytera key only */
+        {"-1 0123456789", 0, 1},
+        {"-K keys.csv", 0, 1},
+        {"-k keys.csv", 0, 1},
+        {"--dmr-tg-key-csv map.csv", 0, 0},
+        {"--dmr-tg-key-clear", 0, 0},
+        {"-0", 0, 0},
+        {"--dmr-force-algid 21", 0, 0},
+    };
+
+    static const struct {
+        unsigned int mode;
+        const char* why;
+    } unkeyed[] = {
+        {DSD_SCAN_MODE_M17,
+         "a m17 row or target takes no key setting: it takes no keys of its own: the session's keys"},
+        {DSD_SCAN_MODE_YSF, "a ysf row or target takes no key setting: it decrypts nothing"},
+        {DSD_SCAN_MODE_DSTAR, "a dstar row or target takes no key setting: it decrypts nothing"},
+        {DSD_SCAN_MODE_TETRA_DMO, "a tetra-dmo row or target takes no key setting: it decrypts nothing"},
+    };
+
+    for (size_t i = 0; i < sizeof(switches) / sizeof(switches[0]); i++) {
+        dsd_scan_options parsed = {0};
+        char error[192] = {0};
+        const int dpmr = dsd_scan_options_parse(switches[i].text, DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error));
+        if ((dpmr == 0) != switches[i].dpmr) {
+            DSD_FPRINTF(stderr, "dpmr '%s': rc %d (%s), want %s\n", switches[i].text, dpmr, error,
+                        switches[i].dpmr ? "taken" : "refused");
+            assert(0);
+        }
+        DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+        const int nxdn =
+            dsd_scan_options_parse(switches[i].text, DSD_SCAN_MODE_NXDN48, 1, &parsed, error, sizeof(error));
+        assert((nxdn == 0) == switches[i].nxdn);
+        DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+        for (size_t m = 0; m < sizeof(unkeyed) / sizeof(unkeyed[0]); m++) {
+            DSD_MEMSET(error, 0, sizeof(error));
+            if (dsd_scan_options_parse(switches[i].text, unkeyed[m].mode, 1, &parsed, error, sizeof(error)) == 0
+                || strstr(error, unkeyed[m].why) == NULL) {
+                DSD_FPRINTF(stderr, "class %u '%s': '%s', want '%s'\n", unkeyed[m].mode, switches[i].text, error,
+                            unkeyed[m].why);
+                assert(0);
+            }
+            DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+        }
+    }
+    /* 15 bits: the scrambler key's range (TS 102 658 clause 7.4). */
+    dsd_scan_options parsed = {0};
+    char error[192] = {0};
+    assert(dsd_scan_options_parse("-R 32767", DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.scalar == 32767U);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    assert(dsd_scan_options_parse("-R 32768", DSD_SCAN_MODE_DPMR, 1, &parsed, error, sizeof(error)) < 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    /* The legacy NXDN-scrambler system's whole option text, as the Qt scan list writes it for a dPMR row. */
+    assert(dsd_scan_options_parse("-R 17 -4 --key-profile-ref legacy-ref", DSD_SCAN_MODE_DPMR, 1, &parsed, error,
+                                  sizeof(error))
+           == 0);
+    assert(parsed.values.force == 1 && (parsed.values.present & DSD_SCAN_OPT_SCRAMBLER) != 0U);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    /* The fields a class may set agree: none that carry keys for M17, YSF, D-STAR or TETRA DMO. */
+    const uint32_t key_fields = DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_FILES | DSD_SCAN_OPT_DMR_MAP
+                                | DSD_SCAN_OPT_CLEAR_KEYS | DSD_SCAN_OPT_KEY_PROFILE_REF | DSD_SCAN_OPT_FORCE;
+    for (size_t m = 0; m < sizeof(unkeyed) / sizeof(unkeyed[0]); m++) {
+        assert((dsd_scan_options_fields_for_mode(unkeyed[m].mode, 1) & key_fields) == 0U);
+    }
+    assert((dsd_scan_options_fields_for_mode(DSD_SCAN_MODE_DPMR, 1) & key_fields)
+           == (DSD_SCAN_OPT_SCRAMBLER | DSD_SCAN_OPT_CLEAR_KEYS | DSD_SCAN_OPT_KEY_PROFILE_REF | DSD_SCAN_OPT_FORCE));
+    /* An untyped row keeps every key switch it had. */
+    assert(dsd_scan_options_parse("--no-decryption-keys --no-force-key", DSD_SCAN_MODE_INHERIT, 1, &parsed, error,
+                                  sizeof(error))
+           == 0);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    /* The capability table itself. */
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_INHERIT) == DSD_SCAN_KEYS_FULL);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_P25) == DSD_SCAN_KEYS_FULL);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_NXDN96) == DSD_SCAN_KEYS_FULL);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_DPMR) == DSD_SCAN_KEYS_SCRAMBLER);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_M17) == DSD_SCAN_KEYS_SESSION);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_TETRA_DMO) == DSD_SCAN_KEYS_NONE);
+    assert(dsd_scan_mode_key_capability(DSD_SCAN_MODE_NFM) == DSD_SCAN_KEYS_NONE);
+    assert(dsd_scan_mode_key_capability((dsd_scan_mode)(DSD_SCAN_MODE_LAST + 1)) == DSD_SCAN_KEYS_NONE);
+    assert(dsd_scan_mode_key_refusal(DSD_SCAN_MODE_DMR) == NULL);
+}
+
 int
 main(void) {
     check_tetra_dmo_options();
+    check_key_matrix_options();
     check_recording_switches_refused();
     check_tone_options();
     check_tone_summary();

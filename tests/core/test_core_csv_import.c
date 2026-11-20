@@ -3126,6 +3126,50 @@ test_nfm_channel_map_tone_lists(void) {
     return rc;
 }
 
+/* Issue #890 key matrix on -Y rows: a ysf, dstar, tetra-dmo, m17 or dpmr row takes no legacy key column (each says why,
+   never echoing the cell), a dpmr row takes its scoped -R in the options cell, and an m17 row refuses -R there. */
+static int
+test_simplex_channel_map_keys(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "simplex-map-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    char log[4096];
+    int rc = 0;
+
+    static const struct {
+        const char* mode;
+        const char* why;
+    } modes[] = {
+        {"ysf", "key columns are not supported for mode ysf: it decrypts nothing"},
+        {"dstar", "key columns are not supported for mode dstar: it decrypts nothing"},
+        {"tetra-dmo", "key columns are not supported for mode tetra-dmo: it decrypts nothing"},
+        {"m17", "key columns are not supported for mode m17: it takes no keys of its own: the session's keys apply"},
+        {"dpmr", "key columns are not supported for mode dpmr: it takes only an -R scrambler key in its options"},
+    };
+
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "channel,frequency_hz,mode,single_key_dec\n1,433000000,%s,SECRET123\n",
+                     modes[i].mode);
+        rc |= expect_import_refused(path, body, modes[i].why);
+        const int imported = import_channel_map_text(path, body, log, sizeof log);
+        rc |= fixture_check(imported != CHANNEL_MAP_NOT_IMPORTED && strstr(log, "SECRET") == NULL,
+                            "keyed simplex row: the key text stays out of the log");
+        DSD_SNPRINTF(body, sizeof body, "channel,frequency_hz,mode,keys_hex_csv,options\n1,433000000,%s,keys.csv,\n",
+                     modes[i].mode);
+        rc |= expect_import_refused(path, body, modes[i].why);
+    }
+    rc |= fixture_check(
+        import_channel_map_text(path, "channel,frequency_hz,mode,options\n1,446100000,dpmr,-R 17 -4\n", log, sizeof log)
+            == 0,
+        "a dpmr row takes its scoped -R");
+    rc |= expect_import_refused(path, "channel,frequency_hz,mode,options\n1,433475000,m17,-R 17\n",
+                                "row 2: -R: a m17 row or target takes no key setting");
+    assert(remove(path) == 0);
+    return rc;
+}
+
 int
 main(void) {
     if (test_bandplan_offset_boundaries() != 0) {
@@ -3141,6 +3185,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_warns_unreachable_names() != 0) {
+        return 1;
+    }
+    if (test_simplex_channel_map_keys() != 0) {
         return 1;
     }
     if (test_nfm_channel_map_rows() != 0) {

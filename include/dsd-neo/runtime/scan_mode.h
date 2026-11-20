@@ -42,6 +42,30 @@ typedef enum {
  * class moves it, so stored values and MODE_BIT() option masks keep their meaning. */
 #define DSD_SCAN_MODE_LAST DSD_SCAN_MODE_TETRA_DMO
 
+/** Which keys a row or target of a scan class takes of its own (issue #890 key capability matrix): the one table every
+ * entry point that takes a row's keys enforces (the options cell, the legacy key columns, a live key change, the key
+ * loader check), and that the Qt/Android scan list's catalog mirrors. */
+typedef enum {
+    /** Every key option, key column, key file and key loader its class decodes: an untyped row, P25, DMR, NXDN. */
+    DSD_SCAN_KEYS_FULL = 0,
+    /** dPMR: only its scoped 15-bit `-R` scrambler key (TS 102 658 clause 7.4), with `-4`, `--no-force-key`,
+     * `--key-profile-ref` and `--no-decryption-keys`, as a legacy NXDN-scrambler system carries them; no key column,
+     * key file, key loader or other key. */
+    DSD_SCAN_KEYS_SCRAMBLER,
+    /** M17: no key of its own, the session's keys apply; any per-row key setting is refused. */
+    DSD_SCAN_KEYS_SESSION,
+    /** No decryption at all, so no key setting: YSF, D-STAR, TETRA DMO (dsd-neo has no direct mode decryption), and
+     * the analog classes. */
+    DSD_SCAN_KEYS_NONE,
+} dsd_scan_key_capability;
+
+/** The keys class @p mode takes of its own (dsd_scan_key_capability); DSD_SCAN_KEYS_NONE for a value out of range. */
+dsd_scan_key_capability dsd_scan_mode_key_capability(dsd_scan_mode mode);
+/** Why class @p mode takes no key column or key file a row or target names, for its refusal ("it takes only an -R
+ * scrambler key in its options", "the session's keys apply", "it decrypts nothing"); NULL for a class that takes them
+ * (DSD_SCAN_KEYS_FULL). */
+const char* dsd_scan_mode_key_refusal(dsd_scan_mode mode);
+
 /** Target modulation precedence shared by scope reapplication and trunk entry. */
 typedef enum {
     DSD_SCAN_MODULATION_INHERIT = 0,
