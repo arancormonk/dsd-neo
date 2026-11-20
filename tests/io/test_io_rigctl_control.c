@@ -15,9 +15,11 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <limits.h>
@@ -44,6 +46,14 @@
 static char g_commands[MAX_COMMANDS][64];
 static size_t g_command_count;
 static const char* g_responses[MAX_RESPONSES];
+/* A reply's length when it holds a NUL (0: up to its first NUL). */
+static size_t g_response_lens[MAX_RESPONSES];
+/* How long after the read before it each reply arrives, in ms of the test's real clock (0: at once). A read that waits
+   for a reply's arrival (dsd_socket_wait(), or dsd_socket_recv() under the socket timeout) moves the clock on. */
+static uint64_t g_response_delay_ms[MAX_RESPONSES];
+static uint64_t g_now_ms;
+/* The longest wait the last dsd_socket_wait() was given. */
+static unsigned int g_last_wait_ms;
 static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
@@ -86,6 +96,17 @@ static const dsd_state* g_session_request_state;
    the scope's answer (dsd_channel_modes_rigctl_request_is_session()). */
 static int g_channel_modes_present;
 
+/* The input marks a manual tune took (io_control_set_freq_tagged()), and how many commands had been sent at the last. */
+static int g_mark_count;
+static size_t g_mark_after_commands;
+
+void
+dsd_input_backlog_mark(dsd_input_cut* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->order = (uint64_t)++g_mark_count;
+    g_mark_after_commands = g_command_count;
+}
+
 static void
 reset_stubs(void) {
     DSD_MEMSET(g_commands, 0, sizeof(g_commands));
@@ -126,9 +147,14 @@ reset_stubs(void) {
     g_rtl_last_applied_freq = 0U;
     DSD_MEMSET(&g_config, 0, sizeof(g_config));
     g_config.rigctl_rcvtimeo_ms = 1500;
+    DSD_MEMSET(g_response_delay_ms, 0, sizeof(g_response_delay_ms));
+    g_now_ms = 1000000U;
+    g_last_wait_ms = 0U;
     g_session_request = 0;
     g_session_request_state = NULL;
     g_channel_modes_present = 0;
+    g_mark_count = 0;
+    g_mark_after_commands = 0U;
 }
 
 int
@@ -165,6 +191,22 @@ rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
 static void
 push_response(const char* response) {
     assert(g_response_count < MAX_RESPONSES);
+    g_response_lens[g_response_count] = 0U;
+    g_responses[g_response_count++] = response;
+}
+
+/* A reply that arrives @p delay_ms after the read before it. */
+static void
+push_response_after(const char* response, uint64_t delay_ms) {
+    g_response_delay_ms[g_response_count] = delay_ms;
+    push_response(response);
+}
+
+/* A reply of @p len bytes, NULs included. */
+static void
+push_response_len(const char* response, size_t len) {
+    assert(g_response_count < MAX_RESPONSES);
+    g_response_lens[g_response_count] = len;
     g_responses[g_response_count++] = response;
 }
 
@@ -304,6 +346,31 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     return (int)len;
 }
 
+uint64_t
+dsd_realtime_mono_ms(void) {
+    return g_now_ms;
+}
+
+/* Readable once the next reply has arrived within @p timeout_ms, or at once with none queued (the peer closed, so the
+   read reports it); else the wait runs out. */
+int
+dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms) {
+    (void)sock;
+    assert(events == DSD_SOCKET_WAIT_READ);
+    g_last_wait_ms = timeout_ms;
+    if (g_response_index >= g_response_count) {
+        return DSD_SOCKET_WAIT_READ;
+    }
+    if (g_response_delay_ms[g_response_index] > timeout_ms) {
+        g_now_ms += timeout_ms;
+        g_response_delay_ms[g_response_index] -= timeout_ms;
+        return 0;
+    }
+    g_now_ms += g_response_delay_ms[g_response_index];
+    g_response_delay_ms[g_response_index] = 0U;
+    return DSD_SOCKET_WAIT_READ;
+}
+
 int
 dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     (void)sock;
@@ -311,8 +378,19 @@ dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     if (!buf || len == 0U || g_response_index >= g_response_count) {
         return 0;
     }
+    /* A reply not waited for blocks the read until it arrives, or for the socket's receive timeout. */
+    const uint64_t delay_ms = g_response_delay_ms[g_response_index];
+    const unsigned int socket_timeout_ms = (unsigned int)g_config.rigctl_rcvtimeo_ms;
+    if (delay_ms > socket_timeout_ms) {
+        g_now_ms += socket_timeout_ms;
+        g_response_delay_ms[g_response_index] -= socket_timeout_ms;
+        return -1;
+    }
+    g_now_ms += delay_ms;
+    g_response_delay_ms[g_response_index] = 0U;
+    const size_t given_len = g_response_lens[g_response_index];
     const char* response = g_responses[g_response_index++];
-    size_t response_len = strlen(response);
+    size_t response_len = given_len != 0U ? given_len : strlen(response);
     if (response_len > len) {
         response_len = len;
     }
@@ -1292,7 +1370,8 @@ test_rebind_forgets_the_frequency_a_reused_number_would_match(void) {
 }
 
 /* A reply that fills the whole receive buffer (1024 bytes) is terminated inside every caller's buffer: the frequency
- * query, the frequency set and the modulation set each read one. */
+ * query, the frequency set and the modulation set each read one. The frequency set's is no single RPRT line (its status
+ * line has more after it), so it confirms nothing (issue #834). */
 static int
 test_full_size_replies_stay_in_bounds(void) {
     static char freq_reply[1100];
@@ -1308,10 +1387,150 @@ test_full_size_replies_stay_in_bounds(void) {
     push_response(freq_reply);
     assert(GetCurrentFreq(123) == 851037500L);
     push_response(ok_reply);
-    assert(SetFreq(123, 851050000L));
+    assert(!SetFreq(123, 851050000L));
     push_response(ok_reply);
     assert(SetModulationKind(123, DSD_ANALOG_DEMOD_AM, 8333));
     assert(g_command_count == 3);
+    return 0;
+}
+
+/* Issue #834: only a complete numeric RPRT line says what a frequency request did: "RPRT 0" confirms, a non-zero
+ * status refuses and leaves the peer where it last confirmed, and anything else (a garbled or malformed line, a line
+ * cut short, more than one line, no reply) leaves where the peer is unknown: it may have moved, so the next request
+ * goes out whatever it asks for. */
+static int
+test_set_freq_takes_only_a_complete_rprt(void) {
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(130, 851012500L));
+    assert(RigctlConfirmedFreq(130) == 851012500U);
+    push_response("RPRT 0\r\n");
+    assert(SetFreq(130, 851025000L));
+    assert(RigctlConfirmedFreq(130) == 851025000U);
+
+    /* A complete refusal: still on the frequency confirmed, which a request for it does not send again. */
+    push_response("RPRT -1\n");
+    assert(!SetFreq(130, 851037500L));
+    assert(RigctlConfirmedFreq(130) == 851025000U);
+    const size_t sent = g_command_count;
+    assert(SetFreq(130, 851025000L) && g_command_count == sent);
+
+    /* A line cut short before the peer goes quiet ("RPRT "), or one whose status a newline splits, says nothing. */
+    static const char* const k_unknown[] = {"?\n",       "RPRT x\n", "RPRT 0", "RPRT 0 1\n", "RPRT 0\nRPRT 0\n",
+                                            "RPRT\n",    "",         "RPRT ",  "RPRT \n0\n", "RPRT \n-1\n",
+                                            "RPRT +0\n", "RPRT  0\n"};
+    for (size_t i = 0; i < sizeof k_unknown / sizeof k_unknown[0]; i++) {
+        reset_stubs(); /* the requests and replies the stub holds are few */
+        push_response("RPRT 0\n");
+        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)));
+        if (k_unknown[i][0] != '\0') {
+            push_response(k_unknown[i]);
+        }
+        assert(!SetFreq(130, 851500000L));
+        assert(RigctlConfirmedFreq(130) == 0U);
+        /* A request for the frequency confirmed before goes out again. */
+        push_response("RPRT 0\n");
+        const size_t before = g_command_count;
+        assert(SetFreq(130, 851025000L + 12500L * (long)(i + 1U)) && g_command_count == before + 1);
+    }
+
+    /* The reply is judged by the bytes received: a complete line followed by a NUL and more bytes is not one line. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(130, 851012500L));
+    static const char k_nul_then_more[] = "RPRT 0\n\0RPRT 0\n";
+    push_response_len(k_nul_then_more, sizeof k_nul_then_more - 1U);
+    assert(!SetFreq(130, 851500000L));
+    assert(RigctlConfirmedFreq(130) == 0U);
+    return 0;
+}
+
+/* A frequency reply TCP splits over several reads is read up to its newline before it is judged: "RPRT 0" and its
+ * newline apart still confirm, a split refusal still refuses, and the newline is not left over for the next request's
+ * reply. A reply that fills the buffer with no newline is unknown, and nothing past the buffer is read for it. */
+static int
+test_set_freq_reads_a_split_reply_whole(void) {
+    reset_stubs();
+    push_response("RPRT 0");
+    push_response("\n");
+    assert(SetFreq(131, 851012500L));
+    assert(RigctlConfirmedFreq(131) == 851012500U);
+    assert(g_response_index == 2U);
+    /* The next request takes its own reply, not the first one's newline. */
+    push_response("RPRT 0\n");
+    assert(SetFreq(131, 851025000L));
+    assert(RigctlConfirmedFreq(131) == 851025000U);
+
+    /* Split inside its first word, and a refusal split around its status and CR. */
+    push_response("RP");
+    push_response("RT 0\r\n");
+    assert(SetFreq(131, 851037500L));
+    assert(RigctlConfirmedFreq(131) == 851037500U);
+    push_response("RPRT");
+    push_response(" -1");
+    push_response("\r\n");
+    assert(!SetFreq(131, 851050000L));
+    assert(RigctlConfirmedFreq(131) == 851037500U);
+    assert(g_response_index == g_response_count);
+
+    /* A NUL before the newline is still not one line, over two reads as in one. */
+    static const char k_nul[] = "RPRT 0\0";
+    push_response_len(k_nul, sizeof k_nul - 1U);
+    push_response("\n");
+    assert(!SetFreq(131, 851062500L));
+    assert(RigctlConfirmedFreq(131) == 0U);
+
+    /* A full buffer with no newline: unknown, and the reply queued after it stays unread. */
+    reset_stubs();
+    static char k_full[1024];
+    DSD_MEMSET(k_full, '0', sizeof k_full);
+    push_response_len(k_full, 512U);
+    push_response_len(k_full, sizeof k_full);
+    push_response("RPRT 0\n");
+    assert(!SetFreq(132, 851012500L));
+    assert(RigctlConfirmedFreq(132) == 0U);
+    assert(g_response_index == 2U);
+    return 0;
+}
+
+/* A frequency reply has one receive timeout for the whole line, from the request's first read: a peer that sends its
+ * reply in pieces, each inside the socket timeout but slower than it all told, holds SetFreq() (and the decoder) for
+ * one timeout, not one per piece, and the request's outcome is unknown. Each read waits only for the time left. */
+static int
+test_set_freq_bounds_a_slow_split_reply_by_one_timeout(void) {
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(133, 851012500L));
+    const uint64_t started = g_now_ms;
+
+    /* Pieces at 900, 1400 and 1700 ms: the newline comes after the 1500 ms timeout. */
+    push_response_after("RPRT", 900U);
+    push_response_after(" 0", 500U);
+    push_response_after("\n", 300U);
+    assert(!SetFreq(133, 851025000L));
+    assert(RigctlConfirmedFreq(133) == 0U);
+    assert(g_now_ms - started == 1500U);
+    assert(g_last_wait_ms == 100U);
+    assert(g_response_index == 3U); /* the late newline stays unread */
+
+    /* Pieces that never end the line stop at the timeout, not at the buffer's end. */
+    reset_stubs();
+    for (int i = 0; i < 8; i++) {
+        push_response_after("0", 400U);
+    }
+    const uint64_t begun = g_now_ms;
+    assert(!SetFreq(134, 851012500L));
+    assert(g_now_ms - begun == 1500U);
+    assert(g_response_index == 3U);
+
+    /* Pieces that end the line within the timeout still confirm. */
+    reset_stubs();
+    push_response_after("RPRT", 700U);
+    push_response_after(" 0", 700U);
+    push_response_after("\n", 50U);
+    assert(SetFreq(135, 851012500L));
+    assert(RigctlConfirmedFreq(135) == 851012500U);
+    assert(g_last_wait_ms == 100U);
     return 0;
 }
 
@@ -1341,6 +1560,30 @@ test_get_current_freq_parses_first_line_and_errors(void) {
     push_response("2147483648\n");
     assert(GetCurrentFreq(102) == 0L);
 #endif
+    return 0;
+}
+
+/* A frequency reading TCP splits over two reads is read whole, up to its newline, not taken short with the rest left
+ * for the next command's reply: the tune after it is still confirmed. Its pieces share one receive timeout. */
+static int
+test_get_current_freq_reads_a_split_reply_whole(void) {
+    reset_stubs();
+    push_response("451");
+    push_response("000000\n");
+    assert(GetCurrentFreq(103) == 451000000L);
+    assert(g_response_index == 2U);
+    push_response("RPRT 0\n");
+    assert(SetFreq(103, 451012500L));
+    assert(RigctlConfirmedFreq(103) == 451012500U);
+
+    /* A reading whose newline comes after the timeout is unknown, and its newline stays unread. */
+    reset_stubs();
+    const uint64_t started = g_now_ms;
+    push_response_after("451", 1000U);
+    push_response_after("000000\n", 600U);
+    assert(GetCurrentFreq(104) == 0L);
+    assert(g_now_ms - started == 1500U);
+    assert(g_response_index == 1U);
     return 0;
 }
 
@@ -1385,6 +1628,28 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     assert(g_command_count == 1 && strcmp(g_commands[0], "F 851062500\n") == 0);
     assert(opts.rtlsdr_center_freq == 851050000U);
     assert(opts.rigctl_sent_freq_hz == 851050000U);
+
+    /* A tune given a mark (issue #834) marks the input once the passband is settled, immediately before the frequency:
+       the peer is on the old frequency while it answers the passband request. One given none marks nothing. */
+    assert(g_mark_count == 0);
+    reset_stubs();
+    opts.setmod_bw = 6250;
+    push_response("RPRT 0\n");
+    push_response("RPRT 0\n");
+    dsd_input_cut mark;
+    DSD_MEMSET(&mark, 0, sizeof(mark));
+    assert(io_control_set_freq_tagged(&opts, &state, 851087500U, NULL, &mark) == 0);
+    assert(g_command_count == 2);
+    assert(strncmp(g_commands[0], "M ", 2U) == 0);
+    assert(strcmp(g_commands[1], "F 851087500\n") == 0);
+    assert(g_mark_count == 1 && g_mark_after_commands == 1U && mark.order == 1U);
+    /* A refused passband fails the tune before the frequency: nothing is marked. */
+    reset_stubs();
+    opts.setmod_bw = 7500;
+    push_response("RPRT 1\n");
+    push_response("RPRT 1\n");
+    assert(io_control_set_freq_tagged(&opts, &state, 851100000U, NULL, &mark) == -1);
+    assert(g_mark_count == 0);
 
     reset_stubs();
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -2886,7 +3151,7 @@ test_io_control_set_freq_refuses_fixed_tuning(void) {
         push_response("RPRT 0\n");
 
         uint64_t pending_id = 7U;
-        assert(io_control_set_freq_tagged(&opts, &state, 851075000U, &pending_id) == -1);
+        assert(io_control_set_freq_tagged(&opts, &state, 851075000U, &pending_id, NULL) == -1);
         assert(pending_id == 0U);
         assert(g_command_count == 0);
         assert(g_rtl_tune_calls == 0);
@@ -2976,14 +3241,14 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
 
     uint64_t pending_id = UINT64_MAX;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    assert(io_control_set_freq_tagged(&opts, &state, 851125000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(&opts, &state, 851125000U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     const uint64_t first_id = g_rtl_tune_id;
     assert((first_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
     assert((uint32_t)first_id != 0U);
     assert(pending_id == first_id);
 
     pending_id = UINT64_MAX;
-    assert(io_control_set_freq_tagged(&opts, &state, 851150000U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(&opts, &state, 851150000U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
     assert(g_rtl_tune_id != first_id);
     assert(pending_id == g_rtl_tune_id);
@@ -2992,7 +3257,7 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
     for (size_t i = 0; i < sizeof not_pending / sizeof not_pending[0]; i++) {
         g_rtl_tune_result = not_pending[i];
         pending_id = UINT64_MAX;
-        assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == not_pending[i]);
+        assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == not_pending[i]);
         assert((g_rtl_tune_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
         assert(pending_id == 0U);
     }
@@ -3001,16 +3266,16 @@ test_io_control_set_freq_tagged_reports_the_pending_rtl_id(void) {
        stream reconciles its own copy; with no applied centre known the cache stays. */
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     opts.rtlsdr_center_freq = 851150000U;
-    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == RTL_STREAM_TUNE_FAILED);
     assert(opts.rtlsdr_center_freq == 851000000U);
     g_rtl_last_applied_freq = 0U;
     opts.rtlsdr_center_freq = 851150000U;
-    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id) == RTL_STREAM_TUNE_FAILED);
+    assert(io_control_set_freq_tagged(&opts, &state, 851175000U, &pending_id, NULL) == RTL_STREAM_TUNE_FAILED);
     assert(opts.rtlsdr_center_freq == 851150000U);
 
     /* A refusal before any backend runs says no request either. */
     pending_id = UINT64_MAX;
-    assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id) == -1);
+    assert(io_control_set_freq_tagged(&opts, &state, 0U, &pending_id, NULL) == -1);
     assert(pending_id == 0U);
     return 0;
 }
@@ -3041,7 +3306,11 @@ main(void) {
     rc |= test_rebind_opens_a_fresh_record_where_no_am_is_left_behind();
     rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
+    rc |= test_set_freq_takes_only_a_complete_rprt();
+    rc |= test_set_freq_reads_a_split_reply_whole();
+    rc |= test_set_freq_bounds_a_slow_split_reply_by_one_timeout();
     rc |= test_get_current_freq_parses_first_line_and_errors();
+    rc |= test_get_current_freq_reads_a_split_reply_whole();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();
     rc |= test_scan_restore_keeps_the_record_of_a_session_passband();

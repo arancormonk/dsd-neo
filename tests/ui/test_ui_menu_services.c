@@ -41,7 +41,9 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -591,7 +593,11 @@ static int g_io_control_set_freq_result = -1;
 static uint64_t g_io_control_pending_id = 0U;
 
 int
-io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                           dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = g_io_control_set_freq_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_pending_id : 0U;
@@ -642,6 +648,28 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     g_carrier_boundary_calls++;
     g_carrier_boundary_kind = (int)kind;
     g_carrier_boundary_guarded = guard_held;
+}
+
+/* DMR's receiver attribution, which a rigctl tune whose reply was lost forgets: the DMR machine is not this test's. */
+dmr_sm_ctx_t*
+dmr_sm_get_ctx(void) {
+    return NULL;
+}
+
+void
+dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx) {
+    (void)ctx;
+}
+
+/* A rigctl peer's confirmed move (issue #834): the engine's timeline is not this test's. */
+void
+dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
+                              const dsd_input_cut* mark) {
+    (void)opts;
+    (void)state;
+    (void)sent_before_hz;
+    (void)freq_hz;
+    (void)mark;
 }
 
 void
@@ -2795,6 +2823,31 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_int("keys clear drops the tg key notice latch", (int)state.dmr_tg_key_note_epoch[0], 0);
     rc |= expect_int("keys clear drops the tg key skip latch", (int)state.dmr_tg_key_skip_epoch[0], 0);
 
+    // A call that keyed from a talkgroup's key of the cleared keyring: the operator's own key (none) is the working key
+    // again, and slot 1's row shows no copy of the cleared key. The talkgroup it keyed from stays.
+    rc |= expect_int("clear: seed key import ok again", svc_import_keys_dec(&opts, &state, "keys.csv"), 0);
+    state.K = state.K1 = state.H = 0x33ULL;
+    state.basic_key_present = 1U;
+    state.hytera_key_segments = 1U;
+    const unsigned long long int tg_key[6] = {0x33ULL, 0x33ULL, 0ULL, 0ULL, 0ULL, 0x33ULL};
+    DSD_MEMCPY(state.dmr_tg_autoload.installed, tg_key, sizeof tg_key);
+    DSD_MEMSET(state.dmr_tg_autoload.baseline, 0, sizeof state.dmr_tg_autoload.baseline);
+    state.dmr_tg_autoload.installed_flags[0] = state.dmr_tg_autoload.installed_flags[1] = 1U;
+    state.dmr_tg_autoload.baseline_flags[0] = state.dmr_tg_autoload.baseline_flags[1] = 0U;
+    state.dmr_tg_autoload.active = 1U;
+    DSD_MEMCPY(state.dmr_tg_autoload.slot_key[0], tg_key, sizeof tg_key);
+    state.dmr_tg_autoload.slot_key_flags[0][0] = state.dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state.dmr_tg_autoload.slot_tg[0] = 123U;
+    rc |= expect_int("keys clear with a talkgroup key loaded ok", svc_clear_keys(&opts, &state), 0);
+    rc |= expect_int("keys clear puts the operator's key back", (int)(state.K | state.K1 | state.H), 0);
+    rc |= expect_int("keys clear ends the autoload", (int)state.dmr_tg_autoload.active, 0);
+    rc |= expect_int("keys clear wipes the autoload's installed copy", (int)state.dmr_tg_autoload.installed[0], 0);
+    rc |= expect_int("keys clear wipes slot 1's key copy",
+                     (int)(state.dmr_tg_autoload.slot_key[0][0] | state.dmr_tg_autoload.slot_key[0][1]
+                           | state.dmr_tg_autoload.slot_key_flags[0][0] | state.dmr_tg_autoload.slot_key_flags[0][1]),
+                     0);
+    rc |= expect_int("keys clear keeps slot 1's talkgroup", (int)state.dmr_tg_autoload.slot_tg[0], 123);
+
     g_chan_import_result = -1;
     g_key_import_result = -1;
     return rc;
@@ -3385,10 +3438,12 @@ main(void) {
 }
 
 int
-dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                  int signaled_id, int effective_id, int available, int fallback) {
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                  dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                  int fallback) {
     (void)state;
     (void)slot;
+    (void)protocol;
     (void)epoch;
     (void)source;
     (void)signaled_id;

@@ -286,16 +286,21 @@ p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot, u
         .carried = (uint8_t)carried,
     };
     update.enc_observed = p25_crypto_enc_observed(update.algid, update.received);
-    (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
+    // Only the open P25 call is described: a resolution that opened none (an ESS on the control channel) leaves the
+    // slot holding an ended call, or another protocol's, and neither its crypto nor its key choice is this frame's. The
+    // store refuses another protocol's call, and an ended one for the update; the key choice record takes an ended
+    // call, so the open phase is checked here.
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0) {
-        const int available = update.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
-                              : update.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
-                                                                                   : -1;
-        (void)dsd_call_state_note_key_selection(
-            state, (uint8_t)slot, call.epoch, state->keyloader ? DSD_CALL_KEY_SIGNALED : DSD_CALL_KEY_DIRECT,
-            update.kid, state->keyloader ? update.kid : -1, available, DSD_CALL_KEY_FALLBACK_NONE);
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return;
     }
+    (void)dsd_call_state_update_crypto(state, (uint8_t)slot, DSD_SYNC_P25P1_POS, &update);
+    const int available = update.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
+                          : update.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
+                                                                               : -1;
+    (void)dsd_call_state_note_key_selection(state, (uint8_t)slot, DSD_SYNC_P25P1_POS, call.epoch,
+                                            state->keyloader ? DSD_CALL_KEY_SIGNALED : DSD_CALL_KEY_DIRECT, update.kid,
+                                            state->keyloader ? update.kid : -1, available, DSD_CALL_KEY_FALLBACK_NONE);
 }
 
 static void

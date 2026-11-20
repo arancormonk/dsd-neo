@@ -59,12 +59,19 @@ typedef struct dmr_data_sync_ctx_s {
     int confidence_reject;
     /* The carrier count (state->carrier_seq) the burst began on (issue #575). */
     uint32_t carrier_seq;
-    /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot output folds onto
-       lane 0; DSD_DMR_MONO_RX_NONE otherwise (issue #637). */
+    /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot decoder folds onto
+       lane 0 (dmr_mono_folds_standalone_burst()); DSD_DMR_MONO_RX_NONE otherwise, a trunked one included (issue #637).
+     */
     uint8_t folded_slot;
     /* Who sent the burst, by its own sync word (dmr_data_collect_sync()), for a service with a direction
        (spec 2.13). */
     dmr_burst_origin origin;
+    /* For a voice LC header the single-slot decoder dispatches (dmr_data_mark_header_lane()): the lane it lands on, and
+       that lane's call epoch and revision before the dispatch; header_marked 0 for any other burst. */
+    uint8_t header_marked;
+    uint8_t header_lane;
+    uint64_t header_lane_epoch;
+    uint64_t header_lane_revision;
 } dmr_data_sync_ctx;
 
 static void
@@ -167,10 +174,18 @@ dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
         dmr_mono_slot_note(ctx->state, 1, tact_bits[1]);
         ctx->state->currentslot = 0;
     } else if (ctx->opts->dmr_mono == 1 && ctx->state->dmr_stereo == 0) {
-        /* A standalone burst the single-slot output folds onto lane 0 (dmr_flco_ctx_init()) is judged by its own CACH
-           slot for its dispatch: dmr_data_sync() set the voice lane's proof aside and restores it after. */
-        ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
-        ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
+        /* A standalone burst on the single-slot decoder is judged by its own CACH slot for its dispatch:
+           dmr_data_sync() set the voice lane's proof aside and restores it after. Folded onto lane 0 (without
+           trunking, dmr_mono_folds_standalone_burst()), the lane names that slot, and a header the lane's call took
+           proves it after (dmr_data_restore_voice_lane()). Under trunking the burst stays on its slot and is decoded
+           as the two-slot decoder decodes it, with no lane proof before or after it, as dmrBSBootstrap() decodes the
+           voice that follows: the burst carries the one slot identity its call's voice carries (the lane's receive
+           slot, dsd_position_dmr_air(), issue #800), and a header for one slot leaves the receive identity of the
+           other slot's call alone. */
+        if (dmr_mono_folds_standalone_burst(ctx->opts, ctx->state)) {
+            ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
+            ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
+        }
     }
     return 1;
 }
@@ -297,7 +312,8 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         (uint8_t)((ctx->SlotType[4] << 3) + (ctx->SlotType[5] << 2) + (ctx->SlotType[6] << 1) + ctx->SlotType[7]);
 
     if (ctx->state->dmr_ms_mode == 0) {
-        dmr_confidence_result confidence = dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
+        dmr_confidence_result confidence =
+            dmr_confidence_note_data_burst(ctx->opts, ctx->state, ctx->state->color_code);
         if (confidence == DMR_CONFIDENCE_REJECT) {
             ctx->confidence_reject = 1;
         } else if (confidence != DMR_CONFIDENCE_LOCKED && ctx->burst != 9U) {
@@ -311,7 +327,8 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
            opens the voice gate on the call's first EMB that agrees with it (dmr_ms.c). One whose code conflicts with
            the locked one is dropped, as on BS: dispatched, a header of another system's call that follows on the
            carrier would publish its identity under the old code. Sustained, that code relocks the gate. */
-        const dmr_confidence_result confidence = dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
+        const dmr_confidence_result confidence =
+            dmr_confidence_note_data_burst(ctx->opts, ctx->state, ctx->state->color_code);
         if (confidence == DMR_CONFIDENCE_LOCKED) {
             dmr_ras_note_color_code(ctx->state, ctx->state->color_code);
             ctx->state->dmr_color_code = ctx->state->color_code;
@@ -436,41 +453,65 @@ dmr_data_note_polarity_evidence(dsd_opts* opts, dsd_state* state, const dmr_data
                 opts->inverted_dmr ? "inverted" : "normal", KNRM);
 }
 
-/* Whether the burst was a voice LC header, folded onto lane 0, that the lane's call took (issue #637): the call is active
-   on the header's slot and this dispatch observed it (a new epoch, or the epoch @p before held moved on). That call is
-   the one the lane carries next, so the proof the previous call left must not end it. A header the LC check refused
-   observed nothing, and a PI header does not open the call. */
+/* A voice LC header the single-slot decoder is about to fold onto lane 0 (issue #637, dmr_mono_folds_standalone_burst():
+   never under trunking, which sets no lane proof): that lane's call epoch and revision, which
+   dmr_data_header_opened_lane_call() compares after the dispatch. Any other burst marks nothing and reads no call, so a
+   data burst, a PI header or an idle burst costs nothing here. */
+static void
+dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
+    const dsd_state* state = ctx->state;
+    if (ctx->burst != 1U || ctx->folded_slot == DSD_DMR_MONO_RX_NONE || ctx->opts->dmr_mono != 1
+        || state->dmr_stereo != 0) {
+        return;
+    }
+    ctx->header_lane = 0U;
+    (void)dsd_call_state_get_revision(state, ctx->header_lane, &ctx->header_lane_epoch, &ctx->header_lane_revision);
+    ctx->header_marked = 1U;
+}
+
+/* Whether the burst was a voice LC header that the call it names took (issue #637): the call on the lane the header
+   landed on (dmr_data_mark_header_lane()) is active on the header's slot and this dispatch observed it (a new epoch, or
+   the epoch marked for that lane moved on). That call is the one the lane carries next, so the proof the previous call
+   left must not end it. A header the LC check refused observed nothing, and a PI header does not open the call. */
 static int
-dmr_data_header_opened_lane_call(const dsd_state* state, const dmr_data_sync_ctx* ctx,
-                                 const dsd_call_snapshot* before) {
-    if (ctx->burst != 1U || ctx->folded_slot == DSD_DMR_MONO_RX_NONE) {
+dmr_data_header_opened_lane_call(const dsd_state* state, const dmr_data_sync_ctx* ctx) {
+    if (!ctx->header_marked) {
         return 0;
     }
     dsd_call_snapshot after;
-    if (dsd_call_state_get(state, 0U, &after) <= 0 || after.phase != DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, ctx->header_lane, &after) <= 0 || after.phase != DSD_CALL_PHASE_ACTIVE) {
         return 0;
     }
     const uint8_t slot = (uint8_t)(ctx->folded_slot - DSD_DMR_MONO_RX_TS1 + 1U);
-    return after.receive_identity.slot == slot && (after.epoch != before->epoch || after.revision != before->revision);
+    return after.receive_identity.slot == slot
+           && (after.epoch != ctx->header_lane_epoch || after.revision != ctx->header_lane_revision);
 }
 
 /* After a standalone burst (issue #637): what one the receive policy rejects or is still checking left in its lane's
    position cache (an LRRP fix, a data call line) goes before the voice lane's proof @p mono_slot / @p mono_candidate
    comes back, since the terminal judges that lane by the proof, not by the slot the burst was heard on. The proof comes
    back only onto the carrier it was proven on (a boundary during the burst, a replay retune, forgot it for good), and a
-   voice LC header the lane's call @p lane_call took applies the mono-slot rule on top of it. */
+   voice LC header the call on its lane took (dmr_data_header_opened_lane_call()) applies the mono-slot rule on top of
+   it. Under trunking (-fr -T) no proof comes back. */
 static void
 dmr_data_restore_voice_lane(const dsd_opts* opts, dsd_state* state, const dmr_data_sync_ctx* ctx, uint8_t mono_slot,
-                            uint8_t mono_candidate, const dsd_call_snapshot* lane_call) {
+                            uint8_t mono_candidate) {
     if (state->carrier_seq != ctx->carrier_seq) {
         return;
     }
     if (ctx->cach_okay == 1 && !dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_DATA_POS, state->currentslot & 1)) {
         state->dmr_lrrp_gps[state->currentslot & 1][0] = '\0';
     }
+    if (opts->dmr_mono == 1 && opts->trunk_enable == 1) {
+        /* Under trunking the single-slot decoder runs a repeater's bursts on both slots (dmr_bootstrap_mono()): a lane
+           proof left from conventional decoding (trunking turned on without a retune) is gone, its candidate too, as
+           dmrBSBootstrap() forgets it, so it never names the slot of a call this burst opened on its own slot. */
+        dmr_mono_slot_forget(state);
+        return;
+    }
     state->dmr_mono_rx_slot = mono_slot;
     state->dmr_mono_rx_candidate = mono_candidate;
-    if (dmr_data_header_opened_lane_call(state, ctx, lane_call)) {
+    if (dmr_data_header_opened_lane_call(state, ctx)) {
         dmr_mono_slot_note(state, 1, (unsigned int)(ctx->folded_slot - DSD_DMR_MONO_RX_TS1));
     }
 }
@@ -525,12 +566,6 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     const int standalone = state->dmr_ms_mode != 1;
     const uint8_t mono_slot = state->dmr_mono_rx_slot;
     const uint8_t mono_candidate = state->dmr_mono_rx_candidate;
-    /* The lane's call before the burst, for a header the single-slot output folds onto it (issue #637). */
-    dsd_call_snapshot lane_call;
-    DSD_MEMSET(&lane_call, 0, sizeof(lane_call));
-    if (standalone && opts->dmr_mono == 1 && state->dmr_stereo == 0) {
-        (void)dsd_call_state_get(state, 0U, &lane_call);
-    }
     if (standalone) {
         dmr_mono_slot_forget(state);
     } else {
@@ -556,6 +591,9 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
                 if (opts->dmr_debug_burst != 0) {
                     (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
                 }
+                if (standalone) {
+                    dmr_data_mark_header_lane(&ctx);
+                }
                 dmr_data_dispatch_burst(&ctx);
             }
         }
@@ -564,7 +602,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_finalize(opts, state, ctx.SlotTypeOk, ctx.cach_okay);
     dmr_data_note_polarity_evidence(opts, state, &ctx);
     if (standalone) {
-        dmr_data_restore_voice_lane(opts, state, &ctx, mono_slot, mono_candidate, &lane_call);
+        dmr_data_restore_voice_lane(opts, state, &ctx, mono_slot, mono_candidate);
     }
     if (debug_line[0] != '\0') {
         DSD_FPRINTF(stderr, "%s\n", debug_line);

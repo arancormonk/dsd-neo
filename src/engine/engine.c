@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -68,6 +69,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
@@ -1421,9 +1423,11 @@ legacy_rigctl_leg_present(const dsd_opts* opts) {
  * the session runs the peer's own passband (-B 0, or the FM monitor with neither a width nor -B) it asks for FM at 0,
  * best-effort: that undoes a passband this client set (a session width before a switch to a digital mode, say) with
  * the passband read before it, and is a no-op for a peer back on its own or never asked. The frequency the peer is on
- * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). */
+ * afterwards is the one last sent (dsd_opts::rigctl_sent_freq_hz). A frequency the peer confirmed starts a new symbol
+ * timeline and drops the input's queued samples (dsd_engine_note_rigctl_retune()) unless @p rtl_leg_follows: an RTL
+ * leg that retunes the stream after this one flushes it (issue #834). */
 static dsd_trunk_tune_result
-no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long int freq) {
+no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq, int rtl_leg_follows) {
     if (!legacy_rigctl_leg_present(opts)) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
@@ -1448,11 +1452,29 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long in
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
     }
     legacy_tune_caches_expire_if_stale();
-    if (freq != s_last_rigctl_freq) {
+    /* The frequency this leg sent last is skipped only while the peer still confirms it (RigctlConfirmedFreq()): a
+       request another leg made (a manual tune) moved the peer, or left where it is unknown when its reply could not be
+       read. */
+    if (freq != s_last_rigctl_freq || freq <= 0
+        || (unsigned long)freq != (unsigned long)RigctlConfirmedFreq(opts->rigctl_sockfd)) {
+        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
+           the old frequency while it answered the passband request above. */
+        dsd_input_cut mark;
+        dsd_input_backlog_mark(&mark);
         if (!SetFreq(opts->rigctl_sockfd, freq)) {
+            /* Unknown (0) when the peer may have moved: the next tune goes out and counts as a move. */
+            s_last_rigctl_freq = -1;
+            opts->rigctl_sent_freq_hz = RigctlConfirmedFreq(opts->rigctl_sockfd);
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_last_rigctl_freq = freq;
+        opts->rigctl_sent_freq_hz = (uint32_t)freq;
+        if (!rtl_leg_follows) {
+            /* Nothing flushes the stream after this leg (issue #834): the untyped step's RTL leg, where one follows,
+               retunes the stream, which flushes it; the direct control-channel return has none. */
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
+        }
     }
     opts->rigctl_sent_freq_hz = (uint32_t)freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -1583,7 +1605,8 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
     /* The output generation before any leg moves: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
     if (legacy_rigctl_leg_present(opts)) {
-        if (no_carrier_tune_rigctl_if_needed(opts, state, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, freq, opts->audio_in_type == AUDIO_IN_RTL)
+            != DSD_TRUNK_TUNE_RESULT_OK) {
             return DSD_UNTYPED_STEP_FAILED;
         }
         *moved = 1;
@@ -1603,10 +1626,10 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
  * frequency an analog call on audio input is heard on (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row
  * parks where the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still
  * on. An entry waiting on the row's tune @p request (0: a landing within its caller's own call, which names none) holds
- * the row there (issue #644). Runs after the carrier boundary has ended the calls of the row left, under its keys and
- * its name. */
+ * the row there (issue #644). A landed row's quiet check is published at once (issue #834). Runs after the carrier
+ * boundary has ended the calls of the row left, under its keys and its name. */
 static void
-untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
+untyped_install_row(const dsd_opts* opts, dsd_state* state, int row, time_t now, uint64_t request) {
     state->lcn_freq_roll = row + 1;
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq != 0) {
@@ -1623,6 +1646,9 @@ untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    if (freq != 0) {
+        dsd_engine_scan_quiet_publish_row(opts, state);
+    }
 }
 
 static int no_carrier_scan_tune_awaited(const dsd_state* state);
@@ -1635,18 +1661,19 @@ static void
 no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int row, scan_quiet_eligibility* e) {
     const dsd_scan_mode mode =
         dsd_channel_modes_present(state) ? dsd_channel_mode_get(state, (size_t)row) : DSD_SCAN_MODE_INHERIT;
+    const int kind = dsd_scan_mode_analog_kind(mode);
     if (mode == DSD_SCAN_MODE_INHERIT) {
         e->classes = scan_quiet_decoder_classes(opts, &e->analog_kind, &e->analog_width_hz);
-        return;
+    } else if (kind < 0) {
+        e->classes =
+            scan_quiet_monitor_classes(opts, scan_quiet_mode_classes(mode), &e->analog_kind, &e->analog_width_hz);
+    } else {
+        e->classes = scan_quiet_mode_classes(mode);
+        dsd_scan_option_values scratch;
+        scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
-    e->classes = scan_quiet_mode_classes(mode);
-    const int kind = dsd_scan_mode_analog_kind(mode);
-    if (kind < 0) {
-        e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
-        return;
-    }
-    dsd_scan_option_values scratch;
-    scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
+    /* Why these facts give the row no check, if they give none (issue #834 R6). */
+    e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }
 
 /* The -Y scan's conditions for checking the landed row @p row: the row on air from a landing in this
@@ -1684,6 +1711,28 @@ no_carrier_quiet_facts(const dsd_opts* opts, const dsd_state* state, scan_quiet_
     }
     scan_quiet_revisions_read(opts, state, &e->revisions);
     e->eligible = no_carrier_quiet_row_eligible(opts, state, row);
+}
+
+/* Publish the -Y row on air for its quiet check (issue #834), unless its visit's check is DONE already. */
+static void
+no_carrier_quiet_publish(const dsd_opts* opts, dsd_state* state) {
+    if (scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_Y)) {
+        scan_quiet_eligibility e;
+        no_carrier_quiet_facts(opts, state, &e);
+        scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_Y, &e);
+    }
+}
+
+void
+dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !opts->scan_skip_silent || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
+        || state->lcn_scan_resume_pending) {
+        return;
+    }
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    if (landing && landing->by == DSD_ENGINE_SCAN_LANDING_ROW) {
+        no_carrier_quiet_publish(opts, state);
+    }
 }
 
 /* Whether the -Y row on air steps for its quiet result: asked only where no rule that beats a skip
@@ -1760,6 +1809,18 @@ no_carrier_hangtime_ran_out(const dsd_opts* opts, const dsd_state* state, time_t
 /* The timed -Y step's decision: the forced leaves, then the stays, then the voice gate, then the hangtime
    rule, with a quiet result (issue #834) stepping a row the voice gate still qualifies, or one the hangtime rule
    decides, before its time. Heard voice is the voice gate's alone. */
+/* Whether what the -Y row's frames said still holds it (issue #834; docs/trunk-scan.md), one rule for the frame
+   boundary and noCarrier(), beside the hangtime anchor each checks itself: -t has not passed since the last checked
+   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA, whose frames hold the row
+   while they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
+   (SCAN_QUIET_PENDING_MAX_MS at most) that adds no -t. */
+static int
+live_scanner_y_frames_hold_row(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    const double last_m =
+        state->scan_y_content_m > state->scan_y_unchecked_m ? state->scan_y_content_m : state->scan_y_unchecked_m;
+    return now_m - last_m <= (double)opts->trunk_hangtime || now_m < state->scan_y_partial_until_m;
+}
+
 static int
 no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t now) {
     const int tone_gate = dsd_scan_analog_tone_gate(opts, state);
@@ -1784,7 +1845,9 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t no
                || (opts->scan_skip_silent && dsd_scan_voice_gate_qualifying(opts, state)
                    && no_carrier_quiet_skip(opts, state));
     }
-    return no_carrier_hangtime_ran_out(opts, state, now) || no_carrier_quiet_skip(opts, state);
+    return (no_carrier_hangtime_ran_out(opts, state, now)
+            && !live_scanner_y_frames_hold_row(opts, state, dsd_decode_now_mono_s()))
+           || no_carrier_quiet_skip(opts, state);
 }
 
 /* The -Y step evaluation with the scan quiet check's engine service around it (issue #834): the row on air is
@@ -1795,11 +1858,7 @@ no_carrier_scanner_step_decided(const dsd_opts* opts, dsd_state* state, time_t n
     if (!opts->scan_skip_silent) {
         return no_carrier_scanner_step_is_due(opts, state, now);
     }
-    if (scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_Y)) {
-        scan_quiet_eligibility e;
-        no_carrier_quiet_facts(opts, state, &e);
-        scan_quiet_publish_eligibility(opts, state, SCAN_QUIET_OWNER_Y, &e);
-    }
+    no_carrier_quiet_publish(opts, state);
     const int due = no_carrier_scanner_step_is_due(opts, state, now);
     scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_Y, 0);
     return due;
@@ -1853,7 +1912,7 @@ untyped_enter_tuned_row(dsd_opts* opts, dsd_state* state, int row, int walk_dir,
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
     }
     if (result == DSD_UNTYPED_STEP_OK) {
-        untyped_install_row(state, row, now, 0U);
+        untyped_install_row(opts, state, row, now, 0U);
     } else if (moved) {
         dsd_analog_rx_reset(state);
     }
@@ -1874,7 +1933,7 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
        and a tune that fails or is still pending lands nothing (issue #667 D9). */
     dsd_engine_scan_landing_forget(state);
     if (*dsd_state_trunk_lcn_slot(state, row) == 0) {
-        untyped_install_row(state, row, now_s, 0U);
+        untyped_install_row(opts, state, row, now_s, 0U);
         return DSD_UNTYPED_STEP_OK;
     }
     const int result = untyped_enter_tuned_row(opts, state, row, 0, now_s, NULL);
@@ -2072,7 +2131,8 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
     if (!settled->scan_owned) {
         const dsd_channel_walk_settle_fn settle = dsd_channel_walk_settle_hook_get();
         if (settle) {
-            settle(opts, state, settled->row, settled->dir, settled->requested_hz, settled->list_rev, landed);
+            settle(opts, state, settled->row, settled->dir, settled->requested_hz, settled->list_rev, landed,
+                   settled->move_judge, settled->move_from_hz);
         }
         return;
     }
@@ -2084,7 +2144,7 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
     }
     if (landed) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
-        untyped_install_row(state, settled->row, dsd_decode_time(), settled->id);
+        untyped_install_row(opts, state, settled->row, dsd_decode_time(), settled->id);
         return;
     }
     dsd_engine_channel_walk_note_outcome(state, settled->row, settled->dir, 0);
@@ -2145,7 +2205,7 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
         /* A resume's landing ends the manual session's calls under no row's name, then publishes the scan (issue
            #671). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
-        untyped_install_row(state, settled.row, now, settled.id);
+        untyped_install_row(opts, state, settled.row, now, settled.id);
         dsd_engine_channel_scan_resume_landed(opts, state);
     } else if (state->lcn_scan_resume_pending) {
         /* Failed, or dropped (a newer tune, a stream reopen): the row never lands, so the resume never does. */
@@ -2282,7 +2342,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq == 0) {
         // A zero entry parks on the current frequency rather than retuning, so it is not a hop.
-        untyped_install_row(state, row, now, 0U);
+        untyped_install_row(opts, state, row, now, 0U);
         return 0;
     }
     // Tracks whether the receiver has physically moved yet, so a later leg failing cannot retract a
@@ -2673,7 +2733,7 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 static int
 no_carrier_apply_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
     if (legacy_rigctl_leg_present(opts)) {
-        if (no_carrier_tune_rigctl_if_needed(opts, state, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rigctl_if_needed(opts, state, cc, 0) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }
         state->dmr_rest_channel = -1;
@@ -3092,22 +3152,11 @@ static void
 no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_ms_mode = 0;
     // The DMR heal stash mirrors the payload crypto being cleared below; a stash that outlived
-    // this reset could only ever be misapplied to whatever decodes next.
-    state->dmr_heal_valid[0] = 0;
-    state->dmr_heal_valid[1] = 0;
-    // The live service options and the classification they establish describe the carrier
-    // that just went away; a stale privacy bit would mute the opening bursts of whatever
-    // decodes next until its first LC arrives.
-    state->dmr_so = 0;
-    state->dmr_soR = 0;
-    state->dmr_fid = 0;
-    state->dmr_fidR = 0;
-    dmr_enc_class_reset(state, 0);
-    dmr_enc_class_reset(state, 1);
-    dmr_le_vendor_reset(state, 0);
-    dmr_le_vendor_reset(state, 1);
-    dmr_pi_precall_reset(state, 0);
-    dmr_pi_precall_reset(state, 1);
+    // this reset could only ever be misapplied to whatever decodes next. The live service options
+    // and the classification they establish describe the carrier that just went away; a stale
+    // privacy bit would mute the opening bursts of whatever decodes next until its first LC
+    // arrives. Nor does a slot's next call key from the talkgroups of the calls on it.
+    dmr_forget_call_privacy(state);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;
@@ -3215,6 +3264,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     if (state->keyloader != 1) {
         return;
     }
+    dsd_dmr_tg_autoload_hand_back(state);
     state->R = 0;
     state->RR = 0;
     state->K = 0;
@@ -3604,7 +3654,11 @@ carrier_boundary_release_followed(dsd_opts* opts, dsd_state* state, dsd_carrier_
     if (tetra_owned) {
         tetra_sm_abandon_carrier(opts, state);
     }
+    /* The boundary judges the move for the DMR calls' privacy and voice hold, once
+       (dsd_engine_boundary_holds_dmr_voice()): the release leaves both to it. */
+    dsd_trunk_tuning_caller_judges_begin();
     dsd_engine_release_tuned_call_state(opts, state);
+    dsd_trunk_tuning_caller_judges_end();
 }
 
 /* With its codes, step 3 forgets the evidence that vouched for the carrier's transmissions: every confirmation gate's
@@ -3741,8 +3795,37 @@ carrier_boundary_stream_gap(dsd_opts* opts, dsd_state* state) {
     dsd_analog_rx_reset(state);
     /* The same carrier, so the same system's patches: only the listening clock's continuity breaks. */
     dsd_p25_patch_listen_break(state);
+    /* A scan quiet check waits for no verdict of what the gap cut (issue #834). */
+    dsd_engine_scan_quiet_pending_reset(state);
     state->carrier_seq++;
     dsd_state_note_carrier_change(state);
+}
+
+/* The boundary's hold on each DMR slot's voice (dmr_enc_class_hold()): every boundary holds it but the run's first
+   landing (dsd_state::run_landed: nothing has landed yet in the run). */
+static void
+dsd_engine_boundary_holds_dmr_voice(dsd_state* state) {
+    if (state->run_landed != 0U) {
+        dmr_enc_class_hold(state);
+    }
+    state->run_landed = 1U;
+}
+
+void
+dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    /* Nor does a leave an earlier run's watchdog tune asked for hold this run's first landing. */
+    state->dmr_leave_pending = 0U;
+    state->dmr_leave_request = 0U;
+    dmr_enc_class_release_hold(state, 0U);
+    dmr_enc_class_release_hold(state, 1U);
+    /* Only a trunk scan the run starts with lands before anything decodes: it parks first. A -Y scan steps only once
+       the start frequency its stream opens on has gone quiet, so that start is the run's first landing. */
+    state->run_landed = opts->trunk_scan_enabled == 1 ? 0U : 1U;
+    /* The run's stay where its stream opens has heard no call yet (the -Y no-check status). */
+    dsd_engine_scan_y_stay_begin(state);
 }
 
 void
@@ -3776,6 +3859,13 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
+    /* Nor did the left calls say how the next carrier's are encrypted: its frames before their own LC decrypt with no
+       privacy bit and no talkgroup key of theirs, a key set directly staying the user's. Not in the forget above,
+       which a stream gap runs too: a call it reopens on the same carrier keys as before. Until each slot's call there
+       says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless this is
+       the run's first landing (dsd_state::run_landed). */
+    dmr_forget_call_privacy(state);
+    dsd_engine_boundary_holds_dmr_voice(state);
     /* The digital voice level starts the next carrier's reception at its start gain (issue #518). Not in the forget
        above, which a stream gap runs too: that is the same carrier, whose transmissions decide. */
     dsd_voice_level_reset(state, -1);
@@ -3930,6 +4020,21 @@ dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_held) 
 }
 
 void
+dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    /* The run's start judged whether this stream is its first landing (dsd_engine_note_run_start()): the source
+       boundary against the stream an earlier run on this state opened forgets that carrier's evidence, but neither
+       holds the DMR slots' voice nor counts as this run's landing. */
+    const uint8_t landed = state->run_landed;
+    dsd_engine_note_stream_source(opts, state, 0);
+    dmr_enc_class_release_hold(state, 0U);
+    dmr_enc_class_release_hold(state, 1U);
+    state->run_landed = landed;
+}
+
+void
 dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 0 || opts->trunk_scan_enabled == 1) {
         return;
@@ -4047,7 +4152,7 @@ no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     }
     if (scanner_row >= 0) {
         /* The row it landed on commits once the calls of the row left have ended under its keys (issue #671). */
-        untyped_install_row(state, scanner_row, now, 0U);
+        untyped_install_row(opts, state, scanner_row, now, 0U);
     }
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
@@ -4110,6 +4215,7 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
        the next transmission. */
     dsd_rxid_apply_trunk_tune(state);
     dmr_ras_reset(state);
+    (void)dsd_engine_apply_dmr_leave(state);
     dsd_rxid_mark_stale(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
@@ -4160,7 +4266,7 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
-        dsd_engine_note_stream_source(opts, state, 0);
+        dsd_engine_note_run_stream_source(opts, state);
     }
     return 0;
 }
@@ -4260,20 +4366,17 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     const int frame_dispatchable = dsd_trunk_tuning_frame_is_current(dispatch_generation);
     if (!frame_tune_generation || frame_dispatchable) {
         processFrame(opts, state);
-        /* A provisional P25 sync is activity to a scan quiet check only once its frame's verdict passed (issue #834). */
-        if (opts->scan_skip_silent) {
-            dsd_engine_scan_quiet_settle_sync(state);
-        }
     } else {
-        if (opts->scan_skip_silent) {
-            dsd_engine_scan_quiet_drop_sync(state);
-        }
         /* A real sync the retune generation says is stale. Nothing consumes it, so
          * without saying so the SPS hunt is charged for the search that found it and
          * credited nothing -- and rotates the profile off the channel the retune was
          * tuning to, mid-retune (#392). processFrame() is what normally stamps this
          * field, so the skip has to stamp it itself. */
         state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    }
+    /* The frame's verdict is in, for a scan quiet check (issue #834): one load while skip-silent is off. */
+    if (opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_frame_end(state);
     }
     if (state->input_interrupt_reason == DSD_INTERRUPT_STREAM_GAP) {
         return frame_dispatchable;
@@ -4297,6 +4400,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     if (dsd_rxid_apply_trunk_tune(state)) {
         dmr_ras_reset(state);
     }
+    (void)dsd_engine_apply_dmr_leave(state);
     return frame_dispatchable;
 }
 
@@ -4322,17 +4426,201 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
-/* The frame sync's answer. Any sync it returns, YSF and D-STAR's among them, is activity to a scan quiet check
-   (issue #834), a provisional P25 one only once its frame's verdict passed (dsd_engine_scan_quiet_note_frame_sync(),
-   settled after processFrame()): one load while skip-silent is off. */
+/* The frame sync's answer. A sync it returns is no activity to a scan quiet check (issue #834 R1): its frame's verdict
+   is pending until the frame ends, and only content its protocol's gate passes counts. One load while skip-silent is
+   off. */
 static int
 live_scanner_frame_sync(dsd_opts* opts, dsd_state* state) {
-    const uint64_t accepts_before = dsd_engine_scan_quiet_sync_accepts(state);
     const int synctype = getFrameSync(opts, state);
     if (synctype > DSD_SYNC_NONE && opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts_before);
+        dsd_engine_scan_quiet_note_frame_sync(state);
     }
     return synctype;
+}
+
+/* The synced-frames loop leaves before its frame's end, or at a boundary: a scan quiet check waits for no verdict of
+   it (issue #834). One load while skip-silent is off. */
+static void
+live_scanner_quiet_pending_reset(const dsd_opts* opts, dsd_state* state) {
+    if (opts->scan_skip_silent) {
+        dsd_engine_scan_quiet_pending_reset(state);
+    }
+}
+
+/* The trunk scan's quiet check at a frame boundary (issue #834 R1): its service, and once per suspension a
+   republication its landing still in force is owed (R5): the per-frame tick after this one publishes the target on air
+   as the outer pass's would. */
+static void
+live_scanner_trunk_quiet_frame_service(const dsd_opts* opts, dsd_state* state) {
+    (void)dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_TRUNK);
+    if (dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
+        dsd_engine_trunk_scan_quiet_service_pass(state);
+    }
+}
+
+/* The -Y frame-boundary yield (issue #834): the row steps on its quiet result; else a check suspended while its row's
+   landing is still in force is published again, once per suspension (R5), since no noCarrier() comes to do it while
+   the syncs keep coming. */
+static int
+live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_engine_scan_quiet_frame_yield(opts, state)) {
+        return 1;
+    }
+    if (dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_Y)) {
+        dsd_engine_scan_quiet_publish_row(opts, state);
+    }
+    return 0;
+}
+
+/* The -Y frame-boundary step (issue #834 item 3), its terms other than the time: -Y owns the step with no voice gate,
+   tone verdict or analog carrier deciding it, and nothing keeps the row: no operator hold, awaited tune or typed step
+   in flight, not an avoided row (its paced departure decides), and another row to land on. */
+static int
+live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
+        || dsd_scan_voice_gate_owns_step(opts, state)
+        || dsd_scan_analog_tone_gate(opts, state) != DSD_ANALOG_TONE_GATE_OFF
+        || dsd_scan_analog_carrier_open(opts, state)) {
+        return 0;
+    }
+    return !dsd_engine_channel_scan_hold_keeps_row(state) && !no_carrier_scan_tune_awaited(state)
+           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_avoided_row(state)
+           && dsd_engine_channel_scan_has_other_row(opts, state);
+}
+
+/* Whether a frame boundary may end the synced-frames loop for the -Y step (issue #834 item 3): frames that keep coming
+   never let noCarrier(), where the step is decided, run. Only when the hangtime rule noCarrier() applies is due (raw
+   syncs of the protocols whose hunt stamps the anchor keep it fresh, as before), no content a protocol's CRC/FEC gate
+   passed came for -t, nor a frame of a protocol with no such gate (live_scanner_y_window_start_m(); a real call's checks
+   or frames keep it fresh, whatever skip-silent says), the
+   other terms hold (live_scanner_y_frame_step_may_decide()), and it has not yielded for this stay (a row's landing, or
+   a stay no landing is in force for) and anchor yet; the pair it would yield for goes in @p out_epoch and
+   @p out_mark_ms. Pure: it reads, and decides nothing itself.
+   Off -Y, one compare. */
+static int
+live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, double now_m, uint64_t* out_epoch,
+                                    int64_t* out_mark_ms) {
+    /* The anchor's rule is noCarrier()'s own (no_carrier_hangtime_ran_out(): the whole-second -t since the anchor, and
+       -t since the input came back from a retune's mute), as the countdown publishes it: one deadline. A yield spent
+       before the input had listened for -t would be refused there and never owed again for this landing and anchor. */
+    if (opts->scanner_mode != 1 || !no_carrier_hangtime_ran_out(opts, state, dsd_decode_time())) {
+        return 0;
+    }
+    if (live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
+        return 0;
+    }
+    /* What the stay's yield is for: the latest of the anchor, the last checked or unchecked frame and the open verdict's
+       deadline, so a later one of them owes a yield of its own. */
+    double mark_m = state->last_cc_sync_time_m;
+    const double marks[] = {state->scan_y_content_m, state->scan_y_unchecked_m, state->scan_y_partial_until_m};
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        mark_m = marks[i] > mark_m ? marks[i] : mark_m;
+    }
+    /* The stay the yield is for: the landing epoch, which a row's landing and a landing forgotten both move, so a stay
+       no row landing is in force for (the scan's start frequency, a placeholder row) is tracked too. A state with no
+       scan owner has had neither: its stay is epoch 0. */
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    *out_epoch = owner ? owner->landing_epoch : 0U;
+    *out_mark_ms = (int64_t)(mark_m * 1000.0);
+    return !owner || owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
+}
+
+/* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
+   become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
+   SCAN_QUIET_PENDING_MAX_MS. Proof dominates, as in dsd_engine_scan_quiet_note_evidence(): checked content resolves
+   the open verdict, so the hold it started ends there, and a PARTIAL note of the same frame starts none. */
+static void
+live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
+    if (state->scan_y_content_seq == state->scan_y_content_seen
+        && state->scan_y_partial_seq == state->scan_y_partial_seen
+        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen) {
+        return;
+    }
+    if (state->scan_y_unchecked_seq != state->scan_y_unchecked_seen) {
+        state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
+        state->scan_y_unchecked_m = now_m;
+    }
+    if (state->scan_y_content_seq != state->scan_y_content_seen) {
+        state->scan_y_content_seen = state->scan_y_content_seq;
+        state->scan_y_content_m = now_m;
+        state->scan_y_partial_seen = state->scan_y_partial_seq;
+        state->scan_y_partial_hold_ms = 0U;
+        state->scan_y_partial_until_m = -1.0;
+    }
+    if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
+        state->scan_y_partial_seen = state->scan_y_partial_seq;
+        const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS
+                                     ? state->scan_y_partial_hold_ms
+                                     : SCAN_QUIET_PENDING_MAX_MS;
+        state->scan_y_partial_hold_ms = 0U;
+        const double until_m = now_m + (double)hold_ms / 1000.0;
+        if (until_m > state->scan_y_partial_until_m) {
+            state->scan_y_partial_until_m = until_m;
+        }
+    }
+}
+
+/* The -Y frame-boundary step: the checked content the frame's gates noted becomes its time, then, when the rule says
+   so, the loop ends and noCarrier() decides, with the pair it yielded for noted. */
+static int
+live_scanner_y_content_frame_yield(const dsd_opts* opts, dsd_state* state) {
+    if (opts->scanner_mode != 1) {
+        return 0; /* off -Y, the one compare */
+    }
+    /* One reading of the clock for the note and the judgement: the frame that just proved the call is no older than
+       itself, so -t 0 keeps a call frame after frame. */
+    const double now_m = dsd_decode_now_mono_s();
+    live_scanner_y_note_frame_content(state, now_m);
+    uint64_t epoch = 0U;
+    int64_t mark_ms = 0;
+    if (!live_scanner_y_frames_carry_nothing(opts, state, now_m, &epoch, &mark_ms)) {
+        return 0;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
+    if (owner) {
+        owner->y_frame_yield_epoch = epoch;
+        owner->y_frame_yield_mark_ms = mark_ms;
+    }
+    return 1;
+}
+
+/* The reasons a frame boundary hands the receiver back to the outer loop, after the trunk scan's per-frame tick: a
+   Signal search's turn, the receive policy, the voice gate, the per-visit cap and a -Y row's quiet result. Returns 1
+   when the synced-frames loop ends there. */
+static int
+live_scanner_frame_boundary_yields(const dsd_opts* opts, dsd_state* state, int frame_dispatchable) {
+    if (dsd_engine_signal_search_should_yield(opts, state)) {
+        dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+        return 1;
+    }
+    if (live_scanner_receive_should_yield(opts, state)) {
+        return 1;
+    }
+    if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
+        dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
+        if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
+            return 1;
+        }
+    }
+    /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
+     * independently of the voice gate and return to noCarrier() when it expires. */
+    dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
+    if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
+        /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
+         * the voice-gate escape above hands control back, and the cap needs the same door: a
+         * row that keeps syncing would otherwise never let the outer loop reach the step. */
+        return 1;
+    }
+    /* A -Y row's quiet result (issue #834): a rejected sync no longer ends the check, so under syncs that keep coming
+       (NXDN48 or dPMR noise) the -Y check is serviced at every frame boundary and the row steps here when it hands
+       back, as after the hunt's hand-back: noCarrier() decides. */
+    if (live_scanner_y_quiet_frame_yield(opts, state)) {
+        return 1;
+    }
+    /* A -Y row whose frames carry no checked content leaves at its hangtime (issue #834 item 3), with skip-silent on or
+       off: noise that keeps passing a sync word (NXDN48) would otherwise hold it for good. */
+    return live_scanner_y_content_frame_yield(opts, state);
 }
 
 static void
@@ -4346,10 +4634,12 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
            (a control channel) would otherwise go on decoding under the frequency that failed. Two loads while no tune is
            noted. */
         if (dsd_engine_manual_tune_settled_ready()) {
+            live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
         }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            live_scanner_quiet_pending_reset(opts, state);
             break;
         }
         /* processFrame() runs under the tick guard: nothing below it may pump
@@ -4365,30 +4655,14 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
             state->synctype = DSD_SYNC_NONE;
             break;
         }
+        /* A trunk-scan target's quiet check is serviced at every frame boundary too (issue #834 R1): under syncs its
+           protocol's gate rejects the hunts stay too short to reach their 300-symbol service. The per-frame tick then
+           decides as at any tick. One load with skip-silent off. */
+        if (opts->scan_skip_silent) {
+            live_scanner_trunk_quiet_frame_service(opts, state);
+        }
         dsd_trunk_scan_hook_tick(opts, state);
-        if (dsd_engine_signal_search_should_yield(opts, state)) {
-            dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
-            state->synctype = DSD_SYNC_NONE;
-            break;
-        }
-        if (live_scanner_receive_should_yield(opts, state)) {
-            state->synctype = DSD_SYNC_NONE;
-            break;
-        }
-        if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
-            dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_decode_now_mono_s());
-            if (dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s())) {
-                state->synctype = DSD_SYNC_NONE;
-                break;
-            }
-        }
-        /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
-         * independently of the voice gate and return to noCarrier() when it expires. */
-        dsd_engine_scan_visit_tick(opts, state, dsd_decode_now_mono_s());
-        if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())) {
-            /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
-             * the voice-gate escape above hands control back, and the cap needs the same door: a
-             * row that keeps syncing would otherwise never let the outer loop reach the step. */
+        if (live_scanner_frame_boundary_yields(opts, state, frame_dispatchable)) {
             state->synctype = DSD_SYNC_NONE;
             break;
         }
@@ -4396,10 +4670,12 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         /* A command replaced the input (issue #634): what follows is another stream, which the outer loop starts with
            the end of this reception. */
         if (state->input_boundary) {
+            live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
         }
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            live_scanner_quiet_pending_reset(opts, state);
             break;
         }
         /* Refresh after controls, even with the voice gate off: continuous sync
@@ -4410,11 +4686,6 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         }
         state->synctype = live_scanner_frame_sync(opts, state);
         (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
-    }
-    /* Every dispatched frame settled its sync: one still deferred here was never dispatched (a manual tune settled, a
-       scan row commit), and gave no verdict. */
-    if (opts->scan_skip_silent) {
-        dsd_engine_scan_quiet_drop_sync(state);
     }
 }
 
@@ -5208,7 +5479,8 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
     dsd_engine_set_decoder_thread(1);
     /* A run boundary, before the P25 watchdog starts: its tunes read the decision this state publishes, not one an
-       earlier session left, and no notice the earlier session's watchdog posted is reconciled into this one. */
+       earlier session left, and no notice the earlier session's watchdog posted is reconciled into this one, nor an
+       input drop an earlier session asked for carried out on this one's input. */
     dsd_frame_sync_off_thread_tunes_reset(state);
 
     /* An I/Q replay decodes on its capture's clock (issue #572). Selected first, before common setup writes its first
@@ -5218,6 +5490,10 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     state->engine_fresh = 0U;
     /* A state an earlier run used may still say its carrier was two-slot TDMA: this run proves its own. */
     state->tdma_carrier = 0U;
+    /* Nor is a DMR slot's voice held for a move the earlier run made (dmr_enc_class_hold()): a host that reuses its
+       state would hold this run's first landing. The radio stream's first start clears it again after its source
+       boundary (dsd_engine_note_run_stream_source()). Whether the run has landed yet is this run's own. */
+    dsd_engine_note_run_start(opts, state);
     if (enter_rc != 0) {
         rc = 1;
         goto ENGINE_OUT;

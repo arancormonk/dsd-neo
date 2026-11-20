@@ -24,6 +24,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -530,6 +531,70 @@ test_frames_split_by_a_carrier_boundary_are_dropped(void) {
     finish(&state);
 }
 
+/* Issue #834: the content notes a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_partial;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else if (level == DSD_CONTENT_EVIDENCE_PARTIAL) {
+        g_quiet_partial++;
+        g_quiet_hold_ms = hold_ms;
+    }
+}
+
+static void
+quiet_notes_install(int on) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(on ? &hooks : NULL);
+    g_quiet_proven = 0;
+    g_quiet_partial = 0;
+    g_quiet_hold_ms = 0U;
+}
+
+/* Issue #834: a packet frame before the end-of-transmission frame carries no check of its own (the packet's CRC is in
+   its last frame), so to a scan quiet check it waits for that verdict: PARTIAL, 80 ms. The last frame's CRC is
+   PROVEN, with no PARTIAL; a cut frame notes nothing; nothing with the setting off. */
+static void
+test_packet_frames_before_their_crc_are_partial(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char text[] = "A KEY-UP WAITS FOR ITS CRC";
+    for (int on = 0; on <= 1; on++) {
+        prepare(&opts, &state);
+        opts.scan_skip_silent = on;
+        state.synctype = DSD_SYNC_M17_PKT_POS;
+        quiet_notes_install(1);
+        assert(load_packet_frame(text, 0) == 2);
+        assert(processM17PKT(&opts, &state) == 1);
+        assert(g_quiet_partial == on && g_quiet_proven == 0);
+        assert(!on || g_quiet_hold_ms == 80U);
+        g_quiet_partial = 0;
+        (void)load_packet_frame(text, 1);
+        assert(processM17PKT(&opts, &state) == 1);
+        assert(state.m17_confirmed == 1U);
+        assert(g_quiet_proven == on && g_quiet_partial == 0);
+        finish(&state);
+
+        prepare(&opts, &state);
+        opts.scan_skip_silent = on;
+        state.synctype = DSD_SYNC_M17_PKT_POS;
+        quiet_notes_install(1);
+        (void)load_packet_frame(text, 0);
+        g_interrupt_at = 170U;
+        assert(processM17PKT(&opts, &state) == 0);
+        assert(g_quiet_partial == 0 && g_quiet_proven == 0);
+        quiet_notes_install(0);
+        finish(&state);
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -538,6 +603,7 @@ main(void) {
     test_packet_frame_cut_by_an_input_interruption_decodes_nothing();
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
+    test_packet_frames_before_their_crc_are_partial();
     return 0;
 }
 

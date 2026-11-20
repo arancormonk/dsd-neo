@@ -526,6 +526,144 @@ test_every_reason_has_a_phrase(void) {
     free(state);
 }
 
+/* The silent-channel skip's status as the decoder publishes it beside a stay (issue #834). */
+static void
+publish_quiet(dsd_state* state, uint8_t status, uint8_t reason) {
+    state->scan_timing.quiet_status = status;
+    state->scan_timing.quiet_reason = reason;
+}
+
+static void
+assert_quiet(const dsd_app_scan_timing* view, const char* phrase, uint8_t status, uint8_t reason, const char* text) {
+    assert_phrase(view, phrase);
+    assert(view->quiet_status == status);
+    assert(view->quiet_reason == reason);
+    if (text) {
+        assert(view->quiet_text != NULL);
+        assert(strcmp(view->quiet_text, text) == 0);
+    } else {
+        assert(view->quiet_text == NULL);
+    }
+}
+
+/* Each published status is the phrase itself on the idle dwell and the -Y hangtime (issue #834 R7), for both owners:
+   the compact reason in at most 17 characters, the full sentence beside it for a screen reader. WIDTH and NO_WIDTH
+   share the phrase, not the sentence. */
+static void
+test_quiet_status_is_the_phrase(void) {
+    static const struct {
+        uint8_t status;
+        uint8_t reason;
+        const char* phrase;
+        const char* text;
+    } cases[] = {
+        {DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE, "Quiet check",
+         "Checking whether this channel is silent. If it is, the scan moves on early."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT, "No check: input",
+         "Skip silent channels can't check channels on this input. Normal scan timing applies."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER, "No check: tuner",
+         "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing applies."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE, "No check: rate",
+         "Skip silent channels can't check channels at this sample rate. Normal scan timing applies."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_MODES, "No check: modes",
+         "Skip silent channels can't check this channel with the decoders in use. Normal scan timing applies."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH, "No check: width",
+         "Skip silent channels can't check this channel at its channel width. Normal scan timing applies."},
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH, "No check: width",
+         "Skip silent channels can't check this channel with no NFM channel width set. Set a width to have it checked. "
+         "Normal scan timing applies."},
+    };
+
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    for (int owner = 0; owner < 2; owner++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.trunk_scan_enabled = owner == 0 ? 1 : 0;
+        opts.scanner_mode = owner == 0 ? 0 : 1;
+        const uint8_t stays[] = {DSD_SCAN_STAY_IDLE_DWELL, DSD_SCAN_STAY_HANGTIME};
+        for (size_t s = 0; s < sizeof stays / sizeof stays[0]; s++) {
+            for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+                publish(state, stays[s], 1U, 101.8, 3000U, 3000U, 2000U);
+                publish_quiet(state, cases[i].status, cases[i].reason);
+                assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+                assert_quiet(&view, cases[i].phrase, cases[i].status, cases[i].reason, cases[i].text);
+                assert(strlen(view.phrase) <= 17U);
+                assert(strlen(view.phrase) <= dsd_app_scan_timing_phrase_width());
+                /* The variant replaces the phrase only: the stay, its countdown and its budgets are unchanged. */
+                assert(view.reason == stays[s]);
+                assert(view.timer_live == 1U && view.remaining_ms == 1800U && view.span_ms == 3000U);
+            }
+        }
+    }
+    free(state);
+}
+
+/* The view shows only what the decoder published (issue #834): no status is the plain phrase, a status on any other
+   stay keeps that stay's phrase (what holds the row explains the visit), and a status or reason this build does not
+   know, or a NO_CHECK with no reason, is no variant. */
+static void
+test_quiet_status_only_where_published(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    publish(state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
+
+    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_NO_LIST; reason++) {
+        if (reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL || reason == (uint8_t)DSD_SCAN_STAY_HANGTIME) {
+            continue;
+        }
+        publish(state, reason, 1U, -1.0, 0U, 3000U, 1200U);
+        publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER);
+        assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+        assert(strncmp(view.phrase, "No check", 8) != 0);
+        assert(view.quiet_status == DSD_SCAN_QUIET_STATUS_NONE && view.quiet_text == NULL);
+        publish_quiet(state, DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+        assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+        assert(strcmp(view.phrase, "Quiet check") != 0);
+        assert(view.quiet_status == DSD_SCAN_QUIET_STATUS_NONE && view.quiet_text == NULL);
+    }
+
+    publish(state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NONE);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
+    publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, (uint8_t)(DSD_SCAN_QUIET_REASON_NO_WIDTH + 1));
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
+    publish_quiet(state, (uint8_t)(DSD_SCAN_QUIET_STATUS_NO_CHECK + 1), DSD_SCAN_QUIET_REASON_TUNER);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
+
+    /* The -Y voice gate's qualify window is the same idle dwell: the check that may end it early names it. */
+    state->scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_QUALIFY;
+    publish_quiet(state, DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_phrase(&view, "Qualify");
+    publish_quiet(state, DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert_phrase(&view, "Quiet check");
+    state->scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
+
+    /* No scan: nothing, whatever a stale publication says. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 0);
+    assert(view.quiet_status == DSD_SCAN_QUIET_STATUS_NONE && view.quiet_text == NULL);
+    free(state);
+}
+
+/* The phrase column keeps room for the widest phrase, the quiet variants included: none is wider than the widest
+   plain phrase, so the column, and the terminal goldens, keep their width (issue #834 R7). */
+static void
+test_phrase_width_holds(void) {
+    assert(dsd_app_scan_timing_phrase_width() == strlen("Acquiring control"));
+}
+
 /* No scanner is running: a publication left over from an earlier -Y or --trunk-scan
    session must not put a countdown on a receiver that is not scanning. */
 static void
@@ -724,6 +862,9 @@ main(void) {
     test_hold_is_conventional_only();
     test_dwell_needs_a_value();
     test_every_reason_has_a_phrase();
+    test_quiet_status_is_the_phrase();
+    test_quiet_status_only_where_published();
+    test_phrase_width_holds();
     test_visit_cap_off_is_not_shown();
     test_visit_cap_counts_down();
     test_visit_cap_suspended_is_not_live();

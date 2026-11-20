@@ -174,7 +174,8 @@ dmr_ms_sync_is_voice(const uint8_t syncdata[48]) {
    every decode, the noise after a carrier drop named the call's last bursts with a random colour code, which split the
    call and published their audio as a recording of no one (issue #834). REJECT for an EMB that did not decode. */
 static dmr_confidence_result
-dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], uint8_t emb_pdu[16], uint8_t* power) {
+dmr_ms_decode_embedded_color_code(const dsd_opts* opts, dsd_state* state, const uint8_t syncdata[48],
+                                  uint8_t emb_pdu[16], uint8_t* power) {
     *power = 9;
     for (int i = 0; i < 8; i++) {
         emb_pdu[i] = syncdata[i];
@@ -186,7 +187,7 @@ dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], 
     const uint8_t cc = (uint8_t)((emb_pdu[0] << 3) + (emb_pdu[1] << 2) + (emb_pdu[2] << 1) + emb_pdu[3]);
     *power = emb_pdu[4];
     state->color_code = cc;
-    return dmr_confidence_note_voice_burst(state, 0U, cc);
+    return dmr_confidence_note_voice_burst(opts, state, 0U, cc);
 }
 
 static void
@@ -539,7 +540,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
             break;
         }
         uint8_t power = 9;
-        const dmr_confidence_result emb = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu, &power);
+        const dmr_confidence_result emb = dmr_ms_decode_embedded_color_code(opts, state, syncdata, emb_pdu, &power);
         dmr_debug_dump_burst(opts, state, state->currentslot, 0x10);
         dmr_ms_dump_dsp_output(opts, state);
 

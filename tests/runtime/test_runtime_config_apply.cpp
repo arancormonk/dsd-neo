@@ -1807,6 +1807,16 @@ test_ui_aes_key_command_handles_zero_and_short_payloads(void) {
     return rc;
 }
 
+/* The segments of the working Hytera key, as the terminal's key status reads them. */
+static unsigned int
+working_hytera_segments(const dsd_state* state) {
+    ui_dmr_key key;
+    ui_dmr_key_working(state, &key);
+    const unsigned int count = ui_dmr_key_hytera_segment_count(&key);
+    ui_dmr_key_clear(&key);
+    return count;
+}
+
 static int
 test_ui_hytera_status_counts_k_fields_only(void) {
     test_runtime runtime;
@@ -1820,22 +1830,21 @@ test_ui_hytera_status_counts_k_fields_only(void) {
     state->aes_key_segments[1] = 2U;
 
     int rc = 0;
-    rc |=
-        expect_int_eq("UI Hytera status ignores H-only stale AES metadata", (int)ui_hytera_key_segment_count(state), 0);
+    rc |= expect_int_eq("UI Hytera status ignores H-only stale AES metadata", (int)working_hytera_segments(state), 0);
 
     state->K1 = 0x0123456789ULL;
-    rc |= expect_int_eq("UI Hytera BP status ignores stale AES metadata", (int)ui_hytera_key_segment_count(state), 1);
+    rc |= expect_int_eq("UI Hytera BP status ignores stale AES metadata", (int)working_hytera_segments(state), 1);
 
     state->hytera_key_segments = 2U;
-    rc |= expect_int_eq("UI Hytera 128-bit status preserves zero K2", (int)ui_hytera_key_segment_count(state), 2);
+    rc |= expect_int_eq("UI Hytera 128-bit status preserves zero K2", (int)working_hytera_segments(state), 2);
     state->hytera_key_segments = 0U;
 
     state->K2 = 0x1122334455667788ULL;
-    rc |= expect_int_eq("UI Hytera 128-bit status counts K fields", (int)ui_hytera_key_segment_count(state), 2);
+    rc |= expect_int_eq("UI Hytera 128-bit status counts K fields", (int)working_hytera_segments(state), 2);
 
     state->K2 = 0ULL;
     state->K4 = 0x8877665544332211ULL;
-    rc |= expect_int_eq("UI Hytera 256-bit status counts upper K fields", (int)ui_hytera_key_segment_count(state), 4);
+    rc |= expect_int_eq("UI Hytera 256-bit status counts upper K fields", (int)working_hytera_segments(state), 4);
 
     free_test_runtime(&runtime);
     return rc;
@@ -2579,7 +2588,7 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
     hooks.udp_read_sample_wait = udp_input_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     const int udp_port = free_loopback_udp_port();
     rc |= expect_true("a free loopback udp port", udp_port > 0);
     struct HostPortPayload udp = {0};
@@ -2631,7 +2640,7 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
         rc |= expect_int_eq("local input temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
     }
     closeAudioInDevice(opts);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
 
     free_test_runtime(&runtime);
     return rc;

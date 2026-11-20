@@ -422,6 +422,11 @@ typedef struct {
     uint64_t entry_avoid_rev;
     uint32_t entry_edit_seq;
     double entry_recheck_s;
+    /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
+       judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
+       failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
+       start and a retry, which do not roll back, keep the restore's judge. */
+    int judge_on_accept;
     /* The outer loop's pass owes the scan quiet check its engine service (issue #834,
        dsd_engine_trunk_scan_quiet_service_pass()): the next tick under the guard publishes the visit on air, so the
        per-frame ticks of a carrier never walk for it. */
@@ -2506,6 +2511,24 @@ trunk_scan_next_chan_map_seq(dsd_trunk_scan_coord* coord, uint64_t restored_seq)
     return ++coord->last_trunk_chan_map_seq;
 }
 
+/* A park's judgement for the DMR calls: its service options say nothing of how the carrier's calls are encrypted, so a
+   stale privacy bit would decrypt this carrier's frames before their own LC with a key set directly, nor does a slot's
+   next call key from the talkgroups the target's or the left target's calls keyed from. Until each slot's call there
+   says whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()), unless nothing has
+   landed yet in the run (dsd_state::run_landed): the first park of a scan the run started with. A park lands, and uses
+   that up, once its tune is confirmed (trunk_scan_note_landing()). Only when @p judges: the restore's, or a walk's or
+   a resume's switch's once its retune is accepted (dsd_trunk_scan_coord::judge_on_accept). */
+static void
+trunk_scan_judge_park(dsd_state* state, int judges) {
+    if (!judges) {
+        return;
+    }
+    dmr_forget_call_privacy(state);
+    if (state->run_landed != 0U) {
+        dmr_enc_class_hold(state);
+    }
+}
+
 static void
 trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
     if (!rt) {
@@ -2525,15 +2548,11 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0;
-    // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding.
-    // Keep it in the raw snapshot only for rollback to a carrier that a failed switch never left (issue #657).
-    DSD_MEMSET(state->dmr_le_vendor, 0, sizeof(state->dmr_le_vendor));
-    // Nor can a PI the old reception held for a call its lost voice LC header would have opened.
-    DSD_MEMSET(state->dmr_pi_precall_rx, 0, sizeof(state->dmr_pi_precall_rx));
-    DSD_MEMSET(state->dmr_pi_precall_algid, 0, sizeof(state->dmr_pi_precall_algid));
-    DSD_MEMSET(state->dmr_pi_precall_kid, 0, sizeof(state->dmr_pi_precall_kid));
-    DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
-    DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
+    // A new visit is a new reception: the old call's vendor evidence cannot suppress this visit's SB/MI decoding, nor
+    // can a PI the old reception held for a call its lost voice LC header would have opened (trunk_scan_judge_park()).
+    // The raw snapshot keeps the service options and vendor evidence only for rollback to a carrier that a failed
+    // switch never left (issue #657). A walk's or resume's attempt is judged by its switch once its retune is accepted.
+    trunk_scan_judge_park(state, !coord || !coord->judge_on_accept);
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
     rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }
@@ -3299,12 +3318,18 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
         return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, out_request_id);
     }
-    /* Trunk targets re-park on their control channel; only the two axes differ per type. */
+    /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
+       for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or
+       resume's switch once this retune is accepted), so the engine's tune hook leaves it to the park
+       (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. */
     state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
     state->trunk_cc_freq = freq;
     const int cc_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                              : trunk_scan_gfsk_sps(opts, state, rt->target.type);
-    return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_trunk_tuning_caller_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_trunk_tuning_caller_judges_end();
+    return result;
 }
 
 /*
@@ -3458,6 +3483,7 @@ trunk_scan_note_landing(dsd_state* state, const dsd_trunk_scan_coord* coord, con
                         uint64_t request) {
     const uint32_t hz = trunk_scan_type_is_conventional(rt->target.type) ? rt->target.frequency_hz : 0U;
     dsd_engine_scan_landing_note_target(state, (int)(rt - coord->targets), coord->session, hz, request);
+    state->run_landed = 1U; // the run's first landing is used up; a tune still pending or one that failed leaves it
 }
 
 /*
@@ -3494,6 +3520,16 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     }
     dsd_engine_release_tuned_call_state(opts, state);
     rt->last_allowed_activity_m = 0.0;
+}
+
+/* A forced advance's release of the carrier it leaves (#507): the park that follows judges the move for the DMR calls'
+   privacy and voice hold, once (trunk_scan_judge_park()), so the release leaves both to it
+   (dsd_trunk_tuning_caller_judges()). */
+static void
+trunk_scan_release_for_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    dsd_trunk_tuning_caller_judges_begin();
+    trunk_scan_release_active_carrier(opts, state, rt);
+    dsd_trunk_tuning_caller_judges_end();
 }
 
 /* The idle dwell runs from the park's landing, as the visit does (discussion #717): the retune armed it when it was
@@ -3839,12 +3875,13 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
          * call the receiver then stays on, and before the snapshot, so the saved state is idle by
          * construction and revisiting the target cannot restore a call that ended a rotation ago. */
         if (coord->forced_visit_release) {
-            trunk_scan_release_active_carrier(opts, state, outgoing);
+            trunk_scan_release_for_park(opts, state, outgoing);
             /* Rollback must preserve this release too. Restoring the pre-release call and
              * ending it again duplicates its history event if every park fails. */
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
             /* The release's own return to the control channel; the RAS evidence goes at the switch below either way. */
             (void)dsd_rxid_apply_trunk_tune(state);
+            (void)dsd_engine_apply_dmr_leave(state);
             coord->rollback_rx_id = state->rx_id;
             coord->forced_visit_release = 0;
         } else {
@@ -3906,6 +3943,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         }
         return tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? TRUNK_SCAN_RETUNE_DEFERRED : -1;
     }
+    trunk_scan_judge_park(state, coord->judge_on_accept);
 
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         dmr_sm_begin_cc_acquisition(&rt->dmr_ctx, opts, state, trunk_scan_retune_freq(state, &rt->target),
@@ -4036,6 +4074,7 @@ trunk_scan_walk_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     double now_m = trunk_scan_now_m();
     /* The rollback snapshot is the original target's whole, a watchdog tune still pending reconciled into it. */
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+    (void)dsd_engine_apply_dmr_leave(state);
     trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
     if (dsd_rxid_apply_trunk_tune(state)) {
         dmr_ras_reset(state);
@@ -4060,8 +4099,10 @@ trunk_scan_walk_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         if (next >= coord->count) {
             continue;
         }
+        coord->judge_on_accept = 1;
         const int switch_rc = next == walk.target ? trunk_scan_park_noting(opts, state, coord, next, save_current)
                                                   : trunk_scan_switch_to(opts, state, coord, next, save_current);
+        coord->judge_on_accept = 0;
         if (switch_rc == 0) {
             dsd_scan_key_change_clear(&rollback);
             return 1;
@@ -4764,6 +4805,29 @@ trunk_scan_timing_fill_visit(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
+/* The silent-channel skip's status on the target on air (issue #834 R6): shown on its idle dwell, said of a
+   conventional target only. One load with the setting off. */
+static void
+trunk_scan_timing_fill_quiet(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord,
+                             dsd_scan_timing_publication* report) {
+    if (!opts->scan_skip_silent) {
+        return;
+    }
+    const dsd_trunk_scan_target* target = &coord->targets[coord->active].target;
+    scan_quiet_visit_ref ref;
+    DSD_MEMSET(&ref, 0, sizeof ref);
+    ref.owner = SCAN_QUIET_OWNER_TRUNK;
+    ref.index = (int)coord->active;
+    ref.session = coord->session;
+    ref.list_id = coord->session;
+    /* An edit of a target in place, or a list switched on or off, is a revision of the lists: a line logs again. */
+    ref.list_rev = ((uint64_t)coord->edit_seq << 32) | (uint64_t)coord->lists_seq;
+    ref.name = target->label[0] != '\0' ? target->label : target->id;
+    ref.shows_status = report->reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    ref.conventional = !trunk_scan_target_is_trunked(target->type);
+    scan_quiet_timing_fill(opts, state, &ref, report);
+}
+
 /*
  * One scan-timing report for the target on air (issue #508). Absolute monotonic anchors only:
  * the frontends difference them against their own clock, so a stalled UI cannot invent a
@@ -4810,6 +4874,7 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
             report.hang_ms = (uint32_t)((hang_s * 1000.0) + 0.5);
         }
     }
+    trunk_scan_timing_fill_quiet(opts, state, coord, &report);
     dsd_scan_timing_publish(state, &report);
 }
 
@@ -4880,8 +4945,15 @@ trunk_scan_advance_releasing(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_co
     if (coord->active == before) {
         if (released) {
             /* Clear transient decoder state from failed candidates. The rollback snapshot
-             * already contains the ended call, so this cannot emit its end a second time. */
+             * already contains the ended call, so this cannot emit its end a second time. A fallback park accepted
+             * onto the original was judged by its switch (judge_on_accept); a walk rolled back is judged here. */
+            if (park_accepted) {
+                dsd_trunk_tuning_caller_judges_begin();
+            }
             dsd_engine_release_tuned_call_state(opts, state);
+            if (park_accepted) {
+                dsd_trunk_tuning_caller_judges_end();
+            }
         }
         dsd_trunk_scan_target_runtime* restored = &coord->targets[before];
         if (released) {
@@ -5162,18 +5234,20 @@ trunk_scan_idle_dwell_ran_out(const dsd_opts* opts, const dsd_state* state, dsd_
 static void
 trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
                          scan_quiet_eligibility* e) {
+    if (!trunk_scan_type_is_conventional(rt->target.type)) {
+        return; /* a trunked target: in no class, and never checked by design */
+    }
     const dsd_scan_mode mode = trunk_scan_target_mode(rt->target.type);
-    e->classes = trunk_scan_type_is_conventional(rt->target.type) ? scan_quiet_mode_classes(mode) : 0U;
     const int kind = dsd_scan_mode_analog_kind(mode);
+    e->classes = scan_quiet_mode_classes(mode);
     if (kind < 0) {
         e->classes = scan_quiet_monitor_classes(opts, e->classes, &e->analog_kind, &e->analog_width_hz);
-        return;
+    } else {
+        dsd_scan_option_values scratch;
+        scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
-    if (e->classes == 0U) {
-        return;
-    }
-    dsd_scan_option_values scratch;
-    scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
+    /* Why these facts give the target no check, if they give none (issue #834 R6). */
+    e->reason = scan_quiet_facts_reason(opts, e, 0);
 }
 
 /* The visit of the target on air: its landing in this session, or its park still in flight. 0 for neither. */
@@ -5253,15 +5327,28 @@ trunk_scan_quiet_skip(const dsd_opts* opts, dsd_state* state, const dsd_trunk_sc
     return 1;
 }
 
+/* The scan's tune count (dsd_engine_scan_owner::tune_seq, moved by every scan tune), so a tick can tell whether it tuned
+   another target; 0 with no scan owner. */
+static uint64_t
+trunk_scan_quiet_tune_mark(const dsd_state* state) {
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    return owner ? owner->tune_seq : 0U;
+}
+
 /* The tail of a tick under the coordinator's guard, for the scan quiet check (issue #834): a READY result the tick saw
-   and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then, on
-   the outer loop's pass, the visit on air is published, after any landing or advance this tick made. */
+   and did not apply is declined (a stay, a hold, a release or any other step that spent the tick came first), then the
+   visit on air is published, after any landing or advance this tick made: on the outer loop's pass, and on a per-frame
+   tick that tuned another target (@p tunes_before, trunk_scan_quiet_tune_mark() at the tick's start), whose new visit
+   no outer pass may publish while the frames keep coming (issue #834 R4, the trunk scan's twin of the -Y landing
+   publication). */
 static void
-trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+trunk_scan_quiet_tick_end(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m,
+                          uint64_t tunes_before) {
     if (!opts->scan_skip_silent) {
         return; /* one load: no pass is ever owed with the setting off */
     }
-    const int pass = coord->quiet_pass_owed;
+    const int pass = coord->quiet_pass_owed || trunk_scan_quiet_tune_mark(state) != tunes_before;
     coord->quiet_pass_owed = 0;
     scan_quiet_reconcile_declined(opts, state, SCAN_QUIET_OWNER_TRUNK, 0);
     if (!pass || !scan_quiet_wants_eligibility(opts, state, SCAN_QUIET_OWNER_TRUNK)) {
@@ -5417,12 +5504,13 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
 static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     const double now_m = trunk_scan_now_m();
+    const uint64_t tunes_before = opts->scan_skip_silent ? trunk_scan_quiet_tune_mark(state) : 0U;
     /* A departure the target on air owes comes first, ahead of everything that could keep it (issue #697). */
     if (!trunk_scan_service_departure(opts, state, coord, now_m)) {
         trunk_scan_tick_targets_locked(opts, state, coord, now_m);
     }
     trunk_scan_note_dwell_serviced(opts, state, coord, now_m);
-    trunk_scan_quiet_tick_end(opts, state, coord, now_m);
+    trunk_scan_quiet_tick_end(opts, state, coord, now_m, tunes_before);
     trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 
@@ -6847,6 +6935,18 @@ trunk_scan_resume_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coor
     return monitor_request;
 }
 
+/* One park a resume tries (a revisit, save_current 0). A resume that fails everywhere rolls back as a walk does
+   (trunk_scan_resume_rollback()), so, as a walk's, the attempt is judged by its switch once its retune is accepted,
+   never at the restore: a failed one judges nothing, and the carrier the receiver stays on keeps its calls' privacy and
+   holds nothing (trunk_scan_judge_park()). */
+static int
+trunk_scan_resume_attempt(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next) {
+    coord->judge_on_accept = 1;
+    const int rc = trunk_scan_park_noting(opts, state, coord, next, 0);
+    coord->judge_on_accept = 0;
+    return rc;
+}
+
 /*
  * A resume's park (issue #671): the target coord->active names, the one the scan paused at or a go-to's (issue #644),
  * as a revisit (trunk_scan_park_noting(), save_current 0). One out of the rotation (issue #697: its list was switched
@@ -6866,7 +6966,7 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     coord->park_tried_hz = 0;
     if (!trunk_scan_active_out_of_rotation(coord)
         || !trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m)) {
-        const int rc = trunk_scan_park_noting(opts, state, coord, original, 0);
+        const int rc = trunk_scan_resume_attempt(opts, state, coord, original);
         *installed = rc != TRUNK_SCAN_PREPARE_FAILED ? original : coord->count;
         if (trunk_scan_active_out_of_rotation(coord)) {
             /* Out of the rotation with nowhere to go yet: it owes the departure once somewhere is. */
@@ -6882,7 +6982,7 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
             continue;
         }
         *tried = next;
-        rc = trunk_scan_park_noting(opts, state, coord, next, 0);
+        rc = trunk_scan_resume_attempt(opts, state, coord, next);
         if (rc == 0) {
             return 0;
         }

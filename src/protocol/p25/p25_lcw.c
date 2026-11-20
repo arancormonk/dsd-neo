@@ -41,6 +41,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_cc_update.h"
 #include "p25_unit_activity.h"
+#include "phase1/p25p1_current_call.h"
 
 static void
 p25_lcw_publish_activity(dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
@@ -117,6 +118,7 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_hard; /* the link control passed a hard RS decode (not a soft-erasure retry; spec 2.20) */
     int is_standard_mfid;
     const dsd_event_closing_call* closing; /* the call the TDULC carrying this LC ended; NULL otherwise */
+    uint64_t ended_epoch;                  /* TDULC: the call it ended, or whose end it repeats (0: none) */
 } p25_lcw_ctx;
 
 typedef void (*p25_lcw_handler_fn)(p25_lcw_ctx* ctx);
@@ -180,8 +182,8 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
 }
 
-/* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
- * else slot 0's ACTIVE Phase 1 call, never an ended one. */
+/* The call a GPS link control belongs to (issue #800, spec N2): from a TDULC, only the call that TDULC ended, captured
+ * just before its end (p25p1_tdulc.c); from an LDU1, slot 0's ACTIVE Phase 1 call. Never an ended call otherwise. */
 typedef struct {
     dsd_position_attribution_call view;    /* open 0: no call */
     const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
@@ -190,8 +192,15 @@ typedef struct {
 static void
 p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
-        out->closing = ctx->closing;
+    if (!ctx->allow_voice_start) {
+        /* A TDULC binds its call only when it ended the call it captured (ctx->ended_epoch is that call's). A TDULC the
+           trunk state machine declined to end (a header opened the call, no voice frame followed) leaves its call
+           open, and its link control is not shown to be that call's: no call, and no fallback to the open one. A
+           repeat of the end captures nothing. */
+        if (ctx->ended_epoch != 0U && ctx->closing != NULL && ctx->closing->epoch == ctx->ended_epoch
+            && dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
+            out->closing = ctx->closing;
+        }
         return;
     }
     /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
@@ -204,7 +213,7 @@ p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
 
 /* The voice-user evidence (issue #800, spec 2.2): p25_p1_lc_attribution, the record of who a later GPS link control
  * of the call names. A hard-decoded voice user naming a radio by a complete local address records it once the call
- * (the one p25_lcw_gps_call_get() names: a terminator's closing call, else slot 0's ACTIVE Phase 1 call) carries exactly
+ * (the one p25_lcw_gps_call_get() names: from a TDULC the call it ended, from an LDU1 slot 0's ACTIVE Phase 1 call) carries exactly
  * this target and source. Fail closed: any other voice user takes the record away unless it only repeats the record's
  * own source by a soft decode. That is one naming a special address in its source field (p25_source_id_is_subscriber():
  * no radio), a source that is not a complete local address (@p source_local 0: the Source ID Extension Required flag,
@@ -563,7 +572,7 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
     }
     if (src != 0) {
         dsd_call_snapshot call;
-        if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        if (p25p1_current_call(ctx->state, &call)) {
             const dsd_call_observation observation = {
                 .protocol = call.protocol,
                 .slot = 0U,
@@ -953,6 +962,9 @@ p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int
     out->protocol = DSD_SYNC_IS_P25P1(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P1_POS;
     out->slot = 0U;
     out->pos_verified = pos_verified ? 1U : 0U;
+    /* A TDULC's report bound to no call (p25_lcw_gps_call_get()) has no history row: falling back to the slot's
+       ACTIVE call would put it on a call that TDULC did not end. */
+    out->no_call_row = (uint8_t)(!ctx->allow_voice_start && !call->view.open);
     dsd_position_attribution granted;
     if (dsd_position_attribution_grant(ctx->state, &ctx->state->p25_p1_lc_attribution, &call->view, out->protocol,
                                        &granted)
@@ -1081,13 +1093,26 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
     }
 }
 
+/* The P25 Phase 1 call this link control speaks for, into @p call: from an LDU1, only the open call, since a new
+ * transmission's first LDU1 decodes before its own call opens and the ended one is the previous transmission's; from a
+ * TDULC, which ends its call before its link control is read, also the call it ended or whose end it repeats
+ * (p25_lcw_from_tdulc()), never an older ended call the slot still holds. */
+static int
+p25_lcw_call(const p25_lcw_ctx* ctx, dsd_call_snapshot* call) {
+    if (p25p1_current_call(ctx->state, call)) {
+        return 1;
+    }
+    return !ctx->allow_voice_start && ctx->ended_epoch != 0U && p25p1_open_or_ended_call(ctx->state, call)
+           && call->epoch == ctx->ended_epoch;
+}
+
 static void
 p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     dsd_call_snapshot call;
-    const int target = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (int)call.ota_target_id : 0;
+    const int target = p25_lcw_call(ctx, &call) ? (int)call.ota_target_id : 0;
     p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_decode_now_mono_s());
 }
 
@@ -1255,7 +1280,7 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
         }
         if (src != 0) {
             dsd_call_snapshot call;
-            if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            if (p25p1_current_call(ctx->state, &call)) {
                 const dsd_call_observation observation = {
                     .protocol = call.protocol,
                     .slot = 0U,
@@ -1308,7 +1333,7 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-               uint8_t allow_voice_start, const dsd_event_closing_call* closing) {
+               uint8_t allow_voice_start, const dsd_event_closing_call* closing, uint64_t ended_epoch) {
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
     }
@@ -1330,6 +1355,7 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
        caller's uncorrectable verdict (the CRC/FEC publication rule). */
     ctx.lc_hard = (uint8_t)(state->p25_p1_lcw_soft == 0U && irrecoverable_errors == 0U);
     ctx.closing = closing;
+    ctx.ended_epoch = ended_epoch;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
     if (ctx.lc_pf == 1) {
@@ -1360,11 +1386,11 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
 
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1, NULL);
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1, NULL, 0U);
 }
 
 void
 p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-                   const dsd_event_closing_call* closing) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0, closing);
+                   const dsd_event_closing_call* closing, uint64_t ended_epoch) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0, closing, ended_epoch);
 }

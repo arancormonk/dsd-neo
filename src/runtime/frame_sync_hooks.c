@@ -6,6 +6,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -99,9 +100,32 @@ int
 dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
     /* The setting off: this one load is the hunt's whole cost. */
     if (!opts->scan_skip_silent) {
-        return 0;
+        return DSD_SCAN_QUIET_NONE;
     }
-    return g_frame_sync_hooks.scan_quiet_service ? g_frame_sync_hooks.scan_quiet_service(opts, state) : 0;
+    return g_frame_sync_hooks.scan_quiet_service ? g_frame_sync_hooks.scan_quiet_service(opts, state)
+                                                 : DSD_SCAN_QUIET_NONE;
+}
+
+void
+dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms) {
+    /* Checked content and open verdicts, whatever the setting, for the -Y step's frame-boundary rule (issue #834 item
+       3): at most three plain stores, no clock read, no owner looked up or made, no hook called. */
+    if (state && level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        state->scan_y_content_seq++;
+    } else if (state && level == DSD_CONTENT_EVIDENCE_PARTIAL) {
+        /* A verdict still open: the -Y step waits its hold out, and counts nothing for it. */
+        state->scan_y_partial_seq++;
+        if (hold_ms > state->scan_y_partial_hold_ms) {
+            state->scan_y_partial_hold_ms = hold_ms;
+        }
+    }
+    /* The setting off: this one load is the rest of the frame's cost, before any owner is looked up. */
+    if (!opts || !opts->scan_skip_silent) {
+        return;
+    }
+    if (g_frame_sync_hooks.content_evidence) {
+        g_frame_sync_hooks.content_evidence(state, level, hold_ms);
+    }
 }
 
 int

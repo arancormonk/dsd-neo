@@ -15,20 +15,26 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -62,6 +68,7 @@ install_trunk_tuning_hooks(void) {
 }
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
+void processTDU(dsd_opts* opts, dsd_state* state);
 
 static int g_rs_hard_result = 0;
 static int g_rs_soft_result = 1;
@@ -334,6 +341,15 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 static int
+expect_eq_u64(const char* tag, uint64_t got, uint64_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", tag, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_true(const char* tag, int ok) {
     if (!ok) {
         DSD_FPRINTF(stderr, "%s: condition failed\n", tag);
@@ -440,9 +456,9 @@ lcw_from_octets(uint8_t lcw[72], uint8_t format, uint8_t mfid, const uint8_t oct
     }
 }
 
-/* A trunked voice channel whose call 0x010203 -> TG 0x1234 a hard-decoded Group Voice Channel User LC opened. */
-static uint64_t
-start_checked_call(dsd_opts* opts, dsd_state* state) {
+/* A trunked voice channel the grant of 0x010203 -> TG 0x1234 tuned. */
+static void
+tune_granted_channel(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -462,6 +478,15 @@ start_checked_call(dsd_opts* opts, dsd_state* state) {
     p25_sm_init_ctx(ctx, opts, state);
     p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
     p25_sm_event(ctx, opts, state, &grant);
+    g_rs_hard_result = 0;
+    g_rs_soft_result = 1;
+    g_gps_calls = 0;
+}
+
+/* A trunked voice channel whose call 0x010203 -> TG 0x1234 a hard-decoded Group Voice Channel User LC opened. */
+static uint64_t
+start_checked_call(dsd_opts* opts, dsd_state* state) {
+    tune_granted_channel(opts, state);
     const uint8_t user[7] = {0x00, 0x00, 0x12, 0x34, 0x01, 0x02, 0x03};
     uint8_t lcw[72];
     lcw_from_octets(lcw, 0x00, 0x00, user);
@@ -471,9 +496,6 @@ start_checked_call(dsd_opts* opts, dsd_state* state) {
         || call.ota_source_id != 0x010203U) {
         return 0U;
     }
-    g_rs_hard_result = 0;
-    g_rs_soft_result = 1;
-    g_gps_calls = 0;
     return call.epoch;
 }
 
@@ -555,6 +577,48 @@ test_terminator_gps(void) {
     return rc;
 }
 
+/* Issue #800: a TDULC's GPS link control belongs only to the call that TDULC ended. On a trunked voice channel a header
+   can open the call before any voice frame: the trunk state machine follows no voice yet, declines the TDULC's end and
+   the call stays open. Neither half of an L3Harris update in such TDULCs, nor a Motorola APX report, is that call's;
+   successive TDULCs must not pair their halves against it. */
+static int
+test_terminator_gps_of_a_call_it_did_not_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t apx[7] = {0x00, 0x00, 0x2A, 0xAA, 0xAA, 0x15, 0x55};
+    int rc = 0;
+
+    tune_granted_channel(&opts, &state);
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    rc |= expect_eq_int("header call: tuned", ctx->state, P25_SM_TUNED);
+    // The header opens the call; no voice user has reached the trunk state machine.
+    rc |= expect_true("header call: opened", seed_active_call(&state, 0x1234, 0x010203, 0x00));
+    dsd_call_snapshot call;
+    const uint64_t epoch = dsd_call_state_get(&state, 0U, &call) > 0 ? call.epoch : 0U;
+    rc |= expect_eq_int("header call: no voice followed", ctx->slots[0].voice_active, 0);
+
+    g_gps_calls = 0;
+    build_lcw_words(0x2A, 0xA4, 0x00, 0x009E, (uint16_t)(22U << 8), 0x0080);
+    processTDULC(&opts, &state);
+    rc |= expect_true("header call: the TDULC did not end it", dsd_call_state_get(&state, 0U, &call) > 0
+                                                                   && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                                   && call.epoch == epoch);
+    rc |= expect_eq_u64("header call: the TDULC ended no call", state.p25_p1_terminator_end_epoch, 0U);
+    build_lcw_words(0x2B, 0xA4, 45, 0x1C20, 0x8400, 0x0315);
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("header call: TDULC halves never pair", g_gps_calls, 0);
+
+    build_lcw_words(0x06, 0x90, apx[0], (uint16_t)((apx[1] << 8) | apx[2]), (uint16_t)((apx[3] << 8) | apx[4]),
+                    (uint16_t)((apx[5] << 8) | apx[6]));
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("header call: APX dispatched", g_gps_calls, 1);
+    rc |= expect_true("header call: APX names no call", g_gps_ctx.call_epoch == 0U && g_gps_closing_epoch == 0U
+                                                            && g_gps_ctx.source_verified == 0U
+                                                            && g_gps_ctx.source_id == 0U);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* Issue #800: the next engine run on a reused state (the engine's cleanup frees the call state; the new one goes on
    from the last run's epochs) is not attributed by the last run's hard-decoded voice-user identity: a GPS link control
    of the new run's first call, opened by a soft-recovered link control of the same radio, names no one. */
@@ -594,6 +658,169 @@ test_reused_state_forgets_checked_identity(void) {
         expect_true("next run: the call, but no checked identity",
                     g_gps_ctx.call_epoch == call.epoch && g_gps_ctx.source_verified == 0U && g_gps_ctx.target_id == 0U);
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The trunk state machine's diagnostic log, where it records the talkgroup each end it is handed names. */
+static char g_sm_log_path[DSD_TEST_PATH_MAX];
+
+/* The talker ends (p25_sm_emit_end_call_at(), `kind=end`) the trunk state machine logged so far, and into @p tg the
+   talkgroup the last one named (0: none). A TDULC's own end runs first, so the talker end in its link control finds no
+   followed voice and is logged as ignored, with the talkgroup it was handed. */
+static int
+logged_talker_ends(dsd_opts* opts, int* tg) {
+    *tg = -1;
+    if (opts->p25_sm_log_f != NULL) {
+        (void)fflush(opts->p25_sm_log_f);
+    }
+    FILE* fp = dsd_fopen_private(g_sm_log_path, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+    int count = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, fp) != NULL) {
+        const char* field = strstr(line, " event_tg=");
+        if (strstr(line, "event=voice_end_ignored") == NULL || strstr(line, " kind=end") == NULL || field == NULL) {
+            continue;
+        }
+        char* end = NULL;
+        const long v = strtol(field + strlen(" event_tg="), &end, 10);
+        *tg = (end != NULL && *end == ' ') ? (int)v : -1;
+        count++;
+    }
+    fclose(fp);
+    return count;
+}
+
+/* A TDULC read at @p clock, as the symbol grid would have it once the frame's sync and NID were read, whose link control
+   is a Motorola talker end (MFID $90 LCO $0F) of radio 0x123456: the talkgroup that end delivers to the trunk state
+   machine (p25_lcw_call(), from the call p25p1_terminator_note_end() named to p25_lcw_from_tdulc()), 0 for none; -1
+   when the TDULC delivered no talker end. */
+static int
+run_tdulc_at(dsd_opts* opts, dsd_state* state, uint64_t clock) {
+    state->symbol_clock = clock;
+    build_lcw_words(0x0F, 0x90, 0x00, 0x0000, 0x0012, 0x3456);
+    int tg = -1;
+    const int before = logged_talker_ends(opts, &tg);
+    processTDULC(opts, state);
+    const int after = logged_talker_ends(opts, &tg);
+    return after == before + 1 ? tg : -1;
+}
+
+/* A trunked voice channel whose call 0x123456 -> TG 0x1234 the trunk state machine follows, its diagnostic log in a
+   fresh file. */
+static int
+reset_followed_call_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_p25_sm_log_close(opts);
+    if (g_sm_log_path[0] != '\0') {
+        (void)remove(g_sm_log_path);
+    }
+    tune_granted_channel(opts, state);
+    const int fd = dsd_test_mkstemp(g_sm_log_path, sizeof g_sm_log_path, "tdulc_sm_log");
+    if (fd < 0) {
+        return 0;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", g_sm_log_path);
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (p25_sm_emit_active_call(opts, state, 0, 0x1234, 0, 0x123456, 1, 0) == 0 || !ctx->slots[0].voice_active) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        (void)seed_active_call(state, 0x1234, 0x123456, 0x00);
+    }
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == 0x1234U;
+}
+
+static void
+close_followed_call_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_p25_sm_log_close(opts);
+    if (g_sm_log_path[0] != '\0') {
+        (void)remove(g_sm_log_path);
+        g_sm_log_path[0] = '\0';
+    }
+    dsd_state_ext_free_all(state);
+}
+
+/* A TDULC's link control speaks for the call that TDULC ended, and its repeats, which follow it back to back on the
+   carrier (each data unit's sync starts where the last one ends, TIA-102.BAAA-A 8.2), for that call too. A TDULC that
+   ended no call, its LDUs lost, is a later transmission's terminator: an older call the slot still holds ended is not
+   its call (p25p1_terminator_note_end()). Probed through the link control processTDULC() dispatches: the Motorola
+   talker end names only its source and takes its talkgroup from that call. */
+static int
+test_tdulc_link_control_takes_only_the_call_it_ended(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint64_t start = 100000U;
+    const int tg = 0x1234;
+    int rc = 0;
+
+    rc |= expect_true("fixture call", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("the TDULC that ends the call speaks for the call", run_tdulc_at(&opts, &state, start), tg);
+    dsd_call_snapshot call;
+    rc |= expect_true("the TDULC ended the call",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_int("its repeat speaks for it too", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), tg);
+    rc |= expect_eq_int("and so does the repeat after it",
+                        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), tg);
+    // Much later, a voiceless transmission whose TDULC alone decoded: the ended call is not its call.
+    rc |= expect_eq_int("a later TDULC speaks for no older call", run_tdulc_at(&opts, &state, start + 50000U), 0);
+    rc |= expect_eq_int("nor does its own repeat", run_tdulc_at(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0);
+
+    // A data unit the decoder never read between them (a TDU or LDU lost to a fade): no repeat of the TDULC that ended
+    // the call.
+    rc |= expect_true("fixture call 2", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("ending TDULC", run_tdulc_at(&opts, &state, start), tg);
+    rc |= expect_eq_int("a TDULC after a unit the decoder never read",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0);
+
+    // A TDU that ended the call, then the same transmission's TDULCs back to back: the end is one, so its link
+    // control is the call's. So is a TDULC after a TDU that followed the TDULC ending the call.
+    rc |= expect_true("fixture call 5", reset_followed_call_fixture(&opts, &state));
+    state.symbol_clock = start;
+    processTDU(&opts, &state);
+    rc |= expect_true("the TDU ended the call",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_int("the TDULC after the TDU that ended the call speaks for the call",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), tg);
+    rc |=
+        expect_eq_int("and its repeat", run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS), tg);
+    state.symbol_clock = start + P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS;
+    processTDU(&opts, &state);
+    rc |= expect_eq_int(
+        "a TDULC after a TDU between the call's TDULCs",
+        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS), tg);
+    // A TDU much later, then a TDULC: a later transmission's end, which ended no call.
+    state.symbol_clock = start + 90000U;
+    processTDU(&opts, &state);
+    rc |= expect_eq_int("a TDULC after a later TDU that ended no call",
+                        run_tdulc_at(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0);
+
+    // A call another end closed (a sync loss) is not a TDULC's either, even straight after it.
+    rc |= expect_true("fixture call 3", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_true("sync loss ends the call", dsd_call_state_end_ex(&state, 0U, 2.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    rc |= expect_eq_int("a TDULC after a call a sync loss ended", run_tdulc_at(&opts, &state, start), 0);
+
+    // A carrier boundary inside the TDU that ended the call (a replay retune adopted while its tail was read): the
+    // TDU stood on the carrier left, so a TDULC on the next carrier where its repeat would stand is no repeat of it.
+    rc |= expect_true("fixture call 6", reset_followed_call_fixture(&opts, &state));
+    state.symbol_clock = start;
+    g_boundary_in_tail = 1;
+    processTDU(&opts, &state);
+    g_boundary_in_tail = 0;
+    rc |= expect_true("the split TDU moved the carrier count", state.carrier_seq == 1U);
+    rc |= expect_eq_int("a TDULC on the carrier after the split TDU",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), 0);
+
+    // A new carrier between the TDULC that ended the call and the next one: that one is no repeat of it.
+    rc |= expect_true("fixture call 4", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("ending TDULC 4", run_tdulc_at(&opts, &state, start), tg);
+    state.carrier_seq++;
+    rc |= expect_eq_int("a TDULC on the next carrier", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), 0);
+    close_followed_call_fixture(&opts, &state);
     return rc;
 }
 
@@ -681,6 +908,7 @@ main(void) {
 
     // Case 4: Voice-user metadata in the terminating frame does not restart voice.
     rc |= test_voice_user_metadata_does_not_restart_call();
+    rc |= test_tdulc_link_control_takes_only_the_call_it_ended();
 
     // Case 5: Hard Reed-Solomon failure recovered by soft reliability still dispatches LCW.
     build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
@@ -737,6 +965,7 @@ main(void) {
 
     // Case 8 (issue #800): GPS link controls in the terminator.
     rc |= test_terminator_gps();
+    rc |= test_terminator_gps_of_a_call_it_did_not_end();
     rc |= test_reused_state_forgets_checked_identity();
 
     dsd_state_ext_free_all(&state);

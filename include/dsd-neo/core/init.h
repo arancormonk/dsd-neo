@@ -29,8 +29,12 @@ void initOpts(dsd_opts* opts);
  * freeState() but must not run.
  */
 void initState(dsd_state* state);
-/** @brief Free dynamic allocations owned by @p state (does not free @p state itself). */
+/** @brief Free dynamic allocations owned by @p state (does not free @p state itself), wiping every key, key schedule
+ *  and keystream it holds first. */
 void freeState(dsd_state* state);
+/** @brief Wipe the secrets @p opts holds (the rdio-scanner API key and URL, the RadioReference API key, the API token)
+ *  before its owner frees it (does not free @p opts itself). */
+void freeOpts(dsd_opts* opts);
 /**
  * @brief Restamp, from the decode clock's now, the decode-domain times initOpts() and initState() seed with "now".
  *

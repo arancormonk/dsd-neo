@@ -1173,6 +1173,9 @@ Notes:
 - The value is stored as a 40-bit quantity (higher bits are discarded).
 - If `key_id` exceeds 16 bits, it is truncated to 24 bits and hashed down to 16 bits for storage.
 - Extra columns are ignored.
+- A DMR call with no ALG ID (Basic Privacy, Hytera) takes the key its talkgroup's row names, for that call only: a
+  call whose talkgroup has no row takes no other talkgroup's key, on either slot; it keys from a `-b` key if one is set
+  and still loaded, else it is muted.
 - A channel-map row (`keys_dec_csv`) or trunk-scan target (`keys_dec_csv`) can name a file in this format to
   override the global keyring on that row or target; see the Channel Map and Trunk Scan Target sections above.
 

@@ -61,6 +61,50 @@ static const dsd_scan_timing_row k_scan_timing_rows[] = {
 _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0])) == (int)DSD_SCAN_STAY_NO_LIST + 1,
                "every dsd_scan_stay_reason needs a display row");
 
+/**
+ * @brief What the silent-channel skip's status renders as on the stay it is shown on (issue #834).
+ *
+ * The compact reason is the phrase itself, at most 17 characters (the widest plain phrase), so the phrase column and
+ * every cut of it hold. The sentence is the full reason, read only by the Qt/Android screen reader, so it names the
+ * setting as that UI does ("Skip silent channels"); the WARN line in the log says how to fix it. WIDTH and NO_WIDTH
+ * share a phrase but not a sentence, since their remedies differ. MODES names no remedy: it covers both a decoder set
+ * with no known width and the M17 encoder, whose fixes differ.
+ */
+typedef struct {
+    const char* phrase;
+    const char* text;
+} dsd_scan_quiet_row;
+
+static const dsd_scan_quiet_row k_scan_quiet_checking = {
+    "Quiet check", "Checking whether this channel is silent. If it is, the scan moves on early."};
+
+/* Indexed by dsd_scan_quiet_reason, for DSD_SCAN_QUIET_STATUS_NO_CHECK. */
+static const dsd_scan_quiet_row k_scan_quiet_no_check[] = {
+    [DSD_SCAN_QUIET_REASON_NONE] = {NULL, NULL},
+    [DSD_SCAN_QUIET_REASON_INPUT] =
+        {"No check: input", "Skip silent channels can't check channels on this input. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_TUNER] =
+        {"No check: tuner",
+         "Skip silent channels can't check channels with this tuner as it is set up. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_RATE] =
+        {"No check: rate",
+         "Skip silent channels can't check channels at this sample rate. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_MODES] =
+        {"No check: modes",
+         "Skip silent channels can't check this channel with the decoders in use. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_WIDTH] =
+        {"No check: width",
+         "Skip silent channels can't check this channel at its channel width. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_NO_WIDTH] = {"No check: width",
+                                        "Skip silent channels can't check this channel with no NFM channel width set. "
+                                        "Set a width to have it checked. Normal scan timing applies."},
+};
+
+/* A reason the decoder can publish but this table cannot render would show the plain phrase and hide why. */
+_Static_assert((int)(sizeof(k_scan_quiet_no_check) / sizeof(k_scan_quiet_no_check[0]))
+                   == (int)DSD_SCAN_QUIET_REASON_NO_WIDTH + 1,
+               "every dsd_scan_quiet_reason needs a display row");
+
 /** @brief Longest countdown the view will report, guarding the cast below. */
 #define DSD_APP_SCAN_REMAINING_MAX_S ((double)UINT32_MAX / 1000.0)
 
@@ -172,17 +216,56 @@ scan_timing_fill_visit(dsd_app_scan_timing* out, const dsd_scan_timing_publicati
     }
 }
 
+/**
+ * @brief The silent-channel skip's variant of the phrase, when the decoder published one (issue #834).
+ *
+ * Only what the decoder said, on the stays it says it on: an idle dwell (the trunk scan's, or the -Y voice gate's
+ * qualify window) or a -Y hangtime. A status on any other stay, an unknown status, or a NO_CHECK without a reason this
+ * build knows leaves the plain phrase: the view never makes up a state. The variant outranks "Qualify", the gate's
+ * name for the same idle dwell: on that window it is the check that may end the visit early.
+ */
+static void
+scan_timing_fill_quiet(dsd_app_scan_timing* out, const dsd_scan_timing_publication* pub) {
+    if (pub->reason != (uint8_t)DSD_SCAN_STAY_IDLE_DWELL && pub->reason != (uint8_t)DSD_SCAN_STAY_HANGTIME) {
+        return;
+    }
+    const dsd_scan_quiet_row* quiet = NULL;
+    uint8_t reason = (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
+    if (pub->quiet_status == (uint8_t)DSD_SCAN_QUIET_STATUS_CHECKING) {
+        quiet = &k_scan_quiet_checking;
+    } else if (pub->quiet_status == (uint8_t)DSD_SCAN_QUIET_STATUS_NO_CHECK
+               && pub->quiet_reason < (uint8_t)(sizeof k_scan_quiet_no_check / sizeof k_scan_quiet_no_check[0])) {
+        quiet = &k_scan_quiet_no_check[pub->quiet_reason];
+        reason = pub->quiet_reason;
+    }
+    if (!quiet || !quiet->phrase) {
+        return;
+    }
+    out->quiet_status = pub->quiet_status;
+    out->quiet_reason = reason;
+    out->phrase = quiet->phrase;
+    out->quiet_text = quiet->text;
+}
+
+static size_t
+scan_timing_longest(size_t width, const char* phrase) {
+    const size_t n = phrase ? strlen(phrase) : 0U;
+    return (n > width) ? n : width;
+}
+
 size_t
 dsd_app_scan_timing_phrase_width(void) {
     static const char* const variants[] = {"Voice tail", "Qualify"};
     size_t width = 0U;
     for (size_t i = 0; i < sizeof k_scan_timing_rows / sizeof k_scan_timing_rows[0]; i++) {
-        const size_t n = k_scan_timing_rows[i].phrase ? strlen(k_scan_timing_rows[i].phrase) : 0U;
-        width = (n > width) ? n : width;
+        width = scan_timing_longest(width, k_scan_timing_rows[i].phrase);
     }
     for (size_t i = 0; i < sizeof variants / sizeof variants[0]; i++) {
-        const size_t n = strlen(variants[i]);
-        width = (n > width) ? n : width;
+        width = scan_timing_longest(width, variants[i]);
+    }
+    width = scan_timing_longest(width, k_scan_quiet_checking.phrase);
+    for (size_t i = 0; i < sizeof k_scan_quiet_no_check / sizeof k_scan_quiet_no_check[0]; i++) {
+        width = scan_timing_longest(width, k_scan_quiet_no_check[i].phrase);
     }
     return width;
 }
@@ -208,6 +291,7 @@ dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double no
         out->remaining_ms = scan_timing_remaining_ms(pub->deadline_m, now_m);
         out->span_ms = pub->span_ms;
     }
+    scan_timing_fill_quiet(out, pub);
     scan_timing_fill_budgets(out, row, pub);
     scan_timing_fill_visit(out, pub, now_m);
     return 1;

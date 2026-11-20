@@ -5981,8 +5981,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                keeps its history as the pass end does: a tick that keeps the target leaves a sync straddling the
                hand-back to the next call, and one that rotates retunes, which drops the history (issue #834). A scan
                quiet check whose quiet result the tick may skip on hands back the same way; it does its measurement
-               work inside the call and costs one load with skip-silent off (issue #834). */
-            if (dsd_trunk_scan_hook_dwell_due(opts, state) || dsd_frame_sync_hook_scan_quiet_service(opts, state)) {
+               work inside the call and costs one load with skip-silent off (issue #834); a check merely under way
+               (LIVE) hands nothing back. */
+            if (dsd_trunk_scan_hook_dwell_due(opts, state)
+                || dsd_frame_sync_hook_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK) {
                 frame_sync_history_keep(&rt, state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;

@@ -87,7 +87,7 @@ test_crypto_and_slot_isolation(dsd_state* state) {
         .audio_permitted = 1U,
         .observed_m = 6.0,
     };
-    assert(dsd_call_state_update_crypto(state, 1, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 1, DSD_SYNC_P25P2_POS, &crypto) == 1);
     assert(dsd_call_state_update_media(state, 1, 1, 6.5) == 1);
 
     dsd_call_state_snapshot all;
@@ -100,7 +100,7 @@ test_crypto_and_slot_isolation(dsd_state* state) {
     assert(dsd_call_state_end(state, 1, 7.0) == 1);
     crypto.classification = DSD_CALL_CRYPTO_CLEAR;
     crypto.observed_m = 7.5;
-    assert(dsd_call_state_update_crypto(state, 1, &crypto) == 0);
+    assert(dsd_call_state_update_crypto(state, 1, DSD_SYNC_P25P2_POS, &crypto) == 0);
     assert(dsd_call_state_get(state, 1, &all.slots[1]) == 1);
     assert(all.slots[1].crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
     assert(dsd_call_state_get(state, 0, &all.slots[0]) == 1);
@@ -123,7 +123,7 @@ test_retained_crypto_update(void) {
         .audio_permitted = 0U,
         .observed_m = 3.0,
     };
-    assert(dsd_call_state_update_retained_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
 
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
@@ -144,7 +144,7 @@ test_retained_crypto_update(void) {
     // Re-applying the identical crypto must not churn the revision: pollers
     // would otherwise see one revision bump per repeat with nothing to show.
     const uint64_t settled_revision = snapshot.revision;
-    assert(dsd_call_state_update_retained_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.revision == settled_revision);
 
@@ -152,7 +152,7 @@ test_retained_crypto_update(void) {
     dsd_call_crypto_update rekey = crypto;
     rekey.kid = 0x4321U;
     rekey.observed_m = 9.0;
-    assert(dsd_call_state_update_retained_crypto(state, 0U, &rekey) == 1);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_P25P2_POS, &rekey) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.kid == 0x4321U);
     assert(snapshot.revision != settled_revision);
@@ -183,7 +183,7 @@ test_media_timestamps(void) {
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .observed_m = 1.5,
     };
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     assert(dsd_call_state_end_ex(state, 0U, 1.6, DSD_CALL_END_TERMINATOR) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.media_active == 0U);
@@ -733,11 +733,15 @@ test_64bit_text_and_protocol_family_continuity(void) {
     assert(snapshot.epoch == 1U);
     assert(snapshot.policy_target_id == 88U);
 
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, NULL, "NEW RPT1", "NEW RPT2", 2.5) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, DSD_SYNC_M17_STR_NEG, snapshot.epoch, NULL, NULL, "NEW RPT1",
+                                      "NEW RPT2", 2.5)
+           == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.epoch == 1U);
     assert(strcmp(snapshot.route_text[0], "NEW RPT1") == 0);
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch + 1U, "STALE", NULL, NULL, NULL, 2.6) == 0);
+    assert(
+        dsd_call_state_enrich_text(state, 0U, DSD_SYNC_M17_STR_NEG, snapshot.epoch + 1U, "STALE", NULL, NULL, NULL, 2.6)
+        == 0);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(strcmp(snapshot.source_text, "SRC CALL") == 0);
 
@@ -853,33 +857,33 @@ test_received_crypto_provenance(void) {
     assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     // A privacy indication with nothing received, then a forced ALG ID with the "no key id" sentinel: none received.
     dsd_call_crypto_update update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U, 0U, 0U);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x24U, 0xFFU, 0U);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert_received(state, 0U, 0U, 0U, 0U);
     // A checked header receives both; only the received fields are marked.
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED, 0x21U, 0x05U, DSD_CALL_CRYPTO_RX_ALG);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert_received(state, 0U, DSD_CALL_CRYPTO_RX_ALG, 0x21U, 0U);
     // A repeat that receives nothing new changes nothing, revision included.
     dsd_call_snapshot before;
     assert(dsd_call_state_get(state, 0U, &before) == 1);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     dsd_call_snapshot after;
     assert(dsd_call_state_get(state, 0U, &after) == 1 && after.revision == before.revision);
     // The same live values now receiving the key id too is a change.
     update.received = DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID;
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert(dsd_call_state_get(state, 0U, &after) == 1 && after.revision != before.revision);
     assert_received(state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID, 0x21U, 0x05U);
     // A later republish of other live values (a sync loss cleared them, an inference rewrote them) keeps them.
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U, 0U, 0U);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert(dsd_call_state_get(state, 0U, &after) == 1 && after.algid == 0U && after.kid == 0U);
     assert_received(state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID, 0x21U, 0x05U);
     // A newly received value replaces the old one.
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED, 0x25U, 0x07U, DSD_CALL_CRYPTO_RX_KID);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert_received(state, 0U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID, 0x21U, 0x07U);
     // The other slot is its own.
     dsd_call_observation other = group_call(1U, 700U, 800U, 10.0);
@@ -895,9 +899,10 @@ test_received_crypto_provenance(void) {
     // A retained ended call may still receive (a late checked header describing it).
     assert(dsd_call_state_end_ex(state, 1U, 10.4, DSD_CALL_END_TERMINATOR) == 1);
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x0001U, DSD_CALL_CRYPTO_RX_ALG);
-    assert(dsd_call_state_update_crypto(state, 1U, &update) == 0); // an ended call takes no live update
+    assert(dsd_call_state_update_crypto(state, 1U, DSD_SYNC_P25P2_POS, &update)
+           == 0); // an ended call takes no live update
     assert_received(state, 1U, 0U, 0U, 0U);
-    assert(dsd_call_state_update_retained_crypto(state, 1U, &update) == 1);
+    assert(dsd_call_state_update_retained_crypto(state, 1U, DSD_SYNC_P25P2_POS, &update) == 1);
     assert_received(state, 1U, DSD_CALL_CRYPTO_RX_ALG, 0x84U, 0U);
 
     // A new transmission on the slot starts with nothing received, even with the same identity.
@@ -907,7 +912,7 @@ test_received_crypto_provenance(void) {
     assert_received(state, 0U, 0U, 0U, 0U);
     // So does a different call replacing an active one.
     update = crypto_update(DSD_CALL_CRYPTO_ENCRYPTED, 0x21U, 0x05U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     dsd_call_observation replacement = group_call(0U, 501U, 601U, 11.2);
     assert(dsd_call_state_observe(state, &replacement, DSD_CALL_BOUNDARY_CONTINUE) == 1);
     assert_received(state, 0U, 0U, 0U, 0U);
@@ -918,7 +923,7 @@ test_received_crypto_provenance(void) {
     dsd_call_observation provisional = identityless_voice(0U);
     provisional.observed_m = 13.0;
     assert(dsd_call_state_observe(state, &provisional, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &update) == 1);
     dsd_call_observation named = group_call(0U, 900U, 901U, 13.1);
     named.protocol = provisional.protocol;
     assert(dsd_call_state_observe(state, &named, DSD_CALL_BOUNDARY_BEGIN) == 0);
@@ -937,7 +942,7 @@ open_crypto_call(dsd_state* state, const dsd_call_observation* call) {
     assert(dsd_call_state_observe(state, call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     const dsd_call_crypto_update update =
         crypto_update(DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x0101U, DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID);
-    assert(dsd_call_state_update_crypto(state, 0U, &update) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, call->protocol, &update) == 1);
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     return dsd_call_snapshot_transmission(&snapshot);
@@ -1218,6 +1223,91 @@ test_reacquire_channel_only_t3_then_conplus_refused(void) {
     }
 }
 
+/* A crypto or identity update names the protocol whose signalling it comes from, and describes only a call of that
+   protocol: a slot keeps an ended call, and another protocol's call whose end never decoded, until the next call
+   begins there, so a frame of one protocol never writes onto what the slot holds without asking whose it is. P25 Phase
+   1 and Phase 2 are one protocol. */
+static void
+test_updates_apply_only_to_their_protocols_call(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation dmr = group_call(0U, 500U, 600U, 1.0);
+    dmr.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    assert(dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    assert(dsd_call_state_get(state, 0U, &before) == 1);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = 0x84U,
+        .kid = 0x1234U,
+        .mi = UINT64_C(0x1122334455667788),
+        .observed_m = 2.0,
+        .received = DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID,
+        .enc_observed = DSD_CALL_ENC_OBSERVED_ENCRYPTED,
+    };
+
+    // Another protocol's updates are refused and change nothing, revision included.
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) == 0);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_P25P1_POS, &crypto) == 0);
+    assert(dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_TETRA_NDB_POS, before.epoch, DSD_CALL_KEY_DIRECT,
+                                             0x1234, -1, 1, 0)
+           == 0);
+    assert(dsd_call_state_enrich_text(state, 0U, DSD_SYNC_DSTAR_VOICE_POS, before.epoch, "N0CALL", "CQCQCQ", NULL, NULL,
+                                      2.0)
+           == 0);
+    dsd_call_snapshot after;
+    assert(dsd_call_state_get(state, 0U, &after) == 1);
+    assert(after.revision == before.revision && after.crypto == DSD_CALL_CRYPTO_UNKNOWN && after.algid == 0U);
+    assert(after.kid == 0U && after.mi == 0U && after.crypto_received == 0U && after.enc_received == 0U);
+    assert(after.key_selection.valid == 0U && after.source_text[0] == '\0' && after.target_text[0] == '\0');
+
+    // Its own protocol's land (another DMR sync type is still DMR).
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_DATA_NEG, &crypto) == 1);
+    assert(dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, before.epoch, DSD_CALL_KEY_DIRECT,
+                                             0x1234, -1, 1, 0)
+           == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, DSD_SYNC_DMR_MS_VOICE, before.epoch, NULL, "DISPATCH", NULL, NULL, 2.1)
+           == 1);
+    assert(dsd_call_state_get(state, 0U, &after) == 1);
+    assert(after.crypto == DSD_CALL_CRYPTO_ENCRYPTED && after.algid == 0x84U && after.kid == 0x1234U);
+    assert(after.key_selection.valid == 1U && strcmp(after.target_text, "DISPATCH") == 0);
+    assert(dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_M17_LSF_POS) == 0);
+    assert(dsd_call_state_get(state, 0U, &after) == 1 && after.algid == 0x84U && after.crypto_received != 0U);
+    assert(dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS) == 1);
+    assert(dsd_call_state_get(state, 0U, &after) == 1 && after.algid == 0U && after.crypto_received == 0U);
+
+    // An ended call keeps its protocol: a retained update from another one is refused, its own lands.
+    assert(dsd_call_state_end(state, 0U, 3.0) == 1);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) == 0);
+    assert(dsd_call_state_get(state, 0U, &after) == 1 && after.algid == 0U);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
+    assert(dsd_call_state_get(state, 0U, &after) == 1 && after.algid == 0x84U);
+
+    // P25 Phase 1 and Phase 2 are one protocol: a Phase 2 call opened from a Phase 1 grant takes Phase 2 crypto.
+    dsd_call_observation p25 = group_call(1U, 700U, 800U, 4.0);
+    p25.protocol = DSD_SYNC_P25P1_POS;
+    assert(dsd_call_state_observe(state, &p25, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_update_crypto(state, 1U, DSD_SYNC_P25P2_NEG, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 0);
+
+    // A call that names no protocol is no protocol's, and an update must name one.
+    dsd_call_observation unnamed = identityless_voice(0U);
+    unnamed.protocol = DSD_SYNC_NONE;
+    unnamed.observed_m = 5.0;
+    assert(dsd_call_state_observe(state, &unnamed, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &after) == 1 && after.protocol == DSD_SYNC_NONE);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NONE, &crypto) == -1);
+    assert(dsd_call_state_update_retained_crypto(state, 0U, DSD_SYNC_NONE, &crypto) == -1);
+    assert(dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_NONE, after.epoch, DSD_CALL_KEY_DIRECT, 1, -1, 1, 0)
+           == -1);
+    assert(dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_NONE) == -1);
+    assert(dsd_call_state_enrich_text(state, 0U, DSD_SYNC_NONE, after.epoch, "X", NULL, NULL, NULL, 5.1) == -1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
@@ -1225,6 +1315,7 @@ main(void) {
     test_epochs_and_late_identity(state);
     test_crypto_and_slot_isolation(state);
     test_retained_crypto_update();
+    test_updates_apply_only_to_their_protocols_call();
     test_media_timestamps();
     test_reacquisition_carries_media_timestamps();
     test_channel_fill_only();

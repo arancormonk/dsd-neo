@@ -410,6 +410,42 @@ test_active_call_ownership(dsd_opts* opts, dsd_state* state, const char* path, i
     return failed;
 }
 
+/* UDP port 5017 is reached from P25 Phase 1 packet data too (decode_ip_pdu()): whichever protocol's frame carried
+   the report, and whichever protocol's call is open, the report goes to its carrier's own data notice and never onto
+   the open voice call's row (one history writer per report, issue #800), so it never lands on another protocol's call
+   either. */
+static int
+test_udp_report_protocol(dsd_opts* opts, dsd_state* state, int carried_by_p25, int call_is_p25) {
+    int failed = 0;
+    reset_carrier_state(state);
+    state->lastsynctype = carried_by_p25 ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
+    const dsd_call_observation observation = {
+        .protocol = call_is_p25 ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_source_id = 111,
+        .ota_target_id = 1201,
+    };
+    CHECK(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    uint8_t packet[38];
+    build_packet(packet);
+    CHECK(decode_ip_pdu(opts, state, sizeof packet, packet) == 1);
+    const Event_History* active = &state->event_history_s[0].Event_History_Items[0];
+    const int filed = strstr(active->gps_s, "LIP:") != NULL;
+    DSD_FPRINTF(stderr, "\nLIP over %s on an open %s call: active GPS='%s'\n", carried_by_p25 ? "P25" : "DMR",
+                call_is_p25 ? "P25" : "DMR", active->gps_s);
+    CHECK(!filed);
+    /* The report is not discarded: its carrier's committed data notice takes it, as a notice of that carrier's
+       protocol. */
+    const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+    DSD_FPRINTF(stderr, "LIP over %s: notice systype=%d GPS='%s'\n", carried_by_p25 ? "P25" : "DMR", notice->systype,
+                notice->gps_s);
+    CHECK(notice_has_position(notice, 111U));
+    CHECK(carried_by_p25 ? DSD_SYNC_IS_P25P1(notice->systype) : DSD_SYNC_IS_DMR(notice->systype));
+    return failed;
+}
+
 static int
 test_truncated_ownership(dsd_opts* opts, dsd_state* state, const char* path) {
     int failed = 0;
@@ -846,6 +882,12 @@ main(void) {
         failed |= test_active_call_ownership(&opts, &state, path, carrier);
     }
     failed |= test_truncated_ownership(&opts, &state, path);
+    for (int by_p25 = 0; by_p25 < 2; ++by_p25) {
+        for (int call_p25 = 0; call_p25 < 2; ++call_p25) {
+            failed |= test_udp_report_protocol(&opts, &state, by_p25, call_p25);
+        }
+    }
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     failed |= test_icmp_enclosed_report(&opts, &state, path);
     failed |= test_icmp_echo_not_decoded(&opts, &state, path);
     failed |= test_udp_mixed_ports(&opts, &state);

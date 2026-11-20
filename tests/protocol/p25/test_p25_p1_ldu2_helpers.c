@@ -104,6 +104,8 @@ static Event_History_I g_event_history[2];
 static int g_resolve_entry_algid;
 static int g_resolve_entry_keyid;
 static uint64_t g_resolve_entry_mi;
+/* The talkgroup the last resolution was given. */
+static int g_resolve_talkgroup = -1;
 
 int
 check_and_fix_reedsolomon_24_16_9(char* data, const char* parity) {
@@ -335,7 +337,7 @@ p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phas
     (void)opts;
     (void)phase;
     (void)slot;
-    (void)talkgroup;
+    g_resolve_talkgroup = talkgroup;
     g_resolve_entry_algid = state->payload_algid;
     g_resolve_entry_keyid = state->payload_keyid;
     g_resolve_entry_mi = state->payload_miP;
@@ -774,6 +776,86 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     return rc;
 }
 
+/* Slot 0 holding a call of @p protocol for @p target / @p source, still open or already ended. */
+static void
+seed_slot0_call(dsd_state* state, int protocol, uint64_t target, uint64_t source, int ended) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    if (ended) {
+        (void)dsd_call_state_end(state, 0U, 0.0);
+    }
+}
+
+/* What slot 0 holds before a Phase 1 frame, and the talkgroup the frame may take from it. Before the fix every case
+   handed its encryption resolution the slot's talkgroup: an ended call's, and another protocol's. On a -Y list with a
+   TETRA and a P25 channel, under encrypted lockout, a decryptable P25 call heard after an encrypted TETRA group call
+   so released that TETRA group's lockout entry (p25_enc_lockout_target() falls back to this talkgroup on an
+   unassigned slot, and handle_enc() releases the entry of a call it can decrypt). */
+static const struct {
+    const char* name;
+    int protocol;
+    int ended;
+    int want_talkgroup;
+} k_slot0_cases[] = {
+    {"ended TETRA call", DSD_SYNC_TETRA_NDB_POS, 1, 0},
+    {"open DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0},
+    {"ended P25 call", DSD_SYNC_P25P1_POS, 1, 0},
+    {"open P25 call", DSD_SYNC_P25P1_POS, 0, 100},
+};
+
+/* The encryption sync takes a talkgroup, and the LSD alias a radio, only from the open P25 Phase 1 call on slot 0:
+   before the fix an alias finishing while another protocol's call was open was learned for that call's source and
+   added to its event row. */
+static int
+test_ldu2_identities_come_from_the_open_p25_call_only(void) {
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_slot0_cases) / sizeof(k_slot0_cases[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        Ldu2Frame frame;
+        reset_hook_counters();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(&frame, 0, sizeof(frame));
+        opts.trunk_tune_enc_calls = 0;
+        state.aes_key_loaded[0] = 1;
+        state.aes_key_segments[0] = 4U;
+        seed_slot0_call(&state, k_slot0_cases[i].protocol, 100U, 5555U, k_slot0_cases[i].ended);
+        frame.algidhex = 0x84;
+        frame.kidhex = 0x0101;
+        frame.hard_checked = 1;
+        g_resolve_talkgroup = -1;
+
+        ldu2_maybe_enc_lockout(&opts, &state, &frame);
+
+        state.dmr_alias_format[0] = 0x02;
+        state.dmr_alias_block_len[0] = 1;
+        state.data_block_counter[0] = 1;
+        DSD_MEMCPY(state.dmr_alias_block_segment[0][0][0], "TEST", 4U);
+        ldu2_maybe_finalize_lsd_alias(&state);
+
+        const int open_p25 = k_slot0_cases[i].want_talkgroup != 0;
+        char tag[96];
+        DSD_SNPRINTF(tag, sizeof(tag), "LDU2 talkgroup after %s", k_slot0_cases[i].name);
+        rc |= expect_int(tag, g_resolve_talkgroup, k_slot0_cases[i].want_talkgroup);
+        DSD_SNPRINTF(tag, sizeof(tag), "LSD alias learned after %s", k_slot0_cases[i].name);
+        rc |= expect_int(tag, g_policy_learn_calls, open_p25 ? 1 : 0);
+        if (open_p25) {
+            rc |= expect_int("LSD alias names the P25 caller", (int)g_last_policy_id, 5555);
+        }
+        DSD_SNPRINTF(tag, sizeof(tag), "LSD alias finished after %s", k_slot0_cases[i].name);
+        rc |= expect_int(tag, state.dmr_alias_format[0], 0);
+    }
+    return rc;
+}
+
 static int
 test_ldu2_alias_without_canonical_call(void) {
     static dsd_opts opts;
@@ -1087,6 +1169,7 @@ main(void) {
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
     rc |= test_ldu2_decode_key_reporting_and_lsd_alias_state();
     rc |= test_ldu2_alias_without_canonical_call();
+    rc |= test_ldu2_identities_come_from_the_open_p25_call_only();
     rc |= test_ldu2_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_ldu2_decode_post_fec_rejects_malformed_ess_bits();
     rc |= test_ldu2_key_reporting_preserves_user_unmute();

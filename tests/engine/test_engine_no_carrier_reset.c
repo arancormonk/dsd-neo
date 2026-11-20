@@ -9,10 +9,14 @@
 #include <dsd-neo/core/audio_activity.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/crc_provenance.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -26,8 +30,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/speech_agc.h>
@@ -41,10 +47,12 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -59,6 +67,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -68,6 +77,7 @@
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <limits.h>
 #include <math.h>
+#include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -80,6 +90,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "analog_call_test_support.h"
+#include "dmr_block_crypto.h"
+#include "dmr_hytera.h"
+#include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -195,6 +208,8 @@ static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+/* A frequency whose next tune fails, once (0: none). */
+static uint32_t g_rtl_fail_once_hz = 0U;
 /* The centre the fake controller last applied, which rtl_stream_get_last_applied_freq() reports (0: none known). */
 static uint32_t g_rtl_last_applied_hz = 0U;
 static int g_rtl_output_rate = 48000;
@@ -310,6 +325,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_fail_once_hz = 0U;
     g_rtl_last_applied_hz = 0U;
     g_rtl_output_rate = 48000;
     g_rtl_cqpsk_enable = 1;
@@ -369,7 +385,15 @@ reset_rtl_profile_fakes(void) {
 // call does on the invalid socket every other case configures.
 static int g_rigctl_setfreq_ok = 0;
 static int g_rigctl_setfreq_calls = 0;
+/* The rigctl peer's io_control leg, faked: a tune the peer confirms, as io_control_set_freq_tagged() records it (the
+   frequency sent, and the decoder's tuner frequency). Only while g_rigctl_io_fake is set and rigctl is in use. */
+static int g_rigctl_io_fake = 0;
+static uint32_t g_rigctl_io_freq = 0U;
+
 static long int g_rigctl_setfreq_freq = 0;
+/* The frequency the stand-in peer last confirmed (RigctlConfirmedFreq()), which the legacy leg's cache holds on: every
+   stand-in failure is a complete refusal, which leaves it. */
+static uint32_t g_rigctl_confirmed_hz = 0U;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
@@ -405,6 +429,35 @@ __wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
     g_manual_tune_supersedes++;
 #endif
     __real_dsd_engine_manual_tune_supersede(state);
+}
+
+/* The DMR voice holds and privacy forgets a move makes, counted: every move is judged once. A forget that
+   dmr_forget_call_privacy() makes through dmr_forget_call_decryption() inside its own object is not counted again. */
+static int g_dmr_holds = 0;
+static int g_dmr_forgets = 0;
+void __real_dmr_enc_class_hold(dsd_state* state);
+void __wrap_dmr_enc_class_hold(dsd_state* state);
+void __real_dmr_forget_call_privacy(dsd_state* state);
+void __wrap_dmr_forget_call_privacy(dsd_state* state);
+void __real_dmr_forget_call_decryption(dsd_state* state);
+void __wrap_dmr_forget_call_decryption(dsd_state* state);
+
+void
+__wrap_dmr_enc_class_hold(dsd_state* state) {
+    g_dmr_holds++;
+    __real_dmr_enc_class_hold(state);
+}
+
+void
+__wrap_dmr_forget_call_privacy(dsd_state* state) {
+    g_dmr_forgets++;
+    __real_dmr_forget_call_privacy(state);
+}
+
+void
+__wrap_dmr_forget_call_decryption(dsd_state* state) {
+    g_dmr_forgets++;
+    __real_dmr_forget_call_decryption(state);
 }
 
 #ifdef USE_RADIO
@@ -818,6 +871,10 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     }
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
+    if (g_rtl_fail_once_hz != 0U && center_freq_hz == g_rtl_fail_once_hz) {
+        g_rtl_fail_once_hz = 0U;
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (g_rtl_watch_freq != 0U && center_freq_hz == g_rtl_watch_freq) {
         g_rtl_watch_tunes++;
     }
@@ -921,10 +978,21 @@ static void (*g_frame_land_action)(dsd_opts* opts, dsd_state* state) = NULL;
 static int g_frame_count = 0;
 /* A provisional P25 sync the scripted hunt finds after the first frame (0 none, 1 a P25p1 anchored candidate, 2 a P25p1
    acquisition one, 3 a P25p2 tolerant window), held as the frame sync holds it; whether the frame decoded behind each
-   passes its NID or window verdict (by frame, counted as the frame sync counts it); and frames decoded behind one. */
+   passes its NID or window verdict (by frame, counted as the frame sync counts it, and PROVEN content to a scan quiet
+   check as the P25 dispatchers note it once the verdict passed); and frames decoded behind one. */
 static int g_frame_candidate = 0;
 static int g_frame_candidate_passes[FAKE_FRAMES_MAX];
 static int g_frame_candidate_frames = 0;
+/* What each scripted frame's decode reports to a scan quiet check (issue #834): DSD_CONTENT_EVIDENCE_* (0: nothing, a
+   sync its protocol's gate rejected), with g_frame_evidence_hold_ms for PARTIAL. */
+static int g_frame_evidence = 0;
+static uint32_t g_frame_evidence_hold_ms = 0U;
+/* The fixed TEST decode clock of a case whose decode-clock deadlines (a hangtime, a PARTIAL verdict's hold, a dwell)
+   must not run out while the host pauses between its steps; ahead of any stamp a system read leaves. */
+#define FROZEN_DECODE_T0_NS 1800000000000000000ULL
+/* Whether each scripted frame is of a protocol with no content check (X2-TDMA, ProVoice, TETRA): processFrame()'s
+   dispatch notes one for the -Y step (issue #834), as ENGINE_PROTOCOL_DISPATCH pins. */
+static int g_frame_unchecked = 0;
 static int g_frame_roll[FAKE_FRAMES_MAX];
 static unsigned long long g_frame_rkey[FAKE_FRAMES_MAX];
 static char g_frame_label[FAKE_FRAMES_MAX][DSD_CHANNEL_LABEL_SIZE];
@@ -971,10 +1039,19 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
             } else {
                 state->p25_p2_sync_anchor.tolerant_windows++;
             }
+            dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         }
         /* The verdict is given: what the accept held is spent or put back. */
         state->p25_p1_sync_candidate.valid = 0U;
         state->p25_p2_sync_candidate.valid = 0U;
+    }
+    if (g_frame_evidence != 0) {
+        dsd_frame_sync_hook_content_evidence(opts, state, g_frame_evidence, g_frame_evidence_hold_ms);
+    }
+    if (g_frame_unchecked) {
+        /* An X2-TDMA frame its decoder took, as processFrame() notes it: for the -Y step and as a call. */
+        state->scan_y_unchecked_seq++;
+        state->scan_y_call_seq++;
     }
     if (g_frame_count < FAKE_FRAMES_MAX) {
         g_frame_roll[g_frame_count] = state->lcn_freq_roll;
@@ -1000,6 +1077,13 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
    the outstanding tune landing while frame @p land_at decodes (-1: never). */
 static void
 run_synced_frames(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at) {
+    /* The engine's content-evidence note, as the engine installs it, so the frames' notes reach the quiet check through
+       the runtime wrapper. */
+    dsd_frame_sync_hooks saved;
+    dsd_frame_sync_hooks_get(&saved);
+    dsd_frame_sync_hooks hooks = saved;
+    hooks.content_evidence = dsd_engine_scan_quiet_note_evidence;
+    dsd_frame_sync_hooks_set(&hooks);
     g_frame_script = 1;
     g_frame_syncs_left = more_syncs;
     g_frame_land_at = land_at;
@@ -1008,6 +1092,18 @@ run_synced_frames(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at)
     dsd_engine_test_process_synced_frames(opts, state);
     g_frame_script = 0;
     g_frame_land_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_frame_sync_hooks_set(&saved);
+}
+
+/* run_synced_frames() with every frame's decode reporting @p evidence (DSD_CONTENT_EVIDENCE_*; 0: nothing). */
+static void
+run_synced_frames_noting(dsd_opts* opts, dsd_state* state, int more_syncs, int land_at, int evidence,
+                         uint32_t hold_ms) {
+    g_frame_evidence = evidence;
+    g_frame_evidence_hold_ms = hold_ms;
+    run_synced_frames(opts, state, more_syncs, land_at);
+    g_frame_evidence = 0;
+    g_frame_evidence_hold_ms = 0U;
 }
 #endif
 
@@ -1016,7 +1112,41 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_rigctl_setfreq_calls++;
     g_rigctl_setfreq_freq = freq;
+    if (g_rigctl_setfreq_ok) {
+        g_rigctl_confirmed_hz = (uint32_t)freq;
+    }
     return g_rigctl_setfreq_ok ? true : false;
+}
+
+uint32_t __wrap_RigctlConfirmedFreq(dsd_socket_t sockfd);
+
+uint32_t
+__wrap_RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    (void)sockfd;
+    return g_rigctl_confirmed_hz;
+}
+
+int __real_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
+
+int
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (g_rigctl_io_fake && opts && opts->use_rigctl == 1) {
+        if (out_pending_id) {
+            *out_pending_id = 0U;
+        }
+        g_rigctl_io_freq = freq_hz;
+        opts->rigctl_sent_freq_hz = freq_hz;
+        opts->rtlsdr_center_freq = freq_hz;
+        if (rigctl_mark) {
+            dsd_input_backlog_mark(rigctl_mark); /* as the real leg marks, immediately before the frequency */
+        }
+        return 0;
+    }
+    return __real_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id, rigctl_mark);
 }
 
 bool
@@ -1139,6 +1269,9 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
 static void
 free_test_runtime(dsd_opts* opts, dsd_state* state) {
     if (state != NULL) {
+        /* A Retevis AP key's context (retevis_rc2_keystream_creation()), which freeState() leaves. */
+        free(state->rc2_context);
+        state->rc2_context = NULL;
         freeState(state);
     }
     free(state);
@@ -1541,6 +1674,33 @@ test_trunk_follow_closes_only_orphaned_recordings(void) {
     rc |= expect_true("whose end publishes it whole", recording_rig_published(&rec, 0, &ms) == 1 && ms == 200);
     g_rigctl_setfreq_ok = 0;
     recording_rig_close(opts, &rec);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* An RTL trunk tune is left to the stream it retunes (issue #834): its flush starts the next symbol timeline when the
+   decoder reads past it, so the engine moves no epoch at the tune, as before rigctl's confirmed retunes moved one. */
+static int
+test_rtl_trunk_tune_leaves_the_timeline_to_the_stream(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->use_rigctl = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const uint32_t epoch = state->symbol_clock_epoch;
+    int rc = expect_true("an RTL grant", dsd_engine_trunk_tune_to_freq_request(opts, state, 943237500L, 0, 0U)
+                                             == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("an RTL hop", dsd_engine_trunk_tune_to_freq_request(opts, state, 943262500L, 0, 0U)
+                                        == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("moves no epoch in the engine: the stream's flush does", state->symbol_clock_epoch == epoch);
+    state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     return rc;
 }
@@ -2380,7 +2540,7 @@ static time_t
 step_into_a_timed_out_tune(dsd_opts* opts, dsd_state* state) {
     g_rtl_timeout_outstanding = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    const time_t deadline = time(NULL) - 11;
+    const time_t deadline = dsd_decode_time() - 11;
     state->last_cc_sync_time = deadline;
     noCarrier(opts, state);
     g_rtl_timeout_outstanding = 0;
@@ -2870,6 +3030,2038 @@ test_fixed_tuning_legacy_legs_send_the_peer_nothing(void) {
     return rc;
 }
 
+/* A Basic Privacy call in progress on slot 1, talkgroup 123, keyed from the keys file's key for it (0x33) over the
+   operator's own key @p operator_key (a -b key, or 0: none): its privacy bit and FID set on both slots, as the left
+   carrier's LCs set them. */
+static void
+seed_dmr_basic_privacy_call(dsd_state* state, unsigned long long operator_key) {
+    state->keyloader = 1;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->K = operator_key;
+    state->basic_key_present = operator_key != 0ULL ? 1U : 0U;
+    uint32_t keyed_from = 0U;
+    (void)keyring_dmr_tg_autoload_apply(state, 0U, 123U, &keyed_from);
+    state->dmr_so = state->dmr_soR = 0x40U;
+    state->dmr_fid = state->dmr_fidR = 0x10U;
+    dmr_enc_class_force(state, 0U, 1);
+}
+
+/* After a carrier boundary, the next carrier's frames before their own LC decrypt with nothing the left call set: no
+   privacy bit, FID or encryption class, and a frame of a call no LC has named yet keys from no talkgroup the left call
+   keyed from, the operator's own key staying loaded. */
+static int
+expect_dmr_privacy_forgotten(const char* tag, dsd_state* state, unsigned long long operator_key) {
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "%s: no privacy bit or FID is left", tag);
+    int rc = expect_true(what, state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_fid == 0U
+                                   && state->dmr_fidR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    uint32_t keyed_from = 0U;
+    const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+    DSD_SNPRINTF(what, sizeof what, "%s: an unnamed call keys from no left talkgroup (K=%llu, want %llu)", tag,
+                 state->K, operator_key);
+    rc |= expect_true(what, !keyed && state->K == operator_key);
+    return rc;
+}
+
+/* Every carrier boundary but a stream gap forgets the left calls' DMR privacy: a user tune, a -Y step, a source
+   change, an input switch and a replay retune. A stream gap stays on the carrier: a call it reopens keys as before. */
+static int
+test_carrier_boundary_forgets_dmr_call_privacy(void) {
+    static const struct {
+        dsd_carrier_boundary_kind kind;
+        const char* name;
+    } kinds[] = {
+        {DSD_CARRIER_BOUNDARY_TUNE, "a user tune"},
+        {DSD_CARRIER_BOUNDARY_SCAN_STEP, "a scan step"},
+        {DSD_CARRIER_BOUNDARY_SOURCE, "a source change"},
+        {DSD_CARRIER_BOUNDARY_INPUT_SWITCH, "an input switch"},
+        {DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, "a replay retune"},
+    };
+
+    int rc = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        const unsigned long long operator_key = with_direct ? 70ULL : 0ULL;
+        for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (init_test_runtime(&opts, &state) != 0) {
+                return 1;
+            }
+            seed_dmr_basic_privacy_call(state, operator_key);
+            dsd_engine_carrier_boundary(opts, state, kinds[k].kind, 0);
+            rc |= expect_dmr_privacy_forgotten(kinds[k].name, state, operator_key);
+            char what[160];
+            DSD_SNPRINTF(what, sizeof what, "%s: each slot's voice is held until its call says", kinds[k].name);
+            rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+            free_test_runtime(opts, state);
+        }
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        seed_dmr_basic_privacy_call(state, operator_key);
+        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+        uint32_t keyed_from = 0U;
+        const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+        rc |= expect_true("a stream gap keeps the call's privacy bit and its talkgroup's key",
+                          state->dmr_so == 0x40U && keyed && keyed_from == 123U && state->K == 0x33ULL);
+        rc |= expect_true("a stream gap, on the same carrier, holds no slot's voice",
+                          state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+        free_test_runtime(opts, state);
+    }
+    /* The no-carrier pass stays on the carrier: it holds nothing, and a hold a move set stands through it (a gap while
+       retuning can run one before the next carrier's first voice). */
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    noCarrier(opts, state);
+    rc |= expect_true("a no-carrier pass holds no slot's voice",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    noCarrier(opts, state);
+    rc |= expect_true("a hold stands through a no-carrier pass",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A run's first stream start on a state an earlier run used (a host may run one state twice): its source boundary
+   against the earlier run's stream (another device, or any I/Q replay start) forgets that carrier's evidence, as
+   before, but the run's first landing is never held. A later start in the run on another source holds as any source
+   change does. */
+static int
+test_run_first_landing_is_never_held(void) {
+    static const struct {
+        const char* earlier;
+        const char* now;
+        const char* name;
+    } cases[] = {
+        {"rtl:0", "rtl:1", "another device"},
+        {"iqreplay:capture.iq.json", "iqreplay:capture.iq.json", "an I/Q replay start"},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->rtl_dev_index = 0;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].earlier);
+        dsd_engine_note_stream_source(opts, state, 0);
+        /* What the earlier run left: a call's privacy and a move's hold. */
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        dmr_enc_class_hold(state);
+        opts->rtl_dev_index = 1;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].now);
+        dsd_engine_note_run_stream_source(opts, state);
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what,
+                     "the next run's first start, %s: its source boundary forgets the call's privacy", cases[c].name);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U);
+        DSD_SNPRINTF(what, sizeof what, "the next run's first start, %s: its first landing is not held", cases[c].name);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+        opts->rtl_dev_index = 2;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[c].now);
+        dsd_engine_note_stream_source(opts, state, 0);
+        DSD_SNPRINTF(what, sizeof what, "a later start in the run, %s: a source change holds the slots' voice",
+                     cases[c].name);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* The frequency entry itself (svc_rtl_set_freq(): the tune, then the carrier boundary of a user tune) forgets the left
+   call's DMR privacy. */
+static int
+test_frequency_entry_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    int rc = expect_true("the entry tunes", svc_rtl_set_freq(opts, state, 985012500U) == 0);
+    rc |= expect_dmr_privacy_forgotten("a frequency entry", state, 70ULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A -Y walk's tune that lands on the scan's row is a scan step's boundary (dsd_engine_scan_untyped_poll()): the next
+   row's frames before their own LC decrypt with nothing the left row's call set. */
+static int
+test_scan_walk_landing_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 986012500, 987012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    rc |= expect_true("lands row 0", land_untyped_row(opts, state, 0));
+    seed_dmr_basic_privacy_call(state, 0ULL);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    /* The rows' key sets decide the working key here; the slot keys from no talkgroup the left call keyed from. */
+    rc |= expect_true("a -Y walk's landing: no privacy bit or FID is left",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_fid == 0U && state->dmr_fidR == 0U
+                          && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    rc |= expect_true("a -Y walk's landing: the slot keeps no left talkgroup", state->dmr_tg_autoload.slot_tg[0] == 0U);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A run's first landing holds no DMR slot's voice; every later carrier move does (dsd_state::run_landed). A -Y scan the
+   run starts with (scanner_mode at the run's start) steps only once its start frequency, where the run's stream opens,
+   has gone quiet: that stream start is the run's first landing, on a fresh state and on a reused one alike, so the
+   first row entry after it forgets what the state held (a Basic Privacy call) and holds both slots, as every later row
+   entry does. A trunk scan the run starts with parks before anything decodes: its first park is the run's first
+   landing (the park judge cases). A scan started from the menu after the run's first stream landed the receiver on a
+   carrier makes a carrier move like any other at its first row entry: it holds. */
+static int
+test_scan_first_landing_is_never_held(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 986012500, 987012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    for (int reused = 0; reused <= 1; reused++) {
+        const char* how = reused ? "a reused state's scanning run" : "a fresh state's scanning run";
+        char what[160];
+        opts->scanner_mode = 1;
+        dsd_engine_note_run_start(opts, state);
+        /* The run's stream opens on its start frequency, which the run decodes until the first step. */
+        dsd_engine_note_run_stream_source(opts, state);
+        DSD_SNPRINTF(what, sizeof what, "%s: its stream start is the run's first landing (run_landed %u)", how,
+                     (unsigned)state->run_landed);
+        rc |= expect_true(what, state->run_landed == 1U && state->dmr_enc_class_held[0] == 0U
+                                    && state->dmr_enc_class_held[1] == 0U);
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry lands", how);
+        rc |= expect_true(what, land_untyped_row(opts, state, 0));
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry forgets the privacy it found", how);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the first -Y row entry, after the start frequency, holds both slots", how);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        DSD_SNPRINTF(what, sizeof what, "%s: the next row entry lands", how);
+        rc |= expect_true(what, land_untyped_row(opts, state, 1));
+        DSD_SNPRINTF(what, sizeof what, "%s: a later row entry in the run holds both slots' voice", how);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    }
+    /* A run that starts with its trunk scan has not landed until the scan's first park. */
+    opts->scanner_mode = 0;
+    opts->trunk_scan_enabled = 1;
+    dsd_engine_note_run_start(opts, state);
+    rc |= expect_true("a run that starts with its trunk scan has not landed before its first park",
+                      state->run_landed == 0U);
+    opts->trunk_scan_enabled = 0;
+    /* A run with no scan at its start: its first stream is its first landing. The user then starts -Y from the menu. */
+    dsd_engine_note_run_start(opts, state);
+    dsd_engine_note_run_stream_source(opts, state);
+    opts->scanner_mode = 1;
+    seed_dmr_basic_privacy_call(state, 0ULL);
+    rc |= expect_true("a scan started from the menu: its first row entry lands", land_untyped_row(opts, state, 0));
+    rc |= expect_true("a scan started from the menu after the receiver landed: its first row entry holds both slots",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The DMR trunk machine's three ways off a voice channel with no release: a grant for another channel, a C_MOVE of the
+   followed call, and a Capacity Plus status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note). */
+typedef enum {
+    DMR_HOP_GRANT = 0,
+    DMR_HOP_MOVE,
+    DMR_HOP_STATUS_FOLLOW,
+    DMR_HOP_REST_MOVE,
+} dmr_hop_kind;
+
+#define DMR_HOP_CC   451000000L
+#define DMR_HOP_VC1  452012500L
+#define DMR_HOP_VC2  452037500L
+#define DMR_HOP_LCN1 0x0010U
+#define DMR_HOP_LCN2 0x0011U
+#define DMR_HOP_REST 452062500L
+#define DMR_HOP_LSN  3U
+
+static void
+dmr_hop_clock_at(double seconds) {
+    dsd_decode_clock_use_test(1000000ULL * 1000000000ULL + (uint64_t)(seconds * 1e9));
+}
+
+static void
+dmr_hop_put_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A CRC-valid Tier III TV_GRANT (opcode 49) or C_MOVE (57) for slot 1 of @p lpcn. */
+static void
+dmr_hop_csbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint32_t tg, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    DSD_MEMSET(bytes, 0, sizeof bytes);
+    bytes[0] = opcode;
+    dmr_hop_put_bits(bits, 16U, lpcn, 12U);
+    dmr_hop_put_bits(bits, 32U, tg, 24U);
+    dmr_hop_put_bits(bits, 56U, src, 24U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+}
+
+/* An active voice frame, so its crypto is never skipped as silence (dmr_ambe49_should_skip_crypto()). */
+static int
+dmr_hop_active_frame(char frame[4][24]) {
+    char ambe_d[49];
+    mbe_process_result decoded;
+    for (int seed = 1; seed < 96; ++seed) {
+        DSD_MEMSET(frame, 0, (size_t)4U * 24U);
+        frame[(seed + 0) % 4][(seed * 5 + 3) % 24] = 1;
+        frame[(seed + 1) % 4][(seed * 7 + 11) % 24] = 1;
+        frame[(seed + 2) % 4][(seed * 13 + 17) % 24] = 1;
+        frame[(seed + 3) % 4][(seed * 19 + 23) % 24] = 1;
+        if (mbe_decodeAmbe3600x2450Frame((const char (*)[24])frame, ambe_d, &decoded) >= 0
+            && !dmr_ambe49_should_skip_crypto(ambe_d)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* @p frame decoded as the next carrier's voice on @p slot (0 for slot 1), with an MBE recording attached: the 49 bits
+   recorded (and played). 1 when it was recorded. */
+static int
+dmr_hop_record_frame_on(dsd_opts* opts, dsd_state* state, int slot, char frame[4][24], char recorded[49]) {
+    FILE* recording = tmpfile();
+    if (recording == NULL) {
+        return 0;
+    }
+    opts->floating_point = 1;
+    opts->dmr_stereo = 1;
+    opts->errorbars = 0;
+    if (slot == 1) {
+        opts->mbe_out_fR = recording;
+    } else {
+        opts->mbe_out_f = recording;
+    }
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->currentslot = slot;
+    processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
+    int ok = fseek(recording, 0, SEEK_SET) == 0;
+    opts->mbe_in_f = recording;
+    ok = ok && readAmbe2450Data(opts, state, recorded) == 0;
+    opts->mbe_in_f = opts->mbe_out_f = opts->mbe_out_fR = NULL;
+    (void)fclose(recording);
+    return ok;
+}
+
+/* @p frame decoded as the next carrier's first voice on slot 1: dmr_hop_record_frame_on() there. */
+static int
+dmr_hop_record_frame(dsd_opts* opts, dsd_state* state, char frame[4][24], char recorded[49]) {
+    return dmr_hop_record_frame_on(opts, state, 0, frame, recorded);
+}
+
+/* The row the left call (talkgroup 101) committed carries its Motorola annotations. */
+static int
+dmr_hop_left_row_keeps_its_tags(const dsd_state* state) {
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == 101U && strstr(row->event_string, "TXI;") && strstr(row->event_string, "PRIORITY;")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* One Hamming(17,12,3) word of a short LC (ETSI TS 102 361-1 B.3.10). */
+static void
+dmr_hop_slc_word(uint8_t out[17], const uint8_t payload[12]) {
+    for (int i = 0; i < 12; i++) {
+        out[i] = payload[i] & 1U;
+    }
+    out[12] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[6] ^ out[7] ^ out[9];
+    out[13] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[7] ^ out[8] ^ out[10];
+    out[14] = out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[5] ^ out[8] ^ out[9] ^ out[11];
+    out[15] = out[0] ^ out[1] ^ out[4] ^ out[5] ^ out[7] ^ out[10];
+    out[16] = out[0] ^ out[1] ^ out[2] ^ out[5] ^ out[6] ^ out[8] ^ out[11];
+}
+
+/* A Capacity Plus SLCO (0xF, site 1) naming rest LSN @p lsn, CRC-8 checked, in the four CACH fragments that carry it,
+   each fed to dmr_cach() as a burst's CACH would be. 1 when the short LC was built. */
+static int
+dmr_hop_cap_plus_rest_slco(dsd_opts* opts, dsd_state* state, uint8_t lsn) {
+    static const uint8_t tact[4][7] = {
+        {0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 1, 0, 1, 1}, {0, 0, 1, 0, 1, 1, 0}, {0, 0, 1, 1, 1, 0, 1}};
+    static const uint8_t lcss[4] = {1U, 3U, 3U, 2U};
+    uint8_t slco[36];
+    DSD_MEMSET(slco, 0, sizeof slco);
+    dmr_hop_put_bits(slco, 0U, 0xFU, 4U);
+    dmr_hop_put_bits(slco, 16U, lsn, 4U);
+    dmr_hop_put_bits(slco, 22U, 1U, 3U);
+    int crc_ok = 0;
+    for (uint32_t nonce = 0U; nonce <= 0xFFU && !crc_ok; nonce++) {
+        dmr_hop_put_bits(slco, 28U, nonce, 8U);
+        crc_ok = crc8(slco, 36U) == 0U;
+    }
+    uint8_t expanded[68];
+    uint8_t raw[68];
+    DSD_MEMSET(expanded, 0, sizeof expanded);
+    for (int word = 0; word < 3; word++) {
+        dmr_hop_slc_word(&expanded[(size_t)word * 17U], &slco[(size_t)word * 12U]);
+    }
+    for (int i = 0; i < 67; i++) {
+        raw[(i * 4) % 67] = expanded[i];
+    }
+    raw[67] = expanded[67];
+    for (int fragment = 0; fragment < 4; fragment++) {
+        uint8_t cach[25];
+        DSD_MEMSET(cach, 0, sizeof cach);
+        DSD_MEMCPY(cach, tact[lcss[fragment]], 7U);
+        DSD_MEMCPY(&cach[7], &raw[(size_t)fragment * 17U], 17U);
+        (void)dmr_cach(opts, state, cach);
+    }
+    return crc_ok;
+}
+
+/* The Capacity Plus rest move dmr_slco() makes to look for the held talkgroup (202, not on either slot) on the rest
+   channel a busy site announces: a control channel tune, which no DMR machine follow or release surrounds. */
+static int
+dmr_hop_rest_move(dsd_opts* opts, dsd_state* state) {
+    state->trunk_chan_map[DMR_HOP_LSN] = DMR_HOP_REST;
+    state->tg_hold = 202U;
+    state->dmrburstL = state->dmrburstR = 16;
+    int rc = expect_true("a Capacity Plus SLCO naming the rest channel",
+                         dmr_hop_cap_plus_rest_slco(opts, state, DMR_HOP_LSN));
+    rc |= expect_true("the rest move tunes the rest channel",
+                      g_rigctl_setfreq_freq == DMR_HOP_REST && state->trunk_cc_freq == DMR_HOP_REST);
+    return rc;
+}
+
+/* Follows the slot 1 call on talkgroup 101 to VC1 and makes it an encrypted Motorola call (FID 0x10, privacy bit, TXI
+   and priority service options) with ALG 0x21, key ID 5 and the MI its superframes stepped to, the -1 key loaded, its
+   MI chain trusted; then leaves VC1 for VC2 by @p kind. */
+static int
+dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_hangtime = 0.0f;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_HOP_CC;
+    state->trunk_cc_freq = DMR_HOP_CC;
+    state->trunk_chan_map[DMR_HOP_LCN1] = DMR_HOP_VC1;
+    state->trunk_chan_map[DMR_HOP_LCN2] = DMR_HOP_VC2;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_rigctl_setfreq_ok = 1;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    dmr_hop_clock_at(0.0);
+    dmr_sm_init(opts, state);
+    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    int rc = expect_true("the machine follows the grant to VC1", state->trunk_vc_freq[0] == DMR_HOP_VC1);
+
+    dmr_hop_clock_at(1.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    const dsd_call_observation lc = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 1001U,
+        .service_options = 0x73U,
+        .has_service_metadata = 1U,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    rc |= expect_true("the call's voice LC", dsd_call_state_observe(state, &lc, DSD_CALL_BOUNDARY_CONTINUE) >= 0);
+    state->dmr_fid = 0x10U;
+    state->dmr_so = 0x73U;
+    state->payload_algid = 0x21;
+    state->payload_keyid = 0x05;
+    state->payload_mi = 0xA1B2C3D4ULL;
+    state->payload_miP = 0x1122334455667788ULL;
+    state->payload_miN = 0x8877665544332211ULL;
+    state->R = 0x0102030405ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 1U;
+    state->dmr_vc_ref_state[0] = DMR_VC_REF_VALID;
+    state->dmr_vc_untrusted[0] = 0U;
+    state->dropL = 256;
+    state->DMRvcL = 0;
+
+    dmr_hop_clock_at(1.5);
+    if (kind == DMR_HOP_GRANT) {
+        dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN2, 202U, 2002U);
+    } else if (kind == DMR_HOP_MOVE) {
+        dmr_hop_csbk(opts, state, 57U, DMR_HOP_LCN2, 101U, 1001U);
+    } else if (kind == DMR_HOP_REST_MOVE) {
+        return rc | dmr_hop_rest_move(opts, state);
+    } else {
+        const long receiver = dmr_sm_receiver_frequency(opts);
+        rc |= expect_true("the status follow's tune",
+                          dsd_trunk_tuning_hook_tune_to_freq(opts, state, DMR_HOP_VC2, 0, NULL)
+                              == DSD_TRUNK_TUNE_RESULT_OK);
+        dmr_sm_note_status_follow(opts, state, DMR_HOP_VC2, 0, receiver, DSD_TRUNK_TUNE_RESULT_OK, 0U);
+    }
+    rc |= expect_true("the machine leaves VC1 for VC2", state->trunk_vc_freq[0] == DMR_HOP_VC2);
+    return rc;
+}
+
+static void
+dmr_hop_done(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dmr_sm_init(opts, state);
+    dsd_decode_clock_use_system();
+    g_rigctl_setfreq_ok = 0;
+}
+
+/* A group call LC on talkgroup @p tg on @p slot (0 for slot 1), of LC @p type (1 voice header, 3 embedded), whose
+   check passed or failed by @p crc: FID @p fid, service options @p so. */
+static void
+dmr_hop_lc_on(dsd_opts* opts, dsd_state* state, int slot, uint8_t type, uint32_t crc, uint8_t fid, uint8_t so,
+              uint32_t tg) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    dmr_hop_put_bits(bits, 8U, fid, 8U);
+    dmr_hop_put_bits(bits, 16U, so, 8U);
+    dmr_hop_put_bits(bits, 24U, tg, 24U);
+    dmr_hop_put_bits(bits, 48U, 3003U, 24U);
+    uint32_t errors = 0U;
+    state->currentslot = slot;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, crc, &errors, type);
+}
+
+/* A CRC-checked voice LC header on slot 1 for a group call on talkgroup @p tg: FID @p fid, service options @p so. */
+static void
+dmr_hop_voice_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, uint8_t so, uint32_t tg) {
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, fid, so, tg);
+}
+
+/* A CRC-checked DMRA PI header on @p slot (0 for slot 1) naming ALG ID @p alg (0x21 RC4; 0x26 or above names no cipher
+   the decoder knows), key ID 5, MI 0x11223344. */
+static void
+dmr_hop_pi_header_on(dsd_opts* opts, dsd_state* state, int slot, uint8_t alg) {
+    uint8_t pi[10] = {alg, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = slot;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+}
+
+/* A CRC-checked DMRA PI header on slot 1: RC4 (ALG 0x21), key ID 5, MI 0x11223344, for talkgroup 303. */
+static void
+dmr_hop_pi_header(dsd_opts* opts, dsd_state* state) {
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+}
+
+/* After a voice channel hop with no release, the next carrier's frames before their own PI or LC decrypt with nothing
+   of the left call's: no ALG, key ID or MI, and no MI chain the left call's superframes stepped (a rigctl tune keeps
+   the symbol timeline, so a trusted chain would step on and decrypt with it). Until the call there says whether it is
+   encrypted, its frames are held: neither played nor recorded (test_dmr_voice_held_until_the_call_says()). Once its
+   voice LC header says clear, its frame is played and recorded as it came, not run through the left call's keystream.
+   The left call's history row, which its end renders after the tune, keeps the annotations its FID names. The key
+   loaded with -1 stays the user's. */
+static int
+test_dmr_trunk_hop_leaves_no_call_crypto(void) {
+    static const char* const names[] = {"a grant for another channel", "a C_MOVE", "a status follow"};
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    char reference[49] = {0};
+    {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= expect_true("the frame on a fresh decoder is recorded",
+                          dmr_hop_record_frame(opts, state, frame, reference));
+        free_test_runtime(opts, state);
+    }
+    for (int kind = DMR_HOP_GRANT; kind <= DMR_HOP_STATUS_FOLLOW; kind++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        char what[160];
+        rc |= dmr_hop_follow_then_leave(opts, state, (dmr_hop_kind)kind);
+        DSD_SNPRINTF(what, sizeof what, "%s: the left call's row keeps TXI and PRIORITY", names[kind]);
+        rc |= expect_true(what, dmr_hop_left_row_keeps_its_tags(state));
+        DSD_SNPRINTF(what, sizeof what, "%s: no ALG, key ID or MI is left (ALG %02X KID %02X MI %llX)", names[kind],
+                     (unsigned)state->payload_algid, (unsigned)state->payload_keyid, state->payload_mi);
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0
+                                    && state->payload_keyidR == 0 && state->payload_mi == 0ULL
+                                    && state->payload_miR == 0ULL && state->payload_miP == 0ULL
+                                    && state->payload_miN == 0ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s: no MI chain is trusted", names[kind]);
+        rc |= expect_true(what, state->dmr_vc_ref_state[0] == DMR_VC_REF_NONE
+                                    && state->dmr_vc_ref_state[1] == DMR_VC_REF_NONE && state->dmr_vc_untrusted[0] == 1U
+                                    && state->dmr_vc_untrusted[1] == 1U);
+        DSD_SNPRINTF(what, sizeof what, "%s: no privacy bit or FID is left, the -1 key stays", names[kind]);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_fid == 0U && state->R == 0x0102030405ULL);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s: a frame before the call's LC or PI header is held", names[kind]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+        DSD_SNPRINTF(what, sizeof what, "%s: once its LC says clear, its frame is recorded as it came", names[kind]);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded)
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* The Capacity Plus rest move off a voice channel (the SLCO's control channel tune, with no release) leaves the left
+   call's decryption behind as a follow does: no ALG, key ID or MI, no MI chain its superframes stepped and no privacy
+   bit, so the rest channel's frames before their own PI or LC are not run through the left call's keystream. They are
+   held until the call says whether it is encrypted; once its LC says clear, its frame is recorded as it came. The key
+   loaded with -1 stays the user's. */
+static int
+test_dmr_rest_move_leaves_no_call_crypto(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    char reference[49] = {0};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= expect_true("the frame on a fresh decoder is recorded", dmr_hop_record_frame(opts, state, frame, reference));
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_REST_MOVE);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a rest move: no ALG, key ID or MI is left (ALG %02X KID %02X MI %llX)",
+                 (unsigned)state->payload_algid, (unsigned)state->payload_keyid, state->payload_mi);
+    rc |= expect_true(what, state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0
+                                && state->payload_keyidR == 0 && state->payload_mi == 0ULL && state->payload_miR == 0ULL
+                                && state->payload_miP == 0ULL && state->payload_miN == 0ULL);
+    rc |= expect_true("a rest move: no MI chain is trusted",
+                      state->dmr_vc_ref_state[0] == DMR_VC_REF_NONE && state->dmr_vc_ref_state[1] == DMR_VC_REF_NONE
+                          && state->dmr_vc_untrusted[0] == 1U && state->dmr_vc_untrusted[1] == 1U);
+    rc |= expect_true("a rest move: no privacy bit is left, the -1 key stays",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->R == 0x0102030405ULL);
+    state->tg_hold = 0U; // the hold would mute the slot's call on talkgroup 101, whose frame this stands in for
+    char recorded[49] = {0};
+    rc |= expect_true("a rest move: a frame before the call's LC or PI header is held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    rc |= expect_true("a rest move: once its LC says clear, the rest channel's frame is recorded as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* How the call on the carrier the receiver moved to says whether it is encrypted, and the keys loaded for it. */
+typedef enum {
+    DMR_HELD_CLEAR_HEADER_FIRST = 0, /* a normal grant: the voice LC header (clear) before any voice */
+    DMR_HELD_CLEAR_LATE,             /* joined mid-call: voice first, then an LC saying clear */
+    DMR_HELD_BP_LATE,                /* voice first, then an LC saying Basic Privacy, with a -b key */
+    DMR_HELD_PI_KEYED,               /* voice first, then a PI header naming RC4, with that -1 key loaded */
+    DMR_HELD_PI_NO_KEY,              /* voice first, then a PI header naming RC4, no key */
+} dmr_held_case;
+
+static void
+dmr_held_keys(dsd_state* state, dmr_held_case c) {
+    state->R = c == DMR_HELD_PI_KEYED ? 0x0102030405ULL : 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = c == DMR_HELD_PI_KEYED ? 1U : 0U;
+    state->K = c == DMR_HELD_BP_LATE ? 70ULL : 0ULL;
+    state->basic_key_present = c == DMR_HELD_BP_LATE ? 1U : 0U;
+}
+
+static void
+dmr_held_announce(dsd_opts* opts, dsd_state* state, dmr_held_case c) {
+    if (c == DMR_HELD_PI_KEYED || c == DMR_HELD_PI_NO_KEY) {
+        dmr_hop_pi_header(opts, state);
+    } else if (c == DMR_HELD_BP_LATE) {
+        dmr_hop_voice_lc(opts, state, 0x10U, 0x40U, 303U);
+    } else {
+        dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    }
+}
+
+/* A fresh decoder (a session's first landing) hearing the case's call: the frame after the call says, in @p after (1
+   when recorded). A frame before it plays as on any first landing, unheld (1 in @p before_recorded), as it came
+   (@p before). */
+static int
+dmr_held_reference(dmr_held_case c, char frame[4][24], int* before_recorded, char before[49], char after[49]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 0;
+    }
+    dmr_held_keys(state, c);
+    if (c == DMR_HELD_CLEAR_HEADER_FIRST) {
+        dmr_held_announce(opts, state, c);
+        *before_recorded = 1;
+    } else {
+        *before_recorded = dmr_hop_record_frame(opts, state, frame, before);
+        dmr_held_announce(opts, state, c);
+    }
+    const int recorded = dmr_hop_record_frame(opts, state, frame, after);
+    free_test_runtime(opts, state);
+    return recorded;
+}
+
+/* The receiver leaves for another carrier by a voice channel hop with no release (@p release 0), or releases its call
+   (1); then the case's call. Its frames before its own LC or PI header says whether it is encrypted are held: neither
+   played nor recorded. From then on the normal rules apply, as on a fresh decoder that heard the same: a clear call
+   plays, Basic Privacy decrypts with the -b key, an RC4 call decrypts with its key and stays muted without one. */
+static int
+dmr_held_case_run(dmr_held_case c, int release, char frame[4][24]) {
+    static const char* const names[] = {"voice LC header first", "clear, joined mid-call", "Basic Privacy with -b",
+                                        "PI header, keyed", "PI header, no key"};
+    const char* how = release ? "after a release" : "after a hop";
+    char what[192];
+    int before_ref = 0;
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    const int reference_recorded = dmr_held_reference(c, frame, &before_ref, as_it_came, reference);
+    DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder plays the frame before the call says", names[c]);
+    int rc = expect_true(what, before_ref);
+    if (c == DMR_HELD_BP_LATE || c == DMR_HELD_PI_KEYED) {
+        DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder decrypts the frame after it", names[c]);
+        rc |= expect_true(what, memcmp(reference, as_it_came, sizeof reference) != 0);
+    }
+    DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder %s the frame after it", names[c],
+                 c == DMR_HELD_PI_NO_KEY ? "mutes" : "plays");
+    rc |= expect_true(what, reference_recorded == (c != DMR_HELD_PI_NO_KEY));
+
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (release) {
+        state->payload_algid = 0x21;
+        state->dmr_so = 0x40U;
+        dsd_engine_release_tuned_call_state(opts, state);
+    } else {
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    }
+    dmr_held_keys(state, c);
+    char recorded[49] = {0};
+    if (c == DMR_HELD_CLEAR_HEADER_FIRST) {
+        dmr_held_announce(opts, state, c);
+    } else {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: a frame before the call says is held, not recorded", names[c], how);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_held_announce(opts, state, c);
+    }
+    const int after = dmr_hop_record_frame(opts, state, frame, recorded);
+    if (c == DMR_HELD_PI_NO_KEY) {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: with no key the call stays muted", names[c], how);
+        rc |= expect_true(what, !after && state->mbe_slot_muted[0] == 1U);
+    } else {
+        DSD_SNPRINTF(what, sizeof what, "%s %s: once the call says, its frame plays as on a fresh decoder", names[c],
+                     how);
+        rc |= expect_true(what, after && memcmp(recorded, reference, sizeof recorded) == 0);
+    }
+    if (!release) {
+        dmr_hop_done(opts, state);
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* After the receiver moves off a carrier or releases its call, each slot's encryption is unknown until its call's own
+   LC or PI header says, and its voice is held till then; a session's first landing is not. */
+static int
+test_dmr_voice_held_until_the_call_says(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    for (int release = 0; release <= 1; release++) {
+        for (int c = DMR_HELD_CLEAR_HEADER_FIRST; c <= DMR_HELD_PI_NO_KEY; c++) {
+            rc |= dmr_held_case_run((dmr_held_case)c, release, frame);
+        }
+    }
+    return rc;
+}
+
+/* The frame as a fresh decoder (a session's first landing) records it with the keys @p setup loads: 1 when recorded. */
+static int
+dmr_hold_fresh_frame(void (*setup)(dsd_opts*, dsd_state*), char frame[4][24], char recorded[49]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 0;
+    }
+    if (setup != NULL) {
+        setup(opts, state);
+    }
+    const int ok = dmr_hop_record_frame(opts, state, frame, recorded);
+    free_test_runtime(opts, state);
+    return ok;
+}
+
+/* -4 -b 70: Basic Privacy forced onto every frame, whatever the call says. */
+static void
+dmr_hold_force_basic_key(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0U;
+    state->M = 1;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+}
+
+/* No key at all. */
+static void
+dmr_hold_no_key(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0U;
+    state->M = 0;
+    state->K = 0ULL;
+    state->basic_key_present = 0U;
+}
+
+/* A key forced onto every frame (-4 with a -b key) keys a held slot's frames as before: they play, keyed as on a fresh
+   decoder, though the call has not said yet whether it is encrypted. */
+static int
+test_dmr_hold_forced_key_plays(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    int rc = expect_true("-4 -b: a fresh decoder records the frame as it came without a key",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    rc |= expect_true("-4 -b: a fresh decoder keys every frame",
+                      dmr_hold_fresh_frame(dmr_hold_force_basic_key, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_force_basic_key(opts, state);
+    char recorded[49] = {0};
+    rc |= expect_true("-4 -b after a hop: a frame before the call says plays, keyed as on a fresh decoder",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The vendor keys and the generic keystream, each applied to every voice frame whatever the call says. */
+static void
+dmr_hold_anytone_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    char key[] = "1234";
+    anytone_bp_keystream_creation(state, key, 0);
+}
+
+static void
+dmr_hold_tyt_basic_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->tyt_bp = 1;
+    state->H = 0x1234ULL;
+}
+
+static void
+dmr_hold_tyt_ap_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    tyt_ap_pc4_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_retevis_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    retevis_rc2_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_tyt_ep_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    tyt_ep_aes_keystream_creation(state, "0123456789ABCDEF 0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_kenwood_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    char key[] = "12345";
+    ken_dmr_scrambler_keystream_creation(state, key, 0);
+}
+
+static void
+dmr_hold_baofeng_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    (void)baofeng_ap_pc5_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+}
+
+static void
+dmr_hold_csi_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    (void)connect_systems_ee72_key_creation(state, "0123456789ABCDEF01", 0);
+}
+
+/* -4 -H: a Hytera Basic Privacy key forced onto every frame. */
+static void
+dmr_hold_force_hytera_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->M = 1;
+    state->K1 = 0x0123456789ABCDEFULL;
+    state->hytera_key_segments = 1U;
+}
+
+static void
+dmr_hold_straight_keystream(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    straight_mod_xor_keystream_creation(state, "49:123456789ABC80", 0);
+}
+
+/* Every key forced onto every frame plays a held slot's frames as a fresh decoder plays them, the vendor keys (-A,
+   -2, -!, -@, -5, -9, --dmr-baofeng-pc5, --dmr-csi-ee72), a Hytera key under -4 and the generic -S keystream alike:
+   the call need not say it is encrypted for them. The TYT Basic and Connect Systems keys key the frame before the vocoder, so this frame
+   reaches it as it came; the others key it in the vocoder. */
+static int
+test_dmr_hold_vendor_keys_play(char frame[4][24]) {
+    static const struct {
+        const char* name;
+        void (*setup)(dsd_opts*, dsd_state*);
+        int keys_in_vocoder;
+    } kinds[] = {
+        {"-A (AnyTone)", dmr_hold_anytone_key, 1},        {"-2 (TYT Basic)", dmr_hold_tyt_basic_key, 0},
+        {"-! (TYT AP)", dmr_hold_tyt_ap_key, 1},          {"-@ (Retevis AP)", dmr_hold_retevis_key, 1},
+        {"-5 (TYT EP)", dmr_hold_tyt_ep_key, 1},          {"-9 (Kenwood)", dmr_hold_kenwood_key, 1},
+        {"--dmr-baofeng-pc5", dmr_hold_baofeng_key, 1},   {"--dmr-csi-ee72", dmr_hold_csi_key, 0},
+        {"-4 -H (Hytera)", dmr_hold_force_hytera_key, 1}, {"-S", dmr_hold_straight_keystream, 1},
+    };
+
+    char as_it_came[49] = {0};
+    int rc = expect_true("vendor keys: a fresh decoder records the frame as it came without a key",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    char what[192];
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+        char reference[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s: a fresh decoder records the frame%s", kinds[k].name,
+                     kinds[k].keys_in_vocoder ? ", keyed" : "");
+        rc |= expect_true(what, dmr_hold_fresh_frame(kinds[k].setup, frame, reference)
+                                    && (memcmp(reference, as_it_came, sizeof reference) != 0)
+                                           == (kinds[k].keys_in_vocoder != 0));
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        kinds[k].setup(opts, state);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: a frame before the call says plays as on a fresh decoder",
+                     kinds[k].name);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && state->dmr_enc_class_held[0] == 1U
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* What follows a hop on slot 1 before the frame: a PI header naming no cipher the decoder knows (ALG 0x30, zeroed),
+   then a clear voice LC header. The PI says the call is encrypted with nothing to judge its frames by: they stay
+   held. Its LC ends the hold. */
+static int
+test_dmr_hold_pi_naming_no_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a PI naming no cipher: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_pi_header_on(opts, state, 0, 0x30U);
+    char recorded[49] = {0};
+    rc |= expect_true("a PI naming no cipher after a hop: no ALG ID is taken", state->payload_algid == 0);
+    rc |= expect_true("a PI naming no cipher after a hop: the frame stays held, not played as clear",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    rc |= expect_true("a PI naming no cipher after a hop: once its LC says clear, the frame plays as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* An embedded LC whose 5-bit checksum failed says nothing: the slot stays held. One whose check passed (a RAS
+   acceptance under -F counts, CRCCorrect 1 with the slot's RAS flag) ends the hold. */
+static int
+test_dmr_hold_failed_embedded_lc(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a failed embedded LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int ras = 0; ras <= 1; ras++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x00U, 0x00U, 303U);
+        char recorded[49] = {0};
+        rc |= expect_true("an embedded LC whose checksum failed after a hop: the frame stays held",
+                          !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                              && state->dmr_enc_class_held[0] == 1U);
+        state->event_crc_invalid[0] = ras ? DSD_CRC_RAS_UNVERIFIED : 0U;
+        dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x00U, 0x00U, 303U);
+        state->event_crc_invalid[0] = 0U;
+        rc |= expect_true(ras ? "a RAS-accepted embedded LC after a hop: the frame plays as it came"
+                              : "a checked embedded LC after a hop: the frame plays as it came",
+                          dmr_hop_record_frame(opts, state, frame, recorded)
+                              && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* -b 70 without -4: a Basic Privacy key the call's privacy bit asks for, forced onto nothing. */
+static void
+dmr_hold_basic_key(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_force_basic_key(opts, state);
+    state->M = 0;
+}
+
+/* A key that is loaded but not forced keys nothing while a slot is held: an embedded LC whose checksum failed, asking
+   for Basic Privacy (FID 0x10, privacy bit), neither plays nor records the frame. Only a checked LC ends the hold,
+   and the frame then plays keyed, as on a fresh decoder that heard the same LC. */
+static int
+test_dmr_hold_failed_embedded_lc_privacy_bit(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a failed Basic Privacy LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_basic_key(opts, state);
+    char recorded[49] = {0};
+    rc |= expect_true("a Basic Privacy key after a hop: the frame is held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("an embedded LC asking for Basic Privacy whose checksum failed: the frame stays held",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("a checked one ends the hold: the frame plays keyed",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && state->dmr_enc_class_held[0] == 0U && memcmp(recorded, as_it_came, sizeof recorded) != 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A checked voice LC the decoder reads no privacy from (Tait, FID 0x58) says as much as such a call ever does: the
+   frame after it plays as a fresh decoder plays it, not held. */
+static int
+test_dmr_hold_unread_lc_shape(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("a Tait LC: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_voice_lc(opts, state, 0x58U, 0x00U, 303U);
+    char recorded[49] = {0};
+    rc |= expect_true("a Tait LC after a hop: the frame plays as on a fresh decoder",
+                      dmr_hop_record_frame(opts, state, frame, recorded)
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A checked LC in a shape the decoder reads no privacy from ends a hold on what the call says, never on what data no
+   check passed left on the slot. A Kirisun voice LC header (FID 0x0A) asking for encryption ends it encrypted: with no
+   key the frame is muted, not played as clear. A Tait one (FID 0x58) after an embedded Motorola LC whose checksum
+   failed (FID 0x10, privacy bit) ends it as on a first landing that heard only the Tait LC: the frame plays as it came,
+   not muted by the failed LC's privacy bit. */
+static int
+test_dmr_hold_unread_lc_classifies_the_slot(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("an unread LC shape: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int c = 0; c < 2; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        char recorded[49] = {0};
+        if (c == 0) {
+            dmr_hop_voice_lc(opts, state, 0x0AU, 0x40U, 303U);
+            rc |= expect_true("an encrypted Kirisun LC after a hop: the slot reads encrypted, held no more",
+                              state->dmr_enc_class_held[0] == 0U && (state->dmr_so & 0x40U) != 0U);
+            rc |=
+                expect_true("an encrypted Kirisun LC after a hop: with no key the frame is muted, not played as clear",
+                            !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        } else {
+            dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x40U, 303U);
+            dmr_hop_voice_lc(opts, state, 0x58U, 0x00U, 303U);
+            rc |= expect_true("a Tait LC after a failed Motorola LC: the failed LC's FID and privacy bit go",
+                              state->dmr_enc_class_held[0] == 0U && state->dmr_so == 0U && state->dmr_fid == 0U);
+            rc |= expect_true("a Tait LC after a failed Motorola LC: the frame plays as it came",
+                              dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                  && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        }
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Each slot's hold is its own: only that slot's LC or PI header ends it. */
+static int
+test_dmr_hold_per_slot(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_enc_class_hold(state);
+    dmr_hop_voice_lc(opts, state, 0x00U, 0x00U, 303U);
+    int rc = expect_true("slot 1's LC ends slot 1's hold only",
+                         state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 1U);
+    dmr_hop_pi_header_on(opts, state, 0, 0x21U);
+    rc |= expect_true("slot 1's PI header leaves slot 2 held", state->dmr_enc_class_held[1] == 1U);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    rc |= expect_true("slot 2's LC ends slot 2's hold", state->dmr_enc_class_held[1] == 0U);
+    dmr_enc_class_hold(state);
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    rc |= expect_true("slot 2's PI header ends slot 2's hold only",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 0U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The single-slot decoder under trunking (-fr -T) runs a BS carrier's voice on both slots, and a voice LC header
+   decoded on its own (the first sync on a freshly tuned voice channel) stays on its burst's slot. Slot 2's header ends
+   slot 2's hold, never slot 1's, and its service options and classification are slot 2's: a Basic Privacy header there
+   keys slot 2's voice from its first frame, as the dual-slot decoder does. */
+static void
+dmr_hold_mono_trunked(dsd_opts* opts, dsd_state* state) {
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_enc_calls = 1;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_slot = 1;
+}
+
+static int
+test_dmr_hold_mono_trunked_slot2_header(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_enc_class_hold(state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    int rc = expect_true("-fr -T: slot 2's voice LC header ends slot 2's hold, not slot 1's",
+                         state->dmr_enc_class_held[1] == 0U && state->dmr_enc_class_held[0] == 1U);
+    free_test_runtime(opts, state);
+
+    /* The dual-slot decoder hearing slot 2's Basic Privacy header with -b 70, then slot 2's frame. */
+    char reference[49] = {0};
+    char as_it_came[49] = {0};
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= expect_true("a fresh decoder records slot 2's frame as it came",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, as_it_came));
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 404U);
+    rc |= expect_true("the dual-slot decoder keys slot 2's frame after its BP header",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 404U);
+    rc |= expect_true("-fr -T: slot 2's BP header sets slot 2's FID, service options and classification",
+                      state->dmr_fidR == 0x10U && (state->dmr_soR & 0x40U) != 0U
+                          && state->dmr_enc_class[1] == DMR_ENC_CLASS_ENC && state->dmr_so == 0U && state->dmr_fid == 0U
+                          && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    char recorded[49] = {0};
+    rc |= expect_true("-fr -T: slot 2's first frame after its BP header decrypts as on the dual-slot decoder",
+                      dmr_hop_record_frame_on(opts, state, 1, frame, recorded)
+                          && memcmp(recorded, reference, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The slot's call as the call state holds it: 1 when it is active on talkgroup @p tg. */
+static int
+dmr_fold_slot_call_on(const dsd_state* state, uint8_t slot, uint64_t tg) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == tg;
+}
+
+/* An LC decoded on its own by the single-slot decoder under trunking (-fr -T), on slot 2 (currentslot 1) of a BS
+   carrier whose voice that decoder runs on both slots: it stays on slot 2, as on the dual-slot decoder (docs/cli.md:
+   the decoder logs the slot its bursts' CACH proved). Its call is published on slot 2 and its tag prints SLOT 2;
+   slot 2's terminator ends slot 2's call, not slot 1's; and its crypto is judged by slot 2's ALG ID and key (RC4 from
+   slot 2's PI header, with the slot 2 key loaded). */
+static int
+test_dmr_mono_trunked_lc_stays_on_its_slot(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 303U);
+    int rc = expect_true("-fr -T: slot 1's call is on slot 1", dmr_fold_slot_call_on(state, 0U, 303U));
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "mono-trunked-slot2-lc") != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x00U, 0x00U, 404U);
+    (void)dsd_test_capture_stderr_end(&cap);
+    char log[4096];
+    const int read_ok = dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0;
+    rc |= expect_true("-fr -T: slot 2's voice LC header prints its own slot",
+                      read_ok && strstr(log, "SLOT 2") != NULL && strstr(log, "SLOT 1") == NULL);
+    rc |= expect_true("-fr -T: slot 2's voice LC header publishes its call on slot 2",
+                      dmr_fold_slot_call_on(state, 1U, 404U));
+    rc |= expect_true("-fr -T: slot 2's voice LC header leaves slot 1's call as it was",
+                      dmr_fold_slot_call_on(state, 0U, 303U));
+
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 2U, 1U, 0x00U, 0x00U, 404U);
+    dsd_call_snapshot ended;
+    rc |= expect_true("-fr -T: slot 2's terminator ends slot 2's call",
+                      dsd_call_state_get(state, 1U, &ended) > 0 && ended.phase == DSD_CALL_PHASE_ENDED);
+    rc |=
+        expect_true("-fr -T: slot 2's terminator leaves slot 1's call active", dmr_fold_slot_call_on(state, 0U, 303U));
+
+    state->RR = 0x0102030405ULL;
+    state->scalar_key_present[1] = 1U;
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    dmr_hold_mono_trunked(opts, state);
+    dmr_hop_lc_on(opts, state, 1, 1U, 1U, 0x10U, 0x40U, 505U);
+    dsd_call_snapshot keyed;
+    rc |= expect_true("-fr -T: slot 2's encrypted call is judged by slot 2's ALG ID and key",
+                      dsd_call_state_get(state, 1U, &keyed) > 0 && keyed.ota_target_id == 505U && keyed.algid == 0x21U
+                          && keyed.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_true("-fr -T: slot 2's encrypted call leaves slot 1's crypto alone",
+                      state->payload_algid == 0 && state->dmr_so == 0U && dmr_fold_slot_call_on(state, 0U, 303U));
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static long
+dmr_hold_rigctl_on_cc(const dsd_opts* opts) {
+    (void)opts;
+    return DMR_HOP_CC;
+}
+
+/* A Basic Privacy call (FID 0x10, the privacy bit) keyed with -b 70. */
+static void
+dmr_hold_bp_call(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_no_key(opts, state);
+    state->dmr_fid = 0x10U;
+    state->dmr_so = 0x40U;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+}
+
+/* A grant for the carrier the receiver is on (a composite control channel's own payload) leaves nothing, by the DMR
+   machine's judgement, whatever the engine's reading of the tuner says (here: a rigctl session whose frequency
+   dsd-neo never set). The call it keeps playing there is not held, and keeps its privacy: a clear call plays as it
+   came, and a Basic Privacy call (@p bp) still decrypts with its key, as on a fresh decoder that heard it. */
+static int
+dmr_composite_cc_grant_case(char frame[4][24], int bp) {
+    const char* what_call = bp ? "a Basic Privacy call" : "a clear call";
+    char reference[49] = {0};
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: a fresh decoder records the frame", what_call);
+    int rc = expect_true(what, dmr_hold_fresh_frame(bp ? dmr_hold_bp_call : dmr_hold_no_key, frame, reference));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_hangtime = 0.0f;
+    opts->rtlsdr_center_freq = 0U;
+    state->trunk_cc_freq = DMR_HOP_CC;
+    state->trunk_chan_map[DMR_HOP_LCN1] = DMR_HOP_CC;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_rigctl_setfreq_ok = 1;
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){.get_current_freq_hz = dmr_hold_rigctl_on_cc});
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    dmr_hop_clock_at(0.0);
+    dmr_sm_init(opts, state);
+    if (bp) {
+        dmr_hold_bp_call(opts, state);
+    }
+    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: the machine follows it on the control channel's carrier",
+                 what_call);
+    rc |= expect_true(what, state->trunk_vc_freq[0] == DMR_HOP_CC);
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: no slot's voice is held", what_call);
+    rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+    if (bp) {
+        rc |= expect_true("a composite grant, a Basic Privacy call: its privacy bit and FID stay",
+                          state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
+    }
+    char recorded[49] = {0};
+    DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: the call it keeps plays as on a fresh decoder", what_call);
+    rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded)
+                                && memcmp(recorded, reference, sizeof recorded) == 0);
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_dmr_composite_cc_grant_holds_nothing(char frame[4][24]) {
+    return dmr_composite_cc_grant_case(frame, 0) | dmr_composite_cc_grant_case(frame, 1);
+}
+
+/* A checked Kirisun PI header naming ALG ID 0 says the call is encrypted with no cipher the decoder knows: it forces no
+   classification, so a held slot stays held rather than playing as clear. */
+static int
+test_dmr_hold_kirisun_pi_naming_no_cipher(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    uint8_t pi[10] = {0x00U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    char recorded[49] = {0};
+    rc |= expect_true("a Kirisun PI with ALG ID 0 after a hop: no classification is forced",
+                      state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE);
+    rc |= expect_true("a Kirisun PI with ALG ID 0 after a hop: the frame stays held, not played as clear",
+                      !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                          && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A Hytera Enhanced PI header on slot 1 whose own checksum passed, naming ALG ID @p alg (0x02 Hytera Enhanced RC4, 0
+   none), key ID 5. */
+static void
+dmr_hold_hytera_pi(dsd_opts* opts, dsd_state* state, uint8_t alg) {
+    uint8_t pi[10] = {alg, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U, 0x00U};
+    pi[9] = dmr_hytera_checksum(pi, 9U);
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 0U, 0U);
+}
+
+/* A Hytera Enhanced LC on slot 1 (ALG ID @p alg, whose low six bits are its FLCO 0x02; FID 0x68, key ID 5) whose own
+   checksum passed, read past the FEC failure its shape always reports. */
+static void
+dmr_hold_hytera_lc_alg(dsd_opts* opts, dsd_state* state, uint8_t alg) {
+    uint8_t bytes[9] = {alg, 0x68U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x00U};
+    bytes[8] = dmr_hytera_checksum(bytes, 8U);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (size_t i = 0; i < sizeof bytes; i++) {
+        dmr_hop_put_bits(bits, i * 8U, bytes[i], 8U);
+    }
+    uint32_t errors = 1U;
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_flco(opts, state, bits, 0U, &errors, 3U);
+}
+
+/* The Hytera Enhanced LC naming RC4 (ALG ID 0x02). */
+static void
+dmr_hold_hytera_lc(dsd_opts* opts, dsd_state* state) {
+    dmr_hold_hytera_lc_alg(opts, state, 0x02U);
+}
+
+/* A checked PI header or Hytera Enhanced LC naming an ALG ID the decoder has no cipher for, after a hop: a Kirisun PI
+   with ALG ID 0x80 and service options without the privacy bit (which the vocoder would read as clear), a DMRA PI with
+   ALG ID 0x23 (no RC4, DES or AES), a Hytera Enhanced LC with ALG ID 0x42. Each keeps the slot held and trusts no MI
+   chain: the frame is neither played nor recorded. */
+static int
+test_dmr_hold_unknown_cipher(char frame[4][24]) {
+    static const char* const names[] = {"a Kirisun PI with ALG ID 0x80", "a DMRA PI with ALG ID 0x23",
+                                        "a Hytera LC with ALG ID 0x42"};
+    int rc = 0;
+    for (int c = 0; c < 3; c++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        if (c == 0) {
+            uint8_t pi[10] = {0x80U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+            state->currentslot = 0;
+            state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            dmr_pi(opts, state, pi, 1U, 0U);
+        } else if (c == 1) {
+            dmr_hop_pi_header_on(opts, state, 0, 0x23U);
+        } else {
+            dmr_hold_hytera_lc_alg(opts, state, 0x42U);
+        }
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the slot stays held and trusts no MI chain", names[c]);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_crypto_pi_verified[0] == 0U);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the frame is not played or recorded", names[c]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A Hytera Enhanced PI header naming ALG ID 0 says the call is encrypted with no cipher the decoder knows, as a DMRA or
+   Kirisun one does: a held slot stays held. One naming its cipher ends the hold, and so does a Hytera Enhanced LC,
+   which carries what such a PI carries (its FLCO 0x02 is its ALG ID's low six bits, so it never names ALG ID 0). */
+static int
+test_dmr_hold_hytera_pi_and_lc(char frame[4][24]) {
+    int rc = 0;
+    for (int c = 0; c < 3; c++) {
+        static const char* const names[] = {"a Hytera PI with ALG ID 0", "a Hytera PI naming RC4", "a Hytera LC"};
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_no_key(opts, state);
+        if (c == 2) {
+            dmr_hold_hytera_lc(opts, state);
+        } else {
+            dmr_hold_hytera_pi(opts, state, c == 0 ? 0x00U : 0x02U);
+        }
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the slot is %s", names[c],
+                     c == 0 ? "still held" : "held no more");
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == (c == 0 ? 1U : 0U));
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "%s after a hop: the frame is not played or recorded", names[c]);
+        rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* A grant-identified call on the carrier the receiver moved to, still held: an embedded LC whose checksum failed writes
+   the slot's live FID 0x10 and service options @p so, then a terminator whose check failed ends the call recoverably
+   and stashes them for the heal. The next voice frame heals the call and the heal puts them back: they are still no
+   check of the call's, so the frame stays held, neither played as clear nor keyed with the -b key the privacy bit asks
+   for. A checked LC then ends the hold. */
+static int
+dmr_hold_heal_case(char frame[4][24], uint8_t so) {
+    const char* how = so != 0U ? "asking for Basic Privacy" : "with no privacy bit";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    if (so != 0U) {
+        dmr_hold_basic_key(opts, state);
+    } else {
+        dmr_hold_no_key(opts, state);
+    }
+    dmr_hop_clock_at(2.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, so, 202U);
+    dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x10U, so, 202U);
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "an unverified terminator after a failed embedded LC %s: stashed, still held", how);
+    rc |= expect_true(what, state->dmr_heal_valid[0] == 1U && state->dmr_enc_class_held[0] == 1U);
+    char recorded[49] = {0};
+    DSD_SNPRINTF(what, sizeof what, "the frame that heals the call after a failed embedded LC %s stays held", how);
+    rc |= expect_true(what, !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U
+                                && state->dmr_enc_class_held[0] == 1U);
+    DSD_SNPRINTF(what, sizeof what, "the heal after a failed embedded LC %s put its live FID back", how);
+    rc |= expect_true(what, state->dmr_fid == 0x10U && state->dmr_heal_valid[0] == 0U);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, so, 202U);
+    DSD_SNPRINTF(what, sizeof what, "a checked LC %s ends the hold: the frame plays", how);
+    rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                && state->dmr_enc_class_held[0] == 0U);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_dmr_hold_heal_keeps_hold(char frame[4][24]) {
+    return dmr_hold_heal_case(frame, 0x00U) | dmr_hold_heal_case(frame, 0x40U);
+}
+
+/* While a slot is held, two embedded LCs whose checksum failed say clear (FID 0x10, no privacy bit), which would
+   establish the slot's classification as clear. The checked LC that ends the hold asks for Basic Privacy: its own
+   word decides, so the frame plays keyed with the -b key, as on a fresh decoder that heard that LC, never as it came.
+   The same holds after a heal restored what such LCs wrote. */
+static int
+test_dmr_hold_ends_on_the_checked_word(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    char reference[49] = {0};
+    int rc = expect_true("the checked word: a fresh decoder records the frame",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_basic_key(opts, state);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+    rc |= expect_true("the checked word: a fresh decoder keys the frame after a checked Basic Privacy LC",
+                      dmr_hop_record_frame(opts, state, frame, reference)
+                          && memcmp(reference, as_it_came, sizeof reference) != 0);
+    free_test_runtime(opts, state);
+    for (int healed = 0; healed <= 1; healed++) {
+        const char* how = healed ? "after a heal" : "after two failed embedded LCs";
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+        dmr_hold_basic_key(opts, state);
+        dmr_hop_clock_at(2.0);
+        state->dmr_confidence_voice_open[0] = 1;
+        state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+        dmr_sm_emit_voice_sync(opts, state, 0);
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x00U, 303U);
+        char recorded[49] = {0};
+        if (healed) {
+            dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x10U, 0x00U, 303U);
+            rc |= expect_true("the checked word: the frame that heals the call stays held",
+                              !dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 1U);
+        } else {
+            dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, 0x00U, 303U);
+        }
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what, "the checked word %s: the slot reads clear, held", how);
+        rc |= expect_true(what, dmr_enc_class_established_clear(state, 0U) && state->dmr_enc_class_held[0] == 1U);
+        dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x10U, 0x40U, 303U);
+        DSD_SNPRINTF(what, sizeof what,
+                     "the checked word %s: a checked Basic Privacy LC ends the hold, the frame keyed", how);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && state->dmr_enc_class_held[0] == 0U
+                                    && memcmp(recorded, reference, sizeof recorded) == 0);
+        dmr_hop_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* With encryption lockout on, an established Basic Privacy call on talkgroup 123 keyed from the keys file plays on; an
+   embedded LC whose checksum failed naming talkgroup 202 (no key) with the privacy bit is no check of anything: it locks
+   no talkgroup out and releases none, whatever talkgroup it names. */
+static int
+test_dmr_enc_lockout_needs_a_checked_lc(void) {
+    int rc = 0;
+    for (int locked = 0; locked <= 1; locked++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->trunk_enable = 1;
+        opts->trunk_tune_enc_calls = 0;
+        seed_dmr_basic_privacy_call(state, 0ULL);
+        if (locked) {
+            (void)dsd_enc_lockout_note(state, 202U, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
+        }
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x10U, locked ? 0x00U : 0x40U, 202U);
+        rc |= expect_true(locked ? "lockout: an unchecked clear LC releases no talkgroup"
+                                 : "lockout: an unchecked LC naming a keyless talkgroup locks nothing out",
+                          dsd_enc_lockout_entry_active(state, 202U, 1) == locked);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* --dmr-force-algid 0x21 (M = 0x21) on the dual-slot decoder, no key. After a carrier boundary held slot 1, an embedded
+   LC whose checksum failed set the privacy bit, and the next frame installed the forced ALG ID as a fallback (0x21, key
+   ID 0xFF): unverified. The call's checked clear voice LC header then ends the hold on its own word, the fallback with
+   it, so its frame plays as it came; so does a checked header in a shape the decoder reads no privacy from (Tait FID
+   0x58), which ends the hold as on a first landing. */
+static int
+test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("forced fallback: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int tait = 0; tait <= 1; tait++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_hold_no_key(opts, state);
+        state->M = 0x21;
+        dmr_enc_class_hold(state);
+        dmr_hop_lc_on(opts, state, 0, 3U, 0U, 0x00U, 0x40U, 101U);
+        char recorded[49] = {0};
+        (void)dmr_hop_record_frame(opts, state, frame, recorded);
+        const char* lc = tait ? "Tait" : "standard";
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "forced fallback (%s): the held frame installed the fallback", lc);
+        rc |= expect_true(what, state->payload_algid == 0x21 && state->payload_keyid == 0xFF);
+        dmr_hop_lc_on(opts, state, 0, 1U, 1U, tait ? 0x58U : 0x00U, 0x00U, 101U);
+        DSD_SNPRINTF(what, sizeof what, "forced fallback (%s): the checked clear header drops it", lc);
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_keyid == 0);
+        DSD_SNPRINTF(what, sizeof what, "forced fallback (%s): the clear call's frame plays as it came", lc);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* After a carrier boundary held slot 1, a checked DMRA PI header naming ALG ID 0x23 (no cipher the decoder has) keeps
+   the hold but takes the ALG ID, key ID and MI. The call's checked voice LC header then says the voice is clear: it
+   ends the hold on its own word, and that unusable cipher with it, so the frame plays as it came. */
+static int
+test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("unusable PI cipher: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    dmr_hop_pi_header_on(opts, state, 0, 0x23U);
+    rc |= expect_true("unusable PI cipher: the PI keeps the hold and takes its ALG ID",
+                      state->payload_algid == 0x23 && state->dmr_enc_class_held[0] == 1U);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x00U, 0x00U, 101U);
+    rc |= expect_true("unusable PI cipher: the checked clear header drops its ALG ID, key ID and MI",
+                      state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_mi == 0ULL);
+    char recorded[49] = {0};
+    rc |= expect_true("unusable PI cipher: the clear call's frame plays as it came",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* After a carrier boundary held slot 1, a checked Kirisun PI header naming ALG ID @p alg, a cipher the decoder has
+   none of, keeps the hold, takes that ALG ID and sets the Kirisun encrypted late-entry mode. The call's checked clear
+   voice LC header, in Kirisun shape (FID 0x0A, whose privacy bit the decoder reads) or standard, then ends the hold on
+   its own word: the ALG ID, key ID and MI go, and so does the Kirisun encrypted mode, so the clear call plays as it
+   came. A checked Kirisun LC declaring encryption keeps them. */
+static int
+test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("unusable Kirisun cipher: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int kirisun_lc = 0; kirisun_lc <= 1; kirisun_lc++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_hold_no_key(opts, state);
+        dmr_enc_class_hold(state);
+        uint8_t pi[10] = {kirisun_lc ? 0x23U : 0x80U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+        state->currentslot = 0;
+        state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        dmr_pi(opts, state, pi, 1U, 0U);
+        const char* lc = kirisun_lc ? "Kirisun" : "standard";
+        char what[160];
+        DSD_SNPRINTF(what, sizeof what, "unusable Kirisun cipher (%s LC): the PI keeps the hold, its ALG ID and mode",
+                     lc);
+        rc |= expect_true(what, state->payload_algid != 0 && state->dmr_enc_class_held[0] == 1U
+                                    && state->dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+        dmr_hop_lc_on(opts, state, 0, 1U, 1U, kirisun_lc ? 0x0AU : 0x00U, 0x00U, 101U);
+        DSD_SNPRINTF(what, sizeof what,
+                     "unusable Kirisun cipher (%s LC): the checked clear header drops it and its mode", lc);
+        rc |= expect_true(what, state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_mi == 0ULL
+                                    && state->dmr_le_vendor[0] != DMR_LE_VENDOR_KIRISUN_ENC);
+        char recorded[49] = {0};
+        DSD_SNPRINTF(what, sizeof what, "unusable Kirisun cipher (%s LC): the clear call's frame plays as it came", lc);
+        rc |= expect_true(what, dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                                    && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        free_test_runtime(opts, state);
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    uint8_t pi[10] = {0x23U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    dmr_hop_lc_on(opts, state, 0, 1U, 1U, 0x0AU, 0x40U, 101U);
+    rc |= expect_true("unusable Kirisun cipher: a checked Kirisun LC declaring encryption keeps it and its mode",
+                      state->payload_algid == 0x23 && state->dmr_le_vendor[0] == DMR_LE_VENDOR_KIRISUN_ENC);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A grant already opened the held slot's call when a checked Kirisun PI header names ALG ID 0x23, a cipher the decoder
+   has none of: the call is published encrypted. Its checked clear Kirisun LC ends the hold and drops the cipher, and
+   says so to the call as well: the call reads clear with no ALG ID, and the ALG ID DMR last published for it is
+   gone, so a heal after a terminator whose check failed puts no 0x23 back and the call's next frame plays. */
+static int
+test_dmr_hold_kirisun_clear_lc_reaches_the_call(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_clock_at(2.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    uint8_t pi[10] = {0x23U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    dsd_call_snapshot call;
+    rc |= expect_true("Kirisun clear LC: the PI keeps the hold and the call reads encrypted",
+                      state->dmr_enc_class_held[0] == 1U && dsd_call_state_get(state, 0U, &call) > 0
+                          && call.crypto != DSD_CALL_CRYPTO_CLEAR);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x0AU, 0x00U, 202U);
+    rc |= expect_true("Kirisun clear LC: the hold ends and the cipher goes",
+                      state->dmr_enc_class_held[0] == 0U && state->payload_algid == 0);
+    rc |= expect_true("Kirisun clear LC: the call reads clear with no ALG ID",
+                      dsd_call_state_get(state, 0U, &call) > 0 && call.crypto == DSD_CALL_CRYPTO_CLEAR
+                          && call.algid == 0U);
+    rc |= expect_true("Kirisun clear LC: DMR's last published ALG ID for the call is gone",
+                      state->dmr_live_pub_epoch[0] != call.epoch || state->dmr_live_pub_algid[0] == 0);
+    dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x0AU, 0x00U, 202U);
+    char recorded[49] = {0};
+    rc |= expect_true("Kirisun clear LC: after a heal the call's frame plays, no 0x23 put back",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && state->payload_algid == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The dual-slot decoder hearing direct mode (an MS sync: both slots' voice and LCs on lane 0) behaves as main: no voice
+   hold, as on -fr. After a carrier boundary held both slots, a direct-mode frame plays as it came before any LC, burst A
+   included (decoded before dmrMS() marks dsd_state::dmr_ms_mode); a repeater frame is still held. */
+static int
+test_dmr_direct_mode_has_no_voice_hold(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("direct mode: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    for (int direct = 0; direct <= 1; direct++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        dmr_hold_no_key(opts, state);
+        dmr_enc_class_hold(state);
+        FILE* recording = tmpfile();
+        if (recording == NULL) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        opts->floating_point = 1;
+        opts->dmr_stereo = 1;
+        opts->errorbars = 0;
+        opts->mbe_out_f = recording;
+        state->synctype = direct ? DSD_SYNC_DMR_MS_VOICE : DSD_SYNC_DMR_BS_VOICE_POS;
+        state->dmr_ms_mode = 0;
+        state->currentslot = 0;
+        processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DMR, NULL, frame, NULL);
+        char recorded[49] = {0};
+        int ok = fseek(recording, 0, SEEK_SET) == 0;
+        opts->mbe_in_f = recording;
+        ok = ok && readAmbe2450Data(opts, state, recorded) == 0;
+        opts->mbe_in_f = opts->mbe_out_f = NULL;
+        (void)fclose(recording);
+        if (direct) {
+            rc |=
+                expect_true("direct mode: after a carrier boundary the frame plays as it came, no hold",
+                            ok && state->mbe_slot_muted[0] == 0U && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+        } else {
+            rc |= expect_true("repeater mode: after a carrier boundary the frame is held",
+                              !ok && state->mbe_slot_muted[0] == 1U);
+        }
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Direct-mode traffic has no hold, so its checked LCs end none either: a direct-mode slot 2 header (folded onto lane 0)
+   leaves both slots' holds the carrier boundary armed, and repeater slot 1 voice heard after it on the same carrier is
+   still held until its own LC or PI. */
+static int
+test_dmr_direct_mode_lc_keeps_the_repeater_holds(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    dmr_hop_put_bits(bits, 24U, 101U, 24U);
+    dmr_hop_put_bits(bits, 48U, 3003U, 24U);
+    uint32_t errors = 0U;
+    state->synctype = DSD_SYNC_DMR_MS_VOICE;
+    state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
+    state->dmr_ms_mode = 1;
+    state->currentslot = 1;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+    int rc = expect_true("direct mode: a checked slot 2 header ends neither repeater hold",
+                         state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    /* Nor does a direct-mode PI header naming a cipher the decoder knows (RC4). */
+    uint8_t pi[10] = {0x21U, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 1;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    rc |= expect_true("direct mode: a checked slot 2 PI header ends neither repeater hold",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Without trunking the single-slot decoder (-fr) decodes both slots on one lane, where crypto and call state can mix
+   across slots, as on main: the DMR voice hold does not apply there, so after a carrier boundary held both slots, lane
+   0's frame plays as it came before any LC says. A slot 2 PI header stays on slot 2's fields (index 1), as on main: only
+   LCs are folded onto lane 0. */
+static int
+test_dmr_mono_has_no_voice_hold(char frame[4][24]) {
+    char as_it_came[49] = {0};
+    int rc = expect_true("-fr: a fresh decoder records the frame as it came",
+                         dmr_hold_fresh_frame(dmr_hold_no_key, frame, as_it_came));
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    state->dmr_ms_mode = 0;
+    state->dmr_mono_slot = 0;
+    dmr_enc_class_hold(state);
+    char recorded[49] = {0};
+    rc |= expect_true("-fr: after a carrier boundary lane 0's frame plays as it came, no hold",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && memcmp(recorded, as_it_came, sizeof recorded) == 0);
+    dmr_hop_pi_header_on(opts, state, 1, 0x21U);
+    rc |= expect_true("-fr: a slot 2 PI header keys slot 2's fields, not lane 0's",
+                      state->payload_algidR == 0x21 && state->payload_algid == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* An AES-OFB data packet on slot 1 decrypts with the IV its header's MI expands to, apart from slot 1's voice: the
+   voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL) an AES call on slot 1 is keyed by stay as they were. */
+static int
+test_dmr_packet_aes_keeps_the_voice_iv(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const int kid = 0x33;
+    state->currentslot = 0;
+    state->data_ks_start[0] = 0;
+    state->data_block_poc[0] = 28;
+    state->data_byte_ctr[0] = 48;
+    state->payload_algid = 4;
+    state->payload_keyid = kid;
+    state->payload_mi = 0x11223344ULL;
+    const unsigned long long words[2] = {0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL};
+    for (int i = 0; i < 2; i++) {
+        state->rkey_array[kid + (i == 0 ? 0x000 : 0x101)] = words[i];
+        state->rkey_array_loaded[kid + (i == 0 ? 0x000 : 0x101)] = 1U;
+    }
+    DSD_MEMSET(state->aes_iv, 0xEE, sizeof(state->aes_iv));
+    state->DMRvcL = 5;
+    dmr_block_crypto_ctx ctx;
+    dmr_block_crypto_load_ctx(state, 0U, 48U, &ctx);
+    int rc = expect_true("packet AES: the packet decrypts", dmr_block_crypto_decrypt_payload(state, 0U, &ctx, 0) == 1);
+    int iv_kept = 1;
+    for (size_t i = 0; i < sizeof(state->aes_iv); i++) {
+        iv_kept &= state->aes_iv[i] == 0xEEU;
+    }
+    rc |= expect_true("packet AES: the voice IV, MI and frame counter stay",
+                      iv_kept && state->DMRvcL == 5 && state->payload_mi == 0x11223344ULL);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The hold's edges: what keys or ends it, per slot, on the single-slot decoder, and the one judge of a trunk move. */
+static int
+test_dmr_hold_edges(void) {
+    char frame[4][24];
+    int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
+    rc |= test_dmr_hold_forced_key_plays(frame);
+    rc |= test_dmr_hold_vendor_keys_play(frame);
+    rc |= test_dmr_hold_pi_naming_no_cipher(frame);
+    rc |= test_dmr_hold_failed_embedded_lc(frame);
+    rc |= test_dmr_hold_failed_embedded_lc_privacy_bit(frame);
+    rc |= test_dmr_hold_unread_lc_shape(frame);
+    rc |= test_dmr_hold_unread_lc_classifies_the_slot(frame);
+    rc |= test_dmr_hold_per_slot();
+    rc |= test_dmr_hold_mono_trunked_slot2_header(frame);
+    rc |= test_dmr_mono_trunked_lc_stays_on_its_slot();
+    rc |= test_dmr_composite_cc_grant_holds_nothing(frame);
+    rc |= test_dmr_hold_kirisun_pi_naming_no_cipher(frame);
+    rc |= test_dmr_hold_hytera_pi_and_lc(frame);
+    rc |= test_dmr_hold_unknown_cipher(frame);
+    rc |= test_dmr_hold_heal_keeps_hold(frame);
+    rc |= test_dmr_hold_ends_on_the_checked_word(frame);
+    rc |= test_dmr_mono_has_no_voice_hold(frame);
+    rc |= test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(frame);
+    rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(frame);
+    rc |= test_dmr_direct_mode_has_no_voice_hold(frame);
+    rc |= test_dmr_direct_mode_lc_keeps_the_repeater_holds();
+    rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(frame);
+    rc |= test_dmr_hold_kirisun_clear_lc_reaches_the_call(frame);
+    rc |= test_dmr_enc_lockout_needs_a_checked_lc();
+    rc |= test_dmr_packet_aes_keeps_the_voice_iv();
+    return rc;
+}
+
+/* A trunked follow that leaves the carrier (a voice channel followed from another without a release, a move) forgets
+   the left calls' DMR privacy, as a release does; a grant on the carrier the receiver is on keeps it. The DMR machine
+   judges the leave (dmr_sm_note_carrier_tune() and its follows), never the engine's tune by its reading of the tuner,
+   which can disagree with it on a composite control channel (test_dmr_composite_cc_grant_holds_nothing()). */
+static int
+test_trunk_follow_forgets_dmr_call_privacy(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long vc1 = 943187500L;
+    const long vc2 = 943212500L;
+    int rc = expect_true("the first follow",
+                         dsd_engine_trunk_tune_to_freq_request(opts, state, vc1, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    rc |= expect_true("a grant on the same carrier",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc1, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("keeps the call's privacy bit", state->dmr_so == 0x40U && state->dmr_fid == 0x10U);
+    rc |= expect_true("the next voice channel, with no release",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc2, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    /* A tune no DMR machine made (another trunk machine's, P25 or NXDN, under -fa or a mixed setup) is judged by the
+       engine's reading of the tuner: it forgets what decrypts and holds the next carrier's voice. The FID stays for
+       the rows of the calls it leaves. */
+    rc |= expect_true("a tune another trunk machine made holds both slots' voice",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    rc |= expect_true("a voice channel hop: no privacy bit is left, the FID stays for the machine",
+                      state->dmr_so == 0U && state->dmr_soR == 0U && state->dmr_enc_class[0] == DMR_ENC_CLASS_NONE
+                          && state->dmr_fid == 0x10U && state->dmr_fidR == 0x10U);
+    uint32_t keyed_from = 0U;
+    rc |= expect_true("a voice channel hop: an unnamed call keys from no left talkgroup",
+                      !keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from) && state->K == 70ULL);
+    /* The DMR machine's own tune (dmr_sm_tune_to_freq()) is the machine's to judge: the engine's tune leaves the call's
+       privacy and the hold alone, whatever its reading of the tuner (test_dmr_composite_cc_grant_holds_nothing()). */
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request});
+    rc |= expect_true("a DMR machine's tune", dmr_sm_tune_to_freq(opts, state, vc1, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    rc |= expect_true("the engine leaves a DMR machine's tune to the machine's judgement",
+                      state->dmr_so == 0x40U && state->dmr_fid == 0x10U && state->dmr_enc_class_held[0] == 0U
+                          && state->dmr_enc_class_held[1] == 0U);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    rc |= test_dmr_trunk_hop_leaves_no_call_crypto();
+    rc |= test_dmr_rest_move_leaves_no_call_crypto();
+    rc |= test_dmr_voice_held_until_the_call_says();
+    rc |= test_dmr_hold_edges();
+    return rc;
+}
+
 /* Issue #644: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
    attempt or displacement takes that away, whatever frequency the receiver may still be on. */
 static int
@@ -2979,16 +5171,19 @@ frame_was(const char* tag, int frame, const char* label, unsigned long long rkey
     return 0;
 }
 
-/* Issue #834: every sync the live loop's hunt returns moves the scan owner's sync sequence while skip-silent is on, so
-   a scan quiet check sees activity since its visit's landing: YSF and D-STAR syncs too, which stamp no
-   last_cc_sync_time_m. With the setting off the sequence stays (one load). */
+/* Issue #834 R1: a sync the live loop's hunt returns is no activity to a scan quiet check: frames whose protocol's gate
+   checked nothing (YSF, D-STAR and DMR syncs alike) move no activity sequence and leave nothing pending once each ends.
+   A frame its gate passed (PROVEN) moves it once a frame, and one that left a PARTIAL verdict holds the check back for
+   its hold. With the setting off nothing moves (one load). */
 static int
-test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
+test_live_loop_counts_only_checked_frames(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* The PARTIAL holds run on the decode clock: frozen, a host pause cannot end one before it is looked at. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     int rc = expect_true("a scan owner", owner != NULL);
     static const int k_types[] = {DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DMR_BS_DATA_POS};
@@ -2996,25 +5191,44 @@ test_live_loop_syncs_move_the_quiet_sync_sequence(void) {
         for (int on = 0; on <= 1; on++) {
             opts->scan_skip_silent = on;
             g_frame_sync_type = k_types[i];
-            const uint64_t before = owner->sync_seq;
+            const uint64_t before = owner->activity_seq;
             run_synced_frames(opts, state, 2, -1);
-            if (owner->sync_seq != before + (on ? 2U : 0U)) {
-                DSD_FPRINTF(stderr, "FAIL #834: sync type %d with skip-silent %d moved the sequence by %llu\n",
-                            k_types[i], on, (unsigned long long)(owner->sync_seq - before));
+            const uint64_t rejected = owner->activity_seq - before;
+            const int left_pending = owner->frame_pending != 0U || owner->pending_until_m > 0.0;
+            run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+            const uint64_t proven = owner->activity_seq - before - rejected;
+            run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+            const int partial_holds = owner->pending_until_m > dsd_decode_now_mono_s();
+            if (rejected != 0U || left_pending || proven != (on ? 3U : 0U) || partial_holds != on
+                || owner->frame_pending != 0U || owner->activity_seq - before != proven) {
+                DSD_FPRINTF(stderr,
+                            "FAIL #834: sync type %d with skip-silent %d: rejected frames moved %llu (pending %d), "
+                            "proven ones %llu, partial ones hold %d\n",
+                            k_types[i], on, (unsigned long long)rejected, left_pending, (unsigned long long)proven,
+                            partial_holds);
                 rc = 1;
             }
+            dsd_engine_scan_quiet_pending_reset(state);
         }
     }
+    /* A stream gap cuts what was waited for: its carrier boundary drops the wait. */
+    opts->scan_skip_silent = 1;
+    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
+    const int held = owner && owner->pending_until_m > 0.0;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= expect_true("a stream gap drops a pending verdict", held && owner->pending_until_m < 1e-9);
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
     free_test_runtime(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
 /* Issue #834: a provisional P25 sync (a tolerant word, held until its NID or window verdict) is activity to a scan quiet
-   check only once that verdict passed. A noise near-miss whose verdict fails is put back everywhere else, and must not
-   end a silent channel's quiet check: frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent
-   on, for every kind of candidate. With the setting off it stays. */
+   check only once that verdict passed, as any sync is (R1): its frame's PROVEN note comes from behind the verdict. A
+   noise near-miss whose verdict fails is put back everywhere else, and must not end a silent channel's quiet check:
+   frames 1 and 3 fail, frame 2 passes, so the sequence moves once with skip-silent on, for every kind of candidate, and
+   no frame is left pending. With the setting off it stays. */
 static int
 test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) {
     dsd_opts* opts = NULL;
@@ -3038,15 +5252,16 @@ test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) 
             DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
             g_frame_candidate_passes[2] = 1;
             g_frame_candidate_frames = 0;
-            const uint64_t before = owner->sync_seq;
+            const uint64_t before = owner->activity_seq;
             run_synced_frames(opts, state, 3, -1);
-            if (g_frame_candidate_frames != 3 || owner->sync_seq != before + (on ? 1U : 0U) || owner->sync_deferred) {
+            if (g_frame_candidate_frames != 3 || owner->activity_seq != before + (on ? 1U : 0U)
+                || owner->frame_pending != 0U) {
                 DSD_FPRINTF(
                     stderr,
                     "FAIL #834: candidate kind %d with skip-silent %d: %d provisional frames moved the sequence "
-                    "by %llu (deferral left %u)\n",
-                    k_kinds[i].candidate, on, g_frame_candidate_frames, (unsigned long long)(owner->sync_seq - before),
-                    (unsigned)owner->sync_deferred);
+                    "by %llu (frame left pending %u)\n",
+                    k_kinds[i].candidate, on, g_frame_candidate_frames,
+                    (unsigned long long)(owner->activity_seq - before), (unsigned)owner->frame_pending);
                 rc = 1;
             }
         }
@@ -3055,55 +5270,6 @@ test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict(void) 
     DSD_MEMSET(g_frame_candidate_passes, 0, sizeof g_frame_candidate_passes);
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     opts->scan_skip_silent = 0;
-
-    /* The helpers alone: an exact sync is noted at once; a provisional one (this call accepted a candidate) waits for its
-       verdict, which a frame withheld or never dispatched does not give (dropped unnoted), and a passed verdict counter
-       notes it at the settle. A candidate an earlier call accepted, whose frame was withheld so that it still reads as
-       held, defers nothing after it: the next exact sync is noted at once. */
-    if (owner) {
-        const uint64_t before = owner->sync_seq;
-        dsd_engine_scan_quiet_note_frame_sync(state, dsd_engine_scan_quiet_sync_accepts(state));
-        rc |= expect_true("an exact sync noted at once", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        uint64_t accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p1_sync_candidate.valid = 1U;
-        state->p25_p1_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        rc |= expect_true("a provisional sync deferred", owner->sync_seq == before + 1U && owner->sync_deferred);
-        dsd_engine_scan_quiet_drop_sync(state);
-        state->p25_p1_sync_candidate.valid = 0U;
-        state->p25_p1_sync_anchor.tolerant_frames++;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a dropped deferral never noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        state->p25_p2_sync_candidate.valid = 0U;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a failed verdict not noted", owner->sync_seq == before + 1U && !owner->sync_deferred);
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        state->p25_p2_sync_candidate.valid = 0U;
-        state->p25_p2_sync_anchor.tolerant_windows++;
-        dsd_engine_scan_quiet_settle_sync(state);
-        rc |= expect_true("a passed verdict noted", owner->sync_seq == before + 2U && !owner->sync_deferred);
-        /* A Phase 2 candidate whose window was withheld still reads as held; the exact syncs after it are noted. */
-        accepts = dsd_engine_scan_quiet_sync_accepts(state);
-        state->p25_p2_sync_candidate.valid = 1U;
-        state->p25_p2_sync_anchor.tolerant_syncs++;
-        dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-        dsd_engine_scan_quiet_drop_sync(state);
-        for (int k = 0; k < 2; k++) {
-            accepts = dsd_engine_scan_quiet_sync_accepts(state);
-            dsd_engine_scan_quiet_note_frame_sync(state, accepts);
-            dsd_engine_scan_quiet_settle_sync(state);
-        }
-        rc |= expect_true("exact syncs after an abandoned candidate noted",
-                          owner->sync_seq == before + 4U && !owner->sync_deferred);
-        state->p25_p2_sync_candidate.valid = 0U;
-    }
     free_test_runtime(opts, state);
     return rc;
 }
@@ -3120,14 +5286,18 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
         return 1;
     }
     int rc = 0;
+    /* The 1 s hangtime runs on the decode clock, and a frame boundary past it yields: frozen, a host pause between the
+       landing and the frames cannot cut the reception. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     if (setup_untyped_keyed_list(opts, state, 995012500, 996012500) != 0
         || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
         || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
         free_test_runtime(opts, state);
+        dsd_decode_clock_use_system();
         return 1;
     }
     /* Row 0 lands at once: the reception on it decodes under ALPHA and its keys. */
-    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_cc_sync_time = dsd_decode_time() - 11;
     noCarrier(opts, state);
     run_synced_frames(opts, state, 1, -1);
     rc |= expect_true("mid-reception-row-0-frames", g_frame_count == 2);
@@ -3137,6 +5307,9 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
        finding sync, now on row 1. */
     (void)step_into_a_timed_out_tune(opts, state);
     rc |= expect_true("mid-reception-row-1-pending", g_retune_in_flight.active && state->lcn_freq_roll == 1);
+    /* The reception's syncs keep the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): only the
+       landing ends it. */
+    state->last_cc_sync_time = dsd_decode_time();
     run_synced_frames(opts, state, 6, 1);
     if (g_frame_count != 2) {
         DSD_FPRINTF(stderr, "mid-reception: %d frames decoded in the reception the landing came in (want 2)\n",
@@ -3153,6 +5326,7 @@ test_legacy_step_landing_ends_the_reception_on_it(void) {
     rc |= frame_was("mid-reception-after-landing", 0, "BRAVO", 0ULL);
     rc |= frame_was("mid-reception-after-landing", 1, "BRAVO", 0ULL);
     free_test_runtime(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -3621,7 +5795,7 @@ test_entry_late_failure_ends_a_synced_reception(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     uint64_t pending_id = 0U;
     rc |= expect_true("late-failure-entry-times-out",
-                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U && opts->rtlsdr_center_freq == 981012500U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -3722,7 +5896,7 @@ rr_sync_case(int how) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     uint64_t pending_id = 0U;
     rc |= expect_true("rr-import-tune-times-out",
-                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 981012500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -3874,7 +6048,7 @@ test_untyped_resume_settles_when_a_newer_tune_displaces_its_row(void) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     rc |= expect_true("displaced-newer-times-out",
-                      io_control_set_freq_tagged(opts, state, 977512500U, &pending_id) == RTL_STREAM_TUNE_TIMEOUT
+                      io_control_set_freq_tagged(opts, state, 977512500U, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT
                           && pending_id != 0U);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -10184,7 +12358,7 @@ test_held_scan_steps_off_an_avoided_row(void) {
    finds @p syncs more frames after the first. Returns the frames decoded before the loop yielded. */
 static int
 carrier_frames(dsd_opts* opts, dsd_state* state, int syncs) {
-    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time = dsd_decode_time();
     run_synced_frames(opts, state, syncs, -1);
     return g_frame_count;
 }
@@ -10217,9 +12391,13 @@ untyped_departure_case(int held) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* The carrier's fresh anchor holds the 1 s hangtime on the decode clock: frozen, a host pause cannot end it
+       between the step and the frames that decode through. */
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
     const long int base_hz = 1270012500L + (long int)held * 3000000L;
     if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
         teardown_walk_list(opts, state);
+        dsd_decode_clock_use_system();
         return 1;
     }
     int rc = sit_on_an_avoided_row(opts, state, held, what);
@@ -10232,6 +12410,7 @@ untyped_departure_case(int held) {
     rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
     rc |= expect_case(what, "the carrier on row 2 decodes through", carrier_frames(opts, state, 20) == 21);
     teardown_walk_list(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -10430,7 +12609,9 @@ static dsd_trunk_tune_result g_settling_return_result;
    tick between the completion's consumption and the walk's handoff would. */
 static void
 settle_after_a_trunk_return(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
-                            uint64_t list_rev, int landed) {
+                            uint64_t list_rev, int landed, int move_judge, long move_from_hz) {
+    (void)move_judge;
+    (void)move_from_hz;
     (void)row;
     (void)dir;
     (void)requested_hz;
@@ -10484,6 +12665,678 @@ test_walk_owns_the_tuner_through_its_settling(void) {
     g_rigctl_setfreq_ok = 0;
     opts->use_rigctl = 0;
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The DMR trunk's manual moves: an operator's press, through the command queue. */
+typedef enum {
+    DMR_MANUAL_RETURN_CC = 0,
+    DMR_MANUAL_CHANNEL_CYCLE,
+    DMR_MANUAL_LOCKOUT,
+    DMR_MANUAL_SKIP,
+} dmr_manual_move;
+
+#define DMR_MANUAL_CC 942262500L
+#define DMR_MANUAL_VC 943112500L
+
+/* A DMR trunk on an RTL stream (the fakes), following a Basic Privacy call (talkgroup 101 on slot 1, the -b 70 key, the
+   talkgroup key autoload's talkgroup 123) on a voice channel; the tuner is on @p receiver_hz. */
+static int
+dmr_manual_setup(dsd_opts* opts, dsd_state* state, long receiver_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->use_rigctl = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_p25p1 = opts->frame_p25p2 = 0;
+    opts->frame_dmr = 1;
+    opts->rtlsdr_center_freq = (uint32_t)receiver_hz;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_last_applied_hz = (uint32_t)receiver_hz;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->synctype = state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR; // the DMR machine owns the trunk (dmr_sm_submit_grant())
+    state->trunk_cc_freq = DMR_MANUAL_CC;
+    state->trunk_vc_freq[0] = DMR_MANUAL_VC;
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = 944012500L + (long int)i * 1000000L;
+    }
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    dmr_sm_init(opts, state);
+    const dsd_call_observation lc = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 1001U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+        .observed_m = dsd_decode_now_mono_s(),
+    };
+    const int rc = expect_true("the followed call", dsd_call_state_observe(state, &lc, DSD_CALL_BOUNDARY_BEGIN) >= 0);
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    dsd_app_frontend_runtime_start(opts, state);
+    return rc;
+}
+
+static int
+dmr_manual_press(dsd_opts* opts, dsd_state* state, dmr_manual_move move) {
+    switch (move) {
+        case DMR_MANUAL_RETURN_CC: return press_action(opts, state, DSD_APP_CMD_RETURN_CC);
+        case DMR_MANUAL_CHANNEL_CYCLE: return press_action(opts, state, DSD_APP_CMD_CHANNEL_CYCLE);
+        case DMR_MANUAL_LOCKOUT:
+            return dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0) > 0 ? dsd_app_drain_cmds(opts, state) : 0;
+        default: return dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0) > 0 ? dsd_app_drain_cmds(opts, state) : 0;
+    }
+}
+
+static void
+dmr_manual_done(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    dmr_sm_init(opts, state);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+}
+
+static const char* const k_dmr_manual_names[] = {"a manual Return to CC", "a trunked channel cycle", "a lockout",
+                                                 "a skip"};
+
+/* The trunk's owner a manual move case runs under: the DMR machine's (as dmr_manual_setup() leaves it), or, with every
+   protocol decoded (-fa, the default mode), none known yet, P25's or NXDN's. */
+enum { DMR_MANUAL_OWNER_DMR = 0, DMR_MANUAL_OWNER_UNKNOWN, DMR_MANUAL_OWNER_P25, DMR_MANUAL_OWNER_NXDN };
+
+static const char* const k_dmr_manual_owner_names[] = {"", " (owner not known yet)", " (P25 owns the trunk)",
+                                                       " (NXDN owns the trunk)"};
+
+/* After dmr_manual_setup(): the trunk's @p owner, with every protocol decoded unless the DMR machine owns it. */
+static void
+dmr_manual_set_owner(dsd_opts* opts, dsd_state* state, int owner) {
+    static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
+                                                         DSD_TRUNK_RECOVERY_P25, DSD_TRUNK_RECOVERY_NXDN};
+    if (owner != DMR_MANUAL_OWNER_DMR) {
+        opts->frame_p25p1 = opts->frame_p25p2 = 1;
+        opts->frame_nxdn48 = opts->frame_nxdn96 = 1;
+        state->trunk_recovery_protocol = owners[owner];
+    }
+}
+
+/* One manual @p move off the followed call's voice channel, a DMR sync current, under @p owner. With the owner not
+   known yet (no CRC-valid DMR CSBK has named it) the DMR machine judges the move. With P25 or NXDN the owner, the
+   last control channel decoded, the receiver can still have reached a DMR carrier sending no CSBK (a conventional
+   repeater, a traffic channel): DMR voice is decoded on both ends of the move, which takes the io_control leg, so
+   the engine's judge, by its own reading of the receiver, judges it. Each way the move is judged once. */
+static int
+dmr_manual_move_case(int move, int owner) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    dmr_manual_set_owner(opts, state, owner);
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "%s%s", k_dmr_manual_names[move], k_dmr_manual_owner_names[owner]);
+    char what[192];
+    g_rtl_tune_calls = 0;
+    g_dmr_holds = 0;
+    const int drained = dmr_manual_press(opts, state, (dmr_manual_move)move);
+    DSD_SNPRINTF(what, sizeof what, "%s: the press is applied and moves the tuner", name);
+    rc |= expect_true(what, drained == 1 && g_rtl_tune_calls >= 1 && g_rtl_tune_freq != (uint32_t)DMR_MANUAL_VC);
+    /* A lockout's and a skip's no-carrier pass also unloads the keyloader's working keys, as before. */
+    rc |= expect_dmr_privacy_forgotten(name, state, move >= DMR_MANUAL_LOCKOUT ? 0ULL : 70ULL);
+    DSD_SNPRINTF(what, sizeof what, "%s: both slots' voice is held, once (holds %d)", name, g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    DSD_SNPRINTF(what, sizeof what, "%s: the left call ended", name);
+    dsd_call_snapshot call;
+    rc |= expect_true(what, dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A Return to CC with the receiver already on the control channel leaves nothing behind, whoever judges it: the DMR
+   machine under DMR trunking, the engine's reading of the receiver (dsd_engine_receiver_frequency()) under P25 or
+   NXDN trunking. The followed call's privacy stays, and nothing is held. */
+static int
+dmr_manual_stay_cases(void) {
+    static const int owners[] = {DMR_MANUAL_OWNER_DMR, DMR_MANUAL_OWNER_P25, DMR_MANUAL_OWNER_NXDN};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_CC);
+        dmr_manual_set_owner(opts, state, owners[i]);
+        g_rtl_tune_calls = 0;
+        g_dmr_holds = g_dmr_forgets = 0;
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what, "a Return to CC already on the control channel%s is applied and tunes",
+                     k_dmr_manual_owner_names[owners[i]]);
+        rc |= expect_true(what, dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC) == 1 && g_rtl_tune_calls >= 1
+                                    && g_rtl_tune_freq == (uint32_t)DMR_MANUAL_CC);
+        DSD_SNPRINTF(what, sizeof what,
+                     "a Return to CC already on the control channel%s holds nothing and keeps the privacy (holds %d, "
+                     "so 0x%02X)",
+                     k_dmr_manual_owner_names[owners[i]], g_dmr_holds, (unsigned)state->dmr_so);
+        rc |= expect_true(what, state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U
+                                    && g_dmr_holds == 0 && state->dmr_so == 0x40U);
+        dmr_manual_done(opts, state);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* Under P25 trunking with DMR decoding on, the operator's move on a rigctl peer after a reconnect: the peer
+   restarted on a carrier of its own (the voice channel, whose Basic Privacy call plays), nothing was sent on the new
+   connection (dsd_opts::rigctl_sent_freq_hz 0), and the decoder's tuner frequency still names what the old peer was
+   last sent, the control channel. The Return to CC there leaves the carrier the peer is on: the engine's reading,
+   the frequency the peer last confirmed, is unknown, which counts as a leave, so the call's privacy is forgotten and
+   the voice held. The reading itself: unknown before anything is sent, then what the peer confirmed, whatever the
+   tuner frequency. */
+static int
+test_rigctl_reconnect_move_back_leaves(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    dmr_manual_set_owner(opts, state, DMR_MANUAL_OWNER_P25);
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_TCP;
+    state->rtl_ctx = NULL;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_CC;
+    opts->rigctl_sent_freq_hz = 0U;
+    rc |= expect_true("after a reconnect the engine's reading of a rigctl peer is unknown",
+                      dsd_engine_receiver_frequency(opts, state) == 0U);
+    g_rigctl_io_fake = 1;
+    g_rigctl_io_freq = 0U;
+    g_dmr_holds = g_dmr_forgets = 0;
+    const int drained = dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC);
+    g_rigctl_io_fake = 0;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "the Return to CC after a reconnect tunes the peer (tuned %u Hz)",
+                 (unsigned)g_rigctl_io_freq);
+    rc |= expect_true(what, drained == 1 && g_rigctl_io_freq == (uint32_t)DMR_MANUAL_CC);
+    rc |= expect_dmr_privacy_forgotten("the Return to CC after a reconnect", state, 70ULL);
+    DSD_SNPRINTF(what, sizeof what, "the Return to CC after a reconnect holds both slots, once (holds %d)",
+                 g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_VC;
+    rc |= expect_true("the engine's reading of a rigctl peer is the frequency it confirmed, not the tuner frequency",
+                      dsd_engine_receiver_frequency(opts, state) == (uint32_t)DMR_MANUAL_CC);
+    opts->use_rigctl = 0;
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The P25 machine's own tunes on a rigctl peer after a reconnect, through the engine's tune hooks: the peer restarted
+   on a carrier of its own (the voice channel, whose Basic Privacy call plays), nothing was sent on the new connection,
+   and the decoder's tuner frequency still names what the old peer was last sent. A hunt's control-channel tune, or a
+   grant, to that stale frequency leaves the carrier the peer is on: the engine's reading is unknown, which counts as a
+   leave, so the DMR call's privacy bit and talkgroup keys are forgotten, both slots' voice is held once, and the P25
+   patch table's listening clock breaks (the orphan-recording flush shares the judgement). A tune to the frequency the
+   peer last confirmed stays. */
+enum { RIGCTL_HOOK_CC = 0, RIGCTL_HOOK_VC = 1, RIGCTL_HOOK_STAY = 2 };
+
+static int
+rigctl_reconnect_hook_case(int kind) {
+    static const char* const names[] = {"a hunt's control-channel tune after a reconnect",
+                                        "a grant to the stale frequency after a reconnect",
+                                        "a control-channel tune to where the peer confirmed"};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+    dmr_manual_set_owner(opts, state, DMR_MANUAL_OWNER_P25);
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    opts->audio_in_type = AUDIO_IN_TCP;
+    state->rtl_ctx = NULL;
+    const long stale_hz = kind == RIGCTL_HOOK_VC ? DMR_MANUAL_VC : DMR_MANUAL_CC;
+    opts->rtlsdr_center_freq = (uint32_t)stale_hz;
+    opts->rigctl_sent_freq_hz = kind == RIGCTL_HOOK_STAY ? (uint32_t)DMR_MANUAL_CC : 0U;
+    state->p25_patch_listen_last_m = 5.0;
+    g_rigctl_setfreq_ok = 1;
+    g_dmr_holds = g_dmr_forgets = 0;
+    const dsd_trunk_tune_result result = kind == RIGCTL_HOOK_VC
+                                             ? dsd_engine_trunk_tune_to_freq_request(opts, state, stale_hz, 0, 0U)
+                                             : dsd_engine_trunk_tune_to_cc_request(opts, state, stale_hz, 0, 0U);
+    g_rigctl_setfreq_ok = 0;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "%s is accepted (sent %u Hz)", names[kind], (unsigned)opts->rigctl_sent_freq_hz);
+    rc |= expect_true(what, result == DSD_TRUNK_TUNE_RESULT_OK && opts->rigctl_sent_freq_hz == (uint32_t)stale_hz);
+    if (kind == RIGCTL_HOOK_STAY) {
+        DSD_SNPRINTF(what, sizeof what, "%s holds nothing and keeps the privacy and the listening clock (holds %d)",
+                     names[kind], g_dmr_holds);
+        rc |= expect_true(what, g_dmr_holds == 0 && g_dmr_forgets == 0 && state->dmr_so == 0x40U
+                                    && state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U
+                                    && state->p25_patch_listen_last_m > 4.0);
+    } else {
+        /* The engine's judge forgets the privacy bit and the talkgroup keys, the FID staying for the rows. */
+        uint32_t keyed_from = 0U;
+        const int keyed = keyring_dmr_tg_autoload_apply(state, 0U, 0U, &keyed_from);
+        DSD_SNPRINTF(what, sizeof what, "%s forgets the privacy bit and talkgroup keys (so 0x%02X, K=%llu)",
+                     names[kind], (unsigned)state->dmr_so, state->K);
+        rc |= expect_true(what, state->dmr_so == 0U && state->dmr_soR == 0U && g_dmr_forgets >= 1 && !keyed
+                                    && state->K == 70ULL);
+        DSD_SNPRINTF(what, sizeof what, "%s holds both slots, once (holds %d)", names[kind], g_dmr_holds);
+        rc |= expect_true(what,
+                          state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+        DSD_SNPRINTF(what, sizeof what, "%s breaks the patch table's listening clock", names[kind]);
+        rc |= expect_true(what, state->p25_patch_listen_last_m < 1.0);
+    }
+    opts->use_rigctl = 0;
+    dmr_manual_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_rigctl_reconnect_hook_tunes_leave(void) {
+    int rc = 0;
+    for (int kind = RIGCTL_HOOK_CC; kind <= RIGCTL_HOOK_STAY; kind++) {
+        rc |= rigctl_reconnect_hook_case(kind);
+    }
+    return rc;
+}
+
+/* Under DMR trunking a manual Return to CC, a channel cycle, a lockout and a skip retune through io_control, which runs
+   neither the engine's tune hook nor a carrier boundary. Judged by the DMR machine as its own follows are, each move
+   that leaves the followed call's carrier ends the call (its row keeping the FID), then forgets its privacy bit, FID,
+   class and talkgroup key and holds both slots' voice until the next carrier's calls say. So it does in the default
+   every-protocol mode before a CRC-valid DMR CSBK names the trunk's owner, and, judged by the engine's reading of the
+   receiver, under P25 or NXDN trunking. A Return to CC with the receiver already on the control channel leaves nothing
+   behind. */
+static int
+test_dmr_manual_moves_forget_and_hold(void) {
+    int rc = 0;
+    for (int owner = DMR_MANUAL_OWNER_DMR; owner <= DMR_MANUAL_OWNER_NXDN; owner++) {
+        for (int move = DMR_MANUAL_RETURN_CC; move <= DMR_MANUAL_SKIP; move++) {
+            rc |= dmr_manual_move_case(move, owner);
+        }
+    }
+    rc |= dmr_manual_stay_cases();
+    return rc;
+}
+
+/* A --trunk-scan over two dmr-trunk targets through the real coordinator and the real engine tune hooks, the tuner
+   (an RTL stream) at 433 MHz, away from both. @p landed is the run's landing at its start (dsd_engine_note_run_start()
+   leaves 0 for a run that starts with its trunk scan; 1 is a run that landed before the scan was started from the
+   menu). The first park's retune (the first target's) fails once with PARK_JUDGE_FIRST_FAILS, and the start parks the
+   second target instead; with PARK_JUDGE_FIRST_PENDING it times out, its RTL tune left outstanding (PENDING). The
+   targets' 250 ms dwell runs on the decode clock, frozen at FROZEN_DECODE_T0_NS from here to park_judge_done(), so a
+   host pause cannot rotate a park before the case acts on it. */
+enum { PARK_JUDGE_FIRST_LANDS = 0, PARK_JUDGE_FIRST_FAILS = 1, PARK_JUDGE_FIRST_PENDING = 2 };
+
+static int
+park_judge_start(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, uint8_t landed, int first_park) {
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
+    const int fd = dsd_test_mkstemp(path, path_size, "park-judge-");
+    if (fd < 0) {
+        path[0] = '\0';
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_true("park judge targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "cap,dmr-trunk,451000000,,250,250,,\n"
+                        "xpt,dmr-trunk,452000000,,250,250,,\n");
+        (void)fclose(fp);
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    opts->rtlsdr_center_freq = 433000000U;
+    g_rtl_last_applied_hz = 433000000U;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    dsd_engine_note_run_start(opts, state);
+    state->run_landed = landed;
+    g_rtl_tune_result = first_park == PARK_JUDGE_FIRST_PENDING ? RTL_STREAM_TUNE_TIMEOUT : RTL_STREAM_TUNE_OK;
+    g_rtl_timeout_outstanding = first_park == PARK_JUDGE_FIRST_PENDING;
+    g_rtl_fail_once_hz = first_park == PARK_JUDGE_FIRST_FAILS ? 451000000U : 0U;
+    g_dmr_holds = g_dmr_forgets = 0;
+    char err[256] = {0};
+    rc |= expect_true("park judge trunk scan init", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    g_rtl_fail_once_hz = 0U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_timeout_outstanding = 0;
+    return rc;
+}
+
+static void
+park_judge_done(dsd_opts* opts, dsd_state* state, const char* path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+    if (path[0] != '\0') {
+        (void)remove(path);
+    }
+    dsd_decode_clock_use_system();
+}
+
+/* A first park whose RTL tune is still PENDING has not landed: it leaves the run's first landing for the park that
+   does. Its tune failing, the next park is the first landing and holds nothing; its tune completing, the run has
+   landed, and the next park holds. */
+static int
+park_judge_pending_first_park(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    char what[192];
+    for (int completes = 0; completes <= 1; completes++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_PENDING);
+        DSD_SNPRINTF(what, sizeof what, "a first park still PENDING has not landed (tuned %u Hz, landed %u)",
+                     (unsigned)g_rtl_tune_freq, (unsigned)state->run_landed);
+        rc |= expect_true(what, g_rtl_tune_freq == 451000000U && state->run_landed == 0U && g_dmr_holds == 0);
+        land_outstanding_tunes(completes ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (completes) {
+            DSD_SNPRINTF(what, sizeof what, "a first park's PENDING tune that completes lands the run (landed %u)",
+                         (unsigned)state->run_landed);
+            rc |= expect_true(what, state->run_landed == 1U && g_dmr_holds == 0);
+            rc |= expect_true("the advance after a completed first park",
+                              dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0
+                                  && g_rtl_tune_freq == 452000000U);
+        }
+        DSD_SNPRINTF(what, sizeof what,
+                     "after a first park whose PENDING tune %s, the next park %s (tuned %u Hz, holds %d, landed %u)",
+                     completes ? "completed" : "failed", completes ? "holds once" : "holds nothing",
+                     (unsigned)g_rtl_tune_freq, g_dmr_holds, (unsigned)state->run_landed);
+        rc |=
+            expect_true(what, g_rtl_tune_freq == 452000000U && g_dmr_holds == (completes ? 1 : 0)
+                                  && state->dmr_enc_class_held[0] == (completes ? 1U : 0U) && state->run_landed == 1U);
+        park_judge_done(opts, state, path);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
+/* An operator's advance off a landed park is a forced advance (#507): it releases the call and walks on. When the
+   alternate's retune fails, the walk falls back onto the original, and that move is judged once, by the fallback's
+   switch: one forget, one hold, not one each for the failed alternate, the fallback and the release after the walk.
+   With @p all_fail the fallback fails too and the walk rolls back; the release after it judges the move, once. */
+static int
+park_judge_advance_falls_back(int all_fail) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    g_dmr_holds = g_dmr_forgets = 0;
+    g_rtl_fail_once_hz = 452000000U;
+    if (all_fail) {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    }
+    (void)dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    g_rtl_fail_once_hz = 0U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what, "a forced advance %s is judged once (tuned %u Hz, holds %d, forgets %d)",
+                 all_fail ? "whose every park fails, rolled back,"
+                          : "whose alternate fails, fallen back onto the original,",
+                 (unsigned)g_rtl_tune_freq, g_dmr_holds, g_dmr_forgets);
+    rc |= expect_true(what, g_rtl_tune_freq == 451000000U && g_dmr_holds == 1 && g_dmr_forgets == 1
+                                && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Before a rollback: the first park landed, and the carrier the receiver is on has said its call is Basic Privacy
+   (dmr_so 0x40), with slot 1's hold ended by its call and slot 0's still standing. The counts start from here. */
+static void
+park_judge_seed_carrier(dsd_state* state) {
+    state->dmr_so = 0x40U;
+    dmr_enc_class_hold(state);
+    dmr_enc_class_release_hold(state, 1U);
+    g_dmr_holds = g_dmr_forgets = 0;
+}
+
+/* After a rollback onto the carrier the receiver never left: nothing judged, its call's privacy back, and the holds
+   as they stood. */
+static int
+park_judge_expect_rolled_back(const char* label, const dsd_state* state) {
+    char what[224];
+    DSD_SNPRINTF(what, sizeof what,
+                 "%s judges nothing: privacy kept, holds as they stood (holds %d, forgets %d, so 0x%02X, held %u,%u)",
+                 label, g_dmr_holds, g_dmr_forgets, (unsigned)state->dmr_so, (unsigned)state->dmr_enc_class_held[0],
+                 (unsigned)state->dmr_enc_class_held[1]);
+    return expect_true(what, g_dmr_holds == 0 && g_dmr_forgets == 0 && state->dmr_so == 0x40U
+                                 && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 0U);
+}
+
+/* A dwell rotation is no forced advance: it releases nothing. When every retune it tries fails, the walk rolls back
+   onto the carrier the receiver never left, which is no move at all. */
+static int
+park_judge_rotation_rolls_back(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    park_judge_seed_carrier(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_rtl_tune_calls = 0;
+    dsd_decode_clock_test_set_ns(FROZEN_DECODE_T0_NS + 2ULL * 1000000000ULL); // past the 250 ms dwell
+    dsd_engine_trunk_scan_tick(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    char tried[160];
+    DSD_SNPRINTF(
+        tried, sizeof tried,
+        "a dwell rotation tries the alternate, then the original, and every retune fails (tunes %d, last %u Hz)",
+        g_rtl_tune_calls, (unsigned)g_rtl_tune_freq);
+    rc |= expect_true(tried, g_rtl_tune_calls == 2 && g_rtl_tune_freq == 451000000U);
+    rc |= park_judge_expect_rolled_back("a dwell rotation rolled back", state);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A resume rolls back as a walk does when every retune it tries fails: the scan stays paused on the carrier the
+   operator was hearing, which keeps its call's privacy and holds nothing more. */
+static int
+park_judge_resume_fails_everywhere(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int rc = park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    p25_sm_tick_guard_enter();
+    rc |= expect_true("the park judge scan pauses in place",
+                      dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0
+                          && state->trunk_scan_paused == 1U);
+    p25_sm_tick_guard_leave();
+    park_judge_seed_carrier(state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    p25_sm_tick_guard_enter();
+    const int resumed = dsd_engine_trunk_scan_resume_locked(opts, state);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_true("a resume whose every retune fails is refused and stays paused",
+                      resumed == -3 && state->trunk_scan_paused == 1U);
+    rc |= park_judge_expect_rolled_back("a resume rolled back", state);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A trunk-scan park is judged once, by its restore, never again by the engine's tune hook its trunked target's
+   control-channel tune goes through. A run that starts with its trunk scan makes its first landing at the first
+   park: it holds nothing. Each later park holds both slots, once. A run that landed before its scan was started holds
+   at the first park too; a first park whose retune fails uses nothing up, so the next park is still the first
+   landing. */
+static int
+test_trunk_scan_park_judged_once(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_LANDS);
+    rc |= expect_true("a run starting with its trunk scan: the first park tunes the trunked target",
+                      g_rtl_tune_freq == 451000000U);
+    rc |= expect_true("a run starting with its trunk scan: the first park holds nothing",
+                      state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U && g_dmr_holds == 0);
+    g_dmr_holds = g_dmr_forgets = 0;
+    rc |= expect_true("the advance to the second target",
+                      dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0
+                          && g_rtl_tune_freq == 452000000U);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a later park holds both slots once (holds %d, forgets %d)", g_dmr_holds,
+                 g_dmr_forgets);
+    rc |= expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1
+                                && g_dmr_forgets == 1);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 1U, PARK_JUDGE_FIRST_LANDS);
+    DSD_SNPRINTF(what, sizeof what, "a trunk scan started after the run landed: its first park holds once (holds %d)",
+                 g_dmr_holds);
+    rc |=
+        expect_true(what, state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U && g_dmr_holds == 1);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= park_judge_start(opts, state, path, sizeof path, 0U, PARK_JUDGE_FIRST_FAILS);
+    DSD_SNPRINTF(what, sizeof what,
+                 "a first park whose retune failed uses nothing up: the next park is the run's first landing and holds "
+                 "nothing (tuned %u Hz, holds %d, landed %u)",
+                 (unsigned)g_rtl_tune_freq, g_dmr_holds, (unsigned)state->run_landed);
+    rc |= expect_true(what, g_rtl_tune_freq == 452000000U && g_dmr_holds == 0 && state->dmr_enc_class_held[0] == 0U
+                                && state->dmr_enc_class_held[1] == 0U && state->run_landed == 1U);
+    park_judge_done(opts, state, path);
+    free_test_runtime(opts, state);
+    rc |= park_judge_pending_first_park();
+    rc |= park_judge_advance_falls_back(0);
+    rc |= park_judge_advance_falls_back(1);
+    rc |= park_judge_rotation_rolls_back();
+    rc |= park_judge_resume_fails_everywhere();
+    return rc;
+}
+
+/* A return to the control channel through the tuning hooks (the DMR machine's dmr_sm_return_to_cc(), a P25 or NXDN
+   return) is judged once, by its release: one privacy forget and one hold, not one each for the control-channel tune,
+   the release and the audio close after it. */
+static int
+test_return_to_cc_judged_once(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = (uint32_t)DMR_MANUAL_VC;
+    g_rtl_last_applied_hz = (uint32_t)DMR_MANUAL_VC;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_cc_freq = DMR_MANUAL_CC;
+    seed_dmr_basic_privacy_call(state, 70ULL);
+    g_dmr_holds = g_dmr_forgets = 0;
+    uint64_t request_id = 0U;
+    int rc = expect_true("the return to the control channel",
+                         dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id) == DSD_TRUNK_TUNE_RESULT_OK);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a return to the control channel forgets and holds once (holds %d, forgets %d)",
+                 g_dmr_holds, g_dmr_forgets);
+    rc |= expect_true(what, g_dmr_holds == 1 && g_dmr_forgets == 1 && state->dmr_so == 0U
+                                && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A manual Return to CC that takes the P25 hook leg (a P25 control channel context) is judged once. Under DMR
+   trunking, and with the owner not known yet while P25 and NXDN decode, the DMR machine judges it
+   (dmr_sm_note_operator_leave(): its privacy bit before the rows end and the FID after, two forgets, one hold), the
+   engine's tune hook leaving it to the caller; under P25 trunking the engine's tune hook judges it (one forget, one
+   hold), and the DMR machine reads and judges nothing. */
+static int
+test_manual_hook_leg_judged_once(void) {
+    static const dsd_trunk_recovery_protocol owners[] = {DSD_TRUNK_RECOVERY_DMR, DSD_TRUNK_RECOVERY_UNKNOWN,
+                                                         DSD_TRUNK_RECOVERY_P25};
+    static const char* const owner_names[] = {"DMR trunking", "owner not known yet", "P25 trunking"};
+    int rc = 0;
+    for (int o = 0; o < 3; o++) {
+        const int dmr_owns = owners[o] != DSD_TRUNK_RECOVERY_P25;
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        rc |= dmr_manual_setup(opts, state, DMR_MANUAL_VC);
+        dsd_trunk_tuning_hooks_set(
+            (dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                     .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                     .return_to_cc_request = dsd_engine_return_to_cc_request});
+        opts->frame_p25p1 = 1;
+        state->synctype = DSD_SYNC_NONE;
+        state->lastsynctype = DSD_SYNC_P25P1_POS;
+        state->p25_cc_is_tdma = 0;
+        state->p25_cc_freq = DMR_MANUAL_CC;
+        state->trunk_recovery_protocol = owners[o];
+        opts->frame_nxdn48 = owners[o] == DSD_TRUNK_RECOVERY_UNKNOWN;
+        g_dmr_holds = g_dmr_forgets = 0;
+        const int drained = dmr_manual_press(opts, state, DMR_MANUAL_RETURN_CC);
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what,
+                     "%s: a manual Return to CC on the hook leg is judged once (holds %d, forgets %d)", owner_names[o],
+                     g_dmr_holds, g_dmr_forgets);
+        rc |= expect_true(what, drained == 1 && g_dmr_holds == 1 && g_dmr_forgets == (dmr_owns ? 2 : 1)
+                                    && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        dmr_manual_done(opts, state);
+        dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+        dsd_trunk_tuning_requests_reset();
+        free_test_runtime(opts, state);
+    }
     return rc;
 }
 
@@ -12009,7 +14862,7 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
         g_live_realtime_ms = __real_dsd_realtime_mono_ms();
         g_live_fake_realtime = 1;
         opts->audio_in_type = AUDIO_IN_UDP;
-        dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
+        dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
     } else {
         g_live_output_kind = output_kind;
         opts->audio_in_type = AUDIO_IN_RTL;
@@ -12034,7 +14887,7 @@ live_session_stop(dsd_opts* opts, dsd_state* state) {
     g_live_fake_realtime = 0;
     dsd_app_frontend_runtime_stop();
     dsd_frame_sync_hooks_set(NULL);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
@@ -12365,14 +15218,22 @@ test_live_scan_over_silent_inputs(void) {
  */
 static struct {
     int active;
+    int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
+    int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 R6) */
+    int rate_refused;  /* the capture's rate is one the calibration did not validate */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
+    /* When set, the stream's generation moves on while the check judges a capture's rate: the RTL thread opened a new
+       generation between the check's validation of that capture and its refusal of it. */
+    int bump_in_rate_check;
     int requests;
     uint32_t ticket;
     uint32_t next_ticket;
     dsd_signal_quiet_request last;
     int notices;
     char notice[192];
+    int warns; /* the silent-channel skip's WARN lines (issue #834 R6) */
+    char warn[512];
 } g_yq;
 
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -12410,7 +15271,7 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     capture->generation = yq_stream_gen();
     capture->rate_hz = 1536000U;
     capture->capture_hz = g_rtl_tune_freq;
-    capture->rotation_hz = 384000;
+    capture->rotation_hz = g_yq.centred ? 0 : 384000;
     capture->gain = 20;
     return 1;
 }
@@ -12471,12 +15332,16 @@ __wrap_rtl_signal_quiet_cancel(uint32_t ticket) {
 
 int
 __wrap_dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
-    return g_yq.active ? rate_hz != 0U : __real_dsd_signal_quiet_rate_supported(rate_hz);
+    if (g_yq.active && g_yq.bump_in_rate_check) {
+        g_yq.bump_in_rate_check = 0;
+        g_yq.gen_base++;
+    }
+    return g_yq.active ? (rate_hz != 0U && !g_yq.rate_refused) : __real_dsd_signal_quiet_rate_supported(rate_hz);
 }
 
 int
 __wrap_dsd_signal_quiet_analog_supported(int kind, uint32_t width_hz, uint32_t rate_hz) {
-    if (!g_yq.active) {
+    if (!g_yq.active || g_yq.real_widths) {
         return __real_dsd_signal_quiet_analog_supported(kind, width_hz, rate_hz);
     }
     return width_hz != 0U && rate_hz != 0U;
@@ -12492,9 +15357,19 @@ yq_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_yq.notices++;
         DSD_SNPRINTF(g_yq.notice, sizeof g_yq.notice, "%s", text);
     }
+    if (text && strncmp(text, "WARNING: scan: silent channel skip", 34) == 0) {
+        g_yq.warns++;
+        DSD_SNPRINTF(g_yq.warn, sizeof g_yq.warn, "%s", text);
+    }
 }
 
-/* The fake tap on (answering @p quiet), its stream generation hook, a fixed fake realtime clock and the NOTICE tap. */
+/* Set while a yq case runs on the TEST decode clock yq_start() put it on; yq_finish() returns it to SYSTEM. */
+static int g_yq_owns_decode_clock = 0;
+
+/* The fake tap on (answering @p quiet), its stream generation hook, a fixed fake realtime clock, a fixed TEST decode
+   clock and the NOTICE tap. The hangtime, a PARTIAL verdict's hold, the voice gate's qualification and hold and a
+   trunk target's dwell run on the decode clock, so with it frozen a host pause anywhere in a case runs none of them
+   out. A live session's own TEST decode clock (live_session_start()) is left as it is. */
 static void
 yq_start(int quiet) {
     DSD_MEMSET(&g_yq, 0, sizeof g_yq);
@@ -12505,6 +15380,10 @@ yq_start(int quiet) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     g_live_realtime_ms = 5000000U;
     g_live_fake_realtime = 1;
+    g_yq_owns_decode_clock = dsd_decode_clock_source() != DSD_DECODE_CLOCK_TEST;
+    if (g_yq_owns_decode_clock) {
+        dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
+    }
     dsd_neo_log_set_tap(yq_count_notice, NULL);
 }
 
@@ -12564,12 +15443,26 @@ yq_list(dsd_opts* opts, dsd_state* state, int rows, int typed, int on, long int 
     }
     state->lcn_freq_roll = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
-    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_cc_sync_time = dsd_decode_time() - 11;
     noCarrier(opts, state);
     /* The stream generation stays where the landing's tune left it while the tune count starts again from 0. */
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
     return (dsd_engine_scan_landing_is_row(state, 0) && g_rtl_tune_freq == (uint32_t)base_hz) ? 0 : 1;
+}
+
+/* A decoded call on the stay (issue #834): content its protocol's CRC/FEC gate passed, which the call store begins a
+   call to @p target from. Returns 0 once the call began. */
+static int
+yq_call_begins(const dsd_opts* opts, dsd_state* state, uint32_t target) {
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = target,
+                                       .policy_target_id = target,
+                                       .ota_source_id = 99U};
+    return expect_true("the call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
 }
 
 static void
@@ -12580,11 +15473,16 @@ yq_finish(dsd_opts* opts, dsd_state* state) {
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    if (g_yq_owns_decode_clock) {
+        dsd_decode_clock_use_system();
+        g_yq_owns_decode_clock = 0;
+    }
 }
 
-/* -Y: a landed row is measured at the next pass, and the pass after steps off it for its quiet result, long
-   before its 10 s hangtime, with one NOTICE line naming the row; typed and untyped. The measurement writes no hangtime
-   anchor. With the setting off nothing is asked and nothing steps. */
+/* -Y: a landed row is measured as it lands (issue #834 R3): the noCarrier() whose step landed it leaves its check
+   REQUESTED, with no further noCarrier(), and the next pass steps off it for its quiet result, long before its 10 s
+   hangtime, with one NOTICE line naming the row; typed and untyped. Collecting the result writes no hangtime anchor.
+   With the setting off nothing is asked and nothing steps. */
 static int
 test_y_quiet_skips_a_landed_row(int typed, int on) {
     dsd_opts* opts = NULL;
@@ -12599,13 +15497,15 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     DSD_SNPRINTF(label, sizeof label, "%s -Y, skip-silent %s", typed ? "typed" : "untyped", on ? "on" : "off");
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, on, base_hz) == 0);
     const time_t anchor = state->last_cc_sync_time;
-    noCarrier(opts, state);
-    rc |= expect_true(label, g_yq.requests == (on ? 1 : 0) && g_rtl_tune_calls == 0);
-    rc |= expect_true("the measurement writes no hangtime anchor", state->last_cc_sync_time == anchor);
+    rc |= expect_true(label, g_yq.requests == (on ? 1 : 0) && g_rtl_tune_calls == 0
+                                 && scan_quiet_phase_get(state) == (on ? SCAN_QUIET_REQUESTED : SCAN_QUIET_SUSPENDED));
     if (on) {
         rc |= expect_true("the request names the row", g_yq.last.frequency_hz == (uint32_t)base_hz
                                                            && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_12K5);
+        rc |= expect_true("the hunt collects the quiet result",
+                          dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK);
     }
+    rc |= expect_true("the measurement writes no hangtime anchor", state->last_cc_sync_time == anchor);
     noCarrier(opts, state);
     if (on) {
         rc |= expect_true("a quiet row steps at once", g_rtl_tune_calls == 1
@@ -12620,6 +15520,789 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: %s\n", label);
+    }
+    return rc;
+}
+
+/* issue #834 R3: every committed -Y landing publishes its row at once, so its check is REQUESTED with one request and
+   no further noCarrier(); a landing that failed or was superseded arms nothing. Each case lands row 0 first (the
+   timed step, measured as it lands), then takes row 1 another way. */
+enum {
+    YQ_LAND_TYPED_LATE = 0, /* a typed step whose tune timed out, completed by dsd_engine_channel_scan_pending() */
+    YQ_LAND_TYPED_LATE_FAILED,
+    YQ_LAND_TYPED_LATE_STALE, /* completed OK after the list was replaced under it */
+    YQ_LAND_UNTYPED_LATE,     /* an untyped step whose RTL tune timed out, landed by dsd_engine_scan_untyped_poll() */
+    YQ_LAND_UNTYPED_LATE_FAILED,
+    YQ_LAND_UNTYPED_LATE_DROPPED, /* superseded by another tune */
+    YQ_LAND_WALK,                 /* a Next the scan owns, landed within its call */
+    YQ_LAND_WALK_LATE,            /* a Next the scan owns whose RTL tune timed out, landed late */
+    YQ_LAND_WALK_REFUSED,
+    YQ_LAND_TYPED_MANUAL, /* a typed Next */
+    YQ_LAND_RESUME,       /* an untyped resume of the paused scan */
+};
+
+/* Row 1's tune for @p which: started (timed out, for the late ones) and settled. */
+static void
+yq_land_row_1(dsd_opts* opts, dsd_state* state, int which) {
+    const int late = which <= YQ_LAND_UNTYPED_LATE_DROPPED || which == YQ_LAND_WALK_LATE;
+    g_rtl_timeout_outstanding = late && which > YQ_LAND_TYPED_LATE_STALE;
+    g_rtl_tune_result =
+        late ? RTL_STREAM_TUNE_TIMEOUT : (which == YQ_LAND_WALK_REFUSED ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_OK);
+    g_yq.requests = 0; /* what row 1's own landing asks from here */
+    if (which <= YQ_LAND_UNTYPED_LATE_DROPPED) {
+        noCarrier(opts, state); /* row 0's quiet result steps it */
+    } else if (which == YQ_LAND_WALK || which == YQ_LAND_WALK_LATE || which == YQ_LAND_WALK_REFUSED) {
+        (void)dsd_engine_channel_scan_walk_row(opts, state, 1, 1);
+    } else if (which == YQ_LAND_TYPED_MANUAL) {
+        (void)dsd_engine_channel_scan_step_manual(opts, state);
+    } else {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        (void)dsd_engine_channel_scan_resume(opts, state);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    if (which <= YQ_LAND_TYPED_LATE_STALE) {
+        const uint64_t request = dsd_trunk_tuning_pending_request();
+        if (which == YQ_LAND_TYPED_LATE_STALE) {
+            dsd_state_trunk_lcn_replace_begin(state);
+        }
+        dsd_trunk_tuning_request_publish(request, which == YQ_LAND_TYPED_LATE_FAILED ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                                                     : DSD_TRUNK_TUNE_RESULT_OK);
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    } else if (late) {
+        if (which == YQ_LAND_UNTYPED_LATE_DROPPED) {
+            dsd_engine_manual_tune_supersede(state);
+        } else {
+            land_outstanding_tune(&g_retune_in_flight, which == YQ_LAND_UNTYPED_LATE_FAILED
+                                                           ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                           : DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+}
+
+static int
+yq_landing_case(int which) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1101012500L + (long int)which * 10000000L;
+    const int typed = which <= YQ_LAND_TYPED_LATE_STALE || which == YQ_LAND_TYPED_MANUAL;
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |= expect_true("row 0 is measured as it lands",
+                      g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+    yq_land_row_1(opts, state, which);
+    const int lands = which != YQ_LAND_TYPED_LATE_FAILED && which != YQ_LAND_TYPED_LATE_STALE
+                      && which != YQ_LAND_UNTYPED_LATE_FAILED && which != YQ_LAND_UNTYPED_LATE_DROPPED
+                      && which != YQ_LAND_WALK_REFUSED;
+    if (lands) {
+        rc |= expect_true("row 1 landed", dsd_engine_scan_landing_is_row(state, 1));
+        rc |= expect_true("row 1 is measured as it lands, once",
+                          g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                              && g_yq.last.frequency_hz == (uint32_t)(base_hz + 1000000L));
+    } else {
+        rc |= expect_true("no row 1 landing", !dsd_engine_scan_landing_is_row(state, 1));
+        rc |= expect_true("a landing that failed or was superseded arms nothing",
+                          g_yq.requests == 0 && dsd_engine_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_NONE
+                              && g_yq.requests == 0);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y landing case %d\n", which);
+    }
+    return rc;
+}
+
+/* issue #834 R6: the -Y timing publication says what the check does on the row on air. A typed row measured as it
+   lands, its hangtime running: Quiet check. An untyped row under a decoder set holding ProVoice: No check: modes, with
+   one WARN line naming the row however many ticks follow. */
+static int
+yq_expect_quiet(const dsd_state* state, const char* stage, unsigned stay, unsigned status, unsigned reason) {
+    const dsd_scan_timing_publication* t = &state->scan_timing;
+    if ((unsigned)t->reason != stay || (unsigned)t->quiet_status != status || (unsigned)t->quiet_reason != reason) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y %s: stay %u, quiet %u/%u, want %u, %u/%u\n", stage, (unsigned)t->reason,
+                    (unsigned)t->quiet_status, (unsigned)t->quiet_reason, stay, status, reason);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+yq_timing_tick(const dsd_opts* opts, dsd_state* state) {
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+}
+
+static int
+test_y_quiet_timing_says_why(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 481012500L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a typed row measured in its hangtime", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+    rc |= expect_true("no WARN line for a row it checks", g_yq.warns == 0);
+    yq_finish(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int untyped_hz = 491012500L;
+    rc |= expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 1, untyped_hz) == 0);
+    opts->frame_provoice = 1;
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    for (int tick = 0; tick < 3; tick++) {
+        yq_timing_tick(opts, state);
+    }
+    rc |= yq_expect_quiet(state, "an untyped row under ProVoice", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_MODES);
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES, SCAN_QUIET_WARN_PROVOICE, 0U, NULL, 0,
+                                 (uint32_t)untyped_hz, 0, 0U);
+    rc |= expect_true("one WARN line naming the row and ProVoice", g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0);
+    rc |= expect_true("a row it cannot check requests nothing", g_yq.requests == 1);
+    /* Another decoder set without a known width: another key, logged again; naming both. */
+    opts->frame_x2tdma = 1;
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    yq_timing_tick(opts, state);
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_MODES,
+                                 SCAN_QUIET_WARN_PROVOICE | SCAN_QUIET_WARN_X2TDMA, 0U, NULL, 0, (uint32_t)untyped_hz,
+                                 0, 0U);
+    rc |= expect_true("another decoder set: logged again", g_yq.warns == 2 && strcmp(g_yq.warn, want) == 0);
+    /* An X2-TDMA call on the row: processFrame() notes each frame its decoder took (scan_y_unchecked_seq and
+       scan_y_call_seq, which ENGINE_PROTOCOL_DISPATCH pins); the call explains the visit, so nothing is said of the
+       check. */
+    state->scan_y_unchecked_seq++;
+    state->scan_y_call_seq++;
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "an X2-TDMA call on the row", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    opts->frame_x2tdma = 0;
+    opts->frame_provoice = 0;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y timing says why (warns %d, last '%s')\n", g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834 R6: each no-check cause through the real -Y timing writer, on an unsynced row in its hangtime, then the
+   same row once it synced (a call on it) reads nothing of the check. */
+enum { YQ_CAUSE_INPUT = 0, YQ_CAUSE_TUNER, YQ_CAUSE_RATE, YQ_CAUSE_WIDTH, YQ_CAUSE_NO_WIDTH, YQ_CAUSE_COUNT };
+
+static int
+yq_cause_case(int which) {
+    static const unsigned k_reason[YQ_CAUSE_COUNT] = {DSD_SCAN_QUIET_REASON_INPUT, DSD_SCAN_QUIET_REASON_TUNER,
+                                                      DSD_SCAN_QUIET_REASON_RATE, DSD_SCAN_QUIET_REASON_WIDTH,
+                                                      DSD_SCAN_QUIET_REASON_NO_WIDTH};
+    if (which < 0 || which >= YQ_CAUSE_COUNT) {
+        return expect_true("a known no-check cause", 0);
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.centred = which == YQ_CAUSE_TUNER;
+    g_yq.rate_refused = which == YQ_CAUSE_RATE;
+    g_yq.real_widths = which == YQ_CAUSE_WIDTH;
+    g_yq_monitor_nfm_hz = which == YQ_CAUSE_WIDTH ? 13500 : (which == YQ_CAUSE_NO_WIDTH ? 0 : -1);
+    const long int base_hz = 501012500L + (long int)which * 10000000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    if (which == YQ_CAUSE_INPUT) {
+        /* The input switched to audio after the landing measured the row: published again, it has no check. */
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        dsd_engine_scan_quiet_publish_row(opts, state);
+        g_yq.requests = 0;
+    }
+    yq_timing_tick(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "an unsynced row it cannot check", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
+    rc |= expect_true("one WARN line, nothing requested", g_yq.warns == 1 && g_yq.requests == 0);
+    /* Raw syncs with no content (NXDN48 noise passes its sync word several times a second), and the hangtime anchor
+       stamped again by the scan itself (a hold released): no call, so the status stays. */
+    for (int sync = 0; sync < 5; sync++) {
+        dsd_engine_scan_quiet_note_frame_sync(state);
+        dsd_engine_scan_quiet_frame_end(state);
+    }
+    state->last_cc_sync_time += 1;
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "raw syncs and a re-armed anchor", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, k_reason[which]);
+    /* A decoded call: content its protocol's CRC/FEC gate passed, which the call store begins a call from. */
+    rc |= yq_call_begins(opts, state, 9U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a decoded call", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y cause %d (warns %d, last '%s')\n", which, g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834: on audio input a -Y session has no check, so its stay shows "No check: input" while it carries no call
+   and hides it only while a call is heard: on a landed row, from the landing; with no row landing in force, from the
+   stay's own start: the run's start (the start frequency before the first step), or a landing forgotten (a step whose
+   rigctl leg failed after it forgot the landing, an input switch) while the receiver stays where it was. */
+static int
+test_y_quiet_input_shows_until_a_call(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 581012500L;
+    /* The run starts on its start frequency, a -Y list configured, audio input: no row has landed yet. */
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = 1;
+    yq_dmr_only(opts);
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+    }
+    state->lcn_freq_roll = 0;
+    yq_call_begins(opts, state, 301U); /* an earlier run's call */
+    dsd_engine_note_run_start(opts, state);
+    state->last_cc_sync_time = dsd_decode_time();
+    yq_timing_tick(opts, state);
+    int rc = expect_true("no row has landed", !dsd_engine_scan_landing_is_row(state, 0));
+    rc |= yq_expect_quiet(state, "audio input, idle before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= yq_call_begins(opts, state, 302U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, a call before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    /* A row lands: its visit has heard no call yet, then a call on it hides the status, as before. */
+    dsd_engine_scan_landing_note_row(state, 0, base_hz, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= yq_call_begins(opts, state, 303U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, a call on the landed row", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    /* The landing is forgotten and the receiver stays where it was: a new stay, idle until a call. */
+    dsd_engine_scan_landing_forget(state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, idle after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    state->scan_y_unchecked_seq++; /* an X2-TDMA frame its decoder took, as processFrame() notes it */
+    state->scan_y_call_seq++;
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "audio input, a call after the landing was forgotten", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y on audio input shows its status until a call\n");
+    }
+    return rc;
+}
+
+/* One admitted NFM call heard on the stay: a reception of DSD_ANALOG_CALL_MIN_MS (an open carrier, its tone locked),
+   then its end. */
+static int
+yq_hear_analog_call(dsd_opts* opts, dsd_state* state) {
+    static float block[960];
+    for (int i = 0; i < 960; i++) {
+        block[i] = 2000.0f;
+    }
+    state->analog_rx.carrier_open = 1;
+    for (int i = 0; i < DSD_ANALOG_CALL_MIN_MS / 20; i++) {
+        dsd_test_analog_call_feed(opts, state, block, 960, 48000, 1);
+    }
+    const int heard = dsd_engine_analog_call_active(state);
+    dsd_engine_analog_call_end(opts, state);
+    state->analog_rx.carrier_open = 0;
+    return heard;
+}
+
+/* issue #834: an admitted NFM call on a -Y stay explains it as a digital call's checked content does: once one was
+   heard, the stay shows no "No check: input" for the rest of -t, after the call closed as while it ran. On a landed
+   row and on a stay no landing is in force for (the run's start frequency). */
+static int
+test_y_quiet_analog_call_explains_the_stay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 583012500L;
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+    }
+    state->lcn_freq_roll = 0;
+    dsd_engine_note_run_start(opts, state);
+    state->last_cc_sync_time = dsd_decode_time();
+    yq_timing_tick(opts, state);
+    int rc = yq_expect_quiet(state, "nfm: idle before the first landing", DSD_SCAN_STAY_HANGTIME,
+                             DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= expect_true("nfm: a call is admitted before the first landing", yq_hear_analog_call(opts, state));
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: a call was heard before the first landing", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    dsd_engine_scan_landing_note_row(state, 0, base_hz, 0U);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: the row landed", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_INPUT);
+    rc |= expect_true("nfm: a call is admitted on the landed row", yq_hear_analog_call(opts, state));
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "nfm: a call was heard on the landed row", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->analog_only = 0;
+    opts->monitor_input_audio = 0;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: an NFM call explains the -Y stay\n");
+    }
+    return rc;
+}
+
+/* issue #834: a -Y row refused for its width shows "No check: width" while its visit has carried no call. A short
+   carrier that ends before its tone check admits a call is activity, which ends the visit's measurement, but no call:
+   the status stays until a call is heard there (docs/trunk-scan.md), or until an edit changes the facts the visit was
+   refused on (@p edited), as its check is over for the visit. */
+static int
+test_y_quiet_no_check_outlasts_an_unqualified_carrier(int edited) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 512012500L) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a row refused for its width", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    /* A carrier heard, which ends before any call is admitted: the visit's measurement is over. */
+    dsd_engine_scan_quiet_note_activity(state);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a short unqualified carrier ended", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    if (edited) {
+        dsd_engine_scan_quiet_note_change(state);
+    } else {
+        state->scan_y_call_seq++; /* an admitted call explains the visit */
+    }
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, edited ? "an edit since" : "a call was heard", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status after an unqualified carrier, edited %d\n", edited);
+    }
+    return rc;
+}
+
+/* issue #834: checked control traffic with no call on it (a P25 control channel's TSDUs, whose NID passes its BCH
+   check) is evidence for the quiet check and the hangtime, but no call: "No check" stays until a call is heard there,
+   a call the call store begins (docs/trunk-scan.md). */
+static int
+test_y_quiet_no_check_outlasts_checked_control_traffic(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 514512500L) == 0);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a row refused for its width", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_WIDTH);
+    /* Idle control traffic: content a gate passed, no call. */
+    state->scan_y_content_seq++;
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "checked control traffic is no call", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_WIDTH);
+    /* A call: the store begins it. */
+    const dsd_call_observation call = {.protocol = DSD_SYNC_P25P1_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 300U,
+                                       .policy_target_id = 300U,
+                                       .ota_source_id = 30U};
+    rc |= expect_true("a call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a call was heard", DSD_SCAN_STAY_HANGTIME, DSD_SCAN_QUIET_STATUS_NONE,
+                          DSD_SCAN_QUIET_REASON_NONE);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y no-check status through checked control traffic\n");
+    }
+    return rc;
+}
+
+/* Issue #834: a call heard on a stay explains it, a call going on as much as one begun. A step the radio refused
+   moved no carrier but began a new stay; the call it left going on is heard on it through its checked observations
+   (CONTINUE, no new call), and the stay shows no "No check". */
+static int
+test_y_continuing_call_explains_a_new_stay(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 1000U,
+    };
+    int rc = expect_true("the call begins", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    (void)dsd_call_state_get(state, 0U, &before);
+    dsd_engine_scan_y_stay_begin(state); /* the refused step's new stay */
+    (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_call_snapshot after;
+    (void)dsd_call_state_get(state, 0U, &after);
+    rc |= expect_true("the same call goes on", after.epoch == before.epoch);
+    rc |= expect_true("and is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
+    /* Its voice may come with no further observation: the vocoder's media update of the call explains a stay too, and
+       an update that says no media does not. */
+    dsd_engine_scan_y_stay_begin(state);
+    (void)dsd_call_state_update_media(state, 0U, 0, 0.0);
+    rc |= expect_true("no media explains nothing", state->scan_y_call_seq == state->scan_y_stay_call_seq);
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    rc |=
+        expect_true("the call's media is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
+    free_test_runtime(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y continuing call\n");
+    }
+    return rc;
+}
+
+/* Issue #834: a -Y stay's frame evidence is its own. A row that lands, and a stay that begins (the -Y scan's start, a
+   landing forgotten), clear what the frames before them noted: the time of the last checked or unchecked frame, and
+   checked content no frame boundary has read yet (with -Y off nothing reads it). Either left would hold the new stay's
+   row for -t after frames that carry nothing on it. */
+static int
+test_y_stay_starts_without_the_last_stays_frames(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 523012500L) == 0);
+    opts->trunk_hangtime = 1;
+    char label[160];
+    /* Row 0's last frame was checked content just now; row 1 lands. */
+    state->scan_y_content_m = dsd_decode_now_mono_s();
+    state->scan_y_unchecked_m = dsd_decode_now_mono_s();
+    dsd_engine_scan_landing_note_row(state, 1, 523025000L, 0U);
+    state->last_cc_sync_time = dsd_decode_time() - 2;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 2.0;
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "a landed row's empty frames yield past -t (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    /* Checked content no frame boundary read, then a new stay begins. */
+    state->scan_y_content_seq += 3U;
+    state->scan_y_unchecked_seq += 2U;
+    dsd_engine_scan_y_stay_begin(state);
+    /* An anchor of its own: a stay's frame boundary yields once per anchor. */
+    state->last_cc_sync_time = dsd_decode_time() - 3;
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 3.0;
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "a new stay's empty frames yield past -t (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y stay frame evidence\n");
+    }
+    return rc;
+}
+
+/* Issue #834: one hangtime deadline for the frame boundary, noCarrier() and the countdown: the anchor's whole-second
+   rule (-t 1.8 lets a row go at the second wall-clock tick after it landed), never a second, sub-second count on the
+   monotonic clock that only the frame boundary added. A row that landed late in a second (here 0.6 s before its
+   second tick, on the monotonic clock 1.4 s ago) with frames carrying nothing leaves at that tick. */
+static int
+test_y_one_hangtime_deadline(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 521012500L) == 0);
+    opts->trunk_hangtime = 1.8f;
+    state->last_cc_sync_time = dsd_decode_time() - 2; /* two wall-clock ticks: the rule lets it go */
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 1.4;
+    yq_timing_tick(opts, state);
+    const double left_s = state->scan_timing.deadline_m - dsd_decode_now_mono_s();
+    run_synced_frames(opts, state, 5, -1);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "the countdown is out (%.2f s left) and the frame boundary yields with it (frames %d)", left_s,
+                 g_frame_count);
+    rc |= expect_true(label, left_s <= 0.0 && g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("and the step leaves the row", g_rtl_tune_calls == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y one hangtime deadline\n");
+    }
+    return rc;
+}
+
+/* Issue #834: with -t 0 a row's call holds it frame after frame: a frame whose content passed its check is judged at
+   the time it was noted, so the clock moving on between the note and the judgement never makes the frame that just
+   proved the call too old to hold the row. On a clock that moves (the system's). */
+static int
+test_y_zero_hangtime_keeps_a_proven_call(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 519012500L) == 0);
+    opts->trunk_hangtime = 0;
+    dsd_decode_clock_use_system();
+    state->last_cc_sync_time = dsd_decode_time() - 2; /* landed 2 s ago */
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 2.0;
+    run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "-t 0, every frame proven: all 6 frames run, no step (frames %d, tunes %d)",
+                 g_frame_count, g_rtl_tune_calls);
+    rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == 0);
+    dsd_decode_clock_use_test(FROZEN_DECODE_T0_NS);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y zero hangtime\n");
+    }
+    return rc;
+}
+
+/* Issue #834: the -Y hangtime countdown is the one the step keeps: checked content inside -t holds the row past the
+   hangtime anchor's -t, and an open verdict's hold until its end, so the published deadline runs to the later of them,
+   on the decode clock the step reads. */
+static int
+test_y_hangtime_publishes_the_deadline_the_step_keeps(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    int rc = expect_true("the first step lands untyped row 0", yq_list(opts, state, 3, 0, 0, 518012500L) == 0);
+    const double now_m = dsd_decode_now_mono_s();
+    state->last_cc_sync_time = dsd_decode_time() - 11; /* the anchor's -t (10 s) ran out */
+    state->last_cc_sync_time_m = now_m - 11.0;
+    state->scan_y_content_m = now_m - 2.0; /* checked content 2 s ago: 8 s left */
+    yq_timing_tick(opts, state);
+    const double left_s = state->scan_timing.deadline_m - now_m;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "content 2 s old: the countdown has %.2f s left (want 8)", left_s);
+    rc |= expect_true(label, state->scan_timing.reason == DSD_SCAN_STAY_HANGTIME && left_s > 7.9 && left_s < 8.1);
+    state->scan_y_content_m = now_m - 11.0;
+    state->scan_y_partial_until_m = now_m + 0.5; /* an open verdict's hold */
+    yq_timing_tick(opts, state);
+    const double hold_left_s = state->scan_timing.deadline_m - now_m;
+    DSD_SNPRINTF(label, sizeof label, "an open verdict's hold: the countdown has %.2f s left (want 0.5)", hold_left_s);
+    rc |= expect_true(label, hold_left_s > 0.4 && hold_left_s < 0.6);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y hangtime countdown\n");
+    }
+    return rc;
+}
+
+/* issue #834 R10: a refusal of a capture is cached against that capture's stream generation, never the one the stream
+   reads when the refusal is stored: the RTL thread may open a new generation (Fs/4 rotation back on) between the
+   check's validation of a capture and its refusal (here of its rate). A publication on that new generation, whose
+   rate is validated again, then measures the row instead of holding the stale "No check: rate". */
+static int
+test_y_quiet_refusal_keeps_the_refused_capture_generation(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_refused = 1;
+    g_yq.bump_in_rate_check = 1;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 513012500L) == 0);
+    rc |= expect_true("the capture's rate is refused", scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED
+                                                           && g_yq.requests == 0 && !g_yq.bump_in_rate_check);
+    g_yq.rate_refused = 0; /* the new generation runs a validated rate */
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the new generation is measured (requests %d, phase %d)", g_yq.requests,
+                 (int)scan_quiet_phase_get(state));
+    rc |= expect_true(label, g_yq.requests == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refusal cached against the refused capture's generation\n");
+    }
+    return rc;
+}
+
+/* issue #834 R10: a capture refused on one stream generation is checked again once the stream runs another (the radio
+   worker applied a supported rate or rotation just after the refusal), even with no revision moved: under syncs that
+   keep the frame loop running, the frame boundary owes one republication per new generation, and the republication
+   measures the row. */
+static int
+test_y_quiet_refused_row_republished_on_a_new_generation(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_refused = 1;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 514012500L) == 0);
+    rc |= expect_true("the capture's rate is refused",
+                      scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 0);
+    rc |= expect_true("nothing owed on the same generation", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    g_yq.rate_refused = 0;
+    g_yq.gen_base++; /* the radio worker applied a supported rate */
+    const int first_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    const int second_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the new generation owes one republication (takes %d, %d)", first_take,
+                 second_take);
+    rc |= expect_true(label, first_take == 1 && second_take == 0);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    rc |= expect_true("the republication measures the row", g_yq.requests == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refused row republished on a new generation\n");
+    }
+    return rc;
+}
+
+/* issue #834 R10: a -Y row refused for its width starts again on the same visit once the width is edited, through the
+   frame boundary's owed republication (syncs that keep the frame loop running let no noCarrier() publish it), owed
+   once per change. */
+static int
+test_y_quiet_refused_row_restarts_after_an_edit(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = 13500;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, 511012500L) == 0);
+    rc |=
+        expect_true("refused for its width", scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 0);
+    rc |= expect_true("nothing owed before an edit", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    const int first_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    const int second_take = dsd_engine_scan_quiet_take_republish(opts, state, 2);
+    rc |= expect_true("the edit owes one republication", first_take == 1 && second_take == 0);
+    /* Taken but not republished: back to the width published, then the edit again, owes again. */
+    opts->analog_nfm_bandwidth_hz = 13500;
+    rc |= expect_true("back as published: nothing owed", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_true("the same edit again owes again", dsd_engine_scan_quiet_take_republish(opts, state, 2) == 1);
+    dsd_engine_scan_quiet_publish_row(opts, state);
+    rc |= expect_true("the same visit is measured at the new width", scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                                                                         && g_yq.requests == 1
+                                                                         && g_yq.last.analog_width_hz == 12500U);
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y refused row restarts after an edit\n");
+    }
+    return rc;
+}
+
+/* issue #834 R6: the widths the WARN line names as checked are exactly the admitted ones, NFM and AM. */
+static int
+test_y_quiet_warn_widths_are_the_admitted_ones(void) {
+    int rc = 0;
+    static const int kinds[] = {DSD_ANALOG_DEMOD_FM, DSD_ANALOG_DEMOD_AM};
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+        size_t count = 0U;
+        const uint32_t* named = scan_quiet_warn_widths(kinds[k], &count);
+        for (uint32_t hz = 1000U; hz <= 40000U; hz++) {
+            int listed = 0;
+            for (size_t i = 0; i < count; i++) {
+                listed |= named[i] == hz;
+            }
+            if (listed != (__real_dsd_signal_quiet_analog_supported(kinds[k], hz, 1536000U) != 0)) {
+                DSD_FPRINTF(stderr, "FAIL #834: kind %d width %u Hz: named %d, admitted %d\n", kinds[k], (unsigned)hz,
+                            listed, !listed);
+                rc = 1;
+            }
+        }
+    }
+    return rc;
+}
+
+/* -Y on an RTL capture (1.536 Msps, the shipped admission table): a typed row with the -8 monitor at an NFM width the
+   calibration validated on its own (10, 12 and 15 kHz) is measured, one between the validated widths is not and gets
+   no check (issue #834). */
+static int
+test_y_quiet_validated_nfm_width(int nfm_hz, int checked) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    g_yq.real_widths = 1;
+    g_yq_monitor_nfm_hz = nfm_hz;
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 471012500L + (long int)nfm_hz * 1000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    if (checked) {
+        rc |= expect_true("the width is checked in both classes",
+                          g_yq.requests == 1
+                              && g_yq.last.classes == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
+                              && g_yq.last.analog_width_hz == (uint32_t)nfm_hz);
+    } else {
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("a width between the validated ones: no check", g_yq.requests == 0 && g_rtl_tune_calls == 0);
+    }
+    g_yq_monitor_nfm_hz = -1;
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y validated NFM width %d\n", nfm_hz);
     }
     return rc;
 }
@@ -12639,13 +16322,13 @@ test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
     const long int base_hz = 489012500L + (nfm_hz ? 0L : 4000000L);
     int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
     rc |= expect_true("the monitor plays on the typed row", opts->monitor_input_audio == 1 && opts->frame_dmr == 1);
-    noCarrier(opts, state);
     if (nfm_hz) {
         rc |= expect_true("the typed row is judged in both classes at the configured width",
                           g_yq.requests == 1
                               && g_yq.last.classes == (DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG)
                               && g_yq.last.analog_width_hz == (uint32_t)nfm_hz);
     } else {
+        noCarrier(opts, state);
         noCarrier(opts, state);
         rc |= expect_true("an unset NFM width: no check", g_yq.requests == 0 && g_rtl_tune_calls == 0);
     }
@@ -12657,9 +16340,9 @@ test_y_quiet_typed_row_judges_the_monitor(int nfm_hz) {
     return rc;
 }
 
-/* -Y: a row landed mid-transmission counts its syncs from its landing's note. Synced frames after the landing and
-   before the first noCarrier() pass publishes the row end its check: the tap is never asked and the row keeps its
-   hangtime. With no frames the row is measured and steps on its quiet result. */
+/* -Y: a row landed mid-transmission counts its checked content from its tune's issue. The row is measured as it
+   lands (issue #834 R3); checked frames after the landing end its check: the row keeps its hangtime. With no frames
+   the next pass steps on its quiet result, and the row it lands on is measured as it lands. */
 static int
 test_y_quiet_counts_from_the_landing(int heard) {
     dsd_opts* opts = NULL;
@@ -12671,18 +16354,20 @@ test_y_quiet_counts_from_the_landing(int heard) {
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 481012500L + (heard ? 0L : 4000000L);
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
-        run_synced_frames(opts, state, 2, -1);
+        run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
-    }
-    noCarrier(opts, state);
-    noCarrier(opts, state);
-    if (heard) {
-        rc |= expect_true("frames after the landing: no request, no step",
-                          g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("frames after the landing: no further request, no step",
+                          g_yq.requests == 1 && g_rtl_tune_calls == 0 && g_yq.notices == 0
+                              && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
     } else {
-        rc |= expect_true("no frames: measured and stepped", g_yq.requests == 1 && g_rtl_tune_calls == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("no frames: stepped, and the next row measured as it lands",
+                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12691,9 +16376,57 @@ test_y_quiet_counts_from_the_landing(int heard) {
     return rc;
 }
 
-/* -Y: a row counts its syncs from its tune's issue. A Next whose RTL tune timed out lands while a frame decodes, and the
-   sync the new channel returns comes before the outer pass notes the landing: that sync ends the row's check, so the
-   tap is never asked and the row keeps its hangtime. With nothing heard the landed row is measured and steps. */
+/* -Y, issue #834 R1: syncs that keep coming and that their protocol's gate rejects (NXDN48 or dPMR noise) keep the
+   synced-frames loop running, so the row never reaches noCarrier() through a no-sync hunt. The loop's frame-boundary
+   yield collects the quiet result after the first rejected frame and leaves, and the next noCarrier() steps the row
+   with its NOTICE, long before the hangtime; typed and untyped. A frame that left a PARTIAL verdict holds the yield
+   until the frame after it, which completes it (PROVEN): the row keeps its hangtime. */
+static int
+test_y_quiet_noise_syncs_still_step(int typed) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1820012500L + (typed ? 40000000L : 0L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    run_synced_frames(opts, state, 5, -1);
+    rc |= expect_true("the loop yields at the first rejected frame's boundary", g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+
+    /* A PARTIAL frame, then the frame that completes it: no yield, no step. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    rc |= expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz + 20000000L) == 0);
+    /* The longest hold, on the system decode clock: the steps below run well inside it. Three frames, each one's
+       verdict PARTIAL: with no yield the loop decodes all three (a yield would leave after the first). */
+    run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, SCAN_QUIET_PENDING_MAX_MS);
+    rc |= expect_true("PARTIAL frames: no yield, every frame decoded, the check held",
+                      g_frame_count == 3 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+    noCarrier(opts, state);
+    rc |= expect_true("noCarrier() while the verdict is pending: no step, READY kept",
+                      g_rtl_tune_calls == 0 && g_yq.notices == 0 && scan_quiet_phase_get(state) == SCAN_QUIET_READY);
+    run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    noCarrier(opts, state);
+    rc |= expect_true("completed: the row keeps its hangtime", g_rtl_tune_calls == 0 && g_yq.notices == 0);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y noise syncs, typed %d\n", typed);
+    }
+    return rc;
+}
+
+/* -Y: a row counts its checked content from its tune's issue. A Next whose RTL tune timed out lands while a frame
+   decodes, and the checked frame the new channel carries comes before the outer pass notes the landing: it ends the
+   row's check at its landing's publication, so the tap is never asked for the row and it keeps its hangtime. With
+   nothing heard the row is measured as its landing is noted (issue #834 R3) and the next pass steps. */
 static int
 test_y_quiet_counts_from_the_walk_tune(int heard) {
     dsd_opts* opts = NULL;
@@ -12713,23 +16446,28 @@ test_y_quiet_counts_from_the_walk_tune(int heard) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     if (heard) {
         g_frame_sync_type = DSD_SYNC_DMR_BS_VOICE_POS;
-        run_synced_frames(opts, state, 1, 0); /* the tune lands while frame 0 decodes; the next sync is row 1's */
+        /* The tune lands while frame 0 decodes; the next frame is row 1's, and its gate passes it. */
+        run_synced_frames_noting(opts, state, 1, 0, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
     } else {
         land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     }
+    g_yq.requests = 0; /* row 0's measurement, made as it landed */
     rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                             && dsd_engine_scan_landing_is_row(state, 1));
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
-    noCarrier(opts, state);
-    noCarrier(opts, state);
     if (heard) {
-        rc |= expect_true("a sync between the walk's tune and its landing's note: no request, no step",
+        noCarrier(opts, state);
+        noCarrier(opts, state);
+        rc |= expect_true("checked content between the walk's tune and its landing's note: no request, no step",
                           g_yq.requests == 0 && g_rtl_tune_calls == 0 && g_yq.notices == 0);
     } else {
-        rc |= expect_true("nothing heard since the walk's tune: measured and stepped",
-                          g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+        rc |= expect_true("nothing heard since the walk's tune: measured as its landing is noted",
+                          g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+        noCarrier(opts, state);
+        rc |= expect_true("nothing heard since the walk's tune: stepped, the next row measured as it lands",
+                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12752,12 +16490,11 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
     /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
     const long int base_hz = 471012500L + (heard ? 0L : 4000000L);
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
-    noCarrier(opts, state);
-    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
     dsd_engine_scan_quiet_note_change(state);
     if (heard) {
         g_frame_sync_type = DSD_SYNC_YSF_POS;
-        run_synced_frames(opts, state, 1, -1);
+        run_synced_frames_noting(opts, state, 1, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         g_frame_sync_type = DSD_SYNC_NXDN_POS;
     }
     noCarrier(opts, state);
@@ -12767,8 +16504,9 @@ test_y_quiet_sync_while_suspended_ends_the_check(int heard) {
                           g_yq.requests == 1 && g_rtl_tune_calls == 0 && g_yq.notices == 0
                               && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
     } else {
-        rc |= expect_true("nothing heard while suspended: measured again and stepped",
-                          g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+        rc |=
+            expect_true("nothing heard while suspended: measured again and stepped, the next row measured as it lands",
+                        g_yq.requests == 3 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     }
     yq_finish(opts, state);
     if (rc) {
@@ -12790,14 +16528,13 @@ test_y_quiet_restart_late_in_the_visit_measures(void) {
     /* A frequency unique to this case: engine.c caches its last tune in file statics. */
     const long int base_hz = 521012500L;
     int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, base_hz) == 0);
-    noCarrier(opts, state);
-    rc |= expect_true("the landed row is measured", g_yq.requests == 1 && g_rtl_tune_calls == 0);
+    rc |= expect_true("the landed row is measured as it lands", g_yq.requests == 1 && g_rtl_tune_calls == 0);
     dsd_engine_scan_quiet_note_change(state);
     g_live_realtime_ms += 2000U;
     noCarrier(opts, state);
     noCarrier(opts, state);
-    rc |= expect_true("restarted 2 s after the landing: measured again and stepped",
-                      g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    rc |= expect_true("restarted 2 s after the landing: measured again and stepped, the next row measured as it lands",
+                      g_yq.requests == 3 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y check restarted late in the visit\n");
@@ -12875,10 +16612,11 @@ test_y_quiet_turned_on_after_the_walk_tune(void) {
                           && dsd_engine_scan_landing_is_row(state, 2));
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
+    rc |= expect_true("the next tune's row is measured as it lands",
+                      g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
     noCarrier(opts, state);
-    noCarrier(opts, state);
-    rc |= expect_true("the next tune's row is measured and steps",
-                      g_yq.requests == 1 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    rc |= expect_true("the next tune's row steps, and the row it lands on is measured",
+                      g_yq.requests == 2 && g_rtl_tune_calls == 1 && g_yq.notices == 1);
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y setting turned on after the walk's tune\n");
@@ -12891,7 +16629,7 @@ test_y_quiet_turned_on_after_the_walk_tune(void) {
    expiry still steps. The rules a step would stay for are part of the row's conditions, so none is measured and no
    skip is logged that the step would not take: an avoided row whose paced departure is not due, a walk the scan owns
    still waiting on its tune, and a typed step still in flight (which also leaves no landing). Each case runs a few
-   passes after the landing. */
+   passes after the landing, up to its first step. */
 enum {
     YQ_BUSY = 0,
     YQ_HOLD,
@@ -12904,21 +16642,27 @@ enum {
     YQ_STEP_IN_FLIGHT,
 };
 
-/* The keep cases a step would stay for: set up after the landing. */
+/* The keep cases a step would stay for: set up after the landing, which measured the row as it landed (issue #834 R3),
+   so only the requests made once they are in force count. */
 static void
 yq_keep_stay(dsd_opts* opts, dsd_state* state, int which, long int base_hz, double now_m) {
-    if (which == YQ_AVOIDED) {
+    if (which == YQ_HOLD || which == YQ_AVOIDED || which == YQ_WALK_AWAITED) {
+        g_yq.requests = 0;
+    }
+    if (which == YQ_HOLD) {
+        state->lcn_scan_hold = 1;
+    } else if (which == YQ_AVOIDED) {
         (void)dsd_state_trunk_lcn_avoid_set(state, 0U, 1);
         state->lcn_avoid_depart_m = now_m + 100.0;
     } else if (which == YQ_WALK_AWAITED) {
         dsd_engine_manual_tune_note_lcn_cycle(state, 4243U, (uint32_t)(base_hz + 1000000L), (uint32_t)base_hz, 1, 1, 1);
     } else if (which == YQ_STEP_IN_FLIGHT) {
         g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-        state->last_cc_sync_time = time(NULL) - 11;
+        state->last_cc_sync_time = dsd_decode_time() - 11;
         noCarrier(opts, state);
         g_rtl_tune_result = RTL_STREAM_TUNE_OK;
         g_rtl_tune_calls = 0;
-        g_yq.requests = 0; /* the landed row's own measurement, made before this pass's step */
+        g_yq.requests = 0; /* the landed row's own measurement, made as it landed */
     }
 }
 
@@ -12946,9 +16690,6 @@ yq_keep_case(int which) {
                     yq_list(opts, state, which == YQ_SINGLE_ROW ? 1 : 3, which == YQ_STEP_IN_FLIGHT, 1, base_hz) == 0);
     const double now_m = dsd_decode_now_mono_s();
     yq_keep_stay(opts, state, which, base_hz, now_m);
-    if (which == YQ_HOLD) {
-        state->lcn_scan_hold = 1;
-    }
     if (which >= YQ_VOICE_HEARD) {
         opts->scan_voice_only = 1;
         opts->scan_voice_qualify_ms = 1000;
@@ -12959,7 +16700,8 @@ yq_keep_case(int which) {
             state->scan_voice_gate_voice_m = now_m;
         }
     }
-    for (int pass = 0; pass < 3; pass++) {
+    /* Up to the first step: the row a step lands on is measured as it lands (issue #834 R3), and would skip too. */
+    for (int pass = 0; pass < 3 && g_rtl_tune_calls == 0; pass++) {
         noCarrier(opts, state);
     }
     const int skipped = g_rtl_tune_calls != 0;
@@ -13022,13 +16764,12 @@ test_y_quiet_open_analog_carrier_stays(void) {
     state->trunk_lcn_freq[1] = 154665000L;
     int rc = expect_true("nfm row 0", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NFM) == 0);
     rc |= expect_true("nfm row 1", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NFM) == 0);
-    state->last_cc_sync_time = time(NULL) - 40;
+    state->last_cc_sync_time = dsd_decode_time() - 40;
     noCarrier(opts, state);
     g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
     g_rtl_tune_calls = 0;
     rc |= expect_true("the nfm row on air", state->lcn_freq_roll == 1 && opts->analog_only == 1);
-    noCarrier(opts, state);
-    rc |= expect_true("the nfm row is measured in the analog class",
+    rc |= expect_true("the nfm row is measured in the analog class as it lands",
                       g_yq.requests == 1 && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
                           && g_yq.last.analog_width_hz == 12500U);
     state->analog_rx.carrier_open = 1;
@@ -13163,6 +16904,502 @@ test_live_trunk_scan_skips_a_quiet_target(int on) {
     return rc;
 }
 
+/* Issue #834 R1, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
+   noise) keeps the synced-frames loop running, so the hunt's 300-symbol service never comes and the outer pass that
+   publishes the target never runs. The loop's frame-boundary service collects the quiet result after the first
+   rejected frame, and the per-frame tick skips the target with its NOTICE, long before its 3 s dwell. That tick tuned
+   the next target, so it publishes it too (issue #834 R4): the next target is measured at once, and the frame
+   boundary after it skips it in turn, still with no outer pass. With the setting off nothing is asked and the target
+   stays. */
+/* A trunk scan of two DMR conventional targets on RTL input over the fake tap, skip-silent @p on, whose one outer pass
+   notes target 0's landing and publishes it (the tap asked, with the setting on). Returns 0 when it did. */
+static int
+trunk_quiet_one_pass(dsd_opts* opts, dsd_state* state, char* path, size_t path_size, long int base_hz, int on) {
+    yq_start(1);
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    yq_dmr_only(opts);
+    opts->scan_skip_silent = on;
+    g_live_trunk_dwell_ms = 3000;
+    int rc = expect_true("trunk scan set up", live_trunk_scan(opts, state, path, path_size, base_hz) == 0);
+    g_live_trunk_dwell_ms = 250;
+    g_yq.gen_base = 100U; /* the landing's capture is newer than the generation read at its tune */
+    /* One outer pass: its tick notes target 0's landing and publishes it, and the tap is asked. No pass after it
+       collects the answer: only the frame boundaries can. */
+    if (on) {
+        dsd_engine_trunk_scan_quiet_service_pass(state);
+    }
+    dsd_trunk_scan_hook_tick(opts, state);
+    rc |= expect_true("target 0 landed and, on, measured",
+                      g_rtl_tune_freq == (uint32_t)base_hz && g_yq.requests == (on ? 1 : 0)
+                          && scan_quiet_phase_get(state) == (on ? SCAN_QUIET_REQUESTED : SCAN_QUIET_SUSPENDED));
+    return rc;
+}
+
+static int
+test_trunk_quiet_noise_syncs_still_skip(int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = on ? 1301012500L : 1311012500L;
+    int rc = trunk_quiet_one_pass(opts, state, path, sizeof path, base_hz, on);
+    const int tunes = g_rtl_tune_calls;
+    run_synced_frames(opts, state, 0, -1);
+    if (on) {
+        rc |= expect_true("the per-frame tick skips the target at the first rejected frame's boundary",
+                          g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
+                              && g_yq.notices == 1);
+        rc |= expect_true("the tick that advanced publishes the next target: measured at once",
+                          g_yq.requests == 2 && g_yq.last.frequency_hz == (uint32_t)(base_hz + 1000000L)
+                              && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+        run_synced_frames(opts, state, 0, -1);
+        rc |= expect_true("the next rejected frame's boundary skips it in turn, with no outer pass",
+                          g_rtl_tune_calls == tunes + 2 && g_rtl_tune_freq == (uint32_t)base_hz && g_yq.notices == 2);
+    } else {
+        run_synced_frames(opts, state, 5, -1);
+        rc |= expect_true("off: nothing asked, the target stays",
+                          g_rtl_tune_calls == tunes && g_yq.requests == 0 && g_yq.notices == 0);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)remove(path);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: trunk scan noise syncs, skip-silent %d\n", on);
+    }
+    return rc;
+}
+
+/* Issue #834 R5: a check suspended while its landing is still in force (here a note of change; on air, a receive request
+   the stream numbered) is published again at the next frame boundary, once, though the syncs keep coming and no outer
+   pass or noCarrier() runs: measured again, then skipped at the boundary after, for the trunk scan and for -Y. */
+static int
+test_trunk_quiet_suspended_target_republished(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1321012500L;
+    int rc = trunk_quiet_one_pass(opts, state, path, sizeof path, base_hz, 1);
+    const int tunes = g_rtl_tune_calls;
+    dsd_engine_scan_quiet_note_change(state);
+    run_synced_frames(opts, state, 0, -1);
+    rc |= expect_true("trunk: suspended, then published again at the frame boundary and measured",
+                      g_yq.requests == 2 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                          && g_rtl_tune_calls == tunes);
+    run_synced_frames(opts, state, 0, -1);
+    rc |= expect_true("trunk: skipped at the boundary after", g_rtl_tune_calls == tunes + 1 && g_yq.notices == 1);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)remove(path);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: trunk scan suspended target republished\n");
+    }
+    return rc;
+}
+
+static int
+test_y_quiet_suspended_row_republished(int typed) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1331012500L + (typed ? 10000000L : 0L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
+    dsd_engine_scan_quiet_note_change(state);
+    run_synced_frames(opts, state, 5, -1);
+    rc |= expect_true("-Y: published again at the first boundary, measured, and the loop yields at the next",
+                      g_yq.requests == 2 && g_frame_count == 2 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("-Y: the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y suspended row republished, typed %d\n", typed);
+    }
+    return rc;
+}
+
+/* The operator's `Y`, as app-control applies it: every hold change on the -Y scan notes a quiet-check change first
+   (dsd_engine_channel_scan_entry_cancel()). */
+static void
+yq_operator_hold(dsd_state* state, int on) {
+    dsd_engine_channel_scan_entry_cancel(state);
+    state->lcn_scan_hold = on ? 1U : 0U;
+}
+
+/* Issue #834: a -Y row published under an operator hold is SUSPENDED with no reason to show (a hold is the visit's own
+   condition). Releasing the hold moves only the quiet-check change number, and under syncs that keep the frame loop
+   running no noCarrier() publishes the row: the frame boundary owes it one republication, so the same visit is
+   measured and skipped, not left unchecked for the rest of its hangtime. */
+static int
+test_y_quiet_released_hold_republished(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, 1351012500L) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
+    yq_operator_hold(state, 1);
+    run_synced_frames(opts, state, 2, -1);
+    rc |= expect_true("held: suspended at the boundary, republished under the hold, no check, no step",
+                      scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 1 && g_frame_count == 3
+                          && g_rtl_tune_calls == 0);
+    rc |= expect_true("held: nothing more owed while the hold stands",
+                      dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_Y) == 0);
+    yq_operator_hold(state, 0);
+    run_synced_frames(opts, state, 5, -1);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "released: published again at the first boundary, measured, and the loop yields at the next "
+                 "(requests %d, frames %d, tunes %d)",
+                 g_yq.requests, g_frame_count, g_rtl_tune_calls);
+    rc |= expect_true(label, g_yq.requests == 2 && g_frame_count == 2 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("released: the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y released hold republished\n");
+    }
+    return rc;
+}
+
+/* Issue #834 item 3: frames that keep coming never let noCarrier(), where the -Y step is decided, run. A row whose frames
+   carry no content a protocol's CRC/FEC gate passed (NXDN48 noise) leaves at a frame boundary once -t has run out, with
+   skip-silent on or off and no visit cap; a real call, whose checks pass, keeps the row; the protocols whose hunt stamps
+   the hangtime anchor on raw syncs keep it as before; and no stay is overridden. Each case lands row 0, then makes the
+   row's -t (10 s) run out by moving its anchors back. */
+enum {
+    YC_NOISE = 0,     /* rejected syncs: yields at the first boundary, noCarrier() steps */
+    YC_CALL,          /* every frame's content passes its gate: no yield; then the content stops: yields */
+    YC_ANCHOR_FRESH,  /* the hangtime anchor fresh (a DMR or P25 hunt stamps it on raw syncs): no yield */
+    YC_HOLD,          /* an operator hold */
+    YC_WALK_AWAITED,  /* a walk the scan owns waiting on its tune */
+    YC_SINGLE_ROW,    /* nowhere else to go */
+    YC_VOICE_GATE,    /* --scan-voice-only owns the step */
+    YC_UNCHECKED_SET, /* the default set (-fa: X2-TDMA and ProVoice in it) with rejected NXDN48 syncs: steps */
+    YC_ONCE,          /* a noCarrier() that did not step: no second yield for the same anchor */
+    YC_QUIET_FIRST,   /* skip-silent on, a quiet row inside -t: the quiet yield steps it with its NOTICE */
+    YC_PARTIAL,       /* verdicts still open (PARTIAL): no yield until the latest hold, capped at 1 s, is -t old */
+    YC_STALE_NOTES,   /* a check, an open verdict and an unchecked frame the row left noted: the landing forgets all */
+    YC_UNCHECKED_FRAMES,  /* X2-TDMA frames, which no check can prove: held while they come, then steps */
+    YC_UNLANDED,          /* rejected syncs on a stay no row landing is in force for (the scan's start frequency, a
+                            placeholder row): yields at the first boundary, noCarrier() steps */
+    YC_PARTIAL_DEADLINE,  /* an open verdict's hold is a deadline: once it ended, with the anchors -t old, it yields at
+                            once, not -t later */
+    YC_SYNC_LOST_CONTENT, /* the sync lost mid-call (an M17 or D-STAR call whose syncs stamp no anchor): noCarrier()
+                             keeps the row while its last checked content is inside -t, then steps */
+    YC_LISTENING,         /* the whole-second -t since the landing run out, but the input came back from the retune's
+                             mute under -t ago: no yield (none spent) until -t since then has run out, then steps */
+    YC_PROOF_ENDS_HOLD,   /* an open verdict's hold, then a frame whose checks pass resolves it: the hold ends there,
+                             so once that content is -t old the row yields at once, not at the old deadline */
+    YC_PROOF_SAME_FRAME,  /* one frame noting an open verdict and passing checks: proof dominates, no hold starts */
+};
+
+/* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
+static void
+yc_age(dsd_state* state, int anchor_too) {
+    if (anchor_too) {
+        state->last_cc_sync_time = dsd_decode_time() - 11;
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s() - 11.0;
+    }
+    state->scan_y_content_m = dsd_decode_now_mono_s() - 11.0;
+}
+
+static void
+yc_setup(dsd_opts* opts, dsd_state* state, int which, long int base_hz) {
+    if (which == YC_HOLD) {
+        state->lcn_scan_hold = 1;
+    } else if (which == YC_WALK_AWAITED) {
+        dsd_engine_manual_tune_note_lcn_cycle(state, 4343U, (uint32_t)(base_hz + 1000000L), (uint32_t)base_hz, 1, 1, 1);
+    } else if (which == YC_VOICE_GATE) {
+        opts->scan_voice_only = 1;
+        opts->scan_voice_qualify_ms = 60000;
+        opts->scan_voice_hold_ms = 60000;
+        seed_visit_anchor(state, dsd_decode_now_mono_s());
+    } else if (which == YC_UNCHECKED_SET || which == YC_UNCHECKED_FRAMES) {
+        opts->frame_x2tdma = 1;
+        opts->frame_provoice = 1;
+    }
+    if (which == YC_UNLANDED) {
+        dsd_engine_scan_landing_forget(state);
+    }
+    if (which == YC_LISTENING) {
+        g_rtl_listening_rc = 1;
+        g_rtl_listening_since_ns = (uint64_t)((dsd_decode_now_mono_s() - 2.0) * 1e9);
+    }
+    if (which != YC_QUIET_FIRST) { /* a quiet row steps on its result long before -t runs out */
+        yc_age(state, which != YC_ANCHOR_FRESH);
+    }
+}
+
+static void
+yc_clear(dsd_opts* opts, dsd_state* state, int which) {
+    state->lcn_scan_hold = 0;
+    opts->scan_voice_only = 0;
+    opts->frame_x2tdma = 0;
+    opts->frame_provoice = 0;
+    g_rtl_listening_rc = 0;
+    if (which == YC_WALK_AWAITED) {
+        dsd_engine_manual_tune_supersede(state);
+        while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    }
+}
+
+/* The cases whose frames hold the row, then let it go once what held it is -t old: open verdicts and unchecked
+   frames. */
+static int
+yc_check_held_then_steps(dsd_opts* opts, dsd_state* state, int which) {
+    int rc = 0;
+    const double now_m = dsd_decode_now_mono_s();
+    if (which == YC_PARTIAL) {
+        rc |= expect_true("open verdicts: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        rc |= expect_true("open verdicts: never content",
+                          state->scan_y_content_seq == 0U && state->scan_y_content_m < now_m - 10.0);
+        rc |= expect_true("open verdicts: the hold capped at 1 s",
+                          state->scan_y_partial_until_m > now_m + 0.5 && state->scan_y_partial_until_m <= now_m + 1.01);
+        state->scan_y_partial_until_m = now_m - 11.0; /* the latest hold ended -t ago */
+    } else {
+        rc |= expect_true("unchecked frames: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        rc |= expect_true("unchecked frames: never content", state->scan_y_content_seq == 0U);
+        state->scan_y_unchecked_m = now_m - 11.0; /* the last of them -t ago */
+    }
+    run_synced_frames(opts, state, 5, -1);
+    rc |= expect_true("what held the row is -t old: yields", g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("and steps", g_rtl_tune_calls == 1);
+    return rc;
+}
+
+/* Issue #834: the -Y hangtime is one rule at a frame boundary and in noCarrier(): -t since the latest of the landing or
+   hangtime anchor, the last checked content and the last unchecked protocol's frame, and past an open verdict's hold,
+   a deadline of its own (docs/trunk-scan.md). */
+static int
+yc_check_one_rule(dsd_opts* opts, dsd_state* state, int which) {
+    int rc = 0;
+    const double now_m = dsd_decode_now_mono_s();
+    if (which == YC_PARTIAL_DEADLINE) {
+        rc |=
+            expect_true("open verdict deadline: held while the hold runs", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        state->scan_y_partial_until_m = now_m - 0.05; /* the hold just ended; everything else is -t old */
+        run_synced_frames(opts, state, 5, -1);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "open verdict deadline: yields once the hold ended, not -t later (frames %d)",
+                     g_frame_count);
+        rc |= expect_true(label, g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("open verdict deadline: and steps", g_rtl_tune_calls == 1);
+        return rc;
+    }
+    /* YC_SYNC_LOST_CONTENT: the frames' checked content is fresh, the hangtime anchor -t old, and the sync is lost. */
+    state->scan_y_content_m = now_m;
+    noCarrier(opts, state);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "sync lost mid-call: checked content 0 s old keeps the row (tunes %d)",
+                 g_rtl_tune_calls);
+    rc |= expect_true(label, g_rtl_tune_calls == 0);
+    state->scan_y_content_m = now_m - 11.0;
+    noCarrier(opts, state);
+    rc |= expect_true("sync lost mid-call: the content -t old, it steps", g_rtl_tune_calls == 1);
+    return rc;
+}
+
+/* YC_LISTENING: rejected syncs keep coming on a row whose input came back from the retune's mute 2 s ago, after the
+   landing 11 s ago. noCarrier() would refuse to step before -t since then, so the frame loop does not yield for it (a
+   yield spent there is owed no second time for this landing and anchor); once -t since the input's return has run out
+   it yields and noCarrier() steps. */
+static int
+yc_check_listening(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "listening under -t: no yield, no step (frames %d, tunes %d)", g_frame_count,
+                 g_rtl_tune_calls);
+    rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("listening under -t: noCarrier() keeps the row", g_rtl_tune_calls == 0);
+    /* The input came back 10.5 s ago, still after the landing: -t since then has run out. */
+    g_rtl_listening_since_ns = (uint64_t)((dsd_decode_now_mono_s() - 10.5) * 1e9);
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "listened for -t: yields at the first boundary (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("listened for -t: and steps", g_rtl_tune_calls == 1);
+    return rc;
+}
+
+/* YC_PROOF_ENDS_HOLD, YC_PROOF_SAME_FRAME: checked content resolves the open verdict, as the quiet check's own note
+   does (dsd_engine_scan_quiet_note_evidence()): no hold is left, so once the content and the anchor are -t old the
+   frames yield at the first boundary and noCarrier() steps, with no wait for the deadline the verdict asked for. */
+static int
+yc_check_proof_ends_hold(dsd_opts* opts, dsd_state* state, int which) {
+    const char* what =
+        which == YC_PROOF_ENDS_HOLD ? "proof after an open verdict" : "proof in the open verdict's frame";
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: no hold left (until %.3f, now %.3f)", what, state->scan_y_partial_until_m,
+                 dsd_decode_now_mono_s());
+    int rc = expect_true(label, state->scan_y_partial_until_m < 0.0 && g_rtl_tune_calls == 0);
+    yc_age(state, 1);
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "%s: the content -t old, yields at the first boundary (frames %d)", what,
+                 g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    noCarrier(opts, state);
+    DSD_SNPRINTF(label, sizeof label, "%s: and steps", what);
+    rc |= expect_true(label, g_rtl_tune_calls == 1);
+    return rc;
+}
+
+/* What the case expects once its frames ran: 1 when a yield and a step are owed. */
+static int
+yc_check(dsd_opts* opts, dsd_state* state, int which) {
+    int rc = 0;
+    if (which == YC_LISTENING) {
+        return yc_check_listening(opts, state);
+    }
+    if (which == YC_PROOF_ENDS_HOLD || which == YC_PROOF_SAME_FRAME) {
+        return yc_check_proof_ends_hold(opts, state, which);
+    }
+    if (which == YC_PARTIAL || which == YC_UNCHECKED_FRAMES) {
+        return yc_check_held_then_steps(opts, state, which);
+    }
+    if (which == YC_PARTIAL_DEADLINE || which == YC_SYNC_LOST_CONTENT) {
+        return yc_check_one_rule(opts, state, which);
+    }
+    if (which == YC_NOISE || which == YC_UNCHECKED_SET || which == YC_UNLANDED) {
+        rc |= expect_true("noise: yields at the first boundary past -t", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("noise: noCarrier() steps, with no quiet NOTICE", g_rtl_tune_calls == 1 && g_yq.notices == 0);
+    } else if (which == YC_CALL) {
+        rc |= expect_true("a call's checked frames: no yield, no step", g_frame_count == 6 && g_rtl_tune_calls == 0);
+        yc_age(state, 1);
+        run_synced_frames(opts, state, 5, -1);
+        rc |= expect_true("the content stopped -t ago: yields", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("and steps", g_rtl_tune_calls == 1);
+    } else if (which == YC_ONCE) {
+        rc |= expect_true("once: the first yield", g_frame_count == 1);
+        run_synced_frames(opts, state, 5, -1); /* no noCarrier() between: as if it had kept the row */
+        rc |= expect_true("once: no second yield for the same anchor", g_frame_count == 6 && g_rtl_tune_calls == 0);
+    } else if (which == YC_STALE_NOTES) {
+        rc |= expect_true("stale notes: no hold left after the frames", state->scan_y_partial_until_m < 0.0);
+        rc |= expect_true("stale notes: yields at the first boundary past -t", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("stale notes: noCarrier() steps", g_rtl_tune_calls == 1);
+    } else if (which == YC_QUIET_FIRST) {
+        rc |= expect_true("quiet first: yields at the first boundary", g_frame_count == 1);
+        noCarrier(opts, state);
+        rc |= expect_true("quiet first: steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    } else {
+        rc |= expect_true("a stay keeps the row: no yield", g_frame_count == 6 && g_rtl_tune_calls == 0);
+    }
+    return rc;
+}
+
+/* Noted on the row left, and not read at a frame boundary before the step: a PROVEN note, an X2-TDMA frame
+   (processFrame()'s unchecked note), and a verdict still open whose hold the row left turned into an end already, the
+   end reached as the step comes (a hold still running keeps the row it was noted on, noCarrier() included). */
+static void
+yc_stage_stale_notes(dsd_state* state) {
+    state->scan_y_content_seq++;
+    state->scan_y_unchecked_seq++;
+    state->scan_y_partial_seq++;
+    state->scan_y_partial_hold_ms = 900U;
+    state->scan_y_partial_until_m = dsd_decode_now_mono_s();
+}
+
+/* The row's frames for the case: checked, unchecked, open verdicts, or rejected syncs. */
+static void
+yc_run_frames(dsd_opts* opts, dsd_state* state, int which) {
+    if (which == YC_CALL) {
+        run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else if (which == YC_UNCHECKED_FRAMES) {
+        g_frame_unchecked = 1;
+        run_synced_frames(opts, state, 5, -1);
+        g_frame_unchecked = 0;
+    } else if (which == YC_SYNC_LOST_CONTENT) {
+        /* no frame: the sync is lost */
+    } else if (which == YC_PARTIAL || which == YC_PARTIAL_DEADLINE) {
+        /* A hold longer than any gate's: the rule caps it at SCAN_QUIET_PENDING_MAX_MS. */
+        run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
+    } else if (which == YC_PROOF_ENDS_HOLD) {
+        /* A late-entry D-STAR superframe's open verdict (840 ms), then the frame that resolves it. */
+        run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 840U);
+        run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else if (which == YC_PROOF_SAME_FRAME) {
+        /* The frame's open verdict, noted beside its passing checks before the boundary reads either. */
+        state->scan_y_partial_seq++;
+        state->scan_y_partial_hold_ms = 840U;
+        run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else {
+        run_synced_frames(opts, state, 5, -1);
+    }
+}
+
+static int
+yc_case(int which, int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    /* With the setting on, a busy channel (DONE) leaves the step to the hangtime rule, except where the quiet yield is
+       the point. */
+    yq_start(which == YC_QUIET_FIRST);
+    if (which == YC_STALE_NOTES) {
+        yc_stage_stale_notes(state);
+    }
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 1401012500L + (long int)which * 10000000L + (on ? 200000000L : 0L);
+    int rc = expect_true("the first step lands row 0",
+                         yq_list(opts, state, which == YC_SINGLE_ROW ? 1 : 3, 0, on, base_hz) == 0);
+    if (which == YC_STALE_NOTES) {
+        /* Before any frame boundary of the new row could read them. */
+        rc |= expect_true("stale notes: forgotten as the row lands",
+                          state->scan_y_content_seen == state->scan_y_content_seq
+                              && state->scan_y_unchecked_seen == state->scan_y_unchecked_seq
+                              && state->scan_y_partial_seen == state->scan_y_partial_seq
+                              && state->scan_y_partial_hold_ms == 0U && state->scan_y_partial_until_m < 0.0);
+    }
+    if (on && which != YC_QUIET_FIRST) {
+        (void)dsd_engine_scan_quiet_service(opts, state); /* the busy answer: DONE */
+    }
+    yc_setup(opts, state, which, base_hz);
+    yc_run_frames(opts, state, which);
+    rc |= yc_check(opts, state, which);
+    yc_clear(opts, state, which);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y frames with no checked content, case %d, skip-silent %d\n", which, on);
+    }
+    return rc;
+}
+
+static int
+test_y_frames_with_no_checked_content_leave(void) {
+    int rc = 0;
+    for (int which = YC_NOISE; which <= YC_PROOF_SAME_FRAME; which++) {
+        if (which != YC_QUIET_FIRST) {
+            rc |= yc_case(which, 0);
+        }
+        rc |= yc_case(which, 1);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -13173,14 +17410,48 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_BUSY; which <= YQ_STEP_IN_FLIGHT; which++) {
         rc |= yq_keep_case(which);
     }
+    for (int which = YQ_LAND_TYPED_LATE; which <= YQ_LAND_RESUME; which++) {
+        rc |= yq_landing_case(which);
+    }
+    rc |= test_y_quiet_timing_says_why();
+    for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
+        rc |= yq_cause_case(which);
+    }
+    rc |= test_y_quiet_input_shows_until_a_call();
+    rc |= test_y_quiet_analog_call_explains_the_stay();
+    rc |= test_y_quiet_refused_row_restarts_after_an_edit();
+    rc |= test_y_quiet_refusal_keeps_the_refused_capture_generation();
+    rc |= test_y_quiet_refused_row_republished_on_a_new_generation();
+    rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(0);
+    rc |= test_y_quiet_no_check_outlasts_an_unqualified_carrier(1);
+    rc |= test_y_quiet_no_check_outlasts_checked_control_traffic();
+    rc |= test_y_hangtime_publishes_the_deadline_the_step_keeps();
+    rc |= test_y_zero_hangtime_keeps_a_proven_call();
+    rc |= test_y_one_hangtime_deadline();
+    rc |= test_y_stay_starts_without_the_last_stays_frames();
+    rc |= test_y_continuing_call_explains_a_new_stay();
+    rc |= test_y_quiet_warn_widths_are_the_admitted_ones();
+    rc |= test_trunk_quiet_noise_syncs_still_skip(1);
+    rc |= test_trunk_quiet_noise_syncs_still_skip(0);
+    rc |= test_trunk_quiet_suspended_target_republished();
+    rc |= test_y_quiet_suspended_row_republished(0);
+    rc |= test_y_quiet_suspended_row_republished(1);
+    rc |= test_y_quiet_released_hold_republished();
+    rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);
+    rc |= test_y_quiet_validated_nfm_width(10000, 1);
+    rc |= test_y_quiet_validated_nfm_width(12000, 1);
+    rc |= test_y_quiet_validated_nfm_width(15000, 1);
+    rc |= test_y_quiet_validated_nfm_width(13500, 0);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(1);
     rc |= test_y_quiet_sync_while_suspended_ends_the_check(0);
     rc |= test_y_quiet_restart_late_in_the_visit_measures();
     rc |= test_y_quiet_turned_on_mid_visit_keeps_the_row();
     rc |= test_y_quiet_turned_on_after_the_walk_tune();
+    rc |= test_y_quiet_noise_syncs_still_step(0);
+    rc |= test_y_quiet_noise_syncs_still_step(1);
     rc |= test_y_quiet_counts_from_the_landing(1);
     rc |= test_y_quiet_counts_from_the_landing(0);
     rc |= test_y_quiet_counts_from_the_walk_tune(1);
@@ -13202,6 +17473,8 @@ main(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* This thread decodes, as a run marks its thread (dsd_engine_run()): its tunes are the decoder thread's. */
+    dsd_engine_set_decoder_thread(1);
 
     dsd_call_observation observation = {0};
     observation.protocol = DSD_SYNC_P25P1_POS;
@@ -14758,6 +19031,31 @@ main(void) {
                                                                       && state->H == 0ULL
                                                                       && state->aes_key_loaded[0] == 0);
 
+    // The unload writes the working key the talkgroup key autoload loaded: the autoload owns it no more and its key
+    // copies are wiped, so a call on a talkgroup with no key leaves the unloaded key alone.
+    state->keyloader = 1;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    uint32_t seeded_from = 0U;
+    (void)keyring_dmr_tg_autoload_apply(state, 0U, 123U, &seeded_from);
+    rc |=
+        expect_true("keyloader-carrier-reset-autoload-seeded", dsd_dmr_tg_autoload_holds(state) && state->K == 0x33ULL);
+    noCarrier(opts, state);
+    int autoload_wiped = state->dmr_tg_autoload.active == 0U;
+    for (size_t i = 0U; i < 6U; i++) {
+        autoload_wiped &= state->dmr_tg_autoload.baseline[i] == 0ULL && state->dmr_tg_autoload.installed[i] == 0ULL;
+    }
+    autoload_wiped &= state->dmr_tg_autoload.baseline_flags[0] == 0U && state->dmr_tg_autoload.installed_flags[0] == 0U;
+    rc |= expect_true("keyloader-carrier-reset-ends-the-autoload-hold",
+                      !dsd_dmr_tg_autoload_holds(state) && autoload_wiped && state->K == 0ULL && state->H == 0ULL);
+    uint32_t unload_keyed_from = 0U;
+    rc |= expect_true("keyloader-carrier-reset-autoload-restores-nothing",
+                      !keyring_dmr_tg_autoload_apply(state, 0U, 456U, &unload_keyed_from) && state->K == 0ULL
+                          && state->basic_key_present == 0U);
+    state->keyloader = 0;
+
     // Embedded direct keys deliberately use keyloader=0, matching -b/-H:
     // noCarrier preserves them and must not alter the operator's mute policy.
     dsd_key_set direct;
@@ -14979,8 +19277,8 @@ main(void) {
     rc |= test_iq_stream_start_sets_freq_and_source();
     rc |= test_fixed_tuning_legacy_legs_send_the_peer_nothing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
-    rc |= test_live_loop_syncs_move_the_quiet_sync_sequence();
     rc |= test_live_loop_provisional_syncs_move_the_quiet_sequence_on_their_verdict();
+    rc |= test_live_loop_counts_only_checked_frames();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
     rc |= test_untyped_resume_waits_for_its_row();
@@ -15013,6 +19311,12 @@ main(void) {
     rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
     rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
     rc |= test_return_to_cc_replaces_a_pending_walk();
+    rc |= test_dmr_manual_moves_forget_and_hold();
+    rc |= test_trunk_scan_park_judged_once();
+    rc |= test_return_to_cc_judged_once();
+    rc |= test_manual_hook_leg_judged_once();
+    rc |= test_rigctl_reconnect_move_back_leaves();
+    rc |= test_rigctl_reconnect_hook_tunes_leave();
     rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
@@ -15048,7 +19352,14 @@ main(void) {
     rc |= test_direct_cc_return_closes_an_orphaned_recording();
     rc |= test_trunk_cc_return_closes_an_orphaned_recording();
     rc |= test_trunk_follow_closes_only_orphaned_recordings();
+    rc |= test_carrier_boundary_forgets_dmr_call_privacy();
+    rc |= test_run_first_landing_is_never_held();
+    rc |= test_scan_first_landing_is_never_held();
+    rc |= test_frequency_entry_forgets_dmr_call_privacy();
+    rc |= test_scan_walk_landing_forgets_dmr_call_privacy();
+    rc |= test_trunk_follow_forgets_dmr_call_privacy();
     rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
+    rc |= test_rtl_trunk_tune_leaves_the_timeline_to_the_stream();
     rc |= test_typed_scan_async_move_is_a_carrier_boundary();
     rc |= test_typed_step_completes_across_a_learned_channel();
     rc |= test_refused_scan_tune_reports_no_stale_move();

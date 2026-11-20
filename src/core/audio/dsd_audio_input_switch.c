@@ -226,7 +226,7 @@ switch_stop_udp(dsd_opts* opts, switch_udp_before* before) {
 static int
 switch_open_udp(dsd_opts* opts, const char* bindaddr, int port, int raw_rate_hz) {
     if (dsd_net_audio_input_hook_udp_start(opts, bindaddr, port, raw_rate_hz) != 0) {
-        LOG_ERROR("Input switch: couldn't bind UDP input on %s:%d\n", bindaddr, port);
+        LOG_ERROR("Input switch: couldn't start UDP input on %s:%d\n", bindaddr, port);
         return -1;
     }
     return 0;

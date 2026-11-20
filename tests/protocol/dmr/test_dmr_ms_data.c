@@ -1245,7 +1245,7 @@ test_ms_headers_open_the_gate(void) {
         load_voice_stream();
         opts.pulse_digi_out_channels = 1;
         for (int h = 0; h < headers; h++) {
-            (void)dmr_confidence_note_data_burst(&state, 1U);
+            (void)dmr_confidence_note_data_burst(NULL, &state, 1U);
         }
 
         dmrMSBootstrap(&opts, &state);

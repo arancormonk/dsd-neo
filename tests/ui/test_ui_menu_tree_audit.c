@@ -707,6 +707,34 @@ audit_group_reload_row(void) {
     }
 }
 
+/* The row with @p id anywhere below @p items, or NULL. */
+static const NcMenuItem*
+find_row(const NcMenuItem* items, size_t n, const char* id) {
+    for (size_t i = 0; i < n; i++) {
+        if (items[i].id && strcmp(items[i].id, id) == 0) {
+            return &items[i];
+        }
+        const NcMenuItem* found = items[i].submenu ? find_row(items[i].submenu, items[i].submenu_len, id) : NULL;
+        if (found) {
+            return found;
+        }
+    }
+    return NULL;
+}
+
+/* Issue #834: the Silent channel skip row's help names what the Scan Timing row reads while a channel is checked and
+   where it cannot be, the phrases app-control's scan timing view sets. */
+static void
+audit_skip_silent_help(const NcMenuItem* root, size_t n) {
+    const NcMenuItem* it = find_row(root, n, "follow.skip_silent");
+    if (!it) {
+        fail("root/trunk", "follow.skip_silent", "no Silent channel skip row");
+    } else if (!it->help || !strstr(it->help, "Scan Timing") || !strstr(it->help, "\"Quiet check\"")
+               || !strstr(it->help, "\"No check: input\"")) {
+        fail("root/trunk", it->id, "the help does not say what the Scan Timing row reads");
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -725,6 +753,7 @@ main(void) {
     audit_rigctl_rows(root, n);
     audit_scan_lists_row();
     audit_group_reload_row();
+    audit_skip_silent_help(root, n);
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

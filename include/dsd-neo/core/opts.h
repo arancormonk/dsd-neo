@@ -26,6 +26,7 @@
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/resampler.h>
+#include <dsd-neo/dsp/unflushed_retune.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -754,7 +755,9 @@ dsd_opts_note_pcm_stream(dsd_opts* opts) {
  * @brief Reset low-rate PCM input processing state at a stream boundary.
  *
  * Clears both the staged upsample bookkeeping and the reusable FIR state so the next socket/file block cannot blend
- * samples from a previous stream. Callers that use this helper must link against `dsd-neo_dsp`.
+ * samples from a previous stream, and a rigctl retune the P25 watchdog posted before it is not taken as a drop of the
+ * new stream (dsd_frame_sync_forget_unflushed_retunes(), issue #834). Callers that use this helper must link against
+ * `dsd-neo_dsp`.
  *
  * @param opts Decoder options containing the staged/FIR input state.
  */
@@ -766,6 +769,7 @@ dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
     dsd_resampler_reset(&opts->input_resampler);
     dsd_opts_reset_input_upsample_state(opts);
     dsd_opts_note_pcm_stream(opts);
+    dsd_frame_sync_forget_unflushed_retunes();
 }
 
 /**
@@ -1038,6 +1042,21 @@ dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Whether @p center_hz is a centre dsd_opts_note_iq_replay_center() would adopt: a centre, and not the one held.
+ *
+ * The per-sample readers ask this before they call dsd_frame_sync_note_replay_center(), so a sample on the centre
+ * already held costs one compare and no call.
+ *
+ * @param opts Decoder options (may be NULL).
+ * @param center_hz Capture centre in Hz of the sample just read; 0 for none.
+ * @return 1 when the centre would be adopted, 0 otherwise.
+ */
+static inline int
+dsd_opts_iq_replay_center_is_new(const dsd_opts* opts, uint32_t center_hz) {
+    return opts != NULL && center_hz != 0U && opts->iq_replay_center_freq != center_hz;
+}
+
+/**
  * @brief Note the centre the I/Q replay sample the decoder just read was captured on, for dsd_opts_tuned_freq_hz().
  *
  * Every read path that runs the decode clock on a replay sample calls it, on the decoder thread (issue #575): the
@@ -1053,7 +1072,7 @@ dsd_opts_tuned_freq_hz(const dsd_opts* opts) {
  */
 static inline int
 dsd_opts_note_iq_replay_center(dsd_opts* opts, uint32_t center_hz) {
-    if (opts == NULL || center_hz == 0U || opts->iq_replay_center_freq == center_hz) {
+    if (!dsd_opts_iq_replay_center_is_new(opts, center_hz)) {
         return 0;
     }
     const int moved = opts->iq_replay_center_freq != 0U;

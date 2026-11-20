@@ -22,6 +22,13 @@ static dsd_mutex_t g_opts_mu;
 static atomic_int g_opts_mu_init = 0;
 static unsigned long long g_pub_opts_seq = 0;
 static unsigned long long g_consume_opts_seq = 0;
+/* The session ended (dsd_app_opts_snapshot_wipe_keys()): the consumer's next read wipes the API keys its buffer
+   holds. */
+static int g_consume_opts_wipe_keys = 0;
+/* The consumer's buffer lost its API keys while the published copy kept them: its next read copies it again. */
+static int g_consume_opts_stale = 0;
+/* The reader keeps no API keys in its buffer for now (dsd_app_opts_snapshot_consumer_withhold_keys()). */
+static int g_consume_opts_keys_withheld = 0;
 /* A publication the P25 SM tick guard put off (dsd_app_telemetry_opts_snapshot_pending()). */
 static atomic_int g_pub_opts_pending = 0;
 
@@ -42,6 +49,17 @@ ensure_opts_mu_init(void) {
     while (atomic_load(&g_opts_mu_init) != 2) {
         dsd_thread_yield();
     }
+}
+
+/* The secrets an options copy holds: the rdio-scanner API key and URL (a URL can carry credentials) and the
+   RadioReference API key, which a frontend reads from its copy (the terminal UI's RadioReference panel and its config
+   save), and the API token, which never reaches one. */
+static void
+ui_opts_snapshot_wipe_key_copies(dsd_opts* snap) {
+    DSD_SECURE_ZERO(snap->rdio_api_key, sizeof snap->rdio_api_key);
+    DSD_SECURE_ZERO(snap->rdio_api_url, sizeof snap->rdio_api_url);
+    DSD_SECURE_ZERO(snap->rr_app_key, sizeof snap->rr_app_key);
+    DSD_SECURE_ZERO(snap->api_token, sizeof snap->api_token);
 }
 
 static void
@@ -90,16 +108,57 @@ const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
     ensure_opts_mu_init();
     dsd_mutex_lock(&g_opts_mu);
+    if (g_consume_opts_wipe_keys) {
+        ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+        g_consume_opts_wipe_keys = 0;
+    }
     if (!g_have_opts) {
         dsd_mutex_unlock(&g_opts_mu);
         return NULL;
     }
-    if (g_consume_opts_seq != g_pub_opts_seq) {
+    if (g_consume_opts_seq != g_pub_opts_seq || g_consume_opts_stale) {
         DSD_MEMCPY(&g_consume_opts, &g_pub_opts, sizeof(dsd_opts));
         g_consume_opts_seq = g_pub_opts_seq;
+        g_consume_opts_stale = 0;
+        if (g_consume_opts_keys_withheld) {
+            ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+        }
     }
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
+}
+
+void
+dsd_app_opts_snapshot_wipe_keys(void) {
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    ui_opts_snapshot_wipe_key_copies(&g_pub_opts);
+    /* The consumer's buffer is read without the lock on its own thread (snapshot.h), so that thread wipes it, at its
+       next read. */
+    g_consume_opts_wipe_keys = 1;
+    dsd_mutex_unlock(&g_opts_mu);
+}
+
+void
+dsd_app_opts_snapshot_consumer_withhold_keys(int withhold) {
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    g_consume_opts_keys_withheld = withhold != 0;
+    if (g_consume_opts_keys_withheld) {
+        ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+    }
+    g_consume_opts_stale = 1;
+    dsd_mutex_unlock(&g_opts_mu);
+}
+
+void
+dsd_app_opts_snapshot_consumer_wipe_keys(void) {
+    ensure_opts_mu_init();
+    dsd_mutex_lock(&g_opts_mu);
+    ui_opts_snapshot_wipe_key_copies(&g_consume_opts);
+    g_consume_opts_wipe_keys = 0;
+    g_consume_opts_stale = 1;
+    dsd_mutex_unlock(&g_opts_mu);
 }
 
 void

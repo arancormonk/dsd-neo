@@ -368,6 +368,12 @@ private fun await(latch: CountDownLatch, what: String) {
 /** Runs [work] on a thread of its own, as the Qt thread calls the broker; returns it started. */
 private fun onAnotherThread(work: () -> Unit): Thread = Thread(work, "qt").also { it.start() }
 
+/** Waits for [thread], which has nothing left to wait on: the bound only turns a hang into a failure. */
+private fun finish(thread: Thread, what: String) {
+    thread.join(TimeUnit.SECONDS.toMillis(10))
+    check(!thread.isAlive) { what }
+}
+
 // #782 WP7: each session after the first gets a connection of its own, reopened without a prompt while permission
 // holds; the retired one is closed and the new descriptor published before configure.
 private fun aSecondSessionGetsAFreshDescriptor() {
@@ -572,7 +578,7 @@ private fun concurrentSwitchesAreSerialized() {
         UsbSourceManager.requestAccessForSource(rig.context, "airspy", "")
         UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
     }
-    qt.join(2000)
+    finish(qt, "the Qt thread posts its requests")
     check(rig.usb.opened.isEmpty() && !rig.record().optBoolean("ready")) { "nothing changes off the main thread" }
     rig.drain()
     val record = rig.record()
@@ -623,7 +629,7 @@ private fun aStaleListingNeverClearsANewerAttach() {
     await(attached, "the attach broadcast is handled while the poll's listing is held up")
     main.join()
     resume.countDown()
-    qt.join(2000)
+    finish(qt, "the poll ends once its listing is let go")
     check(first == "") { "the stale listing is dropped: $first" }
     check(UsbSourceManager.takeAttachment() == "usb:$RTL_A") { "the attach is still pending for the next poll" }
 }
@@ -643,7 +649,7 @@ private fun aStaleListingAcrossAReplug() {
     main.join(2000)
     check(!main.isAlive) { "the replug is handled while the poll's listing is held up" }
     resume.countDown()
-    qt.join(2000)
+    finish(qt, "the poll ends once its listing is let go")
     check(first == "") { "a listing from before the replug is dropped, not taken as the old device: $first" }
     check(UsbSourceManager.takeAttachment() == "usb:$RTL_B") { "the replugged device is pending" }
     check(rig.record().optLong("epoch") == 0L) { "nothing is connected" }
@@ -664,7 +670,7 @@ private fun aStaleListingAcrossADetach() {
     main.join(2000)
     check(!main.isAlive) { "the detach is handled while the poll's listing is held up" }
     resume.countDown()
-    qt.join(2000)
+    finish(qt, "the poll ends once its listing is let go")
     check(first == "" && UsbSourceManager.takeAttachment() == "") { "the unplugged device is never reported: $first" }
 }
 
@@ -693,8 +699,8 @@ private fun aBlockedSerialReadBlocksNothing() {
     }.also { it.start() }
     await(answered, "the poll and the detach broadcast go on while the serial read is held up")
     resume.countDown()
-    attach.join(2000)
-    receiver.join(2000)
+    finish(attach, "the attach ends once its serial read is let go")
+    finish(receiver, "the poll and the detach broadcast end")
     check(rig.record().optBoolean("ready")) { "the connection is untouched" }
 }
 
@@ -874,7 +880,9 @@ private fun storageRunsOffTheMainThread() {
             ran.incrementAndGet()
         }
     }
-    val rig = Rig(storage = dir, present = listOf(rtl()), storageExecutor = UsbSourceManager.storageExecutor)
+    // The read is let go before the open, so the open's wait ends with it: the long bound only turns a stalled storage
+    // thread into a failure, where the app's second would make a slow host's read look late.
+    val rig = Rig(storage = dir, present = listOf(rtl()), storageExecutor = UsbSourceManager.storageExecutor, loadWaitMs = 10_000L)
     check(ran.get() == 0) { "the read waits on the storage thread" }
     release.countDown()
     UsbSourceManager.requestAccessForSource(rig.context, "usb", "")
@@ -882,8 +890,11 @@ private fun storageRunsOffTheMainThread() {
     rig.take()
     DsdNative.resetOwed = -1
     UsbSourceManager.noteSessionEnded()
-    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-    while (stored(rig).isNotEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+    // One storage thread runs its tasks in order: once a task queued after the write has run, the write has run and been
+    // counted. The file alone says so too early, empty from the write's rename on, before its task is counted.
+    val written = CountDownLatch(1)
+    worker.execute { written.countDown() }
+    check(written.await(10, TimeUnit.SECONDS)) { "the storage thread ran the write" }
     check(stored(rig) == "") { "the cleared record is written: ${stored(rig)}" }
     check(onMain.get() == 0 && ran.get() >= 2) { "every read and write ran off the main thread: ${ran.get()}" }
     rig.drain()

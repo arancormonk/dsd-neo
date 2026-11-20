@@ -236,7 +236,7 @@ main(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     hooks.udp_read_sample_wait = silent_udp_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     (void)dsd_mutex_init(&g_tick.mutex);
     (void)dsd_cond_init(&g_tick.condition);
     dsd_atomic_u64_init(&g_tick.released_ms, 0U);
@@ -244,7 +244,7 @@ main(void) {
     int rc = put_off_publication_reaches_the_frontends(opts, state);
     rc |= drained_publications_ask_for_a_redraw(opts, state);
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_cond_destroy(&g_tick.condition);
     dsd_mutex_destroy(&g_tick.mutex);
     free(state);

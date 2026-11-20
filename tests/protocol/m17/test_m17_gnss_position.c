@@ -931,7 +931,7 @@ test_lich_lsd_bound_to_its_first_chunk(void) {
         if (change == 0) {
             dsd_trunk_tuning_generation_advance();
         } else {
-            m17_confirm_note_evidence(r.state, M17_EVIDENCE_STRONG);
+            m17_confirm_note_evidence(r.opts, r.state, M17_EVIDENCE_STRONG);
         }
         send_lich_chunks(&r, bits, 3U, 5U);
         const char* what = change == 0 ? "retune" : "confirmation";

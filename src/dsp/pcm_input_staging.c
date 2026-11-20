@@ -149,3 +149,30 @@ dsd_pcm_input_stage_resampler_tail(dsd_opts* opts) {
     }
     return 1;
 }
+
+void
+dsd_pcm_input_restart_staged(dsd_opts* opts) {
+    if (!opts || !opts->input_upsample_prev_valid || opts->input_upsample_tail_blocks > 0) {
+        return;
+    }
+    const float last = opts->input_upsample_prev;
+    /* As a stream that starts on the last sample read: the history holds it alone, and its outputs not read yet are its
+       own value (dsd_pcm_input_stage_resample()'s first sample). */
+    dsd_pcm_input_prime_resampler_history(opts, last);
+    for (int i = opts->input_upsample_pos; i < opts->input_upsample_len; i++) {
+        opts->input_upsample_buf[i] = last;
+    }
+}
+
+void
+dsd_pcm_input_forget_staged(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    opts->input_upsample_len = 0;
+    opts->input_upsample_pos = 0;
+    opts->input_upsample_tail_blocks = 0;
+    opts->input_upsample_prev = 0.0f;
+    opts->input_upsample_prev_valid =
+        0; /* the next sample re-primes the FIR history (dsd_pcm_input_stage_resample()) */
+}

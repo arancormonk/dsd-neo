@@ -8,18 +8,35 @@
 
 #include <assert.h>
 #include <pulse/channelmap.h>
+#include <pulse/context.h>
 #include <pulse/def.h>
 #include <pulse/error.h>
 #include <pulse/introspect.h>
+#include <pulse/mainloop-api.h>
 #include <pulse/operation.h>
 #include <pulse/sample.h>
 #include <pulse/simple.h>
+#include <pulse/stream.h>
+#include <pulse/thread-mainloop.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <dsd-neo/platform/env.h>
 #include <stdlib.h>
+/* Issue #834: while set, every allocation the backend under test makes fails (the macro below renames its calls; the
+   test's own go to the C library), so a discard is seen to lose no new audio when memory runs out. */
+static int g_backend_alloc_fails;
+
+static void*
+backend_alloc(size_t bytes) {
+    return g_backend_alloc_fails ? NULL : malloc(bytes);
+}
+
+#define malloc(bytes) backend_alloc(bytes)
 #include "../../src/platform/audio_pulse.c"
+#include "../../src/platform/audio_pulse_record.c"
+#undef malloc
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/audio.h"
 #include "dsd-neo/platform/audio_concealment.h"
@@ -43,8 +60,35 @@ static uint64_t g_pa_simple_new_delay_ns; /* how long an open takes on the fake 
 static char g_pa_simple_new_dev[64];
 static char g_pa_simple_new_app[64];
 static int g_pa_simple_error;
-static int g_pa_simple_read_fail;
-static int g_pa_simple_read_calls;
+/* The input's record stream (audio_pulse_record.c) over a fake threaded mainloop, context and stream. Its open fails
+   at the connect, with g_pa_simple_error, when g_pa_simple_new_fail; a peek fails with it when g_pa_record_peek_fail;
+   the stream reads as failed when g_pa_record_failed. */
+static int g_pa_record_peek_fail;
+static int g_pa_record_failed;
+static int g_pa_record_peeks;
+static int g_pa_record_frees;
+static int g_pa_lock_depth;
+/* The capture the input reads (issue #834): mono frames numbered from g_pa_capture_next, g_pa_capture_held of them held
+   by the client, handed over in fragments of at most g_pa_fragment_frames (frames handed over stay held until dropped).
+   A wait on the mainloop for audio (a read that found none held) takes 2 ms on the fake clock and brings 96 frames,
+   unless the source stopped delivering (g_pa_capture_stopped: suspended during a retune): then nothing would ever come,
+   so the wait is counted as one without end and the stream fails, which ends the read. Off unless g_pa_capture_on. */
+static int g_pa_capture_on;
+static int16_t g_pa_capture_next;
+static size_t g_pa_capture_held;
+static size_t g_pa_fragment_frames;
+static int g_pa_capture_stopped;
+static int g_pa_waits;
+static int g_pa_unbounded_waits;
+/* At the g_pa_overrun_at_peek-th peek from then on (0: never), the decoder is preempted for g_pa_overrun_ns on the
+   fake clock, and the server's record queue overruns meanwhile (issue #834): it throws its oldest frames away, so what
+   the client holds is g_pa_overrun_held frames numbered from g_pa_overrun_next. */
+static int g_pa_overrun_at_peek;
+static uint64_t g_pa_overrun_ns;
+static int16_t g_pa_overrun_next;
+static size_t g_pa_overrun_held;
+/* The next peek finds a hole in the stream of this many bytes (issue #834), once. */
+static size_t g_pa_hole_bytes;
 static int g_pa_simple_write_fail;
 static int g_pa_simple_write_calls;
 static int g_pa_simple_drain_fail;
@@ -58,8 +102,23 @@ reset_pa_simple_fakes(void) {
     g_pa_simple_new_dev[0] = '\0';
     g_pa_simple_new_app[0] = '\0';
     g_pa_simple_error = 0;
-    g_pa_simple_read_fail = 0;
-    g_pa_simple_read_calls = 0;
+    g_pa_record_peek_fail = 0;
+    g_pa_record_failed = 0;
+    g_pa_record_peeks = 0;
+    g_pa_record_frees = 0;
+    g_pa_lock_depth = 0;
+    g_pa_capture_on = 0;
+    g_pa_capture_next = 0;
+    g_pa_capture_held = 0U;
+    g_pa_fragment_frames = 100U;
+    g_pa_capture_stopped = 0;
+    g_pa_waits = 0;
+    g_pa_unbounded_waits = 0;
+    g_pa_overrun_at_peek = 0;
+    g_pa_overrun_ns = 0U;
+    g_pa_overrun_next = 0;
+    g_pa_overrun_held = 0U;
+    g_pa_hole_bytes = 0U;
     g_pa_simple_write_fail = 0;
     g_pa_simple_write_calls = 0;
     g_pa_simple_drain_fail = 0;
@@ -68,9 +127,19 @@ reset_pa_simple_fakes(void) {
 
 /* The device recovery's clock (audio_output_recovery.h), set by the tests. */
 static uint64_t g_now_ns = 1000000000ULL;
+/* The next clock read is late (issue #834): the clock moves this far first, while the capture holds
+   g_late_clock_frames more, once. */
+static uint64_t g_late_clock_ns;
+static size_t g_late_clock_frames;
 
 uint64_t
 dsd_time_monotonic_ns(void) {
+    if (g_late_clock_ns > 0U) {
+        g_now_ns += g_late_clock_ns;
+        g_pa_capture_held += g_late_clock_frames;
+        g_late_clock_ns = 0U;
+        g_late_clock_frames = 0U;
+    }
     return g_now_ns;
 }
 
@@ -211,23 +280,226 @@ pa_simple_free(pa_simple* s) {
     (void)s;
 }
 
+/* ---- The fake record stream (audio_pulse_record.c) ---- */
+
+static char g_fake_mainloop;
+static char g_fake_context;
+static char g_fake_stream;
+static pa_mainloop_api g_fake_api;
+static int16_t g_fake_fragment[4096];
+static size_t g_fake_fragment_out; /* frames handed over by the last peek and not dropped yet */
+static size_t g_fake_hole_out;     /* bytes of a hole handed over and not dropped yet */
+
+pa_threaded_mainloop*
+pa_threaded_mainloop_new(void) {
+    return (pa_threaded_mainloop*)&g_fake_mainloop;
+}
+
+void
+pa_threaded_mainloop_free(pa_threaded_mainloop* m) {
+    (void)m;
+    g_pa_record_frees++;
+}
+
 int
-pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
+pa_threaded_mainloop_start(pa_threaded_mainloop* m) {
+    (void)m;
+    return 0;
+}
+
+void
+pa_threaded_mainloop_stop(pa_threaded_mainloop* m) {
+    (void)m;
+}
+
+void
+pa_threaded_mainloop_lock(pa_threaded_mainloop* m) {
+    (void)m;
+    g_pa_lock_depth++;
+}
+
+void
+pa_threaded_mainloop_unlock(pa_threaded_mainloop* m) {
+    (void)m;
+    assert(g_pa_lock_depth > 0);
+    g_pa_lock_depth--;
+}
+
+/* A read that found no audio held waits here for the source. */
+void
+pa_threaded_mainloop_wait(pa_threaded_mainloop* m) {
+    (void)m;
+    assert(g_pa_lock_depth == 1);
+    g_pa_waits++;
+    if (g_pa_capture_stopped) {
+        g_pa_unbounded_waits++;
+        g_pa_record_failed = 1;
+        return;
+    }
+    g_now_ns += 2000000ULL;
+    g_pa_capture_held += 96U;
+}
+
+void
+pa_threaded_mainloop_signal(pa_threaded_mainloop* m, int wait_for_accept) {
+    (void)m;
+    (void)wait_for_accept;
+}
+
+pa_mainloop_api*
+pa_threaded_mainloop_get_api(pa_threaded_mainloop* m) {
+    (void)m;
+    return &g_fake_api;
+}
+
+pa_context*
+pa_context_new(pa_mainloop_api* mainloop, const char* name) {
+    (void)mainloop;
+    DSD_SNPRINTF(g_pa_simple_new_app, sizeof(g_pa_simple_new_app), "%s", name ? name : "");
+    return (pa_context*)&g_fake_context;
+}
+
+void
+pa_context_set_state_callback(pa_context* c, pa_context_notify_cb_t cb, void* userdata) {
+    (void)c;
+    (void)cb;
+    (void)userdata;
+}
+
+int
+pa_context_connect(pa_context* c, const char* server, pa_context_flags_t flags, const pa_spawn_api* api) {
+    (void)c;
+    (void)server;
+    (void)flags;
+    (void)api;
+    g_pa_simple_new_calls++;
+    return g_pa_simple_new_fail ? -1 : 0;
+}
+
+pa_context_state_t
+pa_context_get_state(const pa_context* c) {
+    (void)c;
+    return PA_CONTEXT_READY;
+}
+
+int
+pa_context_errno(const pa_context* c) {
+    (void)c;
+    return g_pa_simple_error;
+}
+
+void
+pa_context_disconnect(pa_context* c) {
+    (void)c;
+}
+
+void
+pa_context_unref(pa_context* c) {
+    (void)c;
+}
+
+pa_stream*
+pa_stream_new(pa_context* c, const char* name, const pa_sample_spec* ss, const pa_channel_map* map) {
+    (void)c;
+    (void)name;
+    (void)ss;
+    (void)map;
+    return (pa_stream*)&g_fake_stream;
+}
+
+void
+pa_stream_set_state_callback(pa_stream* s, pa_stream_notify_cb_t cb, void* userdata) {
     (void)s;
-    g_pa_simple_read_calls++;
-    if (g_pa_simple_read_fail) {
-        if (error != NULL) {
-            *error = g_pa_simple_error;
-        }
+    (void)cb;
+    (void)userdata;
+}
+
+void
+pa_stream_set_read_callback(pa_stream* p, pa_stream_request_cb_t cb, void* userdata) {
+    (void)p;
+    (void)cb;
+    (void)userdata;
+}
+
+int
+pa_stream_connect_record(pa_stream* s, const char* dev, const pa_buffer_attr* attr, pa_stream_flags_t flags) {
+    (void)s;
+    (void)attr;
+    (void)flags;
+    DSD_SNPRINTF(g_pa_simple_new_dev, sizeof(g_pa_simple_new_dev), "%s", dev ? dev : "");
+    g_fake_fragment_out = 0U;
+    g_fake_hole_out = 0U;
+    return 0;
+}
+
+pa_stream_state_t
+pa_stream_get_state(const pa_stream* p) {
+    (void)p;
+    return g_pa_record_failed ? PA_STREAM_FAILED : PA_STREAM_READY;
+}
+
+/* From the next peek on, the backend's allocations fail (g_backend_alloc_fails). */
+static int g_pa_peek_runs_out_of_memory;
+
+/* The next fragment the client holds, numbered frames, or none (no data and no length) when it holds none. */
+int
+pa_stream_peek(pa_stream* p, const void** data, size_t* nbytes) {
+    (void)p;
+    assert(g_pa_lock_depth == 1 && g_fake_fragment_out == 0U && g_fake_hole_out == 0U);
+    g_pa_record_peeks++;
+    *data = NULL;
+    *nbytes = 0U;
+    if (g_pa_record_peek_fail) {
         return -1;
     }
-    if (data != NULL) {
-        DSD_MEMSET(data, 0, bytes);
+    if (g_pa_hole_bytes > 0U) {
+        *nbytes = g_pa_hole_bytes;
+        g_fake_hole_out = g_pa_hole_bytes;
+        g_pa_hole_bytes = 0U;
+        return 0;
     }
-    if (error != NULL) {
-        *error = 0;
+    if (g_pa_peek_runs_out_of_memory) {
+        g_backend_alloc_fails = 1; /* from the discard's first read of the client on */
     }
+    const int overrun_now = g_pa_overrun_at_peek == 1;
+    if (g_pa_overrun_at_peek > 0) {
+        g_pa_overrun_at_peek--;
+    }
+    if (overrun_now) {
+        g_now_ns += g_pa_overrun_ns;
+        g_pa_capture_next = g_pa_overrun_next;
+        g_pa_capture_held = g_pa_overrun_held;
+    }
+    size_t frames = g_pa_capture_on ? g_pa_capture_held : 0U;
+    if (frames > g_pa_fragment_frames) {
+        frames = g_pa_fragment_frames;
+    }
+    if (frames > sizeof g_fake_fragment / sizeof g_fake_fragment[0]) {
+        frames = sizeof g_fake_fragment / sizeof g_fake_fragment[0];
+    }
+    for (size_t i = 0; i < frames; i++) {
+        g_fake_fragment[i] = (int16_t)(g_pa_capture_next + (int16_t)i);
+    }
+    g_fake_fragment_out = frames;
+    *data = frames > 0U ? g_fake_fragment : NULL;
+    *nbytes = frames * sizeof(int16_t);
     return 0;
+}
+
+int
+pa_stream_drop(pa_stream* p) {
+    (void)p;
+    assert(g_pa_lock_depth == 1 && (g_fake_fragment_out > 0U || g_fake_hole_out > 0U));
+    g_pa_capture_next = (int16_t)(g_pa_capture_next + (int16_t)g_fake_fragment_out);
+    g_pa_capture_held -= g_fake_fragment_out;
+    g_fake_fragment_out = 0U;
+    g_fake_hole_out = 0U;
+    return 0;
+}
+
+void
+pa_stream_unref(pa_stream* s) {
+    (void)s;
 }
 
 int
@@ -505,16 +777,41 @@ test_pulse_simple_error_paths(void) {
     assert(dsd_audio_open_output(&params) == NULL);
     assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_ACCESS)) == 0);
 
+    /* The input's record stream: a failed peek fails the read with the context's error, and so does a stream that
+       failed while the read waited for audio. A discard fails the same way, and an input closes its record stream. */
     reset_pa_simple_fakes();
-    DSD_MEMSET(&stream, 0, sizeof(stream));
-    stream.handle = (pa_simple*)0x1;
-    stream.is_input = 1;
-    stream.channels = 1;
-    g_pa_simple_read_fail = 1;
+    params.device = "alsa_input.test-source";
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL && in->record != NULL && in->handle == NULL);
+    assert(strcmp(g_pa_simple_new_dev, "alsa_input.test-source") == 0);
+    g_pa_record_peek_fail = 1;
     g_pa_simple_error = PA_ERR_IO;
-    assert(dsd_audio_read(&stream, samples, 4) == -1);
-    assert(g_pa_simple_read_calls == 1);
+    assert(dsd_audio_read(in, samples, 4) == -1);
+    assert(g_pa_record_peeks == 1);
     assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_IO)) == 0);
+    assert(dsd_audio_discard_input(in, g_now_ns) == -1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_IO)) == 0);
+    g_pa_record_peek_fail = 0;
+    g_pa_capture_on = 1;
+    g_pa_capture_stopped = 1;
+    g_pa_simple_error = PA_ERR_KILLED;
+    assert(dsd_audio_read(in, samples, 4) == -1);
+    assert(g_pa_waits == 1 && strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_KILLED)) == 0);
+    assert(g_pa_lock_depth == 0);
+    dsd_audio_close(in);
+    assert(g_pa_record_frees == 1);
+    params.device = NULL;
+
+    /* A hole in the stream is skipped. */
+    reset_pa_simple_fakes();
+    in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_pa_capture_on = 1;
+    g_pa_capture_held = 10U;
+    g_pa_capture_next = 40;
+    g_pa_hole_bytes = 6U;
+    assert(dsd_audio_read(in, samples, 4) == 4 && samples[0] == 40 && samples[3] == 43);
+    dsd_audio_close(in);
 
     reset_pa_simple_fakes();
     DSD_MEMSET(&stream, 0, sizeof(stream));
@@ -848,8 +1145,251 @@ test_pulse_enum_callbacks_and_guards(void) {
     assert(strcmp(dsd_audio_get_error(), "Internal error: unexpected enumeration state") == 0);
 }
 
+/* A mono 48 kHz input on the fake record stream, its capture on. */
+static dsd_audio_stream*
+open_capture_input(void) {
+    reset_pa_simple_fakes();
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = 48000;
+    params.channels = 1;
+    params.bits_per_sample = 16;
+    params.app_name = "dsd-neo-test";
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    g_pa_capture_on = 1;
+    return in;
+}
+
+/* Issue #834: an input discard reads all the client holds, never waiting for more, and keeps the newest of it for the
+   reads that follow: what was captured since the mark, the time before the discard included (a mark 1 ms before it:
+   48 frames at 48 kHz). What a discard kept and no read took is the oldest of what the next one drops. */
+static void
+test_pulse_input_discard_keeps_the_newest(void) {
+    dsd_audio_stream* in = open_capture_input();
+    /* Held: frames 0..299, in fragments of 100. */
+    g_pa_capture_held = 300U;
+    assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 252 && g_pa_waits == 0);
+    int16_t frames[50] = {0};
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 252);
+    /* The carry (253..299) goes first; the read then waits for the source, which brings 300.. */
+    assert(dsd_audio_read(in, frames, 50) == 50 && g_pa_waits == 1);
+    for (int i = 0; i < 50; i++) {
+        assert(frames[i] == (int16_t)(253 + i));
+    }
+    /* Held now: 303..395. A discard of a mark now keeps nothing and takes it all. */
+    assert(dsd_audio_discard_input(in, g_now_ns) == 93);
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 396 && g_pa_waits == 2);
+    /* Held: 397..491. A mark 1 ms ago keeps 48: 47 go, and the next frame read is 444. */
+    assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 47);
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 444);
+    /* The carry (445..491) is the oldest: with 200 more held (492..691), a mark 1 ms ago drops 199 of the 247. */
+    g_pa_capture_held += 200U;
+    assert(dsd_audio_discard_input(in, g_now_ns - 1000000U) == 199);
+    assert(dsd_audio_read(in, frames, 1) == 1 && frames[0] == 644);
+    assert(g_pa_lock_depth == 0);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: an input that holds nothing, its drop run at once (no time since the mark): the discard drops nothing
+   and waits for nothing, and the next read waits for the source as every read does. */
+static void
+test_pulse_input_discard_of_an_empty_input(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_next = 101;
+    assert(dsd_audio_discard_input(in, g_now_ns) == 0 && g_pa_waits == 0);
+    int16_t frame = 0;
+    assert(dsd_audio_read(in, &frame, 1) == 1 && frame == 101 && g_pa_waits == 1);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: the decoder was descheduled after the retune's mark, before the discard began (its first clock read is
+   late by 100 ms): frames 0..239 were held at the mark and 240..5039 (100 ms at 48 kHz) captured meanwhile. Exactly
+   the old frames go: the next frame read is 240. */
+static void
+test_pulse_input_discard_keeps_what_came_before_it_began(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_held = 240U;
+    g_late_clock_ns = 100000000ULL;
+    g_late_clock_frames = 4800U;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    int16_t frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (dropped != 240 || frame != 240) {
+        DSD_FPRINTF(stderr, "a late discard dropped %d, next %d (expected 240 and 240)\n", dropped, frame);
+    }
+    assert(dropped == 240 && frame == 240 && g_pa_waits == 0);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: memory runs out during a discard. Once it read the client (the late discard above: 240 old frames, 4800
+   captured since the mark), the newest frames are kept with no allocation after the read: the next frame read is
+   240. With no memory for the ring that keeps them, the discard reads nothing, and the next frame read is the oldest
+   held. */
+static void
+test_pulse_input_discard_without_memory_loses_no_new_audio(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_held = 240U;
+    g_late_clock_ns = 100000000ULL;
+    g_late_clock_frames = 4800U;
+    g_pa_peek_runs_out_of_memory = 1;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    g_pa_peek_runs_out_of_memory = 0;
+    g_backend_alloc_fails = 0;
+    int16_t frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (dropped != 240 || frame != 240) {
+        DSD_FPRINTF(stderr, "a discard out of memory dropped %d, next %d (expected 240 and 240)\n", dropped, frame);
+    }
+    assert(dropped == 240 && frame == 240);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+
+    in = open_capture_input();
+    g_pa_capture_held = 300U;
+    g_backend_alloc_fails = 1;
+    const int none = dsd_audio_discard_input(in, g_now_ns);
+    g_backend_alloc_fails = 0;
+    frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1);
+    if (none != -1 || frame != 0) {
+        DSD_FPRINTF(stderr, "a discard with no ring returned %d, next %d (expected -1 and 0)\n", none, frame);
+    }
+    assert(none == -1 && frame == 0);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: the server's record queue overruns during the discard. The decoder was preempted for 100 ms before the
+   discard's third peek, and the server threw its oldest frames away meanwhile: frames 0..299 were held at the mark,
+   the first two fragments took 0..199, and what the client holds from there on is 4800 frames numbered from 20000. The
+   discard keeps the frames captured since the mark, counted by time: 100 ms, all the overrun left, so only the old
+   200 go, and every frame the overrun left is read, in order. */
+static void
+test_pulse_input_discard_keeps_what_an_overrun_left(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_held = 300U;
+    g_pa_overrun_at_peek = 3;
+    g_pa_overrun_ns = 100000000ULL;
+    g_pa_overrun_next = 20000;
+    g_pa_overrun_held = 4800U;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns);
+    int16_t frames[100] = {0};
+    assert(dsd_audio_read(in, frames, 100) == 100);
+    if (dropped != 200 || frames[0] != 20000) {
+        DSD_FPRINTF(stderr, "an overrun's discard dropped %d, then read %d (expected 200 and 20000)\n", dropped,
+                    frames[0]);
+    }
+    assert(dropped == 200 && g_pa_waits == 0);
+    for (int i = 0; i < 100; i++) {
+        assert(frames[i] == (int16_t)(20000 + i));
+    }
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* Issue #834: the source stops delivering during a retune (suspended): the discard reads only what is held, never
+   waits for more, and returns. 1000 frames held at a mark 5 ms ago: 760 go, the newest 240 are kept and read first. */
+static void
+test_pulse_input_discard_never_waits_on_a_stopped_source(void) {
+    dsd_audio_stream* in = open_capture_input();
+    g_pa_capture_held = 1000U;
+    g_pa_capture_stopped = 1;
+    const int dropped = dsd_audio_discard_input(in, g_now_ns - 5000000ULL);
+    if (g_pa_unbounded_waits != 0 || dropped != 760) {
+        DSD_FPRINTF(stderr,
+                    "a stopped source's discard made %d reads that wait without end, dropped %d (expected 0, 760)\n",
+                    g_pa_unbounded_waits, dropped);
+    }
+    assert(g_pa_unbounded_waits == 0 && g_pa_waits == 0 && dropped == 760);
+    int16_t frame = -1;
+    assert(dsd_audio_read(in, &frame, 1) == 1 && frame == 760);
+    dsd_audio_close(in);
+    reset_pa_simple_fakes();
+}
+
+/* What a frame of the keep ring's buffer holds before any read writes it: a value no test frame takes. */
+#define KEEP_UNWRITTEN ((int16_t)-32768)
+
+/* A keep ring of @p cap mono frames, every frame of it unwritten, through which frames 1..@p n passed. */
+static pulse_keep_ring
+keep_ring_after(size_t cap, size_t n) {
+    pulse_keep_ring ring = {(int16_t*)malloc(cap * sizeof(int16_t)), cap, 1U, 0U};
+    assert(ring.buf != NULL);
+    for (size_t i = 0; i < cap; i++) {
+        ring.buf[i] = KEEP_UNWRITTEN;
+    }
+    for (size_t i = 1; i <= n; i++) {
+        const int16_t frame = (int16_t)i;
+        pulse_keep_push(&ring, &frame, 1U);
+    }
+    return ring;
+}
+
+/* The carry's frames freed, the carry empty (it is the test's own, not one an input stream allocated). */
+static void
+keep_carry_clear(struct audio_input_carry* carry) {
+    free(carry->frames);
+    carry->frames = NULL;
+    carry->len = 0U;
+    carry->pos = 0U;
+}
+
+/* Issue #834: the discard's ring is sized for the most it could keep, and usually holds far less. The newest frames go
+   to the carry, oldest first, from the frames the discard read only: a ring that never wrapped moves its kept frames
+   to the front and touches none past what was read (no frame it never wrote is read or moved), and one whose kept
+   frames start at its front is left as it is. */
+static void
+test_pulse_keep_moves_only_frames_read(void) {
+    struct audio_input_carry carry = {NULL, 0U, 0U};
+    pulse_keep_ring ring = keep_ring_after(64U, 10U);
+    pulse_keep_to_carry(&carry, &ring, 4U);
+    assert(carry.len == 4U && carry.pos == 0U);
+    for (size_t i = 0; i < 4U; i++) {
+        assert(carry.frames[i] == (int16_t)(7 + i));
+    }
+    int untouched = 1;
+    for (size_t i = 10U; i < 64U; i++) {
+        untouched &= carry.frames[i] == KEEP_UNWRITTEN;
+    }
+    if (!untouched) {
+        DSD_FPRINTF(stderr, "a keep moved frames of the ring it never wrote\n");
+    }
+    assert(untouched);
+    keep_carry_clear(&carry);
+
+    /* Wrapped: 16 frames through 8, the newest 8 kept, starting at the front. */
+    ring = keep_ring_after(8U, 16U);
+    pulse_keep_to_carry(&carry, &ring, 8U);
+    assert(carry.len == 8U);
+    for (size_t i = 0; i < 8U; i++) {
+        assert(carry.frames[i] == (int16_t)(9 + i));
+    }
+    keep_carry_clear(&carry);
+
+    /* Wrapped, the kept frames across the end: 13 through 8, the newest 5 (9..13) from frame 0 of the ring on. */
+    ring = keep_ring_after(8U, 13U);
+    pulse_keep_to_carry(&carry, &ring, 5U);
+    assert(carry.len == 5U);
+    for (size_t i = 0; i < 5U; i++) {
+        assert(carry.frames[i] == (int16_t)(9 + i));
+    }
+    keep_carry_clear(&carry);
+
+    /* All 3 read, all kept: already in order. */
+    ring = keep_ring_after(32U, 3U);
+    pulse_keep_to_carry(&carry, &ring, 32U);
+    assert(carry.len == 3U && carry.frames[0] == 1 && carry.frames[1] == 2 && carry.frames[2] == 3
+           && carry.frames[3] == KEEP_UNWRITTEN);
+    keep_carry_clear(&carry);
+}
+
 int
 main(void) {
+    test_pulse_keep_moves_only_frames_read();
     test_pulse_size_helpers();
     test_pulse_ring_wrap_read_and_drop();
     test_pulse_output_attr_and_async_buffers();
@@ -860,6 +1400,12 @@ main(void) {
     test_pulse_async_device_recovery();
     test_pulse_sync_device_recovery();
     test_pulse_enum_callbacks_and_guards();
+    test_pulse_input_discard_of_an_empty_input();
+    test_pulse_input_discard_keeps_the_newest();
+    test_pulse_input_discard_keeps_what_came_before_it_began();
+    test_pulse_input_discard_keeps_what_an_overrun_left();
+    test_pulse_input_discard_without_memory_loses_no_new_audio();
+    test_pulse_input_discard_never_waits_on_a_stopped_source();
     return 0;
 }
 

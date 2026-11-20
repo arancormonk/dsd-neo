@@ -26,7 +26,15 @@ extern "C" {
 
 void dsd_app_install_telemetry_hooks(void);
 void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
+/* The session ended (dsd_app_frontend_runtime_stop()): the state snapshots outlive it (snapshot.h), their key copies do
+ * not. Wipes the published copy's key material now (DSD_SECURE_ZERO) and the consumer's at its next read, which then
+ * copies the published state again; a later publish fills both anew. */
+void dsd_app_snapshot_wipe_keys(void);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
+/* The same for the options snapshots (dsd_app_frontend_runtime_stop()): their API keys and the rdio-scanner URL
+ * (rdio_api_key, rdio_api_url, rr_app_key, and api_token, which no publish copies) are wiped from the published copy
+ * now (DSD_SECURE_ZERO) and from the consumer's at its next read; a later publish fills both anew. */
+void dsd_app_opts_snapshot_wipe_keys(void);
 
 /* Whether a publication found the P25 SM tick guard busy and was put off (1), until the next publish of the same
  * snapshot: the drain retries it at its start (dsd_app_drain_cmds()), and the frame-sync hunt publishes every 50 ms. */

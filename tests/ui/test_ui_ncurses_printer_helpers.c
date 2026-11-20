@@ -60,6 +60,7 @@
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/decode_clock.h"
+#include "ui_key_status.h"
 #include "ui_row.h"
 #include "unit_activity_panel.h"
 
@@ -3411,30 +3412,134 @@ test_loaded_scalar_key_status(void) {
     free(state);
 }
 
+/* Whether the capture holds @p needle, as @p want says it must (1) or must not (0); prints @p what when it does not. */
+static int
+capture_check(const char* what, const char* needle, int want) {
+    const int got = strstr(g_printw_capture, needle) != NULL;
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", what, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Slot @p slot's open DMR group call on talkgroup @p tg, Basic Privacy under FID 0x10 (a Motorola LC). */
+static void
+open_dmr_basic_privacy_call(dsd_state* state, uint8_t slot, uint64_t tg) {
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = tg;
+    observation.policy_target_id = tg;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    if (slot == 0U) {
+        state->dmrburstL = 16;
+        state->dmr_so = 0x40U;
+        state->dmr_fid = 0x10U;
+    } else {
+        state->dmrburstR = 16;
+        state->dmr_soR = 0x40U;
+        state->dmr_fidR = 0x10U;
+    }
+}
+
+/* Slot 1's call keyed from talkgroup 123's key (51), the working key both slots share: what
+   keyring_dmr_tg_autoload_apply() leaves, over the operator's own key @p operator_key (0: none). */
+static void
+seed_slot1_autoloaded_key(dsd_state* state, unsigned long long operator_key) {
+    const unsigned long long key[6] = {51ULL, 51ULL, 0ULL, 0ULL, 0ULL, 51ULL};
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.installed[i] = key[i];
+        state->dmr_tg_autoload.slot_key[0][i] = key[i];
+        state->dmr_tg_autoload.baseline[i] = 0ULL;
+    }
+    state->dmr_tg_autoload.baseline[0] = operator_key;
+    state->dmr_tg_autoload.baseline_flags[0] = operator_key != 0ULL ? 1U : 0U;
+    state->dmr_tg_autoload.baseline_flags[1] = 0U;
+    state->dmr_tg_autoload.installed_flags[0] = state->dmr_tg_autoload.installed_flags[1] = 1U;
+    state->dmr_tg_autoload.slot_key_flags[0][0] = state->dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state->dmr_tg_autoload.slot_tg[0] = 123U;
+    state->dmr_tg_autoload.active = 1U;
+    state->K = 51ULL;
+    state->K1 = state->H = 51ULL;
+    state->basic_key_present = 1U;
+    state->hytera_key_segments = 1U;
+}
+
+/* A slot row's BP Key is its own call's key, or none, never the working key another slot's talkgroup put there, and
+   --show-keys alone reveals it. The Loaded lines show the keys the user loaded, not a talkgroup's. */
+static void
+test_slot_row_shows_its_own_calls_key(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    int rc = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+        assert(state != NULL);
+        open_dmr_basic_privacy_call(state, 0U, 123U);
+        open_dmr_basic_privacy_call(state, 1U, 124U);
+        seed_slot1_autoloaded_key(state, with_direct ? 70ULL : 0ULL);
+
+        opts.show_keys = 1;
+        ui_slot_view slot1 = ui_build_slot_view(&opts, state, 0);
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot1);
+        rc |= capture_check("slot 1 (talkgroup 123) shows its key", "BP Key: 051", 1);
+        ui_slot_view slot2 = ui_build_slot_view(&opts, state, 1);
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot2);
+        rc |= capture_check("slot 2 (talkgroup 124) never shows talkgroup 123's key", "051", 0);
+        rc |= capture_check(with_direct ? "slot 2 shows the key set directly" : "slot 2, which has no key, shows none",
+                            with_direct ? "BP Key: 070" : "BP Key", with_direct);
+        opts.show_keys = 0;
+        reset_printw_capture();
+        ui_render_slot_basic_privacy(&opts, state, &slot1);
+        rc |= capture_check("without --show-keys slot 1's key is redacted", "BP Key: [redacted]", 1);
+        rc |= capture_check("without --show-keys slot 1's key value is hidden", "051", 0);
+
+        reset_printw_capture();
+        ui_render_forced_key_status(state, 1);
+        rc |= capture_check("the Loaded lines never show talkgroup 123's key", "051", 0);
+        rc |= capture_check("the Loaded lines show no Hytera key the user never loaded", "Hytera", 0);
+        rc |= capture_check(with_direct ? "the Loaded lines show the key set directly" : "no key is loaded",
+                            with_direct ? "Moto BP Key Loaded (not forced): 070" : "Moto BP Key Loaded", with_direct);
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+    assert(rc == 0);
+}
+
 static void
 test_hytera_key_format_helper(void) {
     static dsd_state state;
     char key_text[96];
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(key_text, 0, sizeof(key_text));
+    ui_dmr_key key;
 
     state.K1 = 0x123456789AULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 1U), "123456789A") == 0);
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 0, 1U), DSD_SECRET_REDACTED) == 0);
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 1U), "123456789A") == 0);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 0, 1U), DSD_SECRET_REDACTED) == 0);
 
     state.K1 = 0x1111222233334444ULL;
     state.K2 = 0x5555666677778888ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 2U), "1111222233334444 5555666677778888")
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 2U), "1111222233334444 5555666677778888")
            == 0);
 
     state.K3 = 0x9999AAAABBBBCCCCULL;
     state.K4 = 0xDDDDEEEEFFFF0001ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 4U),
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 4U),
                   "1111222233334444 5555666677778888 9999AAAABBBBCCCC DDDDEEEEFFFF0001")
            == 0);
 
     state.K1 = 0xABCDEF123456ULL;
-    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 3U), "CDEF123456") == 0);
+    ui_dmr_key_working(&state, &key);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &key, 1, 3U), "CDEF123456") == 0);
 }
 
 static void
@@ -3669,7 +3774,7 @@ test_patch_and_slot_helpers(void) {
         .kid = 22U,
         .mi = 0x5555666677778888ULL,
     };
-    assert(dsd_call_state_update_crypto(&state, 1U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
 
     ui_slot_view right = ui_build_slot_view(&(dsd_opts){0}, &state, 1);
     assert(right.slot_no == 2);
@@ -3743,7 +3848,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     crypto.mi = 0x1122334455667788ULL;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 1.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
 
     ui_slot_view slot = ui_build_slot_view(&no_opts, state, 0);
     assert(slot.canonical_p25 == 1);
@@ -3945,7 +4050,7 @@ test_slot_header_burst_column_is_fixed(void) {
     crypto.algid = 0x84U;
     crypto.kid = 0x2468U;
     crypto.observed_m = 1.5;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     capture_slot_header_line(state, 0);
     assert_capture_contains("Group Encrypted");
     assert(capture_burst_separator_offset() == baseline_offset);
@@ -4700,6 +4805,96 @@ test_scan_timing_row_truncates_to_panel_width(void) {
     g_unicode_stub = 1;
 }
 
+/* The silent-channel skip's status is the phrase itself (issue #834 R7): no trailing field, and every variant fits the
+   phrase column, so the countdown and the budgets keep their columns, for both owners and both stays it is shown on. */
+static void
+test_scan_timing_row_quiet_variants(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell          1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Quiet check         1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_INPUT;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: input     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: tuner     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_RATE;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: rate      1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_MODES;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: modes     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_WIDTH;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: width     1.8s/  3.0s  hold 2.0s");
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_NO_WIDTH;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: width     1.8s/  3.0s  hold 2.0s");
+
+    /* -Y: its hangtime carries the status too. */
+    opts.trunk_scan_enabled = 0;
+    opts.scanner_mode = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Quiet check         1.4s/  3.0s");
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_MODES;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: No check: modes     1.4s/  3.0s");
+
+    /* A stay that explains the visit keeps its own phrase. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CARRIER, 1U, 101.9, 2000U, 0U, 0U);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_TUNER;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Carrier             1.9s/  2.0s");
+}
+
+/* A narrow terminal cuts the row after whole fields, and the phrase is the first field: the status survives every cut
+   that keeps the row at all. ASCII output, the one-cell path a PDCurses build takes, names the "..." marker. */
+static void
+test_scan_timing_row_quiet_variants_cut(void) {
+    g_unicode_stub = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    seed_visit(&state, 20000U, 112.3);
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_NO_CHECK;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_WIDTH;
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: No check: width     1.8s/  3.0s  Visit:  12.3s/ 20.0s  hold 2.0s");
+    /* The dwell unarmed after a hold's release, and the cap still paused by it: the row outgrows 80 columns. No live
+       countdown either, so the rendered bytes do not hang on the clock the renderer reads for itself. */
+    state.scan_timing.deadline_m = -1.0;
+    seed_visit(&state, 20000U, -1.0);
+    assert_scan_timing_row(
+        &opts, &state, "| Scan Timing: No check: width                  Visit: paused         dwell 3.0s  hold 2.0s");
+
+    g_stub_max_x = 80;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: No check: width                  Visit: paused...\n");
+    assert(strlen(g_printw_capture) <= 80U);
+
+    g_stub_max_x = 40;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: No check: width...\n");
+    assert(strlen(g_printw_capture) <= 40U);
+
+    state.scan_timing.quiet_status = DSD_SCAN_QUIET_STATUS_CHECKING;
+    state.scan_timing.quiet_reason = DSD_SCAN_QUIET_REASON_NONE;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    assert_capture_equals("| Scan Timing: Quiet check...\n");
+    g_stub_max_x = 80;
+    g_unicode_stub = 1;
+}
+
 #if defined(NCURSES_VERSION)
 static void
 test_scan_timing_row_real_cursor(void) {
@@ -4930,7 +5125,7 @@ test_tetra_call_block(void) {
     DSD_MEMSET(&crypto, 0, sizeof crypto);
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.observed_m = 10.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_TETRA_NDB_POS, &crypto) > 0);
     assert(ui_format_tetra_call_lines(state, 10.5, &lines) == 2);
     assert_tetra_call_line0(&lines, "CALL   - TGT: [        ] SRC: [        ] Voice Encrypted");
     assert_tetra_call_line1(&lines, "       | ");
@@ -5566,6 +5761,8 @@ main(void) {
     test_scan_timing_row_is_silent_without_a_scan();
     test_scan_timing_row_placement();
     test_scan_timing_row_truncates_to_panel_width();
+    test_scan_timing_row_quiet_variants();
+    test_scan_timing_row_quiet_variants_cut();
 #if defined(NCURSES_VERSION)
     test_scan_timing_row_real_cursor();
 #endif
@@ -5576,6 +5773,7 @@ main(void) {
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
     test_loaded_scalar_key_status();
+    test_slot_row_shows_its_own_calls_key();
     test_edacs_tree_update_helpers();
     test_sync_tree_follows_scan_class();
     test_history_merged_slot_tags();

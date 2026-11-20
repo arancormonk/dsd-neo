@@ -29,6 +29,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -288,6 +289,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
         /* Reported once the callsign is on the call: a signal search reads it from there when it hears this. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH2 (CRC ERR) ");
@@ -348,6 +350,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
          * they are on the call, so the frame that carries them is enough for the search to name the stations. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH (CRC ERR) ");
@@ -576,6 +579,8 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
     if (info->err == 0) {
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        /* FICH Golay(24,12) and CRC-16 passed: activity to a scan quiet check (issue #834). */
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
         info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
         info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);

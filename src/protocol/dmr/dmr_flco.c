@@ -46,6 +46,7 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
+#include "dmr_mono_slot.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -109,6 +110,10 @@ typedef struct {
     uint8_t burst_slot;
     uint8_t slot_collapsed;
     uint8_t slot_idx;
+    /* The slot whose call's encryption this LC tells, and whether that slot is known: the slot it is decoded on, after
+       any fold onto slot 0 (dmr_mono_folds_standalone_burst()). */
+    uint8_t voice_slot;
+    uint8_t voice_slot_known;
     uint8_t unk;
     uint8_t is_kenwood_sc;
     int protected_lc;
@@ -127,20 +132,48 @@ dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
     return (ctx != NULL && ctx->opts != NULL) ? ctx->opts->show_keys : 0;
 }
 
+/* The Basic Privacy and Hytera key a call is decrypted with: K, K1, K2, K3, K4, H, then basic_key_present and
+   hytera_key_segments. */
+typedef struct {
+    unsigned long long int words[6];
+    uint8_t flags[2];
+} dmr_flco_call_key;
+
+/* The key the LC's call on its slot is keyed with. Where the talkgroup key autoload keys its voice (no forced key, no
+   ALG ID), that is the key its own talkgroup leaves (keyring_dmr_tg_autoload_preview()), never the working key another
+   talkgroup's call loaded; otherwise the working key. Only an LC whose check passed names its call's talkgroup: one
+   whose checksum failed shows the working key the voice is keyed with. */
+static void
+dmr_flco_call_key_of(const dmr_flco_ctx* ctx, dmr_flco_call_key* key) {
+    const dsd_state* state = ctx->state;
+    const int live_algid = ctx->slot == 0U ? state->payload_algid : state->payload_algidR;
+    if (ctx->CRCCorrect == 1U && state->M == 0 && live_algid == 0 && ctx->slot < DSD_CALL_STATE_SLOT_COUNT) {
+        keyring_dmr_tg_autoload_preview(state, ctx->slot, ctx->target, key->words, key->flags);
+        return;
+    }
+    key->words[0] = state->K;
+    key->words[1] = state->K1;
+    key->words[2] = state->K2;
+    key->words[3] = state->K3;
+    key->words[4] = state->K4;
+    key->words[5] = state->H;
+    key->flags[0] = state->basic_key_present;
+    key->flags[1] = state->hytera_key_segments;
+}
+
 static unsigned int
-dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
-    const dsd_state* state = (ctx != NULL) ? ctx->state : NULL;
-    if (state == NULL
-        || (!dsd_key_hytera_present(state) && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
+dmr_flco_hytera_key_segment_count(const dmr_flco_call_key* key) {
+    const int hytera_present = key->flags[1] != 0U || key->words[1] != 0ULL;
+    if (!hytera_present && key->words[2] == 0ULL && key->words[3] == 0ULL && key->words[4] == 0ULL) {
         return 0U;
     }
-    if (state->hytera_key_segments == 1U || state->hytera_key_segments == 2U || state->hytera_key_segments == 4U) {
-        return state->hytera_key_segments;
+    if (key->flags[1] == 1U || key->flags[1] == 2U || key->flags[1] == 4U) {
+        return key->flags[1];
     }
-    if (state->K3 != 0ULL || state->K4 != 0ULL) {
+    if (key->words[3] != 0ULL || key->words[4] != 0ULL) {
         return 4U;
     }
-    if (state->K2 != 0ULL) {
+    if (key->words[2] != 0ULL) {
         return 2U;
     }
     return 1U;
@@ -148,14 +181,14 @@ dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
 
 static const char*
 dmr_flco_format_hytera_basic_key(char* key_text, size_t key_text_size, const dmr_flco_ctx* ctx,
-                                 unsigned int segment_count) {
+                                 const dmr_flco_call_key* key, unsigned int segment_count) {
     if (segment_count == 2U || segment_count == 4U) {
-        const unsigned long long segments[4] = {ctx->state->K1, ctx->state->K2, ctx->state->K3, ctx->state->K4};
+        const unsigned long long segments[4] = {key->words[1], key->words[2], key->words[3], key->words[4]};
         return dsd_secret_format_u64_segments(key_text, key_text_size, dmr_flco_show_keys(ctx), segments,
                                               segment_count);
     }
-    return dsd_secret_format_hex(key_text, key_text_size, dmr_flco_show_keys(ctx), ctx->state->K1 & 0xFFFFFFFFFFULL,
-                                 10U, 0);
+    return dsd_secret_format_hex(key_text, key_text_size, dmr_flco_show_keys(ctx), key->words[1] & 0xFFFFFFFFFFULL, 10U,
+                                 0);
 }
 
 static void
@@ -171,11 +204,6 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
     }
 }
 
-static int
-dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
-    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
-}
-
 void
 dmr_note_burst_slot(const dsd_opts* opts, dsd_state* state, int slot) {
     if (!state) {
@@ -187,7 +215,7 @@ dmr_note_burst_slot(const dsd_opts* opts, dsd_state* state, int slot) {
         return;
     }
     const uint8_t lane = (uint8_t)(slot & 1);
-    const int folds = opts != NULL && dmr_flco_single_slot_collapse(opts, state);
+    const int folds = opts != NULL && dmr_mono_folds_standalone_burst(opts, state);
     dsd_position_dmr_note_lane_burst(state, folds ? 0U : lane, lane);
 }
 
@@ -227,12 +255,14 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->type = type;
     ctx->restchannel = -1;
 
-    const int collapse = dmr_flco_single_slot_collapse(opts, state);
+    const int collapse = dmr_mono_folds_standalone_burst(opts, state);
     ctx->burst_slot = (uint8_t)(state->currentslot & 1);
     ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0);
     if (collapse) {
         state->currentslot = 0;
     }
+    ctx->voice_slot = (uint8_t)(state->currentslot & 1);
+    ctx->voice_slot_known = (uint8_t)(dmr_slot_is_known(state) != 0);
 
     ctx->slot = state->currentslot;
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
@@ -446,13 +476,13 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
         DSD_FPRINTF(stderr, " Data Terminator (TD_LC) ");
         DSD_FPRINTF(stderr, "%s", KNRM);
 
-        ctx->state->data_header_format[ctx->slot] = 7;
-        ctx->state->data_header_sap[ctx->slot] = 0;
-        ctx->state->data_header_valid[ctx->slot] = 0;
-        ctx->state->data_conf_data[ctx->slot] = 0;
-        ctx->state->data_block_poc[ctx->slot] = 0;
-        ctx->state->data_byte_ctr[ctx->slot] = 0;
-        ctx->state->data_ks_start[ctx->slot] = 0;
+        ctx->state->data_header_format[ctx->slot_idx] = 7;
+        ctx->state->data_header_sap[ctx->slot_idx] = 0;
+        ctx->state->data_header_valid[ctx->slot_idx] = 0;
+        ctx->state->data_conf_data[ctx->slot_idx] = 0;
+        ctx->state->data_block_poc[ctx->slot_idx] = 0;
+        ctx->state->data_byte_ctr[ctx->slot_idx] = 0;
+        ctx->state->data_ks_start[ctx->slot_idx] = 0;
         return 1;
     }
 
@@ -576,10 +606,17 @@ dmr_flco_handle_hytera_unknown_or_fid(dmr_flco_ctx* ctx) {
 }
 
 /* A checked Hytera Enhanced LC re-keys the slot as a PI header does (issue #729): in the voice header its MI is
-   superframe 0's; embedded, it is assembled at VC6 ahead of that burst's audio, and keys the next superframe. */
+   superframe 0's; embedded, it is assembled at VC6 ahead of that burst's audio, and keys the next superframe. One
+   naming no cipher the decoder knows (@p cipher_known 0) checks nothing to keep, as such a PI header does: whatever
+   trust an earlier one gave the slot, and the chain it anchored, are gone. */
 static void
-dmr_flco_note_hytera_rekey(const dmr_flco_ctx* ctx) {
+dmr_flco_note_hytera_rekey(const dmr_flco_ctx* ctx, int cipher_known) {
     const uint8_t slot = ctx->slot != 0U ? 1U : 0U;
+    if (!cipher_known) {
+        ctx->state->dmr_crypto_pi_verified[slot] = 0U;
+        dmr_vcrypt_lose(ctx->state, slot);
+        return;
+    }
     ctx->state->dmr_crypto_pi_verified[slot] = 1U;
     if (ctx->type == 1U) {
         dmr_vcrypt_note_first(ctx->state, slot);
@@ -635,9 +672,16 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_miR = mi;
         }
         dmr_enc_class_force(ctx->state, ctx->slot, 1);
+        // Its own checksum passed and it names the call's cipher, as a PI header does (its FLCO 0x02 is the ALG ID's
+        // low six bits, so the ALG ID is never 0): the slot's voice is held no more, for a cipher the decoder knows
+        // (Hytera Enhanced RC4, 0x02), as for that PI header.
+        const int cipher_known = dmr_vcrypt_vendor_cipher_known(0x68U, alg);
+        if (cipher_known && dsd_dmr_voice_hold_applies(ctx->opts, ctx->state)) {
+            dmr_enc_class_release_hold(ctx->state, ctx->slot);
+        }
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
         *ctx->IrrecoverableErrors = 0;
-        dmr_flco_note_hytera_rekey(ctx);
+        dmr_flco_note_hytera_rekey(ctx, cipher_known);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " (Checksum Err);");
@@ -721,6 +765,131 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
     ctx->state->dmr_lrrp_gps[idx][0] = '\0';
 }
 
+/* An LC that passed its check (CRCCorrect, a RAS acceptance under -F included) said how its slot's call is encrypted,
+   as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
+   the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
+   failed check, a protected LC or an FEC failure says nothing. */
+/* Whether this LC's slot's voice is held (dmr_enc_class_hold()), where the hold applies: not on the single-slot decoder
+   without trunking or for direct-mode traffic, whose one lane carries both slots (dsd_dmr_voice_hold_applies()). */
+static int
+dmr_flco_voice_held(const dmr_flco_ctx* ctx) {
+    return dsd_dmr_voice_hold_applies(ctx->opts, ctx->state) && ctx->state->dmr_enc_class_held[ctx->voice_slot] != 0U;
+}
+
+static int
+dmr_flco_ends_voice_hold(const dmr_flco_ctx* ctx) {
+    return ctx->CRCCorrect == 1U && ctx->voice_slot_known && dmr_flco_lc_readable(ctx);
+}
+
+/* Where the hold does not apply (dsd_dmr_voice_hold_applies(): direct-mode traffic, -fr without trunking) an LC ends
+   none either: a direct-mode LC is folded onto lane 0 whatever its slot, so it would end a repeater slot's hold that
+   no word of that slot's spoke for. */
+static void
+dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
+    if (!dmr_flco_ends_voice_hold(ctx) || !dsd_dmr_voice_hold_applies(ctx->opts, ctx->state)) {
+        return;
+    }
+    dmr_enc_class_release_hold(ctx->state, ctx->voice_slot);
+    dmr_enc_class_release_hold(ctx->state, ctx->burst_slot);
+}
+
+/* The --dmr-force-algid value the voice path installed as a fallback while the slot was held
+   (dsd_dmr_apply_forced_algid(): that ALG ID with key ID 0xFF) came from a privacy bit no check passed: the checked LC
+   that ends the hold drops it with the classification, and the voice path installs it again if that LC's own privacy
+   bit asks. */
+static void
+dmr_flco_drop_forced_fallback(const dmr_flco_ctx* ctx) {
+    const int forced = dsd_dmr_forced_algid(ctx->state);
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    if (forced != 0 && *live.algid == forced && *live.keyid == 0xFF) {
+        *live.algid = 0;
+        *live.keyid = 0;
+    }
+}
+
+/* A checked LC that ends a hold and declares clear voice (no privacy bit) says the call is clear: the ALG ID, key ID and
+   MI the slot took while held (a PI header naming no cipher the decoder has, which kept the hold, or a forced fallback)
+   go with the held classification, so its voice plays as clear. A forced key plays as before. One that declares
+   encryption drops a forced fallback only (dmr_flco_drop_forced_fallback()). The privacy bit read is the standard one,
+   or a Kirisun LC's (FID 0x0A), which sits in the same place; no other unread shape's is read. */
+static void
+dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
+    if ((ctx->lc_so & 0x40U) != 0U) {
+        dmr_flco_drop_forced_fallback(ctx);
+        return;
+    }
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    *live.algid = 0;
+    *live.keyid = 0;
+    *live.mi = 0ULL;
+    // A Kirisun PI header's encrypted late-entry mode went with that cipher (dmr_pi_handle_kirisun()): left, it would
+    // key the clear call again from its next single burst. A Kirisun LC's own clear mode stays.
+    if (ctx->state->dmr_le_vendor[ctx->voice_slot] == DMR_LE_VENDOR_KIRISUN_ENC) {
+        dmr_le_vendor_reset(ctx->state, ctx->voice_slot);
+    }
+}
+
+/* A checked Kirisun LC that ended its slot's hold and declared clear voice dropped the cipher the slot took while held
+   (dmr_flco_drop_held_crypto()); no voice publication follows on that path, so the slot's active DMR call hears it
+   here: clear, with no ALG ID, key ID or MI (the PI's received ones contradicted), and so does DMR's record of what it
+   last published for the call, which a heal restores (dmr_flco_heal_restore()). */
+static void
+dmr_flco_publish_kirisun_clear(const dmr_flco_ctx* ctx) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(ctx->state, ctx->voice_slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DMR(call.protocol)) {
+        return;
+    }
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+        .contradicted = (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID),
+        .enc_observed = DSD_CALL_ENC_OBSERVED_CLEAR,
+    };
+    if (dsd_call_state_update_crypto(ctx->state, ctx->voice_slot, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) > 0) {
+        dmr_note_published_live_crypto(ctx->state, ctx->voice_slot, 0, 0);
+    }
+}
+
+/* A voice LC that passed its check in a shape the decoder reads no privacy from (Tait FID 0x58, an unknown FID, the
+   Motorola and Hytera FLCOs it does not parse: dmr_flco_handle_motorola_or_tait(),
+   dmr_flco_handle_hytera_unknown_or_fid()) says as much as such a call ever says: its voice is judged from then on as
+   on a first landing, not held. On a held slot the classification and the live FID and service options came from no
+   check of the call's (dmr_flco_sync_active_call_state()), so they go first, as on a first landing. A Kirisun LC (FID
+   0x0A) takes that path too, but the decoder reads its privacy bit (dmr_flco_detect_kirisun_le()): the slot is
+   classified by it before the hold ends, so an encrypted Kirisun call is not played as clear. */
+static void
+dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
+    if (ctx->unk != 1U || ctx->type == 2U) {
+        return;
+    }
+    if (dmr_flco_ends_voice_hold(ctx) && dmr_flco_voice_held(ctx)) {
+        dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+        if (ctx->fid == 0x0AU) {
+            dmr_flco_drop_held_crypto(ctx); // a Kirisun LC's privacy bit is read
+            if ((ctx->lc_so & 0x40U) == 0U) {
+                dmr_flco_publish_kirisun_clear(ctx);
+            }
+        } else {
+            dmr_flco_drop_forced_fallback(ctx); // no privacy bit is read: nothing says the call is clear
+        }
+        unsigned int fid = 0U;
+        unsigned int so = 0U;
+        if (ctx->fid == 0x0AU) {
+            fid = ctx->fid;
+            so = dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, ctx->type == 1U);
+        }
+        if (ctx->voice_slot == 0U) {
+            ctx->state->dmr_fid = fid;
+            ctx->state->dmr_so = so;
+        } else {
+            ctx->state->dmr_fidR = fid;
+            ctx->state->dmr_soR = so;
+        }
+    }
+    dmr_flco_release_voice_hold(ctx);
+}
+
 static void
 dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // The privacy bit is filtered through the per-slot classification hysteresis before it can
@@ -730,17 +899,25 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // aggressive default the masked CRC never verifies, so those observations must repeat
     // before they can flip an established classification.
     ctx->lc_so = ctx->so;
-    if (dmr_slot_is_known(ctx->state)) {
+    if (ctx->voice_slot_known) {
+        // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
+        // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
+        // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
+        // heal restoring what one wrote) or from a PI header naming no cipher, and so did a forced ALG ID fallback.
+        if (ctx->CRCCorrect == 1U && dmr_flco_voice_held(ctx)) {
+            dmr_enc_class_reset(ctx->state, ctx->voice_slot);
+            dmr_flco_drop_held_crypto(ctx);
+        }
         const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
-        ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, (uint8_t)(ctx->state->currentslot & 1), ctx->so, strong);
-    }
-    if (ctx->state->currentslot == 0) {
-        ctx->state->dmr_fid = ctx->fid;
-        ctx->state->dmr_so = ctx->so;
-    }
-    if (ctx->state->currentslot == 1) {
-        ctx->state->dmr_fidR = ctx->fid;
-        ctx->state->dmr_soR = ctx->so;
+        ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, ctx->voice_slot, ctx->so, strong);
+        dmr_flco_release_voice_hold(ctx);
+        if (ctx->voice_slot == 0U) {
+            ctx->state->dmr_fid = ctx->fid;
+            ctx->state->dmr_so = ctx->so;
+        } else {
+            ctx->state->dmr_fidR = ctx->fid;
+            ctx->state->dmr_soR = ctx->so;
+        }
     }
     if (ctx->opts->trunk_is_tuned == 1) {
         /* The LC keeps the carrier alive; it holds the voice channel only for a slot the receive policy admits
@@ -860,26 +1037,50 @@ dmr_flco_crypto_carried(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t algid, ui
     return carried;
 }
 
+/* Whether the call this LC names can be decrypted with no ALG ID (Basic Privacy, Hytera, a scalar key). Where the
+   talkgroup key autoload will key its voice (no forced key, no ALG ID), that is the key the autoload leaves for this
+   call's own talkgroup, not the working key another call's talkgroup loaded (keyring_dmr_tg_autoload_key_present()):
+   its voice has not run yet. */
+static int
+dmr_flco_missing_alg_key_can_decrypt(const dmr_flco_ctx* ctx, uint8_t slot, uint8_t live_algid) {
+    if (ctx->state->M != 0 || live_algid != 0U) {
+        return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot);
+    }
+    return dsd_key_scalar_present(ctx->state, slot)
+           || keyring_dmr_tg_autoload_key_present(ctx->state, slot, ctx->target);
+}
+
+/* @p replaced_other_protocol: this LC's call replaced another protocol's call on the slot
+   (dmr_flco_publish_voice()). */
 static void
-dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
+dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot, int replaced_other_protocol) {
+    if (slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return; /* dmr_flco_publish_voice(), the sole caller, never passes one */
+    }
     const int encrypted = (ctx->so & 0x40U) != 0U;
     const uint8_t algid = (uint8_t)(slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
 
-    // Slot bound: dmr_flco_publish_voice(), the sole caller, passes @p slot only once it is below
-    // DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
+    // Slot bound: checked above, so the per-slot reads below are in range.
     // Classify under the ALG the voice path will decrypt with; the published `.algid` stays OTA.
     const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)slot, (int)ctx->so);
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
-    const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, slot)
+    const int has_key = class_algid == 0 ? dmr_flco_missing_alg_key_can_decrypt(ctx, slot, algid)
                                          : dsd_dmr_voice_kid_can_decrypt(ctx->state, slot, class_algid, &key);
     // The LC carries no ALG ID or key id: they are received only when a checked PI header carried them. One that
-    // arrived before any call was active on the slot (its voice LC header lost) transfers into the call this LC
-    // opens, for the fields the live values still hold -- a forced or inferred value written since is not what the PI
-    // carried. Once in the call they stay with it; a later LC adds nothing.
+    // arrived before any DMR call was active on the slot (its voice LC header lost; the slot empty, or holding another
+    // protocol's call) transfers into the call this LC opens, for the fields the live values still hold -- a forced or
+    // inferred value written since is not what the PI carried. Once in the call they stay with it; a later LC adds
+    // nothing.
     const uint8_t received = dmr_flco_precall_received(ctx, slot, algid, kid);
     dmr_pi_precall_drop_hold(ctx->state, slot);
+    // A PI held while another protocol's call was open is this call's own, as dmr_pi() says of a PI it publishes:
+    // that call left no DMR values behind. Replacing a DMR call (an identity-less epoch the voice opened, its LCs
+    // lost), the live values are still that transmission's, the PI's included, and stay carried.
+    if (received != 0U && replaced_other_protocol) {
+        ctx->state->dmr_crypto_inherited[slot] = 0U;
+    }
     // Live values a replaced call left behind (its terminator missed) are still what the voice path decrypts with,
     // but they are not this call's: published as carried, the call keeps its own (none, until its PI or the voice
     // path's forced or inferred choice supplies them). Once the live values change they are this call's, and so are
@@ -899,7 +1100,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx, uint8_t slot) {
            established classification must not make the next call, whose LC says clear, encrypted. */
         .enc_observed = (ctx->lc_so & 0x40U) != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
     };
-    if (dsd_call_state_update_crypto(ctx->state, slot, &crypto) > 0) {
+    if (dsd_call_state_update_crypto(ctx->state, slot, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) > 0) {
         dmr_note_published_live_crypto(ctx->state, slot, algid, kid);
     }
 }
@@ -1036,7 +1237,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         // Where the canonical layer kept the epoch (it names an identity-less one after this call), the record still
         // holds what the replaced transmission published into it: none of that is this call's.
         if (have_after && after.epoch == before.epoch) {
-            (void)dsd_call_state_forget_crypto_values(ctx->state, slot);
+            (void)dsd_call_state_forget_crypto_values(ctx->state, slot, DSD_SYNC_DMR_BS_VOICE_POS);
         }
         // The slot's live ALG ID, key id and MI are still the replaced call's. Decryption keeps them, exactly as it
         // always has; publication marks them as that call's, so the new call never shows them as its own.
@@ -1045,7 +1246,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         ctx->state->dmr_crypto_inherited_algid[slot] = *live.algid;
         ctx->state->dmr_crypto_inherited_keyid[slot] = *live.keyid;
     }
-    dmr_flco_publish_crypto(ctx, slot);
+    dmr_flco_publish_crypto(ctx, slot, was_active && !DSD_SYNC_IS_DMR(before.protocol));
     dsd_event_sync_slot(ctx->opts, ctx->state, slot);
     dsd_signal_search_note_call(ctx->state, slot);
 }
@@ -1136,8 +1337,10 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     state->dmr_vc_ref_carrier[idx] = state->dmr_heal_vc_ref_carrier[idx];
     state->dmr_vc_untrusted[idx] = state->dmr_heal_vc_untrusted[idx];
     state->dmr_crypto_pi_verified[idx] = state->dmr_heal_pi_verified[idx];
-    // The stash held live, already-corroborated signaling; restoring it re-establishes the
-    // classification so the resumed transmission is not re-proved from scratch.
+    // Restoring the stash re-establishes the classification, so the resumed transmission is not re-proved from
+    // scratch. It ends no hold on the slot's voice: the stash copies the live fields, which an embedded LC whose
+    // checksum failed also writes (dmr_flco_sync_active_call_state()), so it is no check of the call's. A slot a
+    // checked LC or PI of its call released when it was decoded is not held, and a heal leaves it so.
     dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);
     state->dmr_heal_valid[idx] = 0U;
     // The healed epoch is a new one, seeded with the record's (the call's own) crypto, which leaves out carried live
@@ -1217,6 +1420,8 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
         ctx->state->dmr_heal_valid[idx] = 0U;
     }
     dmr_flco_reset_slot_crypto(ctx, idx);
+    // The call ended: the slot's next call keys from no talkgroup of this one's (keyring_dmr_tg_autoload_apply()).
+    keyring_dmr_tg_autoload_forget_slot(ctx->state, idx);
     if (lc_readable) {
         dmr_flco_reset_slot_metadata(ctx, idx);
     }
@@ -1315,7 +1520,7 @@ dmr_flco_slot_call_active(const dsd_state* state, int slot) {
 
 static void
 dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
-    int eslot = ctx->state->currentslot & 1;
+    int eslot = ctx->voice_slot;
     int other = eslot ^ 1;
     int other_voice = (other == 0) ? (ctx->state->dmrburstL == 16) : (ctx->state->dmrburstR == 16);
     if (!other_voice) {
@@ -1343,7 +1548,8 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
     // Same classification ALG as dmr_flco_publish_crypto(): the two must not disagree.
     const int algid = dsd_dmr_classify_algid(ctx->state, (int)ctx->slot, (int)ctx->so);
     if (algid == 0) {
-        return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
+        const int live_algid = ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR;
+        return dmr_flco_missing_alg_key_can_decrypt(ctx, ctx->slot, (uint8_t)live_algid);
     }
 
     const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, algid);
@@ -1394,14 +1600,18 @@ dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
 
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
-    const uint8_t eslot = (uint8_t)(ctx->state->currentslot & 1);
+    // The classification the call's LC set, on the slot its voice is judged on.
+    const uint8_t eslot = ctx->voice_slot;
     const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
     // The ledger is suspended -- not erased -- whenever encryption lockout is not
     // the active policy, so neither arming nor releasing may run while following
     // encrypted calls (or with trunking off). Matches the P25 handle_enc release
     // guard and the NXDN VCALL early return; without it a clear DMR LC in follow
     // mode would drop entries that then owe a fresh probe once lockout returns.
-    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0);
+    // Only an LC whose check passed (a RAS acceptance under -F included) names the talkgroup it acts on: one whose
+    // checksum failed may name another call's, which it must neither lock out nor release.
+    const int lockout_active =
+        (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0) && ctx->CRCCorrect == 1U;
     if (!(ctx->so & 0x40)) {
         // Corroborated clear voice on this target releases any retained
         // lockout entry so a talkgroup that stopped encrypting recovers.
@@ -1487,52 +1697,30 @@ dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
     }
 }
 
+/* The Basic Privacy or Hytera key of the LC's call, the one it is decrypted with (dmr_flco_call_key_of()), printed
+   only for an LC dmr_flco_prints_call_key() admits. */
 static void
-dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
-    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
-        && ctx->state->payload_algid == 0) {
+dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx, const dmr_flco_call_key* key) {
+    if ((key->flags[0] != 0U || key->words[0] != 0ULL) && ctx->fid == 0x10) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, "Key %s ",
-                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
-        DSD_FPRINTF(stderr, "%s ", KNRM);
-    }
-    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
-        && ctx->state->payload_algidR == 0) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        char key_text[16];
-        DSD_FPRINTF(stderr, "Key %s ",
-                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
+                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), key->words[0], 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
 
 static void
-dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
-    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
-        && ctx->state->payload_algid == 0) {
-        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
+dmr_flco_print_hytera_basic_key(const dmr_flco_ctx* ctx, const dmr_flco_call_key* key) {
+    if ((key->flags[1] != 0U || key->words[1] != 0ULL) && ctx->fid == 0x68) {
+        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(key);
         if (segment_count >= 2U) {
             DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[68];
-        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
-        DSD_FPRINTF(stderr, "%s ", KNRM);
-    }
-}
-
-static void
-dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
-    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
-        && ctx->state->payload_algidR == 0) {
-        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
-        if (segment_count >= 2U) {
-            DSD_FPRINTF(stderr, "\n ");
-        }
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        char key_text[68];
-        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, key, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -1555,11 +1743,25 @@ dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
     }
 }
 
+/* Whether either Basic Privacy or Hytera key printer can print the LC's call key: an encrypted call (privacy bit) of a
+   known slot with no ALG ID, under the Motorola (0x10) or Hytera (0x68) FID. Any other LC reads no key at all. */
+static int
+dmr_flco_prints_call_key(const dmr_flco_ctx* ctx) {
+    if (ctx->slot > 1U || (ctx->so & 0x40U) == 0U || (ctx->fid != 0x10U && ctx->fid != 0x68U)) {
+        return 0;
+    }
+    return (ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR) == 0;
+}
+
 static void
 dmr_flco_print_loaded_keys(const dmr_flco_ctx* ctx) {
-    dmr_flco_print_dmr_basic_keys(ctx);
-    dmr_flco_print_hytera_basic_key_slot0(ctx);
-    dmr_flco_print_hytera_basic_key_slot1(ctx);
+    if (dmr_flco_prints_call_key(ctx)) {
+        dmr_flco_call_key key;
+        dmr_flco_call_key_of(ctx, &key);
+        dmr_flco_print_dmr_basic_keys(ctx, &key);
+        dmr_flco_print_hytera_basic_key(ctx, &key);
+        DSD_SECURE_ZERO(&key, sizeof(key));
+    }
     dmr_flco_print_alg21_keys(ctx);
 }
 
@@ -1685,6 +1887,7 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
 
     if (*ctx->IrrecoverableErrors == 0) {
         if (dmr_flco_handle_no_error_paths(ctx)) {
+            dmr_flco_release_unread_voice_hold(ctx);
             dmr_flco_finalize(ctx);
             return;
         }
@@ -1971,11 +2174,15 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
         return;
     }
     uint64_t request_id = 0U;
-    dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, &request_id);
+    const long receiver = dmr_sm_receiver_frequency(opts);
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_cc(opts, state, state->trunk_cc_freq, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
+    /* The rest channel may carry voice (a Capacity Plus rest channel is a repeater): the left calls' ALG, key ID and MI
+       decrypt none of its frames. A hop still pending is judged once it lands, and one that fails leaves nothing
+       (dmr_sm_note_tracked_carrier_tune()); the acquisition below keeps that judgement with its request. */
+    dmr_sm_note_tracked_carrier_tune(dmr_sm_get_ctx(), state, tune_result, request_id, receiver, state->trunk_cc_freq);
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;

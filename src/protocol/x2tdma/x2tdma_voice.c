@@ -675,7 +675,7 @@ x2tdma_update_call_crypto(dsd_opts* opts, dsd_state* state, const x2tdma_voice_c
         }
         crypto.audio_permitted = 0U;
     }
-    (void)dsd_call_state_update_crypto(state, slot, &crypto);
+    (void)dsd_call_state_update_crypto(state, slot, DSD_SYNC_X2TDMA_VOICE_POS, &crypto);
     dsd_event_sync_slot(opts, state, slot);
 }
 

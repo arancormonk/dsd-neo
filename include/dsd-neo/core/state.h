@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_STATE_H_H
 
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/input_level.h>
@@ -1202,6 +1203,34 @@ typedef enum {
     DSD_SCAN_STAY_NO_LIST = 12,       /**< -Y with no channel map of the user's: nothing to step to (issue #697) */
 } dsd_scan_stay_reason;
 
+/** Whether the silent-channel skip (issue #834) is checking the scan visit on air, for the Scan Timing row: published
+ * only while the visit waits out its idle dwell (trunk scan) or its idle dwell or hangtime (-Y), so a stay that
+ * explains the visit by itself keeps its plain phrase. NONE: nothing to say (the setting off, a trunked target, a
+ * check that ended: busy, skipped, timed out, refused by the tap, or activity heard). CHECKING: the check runs
+ * (waiting for its capture, settling, measuring, or a quiet result waiting to be applied). NO_CHECK: the visit cannot
+ * be checked, for the dsd_scan_quiet_reason published beside it. */
+typedef enum {
+    DSD_SCAN_QUIET_STATUS_NONE = 0,
+    DSD_SCAN_QUIET_STATUS_CHECKING = 1,
+    DSD_SCAN_QUIET_STATUS_NO_CHECK = 2,
+} dsd_scan_quiet_status;
+
+/** Why a scan visit gets no silent-channel check (DSD_SCAN_QUIET_STATUS_NO_CHECK). The receiver's reasons (INPUT,
+ * TUNER, RATE) outrank the channel's (MODES, then WIDTH and NO_WIDTH). INPUT: audio input, an I/Q replay or I/Q stream,
+ * or a build without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the
+ * shift off). RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known
+ * channel width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM
+ * channel with no width set, so no definite channel to judge. */
+typedef enum {
+    DSD_SCAN_QUIET_REASON_NONE = 0,
+    DSD_SCAN_QUIET_REASON_INPUT = 1,
+    DSD_SCAN_QUIET_REASON_TUNER = 2,
+    DSD_SCAN_QUIET_REASON_RATE = 3,
+    DSD_SCAN_QUIET_REASON_MODES = 4,
+    DSD_SCAN_QUIET_REASON_WIDTH = 5,
+    DSD_SCAN_QUIET_REASON_NO_WIDTH = 6,
+} dsd_scan_quiet_reason;
+
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
  * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
  * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
@@ -1220,6 +1249,8 @@ struct dsd_scan_timing_publication {
     uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
+    uint8_t quiet_status; /**< dsd_scan_quiet_status of the visit on air (issue #834) */
+    uint8_t quiet_reason; /**< dsd_scan_quiet_reason, with DSD_SCAN_QUIET_STATUS_NO_CHECK; NONE otherwise */
 };
 
 /** Which sub-audible signalling the analog receiver has identified: a CTCSS tone (issue #522)
@@ -1325,8 +1356,10 @@ struct dsd_analog_rx_publication {
      * monitors (issue #756). Unlike generation, the carrier hangover running out never moves it, so a reader that saw
      * it move since its last block knows the input crossed such a boundary in between, even inside one block. */
     uint32_t boundaries;
-    /** Real monotonic ms (dsd_realtime_mono_ms()) after which this publication no longer describes
-     * the channel if the tap has not run again since. Set only on input that may pause: stdin,
+    /** Monotonic ms on the tap's clock (dsd_realtime_mono_ms(); a test build may install a test clock in its place,
+     * dsd_analog_rx_clock_s()) after which this publication no longer describes the channel if the tap has not run
+     * again since. Decoder-thread readers ask dsd_analog_rx_stale_now(), so the deadline and the time it is compared
+     * with come from one clock. Set only on input that may pause: stdin,
      * UDP and TCP, whose producer may stop sending between transmissions, and live RTL-family
      * radio streams, which stop when their source does (an rtl_tcp server that went away, a
      * stalled device). Then no samples arrive for the sample-time hangover to count, and a
@@ -1387,6 +1420,28 @@ struct dsd_state {
     uint8_t scalar_key_present[2];
     uint8_t basic_key_present;
     unsigned long long int H;
+
+    /* The DMR talkgroup key autoload's working key (keyring_dmr_tg_autoload_apply()): the K, K1..K4, H,
+       basic_key_present and hytera_key_segments it replaced (a key set directly, or none), restored for a call whose
+       talkgroup has no key, and the ones it installed; it owns the working key (active) until anything else writes
+       it, which hands it back first (dsd_dmr_tg_autoload_hand_back()), so a key written since is left alone. Both
+       slots share the one working key, so each slot keeps the talkgroup whose key its own call last keyed from
+       (slot_tg, 0: none), which a frame of a call no LC has named yet keys from again, and that key (slot_key and
+       slot_key_flags, laid out as baseline; flags all 0: the slot's call keyed from no talkgroup), which a frontend
+       shows on the slot's row from its snapshot, which holds no keyring (dsd_dmr_slot_call_key()). The slot's
+       terminator, the no-carrier pass and every carrier boundary but a stream gap forget both. Key material: wiped
+       with the keys (dsd_key_state_secure_wipe()). Written on the decoder thread only. */
+    struct {
+        unsigned long long int baseline[6];
+        unsigned long long int installed[6];
+        uint8_t baseline_flags[2];
+        uint8_t installed_flags[2];
+        uint8_t active;
+        uint32_t slot_tg[2];
+        unsigned long long int slot_key[2][6];
+        uint8_t slot_key_flags[2][2];
+    } dmr_tg_autoload;
+
     unsigned long long int HYTL;
     unsigned long long int HYTR;
     long int bit_counterL;
@@ -1665,6 +1720,20 @@ struct dsd_state {
        span measured across two epochs is no span. */
     uint32_t symbol_clock_epoch;
     uint32_t symbol_clock_input; /* dsd_opts::pcm_input_generation the last symbol was read under (DSP's) */
+    /* A rigctl peer confirmed a retune (issue #834): the audio input still holds the frequency left's samples, which
+       the decoder thread drops at its next input read (dsd_symbol_apply_input_drop()), as an RTL retune's flush
+       drops them. Decoder-thread owned: a tune off it posts a mark instead, which the decoder thread takes at its
+       next input read (frame_sync_take_unflushed_retunes()), or at the tune notice's reconcile if no read came first
+       (dsd_frame_sync_apply_off_thread_tunes()), and sets this then. A post an input replacement retired is never
+       taken (dsd_frame_sync_forget_unflushed_retunes()). */
+    uint8_t input_drop_pending;
+    /* dsd_opts::pcm_input_generation when the drop was asked for: a drop meant for an input since replaced (an input
+       switch, a reopened stream) is cleared unrun. */
+    uint32_t input_drop_generation;
+    /* Where the input stood before the retune was asked for (dsd_input_backlog_mark()): the drop takes only what was
+       queued by then, never what arrived after it. The newest mark asked for on the input, kept once carried out: an
+       older one asked for later never replaces it (dsd_frame_sync_request_input_drop()). */
+    dsd_input_cut input_drop_cut;
     /* Set while the DSP sync anchor (state-ext slot 12, src/dsp/symbol_anchor.c) records or holds a move for the grid;
        the grid looks the anchor up only then. */
     uint8_t symbol_anchor_hot;
@@ -1991,6 +2060,9 @@ struct dsd_state {
      * unless another check of the frame passed too (nxdn_confirm_frame_checks counts them).
      * nxdn_confirm_strong_pending: the last frame read, an isolated one, passed a strong check, which confirms the
      * transmission if the next frame runs on from it.
+     * nxdn_confirm_spacing_due: the frame just started ran on from such a frame and so confirmed it
+     * (nxdn_confirm_note_frame_start()); nxdn_confirm_begin_frame() hands it to nxdn_confirm_frame_spaced, this frame's
+     * spacing proof, counted once as proof of the frame before's content (nxdn_confirm_frame_content_counted()).
      * nxdn_confirm_last_frame_valid / nxdn_confirm_last_frame_symbol: where the last frame read began
      * (dsd_state::symbolcnt), the run's measure. */
     uint8_t nxdn_confirmed;
@@ -2002,6 +2074,8 @@ struct dsd_state {
     uint8_t nxdn_confirm_strong_waits;
     uint8_t nxdn_confirm_frame_checks;
     uint8_t nxdn_confirm_strong_pending;
+    uint8_t nxdn_confirm_spacing_due;
+    uint8_t nxdn_confirm_frame_spaced;
     uint8_t nxdn_confirm_last_frame_valid;
     uint32_t nxdn_confirm_last_frame_symbol;
     uint64_t nxdn_confirm_scch_generation;
@@ -2095,6 +2169,17 @@ struct dsd_state {
     uint8_t dmr_enc_class[2];         /* applied classification: 0 none, 1 clear, 2 encrypted */
     uint8_t dmr_enc_class_est[2];     /* classification corroborated (strong LC or matching repeat) */
     uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
+    /* The receiver moved off a carrier or released its call, and the slot's call has not said yet whether it is
+     * encrypted (dmr_enc_class_hold()): its voice is held, as an X2-TDMA call's opening frames are, until its own LC or
+     * PI header says (dmr_enc_class_release_hold()). 0 when a run starts, whatever an earlier run on the same state
+     * left (a host may run one state more than once). */
+    uint8_t dmr_enc_class_held[2];
+    /* Whether the receiver has landed on a carrier yet in this run (any landing: the run's first stream, a tune, a scan
+       row or park; dsd_engine_note_run_start()). The run's first landing holds no DMR slot's voice; every later one,
+       any carrier boundary or trunk-scan park, does. A run starts landed unless a trunk scan configured for it
+       (--trunk-scan) is to make its first landing (a -Y run lands where its stream opens, decoding there until its
+       first step); a state outside any run (initState()) counts as landed. */
+    uint8_t run_landed;
 
     /* Per-slot, per-call DMR vendor late-entry mode (DMR_LE_VENDOR_* in <dsd-neo/protocol/dmr/dmr.h>, 0 none), set
      * from verified Kirisun/Hytera Enhanced signalling. The user's late-entry setting stays in opts->dmr_le, which
@@ -2363,6 +2448,15 @@ struct dsd_state {
     time_t p25_p2_last_end_ptt[2];
     // P25p1 recent TDU/TDULC transmission-boundary timestamp
     double p25_p1_last_tdu_m;
+    /* The P25 Phase 1 call the last terminator (a TDU or TDULC) ended (p25p1_terminator_note_end()), 0 for none, and
+       where on the stream the next terminator of the same end would stand: the terminators of one end follow each
+       other back to back, each data unit's sync starting where the last one ends (TIA-102.BAAA-A 8.2). The symbol
+       clock that terminator would reach its link control at, with the clock's epoch and the carrier it was read on. A
+       TDULC's link control speaks for the call its end closed; decoder-thread private. */
+    uint64_t p25_p1_terminator_end_epoch;
+    uint64_t p25_p1_terminator_end_next_clock;
+    uint32_t p25_p1_terminator_end_clock_epoch;
+    uint32_t p25_p1_terminator_end_carrier_seq;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;
@@ -3286,6 +3380,41 @@ struct dsd_state {
     double scan_voice_gate_arrive_m;
     double scan_voice_gate_sync_m;
     double scan_voice_gate_voice_m;
+    /* Checked content for the -Y step (issue #834 item 3): scan_y_content_seq moves with every content a protocol's
+     * CRC/FEC gate passed (a PROVEN content note, dsd_frame_sync_hook_content_evidence(), whatever the skip-silent
+     * setting); the -Y frame boundary turns a move into scan_y_content_m, its decode-mono time (-1.0 for none). A -Y
+     * row whose frames keep coming but carry no checked content for -t leaves at a frame boundary. */
+    uint32_t scan_y_content_seq;
+    uint32_t scan_y_content_seen;
+    double scan_y_content_m;
+    /* A content verdict a protocol still holds open for the -Y step (a PARTIAL note, whatever the skip-silent setting):
+     * scan_y_partial_seq moves with each, scan_y_partial_hold_ms keeps the longest hold since the -Y frame boundary last
+     * read them, which turns them into scan_y_partial_until_m, the decode-mono end of the latest hold (-1.0 for none).
+     * PARTIAL is never content: it only keeps the frame-boundary step waiting for its bounded hold. */
+    uint32_t scan_y_partial_seq;
+    uint32_t scan_y_partial_seen;
+    uint32_t scan_y_partial_hold_ms;
+    double scan_y_partial_until_m;
+    /* A frame of a protocol with no content check for the -Y step (X2-TDMA, ProVoice, TETRA): scan_y_unchecked_seq moves
+     * as processFrame() dispatches one, and the -Y frame boundary turns a move into scan_y_unchecked_m, its decode-mono
+     * time (-1.0 for none). Such a frame is no content either: it only keeps the frame-boundary step from deciding on
+     * a row while those frames keep coming, since their content cannot be told from noise. It moves before the handler,
+     * for a first candidate too; whether the frame was a call is scan_y_call_seq's. */
+    uint32_t scan_y_unchecked_seq;
+    uint32_t scan_y_unchecked_seen;
+    double scan_y_unchecked_m;
+    /* A call heard (issue #834), for the -Y no-check status only: it moves as the call store observes a call, begun or
+     * going on (dsd_call_state_observe(), which takes only checked content), and as an active call's admitted media
+     * plays (dsd_call_state_update_media()), as an analog call is admitted (the
+     * conventional NFM call begins once its reception ran the minimum through every gate, engine/analog_call.c), and as
+     * the ProVoice decoder took a frame of a confirmed transmission on the carrier it was dispatched on, uninterrupted
+     * (processFrame()). Checked content that is no call (a control channel's traffic), raw carrier, which a
+     * tone-rejected transmission has too, and a sync no decoder took never move it. */
+    uint32_t scan_y_call_seq;
+    /* scan_y_call_seq when the receiver's stay with no -Y row landing in force began: the run's start, a -Y scan's
+     * start, or the last forget of a landing (dsd_engine_scan_y_stay_begin()). The -Y no-check status is shown on such
+     * a stay until it moves past it, as on a landed row's visit until a call. */
+    uint32_t scan_y_stay_call_seq;
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;
@@ -3370,6 +3499,16 @@ struct dsd_state {
        back: the other part of the reception generation that is not rx_id's epoch, which such a retune keeps (only the
        access code goes). Decoder thread; outside every snapshot copy range. */
     uint32_t rx_tune_seq;
+    /* What a tune off the decoder thread (the P25 watchdog's) that left a carrier asks the decoder thread to forget of
+       the DMR calls' decryption, and hold their voice for (dsd_engine_apply_dmr_leave()): 0 nothing, else
+       DSD_DMR_LEAVE_* bits. The decoder thread writes those fields in its frames and in the no-carrier pass, which runs
+       outside the P25 SM tick guard, so no other thread writes them. Written under the guard by the watchdog, read and
+       cleared by the decoder thread under it, before each frame; outside every snapshot copy range. */
+    uint8_t dmr_leave_pending;
+    /* An RTL tune still in flight (issue #834) whose landing would leave the DMR calls' carrier: its request ID, or 0.
+       The decoder thread applies the decryption leave once the request lands, and drops it when the request fails,
+       since the receiver then stayed (dsd_engine_apply_dmr_leave()). Written and read as dmr_leave_pending is. */
+    uint64_t dmr_leave_request;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];

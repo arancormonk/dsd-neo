@@ -22,8 +22,22 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "nxdn_confirm.h"
 #include "nxdn_internal.h"
+
+#ifdef LIMAZULUTWEAKS
+#include <dsd-neo/core/keyring.h>
+
+/* The LimaZulu tweak's key load (NXDN_FRAME_ROUTING_LZ): no key for the frequency's hash here. */
+int
+keyring_load_scalar_key(dsd_state* state, int slot, int key_id) {
+    (void)state;
+    (void)slot;
+    (void)key_id;
+    return 0;
+}
+#endif
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -1389,13 +1403,14 @@ test_dcr_header_keeps_its_scrambler_reset(void) {
 }
 
 /* On a confirmed carrier, a data frame whose only checked content is an SCCH TS 1-E does not define shows nothing about
-   the carrier: it neither stamps it active nor extends the scanner's hold. A valid one does (the control). */
+   the carrier: it neither stamps it active nor extends the scanner's hold. A valid one does (the control). Read on a
+   plain conventional receiver, whose stamp follows the transmission's confirmation: a conventional -Y scan's hold also
+   needs each frame's own content proven (issue #834), which a lone SCCH is not. */
 static int
 test_diagnostic_only_frame_holds_no_scan(void) {
     int rc = 0;
     for (int valid = 0; valid < 2; valid++) {
         reset_state();
-        g_opts.scanner_mode = 1;
         g_state.nxdn_confirmed = 1;
         g_stub_facch_ok = 0;
         g_stub_scch_ok = 1;
@@ -1403,7 +1418,7 @@ test_diagnostic_only_frame_holds_no_scan(void) {
         g_stub_scch_invalid = valid ? 0 : 1;
         g_state.last_cc_sync_time = 1000;
         (void)route_frame(0x70U); /* data only: SCCH and two FACCH1 halves */
-        rc |= expect_int(valid ? "valid scch: scanner hold extended" : "diagnostic scch: scanner hold kept",
+        rc |= expect_int(valid ? "valid scch: carrier stamped active" : "diagnostic scch: carrier stamp kept",
                          g_state.last_cc_sync_time > 1000, valid);
     }
     return rc;
@@ -1466,30 +1481,50 @@ test_forced_scramble_skips_a_standalone_header(void) {
 }
 
 /* An NXDN48 transmission whose first frame's FACCH1 passed on its own (isolated: the check waits) is confirmed by the
-   next frame's spacing. That second frame, data only with an SCCH TS 1-E does not define and a failed FACCH1, starts the
-   scanner's hold for the transmission it confirmed; a later such frame does not extend it. */
+   next frame's spacing. That second frame, data only with an SCCH TS 1-E does not define and a failed FACCH1, has no
+   proven content of its own; its spacing counts once as proof of the first frame's content, so it is heard as PROVEN
+   content (the -Y step's and the quiet check's note) and starts the carrier's activity stamp for the transmission it
+   confirmed: on a plain conventional receiver, as test_diagnostic_only_frame_holds_no_scan(), and on a conventional -Y
+   scan (issue #834), whose hold otherwise needs each frame's own content proven, the scanner's 2 s hold. A later
+   diagnostic frame extends neither, and a later frame that checked nothing only runs on: a plain receiver stamps the
+   confirmed transmission's carrier for it, and a -Y scan's hold is not refreshed. */
 static int
-test_spacing_confirmation_starts_the_scan_hold(void) {
+spacing_confirmation_case(int y_scan) {
     reset_state();
-    g_opts.scanner_mode = 1;
+    g_opts.scanner_mode = y_scan;
     g_state.last_cc_sync_time = 1000;
     g_stub_scch_ok = 0;
     g_stub_facch_ok = 1;
     (void)route_nxdn48_frame_at(0x62U, 30000U);
     int rc = expect_int("pending facch: not yet confirmed", nxdn_confirm_is_confirmed(&g_state), 0);
-    rc |= expect_int("pending facch: no scan hold yet", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("pending facch: no stamp yet", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("pending facch: no proven content yet", (int)g_state.scan_y_content_seq, 0);
     g_stub_scch_ok = 1;
     g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 0;
     (void)route_nxdn48_frame_at(0x62U, 30192U);
     rc |= expect_int("spacing confirmed the transmission", nxdn_confirm_is_confirmed(&g_state), 1);
-    rc |=
-        expect_int("spacing confirmation: the scan hold starts", g_state.last_cc_sync_time == dsd_decode_time() + 2, 1);
+    rc |= expect_int("spacing confirmation: the first frame's content proven once", (int)g_state.scan_y_content_seq, 1);
+    rc |= expect_int(y_scan ? "spacing confirmation: the -Y hold started" : "spacing confirmation: the carrier stamped",
+                     (int)g_state.last_cc_sync_time, (int)dsd_decode_time() + (y_scan ? 2 : 0));
     g_state.last_cc_sync_time = 1000;
     (void)route_nxdn48_frame_at(0x62U, 30384U);
-    rc |= expect_int("later diagnostic frame: the scan hold not extended", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("later diagnostic frame: the stamp not extended", (int)g_state.last_cc_sync_time, 1000);
+    g_stub_scch_ok = 0;
+    g_stub_scch_names_type_d = 0;
+    g_stub_scch_invalid = 0;
+    (void)route_nxdn48_frame_at(0x62U, 30576U);
+    rc |= expect_int(y_scan ? "later unchecked frame: the -Y hold not refreshed"
+                            : "later unchecked frame: the confirmed carrier stamped",
+                     (int)g_state.last_cc_sync_time, y_scan ? 1000 : (int)dsd_decode_time());
+    rc |= expect_int("later frames: no further proven content", (int)g_state.scan_y_content_seq, 1);
     return rc;
+}
+
+static int
+test_spacing_confirmation_starts_the_scan_hold(void) {
+    return spacing_confirmation_case(0) | spacing_confirmation_case(1);
 }
 
 /* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a
@@ -1541,6 +1576,89 @@ test_frame_places_the_grid_on_the_next_fsw(void) {
     return rc;
 }
 
+/* Issue #834: on a conventional -Y scan the hold needs the frame's own content proven (a strong CRC, or a weak streak the
+   frame completes), not only the transmission's confirmation.
+   Receiver noise after a call passes the sync word and the LICH parity, and the confirmation lets it through; it must
+   not refresh the hold, so the row leaves once -t has run past the last checked frame's 2 s hold. A call whose frames
+   keep passing checks keeps the hold past -t. Trunked receivers, a trunked -Y scan and a plain conventional receiver
+   keep the transmission's hold. */
+/* The frames are outbound (LICH 0x33, RTCH voice with FACCH), which a trunked receiver also takes. */
+static void
+y_hold_at(time_t t) {
+    dsd_decode_clock_use_test((uint64_t)t * 1000000000ULL);
+}
+
+static int
+y_hold_case(int scanner_mode, int trunk_enable, time_t want_after_noise) {
+    reset_state();
+    g_opts.scanner_mode = scanner_mode;
+    g_opts.trunk_enable = trunk_enable;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = 0;
+    g_stub_facch_ok = 1;
+    y_hold_at(2000);
+    int rc = expect_int("checked call frame routed", route_frame(0x33U), 1);
+    g_stub_facch_ok = 0; /* noise: the LICH passes, no check does */
+    y_hold_at(2001);
+    rc |= expect_int("noise frame routed", route_frame(0x33U), 1);
+    rc |= expect_int("noise frame inside the confirmed transmission", nxdn_confirm_is_confirmed(&g_state), 1);
+    rc |= expect_int("hold after the noise frame", (int)g_state.last_cc_sync_time, (int)want_after_noise);
+    return rc;
+}
+
+static int
+test_y_scan_hold_needs_a_checked_frame(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.scanner_mode = 1;
+    g_opts.trunk_hangtime = 1;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = 0;
+    g_stub_facch_ok = 1;
+    /* A 4 s call whose frames all pass their FACCH CRC: each holds the row 2 s past it, so -t never runs out. */
+    for (time_t t = 1000; t <= 1004; t++) {
+        y_hold_at(t);
+        rc |= expect_int("checked call frame routed", route_frame(0x33U), 1);
+        rc |= expect_int("a checked frame holds the row 2 s", (int)g_state.last_cc_sync_time, (int)t + 2);
+        rc |=
+            expect_int("held past -t", (int)(dsd_decode_time() - g_state.last_cc_sync_time) > g_opts.trunk_hangtime, 0);
+    }
+    const double checked_m = g_state.last_cc_sync_time_m;
+    /* Then receiver noise, one frame a second: the hold stays on the last checked frame. */
+    g_stub_facch_ok = 0;
+    for (time_t t = 1005; t <= 1008; t++) {
+        y_hold_at(t);
+        rc |= expect_int("noise frame routed", route_frame(0x33U), 1);
+        rc |= expect_int("noise leaves the hold", (int)g_state.last_cc_sync_time, 1006);
+        rc |= expect_int(
+            "noise leaves the mono stamp",
+            (g_state.last_cc_sync_time_m - checked_m) < 1e-9 && (checked_m - g_state.last_cc_sync_time_m) < 1e-9, 1);
+    }
+    /* -t (1 s) past the 2 s hold: the hangtime rule is due, and the row leaves. */
+    rc |= expect_int("-t past the hold: due",
+                     (int)(dsd_decode_time() - g_state.last_cc_sync_time) > g_opts.trunk_hangtime, 1);
+
+    /* A lone short CRC a noise frame passes by chance (a 6-bit SACCH, about 1 in 64) is no proven content: it keeps
+       no row. Two in a row complete a weak streak, as a real call's do, and hold it again. */
+    g_stub_sacch_ok = 1;
+    y_hold_at(1009);
+    rc |= expect_int("lone short crc routed", route_frame(0x33U), 1);
+    rc |= expect_int("a lone short crc leaves the hold", (int)g_state.last_cc_sync_time, 1006);
+    rc |= expect_int(
+        "a lone short crc leaves the mono stamp",
+        (g_state.last_cc_sync_time_m - checked_m) < 1e-9 && (checked_m - g_state.last_cc_sync_time_m) < 1e-9, 1);
+    y_hold_at(1010);
+    rc |= expect_int("second short crc routed", route_frame(0x33U), 1);
+    rc |= expect_int("a completed weak streak holds the row 2 s", (int)g_state.last_cc_sync_time, 1012);
+    g_stub_sacch_ok = 0;
+
+    rc |= y_hold_case(1, 1, 2003); /* a trunked -Y scan: the transmission's hold, 2 s past the noise frame */
+    rc |= y_hold_case(0, 1, 2001); /* a trunked receiver: the carrier stamp on the noise frame */
+    rc |= y_hold_case(0, 0, 2001); /* a plain conventional receiver: the same */
+
+    y_hold_at(1042);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1578,6 +1696,7 @@ main(void) {
     rc |= test_dcr_header_keeps_its_scrambler_reset();
     rc |= test_unconfirmed_frame_keeps_the_shared_register();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
+    rc |= test_y_scan_hold_needs_a_checked_frame();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

@@ -298,11 +298,22 @@ dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superfr
     dpmr_mark_unknown_superframe_part(opts);
 }
 
+/* The identities a frame may show: those of the open dPMR call a confirmed transmission published, read whole from
+ * frames whose CCH passed its CRC-7. The canonical call alone is not enough: its text outlives the transmission that
+ * decoded it, and another protocol's call leaves its own there, so a noise frame that syncs as dPMR would show an
+ * earlier call's identities as if it had decoded them. */
+static int
+dpmr_shown_call(const dsd_state* state, dsd_call_snapshot* call) {
+    return dpmr_confirm_is_confirmed(state) && dsd_call_state_get(state, 0U, call) > 0
+           && call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_DPMR(call->protocol);
+}
+
 void
 dpmr_print_ids(const dsd_state* state) {
     dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
+    if (!dpmr_shown_call(state, &call)) {
+        DSD_MEMSET(&call, 0, sizeof(call));
+    }
     DSD_FPRINTF(stderr, "\n");
     if (call.target_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
@@ -428,15 +439,15 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
             dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
         crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DPMR_FS2_POS, &crypto);
     {
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0, &call) > 0) {
             const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
                                   : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
                                                                                        : -1;
-            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available,
-                                                    0);
+            (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DPMR_FS2_POS, call.epoch, DSD_CALL_KEY_DIRECT,
+                                                    call.kid, -1, available, 0);
         }
     }
     dsd_event_sync_slot(opts, state, 0U);
@@ -537,7 +548,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     }
     DSD_FPRINTF(stderr, "\n");
 
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(opts, state);
 
     /* How many of the two CCH halves passed their CRC-7, for the caller's verdict. */
     return (int)((ctx.CrcOk[0] != 0U ? 1U : 0U) + (ctx.CrcOk[1] != 0U ? 1U : 0U));

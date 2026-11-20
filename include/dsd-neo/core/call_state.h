@@ -547,19 +547,35 @@ void dsd_call_state_refresh_receive(const dsd_opts* opts, dsd_state* state, uint
  * terminator was missed stays ACTIVE, so its phase alone holds nothing (issue #637). */
 int dsd_call_state_admitted_call_active(const dsd_opts* opts, const dsd_state* state, double now_m, double window_s);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
-int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
-/** Record resolver provenance on the matching call epoch, without changing call
+/*
+ * Whose call a crypto or identity update describes.
+ *
+ * Every update below that writes a call's crypto (ALG ID, key id, MI, classification, audio permission, key choice) or
+ * its identity text names @p protocol, the DSD_SYNC_* value of the protocol whose signalling it comes from. It applies
+ * only to a call of that protocol (dsd_call_state_protocol_family(), with P25 Phase 1 and Phase 2 one protocol: a Phase
+ * 2 voice channel's call can be opened from a Phase 1 control channel's grant). A slot keeps an ended call, and another
+ * protocol's call whose end was never decoded, until the next call begins there, so a frame of one protocol must never
+ * describe what the slot holds without asking whose it is: such an update is refused and returns 0, as for a call in a
+ * phase the update does not take. A call whose protocol is DSD_SYNC_NONE is no protocol's. @p protocol DSD_SYNC_NONE
+ * is a bad argument (-1).
+ */
+/** Update crypto metadata on the slot's active epoch, a call of @p protocol (see above). Returns 1 when applied (or
+ * already so), 0 when the slot holds no active call of that protocol, -1 on bad arguments. */
+int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const dsd_call_crypto_update* update);
+/** Record resolver provenance on the matching call epoch, a call of @p protocol, without changing call
  * identity, activity age, crypto classification, media or listening policy. */
-int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                      int signaled_id, int effective_id, int available, int fallback);
+int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                      dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                      int fallback);
 /** The slot's active epoch now describes another transmission (one that replaced it while the canonical layer kept the
  * epoch, e.g. an identity-less epoch a new call's LC names): forget the ALG ID, key id, MI, received crypto and
  * restored mark the replaced transmission published into it, so they are never shown as the new call's. The
  * classification and audio permission stay until the new call's next crypto update. Returns 1 when the record
- * changed, 0 when the slot holds no active epoch (or nothing to forget), -1 on bad arguments. */
-int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot);
-/** Update crypto metadata on an existing active or retained ended epoch. */
-int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
+ * changed, 0 when the slot holds no active epoch of @p protocol (or nothing to forget), -1 on bad arguments. */
+int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol);
+/** Update crypto metadata on an existing active or retained ended epoch, a call of @p protocol. */
+int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
+                                          const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
 /**
  * End the active epoch, recording why it ended.
@@ -611,11 +627,18 @@ int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m)
 typedef void (*dsd_call_state_reacquire_hook)(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous);
 void dsd_call_state_set_reacquire_hook(dsd_call_state_reacquire_hook hook);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
+/**
+ * The slot's call epoch and revision alone, into @p epoch and @p revision (0 and 0 with no call state), where a caller
+ * only compares them across a step and needs no snapshot copy. Returns as dsd_call_state_get().
+ */
+int dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
 int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);
 int dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot);
-int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
+/** Set the active epoch @p epoch's identity text, a call of @p protocol (dsd_call_state_update_crypto()); a NULL text
+ * keeps its own. Returns 1 when applied, 0 when the slot holds no such call, -1 on bad arguments. */
+int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* source_text,
                                const char* target_text, const char* route0_text, const char* route1_text,
                                double observed_m);
 /**
@@ -643,6 +666,8 @@ int dsd_recent_activity_restore(dsd_state* state, const dsd_recent_activity_tran
 int dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src);
 
 #ifdef DSD_NEO_TEST_HOOKS
+/** How many whole-call snapshots dsd_call_state_get() has copied out since the process started. */
+long dsd_call_state_test_snapshot_copies(void);
 void dsd_call_state_test_alloc_reset(void);
 void dsd_call_state_test_alloc_fail_after(long fail_after);
 int dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch);

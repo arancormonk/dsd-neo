@@ -41,11 +41,12 @@
 
 /* Enrich the slot's ACTIVE call's row with GPS text: with an admitted position report (@p fix, from
  * dsd_position_admit()) the text and the position go in together under the writer's typed-source rule
- * (dsd_event_enrich_position()); with @p fix NULL the text alone (dsd_event_enrich_gps()). A nonzero
- * @p expected_source must be the call's source. */
+ * (dsd_event_enrich_position()); with @p fix NULL the text alone (dsd_event_enrich_gps()), on a call of @p protocol
+ * (DSD_SYNC_*, the protocol whose signalling carried the report) only. A nonzero @p expected_source must be the call's
+ * source. */
 static int
-gps_enrich_active_call(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t expected_source, const char* text,
-                       const dsd_position_fix* fix, dsd_call_snapshot* call_out) {
+gps_enrich_active_call(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint32_t expected_source,
+                       const char* text, const dsd_position_fix* fix, dsd_call_snapshot* call_out) {
     dsd_call_snapshot call;
     const int has_active_call = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (has_active_call && expected_source != 0U && call.ota_source_id != expected_source) {
@@ -60,7 +61,7 @@ gps_enrich_active_call(const dsd_opts* opts, dsd_state* state, uint8_t slot, uin
     if (fix != NULL) {
         return dsd_event_enrich_position(opts, state, slot, call.epoch, fix, text);
     }
-    return dsd_event_enrich_gps(state, slot, call.epoch, text);
+    return dsd_event_enrich_gps(state, slot, protocol, call.epoch, text);
 }
 
 static const uint32_t POSITION_ERROR_POW10[8] = {
@@ -885,16 +886,20 @@ gps_report_print_prefix(const dsd_gps_report_ctx* ctx) {
 }
 
 /* Write an admitted report into its call's history row: the call the terminator just ended (spec N2), the call of the
- * epoch the report was bound to, or else the slot's ACTIVE call. The writer's typed-source rule decides. */
+ * epoch the report was bound to, or else the slot's ACTIVE call. The writer's typed-source rule decides. A report shown
+ * to belong to no call (ctx->no_call_row: a TDULC that ended none) writes no row: the call still open is not its. */
 static void
 gps_report_write_history(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_gps_report_ctx* ctx,
                          const dsd_position_fix* fix, const char* text) {
+    if (ctx->no_call_row) {
+        return;
+    }
     if (ctx->closing != NULL && ctx->closing->valid) {
         (void)dsd_event_enrich_position_closing(opts, state, ctx->closing, fix, text);
     } else if (ctx->call_epoch != 0U) {
         (void)dsd_event_enrich_position(opts, state, slot, ctx->call_epoch, fix, text);
     } else {
-        (void)gps_enrich_active_call(opts, state, slot, 0U, text, fix, NULL);
+        (void)gps_enrich_active_call(opts, state, slot, ctx->protocol, 0U, text, fix, NULL);
     }
 }
 

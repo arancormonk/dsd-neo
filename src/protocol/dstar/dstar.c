@@ -36,7 +36,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
      * it that can be checked from here; a CRC-16 in the slow data below may yet prove it
      * outright. Weak on its own, so it has to repeat -- see dstar_confirm.h. */
     dstar_confirm_begin_frame(state);
-    dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_WEAK);
+    dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_WEAK);
     /* Its voice reaches the vocoder, the speaker and the call record only from a confirmed transmission: a header whose
        CRC passed, or the superframe before this one (dstar_confirm.h). One sync word on its own is no call: under Auto
        the 4800/2 hunt matched one on receiver noise three times in four hours, and the superframe behind it played
@@ -97,7 +97,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
 
     DSD_FPRINTF(stderr, "\n");
 
-    dstar_confirm_end_frame(state);
+    dstar_confirm_end_frame(opts, state);
     return dstar_confirm_is_confirmed(state);
 }
 
@@ -127,7 +127,7 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     if (header_ok) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
     }

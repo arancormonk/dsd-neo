@@ -63,6 +63,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -256,7 +257,7 @@ void __wrap_dsd_engine_legacy_tune_caches_forget(void);
 int __real_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_dsd_engine_signal_search_active(const dsd_state* state);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 int __real_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
                                           uint64_t* out_pending_id);
 int __wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
@@ -447,7 +448,11 @@ __wrap_rtl_stream_set_bias_tee(int on) {
 static int g_io_control_tune_seals_capture;
 
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = 0U;
@@ -488,7 +493,7 @@ __wrap_io_control_set_rtl_freq_tagged(dsd_opts* opts, const dsd_state* state, ui
     if (state && state->rtl_ctx) {
         return __real_io_control_set_rtl_freq_tagged(opts, state, freq_hz, out_pending_id);
     }
-    return __wrap_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id);
+    return __wrap_io_control_set_freq_tagged(opts, state, freq_hz, out_pending_id, NULL);
 }
 
 /* A pending manual tune superseded by a tune app-control makes itself (issue #671): counted, and superseded for real.
@@ -876,14 +881,14 @@ install_udp_input_hooks(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
     hooks.udp_read_sample_wait = udp_input_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 static void
 clear_net_audio_input_hooks(void) {
     dsd_net_audio_input_hooks none;
     DSD_MEMSET(&none, 0, sizeof none);
-    dsd_net_audio_input_hooks_set(none);
+    dsd_net_audio_input_hooks_set(&none);
 }
 
 /* A UDP socket bound on a loopback port the system picked, which the caller closes. */
@@ -5854,6 +5859,46 @@ test_channel_walk_off_scan_rules(void) {
     return rc;
 }
 
+/* Issue #834: a Next walk off any scan under DMR trunking that lands on the frequency the receiver is already on (a
+   one-row list) leaves the carrier's calls and their voice as they were: the DMR machine judges the move from where it
+   read the receiver before the tune. A walk whose tune times out and lands late is judged from that same reading, kept
+   with the pending tune, not as a move from an unknown frequency, which holds both slots' voice until another checked
+   header. */
+static int
+test_channel_walk_off_scan_judges_a_late_landing_as_the_press(void) {
+    static const long kRows[] = {897500000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int late = 0; late <= 1; late++) {
+        init_manual_walk_context(&opts, &state, kRows, 1);
+        opts.scanner_mode = 0;
+        opts.trunk_enable = 1;
+        opts.trunk_scan_enabled = 0;
+        opts.frame_dmr = 1;
+        state.trunk_recovery_protocol = DSD_TRUNK_RECOVERY_DMR;
+        opts.rtlsdr_center_freq = (uint32_t)kRows[0]; /* the receiver is on the row's frequency */
+        state.dmr_enc_class_held[0] = 0U;
+        state.dmr_enc_class_held[1] = 0U;
+        if (late) {
+            manual_leg_script((uint32_t)kRows[0], RTL_STREAM_TUNE_TIMEOUT);
+        }
+        rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "same-frequency walk: next");
+        if (late) {
+            rc |= expect_int("same-frequency walk: it lands late", settle_walk_tune(&opts, &state, RTL_STREAM_TUNE_OK),
+                             DSD_MANUAL_TUNE_LANDED);
+        }
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "same-frequency walk (%s): no slot's voice held (held %u/%u)",
+                     late ? "landed late" : "landed at once", (unsigned)state.dmr_enc_class_held[0],
+                     (unsigned)state.dmr_enc_class_held[1]);
+        rc |= expect_true(tag, state.dmr_enc_class_held[0] == 0U && state.dmr_enc_class_held[1] == 0U);
+        disarm_manual_leg();
+        freeState(&state);
+    }
+    return rc;
+}
+
 /* The candidate walk's index and use counter, as one value to compare. */
 static int
 expect_candidate_walk(const char* label, const dsd_state* state, int idx, unsigned int used) {
@@ -7828,7 +7873,7 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
         state.trunk_lcn_freq[0] = 853000000L;
         dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
         dmr_sm_init_ctx(dmr, &opts, &state);
-        dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0);
+        dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0, DSD_TRUNK_TUNE_RESULT_OK, 0U);
         opts.trunk_is_tuned = 1;
         reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
         const int cmd = cycle ? DSD_APP_CMD_CHANNEL_CYCLE : DSD_APP_CMD_RETURN_CC;
@@ -7883,7 +7928,7 @@ test_manual_moves_hand_a_dmr_follow_over(void) {
     hooks.dmr_ctx = scan_dmr_ctx;
     dsd_trunk_scan_hooks_set(&hooks);
     dmr_sm_init_ctx(&g_scan_dmr_ctx, &opts, &state);
-    dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0);
+    dmr_sm_note_status_follow(&opts, &state, 852000000L, -1, 0, DSD_TRUNK_TUNE_RESULT_OK, 0U);
     opts.trunk_is_tuned = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |=
@@ -32181,6 +32226,7 @@ main(void) {
     rc |= test_channel_cycle_with_nothing_to_land_on(1);
 #endif
     rc |= test_channel_walk_off_scan_rules();
+    rc |= test_channel_walk_off_scan_judges_a_late_landing_as_the_press();
     rc |= test_channel_cycle_retries_a_deferred_candidate();
     rc |= test_trunk_scan_next_that_stays_says_so();
     rc |= test_channel_cycle_prev_walks_back(0);

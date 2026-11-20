@@ -189,6 +189,27 @@ test_not_learned(dsd_opts* opts) {
     expect_learned(st, 6006U, NULL, "hangtime alias");
     free_state(st);
 
+    /* Slot 0 keeps another protocol's call whose end never decoded (a DMR or P25 call): an NXDN alias completed before
+       its own call opened is no alias of that call's talker. */
+    static const int k_other_protocols[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_P25P1_POS};
+    for (size_t i = 0; i < sizeof k_other_protocols / sizeof k_other_protocols[0]; i++) {
+        st = new_state();
+        dsd_call_observation other;
+        DSD_MEMSET(&other, 0, sizeof other);
+        other.protocol = k_other_protocols[i];
+        other.slot = 0U;
+        other.kind = DSD_CALL_KIND_GROUP_VOICE;
+        other.ota_target_id = 100U;
+        other.policy_target_id = 100U;
+        other.ota_source_id = 9009U;
+        if (dsd_call_state_observe(st, &other, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+            abort();
+        }
+        send_alias(opts, st, "FOREIGN     XX..");
+        expect_learned(st, 9009U, NULL, "another protocol's open call");
+        free_state(st);
+    }
+
     /* An all-space alias. */
     st = new_state();
     open_call(st, 7007U);

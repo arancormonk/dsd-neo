@@ -181,7 +181,7 @@ dstar_sd_print_header_flags(uint8_t flags) {
  * names a voice call -- is read from the bytes the CRC was taken over, never from the display copy (whose clean-up turns
  * a flag byte of 0x80 into a space). */
 static void
-dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
+dstar_sd_handle_header_format(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
         DSD_FPRINTF(stderr, " RPT 2: %s", ctx->str1);
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
@@ -200,7 +200,7 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
          * search reads them from it when it hears the confirmation. */
-        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+        dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
@@ -488,7 +488,7 @@ dstar_dprs_complete(const dsd_opts* opts, dsd_state* state, const dstar_dprs_ass
         DSD_FPRINTF(stderr, " D-PRS (CRC ERR)");
         return;
     }
-    dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+    dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
     dstar_aprs_position pos;
     if (!dstar_aprs_parse(a->text + DSTAR_DPRS_PREFIX_LEN, (size_t)a->len - DSTAR_DPRS_PREFIX_LEN - 1U, &pos)) {
         DSD_FPRINTF(stderr, " D-PRS (NO POSITION)");
@@ -814,7 +814,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     /* A header first: it may name the call the superframe's other blocks belong to. */
     const int header = ctx.payload[0] == 0x55;
     if (header) {
-        dstar_sd_handle_header_format(state, &ctx);
+        dstar_sd_handle_header_format(opts, state, &ctx);
     }
     dstar_sd_handle_typed_blocks(opts, state, &ctx, header);
     dstar_sd_collect_gps(opts, state, ctx.payload, dstar_sd_first_block(header));

@@ -19,11 +19,13 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <errno.h>
@@ -111,6 +113,25 @@ Connect(char* hostname, int portno) {
     return sockfd;
 }
 
+/* The receive timeout every connection Connect() and ConnectBounded() make runs with: DSD_NEO_RIGCTL_RCVTIMEO, else
+   DSD_NEO_TCP_RCVTIMEO, else 1500 ms. */
+static unsigned int
+connect_recv_timeout_ms(void) {
+    int to_ms = 1500;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init();
+        cfg = dsd_neo_get_config();
+    }
+    if (cfg) {
+        to_ms = cfg->rigctl_rcvtimeo_ms;
+        if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
+            to_ms = cfg->tcp_rcvtimeo_ms;
+        }
+    }
+    return to_ms > 0 ? (unsigned int)to_ms : 1500U;
+}
+
 /* The receive timeout, keepalive and options every connection Connect() and ConnectBounded() make runs with. */
 static int
 connect_apply_options(dsd_socket_t sockfd) {
@@ -125,19 +146,7 @@ connect_apply_options(dsd_socket_t sockfd) {
 #endif
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
-        int to_ms = 1500;
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (!cfg) {
-            dsd_neo_config_init();
-            cfg = dsd_neo_get_config();
-        }
-        if (cfg) {
-            to_ms = cfg->rigctl_rcvtimeo_ms;
-            if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
-                to_ms = cfg->tcp_rcvtimeo_ms;
-            }
-        }
-        (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
+        (void)dsd_socket_set_recv_timeout(sockfd, connect_recv_timeout_ms());
         int nodelay = 1;
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
@@ -282,6 +291,42 @@ Recv(dsd_socket_t sockfd, char* buf) {
     return true;
 }
 
+/* Read a reply into @p buf (BUFSIZE + 1 bytes, terminated) up to its first newline, over as many reads as TCP splits it
+   into (a peer's "RPRT 0", or a frequency reading, and its newline can arrive apart, and a part left unread would be
+   taken for the next request's reply); @p len is the bytes read. The whole line has one receive timeout
+   (connect_recv_timeout_ms()), on the real clock from the first read: each read waits only for what is left of it, so
+   a peer that sends its reply in slow pieces holds the decoder no longer than one that sends nothing. 0 when the reply
+   ends (EOF), runs out of that time or fills the buffer before its newline. */
+static int
+rigctl_recv_line(dsd_socket_t sockfd, char* buf, size_t* len) {
+    *len = 0U;
+    buf[0] = '\0';
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + connect_recv_timeout_ms();
+    while (memchr(buf, '\n', *len) == NULL) {
+        if (*len >= BUFSIZE) {
+            return 0;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (now_ms >= deadline_ms) {
+            return 0;
+        }
+        const int ready = dsd_socket_wait(sockfd, DSD_SOCKET_WAIT_READ, (unsigned int)(deadline_ms - now_ms));
+        if (ready < 0) {
+            return 0;
+        }
+        if (ready == 0) {
+            continue; /* the time ran out, or a signal cut the wait short: the deadline decides */
+        }
+        const int n = dsd_socket_recv(sockfd, buf + *len, BUFSIZE - *len, 0);
+        if (n <= 0) {
+            return 0;
+        }
+        *len += (size_t)n;
+        buf[*len] = '\0';
+    }
+    return 1;
+}
+
 /**
  * @brief Query current tuned frequency via RIGCTL.
  *
@@ -293,12 +338,15 @@ Recv(dsd_socket_t sockfd, char* buf) {
 long int
 GetCurrentFreq(dsd_socket_t sockfd) {
     long int freq = 0;
-    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
+    char buf[BUFSIZE + 1]; /* rigctl_recv_line() terminates a full BUFSIZE-byte reply */
     char* ptr;
     const char* token;
     char* saveptr = NULL;
+    size_t len = 0U;
 
-    if (!Send(sockfd, "f\n") || !Recv(sockfd, buf)) {
+    /* The whole first line (rigctl_recv_line()): a reading split over two reads is read whole, not taken short with
+       the rest left for the next command. */
+    if (!Send(sockfd, "f\n") || !rigctl_recv_line(sockfd, buf, &len)) {
         return 0;
     }
 
@@ -330,29 +378,72 @@ rigctl_response_ok(const char* response) {
     return end != response + 5 && code == 0;
 }
 
-/* The frequency the peer last accepted, and the socket it went out on (RigctlRebindPeer() forgets it); 0 is none, as
+/* The frequency the peer last confirmed, and the socket it went out on (RigctlRebindPeer() forgets it); 0 is none, as
    no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
 static uint32_t s_last_freq = 0U;
 
-/* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last accepted on this socket. The request is
+/* What a frequency request's reply says (issue #834): only a complete numeric RPRT line ("RPRT 0", or a non-zero
+   status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
+enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED = 2 };
+
+/* Read the reply (rigctl_recv_line()) and say what it states: exactly one line "RPRT", a space, an optional minus and
+   digits, then the newline (after an optional CR). A reply cut short (rigctl_recv_line()), one with anything else in it
+   (another line, a NUL: the line must end the bytes received), or none is unknown. A reply that comes after its
+   request timed out is read as the next request's: as on every rigctl request, the client cannot tell. */
+static int
+rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
+    size_t len = 0U;
+    if (!rigctl_recv_line(sockfd, buf, &len)) {
+        return RIGCTL_FREQ_UNKNOWN;
+    }
+    if (strlen(buf) != len || strncmp(buf, "RPRT ", 5) != 0) {
+        return RIGCTL_FREQ_UNKNOWN;
+    }
+    const char* p = buf + 5;
+    const int negative = *p == '-';
+    p += negative ? 1 : 0;
+    const char* digits = p;
+    int nonzero = 0;
+    while (*p >= '0' && *p <= '9') {
+        nonzero |= *p != '0';
+        p++;
+    }
+    if (p == digits || (*p == '\r' ? p[1] != '\n' || p[2] != '\0' : p[0] != '\n' || p[1] != '\0')) {
+        return RIGCTL_FREQ_UNKNOWN;
+    }
+    return nonzero ? RIGCTL_FREQ_REFUSED : RIGCTL_FREQ_CONFIRMED;
+}
+
+/* Tune the peer to @p freq_hz, skipping the I/O for the frequency it last confirmed on this socket. The request is
  * formatted from the uint32_t the tuner path carries, so a frequency past 2147.483647 MHz goes out as it is where long
- * is 32-bit (issue #671). */
+ * is 32-bit (issue #671). A request with no complete reply (lost, garbled, cut short) may have moved the peer: where it
+ * is is not known until it confirms a request, so the next one goes out whatever it asks for (RigctlConfirmedFreq()).
+ * A complete refusal leaves the peer where it was, as known. */
 static bool
 rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     if (sockfd == s_last_sockfd && freq_hz == s_last_freq) {
         return true; // no change; skip I/O
     }
-    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
+    char buf[BUFSIZE + 1];
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
-    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
-        return false;
+    const int outcome = Send(sockfd, buf) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    if (outcome == RIGCTL_FREQ_CONFIRMED) {
+        s_last_sockfd = sockfd;
+        s_last_freq = freq_hz;
+        return true;
     }
+    if (outcome == RIGCTL_FREQ_UNKNOWN && sockfd == s_last_sockfd) {
+        s_last_sockfd = DSD_INVALID_SOCKET;
+        s_last_freq = 0U;
+    }
+    return false;
+}
 
-    s_last_sockfd = sockfd;
-    s_last_freq = freq_hz;
-    return true;
+uint32_t
+RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    return sockfd != DSD_INVALID_SOCKET && sockfd == s_last_sockfd ? s_last_freq : 0U;
 }
 
 /**
@@ -983,9 +1074,10 @@ RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session
  * else -B is sent as it always was. Where the session runs the peer's own passband (-B 0, or the monitor with neither a
  * width nor -B) FM at 0 is asked for, best-effort: it undoes a passband this client set (a session width before a
  * switch to a digital mode, or one a refused live return left in force) with the passband read before it, and is a
- * no-op for a peer back on its own or never asked. */
+ * no-op for a peer back on its own or never asked. Once that is settled, and immediately before the frequency is sent,
+ * the input is marked into @p mark when given (io_control_set_freq_tagged()). */
 static int
-set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq_hz) {
+set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, dsd_input_cut* mark) {
     if (opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
         return -1;
     }
@@ -1006,6 +1098,9 @@ set_rigctl_frequency(const dsd_opts* opts, const dsd_state* state, uint32_t freq
         }
     } else {
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    if (mark) {
+        dsd_input_backlog_mark(mark);
     }
     return rigctl_set_freq_hz(opts->rigctl_sockfd, freq_hz) ? 0 : -1;
 }
@@ -1082,7 +1177,8 @@ set_rtl_frequency(dsd_opts* opts, const dsd_state* state, uint32_t requested_fre
  *         the controller last applied there (set_rtl_frequency()).
  */
 int
-io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                           dsd_input_cut* rigctl_mark) {
     if (out_pending_id) {
         *out_pending_id = 0U;
     }
@@ -1100,10 +1196,9 @@ io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq
 
     int rc = -1;
     if (opts->use_rigctl == 1) {
-        rc = set_rigctl_frequency(opts, state, freq_hz);
-        if (rc == 0) {
-            opts->rigctl_sent_freq_hz = freq_hz;
-        }
+        rc = set_rigctl_frequency(opts, state, freq_hz, rigctl_mark);
+        /* A failed request leaves what the peer last confirmed: unknown (0) when it may have moved. */
+        opts->rigctl_sent_freq_hz = rc == 0 ? freq_hz : RigctlConfirmedFreq(opts->rigctl_sockfd);
 #ifdef USE_RADIO
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
         rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq, out_pending_id);

@@ -10,6 +10,8 @@
 #include "diagnostics_log.h"
 #include "ui_controller.h"
 
+#include <QCoreApplication>
+#include <QGuiApplication>
 #include <Qt>
 // WP0's C export payload uses a flexible array; only its fixed header is read in C++.
 #if defined(__GNUC__)
@@ -56,9 +58,37 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistory
         m_session = m_host->sessionState();
         connect(m_host, &DecoderHost::sessionStateChanged, this, &UiController::onSessionStateChanged);
     }
+    if (auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, &UiController::onApplicationStateChanged);
+        // A controller made while the app is already off screen withholds keys from its first poll on: no transition
+        // will come to say so.
+        onApplicationStateChanged(app->applicationState());
+    }
 }
 
-UiController::~UiController() = default;
+UiController::~UiController() {
+    // The GUI thread reads no more snapshots through this controller.
+    wipeSnapshotKeys();
+    withholdSnapshotKeys(false);
+}
+
+void
+UiController::withholdSnapshotKeys(bool withhold) {
+    dsd_app_snapshot_consumer_withhold_keys(withhold ? 1 : 0);
+    dsd_app_opts_snapshot_consumer_withhold_keys(withhold ? 1 : 0);
+}
+
+void
+UiController::wipeSnapshotKeys() {
+    dsd_app_snapshot_consumer_wipe_keys();
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+}
+
+void
+UiController::onApplicationStateChanged(Qt::ApplicationState state) {
+    // Off screen the timer may still tick: its reads copy no key back, until the app is on screen again.
+    withholdSnapshotKeys(state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden);
+}
 
 // WP-S2: attachment consumption and target lookup happen outside this pure decision.
 void

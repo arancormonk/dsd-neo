@@ -2243,11 +2243,12 @@ dmr_cspdu_cap_plus_3e_follow(dsd_opts* opts, dsd_state* state, const dmr_cap_plu
     const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
     const uint64_t generation_before = dsd_trunk_tuning_generation();
     const long receiver_before = dmr_sm_receiver_frequency(opts); // whether the follow leaves the carrier it is on
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
+    uint64_t request_id = 0U;
+    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, grant_freq, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
-    dmr_sm_note_status_follow(opts, state, grant_freq, j & 1, receiver_before);
+    dmr_sm_note_status_follow(opts, state, grant_freq, j & 1, receiver_before, tune_result, request_id);
     dmr_cspdu_cap_plus_3e_seed_carrier(opts, state, ctx, grant_freq, generation_before, 0);
     const dsd_tg_policy_call_route route = {
         .target_id = ctx->t_tg[j],
@@ -2624,9 +2625,14 @@ dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint
         || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
         return 1;
     }
-    if (!dsd_trunk_tune_result_is_ok(dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL))) {
+    const long receiver = dmr_sm_receiver_frequency(opts);
+    uint64_t request_id = 0U;
+    const dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id);
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return 0;
     }
+    /* A tune still in flight is judged once it lands, and one that fails takes nothing from the calls it left. */
+    dmr_sm_note_tracked_carrier_tune(dmr_sm_get_ctx(), state, tune_result, request_id, receiver, freq);
     state->is_con_plus = 1;
     dmr_reset_blocks(opts, state);
     return 1;

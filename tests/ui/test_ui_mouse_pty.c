@@ -124,6 +124,12 @@ dsd_app_get_latest_snapshot(void) {
 }
 
 void
+dsd_app_snapshot_consumer_wipe_keys(void) {}
+
+void
+dsd_app_opts_snapshot_consumer_wipe_keys(void) {}
+
+void
 dsd_app_request_redraw(void) {}
 
 int

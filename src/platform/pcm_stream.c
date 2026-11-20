@@ -5,9 +5,12 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,6 +22,11 @@
 /* How the stream stands: open, at its end, or ended by a read error. */
 enum { PCM_STREAM_OPEN = 0, PCM_STREAM_EOF = 1, PCM_STREAM_FAILED = 2 };
 
+/* The most one discard (dsd_pcm_stream_discard_through()) takes: the buffer and 20 refills of it, about 4 s of 48 kHz
+   mono (2 s of stereo), and no refill but the first after 250 ms on the monotonic clock. */
+#define DSD_PCM_STREAM_DISCARD_MAX_FILLS 20U
+#define DSD_PCM_STREAM_DISCARD_MAX_MS    250U
+
 /* What a failed read means: an interrupted call to repeat, a read that would block (a socket's receive timeout ran out,
    or the readiness it followed was spurious), or a failure. */
 enum { PCM_STREAM_RETRY = 0, PCM_STREAM_WOULD_BLOCK = 1, PCM_STREAM_FAILURE = 2 };
@@ -26,11 +34,50 @@ enum { PCM_STREAM_RETRY = 0, PCM_STREAM_WOULD_BLOCK = 1, PCM_STREAM_FAILURE = 2 
 struct dsd_pcm_stream {
     int fd;            /* the descriptor read: stdin, or a POSIX socket's; -1 for a Windows socket */
     dsd_socket_t sock; /* the socket waited on, or DSD_INVALID_SOCKET for a descriptor */
+    /* A socket, pipe or FIFO (dsd_fd_is_stream()), set at the open: input queues there, so a backlog mark counts it and
+       a retune's drop discards from it. A descriptor nothing feeds (a regular file, a console) holds no backlog. */
+    int queues;
     int ended;
-    size_t pos; /* the next unread byte */
-    size_t len; /* the bytes held */
+    size_t pos;       /* the next unread byte */
+    size_t len;       /* the bytes held */
+    uint64_t read_in; /* the bytes read in so far: written by the reader with fill_mu held */
+    /* A retune's cutoff not paid yet (issue #834): the bytes read in (read_in's count) through which whole samples
+       still go, when a drop reached its bound before them (owing set). The reader pays the rest, in bounded passes, at
+       its refills, before it returns a sample. Reader thread only. */
+    uint64_t drop_through;
+    int owing;
+    /* Held around each read into the buffer and its read_in update, and around a backlog mark's count, so a mark sees a
+       read's bytes either still ready on the descriptor or already in read_in, never both or neither. */
+    dsd_mutex_t fill_mu;
     uint8_t buf[DSD_PCM_STREAM_BUF_BYTES];
 };
+
+/* The stream's count for a backlog mark (<dsd-neo/platform/input_backlog.h>): the bytes read in so far and those the
+   descriptor or socket holds ready, between two refills. A descriptor that queues nothing counts 0, without the refill
+   lock: its read may block while the reader holds that lock (a Windows console reads as ready, then waits for a key),
+   and the watchdog's mark must not wait on it before it sends its tune. Its drop discards nothing anyway. */
+static uint64_t
+pcm_stream_arrived(const void* queue) {
+    dsd_pcm_stream* stream = (dsd_pcm_stream*)queue;
+    if (!stream->queues) {
+        return 0U;
+    }
+    dsd_mutex_lock(&stream->fill_mu);
+    const long ready = stream->sock != DSD_INVALID_SOCKET ? dsd_socket_readable_bytes(stream->sock)
+                                                          : dsd_fd_readable_bytes(stream->fd);
+    const uint64_t arrived = stream->read_in + (ready > 0 ? (uint64_t)ready : 0U);
+    dsd_mutex_unlock(&stream->fill_mu);
+    return arrived;
+}
+
+uint64_t
+dsd_pcm_stream_socket_arrived(dsd_socket_t sock) {
+    if (sock == DSD_INVALID_SOCKET) {
+        return 0U;
+    }
+    const long ready = dsd_socket_readable_bytes(sock);
+    return ready > 0 ? (uint64_t)ready : 0U;
+}
 
 static dsd_pcm_stream*
 pcm_stream_alloc(int fd, dsd_socket_t sock) {
@@ -38,9 +85,16 @@ pcm_stream_alloc(int fd, dsd_socket_t sock) {
     if (stream == NULL) {
         return NULL;
     }
+    if (dsd_mutex_init(&stream->fill_mu) != 0) {
+        free(stream);
+        return NULL;
+    }
     stream->fd = fd;
     stream->sock = sock;
+    stream->queues = sock != DSD_INVALID_SOCKET || dsd_fd_is_stream(fd);
     stream->ended = PCM_STREAM_OPEN;
+    /* The input the decoder reads from now on: a rigctl retune's drop is measured on it. */
+    dsd_input_backlog_attach(stream, pcm_stream_arrived);
     return stream;
 }
 
@@ -69,6 +123,12 @@ dsd_pcm_stream_open_socket(dsd_socket_t sock) {
 
 void
 dsd_pcm_stream_close(dsd_pcm_stream* stream) {
+    if (stream == NULL) {
+        return;
+    }
+    /* Detached first: a mark that is counting it holds the backlog's lock, so none is when the lock is destroyed. */
+    dsd_input_backlog_detach(stream);
+    (void)dsd_mutex_destroy(&stream->fill_mu);
     free(stream);
 }
 
@@ -127,6 +187,24 @@ pcm_stream_raw_read(const dsd_pcm_stream* stream, uint8_t* dst, size_t room) {
     return (long)dsd_read(stream->fd, dst, room);
 }
 
+/* One read into the buffer's free room and its count (read_in), under fill_mu: a backlog mark counts the bytes it took
+   on one side only (pcm_stream_arrived()). The read follows a readiness wait, so it does not block (after a spurious
+   readiness a socket's read, and a mark with it, waits for its receive timeout at most). A failed read's error
+   (pcm_stream_read_error()) is taken before the lock is released, into @p error. */
+static long
+pcm_stream_read_counted(dsd_pcm_stream* stream, int* error) {
+    dsd_mutex_lock(&stream->fill_mu);
+    const long got = pcm_stream_raw_read(stream, stream->buf + stream->len, sizeof(stream->buf) - stream->len);
+    if (got > 0) {
+        stream->len += (size_t)got;
+        stream->read_in += (uint64_t)got;
+    } else if (got < 0) {
+        *error = pcm_stream_read_error(stream);
+    }
+    dsd_mutex_unlock(&stream->fill_mu);
+    return got;
+}
+
 /* One read into the buffer's free room, after the part of a sample left over moves to its front. Returns 1 when bytes
    came, 0 when the read would block, and -1 when the stream ended (stream->ended says how). An interrupted read is
    repeated. */
@@ -139,16 +217,15 @@ pcm_stream_fill(dsd_pcm_stream* stream) {
     stream->pos = 0U;
     stream->len = left;
     for (;;) {
-        const long got = pcm_stream_raw_read(stream, stream->buf + stream->len, sizeof(stream->buf) - stream->len);
+        int error = PCM_STREAM_FAILURE;
+        const long got = pcm_stream_read_counted(stream, &error);
         if (got > 0) {
-            stream->len += (size_t)got;
             return 1;
         }
         if (got == 0) {
             stream->ended = PCM_STREAM_EOF;
             return -1;
         }
-        const int error = pcm_stream_read_error(stream);
         if (error == PCM_STREAM_WOULD_BLOCK) {
             return 0;
         }
@@ -169,6 +246,74 @@ pcm_stream_wait(const dsd_pcm_stream* stream, unsigned int timeout_ms) {
     return dsd_fd_wait_readable(stream->fd, timeout_ms);
 }
 
+/* The bytes whole samples took so far: those read in, less what the buffer still holds. */
+static uint64_t
+pcm_stream_used(const dsd_pcm_stream* stream) {
+    return stream->read_in - (uint64_t)(stream->len - stream->pos);
+}
+
+/* One bounded pass of the drop the stream owes (dsd_pcm_stream::drop_through): from the buffer, then from the
+   descriptor or socket, read without waiting, at most the buffer and DSD_PCM_STREAM_DISCARD_MAX_FILLS refills and no
+   refill but the first after DSD_PCM_STREAM_DISCARD_MAX_MS. What a bound leaves stays owed, and so does what a pass
+   finds not ready yet: the mark counted those bytes queued, so they come before anything newer (a zero-time readiness
+   check is no proof they are gone: a socket's low-water mark, an interrupted wait). Returns the samples dropped. */
+static long
+pcm_stream_pay_owed(dsd_pcm_stream* stream) {
+    const uint64_t used = pcm_stream_used(stream);
+    uint64_t owed = stream->drop_through > used ? stream->drop_through - used : 0U;
+    const uint64_t start_ms = dsd_time_monotonic_ms();
+    long dropped = 0;
+    int bounded = 0;
+    for (unsigned int fills = 0U; owed > 0U && stream->ended == PCM_STREAM_OPEN; fills++) {
+        size_t whole = (stream->len - stream->pos) & ~(size_t)1U;
+        if ((uint64_t)whole > owed) {
+            whole = (size_t)owed;
+        }
+        stream->pos += whole;
+        owed -= (uint64_t)whole;
+        dropped += (long)(whole / 2U);
+        if (owed == 0U) {
+            break;
+        }
+        /* The rest was ready at the mark, so a refill does not wait for it. The time cap never skips the first refill:
+           a pause of the decoder inside the drop does not decide what it takes. */
+        if (fills == DSD_PCM_STREAM_DISCARD_MAX_FILLS
+            || (fills > 0U && dsd_time_monotonic_ms() - start_ms >= DSD_PCM_STREAM_DISCARD_MAX_MS)) {
+            bounded = 1;
+            break;
+        }
+        if (pcm_stream_wait(stream, 0U) <= 0 || pcm_stream_fill(stream) <= 0) {
+            bounded = 1; /* not ready yet, or the stream ended (which owes nothing) */
+            break;
+        }
+    }
+    stream->owing = bounded && stream->ended == PCM_STREAM_OPEN;
+    if (!stream->owing) {
+        stream->drop_through = pcm_stream_used(stream); /* paid, or given up: nothing later is owed */
+    }
+    return dropped;
+}
+
+long
+dsd_pcm_stream_discard_through(dsd_pcm_stream* stream, const dsd_input_cut* cut) {
+    /* A descriptor nothing feeds (a regular file, a console) reports ready whatever a read would do: it holds no
+       queued stream, and a read could wait or take the rest of a file. */
+    if (stream == NULL || !stream->queues || !dsd_input_backlog_cut_applies(cut, stream)) {
+        return DSD_INPUT_DISCARD_NOT_APPLICABLE;
+    }
+    /* Only whole samples that had arrived by the mark go; a part of one stays, so the samples after it stay whole. A
+       later cut of the stream discards at least as much as an earlier one still owed. */
+    const uint64_t used = pcm_stream_used(stream);
+    if (cut->arrived < used && !stream->owing) {
+        return DSD_INPUT_DISCARD_READ_PAST;
+    }
+    const uint64_t through = cut->arrived > used ? used + ((cut->arrived - used) & ~(uint64_t)1U) : used;
+    if (through > stream->drop_through) {
+        stream->drop_through = through;
+    }
+    return pcm_stream_pay_owed(stream);
+}
+
 int
 dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int timeout_ms) {
     if (stream == NULL || out == NULL) {
@@ -179,6 +324,26 @@ dsd_pcm_stream_read_wait(dsd_pcm_stream* stream, int16_t* out, unsigned int time
     }
     if (stream->ended != PCM_STREAM_OPEN) {
         return DSD_PCM_STREAM_END;
+    }
+    /* A retune's cutoff a drop's bound left (issue #834): the buffer holds none of it, so it is paid here, when the
+       buffer ran dry, one bounded pass per read, before any sample is returned. */
+    if (stream->owing) {
+        (void)pcm_stream_pay_owed(stream);
+        if (pcm_stream_take(stream, out)) {
+            return DSD_PCM_STREAM_SAMPLE;
+        }
+        if (stream->ended != PCM_STREAM_OPEN) {
+            return DSD_PCM_STREAM_END;
+        }
+        if (stream->owing) {
+            /* The bytes owed are not ready yet: wait for input, as a read with nothing owed does, and pay on the next
+               read. */
+            if (pcm_stream_wait(stream, timeout_ms) < 0) {
+                stream->ended = PCM_STREAM_FAILED;
+                return DSD_PCM_STREAM_END;
+            }
+            return DSD_PCM_STREAM_TIMEOUT;
+        }
     }
     /* Readiness is checked here only, when the buffer ran dry, and the buffer refills at most once per wait. */
     const int ready = pcm_stream_wait(stream, timeout_ms);

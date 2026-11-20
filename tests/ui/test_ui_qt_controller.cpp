@@ -30,6 +30,9 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#if defined(DSD_TEST_QPA_APP_STATE)
+#include <qpa/qwindowsysteminterface.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -325,6 +328,97 @@ test_history_handoff_after_resume_without_redraw() {
     freeState(state);
     free(state);
 }
+
+// The GUI thread reads the snapshots through one buffer each (snapshot.h). Off screen (Android suspends it in the
+// background) it may read none for hours, so a session stopped meanwhile, from the notification, would leave the last
+// keys and API keys it read in those buffers: they go when the app is suspended or hidden, and when the controller
+// goes, without waiting for a next read. A read made while the app is off screen (a hidden tick) copies none back; once
+// the app is on screen again a read copies them again while the session runs.
+static void
+test_gui_snapshot_buffers_keep_no_key_off_screen() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    for (int c = 0; c < 3; ++c) {
+        state.K = 0x5A5AULL;
+        state.R = 0x0102030405ULL;
+        DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+        const dsd_state* snapshot = nullptr;
+        const dsd_opts* opts_snapshot = nullptr;
+        {
+            dsd_qt::UiController controller(nullptr, nullptr, nullptr, nullptr);
+            dsd_app_frontend_runtime_start(&opts, &state);
+            snapshot = dsd_app_get_latest_snapshot();
+            opts_snapshot = dsd_app_get_latest_opts_snapshot();
+            check(snapshot != nullptr && snapshot->K == 0x5A5AULL && opts_snapshot != nullptr
+                  && strcmp(opts_snapshot->rr_app_key, "rr-test-key") == 0);
+            if (c != 1) {
+                Q_EMIT qGuiApp->applicationStateChanged(c == 0 ? Qt::ApplicationSuspended : Qt::ApplicationHidden);
+                // A tick while off screen reads both snapshots: no key comes back into the buffers.
+                snapshot = dsd_app_get_latest_snapshot();
+                opts_snapshot = dsd_app_get_latest_opts_snapshot();
+                check(snapshot != nullptr && snapshot->K == 0ULL && snapshot->R == 0ULL && opts_snapshot != nullptr
+                      && opts_snapshot->rr_app_key[0] == '\0');
+            }
+            if (c == 2) {
+                // On screen again while the session runs: the next read has the keys.
+                Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+                snapshot = dsd_app_get_latest_snapshot();
+                opts_snapshot = dsd_app_get_latest_opts_snapshot();
+                check(snapshot != nullptr && snapshot->K == 0x5A5AULL && opts_snapshot != nullptr
+                      && strcmp(opts_snapshot->rr_app_key, "rr-test-key") == 0);
+                Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationSuspended);
+            }
+            if (c != 1) {
+                dsd_app_frontend_runtime_stop();
+            }
+        }
+        if (c == 1) {
+            dsd_app_frontend_runtime_stop();
+        }
+        // No read since: the buffers the GUI thread last read hold no key.
+        check(snapshot != nullptr && snapshot->K == 0ULL && snapshot->R == 0ULL);
+        check(opts_snapshot != nullptr && opts_snapshot->rr_app_key[0] == '\0');
+        Q_EMIT qGuiApp->applicationStateChanged(Qt::ApplicationActive);
+    }
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    state.K = state.R = 0ULL;
+    freeState(&state);
+}
+
+#if defined(DSD_TEST_QPA_APP_STATE)
+// A controller made while the app is already off screen (Android recreating the GUI in the background) gets no state
+// transition to say so: it withholds keys from its first read on, and a read once the app is on screen has them.
+static void
+test_controller_made_off_screen_withholds_keys() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.K = 0x5A5AULL;
+    DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+    QWindowSystemInterface::handleApplicationStateChanged<QWindowSystemInterface::SynchronousDelivery>(
+        Qt::ApplicationHidden, true);
+    check(QGuiApplication::applicationState() == Qt::ApplicationHidden);
+    {
+        dsd_qt::UiController controller(nullptr, nullptr, nullptr, nullptr);
+        dsd_app_frontend_runtime_start(&opts, &state);
+        const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+        const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+        check(snapshot != nullptr && snapshot->K == 0ULL && opts_snapshot != nullptr
+              && opts_snapshot->rr_app_key[0] == '\0');
+        QWindowSystemInterface::handleApplicationStateChanged<QWindowSystemInterface::SynchronousDelivery>(
+            Qt::ApplicationActive, true);
+        snapshot = dsd_app_get_latest_snapshot();
+        check(snapshot != nullptr && snapshot->K == 0x5A5AULL);
+        dsd_app_frontend_runtime_stop();
+    }
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    state.K = 0ULL;
+    freeState(&state);
+}
+#endif
 
 // Reproduce the options-publication/redraw gap during Android input startup.
 static void
@@ -2017,6 +2111,10 @@ main(int argc, char** argv) {
     test_unit_activity_follows_the_session();
     test_positions_poll_without_redraw();
     test_startup_options_wait_for_redraw();
+    test_gui_snapshot_buffers_keep_no_key_off_screen();
+#if defined(DSD_TEST_QPA_APP_STATE)
+    test_controller_made_off_screen_withholds_keys();
+#endif
     test_metrics_age_without_decoder_redraw();
     test_target_change_publishes_once();
     test_target_change_drops_sync_hold();

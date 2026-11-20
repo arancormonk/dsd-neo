@@ -594,11 +594,16 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 static int cac_fail = 0;
 
 static void
-nxdn_reset_after_cac_fail(dsd_state* state) {
+nxdn_reset_after_cac_fail(const dsd_opts* opts, dsd_state* state) {
     state->synctype = DSD_SYNC_P25P1_POS;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
-    state->last_cc_sync_time = dsd_decode_time() + 2;
+    /* Only a control channel carries a CAC, so the push holds a trunked receiver on its control channel through a run
+       of failed ones. A conventional -Y row has no control channel to hold: CACs that all failed their CRC are noise
+       there, and pushing the clock the -Y step reads would keep the scan on the row (issue #834). */
+    if (!(opts->scanner_mode == 1 && opts->trunk_enable != 1)) {
+        state->last_cc_sync_time = dsd_decode_time() + 2;
+    }
     cac_fail = 0;
 
     state->center = 0.0f;
@@ -643,7 +648,7 @@ nxdn_reset_after_cac_fail(dsd_state* state) {
 }
 
 static void
-nxdn_update_cac_fail_state(dsd_state* state, uint16_t crc) {
+nxdn_update_cac_fail_state(const dsd_opts* opts, dsd_state* state, uint16_t crc) {
     if (crc != 0) {
         nxdn_print_crc_error_colored();
         cac_fail++;
@@ -652,7 +657,7 @@ nxdn_update_cac_fail_state(dsd_state* state, uint16_t crc) {
     }
 
     if (cac_fail > 10) {
-        nxdn_reset_after_cac_fail(state);
+        nxdn_reset_after_cac_fail(opts, state);
     }
 }
 
@@ -707,7 +712,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " CAC");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    nxdn_update_cac_fail_state(state, crc);
+    nxdn_update_cac_fail_state(opts, state, crc);
 
     if (crc == 0) {
         NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));
@@ -836,7 +841,7 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
-            (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+            (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, "JPN DCR");
         }
     } else if (fields->sf_mes == 0x1EU) {
         // Release signaling decoded over the air: positive end evidence, distinguishable from an
@@ -870,7 +875,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                         : ota_cipher == 1U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED
                                            : DSD_CALL_ENC_OBSERVED_NONE,
     };
-    if (dsd_call_state_update_crypto(state, 0U, &crypto) > 0) {
+    if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }

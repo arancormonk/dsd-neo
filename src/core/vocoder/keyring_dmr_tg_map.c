@@ -12,9 +12,11 @@
  * touches rkey_array directly and classification and activation cannot disagree.
  */
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -196,11 +198,11 @@ keyring_note_selection(dsd_state* state, int slot, const dsd_call_snapshot* call
         && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &mapped_kid) && need != DSD_KEY_NEED_NONE) {
         fallback = keyring_unapplied_row_fallback(state, mapped_kid);
     }
-    if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE
-        && (DSD_SYNC_IS_DMR(call->protocol) || call->protocol == DSD_SYNC_NONE)) {
+    if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE) {
         (void)dsd_call_state_note_key_selection(
-            state, (uint8_t)slot, call->epoch, mapped ? DSD_CALL_KEY_TALKGROUP : DSD_CALL_KEY_SIGNALED, signaled_kid,
-            kid, need == DSD_KEY_NEED_NONE ? -1 : keyring_kid_satisfies_need(state, kid, need), fallback);
+            state, (uint8_t)slot, DSD_SYNC_DMR_BS_VOICE_POS, call->epoch,
+            mapped ? DSD_CALL_KEY_TALKGROUP : DSD_CALL_KEY_SIGNALED, signaled_kid, kid,
+            need == DSD_KEY_NEED_NONE ? -1 : keyring_kid_satisfies_need(state, kid, need), fallback);
     }
 }
 
@@ -233,4 +235,164 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
                                         signaled_kid);
     }
     return signaled_kid;
+}
+
+uint32_t
+keyring_dmr_tg_key_cell(uint32_t tg) {
+    uint32_t hash = tg & 0xFFFFFF;
+    if (hash <= 0xFFFF) {
+        return hash;
+    }
+
+    uint8_t hash_bits[24];
+    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
+    for (int i = 0; i < 24; i++) {
+        hash_bits[i] = ((hash << i) & 0x800000) >> 23;
+    }
+    hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
+    return hash & 0xFFFF;
+}
+
+/* The Basic Privacy and Hytera working key: K, K1..K4 and H, then basic_key_present and hytera_key_segments. */
+static void
+keyring_dmr_working_key_get(const dsd_state* state, unsigned long long int words[6], uint8_t flags[2]) {
+    words[0] = state->K;
+    words[1] = state->K1;
+    words[2] = state->K2;
+    words[3] = state->K3;
+    words[4] = state->K4;
+    words[5] = state->H;
+    flags[0] = state->basic_key_present;
+    flags[1] = state->hytera_key_segments;
+}
+
+static void
+keyring_dmr_working_key_set(dsd_state* state, const unsigned long long int words[6], const uint8_t flags[2]) {
+    state->K = words[0];
+    state->K1 = words[1];
+    state->K2 = words[2];
+    state->K3 = words[3];
+    state->K4 = words[4];
+    state->H = words[5];
+    state->basic_key_present = flags[0];
+    state->hytera_key_segments = flags[1];
+}
+
+/* The talkgroup a frame of slot @p slot's call on @p tg keys from, into @p source: its own, or for a call no LC has
+   named yet the one the slot's call last keyed from (talkgroup 0's own cell when it keyed from none, as an unnamed
+   call always has). Returns 0 when that talkgroup has no key. */
+static int
+keyring_dmr_tg_autoload_source(const dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* source) {
+    *source = tg != 0U ? tg : state->dmr_tg_autoload.slot_tg[slot & 1U];
+    return keyring_kid_scalar_present(state, (int)keyring_dmr_tg_key_cell(*source)); // an imported zero is a key too
+}
+
+/* The working key the keyring's key for talkgroup @p source makes. */
+static void
+keyring_dmr_tg_autoload_key_of(const dsd_state* state, uint32_t source, unsigned long long int words[6],
+                               uint8_t flags[2]) {
+    const unsigned long long int value = state->rkey_array[keyring_dmr_tg_key_cell(source)];
+    words[0] = value & 0xFF;         // doesn't exceed 255
+    words[1] = value & 0xFFFFFFFFFF; // doesn't exceed the 40-bit limit
+    words[2] = words[3] = words[4] = 0ULL;
+    words[5] = words[1];
+    flags[0] = 1U;
+    flags[1] = 1U;
+}
+
+int
+keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, uint32_t* keyed_from) {
+    if (state == NULL || keyed_from == NULL) {
+        return 0;
+    }
+    const uint8_t idx = slot & 1U;
+    uint32_t source = 0U;
+    const int found = keyring_dmr_tg_autoload_source(state, idx, tg, &source);
+    const int holds = dsd_dmr_tg_autoload_holds(state);
+    *keyed_from = source;
+    if (!found) {
+        keyring_dmr_tg_autoload_forget_slot(state, idx);
+        // The key it replaced comes back while its key is the working key, and its copies of both are wiped: its
+        // ownership ends here, and nothing later (a cleared keyring disarms the no-carrier unload) would wipe them.
+        if (state->dmr_tg_autoload.active) {
+            dsd_dmr_tg_autoload_hand_back(state);
+        }
+        return 0;
+    }
+    state->dmr_tg_autoload.slot_tg[idx] = source;
+    if (!holds) {
+        keyring_dmr_working_key_get(state, state->dmr_tg_autoload.baseline, state->dmr_tg_autoload.baseline_flags);
+    }
+    keyring_dmr_tg_autoload_key_of(state, source, state->dmr_tg_autoload.installed,
+                                   state->dmr_tg_autoload.installed_flags);
+    keyring_dmr_working_key_set(state, state->dmr_tg_autoload.installed, state->dmr_tg_autoload.installed_flags);
+    DSD_MEMCPY(state->dmr_tg_autoload.slot_key[idx], state->dmr_tg_autoload.installed,
+               sizeof(state->dmr_tg_autoload.slot_key[idx]));
+    DSD_MEMCPY(state->dmr_tg_autoload.slot_key_flags[idx], state->dmr_tg_autoload.installed_flags,
+               sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
+    state->dmr_tg_autoload.active = 1U;
+    return 1;
+}
+
+void
+keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
+                                uint8_t flags[2]) {
+    if (state == NULL) {
+        dsd_dmr_key_copy_none(words, flags);
+        return;
+    }
+    uint32_t source = 0U;
+    if (keyring_dmr_tg_autoload_source(state, slot & 1U, tg, &source)) {
+        keyring_dmr_tg_autoload_key_of(state, source, words, flags);
+    } else if (dsd_dmr_tg_autoload_holds(state)) {
+        DSD_MEMCPY(words, state->dmr_tg_autoload.baseline, sizeof(state->dmr_tg_autoload.baseline));
+        DSD_MEMCPY(flags, state->dmr_tg_autoload.baseline_flags, sizeof(state->dmr_tg_autoload.baseline_flags));
+    } else {
+        keyring_dmr_working_key_get(state, words, flags);
+    }
+}
+
+unsigned long long int
+keyring_dmr_tg_autoload_basic_key(const dsd_state* state, uint8_t slot, uint32_t tg) {
+    if (state == NULL) {
+        return 0ULL;
+    }
+    uint32_t source = 0U;
+    if (keyring_dmr_tg_autoload_source(state, slot & 1U, tg, &source)) {
+        return state->rkey_array[keyring_dmr_tg_key_cell(source)] & 0xFF; // as keyring_dmr_tg_autoload_key_of()
+    }
+    return dsd_dmr_tg_autoload_holds(state) ? state->dmr_tg_autoload.baseline[0] : state->K;
+}
+
+int
+keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg) {
+    if (state == NULL) {
+        return 0;
+    }
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    keyring_dmr_tg_autoload_preview(state, slot, tg, words, flags);
+    // dsd_key_basic_present() and dsd_key_hytera_present() of that working key.
+    const int present = flags[0] != 0U || words[0] != 0ULL || flags[1] != 0U || words[1] != 0ULL;
+    DSD_SECURE_ZERO(words, sizeof(words));
+    DSD_SECURE_ZERO(flags, sizeof(flags));
+    return present;
+}
+
+void
+keyring_dmr_tg_autoload_forget_slot(dsd_state* state, uint8_t slot) {
+    if (state == NULL) {
+        return;
+    }
+    const uint8_t idx = slot & 1U;
+    state->dmr_tg_autoload.slot_tg[idx] = 0U;
+    /* A copy is written only with its flags set (keyring_dmr_tg_autoload_key_of(): an imported zero key too), and wiped
+       with them, so flags all 0 mean the copy holds zeros already: a call whose talkgroup has no key misses on every
+       frame and is not wiped again each time, only on the change from a key to none. */
+    const uint8_t* flags = state->dmr_tg_autoload.slot_key_flags[idx];
+    if (flags[0] == 0U && flags[1] == 0U) {
+        return;
+    }
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key[idx], sizeof(state->dmr_tg_autoload.slot_key[idx]));
+    DSD_SECURE_ZERO(state->dmr_tg_autoload.slot_key_flags[idx], sizeof(state->dmr_tg_autoload.slot_key_flags[idx]));
 }

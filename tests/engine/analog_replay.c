@@ -96,6 +96,9 @@
  * OK" only after its recordings were checked. --analog-keep-output keeps the session's own output settings instead of
  * capturing the monitor (-o null stays muted, as engine setup leaves it), prints one "ANALOG OUTPUT:" line and fails
  * unless the output is off and nothing reached it.
+ * --analog-audio-out FILE writes every block the monitor delivered to FILE as native float32 samples (full scale 1.0)
+ * at the analog sink rate, and prints one "ANALOG AUDIO OUT:" line with that rate and the sample count, so a caller can
+ * score audio this host does not (tools/scan_quiet_reception.py's multitone S/N).
  */
 
 #include <dsd-neo/core/channel_mode.h>
@@ -111,7 +114,11 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/io/udp_input.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -122,6 +129,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -141,6 +149,7 @@
 #endif
 
 #include "../test_support/test_support.h"
+#include "analog_rx_internal.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "p56.h"
 
@@ -278,6 +287,9 @@ static analog_limit g_record_min_level;
 static int g_keep_output;
 /* The stop hook reported the run's live checks (analog_report()). */
 static int g_reported;
+/* Where the delivered audio is written (--analog-audio-out); empty writes none. */
+static char g_audio_out[DSD_TEST_PATH_MAX];
+static const char k_audio_out_arg[] = "--analog-audio-out";
 /* The option that names a scene (--analog-scene, issue #668) and the one that takes no value. */
 static const char k_scene_arg[] = "--analog-scene";
 static const char k_keep_output_arg[] = "--analog-keep-output";
@@ -389,6 +401,7 @@ analog_usage(void) {
                 "  --analog-record-{min,max}-start-ms MS  where each recording starts against its burst\n"
                 "  --analog-record-{min,max}-audio-ms MS  where its first sample that is not 0 is\n"
                 "  --analog-keep-output              keep the session's own output (-o null stays muted)\n"
+                "  --analog-audio-out FILE           write the delivered audio to FILE as float32 samples\n"
                 "Other --analog-* arguments go to dsd-neo unchanged.\n");
 }
 
@@ -470,7 +483,7 @@ static int
 analog_is_host_option(const char* name) {
     return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0
            || strcmp(name, k_gap_join_arg) == 0 || strcmp(name, k_scene_arg) == 0
-           || strcmp(name, k_keep_output_arg) == 0;
+           || strcmp(name, k_keep_output_arg) == 0 || strcmp(name, k_audio_out_arg) == 0;
 }
 
 /* One ':'-ended field of @p *text, a whole number of ms from 1 to 60000; advances past it. */
@@ -528,6 +541,14 @@ analog_apply_option(const char* name, const char* value) {
     }
     if (strcmp(name, k_scene_arg) == 0) {
         return analog_apply_scene(value);
+    }
+    if (strcmp(name, k_audio_out_arg) == 0) {
+        if (value[0] == '\0' || strlen(value) >= sizeof g_audio_out) {
+            DSD_FPRINTF(stderr, "analog replay: %s needs a path shorter than %zu bytes\n", name, sizeof g_audio_out);
+            return -1;
+        }
+        DSD_SNPRINTF(g_audio_out, sizeof g_audio_out, "%s", value);
+        return 0;
     }
     if (strcmp(name, k_keep_output_arg) == 0) {
         DSD_FPRINTF(stderr, "analog replay: %s takes no value\n", name);
@@ -1552,23 +1573,26 @@ analog_replay_gap(char** args, int count) {
  *  - udp: the pcm kind sent live to `-i udp` at --analog-pcm-tap's rate in 20 ms datagrams, paced in real time, with
  *    the sender stopping for a second before the sample pause_s names: a stream pause part-way through a monitor block.
  *  - udp-tap: the iq kind's discriminator tap sent the same way, for the noise squelch on a live input.
+ *    Both udp kinds run the analog tap's clock on the scene's own time (analog_scene_clock_ms()).
  * Every burst is keyed with 2 ms raised-cosine ramps. */
-#define ANALOG_SCENE_MAX_BURSTS  8
-#define ANALOG_SCENE_SEED        668U
-#define ANALOG_SCENE_VOICE_LO_HZ 300.0
-#define ANALOG_SCENE_VOICE_HI_HZ 2500.0
-#define ANALOG_SCENE_CTCSS_HZ    100.0
-#define ANALOG_SCENE_PCM_VOICE   0.1   /* RMS, full scale 1: -20 dBFS */
-#define ANALOG_SCENE_PCM_CTCSS   0.05  /* peak: -26 dBFS */
-#define ANALOG_SCENE_PCM_FLOOR   0.001 /* RMS: -60 dBFS */
-#define ANALOG_SCENE_PCM_CLIP    0.9
-#define ANALOG_SCENE_IQ_DEV_HZ   3000.0
-#define ANALOG_SCENE_IQ_TONED_HZ 2500.0
-#define ANALOG_SCENE_IQ_CTCSS_HZ 600.0
-#define ANALOG_SCENE_UDP_STOP_MS 1000U
-#define ANALOG_SCENE_UDP_END_MS  1500U
+#define ANALOG_SCENE_MAX_BURSTS   8
+#define ANALOG_SCENE_SEED         668U
+#define ANALOG_SCENE_VOICE_LO_HZ  300.0
+#define ANALOG_SCENE_VOICE_HI_HZ  2500.0
+#define ANALOG_SCENE_CTCSS_HZ     100.0
+#define ANALOG_SCENE_PCM_VOICE    0.1   /* RMS, full scale 1: -20 dBFS */
+#define ANALOG_SCENE_PCM_CTCSS    0.05  /* peak: -26 dBFS */
+#define ANALOG_SCENE_PCM_FLOOR    0.001 /* RMS: -60 dBFS */
+#define ANALOG_SCENE_PCM_CLIP     0.9
+#define ANALOG_SCENE_IQ_DEV_HZ    3000.0
+#define ANALOG_SCENE_IQ_TONED_HZ  2500.0
+#define ANALOG_SCENE_IQ_CTCSS_HZ  600.0
+#define ANALOG_SCENE_UDP_STOP_MS  1000U
+#define ANALOG_SCENE_UDP_END_MS   1500U
+/* How long the udp scene's sender waits at most for the decoder to read what it sent. */
+#define ANALOG_SCENE_UDP_DRAIN_MS 60000U
 /* The udp scene's monitor blocks are 960 samples (symbol_analog_block_size()); at 8192 Hz each is 117 ms. */
-#define ANALOG_SCENE_UDP_RATE    8192.0
+#define ANALOG_SCENE_UDP_RATE     8192.0
 
 typedef enum { ANALOG_SCENE_IQ = 0, ANALOG_SCENE_PCM, ANALOG_SCENE_UDP, ANALOG_SCENE_UDP_TAP } analog_scene_kind;
 
@@ -1922,6 +1946,122 @@ analog_scene_read_tap(void) {
     return rc;
 }
 
+/* The samples the decoder took from the udp input. The scene's sender paces itself by them: a decoder slower than the
+   scene's real time (a sanitizer build on a loaded host) would otherwise let the input's ring overflow and drop part of
+   the scene, the burst included. */
+static dsd_atomic_u64 g_scene_read;
+
+/* The silences the udp scene's sender makes: its stop before the sample at pause_s, and the end after the last sample.
+   Each starts once the decoder has read every sample before it and found the input empty. */
+enum { ANALOG_SCENE_STOP = 0, ANALOG_SCENE_END, ANALOG_SCENE_SILENCES };
+
+static struct {
+    uint64_t at;             /* the samples read before it; 0 for none */
+    uint64_t len_ms;         /* how long the sender keeps it */
+    dsd_atomic_u64 found_ms; /* real ms when the decoder first found the input empty there; 0 before */
+} g_scene_silence[ANALOG_SCENE_SILENCES];
+
+/* The scene clock starts here, so it never reads 0, which the tap's deadline takes for none. */
+#define ANALOG_SCENE_CLOCK_ORIGIN_MS 1000U
+
+/*
+ * The clock the analog tap tells a paused input by (dsd_analog_rx_test_set_clock()), and with it every reader of its
+ * stale deadline, in the udp scenes: the scene's own time at the samples the decoder has read, and in a silence the
+ * sender makes, the real time since the decoder found the input empty there, up to the silence's length. A decoder
+ * that is not scheduled for a while in the middle of a burst (a loaded host, a sanitizer build) then still reads the
+ * burst as one reception, as it would on the real clock only if it were never held up, and the sender's stop is still
+ * the pause it is on the air.
+ */
+static uint64_t
+analog_scene_clock_ms(void) {
+    const uint64_t read = dsd_atomic_u64_load_acquire(&g_scene_read);
+    uint64_t ms = ANALOG_SCENE_CLOCK_ORIGIN_MS + read * 1000U / (uint64_t)g_scene.pcm_rate;
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        const uint64_t at = g_scene_silence[i].at;
+        if (at == 0U || read < at) {
+            continue;
+        }
+        if (read > at) {
+            ms += g_scene_silence[i].len_ms;
+            continue;
+        }
+        const uint64_t found = dsd_atomic_u64_load_acquire(&g_scene_silence[i].found_ms);
+        if (found != 0U) {
+            const uint64_t since = dsd_realtime_mono_ms() - found;
+            ms += since < g_scene_silence[i].len_ms ? since : g_scene_silence[i].len_ms;
+        }
+    }
+    return ms;
+}
+
+/* The decoder found the input empty after @p read samples: a silence of the sender's there starts now. */
+static void
+analog_scene_note_empty(uint64_t read) {
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        if (g_scene_silence[i].at != 0U && g_scene_silence[i].at == read
+            && dsd_atomic_u64_load_acquire(&g_scene_silence[i].found_ms) == 0U) {
+            dsd_atomic_u64_store_release(&g_scene_silence[i].found_ms, dsd_realtime_mono_ms());
+        }
+    }
+}
+
+static int
+analog_scene_udp_read(dsd_opts* opts, int16_t* out) {
+    const int got = udp_input_read_sample(opts, out);
+    if (got == 1) {
+        (void)dsd_atomic_u64_fetch_add_release(&g_scene_read, 1U);
+    }
+    return got;
+}
+
+static int
+analog_scene_udp_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    const int got = udp_input_read_sample_wait(opts, out, timeout_ms);
+    if (got == 1) {
+        (void)dsd_atomic_u64_fetch_add_release(&g_scene_read, 1U);
+    } else if (got < 0) {
+        analog_scene_note_empty(dsd_atomic_u64_load_acquire(&g_scene_read));
+    }
+    return got;
+}
+
+/* The network input hooks the engine installs (dsd_engine_net_audio_input_hooks_install()), with the udp reads
+   counted for the sender, and the tap's clock on the scene's time. */
+static void
+analog_scene_count_udp_reads(void) {
+    dsd_atomic_u64_init(&g_scene_read, 0U);
+    g_scene_silence[ANALOG_SCENE_STOP].at = (uint64_t)lround(g_scene.scene->pause_s * (double)g_scene.pcm_rate);
+    g_scene_silence[ANALOG_SCENE_STOP].len_ms = ANALOG_SCENE_UDP_STOP_MS;
+    g_scene_silence[ANALOG_SCENE_END].at = (uint64_t)g_scene.pcm_n;
+    g_scene_silence[ANALOG_SCENE_END].len_ms = ANALOG_SCENE_UDP_END_MS;
+    for (int i = 0; i < ANALOG_SCENE_SILENCES; i++) {
+        dsd_atomic_u64_init(&g_scene_silence[i].found_ms, 0U);
+    }
+    dsd_analog_rx_test_set_clock(analog_scene_clock_ms);
+    dsd_net_audio_input_hooks hooks = {0};
+    hooks.tcp_open = tcp_input_open;
+    hooks.tcp_close = tcp_input_close;
+    hooks.tcp_read_sample_wait = tcp_input_read_sample_wait;
+    hooks.udp_start = udp_input_start;
+    hooks.udp_stop = udp_input_stop;
+    hooks.udp_read_sample = analog_scene_udp_read;
+    hooks.udp_read_sample_wait = analog_scene_udp_read_wait;
+    hooks.tcp_discard_through = tcp_input_discard_through;
+    hooks.udp_discard_through = udp_input_discard_through;
+    hooks.tcp_connect = ConnectBounded;
+    dsd_net_audio_input_hooks_set(&hooks);
+}
+
+/* Waits until the decoder took @p count of the scene's samples, for at most ANALOG_SCENE_UDP_DRAIN_MS. */
+static void
+analog_scene_wait_read(uint64_t count) {
+    const uint64_t give_up = dsd_realtime_mono_ms() + ANALOG_SCENE_UDP_DRAIN_MS;
+    while (dsd_atomic_u64_load_acquire(&g_scene_read) < count && dsd_realtime_mono_ms() < give_up
+           && !dsd_exitflag_load()) {
+        dsd_sleep_ms(1U);
+    }
+}
+
 /* Waits until @p due_ms on the real-time clock. */
 static void
 analog_scene_wait_until(uint64_t due_ms) {
@@ -1931,8 +2071,11 @@ analog_scene_wait_until(uint64_t due_ms) {
     }
 }
 
-/* The udp scene's sender: 20 ms datagrams, each sent when its first sample is due, the stop before the sample at
-   pause_s, and then, once the decoder had time to read the last of it, the end of the run. */
+/* The udp scene's sender: 20 ms datagrams, each sent when its first sample is due and no more than a quarter second
+   ahead of what the decoder read, so the input's ring never overflows however slowly the decoder runs; the stop before
+   the sample at pause_s, which starts once the decoder read everything before it, so the input stays empty for the
+   whole ANALOG_SCENE_UDP_STOP_MS; and then, once the decoder read the last sample and had time to decode it, the end of
+   the run. */
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -1943,20 +2086,31 @@ static DSD_THREAD_RETURN_TYPE
     dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, 0);
     if (sock != DSD_INVALID_SOCKET && dsd_socket_resolve("127.0.0.1", g_scene.port, &to) == 0) {
         const size_t chunk = (size_t)g_scene.pcm_rate / 50U;
+        const size_t ahead = (size_t)g_scene.pcm_rate / 4U;
         const size_t stop_at = (size_t)lround(g_scene.scene->pause_s * (double)g_scene.pcm_rate);
-        const uint64_t began = dsd_realtime_mono_ms();
+        /* Sample origin_at is due at origin_ms; each later one at the scene's rate after it. */
+        uint64_t origin_ms = dsd_realtime_mono_ms();
+        size_t origin_at = 0U;
         size_t at = 0U;
         while (at < g_scene.pcm_n) {
             size_t take = g_scene.pcm_n - at < chunk ? g_scene.pcm_n - at : chunk;
             if (at < stop_at && at + take > stop_at) {
                 take = stop_at - at;
             }
-            const uint64_t stopped = (stop_at > 0U && at >= stop_at) ? ANALOG_SCENE_UDP_STOP_MS : 0U;
-            analog_scene_wait_until(began + stopped + (uint64_t)at * 1000U / (uint64_t)g_scene.pcm_rate);
+            if (stop_at > 0U && at == stop_at) {
+                analog_scene_wait_read(stop_at);
+                origin_ms = dsd_realtime_mono_ms() + ANALOG_SCENE_UDP_STOP_MS;
+                origin_at = at;
+            }
+            analog_scene_wait_until(origin_ms + (uint64_t)(at - origin_at) * 1000U / (uint64_t)g_scene.pcm_rate);
+            if (at > ahead) {
+                analog_scene_wait_read(at - ahead);
+            }
             (void)dsd_socket_sendto(sock, g_scene.pcm + at, take * sizeof(int16_t), 0, (const struct sockaddr*)&to,
                                     (int)sizeof(to));
             at += take;
         }
+        analog_scene_wait_read(g_scene.pcm_n);
         dsd_sleep_ms(ANALOG_SCENE_UDP_END_MS);
     }
     if (sock != DSD_INVALID_SOCKET) {
@@ -2150,10 +2304,10 @@ analog_p56_wanted(void) {
     return g_limits.min_p56_dbfs.set || g_limits.max_p56_dbfs.set;
 }
 
-/* Keeps a delivered block for the P.56 level. */
+/* Keeps a delivered block for the P.56 level or the audio file (--analog-audio-out). */
 static void
 analog_p56_keep(const double* x, size_t n) {
-    if (!analog_p56_wanted() || g_p56_failed) {
+    if ((!analog_p56_wanted() && g_audio_out[0] == '\0') || g_p56_failed) {
         return;
     }
     if (g_p56_len + n > g_p56_cap) {
@@ -2447,6 +2601,7 @@ analog_start(dsd_opts* opts, dsd_state* state, void* context) {
         opts->audio_out_type = 8;
     }
     if (g_scene.pcm != NULL && !g_scene.feeding) {
+        analog_scene_count_udp_reads();
         if (dsd_thread_create(&g_scene.feeder, analog_scene_feed, NULL) != 0) {
             DSD_FPRINTF(stderr, "analog replay: cannot start the udp scene's sender\n");
             return -1;
@@ -3096,6 +3251,26 @@ analog_print_raw_wav_line(void) {
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
+/* Writes the kept audio to the --analog-audio-out file, full scale 1.0, and says so; a failure fails the run. */
+static void
+analog_write_audio_out(void) {
+    if (g_audio_out[0] == '\0') {
+        return;
+    }
+    FILE* fp = g_p56_failed ? NULL : dsd_fopen_private(g_audio_out, "wb");
+    size_t written = 0;
+    for (size_t i = 0; fp != NULL && i < g_p56_len; i++) {
+        const float sample = (float)(g_p56_audio[i] / ANALOG_FULL_SCALE);
+        written += fwrite(&sample, sizeof sample, 1U, fp);
+    }
+    if (fp == NULL || fclose(fp) != 0 || written != g_p56_len) {
+        DSD_FPRINTF(stderr, "FAIL: could not write the delivered audio to %s\n", g_audio_out);
+        g_failed = 1;
+        return;
+    }
+    DSD_FPRINTF(stderr, "ANALOG AUDIO OUT: rate_hz=%u samples=%zu\n", g_totals.deliver_hz, g_p56_len);
+}
+
 static void
 analog_report(void) {
     analog_report_ctx ctx;
@@ -3103,6 +3278,7 @@ analog_report(void) {
     analog_report_measure(&ctx);
     analog_print_metric_line(&ctx);
     analog_print_raw_wav_line();
+    analog_write_audio_out();
     analog_report_probes(&ctx, 0);
     analog_note_resolution();
     analog_check_limits(&ctx);

@@ -4,11 +4,12 @@
  */
 
 #include <dsd-neo/core/bp.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
-#include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,17 +17,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
-
-static int g_lfsr_calls = 0;
-
-void
-LFSR128d(dsd_state* state) {
-    g_lfsr_calls++;
-    uint8_t* iv = (state->currentslot == 0) ? state->aes_iv : state->aes_ivR;
-    for (int i = 0; i < 16; i++) {
-        iv[i] = (uint8_t)i;
-    }
-}
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -234,13 +224,11 @@ test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     // The three cipher blocks were received: they end at start + 48.
     state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes128 ctx start", ctx.start, start);
     rc |= expect_int("aes128 ctx end", ctx.end, 38);
     rc |= expect_int("aes128 key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes128 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes128 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes128 alg normalized", state.payload_algid, 0x24);
     rc |= expect_u8("aes128 prefix byte 0", state.dmr_pdu_sf[slot][0], 0xE0);
     rc |= expect_u8("aes128 prefix byte 1", state.dmr_pdu_sf[slot][1], 0xE1);
@@ -278,11 +266,9 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
     state.dmr_pdu_sf[slot][start + 48] = 0xB0;
     state.data_byte_ctr[slot] = (uint16_t)(start + 48U);
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, state.data_byte_ctr[slot], &ctx);
     rc |= expect_int("aes256 manual key loaded", ctx.aes_key_loaded, 1);
     rc |= expect_int("aes256 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes256 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes256 alg normalized", state.payload_algidR, 0x25);
     rc |= expect_bytes("aes256 block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
     rc |= expect_bytes("aes256 block 1", state.dmr_pdu_sf[slot] + start + 16, plaintext, sizeof(plaintext));
@@ -356,18 +342,22 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
     state.payload_keyid = kid;
     state.payload_mi = 0x11223344ULL;
     seed_key_array(&state, kid, 0x0001020304050607ULL, 0x08090A0B0C0D0E0FULL, 0, 0);
+    /* The slot's voice IV, MI and frame counter: the packet's IV is expanded apart from them. */
+    DSD_MEMSET(state.aes_iv, 0xEE, sizeof(state.aes_iv));
+    state.DMRvcL = 5;
 
-    g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, 48U, &ctx);
-    for (int i = 0; i < 16; i++) {
-        iv[i] = (uint8_t)i;
-    }
+    (void)dmr_aes_expand_iv(0x11223344U, iv);
     DSD_MEMSET(stream, 0, sizeof(stream));
     aes_ofb_keystream_output(iv, ctx.aes_key, stream, DSD_AES_KEY_128, 3);
 
     rc |= expect_int("aes ofb ctx end", ctx.end, 16);
     rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
-    rc |= expect_int("aes nonzero-mi calls lfsr", g_lfsr_calls, 1);
+    uint8_t voice_iv[16];
+    DSD_MEMSET(voice_iv, 0xEE, sizeof(voice_iv));
+    rc |= expect_bytes("aes ofb leaves the voice iv", state.aes_iv, voice_iv, sizeof(voice_iv));
+    rc |= expect_int("aes ofb leaves the voice frame counter", state.DMRvcL, 5);
+    rc |= expect_int("aes ofb leaves the voice mi", state.payload_mi == 0x11223344ULL ? 1 : 0, 1);
     rc |= expect_int("aes ofb alg normalized", state.payload_algid, 0x24);
     rc |= expect_bytes("aes ofb skips discard block", state.dmr_pdu_sf[slot], stream + 16, 16);
     return rc;
@@ -464,6 +454,70 @@ test_basic_privacy_decrypts_window(void) {
 
     rc |= expect_int("bp decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_bytes("bp plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
+    return rc;
+}
+
+/* A Basic Privacy packet of talkgroup @p tg on @p slot through the data path, its window encrypted with key index
+   @p key_index (0: none): whether it decrypted to the plaintext. */
+static int
+bp_packet_decrypts(dsd_state* state, uint8_t slot, uint32_t tg, unsigned key_index) {
+    dmr_block_crypto_ctx ctx;
+    uint8_t plaintext[32];
+    state->currentslot = slot;
+    state->data_ks_start[slot] = 4;
+    state->data_block_poc[slot] = 24;
+    state->data_byte_ctr[slot] = 48;
+    state->dmr_lrrp_target[slot] = tg;
+    state->dmr_data_target_is_group[slot] = 1U;
+    dmr_block_crypto_load_ctx(state, slot, 48U, &ctx);
+    if (ctx.end != 16) {
+        return 0;
+    }
+    const uint8_t stream[2] = {(uint8_t)((BPK[key_index] >> 8U) & 0xFFU), (uint8_t)(BPK[key_index] & 0xFFU)};
+    fill_pattern(plaintext, (size_t)ctx.end, 0x5A);
+    for (int i = 0; i < ctx.end; i++) {
+        state->dmr_pdu_sf[slot][ctx.start + i] = (uint8_t)(plaintext[i] ^ stream[i % 2]);
+    }
+    return dmr_block_crypto_decrypt_payload(state, slot, &ctx, 0) == 1
+           && memcmp(state->dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end) == 0;
+}
+
+/* The talkgroup key autoload keys each slot's voice from its own talkgroup's key, through the one working key: slot 1's
+   call on talkgroup 100 loads key 33 there, then slot 2's call on talkgroup 200, which has no key, gives the
+   operator's key (key 5, or none) back. A Basic Privacy packet for talkgroup 100 decrypts with talkgroup 100's key
+   all the same, one for talkgroup 200 with the operator's, and the packets leave the working key as the voice left
+   it. */
+static int
+test_basic_privacy_packet_keys_from_its_destination(void) {
+    static dsd_state state;
+    int rc = 0;
+    for (unsigned manual = 0; manual <= 5U; manual += 5U) {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.keyloader = 1;
+        state.K = manual;
+        state.basic_key_present = (uint8_t)(manual != 0U);
+        const uint32_t cell = keyring_dmr_tg_key_cell(100U);
+        state.rkey_array[cell] = 33ULL;
+        state.rkey_array_loaded[cell] = 1U;
+        uint32_t keyed_from = 0U;
+        rc |= expect_int("bp autoload: slot 1 keys talkgroup 100",
+                         keyring_dmr_tg_autoload_apply(&state, 0U, 100U, &keyed_from) == 1 && state.K == 33ULL, 1);
+        rc |= expect_int("bp autoload: slot 2's keyless talkgroup gives the key back",
+                         keyring_dmr_tg_autoload_apply(&state, 1U, 200U, &keyed_from) == 0 && state.K == manual, 1);
+        rc |= expect_int("bp packet: talkgroup 100's key", bp_packet_decrypts(&state, 0U, 100U, 33U), 1);
+        if (manual != 0U) {
+            rc |= expect_int("bp packet: the operator's key for talkgroup 200",
+                             bp_packet_decrypts(&state, 1U, 200U, manual), 1);
+        }
+        rc |= expect_int("bp packet: the working key stays the voice's", (int)state.K, (int)manual);
+        /* A packet of another ALG reads no Basic Privacy key. */
+        dmr_block_crypto_ctx aes;
+        state.currentslot = 0;
+        state.payload_algid = 4;
+        dmr_block_crypto_load_ctx(&state, 0U, 48U, &aes);
+        rc |= expect_int("aes packet: no bp key", aes.bp_key == 0ULL, 1);
+        state.payload_algid = 0;
+    }
     return rc;
 }
 
@@ -583,6 +637,7 @@ main(void) {
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
+    rc |= test_basic_privacy_packet_keys_from_its_destination();
     rc |= test_aes_missing_key_still_normalizes_alg();
     rc |= test_imported_zero_keys_decrypt();
     rc |= test_incomplete_aes_key_refused();

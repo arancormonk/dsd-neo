@@ -7,10 +7,12 @@
  * Writes a 48 kHz mono 16-bit WAV of 4FSK discriminator audio carrying a DMR BS outbound channel:
  * CACH/TACT, voice superframes (BS voice sync, EMB, embedded LC, AMBE+2 2450 from mbelib-neo's encoder), data bursts
  * (voice LC header, PI header, terminator with LC, idle), optional DMRA voice encryption (AES-256 0x25, AES-128 0x24,
- * RC4 0x21) with the per-superframe MI advance and late-entry MI fragments, and fault injection.
+ * RC4 0x21) with the per-superframe MI advance and late-entry MI fragments, or Basic Privacy (no PI header: the LC's
+ * privacy bit under FID 0x10), and fault injection.
  *
  * The MI/IV LFSRs, the late-entry fragment layout and the RC4 keystream are implemented here, independently of the
- * decoder; only the AES block/OFB primitive and the FEC decoders (used to search parity) come from the project.
+ * decoder; only the AES block/OFB primitive, the Basic Privacy keystream and the FEC decoders (used to search parity)
+ * come from the project.
  *
  * The expectation file lists, per transmitted voice frame, the 49 AMBE parameter bits a correct decoder prints after
  * decryption, formatted like dsd-neo's "AMBE <hex> err" / "FRAME AMBE ... data=" (49 bits << 7, 14 hex digits):
@@ -39,7 +41,8 @@
  *   --seed N           noise / filler RNG seed (default 1); output is deterministic for a given seed
  *   --s1 voice|idle    slot 1 content (default voice)
  *   --s2 voice|idle    slot 2 content (default idle)
- *   --alg none|aes256|aes128|rc4   voice encryption for every voice slot (default none)
+ *   --alg none|aes256|aes128|rc4|bp   voice encryption for every voice slot (default none)
+ *   --bp-key N         Basic Privacy key 1..255 (default 1), for --alg bp
  *   --key HEX          key: 64 hex (aes256), 32 hex (aes128), 10 hex (rc4); default built-in test keys
  *                      (aes: 0123456789ABCDEF FEDCBA9876543210 0F1E2D3C4B5A6978 8796A5B4C3D2E1F0 truncated to the key
  *                      size; rc4: 0123456789)
@@ -47,6 +50,8 @@
  *   --mi HEX           slot 1 initial 32-bit MI (default 12345678); --mi2 HEX for slot 2 (default 9ABCDEF1)
  *   --tg N --src N     slot 1 talkgroup / source ID (defaults 100 / 1001; slot 2 uses tg+1 / src+1)
  *   --hdr-repeat N     voice LC headers (and PI headers) sent before the voice (default 1 each)
+ *   --no-hdr           send no voice LC or PI header: the voice starts at once, named only by its embedded LC
+ *                      (late entry, or a header lost)
  *   --no-term          omit the terminator with LC
  *   --no-le            do not embed late-entry MI fragments (encrypted calls embed them by default)
  *   --le-corrupt S:SF[-SF2|-end][:golay|wrong]
@@ -85,6 +90,7 @@
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <math.h>
@@ -331,7 +337,7 @@ rc4_stream(const uint8_t* key, int klen, uint8_t* out, int n) {
 }
 
 /* ---------------------------------------------------------------- configuration */
-enum { ALG_NONE = 0, ALG_AES256 = 0x25, ALG_AES128 = 0x24, ALG_RC4 = 0x21 };
+enum { ALG_NONE = 0, ALG_AES256 = 0x25, ALG_AES128 = 0x24, ALG_RC4 = 0x21, ALG_BP = 0x100 /* no ALG ID: no PI */ };
 
 enum { CM_DROP = 0, CM_NOISE, CM_CC, CM_FLIP };
 
@@ -369,7 +375,8 @@ typedef struct {
     int kid;
     uint32_t mi[2];
     uint32_t tg, src;
-    int hdr_repeat, term, le;
+    int hdr_repeat, term, le, no_hdr;
+    int bp_key;
     int invert;
     int pulse_rc;
     int ms;
@@ -693,12 +700,18 @@ bytes_to_bits(const uint8_t* b, int nbytes, uint8_t* bits) {
     }
 }
 
+/* Whether the call's cipher is named by a PI header and runs an MI (the DMRA ciphers; Basic Privacy has neither). */
+static int
+alg_has_pi(int alg) {
+    return alg != ALG_NONE && alg != ALG_BP;
+}
+
 static void
 full_lc_bytes(int slot, uint8_t* lc9) {
     uint32_t tg = cfg.tg + (uint32_t)slot;
     uint32_t src = cfg.src + (uint32_t)slot;
-    lc9[0] = 0x00; /* PF 0, R 0, FLCO 0: group voice channel user */
-    lc9[1] = 0x00; /* FID 0: standard */
+    lc9[0] = 0x00;                            /* PF 0, R 0, FLCO 0: group voice channel user */
+    lc9[1] = cfg.alg == ALG_BP ? 0x10 : 0x00; /* FID 0: standard; Basic Privacy's under FID 0x10 */
     lc9[2] = cfg.alg != ALG_NONE ? 0x40 : 0x00;
     lc9[3] = (uint8_t)(tg >> 16);
     lc9[4] = (uint8_t)(tg >> 8);
@@ -783,6 +796,17 @@ superframe_keystream(slot_call* c, int alg) {
         for (int k = 0; k < 18; k++) {
             DSD_MEMCPY(c->ks[k], out + 256 + ((size_t)7 * k), 7);
             c->ks[k][6] &= 0x80; /* 49 bits */
+        }
+    } else if (alg == ALG_BP) {
+        char ks49[49];
+        DSD_MEMSET(ks49, 0, sizeof ks49);
+        (void)dmr_basic_privacy_apply_frame49((unsigned long long)cfg.bp_key, ks49);
+        for (int k = 0; k < 18; k++) {
+            for (int b = 0; b < 49; b++) {
+                if (ks49[b] & 1) {
+                    c->ks[k][b / 8] |= (uint8_t)(0x80u >> (b % 8));
+                }
+            }
         }
     }
 }
@@ -939,10 +963,10 @@ build_schedule(int slot, int per_slot, int lead_b, int nsf) {
         sched[k++].type = B_IDLE;
     }
     if (cfg.voice[slot]) {
-        for (int r = 0; r < cfg.hdr_repeat && k < per_slot; r++) {
+        for (int r = 0; !cfg.no_hdr && r < cfg.hdr_repeat && k < per_slot; r++) {
             sched[k++].type = B_VLC;
         }
-        if (cfg.alg != ALG_NONE) {
+        if (alg_has_pi(cfg.alg) && !cfg.no_hdr) {
             for (int r = 0; r < cfg.hdr_repeat && k < per_slot; r++) {
                 sched[k++].type = B_PI;
             }
@@ -1025,6 +1049,8 @@ emit_voice_burst(slot_call* c, int slot, burst_desc bd, int period, FILE* ef, in
         }
         if (cfg.alg != ALG_NONE) {
             superframe_keystream(c, cfg.alg);
+        }
+        if (alg_has_pi(cfg.alg)) {
             superframe_le(c, slot, bd.sf);
         }
     }
@@ -1110,7 +1136,7 @@ modulate(const int* sym, size_t nsym, size_t* nsamp_out) {
 static void
 usage(void) {
     DSD_FPRINTF(stderr, "usage: dsd-neo_test_dmr_synth_gen -o out.wav [-e expect.txt] [-t sec] "
-                        "[--alg none|aes256|aes128|rc4] ... (see the comment at the top of dmr_synth.c)\n");
+                        "[--alg none|aes256|aes128|rc4|bp] ... (see the comment at the top of dmr_synth.c)\n");
     exit(2);
 }
 
@@ -1332,6 +1358,8 @@ parse_args(int argc, char** argv, int* have_key) {
                 cfg.alg = ALG_AES128;
             } else if (strcmp(v, "rc4") == 0) {
                 cfg.alg = ALG_RC4;
+            } else if (strcmp(v, "bp") == 0) {
+                cfg.alg = ALG_BP;
             } else {
                 usage();
             }
@@ -1341,6 +1369,10 @@ parse_args(int argc, char** argv, int* have_key) {
                 die("bad --key");
             }
             *have_key = 1;
+        } else if (strcmp(a, "--bp-key") == 0) {
+            cfg.bp_key = parse_int_arg(next_arg(argc, argv, &i), 1, 255);
+        } else if (strcmp(a, "--no-hdr") == 0) {
+            cfg.no_hdr = 1;
         } else if (strcmp(a, "--kid") == 0) {
             cfg.kid = parse_int_arg(next_arg(argc, argv, &i), 0, 254);
         } else if (strcmp(a, "--mi") == 0) {
@@ -1453,6 +1485,7 @@ main(int argc, char** argv) {
     cfg.hdr_repeat = 1;
     cfg.term = 1;
     cfg.le = 1;
+    cfg.bp_key = 1;
     cfg.lead = 0.6;
     cfg.tail = 0.4;
     cfg.seed = 1;
@@ -1492,6 +1525,9 @@ main(int argc, char** argv) {
         || (cfg.alg == ALG_RC4 && cfg.keylen != 5)) {
         die("key length does not match --alg");
     }
+    if (!alg_has_pi(cfg.alg)) {
+        cfg.le = 0; /* late-entry MI fragments are an MI cipher's */
+    }
     DSD_MEMSET(g_key_aes, 0, sizeof g_key_aes);
     DSD_MEMCPY(g_key_aes, cfg.key, (size_t)cfg.keylen);
 
@@ -1507,7 +1543,7 @@ main(int argc, char** argv) {
     const int per_slot = periods / 2 + 1;
     const int lead_b = (int)(cfg.lead / 0.060);
     const int tail_b = (int)(cfg.tail / 0.060);
-    const int hdr_b = cfg.hdr_repeat * (cfg.alg != ALG_NONE ? 2 : 1);
+    const int hdr_b = cfg.no_hdr ? 0 : cfg.hdr_repeat * (alg_has_pi(cfg.alg) ? 2 : 1);
     const int nsf = (per_slot - lead_b - tail_b - hdr_b - (cfg.term ? 1 : 0)) / 6;
     if (nsf < 1) {
         die("duration too short");

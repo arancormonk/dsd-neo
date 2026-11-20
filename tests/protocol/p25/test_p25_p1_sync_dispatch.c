@@ -26,6 +26,7 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -1530,6 +1531,85 @@ test_p25p1_grid_arming_rows_name_their_verdicts(void) {
     assert(grid_verdict_for(grid_no_change, 1, 576U, 260U) == DSD_P25P1_GRID_SHORT_READ);
 }
 
+/* Issue #834: the PROVEN content notes a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_other;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else {
+        g_quiet_other++;
+    }
+}
+
+/* One frame through the real handler and NID verdict, skip-silent @p on, after @p setup: the PROVEN notes it made. */
+static int
+quiet_nid_frame(int on, void (*setup)(dsd_state* state)) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.scan_skip_silent = on;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    if (setup) {
+        setup(&state);
+    }
+    g_quiet_proven = 0;
+    g_quiet_other = 0;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_quiet_other == 0);
+    return g_quiet_proven;
+}
+
+static void
+quiet_nid_failed(dsd_state* state) {
+    (void)state;
+    g_check_result = NID_DECODE_FAIL;
+}
+
+/* A tolerant sync whose NID names another NAC than the sync's anchor: dropped. */
+static void
+quiet_nid_tolerant_dropped(dsd_state* state) {
+    state->p25_p1_sync_anchor.frame_kind = (uint8_t)DSD_P25P1_SYNC_ANCHORED;
+    state->p25_p1_sync_anchor.frame_nac = 0x123U;
+}
+
+static void
+quiet_nid_interrupted(dsd_state* state) {
+    (void)state;
+    g_interrupt_at_dibit = 15;
+}
+
+static void
+quiet_nid_borrowed(dsd_state* state) {
+    state->p2_cc = 0x293ULL;
+    g_nac_borrowed = 1;
+}
+
+/* A validated NID (the BCH accepted it under its own NAC) is PROVEN content to a scan quiet check, once a frame; a NID
+   the BCH rejected, a tolerant sync's dropped NID, a NID an input interruption cut and one decoded only under a
+   borrowed NAC are none, and nothing is noted with the setting off. */
+static void
+test_p25p1_validated_nid_is_proven_content(void) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+    assert(quiet_nid_frame(1, NULL) == 1);
+    assert(quiet_nid_frame(0, NULL) == 0);
+    assert(quiet_nid_frame(1, quiet_nid_failed) == 0);
+    assert(quiet_nid_frame(1, quiet_nid_tolerant_dropped) == 0);
+    assert(quiet_nid_frame(1, quiet_nid_interrupted) == 0);
+    assert(quiet_nid_frame(1, quiet_nid_borrowed) == 0);
+    dsd_frame_sync_hooks_set(NULL);
+    reset_stub_state();
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -1554,6 +1634,7 @@ main(void) {
     test_p25p1_c4fm_sync_names_the_grid_word();
     test_p25p1_c4fm_frame_arms_the_grid_by_its_rows();
     test_p25p1_grid_arming_rows_name_their_verdicts();
+    test_p25p1_validated_nid_is_proven_content();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

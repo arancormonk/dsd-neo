@@ -142,7 +142,9 @@ test_target_text_used_verbatim(void) {
 
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, "DISPATCH-1", NULL, NULL, 10.05) == 1);
+    assert(
+        dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, NULL, "DISPATCH-1", NULL, NULL, 10.05)
+        == 1);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
@@ -162,7 +164,8 @@ test_source_text_used_verbatim(void) {
 
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, "N0CALL", NULL, NULL, NULL, 10.05) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, "N0CALL", NULL, NULL, NULL, 10.05)
+           == 1);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
@@ -215,7 +218,9 @@ test_route_text_leg0_confers_identity(void) {
     /* D-STAR/NXDN/YSF can decode the first repeater leg before either callsign;
        that alone must count as a named transmission, matching
        dsd_call_state_snapshot_has_identity(). */
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, NULL, "RPT1 GATEWAY", NULL, 10.05) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, NULL, NULL, "RPT1 GATEWAY", NULL,
+                                      10.05)
+           == 1);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 10.5, &view);
@@ -232,7 +237,9 @@ test_route_text_leg1_confers_identity(void) {
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     /* Same as leg0, but only the second repeater leg decoded. Either leg alone
        must be enough -- call_has_no_identity() ANDs both being empty. */
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, NULL, NULL, "RPT2 GATEWAY", 10.05) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, NULL, NULL, NULL, "RPT2 GATEWAY",
+                                      10.05)
+           == 1);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 10.5, &view);
@@ -306,7 +313,7 @@ test_encrypted_call_carries_alg_and_kid(void) {
     crypto.algid = 0x84U;
     crypto.kid = 0x0101U;
     crypto.observed_m = 10.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) > 0);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 11.0, &view);
@@ -331,7 +338,7 @@ test_crypto_classification_reads_encrypted(dsd_call_crypto_state classification)
     crypto.algid = 0xAAU;
     crypto.kid = 0x2222U;
     crypto.observed_m = 10.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) > 0);
 
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 11.0, &view);
@@ -417,7 +424,9 @@ test_target_text_beats_channel_label(void) {
 
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, "DISPATCH-1", NULL, NULL, 10.05) == 1);
+    assert(
+        dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, NULL, "DISPATCH-1", NULL, NULL, 10.05)
+        == 1);
     stage_channel_label(history, 0U, "Fire Dispatch");
 
     dsd_app_slot_call view;
@@ -772,7 +781,8 @@ test_lead_slot_late_identity_uses_original_start(void) {
 
     dsd_call_snapshot call;
     assert(dsd_call_state_get(state, 0U, &call) == 1);
-    assert(dsd_call_state_enrich_text(state, 0U, call.epoch, NULL, "Earlier call", NULL, NULL, 6.0) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, call.protocol, call.epoch, NULL, "Earlier call", NULL, NULL, 6.0)
+           == 1);
     dsd_app_slot_call_view(state, 0U, 6.5, &first);
     dsd_app_slot_call_view(state, 1U, 6.5, &second);
     assert(first.state == DSD_APP_CALL_LINE_ACTIVE);
@@ -857,7 +867,9 @@ test_ended_hold_keeps_target_name(void) {
     observe_group_call(state, 0U, 0U, 0U, 10.0);
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, "N0CALL", "KD9ABC", NULL, NULL, 10.05) == 1);
+    assert(
+        dsd_call_state_enrich_text(state, 0U, snapshot.protocol, snapshot.epoch, "N0CALL", "KD9ABC", NULL, NULL, 10.05)
+        == 1);
     assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
     cache_target_label(state, 0U, 0U, "Numeric");
     dsd_app_slot_call_view(state, 0U, 13.0, &view);

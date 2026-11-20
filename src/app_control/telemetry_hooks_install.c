@@ -93,6 +93,10 @@ dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_stream_notice_set(NULL);
     dsd_app_stream_notice_clear();
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
+    /* The last snapshot outlives the session, its keys do not: with the feed stopped, no publication brings them
+       back. Nor do the options snapshot's API keys. */
+    dsd_app_snapshot_wipe_keys();
+    dsd_app_opts_snapshot_wipe_keys();
     /* Clearing the hooks stops the feed but leaves the last record behind, and that
        record is a module static that outlives the session. On Android the service starts
        polling before the next session reaches dsd_app_frontend_runtime_start(), so a

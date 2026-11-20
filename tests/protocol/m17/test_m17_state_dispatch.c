@@ -23,8 +23,11 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -58,6 +61,12 @@
 #include "m17_confirm.h"
 #include "m17_internal.h"
 #include "test_support.h"
+#if DSD_PLATFORM_WIN_NATIVE
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 struct CODEC2;
 
@@ -1103,7 +1112,7 @@ test_stream_voice_replaces_foreign_active_call(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     err |= expect_int("late-entry M17 voice dispatches",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
                       M17_STREAM_CLEAR_DISPATCHED);
@@ -1141,7 +1150,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1183,7 +1192,7 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1223,7 +1232,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     state->m17_can_en = -1;
     /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
      * holds the call and the audio back (#399). */
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -2403,6 +2412,65 @@ test_stream_encoder_reads_stdin_samples(void) {
     return err;
 }
 
+/* Write @p count copies of @p value to the pipe @p fd as little-endian samples. */
+static int
+pipe_put_samples(int fd, int16_t value, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t b[2] = {(uint8_t)((uint16_t)value & 0xFFU), (uint8_t)((uint16_t)value >> 8)};
+        if (dsd_write(fd, b, sizeof b) != (ssize_t)sizeof b) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Issue #834: a rigctl peer's confirmed retune (here a manual tune's, asked for on the decoder thread) leaves a drop of
+   what the input held before it. The stream encoder reads its blocks itself, not through the symbol reader, so it
+   takes the drop before its next block: the old channel's queued audio is not transmitted after the tune. */
+static int
+test_stream_encoder_drops_audio_queued_before_a_rigctl_retune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int fds[2] = {-1, -1};
+#if DSD_PLATFORM_WIN_NATIVE
+    const int piped = _pipe(fds, 65536U, _O_BINARY);
+#else
+    const int piped = pipe(fds);
+#endif
+    if (piped != 0) {
+        DSD_FPRINTF(stderr, "failed to create the M17 encoder input pipe\n");
+        return 1;
+    }
+    opts.audio_in_stdin = dsd_pcm_stream_open_fd(fds[0]);
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    opts.input_volume_multiplier = 1;
+    opts.use_rigctl = 1;
+    int err = expect_int("the encoder's stdin reader opens", opts.audio_in_stdin != NULL, 1);
+    err |= expect_int("the old channel's audio is queued", pipe_put_samples(fds[1], 7, 320U), 1);
+    dsd_input_cut mark;
+    dsd_input_backlog_mark(&mark); /* the leg's mark, immediately before it sends the frequency */
+    err |= expect_int("the peer confirmed the tune: a drop is asked for",
+                      dsd_frame_sync_request_input_drop(&opts, &state, &mark), 1);
+    err |= expect_int("the new channel's audio follows", pipe_put_samples(fds[1], 9, 160U), 1);
+    m17_encoder_input in;
+    m17_encoder_input_init(&in, 8000);
+    short out[160];
+    err |= expect_int("the encoder reads a block", m17_encoder_read_block(&opts, &state, &in, out, 160U), 1);
+    int new_channel = 1;
+    for (int i = 0; i < 160; i++) {
+        new_channel &= out[i] == 9;
+    }
+    err |= expect_int("the block is the new channel's audio, none of the old", new_channel, 1);
+    err |= expect_int("the drop was taken", state.input_drop_pending, 0);
+    dsd_pcm_stream_close(opts.audio_in_stdin);
+    opts.audio_in_stdin = NULL;
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+    return err;
+}
+
 static int
 test_ip_decoder_propagates_udp_backend_failure(void) {
     static dsd_opts opts;
@@ -2652,7 +2720,7 @@ test_unconfirmed_stream_publishes_no_call(void) {
 
     /* One clean LICH is not proof; two frames running are. */
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
     m17_confirm_end_frame(state);
     err |= expect_int("one clean LICH does not open a call",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
@@ -2660,7 +2728,7 @@ test_unconfirmed_stream_publishes_no_call(void) {
     err |= expect_int("one clean LICH publishes no call", get_m17_call(state, &call), 0);
 
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
     m17_confirm_end_frame(state);
     err |= expect_int("a confirmed stream dispatches",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
@@ -2854,9 +2922,9 @@ encoder_udp_tone_db(double hz, double amplitude, int rate_hz, int volume, double
     opts.audio_in_type = AUDIO_IN_UDP;
     opts.input_volume_multiplier = volume;
     start_tone(hz, amplitude, rate_hz);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_tone_read});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_tone_read});
     const double level = encoder_read_db(&opts, &state, rate_hz, amplitude, peak);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     return level;
 }
 
@@ -2900,7 +2968,7 @@ test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     hooks.udp_read_sample_wait = fake_udp_silent_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     dsd_runtime_set_controls_pending(fake_controls_pending);
     g_silent_pending = 1;
     g_silent_waits = 0;
@@ -2944,7 +3012,7 @@ test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
     }
     dsd_runtime_set_publish_pending(NULL);
     g_silent_pending = 0;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     return rc;
 }
 
@@ -3337,7 +3405,7 @@ test_stream_voice_audio_honors_mute_on_every_output(void) {
                 opts->audio_out_type = out_type;
                 state->m17_str_dt = formats[f].dt;
                 state->m17_can_en = -1;
-                m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+                m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 
                 char path[DSD_TEST_PATH_MAX];
                 int fd = -1;
@@ -3455,7 +3523,7 @@ test_stream_voice_audio_stamps_what_it_plays(void) {
                 state->m17_can_en = cases[c].can_filtered ? 5 : -1;
                 state->m17_can = 3U;
                 state->m17_enc = cases[c].keyless ? 2U : 0U;
-                m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+                m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 
                 char path[DSD_TEST_PATH_MAX];
                 int fd = -1;
@@ -3546,7 +3614,7 @@ run_voice_format_case(uint8_t dt, int floating, int channels, int out_type, floa
     opts->audio_gain = gain;
     state->m17_str_dt = dt;
     state->m17_can_en = -1;
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
 #ifdef DSD_NEO_TEST_AUDIO_WRAP
     g_audio_event_count = 0;
     g_audio_events[0] = '\0';
@@ -3865,12 +3933,12 @@ mic_encode(dsd_opts* opts, dsd_state* state, const mic_segment* script, size_t l
     g_codec2_encode_count = 0;
     DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
     DSD_MEMSET(g_codec2_encode_rms, 0, sizeof g_codec2_encode_rms);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
     exitflag = 0;
     (void)encodeM17STR(opts, state);
     exitflag = 0;
     g_mic_frame_at[g_mic_iters] = g_codec2_encode_count;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     g_mic_state = NULL;
 }
 
@@ -4111,7 +4179,7 @@ test_stream_voice_audio_stamps_nothing_no_output_takes(void) {
             opts->audio_out_fd = -1;
             state->m17_str_dt = formats[f].dt;
             state->m17_can_en = -1;
-            m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+            m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
             dsd_audio_activity_reset();
 
             /* With no stream, the platform's own write refuses the block, as it does in a session. */
@@ -4822,6 +4890,7 @@ main(void) {
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
     err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
     err |= test_stream_encoder_reads_stdin_samples();
+    err |= test_stream_encoder_drops_audio_queued_before_a_rigctl_retune();
     err |= test_ip_decoder_propagates_udp_backend_failure();
 
     if (err == 0) {

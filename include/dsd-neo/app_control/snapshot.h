@@ -23,8 +23,8 @@
  * consumer thread. Both return NULL until the first publish.
  *
  * Staleness: stopping the frontend runtime clears the hooks but not the published
- * snapshots — the last values keep being returned. Never infer running/stopped
- * state from snapshot contents.
+ * snapshots — the last values keep being returned, all but their key material,
+ * which the stop wipes. Never infer running/stopped state from snapshot contents.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SNAPSHOT_H_
@@ -45,10 +45,40 @@ extern "C" {
 const dsd_state* dsd_app_get_latest_snapshot(void);
 
 /**
+ * @brief Wipe the key material of the buffer dsd_app_get_latest_snapshot() returns (DSD_SECURE_ZERO), as the stop
+ * wipes the published copy's. Called by the reading thread once it reads no more (the terminal UI thread as it exits):
+ * the stop leaves that buffer to the thread's next read, which never comes. A later read copies the published state
+ * again.
+ */
+void dsd_app_snapshot_consumer_wipe_keys(void);
+
+/**
+ * @brief While @p withhold is non-zero, the buffer dsd_app_get_latest_snapshot() returns holds no key material: each
+ * read wipes the key copies (DSD_SECURE_ZERO) as it copies, and setting it wipes them now. For a reader that may stop
+ * reading for a long time (the Qt GUI thread while the app is off screen), so a read it makes meanwhile copies no key
+ * back. Clearing it lets the next read copy the published keys again. Called by the reading thread.
+ */
+void dsd_app_snapshot_consumer_withhold_keys(int withhold);
+
+/**
  * @brief Latest published options snapshot.
  * @return Read-only snapshot, or NULL before the first publish.
  */
 const dsd_opts* dsd_app_get_latest_opts_snapshot(void);
+
+/**
+ * @brief Wipe the API keys and the rdio-scanner URL (rdio_api_key, rdio_api_url, rr_app_key, api_token) of the buffer
+ * dsd_app_get_latest_opts_snapshot() returns (DSD_SECURE_ZERO), as the stop wipes the published copy's. Called by the
+ * reading thread once it reads no more, as dsd_app_snapshot_consumer_wipe_keys() is. A later read copies the published
+ * options again.
+ */
+void dsd_app_opts_snapshot_consumer_wipe_keys(void);
+
+/**
+ * @brief The options snapshot's dsd_app_snapshot_consumer_withhold_keys(): while @p withhold is non-zero, the buffer
+ * dsd_app_get_latest_opts_snapshot() returns holds no API key or rdio-scanner URL.
+ */
+void dsd_app_opts_snapshot_consumer_withhold_keys(int withhold);
 /** Read configured decoder settings from matching frontend snapshots. The state snapshot also
  * supports dsd_scan_mode_active() and dsd_scan_mode_effective_profile(), including combined P25. */
 void dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);

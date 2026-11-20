@@ -3,14 +3,22 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "../../src/core/util/key_set_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -527,8 +535,464 @@ test_row_apply_epoch(void) {
     return failed;
 }
 
+/* The talkgroup key autoload has the working Basic Privacy key: talkgroup 123's 0x33 replaced the operator's own (none,
+   or a -b key), as keyring_dmr_tg_autoload_apply() leaves it. */
+static void
+seed_autoloaded_key(dsd_state* state, unsigned long long int operator_key) {
+    state->K = 0x33ULL;
+    state->K1 = state->H = 0x33ULL;
+    state->basic_key_present = 1U;
+    state->hytera_key_segments = 1U;
+    const unsigned long long int installed[6] = {0x33ULL, 0x33ULL, 0ULL, 0ULL, 0ULL, 0x33ULL};
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.installed[i] = installed[i];
+        state->dmr_tg_autoload.baseline[i] = 0ULL;
+    }
+    state->dmr_tg_autoload.baseline[0] = operator_key;
+    state->dmr_tg_autoload.installed_flags[0] = 1U;
+    state->dmr_tg_autoload.installed_flags[1] = 1U;
+    state->dmr_tg_autoload.baseline_flags[0] = operator_key != 0ULL ? 1U : 0U;
+    state->dmr_tg_autoload.baseline_flags[1] = 0U;
+    state->dmr_tg_autoload.active = 1U;
+}
+
+/* A scan row's keys entered while the autoload's key is the working key: leaving restores the operator's own key, not
+   a talkgroup's key turned into one set directly. The secure wipe clears the autoload's key copies with the keys. */
+static int
+test_scan_keys_and_wipe_leave_no_autoloaded_key(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    for (int with_direct = 0; with_direct < 2; with_direct++) {
+        const unsigned long long int operator_key = with_direct ? 70ULL : 0ULL;
+        seed_autoloaded_key(state, operator_key);
+        dsd_key_set row;
+        DSD_MEMSET(&row, 0, sizeof(row));
+        row.present = 1;
+        row.keyloader = 1;
+        if (dsd_scan_keys_enter(state, &row) != 1) {
+            DSD_FPRINTF(stderr, "enter must report a change\n");
+            failed = 1;
+        }
+        dsd_scan_keys_leave(state);
+        if (state->K != operator_key || state->basic_key_present != (with_direct ? 1U : 0U) || state->K1 != 0ULL
+            || state->H != 0ULL) {
+            DSD_FPRINTF(stderr,
+                        "leave reinstalled K=%llu (operator key %llu): the autoloaded key became a direct key\n",
+                        state->K, operator_key);
+            failed = 1;
+        }
+        dsd_key_set_free(&row);
+    }
+    seed_autoloaded_key(state, 70ULL);
+    dsd_key_state_secure_wipe(state);
+    const unsigned char* bytes = (const unsigned char*)&state->dmr_tg_autoload;
+    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload); i++) {
+        if (bytes[i] != 0U) {
+            DSD_FPRINTF(stderr, "the secure wipe left the autoload's key copies\n");
+            failed = 1;
+            break;
+        }
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* Slot 1's call keyed from talkgroup 123's key, which its row shows: the autoload's key is the working key, and the
+   slot keeps its copy of it. */
+static void
+seed_slot_keyed_from_tg(dsd_state* state) {
+    seed_autoloaded_key(state, 0ULL);
+    for (int i = 0; i < 6; i++) {
+        state->dmr_tg_autoload.slot_key[0][i] = state->dmr_tg_autoload.installed[i];
+    }
+    state->dmr_tg_autoload.slot_key_flags[0][0] = 1U;
+    state->dmr_tg_autoload.slot_key_flags[0][1] = 1U;
+    state->dmr_tg_autoload.slot_tg[0] = 123U;
+}
+
+/* Whether slot 1 holds no copy of a key, and the key its row shows on talkgroup 123 is none. */
+static int
+slot_key_copy_gone(const dsd_state* state) {
+    for (size_t slot = 0; slot < 2U; slot++) {
+        for (size_t i = 0; i < 6U; i++) {
+            if (state->dmr_tg_autoload.slot_key[slot][i] != 0ULL) {
+                return 0;
+            }
+        }
+    }
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    dsd_dmr_slot_call_key(state, 0U, 123U, words, flags);
+    return state->dmr_tg_autoload.slot_key_flags[0][0] == 0U && state->dmr_tg_autoload.slot_key_flags[0][1] == 0U
+           && words[0] == 0ULL && words[1] == 0ULL && words[5] == 0ULL && flags[0] == 0U && flags[1] == 0U;
+}
+
+/* Replacing the key collection (the decryption settings' apply clearing it, a profile or scan row installed) wipes
+   each slot's copy of the talkgroup key its call keyed from: the row no longer shows a key the keyring does not hold.
+   The talkgroup the slot's call keyed from stays, and the autoload's key leaves the working key. */
+static int
+test_key_set_install_wipes_slot_key_copies(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    seed_slot_keyed_from_tg(state);
+    dsd_key_set empty;
+    DSD_MEMSET(&empty, 0, sizeof(empty));
+    dsd_key_set_install(state, &empty);
+    if (!slot_key_copy_gone(state)) {
+        DSD_FPRINTF(stderr, "installing a key set kept slot 1's copy of talkgroup 123's key\n");
+        failed = 1;
+    }
+    if (state->dmr_tg_autoload.slot_tg[0] != 123U || state->K != 0ULL || dsd_dmr_tg_autoload_holds(state)) {
+        DSD_FPRINTF(stderr, "installing a key set lost slot 1's talkgroup or kept the autoloaded working key\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* Whether no byte of the autoload's key copies (the key it replaced, the one it installed, their flags) is set. */
+static int
+autoload_copies_wiped(const dsd_state* state) {
+    const unsigned char* parts[4] = {(const unsigned char*)state->dmr_tg_autoload.baseline,
+                                     (const unsigned char*)state->dmr_tg_autoload.installed,
+                                     state->dmr_tg_autoload.baseline_flags, state->dmr_tg_autoload.installed_flags};
+    const size_t sizes[4] = {sizeof(state->dmr_tg_autoload.baseline), sizeof(state->dmr_tg_autoload.installed),
+                             sizeof(state->dmr_tg_autoload.baseline_flags),
+                             sizeof(state->dmr_tg_autoload.installed_flags)};
+    for (size_t p = 0; p < 4U; p++) {
+        for (size_t i = 0; i < sizes[p]; i++) {
+            if (parts[p][i] != 0U) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* A call on talkgroup 123 keys from its imported key, replacing the operator's -b 70; a call on talkgroup 456, which
+   has none, then gives the operator's key back. The autoload owns the working key no more, so its copies of both keys
+   are wiped then: a later keyring clear disarms the no-carrier unload, which would otherwise be the next to wipe them. */
+static int
+test_autoload_miss_wipes_its_copies(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    state->rkey_array[123] = 0x33ULL;
+    state->rkey_array_loaded[123] = 1U;
+    state->keyloader = 1;
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    uint32_t keyed_from = 0U;
+    if (keyring_dmr_tg_autoload_apply(state, 0U, 123U, &keyed_from) != 1 || state->K != 0x33ULL) {
+        DSD_FPRINTF(stderr, "talkgroup 123's call did not key from its imported key\n");
+        failed = 1;
+    }
+    if (keyring_dmr_tg_autoload_apply(state, 0U, 456U, &keyed_from) != 0 || state->K != 70ULL
+        || state->basic_key_present != 1U || state->K1 != 0ULL) {
+        DSD_FPRINTF(stderr, "talkgroup 456's call did not give the operator's key back\n");
+        failed = 1;
+    }
+    if (state->dmr_tg_autoload.active != 0U || !autoload_copies_wiped(state)) {
+        DSD_FPRINTF(stderr, "the autoload kept its copies of the keys after it gave the working key back\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* Forgetting a slot's talkgroup key wipes the copy its row shows on the change from a key to none, an imported zero key
+   (a copy of zeros whose flags say it is a key) included; a slot that holds none stays empty. */
+static int
+test_forget_slot_wipes_on_the_change_to_none(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    for (int zero_key = 0; zero_key <= 1; zero_key++) {
+        seed_slot_keyed_from_tg(state);
+        if (zero_key) {
+            DSD_MEMSET(state->dmr_tg_autoload.slot_key[0], 0, sizeof(state->dmr_tg_autoload.slot_key[0]));
+        }
+        keyring_dmr_tg_autoload_forget_slot(state, 0U);
+        if (!slot_key_copy_gone(state) || state->dmr_tg_autoload.slot_tg[0] != 0U) {
+            DSD_FPRINTF(stderr, "forgetting slot 1 kept its copy of %s key\n", zero_key ? "an imported zero" : "a");
+            failed = 1;
+        }
+        keyring_dmr_tg_autoload_forget_slot(state, 0U);
+        if (!slot_key_copy_gone(state) || state->dmr_tg_autoload.slot_tg[0] != 0U) {
+            DSD_FPRINTF(stderr, "forgetting an empty slot 1 left something in it\n");
+            failed = 1;
+        }
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* The final teardown wipes the keys the state holds, the autoload's copies of them and the NXDN scrambler register
+   loaded from the key included, whether or not a keyring armed the no-carrier unload. */
+static int
+test_free_state_wipes_keys(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    initState(state);
+    seed_slot_keyed_from_tg(state);
+    state->keyloader = 0;
+    state->R = 0x0102030405ULL;
+    state->nxdn_payload_mi = state->R; /* the NXDN scrambler's seed, loaded from the key */
+    state->rkey_array[123] = 0x33ULL;
+    state->aes_key[0] = 0x5AU;
+    freeState(state);
+    int failed = 0;
+    const unsigned char* autoload = (const unsigned char*)&state->dmr_tg_autoload;
+    for (size_t i = 0; i < sizeof(state->dmr_tg_autoload); i++) {
+        failed |= autoload[i] != 0U;
+    }
+    if (failed || state->K != 0ULL || state->K1 != 0ULL || state->H != 0ULL || state->R != 0ULL
+        || state->nxdn_payload_mi != 0ULL || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
+        DSD_FPRINTF(stderr, "freeState left key material in the state\n");
+        failed = 1;
+    }
+    free(state);
+    return failed;
+}
+
+/* The final teardown also wipes the vendor and static keys and keystreams and the working keystreams (CSI EE72, -S,
+   the Vertex ALG 0x07 map), and wipes and frees the Retevis AP RC2 key schedule. freeOpts() wipes the options'
+   secrets. */
+static int
+test_teardown_wipes_keystreams_and_opts_secrets(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    initState(state);
+    state->csi_ee_key[0] = 0x5AU;
+    state->static_ks_bits[1][5] = 1U;
+    state->vertex_ks_key[3] = 0x77ULL;
+    state->vertex_ks_bits[2][7] = 1U;
+    state->ks_octetL[9] = 0xA5U;
+    state->ks_octetR[9] = 0xA5U;
+    state->ks_bitstreamL[11] = 1U;
+    state->ks_bitstreamR[11] = 1U;
+    retevis_rc2_keystream_creation(state, "00112233445566778899AABBCCDDEEFF", 0);
+    int failed = state->rc2_context == NULL;
+    freeState(state);
+    if (state->csi_ee_key[0] != 0U || state->static_ks_bits[1][5] != 0U || state->vertex_ks_key[3] != 0ULL
+        || state->vertex_ks_bits[2][7] != 0U || state->ks_octetL[9] != 0U || state->ks_octetR[9] != 0U
+        || state->ks_bitstreamL[11] != 0U || state->ks_bitstreamR[11] != 0U || state->rc2_context != NULL) {
+        DSD_FPRINTF(stderr, "freeState left a keystream, vendor key or key schedule in the state\n");
+        failed = 1;
+    }
+    initOpts(opts);
+    DSD_SNPRINTF(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", "rdio-test-key");
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", "https://name:word@rdio.invalid/api");
+    DSD_SNPRINTF(opts->rr_app_key, sizeof opts->rr_app_key, "%s", "rr-test-key");
+    DSD_SNPRINTF(opts->api_token, sizeof opts->api_token, "%s", "api-test-token");
+    freeOpts(opts);
+    if (opts->rdio_api_key[0] != '\0' || opts->rdio_api_url[0] != '\0' || opts->rr_app_key[0] != '\0'
+        || opts->api_token[0] != '\0') {
+        DSD_FPRINTF(stderr, "freeOpts left an API key or token in the options\n");
+        failed = 1;
+    }
+    free(state);
+    free(opts);
+    return failed;
+}
+
+/* A frame the vendor ciphers do not skip as silence: every bit pattern set, the tail included. */
+static void
+vendor_test_frame(char frame[49]) {
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i % 3) != 0);
+    }
+}
+
+/* The TYT AP (PC4) and Baofeng AP (PC5) key schedules and the TYT EP keystream live in the crypto module, not the
+   state, for the whole process: freeState() wipes them with the state's keys, so a stopped session leaves no key
+   material behind. A wiped schedule decrypts as one no key was ever loaded into does (the run's first, before any key:
+   this test runs first). */
+static int
+test_teardown_wipes_vendor_key_contexts(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    initState(state);
+    char never_keyed[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(never_keyed[c]);
+    }
+    state->tyt_ap = 1;
+    (void)tyt_ap_pc4_apply_frame49(state, never_keyed[0]);
+    state->baofeng_ap = 1;
+    (void)baofeng_pc5_apply_frame49(state, never_keyed[1]);
+    state->tyt_ap = state->baofeng_ap = 0;
+
+    tyt_ap_pc4_keystream_creation(state, "0123456789ABCDEF0123456789ABCDEF", 0);
+    (void)baofeng_ap_pc5_keystream_creation(state, "0123456789ABCDEF FEDCBA9876543210", 0);
+    tyt_ep_aes_keystream_creation(state, "0123456789ABCDEF FEDCBA9876543210", 0);
+    char keyed[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(keyed[c]);
+    }
+    (void)tyt_ap_pc4_apply_frame49(state, keyed[0]);
+    (void)baofeng_pc5_apply_frame49(state, keyed[1]);
+    (void)tyt_ep_aes_apply_frame49(state, keyed[2]);
+    int failed = memcmp(keyed[0], never_keyed[0], 49) == 0 || memcmp(keyed[1], never_keyed[1], 49) == 0
+                 || memcmp(keyed[2], never_keyed[2], 49) == 0;
+    freeState(state);
+
+    initState(state);
+    state->tyt_ap = state->baofeng_ap = state->tyt_ep = 1;
+    char after[3][49];
+    for (int c = 0; c < 3; c++) {
+        vendor_test_frame(after[c]);
+    }
+    (void)tyt_ap_pc4_apply_frame49(state, after[0]);
+    (void)baofeng_pc5_apply_frame49(state, after[1]);
+    (void)tyt_ep_aes_apply_frame49(state, after[2]);
+    if (memcmp(after[0], never_keyed[0], 49) != 0 || memcmp(after[1], never_keyed[1], 49) != 0
+        || memcmp(after[2], never_keyed[2], 49) != 0) {
+        DSD_FPRINTF(stderr, "freeState left a TYT or Baofeng key schedule or keystream behind\n");
+        failed = 1;
+    }
+    state->tyt_ap = state->baofeng_ap = state->tyt_ep = 0;
+    freeState(state);
+    free(state);
+    return failed;
+}
+
+/* A Basic Privacy key typed while the autoload's key is the working key (the menu's or a command's direct entry,
+   overlay mode) is the user's direct key on the key state the autoload replaced: talkgroup 123's Hytera key (K1, H)
+   does not come along as a direct key, and the autoload no longer holds, so it never takes the typed key out. */
+static int
+test_direct_entry_keeps_no_autoloaded_key(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int failed = 0;
+    seed_autoloaded_key(state, 0ULL);
+    if (dsd_key_apply_direct(state, DSD_KEY_TYPE_BASIC, "44", DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) {
+        DSD_FPRINTF(stderr, "direct entry of a Basic Privacy key failed\n");
+        failed = 1;
+    }
+    if (state->K != 44ULL || state->basic_key_present != 1U) {
+        DSD_FPRINTF(stderr, "direct entry did not keep the typed key as the Basic Privacy key\n");
+        failed = 1;
+    }
+    if (state->K1 != 0ULL || state->H != 0ULL || state->hytera_key_segments != 0U) {
+        DSD_FPRINTF(stderr, "direct entry kept the autoloaded talkgroup's Hytera key as a direct key\n");
+        failed = 1;
+    }
+    if (dsd_dmr_tg_autoload_holds(state)) {
+        DSD_FPRINTF(stderr, "the autoload still holds the typed key as its own\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
+/* Whether the key copy holds zeros only. */
+static int
+key_copy_is_zero(const unsigned long long int words[6], const uint8_t flags[2]) {
+    for (int i = 0; i < 6; i++) {
+        if (words[i] != 0ULL) {
+            return 0;
+        }
+    }
+    return flags[0] == 0U && flags[1] == 0U;
+}
+
+/* The key readers fill every word and flag they are given on every path: with no state, the slot's call key and the
+   autoload's preview are no key, and while the autoload does not hold, its baseline is no key (and it says so). A caller's uninitialized copy is
+   never read back, and a copy that held an earlier key never keeps it. */
+static int
+test_key_readers_fill_their_outputs(void) {
+    int failed = 0;
+    unsigned long long int words[6];
+    uint8_t flags[2];
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    dsd_dmr_slot_call_key(NULL, 0U, 123U, words, flags);
+    if (!key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the slot call key with no state left its outputs unwritten\n");
+        failed = 1;
+    }
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    keyring_dmr_tg_autoload_preview(NULL, 0U, 123U, words, flags);
+    if (!key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload preview with no state left its outputs unwritten\n");
+        failed = 1;
+    }
+
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    state->K = 70ULL;
+    state->basic_key_present = 1U;
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    if (dsd_dmr_tg_autoload_baseline(state, words, flags) != 0 || !key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload baseline while it does not hold is not an empty key\n");
+        failed = 1;
+    }
+    DSD_MEMSET(words, 0xA5, sizeof words);
+    DSD_MEMSET(flags, 0xA5, sizeof flags);
+    if (dsd_dmr_tg_autoload_baseline(NULL, words, flags) != 0 || !key_copy_is_zero(words, flags)) {
+        DSD_FPRINTF(stderr, "the autoload baseline with no state is not an empty key\n");
+        failed = 1;
+    }
+    free_test_state(state);
+    return failed;
+}
+
 int
 main(void) {
+    /* First: it compares with the vendor schedules as no key has touched them yet. */
+    if (test_teardown_wipes_vendor_key_contexts() != 0) {
+        return 1;
+    }
+    if (test_key_readers_fill_their_outputs() != 0) {
+        return 1;
+    }
+    if (test_scan_keys_and_wipe_leave_no_autoloaded_key() != 0) {
+        return 1;
+    }
+    if (test_direct_entry_keeps_no_autoloaded_key() != 0) {
+        return 1;
+    }
+    if (test_key_set_install_wipes_slot_key_copies() != 0) {
+        return 1;
+    }
+    if (test_autoload_miss_wipes_its_copies() != 0) {
+        return 1;
+    }
+    if (test_free_state_wipes_keys() != 0) {
+        return 1;
+    }
+    if (test_teardown_wipes_keystreams_and_opts_secrets() != 0) {
+        return 1;
+    }
+    if (test_forget_slot_wipes_on_the_change_to_none() != 0) {
+        return 1;
+    }
     if (test_capture_install_roundtrip() != 0) {
         return 1;
     }

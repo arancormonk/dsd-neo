@@ -12572,6 +12572,10 @@ static int g_profile_req_landing_after = 0;
  * with no pipeline to take a queue, settle every number. */
 static std::atomic<uint32_t> g_rx_req_seq{0U};
 static std::atomic<uint32_t> g_rx_req_settled_seq{0U};
+/* rtl_stream_receive_change_seq(): moved with each numbered request except a symbol profile request that repeats what
+ * the stream will run once its queue drains (rtl_stream_demod_request_repeats_locked()). Written under
+ * g_profile_req_m. */
+static std::atomic<uint32_t> g_rx_change_seq{0U};
 static std::atomic<uint32_t> g_rx_req_refused_seq{0U};
 /* What the stream kept when it refused g_rx_req_refused_seq (rtl_stream_receive_request_refusal()): whether it stayed
  * on the analog family, the configured analog width (0 = the kind's default, demod_state::analog_width_setting_hz)
@@ -12627,6 +12631,17 @@ rtl_stream_request_replaced(uint32_t seq) {
 extern "C" uint32_t
 rtl_stream_receive_request_seq(void) {
     return g_rx_req_seq.load(std::memory_order_acquire);
+}
+
+extern "C" uint32_t
+rtl_stream_receive_change_seq(void) {
+    return g_rx_change_seq.load(std::memory_order_acquire);
+}
+
+/* A numbered request that may change the receive chain. Called with g_profile_req_m held. */
+static void
+rtl_stream_note_receive_change_locked(void) {
+    g_rx_change_seq.store(g_rx_change_seq.load(std::memory_order_relaxed) + 1U, std::memory_order_release);
 }
 
 extern "C" int
@@ -12821,6 +12836,60 @@ rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int c
     }
 }
 
+/* Whether the published profile is one a symbol profile request at @p rate leaves as it is apart from its values: the
+ * FSK discriminator with CQPSK off and no TED override, at a complex rate @p rate divides (so the TED the request lands
+ * at, the complex rate over the symbol rate, is exact). */
+static int
+rtl_stream_published_plain_fsk(int rate) {
+    const int complex_rate = g_pub_complex_rate.load(std::memory_order_relaxed);
+    return g_pub_ted_sps_override.load(std::memory_order_relaxed) == 0
+           && g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0
+           && g_pub_output_kind.load(std::memory_order_relaxed) == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR
+           && complex_rate > 0 && complex_rate % rate == 0;
+}
+
+/* Whether the published profile already is what a symbol profile request of these values would apply: a plain FSK
+ * profile (rtl_stream_published_plain_fsk()) with CQPSK left off, no override asked, the same rate and levels, a channel
+ * profile the request passes through as it is, and the TED the request lands at the published one. Conservative:
+ * anything the request's own transforms could change (CQPSK, the TETRA profile, an M17 encoder's WIDE channel) reads as
+ * no repeat. */
+static int
+rtl_stream_demod_request_repeats_published(int cqpsk, int rate, int levels, int chan, int ted, int ovr) {
+    if (ovr || cqpsk > 0 || !rtl_stream_published_plain_fsk(rate)) {
+        return 0;
+    }
+    if (chan < DSD_CH_LPF_PROFILE_WIDE || chan >= DSD_CH_LPF_PROFILE_TETRA
+        || chan != g_pub_channel_profile.load(std::memory_order_relaxed)
+        || chan != g_pub_running_channel_profile.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    const int sps = g_pub_complex_rate.load(std::memory_order_relaxed) / rate;
+    return sps >= 2 && sps <= 64 && rate == g_pub_symbol_rate.load(std::memory_order_relaxed)
+           && levels == g_pub_symbol_levels.load(std::memory_order_relaxed)
+           && sps == g_pub_ted_sps.load(std::memory_order_relaxed) && (ted <= 0 || ted == sps);
+}
+
+/* Whether a symbol profile request of these values repeats what the stream will run once its queue drains: the same
+ * values as the demod-only request still queued, or, with none queued or taken and unsettled, the published profile.
+ * Called with g_profile_req_m held. */
+static int
+rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int chan, int ted, int ovr) {
+    if (rate <= 0) {
+        return 0;
+    }
+    if (g_profile_req_pending.load(std::memory_order_acquire)) {
+        return g_profile_req_has_demod && g_profile_req_analog_family < 0 && !g_profile_req_digital_landing
+               && g_profile_req_cqpsk == cqpsk && g_profile_req_sym_rate == rate && g_profile_req_levels == levels
+               && g_profile_req_chan == chan && g_profile_req_ted_sps == ted
+               && g_profile_req_ted_sps_is_override == (ovr ? 1 : 0);
+    }
+    if (rtl_stream_receive_request_outcome(g_rx_req_seq.load(std::memory_order_relaxed))
+        == RTL_STREAM_RX_REQUEST_PENDING) {
+        return 0; /* taken and not yet applied: what it leaves is not published yet */
+    }
+    return rtl_stream_demod_request_repeats_published(cqpsk, rate, levels, chan, ted, ovr);
+}
+
 extern "C" int
 rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                  int ted_sps_is_override) {
@@ -12851,7 +12920,14 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
     g_profile_req_family_after = rtl_stream_requested_family_locked();
     g_profile_req_landing_after = rtl_stream_requested_landing_locked();
+    /* Numbered as every queued request (its ordering against a retune's family, its settlement), and applied as any
+       other; only one that may change the receive chain moves the change counter (issue #834). */
+    const int repeats = rtl_stream_demod_request_repeats_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                                ted_sps, ted_sps_is_override);
     (void)rtl_stream_number_request_locked();
+    if (!repeats) {
+        rtl_stream_note_receive_change_locked();
+    }
     g_profile_req_has_demod = 1;
     g_profile_req_cqpsk = cqpsk_enable;
     g_profile_req_sym_rate = symbol_rate_hz;
@@ -13094,6 +13170,7 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
         rtl_stream_note_replaced_locked(g_rx_req_seq.load(std::memory_order_relaxed));
     }
     g_profile_req_analog_seq = rtl_stream_number_request_locked();
+    rtl_stream_note_receive_change_locked();
     if (!replaces_analog) {
         g_profile_req_analog_first_seq = g_profile_req_analog_seq;
     }

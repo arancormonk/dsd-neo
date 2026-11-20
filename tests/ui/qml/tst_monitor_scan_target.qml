@@ -52,6 +52,9 @@ Item {
             testContext.setMetric("scanVisitMs", 0);
             testContext.setMetric("scanVisitLive", false);
             testContext.setMetric("scanVisitRemainingDs", 0);
+            testContext.setMetric("scanQuietStatus", 0);
+            testContext.setMetric("scanQuietReason", 0);
+            testContext.setMetric("scanQuietText", "");
             testContext.setMetric("scanRotationActive", false);
             testContext.setMetric("scanKind", 0);
             testContext.setMetric("scanPaused", false);
@@ -320,6 +323,29 @@ Item {
             // No cap in force: the view withholds the width, so the row closes as before.
             testContext.setMetric("scanVisitMs", 0);
             tryCompare(row, "text", "Manual hold  dwell 3.0s (paused)");
+            // The silent-channel skip's status (#834) is the phrase itself, in the same grammar
+            // (what a screen reader hears of it is tst_a11y_paced_names.qml's).
+            testContext.setMetric("scanStayReason", 8);
+            testContext.setMetric("scanStayPhrase", "No check: width");
+            testContext.setMetric("scanDwellMs", 0);
+            testContext.setMetric("scanDwellState", 0);
+            testContext.setMetric("scanTimerLive", true);
+            testContext.setMetric("scanTimerRemainingDs", 18);
+            testContext.setMetric("scanTimerSpanMs", 3000);
+            testContext.setMetric("scanHoldMs", 2000);
+            testContext.setMetric("scanQuietStatus", 2);
+            testContext.setMetric("scanQuietReason", 5);
+            testContext.setMetric("scanQuietText", "Skip silent channels can't check this channel at its channel width. Normal scan timing applies.");
+            tryCompare(row, "text", "No check: width 1.8s/3.0s  hold 2.0s");
+            testContext.setMetric("scanStayPhrase", "Quiet check");
+            testContext.setMetric("scanQuietStatus", 1);
+            testContext.setMetric("scanQuietReason", 0);
+            testContext.setMetric("scanQuietText", "Checking whether this channel is silent. If it is, the scan moves on early.");
+            tryCompare(row, "text", "Quiet check 1.8s/3.0s  hold 2.0s");
+            testContext.setMetric("scanQuietStatus", 0);
+            testContext.setMetric("scanQuietText", "");
+            testContext.setMetric("scanStayPhrase", "Idle dwell");
+            tryCompare(row, "text", "Idle dwell 1.8s/3.0s  hold 2.0s");
             cleanup();
             tryCompare(row, "visible", false);
         }

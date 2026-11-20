@@ -17,6 +17,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -34,14 +35,17 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -988,8 +992,10 @@ svc_clear_keys(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
-    // One keyring behind both CSV kinds, so one clear covers dec and hex.
+    // One keyring behind both CSV kinds, so one clear covers dec and hex. No talkgroup key of it stays the working key
+    // or a slot's shown copy.
     opts->key_in_file[0] = '\0';
+    dsd_dmr_tg_autoload_keyring_replaced(state);
     DSD_MEMSET(state->rkey_array, 0, sizeof state->rkey_array);
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof state->rkey_array_loaded);
     // The TG->key ID override map indexes into the keyring, so it goes with it. One
@@ -2802,13 +2808,36 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
    the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
    late failure putting the cached frequency back (issue #671). */
 int
+svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
+    if (!opts) {
+        return -1;
+    }
+    const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+    /* Marked by the leg immediately before it sends the frequency: the peer may move and send new audio before it
+       answers, and is on the old frequency while it answers a passband request before that. */
+    dsd_input_cut mark;
+    DSD_MEMSET(&mark, 0, sizeof mark);
+    const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id, &mark);
+    /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
+    if (rc == 0 && opts->use_rigctl == 1) {
+        dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
+    } else if (opts->use_rigctl == 1 && sent_before_hz != 0U && opts->rigctl_sent_freq_hz == 0U) {
+        /* A request whose reply could not be read may have moved the peer, where it was known: DMR no longer takes the
+           receiver to be where it last put it (a control channel it parked on), so its hunt sends that channel again
+           rather than listening on. A complete refusal left the peer, and DMR's attribution, where they were. */
+        dmr_sm_note_receiver_unknown(dmr_sm_get_ctx());
+    }
+    return rc;
+}
+
+int
 svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     if (!opts) {
         return -1;
     }
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
-    const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
+    const int rc = svc_io_control_tune(opts, state, hz, &pending_id);
     /* A tune taken decides where the receiver goes, so it replaces a tune still pending; a refused one decides nothing,
        and that tune stands (issue #644). */
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {

@@ -1361,8 +1361,10 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     // rendered as that kind only; nothing between, no other kind.
     const uint32_t rendered_rates[] = {960000u,  1024000u, 1152000u, 1200000u, 1280000u, 1440000u, 1536000u, 1600000u,
                                        1800000u, 1920000u, 2048000u, 2400000u, 2500000u, 3000000u, 6000000u, 10000000u};
-    const uint32_t nfm_widths[] = {8000u, 11250u, 12500u, 16000u, 20000u, 25000u};
-    const uint32_t am_widths[] = {5000u, 6000u, 8000u, 10000u, 15000u, 20000u};
+    // NFM 10, 12 and 15 kHz and AM 8.333 kHz are the widths admitted beyond the Radio sheet's steps (each validated
+    // on its own); a width between two admitted ones is refused.
+    const uint32_t nfm_widths[] = {8000u, 10000u, 11250u, 12000u, 12500u, 15000u, 16000u, 20000u, 25000u};
+    const uint32_t am_widths[] = {5000u, 6000u, 8000u, 8333u, 10000u, 15000u, 20000u};
     for (uint32_t rate : rendered_rates) {
         assert(dsd_signal_quiet_rate_supported(rate) == 1);
         for (uint32_t width : nfm_widths) {
@@ -1371,14 +1373,14 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
         for (uint32_t width : am_widths) {
             assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 1);
         }
-        // Widths rendered only as the other kind: NFM 10 and 15 kHz, AM 11.25, 12.5 and 16 kHz.
-        for (uint32_t width : {10000u, 15000u}) {
-            assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
-        }
+        // Widths rendered only as the other kind: AM 11.25, 12, 12.5 and 16 kHz, NFM 8.333 kHz.
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, 8333u, rate) == 0);
+        assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, 12000u, rate) == 0);
         for (uint32_t width : {11250u, 12500u, 16000u}) {
             assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
         }
-        for (uint32_t width : {0u, 4999u, 7000u, 9000u, 12000u, 14000u, 18000u, 24999u, 25001u}) {
+        for (uint32_t width : {0u, 4999u, 7000u, 9000u, 8332u, 8334u, 9999u, 10001u, 11000u, 12001u, 13000u, 14000u,
+                               15001u, 18000u, 24999u, 25001u}) {
             assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_FM, width, rate) == 0);
             assert(dsd_signal_quiet_analog_supported(DSD_ANALOG_DEMOD_AM, width, rate) == 0);
         }

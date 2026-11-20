@@ -15,9 +15,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -151,12 +153,23 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
 /* The received tone the view reports: hidden (the view's 0) until a case sets it. */
 static dsd_app_rx_tone rx_tone;
 static int rx_tone_rc;
+/* The time the observer last aged the view by. */
+static double rx_tone_now = -1.0;
+
+/* The analog tap's clock, on which it sets the publication's stale deadline: a test clock here, far from the real one,
+   as a test build may install. */
+#define ANALOG_TAP_CLOCK_S 42.125
+
+double
+dsd_analog_rx_clock_s(void) {
+    return ANALOG_TAP_CLOCK_S;
+}
 
 int
 dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now, dsd_app_rx_tone* out) {
     (void)opts;
     (void)state;
-    (void)now;
+    rx_tone_now = now;
     *out = rx_tone;
     return rx_tone_rc;
 }
@@ -221,6 +234,8 @@ test_detection_tone(void) {
     new_tone_hit(&status, 100);
     rx_tone_locked(A_TONE, 1, 1);
     assert(strcmp(publish_at(&status, 0, 0), A_TONE) == 0);
+    // The view ages the publication on the clock the tap set its stale deadline on, not on a clock of the observer's.
+    assert(fabs(rx_tone_now - ANALOG_TAP_CLOCK_S) < 1e-9);
     assert(strcmp(publish_at(&status, 1000, 0), A_TONE) == 0); // held 1 s: established
     // A 0.3 s lock of another tone after it (a talk-off) never replaces the established tone, live or ended.
     rx_tone_locked(B_TONE, 1, 2);

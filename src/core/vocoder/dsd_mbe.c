@@ -1141,22 +1141,6 @@ mbe_apply_vendor_overlays(dsd_state* state, char ambe_d[49]) {
     mbe_apply_vendor_static_scramblers(state, ambe_d);
 }
 
-static uint32_t
-mbe_hash_tg_for_key(uint32_t tg) {
-    uint32_t hash = tg & 0xFFFFFF;
-    if (hash <= 0xFFFF) {
-        return hash;
-    }
-
-    uint8_t hash_bits[24];
-    DSD_MEMSET(hash_bits, 0, sizeof(hash_bits));
-    for (int i = 0; i < 24; i++) {
-        hash_bits[i] = ((hash << i) & 0x800000) >> 23;
-    }
-    hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
-    return hash & 0xFFFF;
-}
-
 static int
 mbe_slot_straight_ks_armed(const dsd_state* state) {
     return state->straight_ks == 1 && state->straight_mod > 0;
@@ -1281,22 +1265,31 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     frame_ctx->capture = MBE_CAPTURE_NXDN;
 }
 
+/* The talkgroup a DMR frame's talkgroup key autoload keys it from, into @p call: its own call's, the open DMR call on
+ * the slot, which a checked LC names, or the identity-less one an admitted frame opens before any LC has. 0 when the
+ * slot holds none. A frame the receive policy has not admitted yet opens no call (mark_vocoder_call_media()), so its
+ * slot can still hold an ended call or another protocol's, whose talkgroup is not the frame's: its key would stay
+ * loaded into the call's admitted frames, decrypting their Basic Privacy with it and judging a call that has no key
+ * decryptable (dsd_dmr_missing_alg_key_can_decrypt()). Before the call's LC the frame takes no talkgroup's key; an
+ * admitted one there keys from the identity-less call's talkgroup 0, which is no talkgroup either. */
+static int
+mbe_dmr_autoload_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call) {
+    return dsd_call_state_get(state, slot, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_DMR(call->protocol);
+}
+
 static void
 mbeslot_left_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algid == 0) {
         dsd_call_snapshot call;
-        uint32_t target = dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= UINT32_MAX
-                              ? (uint32_t)call.ota_target_id
-                              : 0U;
-        uint32_t hash = mbe_hash_tg_for_key(target);
-        if (keyring_kid_scalar_present(state, (int)hash)) {                // an imported zero is a key too
-            state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
-            state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
-            state->K2 = state->K3 = state->K4 = 0ULL;
-            state->basic_key_present = 1U;
-            state->hytera_key_segments = 1U;
-            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                    (int)target, 1, 0);
+        if (!mbe_dmr_autoload_call(state, 0U, &call)) {
+            return;
+        }
+        uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
+        uint32_t keyed_from = 0U;
+        if (keyring_dmr_tg_autoload_apply(state, 0U, target, &keyed_from)) {
+            (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
+                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)keyed_from, 1, 0);
         }
     }
 }
@@ -1305,18 +1298,14 @@ static void
 mbeslot_right_autoload_keys(dsd_state* state) {
     if (state->M == 0 && state->payload_algidR == 0) {
         dsd_call_snapshot call;
-        uint32_t target = dsd_call_state_get(state, 1U, &call) > 0 && call.ota_target_id <= UINT32_MAX
-                              ? (uint32_t)call.ota_target_id
-                              : 0U;
-        uint32_t hash = mbe_hash_tg_for_key(target);
-        if (keyring_kid_scalar_present(state, (int)hash)) { // an imported zero is a key too
-            state->K = state->rkey_array[hash] & 0xFF;
-            state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
-            state->K2 = state->K3 = state->K4 = 0ULL;
-            state->basic_key_present = 1U;
-            state->hytera_key_segments = 1U;
-            (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
-                                                    (int)target, 1, 0);
+        if (!mbe_dmr_autoload_call(state, 1U, &call)) {
+            return;
+        }
+        uint32_t target = call.ota_target_id <= UINT32_MAX ? (uint32_t)call.ota_target_id : 0U;
+        uint32_t keyed_from = 0U;
+        if (keyring_dmr_tg_autoload_apply(state, 1U, target, &keyed_from)) {
+            (void)dsd_call_state_note_key_selection(state, 1, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch,
+                                                    DSD_CALL_KEY_DESTINATION, call.kid, (int)keyed_from, 1, 0);
         }
     }
 }
@@ -2084,8 +2073,40 @@ mbe_dmr_slot_crypto_class(const dsd_state* state, int slot, const mbe_frame_ctx_
 typedef struct {
     int admitted;               // dsd_receive_current_allows()
     dsd_voice_crypto_class cls; // DMR's slot class, NXDN's and dPMR's cipher class, X2-TDMA's; CLEAR for the others
-    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames): not decodable
+    int crypto_unknown;         // the owner has not said yet (an X2-TDMA call's opening frames, a DMR call's held ones)
 } mbe_frame_judgement;
+
+// A vendor key applied to every DMR voice frame whatever its call says: the forced-clear keys
+// (dsd_key_dmr_forced_clear(): Baofeng AP, Connect Systems EE72, Kenwood) and the TYT Basic (-2), TYT AP (-!),
+// Retevis AP (-@), TYT EP (-5) and AnyTone (-A) keys. Their verdict stays as dsd_key_dmr_forced_clear() decides it.
+static int
+mbe_dmr_vendor_key_forced(const dsd_state* state) {
+    return dsd_key_dmr_forced_clear(state) || state->tyt_bp == 1 || state->tyt_ap == 1 || state->tyt_ep == 1
+           || (state->retevis_ap == 1 && state->rc2_context != NULL) || state->any_bp == 1;
+}
+
+// A key forced onto every frame of the slot, whatever its call says: a vendor key (mbe_dmr_vendor_key_forced()), the
+// -S keystream, or Basic or Hytera Privacy forced with -4 (M 1). A key the frame got because its service options or
+// ALG ID asked for it is not forced.
+static int
+mbe_dmr_slot_key_forced(const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
+    return mbe_dmr_vendor_key_forced(state) || frame_ctx->straight_ks[slot]
+           || (frame_ctx->slot_keyed[slot] && state->M == 1);
+}
+
+// A DMR slot's frame on a slot whose call has not said yet whether it is encrypted since the receiver moved or
+// released its call (dsd_state::dmr_enc_class_held): its encryption is unknown, as an X2-TDMA call's opening frames
+// are, until its checked LC or accepted PI header says, whatever the frame's class reads. The privacy bit or ALG ID
+// that class reads may come from data no check passed (an embedded LC whose checksum failed), and the key it selects
+// keys nothing yet. Only a key forced onto every frame keys it as before (mbe_dmr_slot_key_forced()). The single-slot
+// decoder without trunking and direct-mode traffic have no hold (dsd_dmr_voice_hold_applies()).
+static void
+mbe_dmr_slot_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                   mbe_frame_judgement* j) {
+    j->cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx);
+    j->crypto_unknown = dsd_dmr_voice_hold_applies(opts, state) && state->dmr_enc_class_held[slot] != 0U
+                        && !mbe_dmr_slot_key_forced(state, slot, frame_ctx);
+}
 
 // X2-TDMA's encryption on the slot, as processX2TDMAvoice() set it for the burst being decoded. X2 has no
 // decryption: an encrypted frame is undecryptable.
@@ -2096,10 +2117,10 @@ mbe_x2_slot_judge(const dsd_state* state, int slot, mbe_frame_judgement* j) {
     j->cls = crypto == DSD_X2TDMA_CRYPTO_ENCRYPTED ? DSD_VOICE_CRYPTO_UNDECRYPTABLE : DSD_VOICE_CRYPTO_CLEAR;
 }
 
-// Whether an X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where it
-// would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
+// Whether a DMR or X2-TDMA frame plays under the user's options. One whose encryption is not known yet plays only where
+// it would play either way, clear or encrypted: with the encrypted-audio mute off and reverse mute off.
 static int
-mbe_x2_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
+mbe_slot_frame_audible(const dsd_opts* opts, int slot, const mbe_frame_judgement* j) {
     if (j->crypto_unknown) {
         return dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_CLEAR)
                && dsd_voice_crypto_class_audible(opts, slot, DSD_VOICE_CRYPTO_UNDECRYPTABLE);
@@ -2111,7 +2132,7 @@ static mbe_frame_judgement
 mbe_frame_judge(const dsd_opts* opts, const dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx) {
     mbe_frame_judgement j = {dsd_receive_current_allows(opts, state, slot) != 0, DSD_VOICE_CRYPTO_CLEAR, 0};
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: j.cls = mbe_dmr_slot_crypto_class(state, slot, frame_ctx); break;
+        case DSD_VOICE_PROTOCOL_DMR: mbe_dmr_slot_judge(opts, state, slot, frame_ctx, &j); break;
         case DSD_VOICE_PROTOCOL_NXDN:
         case DSD_VOICE_PROTOCOL_DPMR: j.cls = dsd_nxdn_voice_crypto_class(state); break;
         case DSD_VOICE_PROTOCOL_X2TDMA: mbe_x2_slot_judge(state, slot, &j); break;
@@ -2157,8 +2178,8 @@ mbe_frame_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, con
         return 1;
     }
     switch (frame_ctx->protocol) {
-        case DSD_VOICE_PROTOCOL_DMR: return !dsd_voice_crypto_class_audible(opts, slot, j->cls);
-        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_x2_frame_audible(opts, slot, j);
+        case DSD_VOICE_PROTOCOL_DMR:
+        case DSD_VOICE_PROTOCOL_X2TDMA: return !mbe_slot_frame_audible(opts, slot, j);
         case DSD_VOICE_PROTOCOL_P25P1: return !p25_crypto_audio_output_permitted(opts, state, 0);
         case DSD_VOICE_PROTOCOL_P25P2:
             return state->p25_p2_audio_allowed[slot] == 0 || !p25_crypto_audio_output_permitted(opts, state, slot);

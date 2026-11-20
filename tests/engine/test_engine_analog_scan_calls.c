@@ -37,6 +37,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -85,7 +86,7 @@ bool __wrap_SetScanRowModulation(dsd_socket_t sockfd, int kind, int bandwidth);
 bool __wrap_RestoreScanModulation(dsd_socket_t sockfd, int kind, int bandwidth, bool session_passband);
 void __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 int __real_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
 int __wrap_dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
 
@@ -106,7 +107,11 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
 /* The app-control tunes (`C`, `J`, `=`) reach the peer through io_control's rigctl leg, which answers as SetFreq does:
    0 when the peer took the frequency, -1 when it refused. */
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = 0U;

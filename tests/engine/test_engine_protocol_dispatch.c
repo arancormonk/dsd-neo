@@ -12,6 +12,7 @@
 #include <dsd-neo/dsp/p25p1_sync_anchor.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -20,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
 
@@ -64,11 +66,27 @@ static int g_tune_then_burst_during_handler = 0;
 /* The record a frontend publication made between the two copied. */
 static dsd_received_identity g_published_after_tune;
 
+/* What a P25 watchdog tune left of the DMR calls (dsd_engine_apply_dmr_leave(), the engine's): applied how many times,
+   and what a handler saw still pending. */
+static int g_dmr_leave_applied = 0;
+static int g_seen_dmr_leave_pending = -1;
+
+int
+dsd_engine_apply_dmr_leave(dsd_state* state) {
+    if (state->dmr_leave_pending == 0U) {
+        return 0;
+    }
+    state->dmr_leave_pending = 0U;
+    g_dmr_leave_applied++;
+    return 1;
+}
+
 static dsd_frame_verdict
 record_handler(int handler_id) {
     assert(g_called_handler == TEST_HANDLER_NONE);
     g_called_handler = handler_id;
     if (g_dispatch_state != NULL) {
+        g_seen_dmr_leave_pending = g_dispatch_state->dmr_leave_pending;
         g_seen_dispatch_active = g_dispatch_state->frame_dispatch_active;
         g_seen_dispatch_synctype = g_dispatch_state->frame_dispatch_synctype;
         g_seen_dispatch_carrier_seq = g_dispatch_state->frame_dispatch_carrier_seq;
@@ -294,6 +312,25 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
                                                      : (int)verdict));
     /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
     assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
+    /* Issue #834: a frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA) is noted for the -Y step as it
+       is dispatched, once; any other frame, or a synctype no handler takes, is not. */
+    const int unchecked = expected_handler == TEST_HANDLER_X2TDMA || expected_handler == TEST_HANDLER_PROVOICE
+                          || expected_handler == TEST_HANDLER_TETRA;
+    assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
+    /* Its -Y call marker moves only when its decoder took it, on the carrier it was dispatched on and uninterrupted:
+       a ProVoice sync its decoder has not confirmed (UNPRODUCTIVE), a frame dropped or cut, is no call. Nor is an
+       X2-TDMA burst, data or voice: one voice sync on noise is taken too, and an X2-TDMA call is heard when its
+       decoder corroborates the superframe and the call store begins it. Nor is a TETRA burst, even one whose CRC
+       passed: an idle control channel's signalling passes it too, and a TETRA call is heard when the store begins it. */
+    const int taken =
+        !dropped && !cut && (verdict == DSD_FRAME_VERDICT_PRODUCTIVE || verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const int provoice = expected_handler == TEST_HANDLER_PROVOICE;
+    const unsigned want_call = unchecked && taken && provoice ? 1U : 0U;
+    if (state->scan_y_call_seq != want_call) {
+        DSD_FPRINTF(stderr, "the -Y call marker of synctype %d with verdict %d moved %u (want %u)\n", synctype,
+                    (int)verdict, (unsigned)state->scan_y_call_seq, want_call);
+    }
+    assert(state->scan_y_call_seq == want_call);
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
@@ -485,6 +522,31 @@ check_trunk_tune_drop_applied_around_the_frame(void) {
     free(opts);
 }
 
+/* A retune the P25 watchdog made between frames asked the decoder thread to forget the DMR calls' decryption
+   (dsd_state::dmr_leave_pending): processFrame() applies it before the frame's handler reads anything, and with
+   nothing pending applies nothing. */
+static void
+check_dmr_leave_applied_before_the_frame(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmr_leave_pending = DSD_DMR_LEAVE_PRIVACY;
+    g_dispatch_state = state;
+    g_dmr_leave_applied = 0;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_DMR);
+    assert(g_dmr_leave_applied == 1 && g_seen_dmr_leave_pending == 0);
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_dmr_leave_applied == 1);
+    g_dispatch_state = NULL;
+    free(state);
+    free(opts);
+}
+
 /* A retune the P25 watchdog made between frames left the DMR carrier: processFrame() applies its drop before the frame
    and resets the DMR RAS evidence with it (dmr_ras_reset()), so neither a confirmation nor one signature of the carrier
    left carries over to the carrier reached. With nothing pending the evidence stays. */
@@ -559,6 +621,7 @@ main(void) {
     check_tolerant_p25p1_word_leaves_the_identity();
     check_trunk_tune_drop_applied_around_the_frame();
     check_trunk_tune_drop_resets_dmr_ras();
+    check_dmr_leave_applied_before_the_frame();
     check_trunk_tune_inside_the_frame_keeps_the_next_burst();
     check_public_handler_table();
     check_dispatch_context();
@@ -591,6 +654,17 @@ main(void) {
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA);
+    run_dispatch_case(DSD_SYNC_TETRA_SB_NEG, TEST_HANDLER_TETRA);
+    run_dispatch_case(DSD_SYNC_PROVOICE_NEG, TEST_HANDLER_PROVOICE);
+    /* Issue #834: one ProVoice sync its decoder has not confirmed, and a TETRA burst whose CRC failed, are no call. */
+    run_dispatch_case_verdict(DSD_SYNC_PROVOICE_NEG, TEST_HANDLER_PROVOICE, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    run_dispatch_case_verdict(DSD_SYNC_TETRA_NDB_POS, TEST_HANDLER_TETRA, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
+    run_dispatch_case(DSD_SYNC_X2TDMA_DATA_NEG, TEST_HANDLER_X2TDMA);
+    /* Nor is an X2-TDMA voice frame its decoder took: one sync on noise is taken too, before the superframe is
+       corroborated. */
+    run_dispatch_case(DSD_SYNC_X2TDMA_VOICE_POS, TEST_HANDLER_X2TDMA);
+    run_dispatch_case(DSD_SYNC_EDACS_POS, TEST_HANDLER_EDACS);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
     run_dispatch_case(-1, TEST_HANDLER_NONE);
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);

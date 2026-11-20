@@ -9,6 +9,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -163,6 +164,9 @@ dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
+    /* A tracked DMR tune that landed since is judged before this frame is read (dmr_sm_resolve_tracked_tune()): one
+       context read while none waits. */
+    dmr_sm_resolve_tracked_tune(opts, state);
     dmr_update_branding(state);
     state->nac = 0;
 

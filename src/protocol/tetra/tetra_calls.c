@@ -632,7 +632,7 @@ calls_classify(dsd_state* state, dsd_call_crypto_state crypto) {
     DSD_MEMSET(&update, 0, sizeof update);
     update.classification = crypto;
     update.audio_permitted = (uint8_t)(crypto == DSD_CALL_CRYPTO_CLEAR || crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
-    (void)dsd_call_state_update_crypto(state, 0U, &update);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_TETRA_NDB_POS, &update);
 }
 
 /* The call canonical slot 0 carries is of crypto class @p crypto now, which DSD_CALL_CRYPTO_UNKNOWN leaves as it was. */

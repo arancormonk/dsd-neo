@@ -3,6 +3,7 @@
  * output wrappers exercise config apply without hardware or an audio server. */
 #include <assert.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/runtime/cli.h>
 #include <math.h>
 #include <stdint.h>
@@ -64,7 +65,8 @@ uint32_t __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx);
 int __wrap_rtl_stream_airspy_controls(const dsd_airspy_config* config);
 int __wrap_rtl_stream_airspy_info(dsd_airspy_info* info);
 void __wrap_rtl_stream_set_channel_squelch(float level);
-int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id);
+int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id,
+                                      dsd_input_cut* rigctl_mark);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 
 int
@@ -154,7 +156,11 @@ __wrap_rtl_stream_set_channel_squelch(float level) {
 }
 
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = 0U;

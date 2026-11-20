@@ -43,7 +43,7 @@ typedef struct dsd_gps_report_ctx {
      * dsd_event_enrich_position_closing(). NULL otherwise (Phase 2). */
     const struct dsd_event_closing_call* closing;
     /** The call the report belongs to: its epoch (dsd_call_snapshot::epoch); 0 enriches the slot's ACTIVE call, if
-     * any. Ignored when @c closing is valid. */
+     * any, unless @c no_call_row. Ignored when @c closing is valid. */
     uint64_t call_epoch;
     uint32_t source_id;      /**< the call's source; 0 = none */
     uint32_t target_id;      /**< the call's target; 0 = none */
@@ -52,6 +52,9 @@ typedef struct dsd_gps_report_ctx {
     uint8_t pos_verified;    /**< 1 when the message's own check passed (hard RS decode, MAC CRC, whole segment) */
     uint8_t source_verified; /**< 1 when source, target and group flag came from checked provenance */
     uint8_t target_group;    /**< 1 when @c target_id is a talkgroup */
+    /** 1 when the report is shown to belong to no call (a P25 Phase 1 TDULC that ended none, issue #800): it reaches
+     * the feed and the location file, but no history row, the slot's ACTIVE call's included. */
+    uint8_t no_call_row;
 } dsd_gps_report_ctx;
 
 /**

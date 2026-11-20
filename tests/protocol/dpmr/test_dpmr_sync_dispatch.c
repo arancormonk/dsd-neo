@@ -16,6 +16,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -309,6 +310,57 @@ test_dispatch_boundaries_forget_the_scrambling(void) {
     assert(state.dpmr_scrambled == 2U);
 }
 
+/* Issue #834: the content notes a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_partial;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else if (level == DSD_CONTENT_EVIDENCE_PARTIAL) {
+        g_quiet_partial++;
+        g_quiet_hold_ms = hold_ms;
+    }
+}
+
+static void
+quiet_notes_install(int on) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(on ? &hooks : NULL);
+    g_quiet_proven = 0;
+    g_quiet_partial = 0;
+    g_quiet_hold_ms = 0U;
+}
+
+/* Issue #834: FS1, FS3 and FS4 carry no check of their own, so to a scan quiet check each is a frame waiting for its
+   first CCH verdict: PARTIAL for two FS2 spans (320 ms), once a frame, nothing PROVEN; nothing with the setting off. */
+static void
+test_dispatch_unchecked_frames_are_partial(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int frames[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS1_NEG, DSD_SYNC_DPMR_FS3_POS,
+                                 DSD_SYNC_DPMR_FS3_NEG, DSD_SYNC_DPMR_FS4_POS, DSD_SYNC_DPMR_FS4_NEG};
+    for (int on = 0; on <= 1; on++) {
+        for (size_t i = 0; i < sizeof(frames) / sizeof(frames[0]); i++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            opts.scan_skip_silent = on;
+            state.synctype = frames[i];
+            quiet_notes_install(1);
+            assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+            assert(g_quiet_proven == 0);
+            assert(g_quiet_partial == on);
+            assert(!on || g_quiet_hold_ms == 320U);
+            quiet_notes_install(0);
+        }
+    }
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -321,6 +373,7 @@ main(void) {
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();
+    test_dispatch_unchecked_frames_are_partial();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

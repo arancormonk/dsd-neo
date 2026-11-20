@@ -251,6 +251,21 @@ void audio_mix_mono_sum_s16(const short* left, const short* right, size_t n, int
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
 
+/**
+ * @brief Return 1 when the DMR voice hold applies (dsd_state::dmr_enc_class_held), 0 otherwise.
+ *
+ * The hold applies where the decoder keeps the two timeslots on separate lanes: repeater traffic on the dual-slot
+ * decoder, and the single-slot decoder under trunking, which keeps each standalone burst on its own slot. Where both
+ * slots share one lane, crypto and call state can mix across slots, and the hold does not apply, as on main: the
+ * single-slot decoder without trunking (-fr, -nm), and direct-mode traffic (an MS sync, or the MS path's
+ * dsd_state::dmr_ms_mode), whose two slots run on lane 0.
+ *
+ * @param opts  Decoder options (may be NULL).
+ * @param state Decoder state (may be NULL).
+ * @return 0 for the single-slot decoder without trunking and for direct-mode traffic; 1 otherwise.
+ */
+int dsd_dmr_voice_hold_applies(const dsd_opts* opts, const dsd_state* state);
+
 /** @brief The --dmr-force-algid value in force, or 0 when none is (0/1 and 0x16 in state->M are not forced ALG IDs). */
 int dsd_dmr_forced_algid(const dsd_state* state);
 

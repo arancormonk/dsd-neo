@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The analog replay host's --analog-audio-out file, read back.
+
+tools/scan_quiet_reception.py scores its voice rows from this file, so its level matters, not only its length. One
+replay writes it; the file must hold one native float32 per delivered sample (the count the "ANALOG AUDIO OUT:" line
+prints), full scale 1.0, and its RMS must be the "ANALOG METRIC:" line's rms_dbfs within RMS_TOLERANCE_DB. A scale,
+format or stale-slice error in the writer fails here, where the printed sample count alone would pass.
+"""
+import argparse
+from array import array
+import math
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import tempfile
+
+# The metric line prints rms_dbfs to 0.01 dB (at most 0.005 dB of rounding); float32 storage adds far less.
+RMS_TOLERANCE_DB = 0.01
+SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|LeakSanitizer|runtime error:")
+METRIC = re.compile(r"^ANALOG METRIC: .* rms_dbfs=(-?[0-9]+\.[0-9]+) ", re.MULTILINE)
+AUDIO_OUT = re.compile(r"^ANALOG AUDIO OUT: rate_hz=([0-9]+) samples=([0-9]+)$", re.MULTILINE)
+
+
+def host_text(stdout, stderr):
+    """The host's stderr then its stdout as text. Windows writes its lines with CRLF ends: each is read as one newline,
+    so the line patterns' end anchors match there as they do elsewhere."""
+    text = stderr.decode("utf-8", "replace") + stdout.decode("utf-8", "replace")
+    return text.replace("\r\n", "\n")
+
+
+def metric_lines(text):
+    """The ANALOG METRIC and ANALOG AUDIO OUT matches in the host's output (None where a line is missing)."""
+    return METRIC.search(text), AUDIO_OUT.search(text)
+
+
+def require(condition, message):
+    """Fail the check with @p message unless @p condition holds (explicit, so python -O cannot strip it)."""
+    if not condition:
+        raise SystemExit(f"FAIL: {message}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("binary")
+    parser.add_argument("fixture")
+    parser.add_argument("mode", help="the host's decoder and bound options, one shell-quoted string")
+    parser.add_argument("not_expected", help="a regex the run's output must not match")
+    args = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="dsd-analog-audio-out-") as temporary:
+        path = Path(temporary) / "audio.f32"
+        command = [str(Path(args.binary).resolve()), "--frontend", "none", *shlex.split(args.mode),
+                   "--analog-audio-out", str(path), "--iq-replay", str(Path(args.fixture).resolve()), "-o", "null"]
+        result = subprocess.run(command, capture_output=True, timeout=110, check=False)
+        err = host_text(result.stdout, result.stderr)
+        require(result.returncode == 0, f"the host exited {result.returncode}\n{err}")
+        require(not SANITIZER.search(err), f"sanitizer report\n{err}")
+        forbidden = re.search(args.not_expected, err)
+        require(forbidden is None, f"forbidden output /{args.not_expected}/ matched\n{err}")
+        require("ANALOG AUDIO OK" in err, f"no ANALOG AUDIO OK\n{err}")
+        metric, out = metric_lines(err)
+        require(metric and out, f"no ANALOG METRIC rms_dbfs or ANALOG AUDIO OUT line\n{err}")
+        samples = int(out.group(2))
+        data = path.read_bytes()
+        audio = array("f")
+        require(samples > 0 and len(data) == samples * audio.itemsize,
+                f"{len(data)} bytes in the file for {samples} samples of {audio.itemsize} bytes")
+        audio.frombytes(data)
+        energy = math.fsum(x * x for x in audio)
+        require(energy > 0.0, "the file holds only silence")
+        rms_dbfs = 10.0 * math.log10(energy / samples)
+        want = float(metric.group(1))
+        print(f"file: {samples} samples at {out.group(1)} Hz, RMS {rms_dbfs:.4f} dBFS; metric line {want:.2f} dBFS")
+        if abs(rms_dbfs - want) > RMS_TOLERANCE_DB:
+            raise SystemExit(f"FAIL: the file's RMS {rms_dbfs:.4f} dBFS is not the metric line's {want:.2f} dBFS "
+                             f"(tolerance {RMS_TOLERANCE_DB} dB)")
+    print("ANALOG AUDIO OUT FILE OK")
+
+
+if __name__ == "__main__":
+    main()

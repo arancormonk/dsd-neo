@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
@@ -1104,6 +1105,86 @@ test_process_ysf_frame_cut_by_an_input_interruption_publishes_nothing(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #834: the PROVEN content notes a scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_other;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else {
+        g_quiet_other++;
+    }
+}
+
+/* A header frame through processYSF(), skip-silent @p on, cut by an input interruption at dibit @p cut (SIZE_MAX for
+   none): the PROVEN notes it made. */
+static int
+quiet_ysf_header(int on, size_t cut) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    opts.scan_skip_silent = on;
+    state.synctype = DSD_SYNC_YSF_POS;
+    make_fich_bits_for_full_rate_data(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("QYSFDST001QYSFSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("QYSFUPL003QYSFDNL004", 20U, dch1, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+    g_quiet_proven = 0;
+    g_quiet_other = 0;
+    g_interrupt_at = cut;
+    (void)processYSF(&opts, &state);
+    g_interrupt_at = SIZE_MAX;
+    dsd_state_ext_free_all(&state);
+    assert(g_quiet_other == 0);
+    return g_quiet_proven;
+}
+
+/* A FICH that passed its Golay and CRC-16, and each DCH whose CRC passed, is PROVEN content to a scan quiet check; a
+   DCH whose CRC failed and a FICH an input interruption cut are none, and nothing is noted with the setting off. */
+static void
+test_ysf_checked_fich_and_dch_are_proven_content(void) {
+    InitAllFecFunction();
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+    assert(quiet_ysf_header(1, SIZE_MAX) >= 2); /* the FICH and the DCH */
+    assert(quiet_ysf_header(0, SIZE_MAX) == 0);
+    assert(quiet_ysf_header(1, 50U) == 0);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t input[100];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.scan_skip_silent = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+    begin_test_ysf_call(&state);
+    g_quiet_proven = 0;
+    encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
+    assert(g_quiet_proven == 0);
+    encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
+    assert(g_quiet_proven == 1);
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     static dsd_opts opts;
@@ -1989,6 +2070,7 @@ main(void) {
     test_process_ysf_vd_type1_split_by_a_carrier_boundary_publishes_nothing();
     test_process_ysf_frame_cut_by_an_input_interruption_publishes_nothing();
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
+    test_ysf_checked_fich_and_dch_are_proven_content();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_vd_type2_tells_the_chain_each_frame();

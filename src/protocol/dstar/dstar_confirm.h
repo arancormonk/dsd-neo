@@ -38,6 +38,7 @@
 #ifndef DSD_NEO_PROTOCOL_DSTAR_DSTAR_CONFIRM_H
 #define DSD_NEO_PROTOCOL_DSTAR_DSTAR_CONFIRM_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -51,7 +52,11 @@ typedef enum {
 } dstar_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
-#define DSTAR_CONFIRM_WEAK_OBSERVES 2U
+#define DSTAR_CONFIRM_WEAK_OBSERVES   2U
+
+/** @brief How long a scan quiet check waits for the superframe that completes a weak streak (issue #834): two
+ * superframes (2016 symbols at 4800 symbols/s are 420 ms each). */
+#define DSTAR_CONFIRM_PARTIAL_HOLD_MS 840U
 
 /** @brief Forget everything learned about the current transmission (dstar_tx_begin() included): the carrier ended. */
 void dstar_confirm_reset(dsd_state* state);
@@ -79,12 +84,20 @@ void dstar_confirm_begin_frame(dsd_state* state);
  * @brief Report a check this frame passed.
  *
  * Strong evidence confirms immediately. Weak evidence counts once per frame however many
- * times it is reported, and confirms on the DSTAR_CONFIRM_WEAK_OBSERVES'th frame in a row.
+ * times it is reported, and confirms on the DSTAR_CONFIRM_WEAK_OBSERVES'th frame in a row. Where a
+ * signal search hears the confirmation, a scan quiet check hears PROVEN too, through @p opts
+ * (dsd_frame_sync_hook_content_evidence(), issue #834). @p opts may be NULL (no quiet check).
  */
-void dstar_confirm_note_evidence(dsd_state* state, dstar_evidence evidence);
+void dstar_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, dstar_evidence evidence);
 
-/** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
-void dstar_confirm_end_frame(dsd_state* state);
+/**
+ * @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak.
+ *
+ * A superframe that ends with only its weak evidence, its streak still short, is PARTIAL to a scan
+ * quiet check through @p opts (DSTAR_CONFIRM_PARTIAL_HOLD_MS, issue #834): the next superframe
+ * completes it. @p opts may be NULL (no quiet check).
+ */
+void dstar_confirm_end_frame(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */
 int dstar_confirm_is_confirmed(const dsd_state* state);

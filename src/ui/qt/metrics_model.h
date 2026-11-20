@@ -276,6 +276,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanVisitMs READ scanVisitMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool scanVisitLive READ scanVisitLive NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanVisitRemainingDs READ scanVisitRemainingDs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanQuietStatus READ scanQuietStatus NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanQuietReason READ scanQuietReason NOTIFY scanTimingChanged)
+    Q_PROPERTY(QString scanQuietText READ scanQuietText NOTIFY scanTimingChanged)
     /* #522/#523: the sub-audible tone or code the analog FM monitor hears, from the shared
        app-control view, and the configured tone policy beside it -- never derived from each
        other. */
@@ -1802,6 +1805,28 @@ class MetricsModel : public QObject {
         return m_view.scan_visit_remaining_ds;
     }
 
+    /**
+     * @brief dsd_scan_quiet_status the phrase shows (#834): the silent-channel skip checking the visit, or unable to.
+     *
+     * Already in scanStayPhrase ("Quiet check", "No check: tuner"); NONE where the phrase is the plain one.
+     */
+    int
+    scanQuietStatus() const {
+        return m_view.scan_quiet.status;
+    }
+
+    /** @brief dsd_scan_quiet_reason beside DSD_SCAN_QUIET_STATUS_NO_CHECK; NONE otherwise. */
+    int
+    scanQuietReason() const {
+        return m_view.scan_quiet.reason;
+    }
+
+    /** @brief The full sentence for scanQuietStatus, for a screen reader; empty when there is none. */
+    const QString&
+    scanQuietText() const {
+        return m_view.scan_quiet.text;
+    }
+
     /** @brief Whether the TETRA rows belong on screen: the TETRA preset runs and a block has decoded. */
     bool
     tetraVisible() const {
@@ -2335,6 +2360,19 @@ class MetricsModel : public QObject {
         bool operator==(const SiteView& other) const;
     };
 
+    /* The silent-channel skip's status on the Scan Timing row (#834), compared as one so scanTimingEquals() stays under
+       the complexity ceiling. */
+    struct ScanQuiet {
+        int status = 0;
+        int reason = 0;
+        QString text;
+
+        bool
+        operator==(const ScanQuiet& other) const {
+            return status == other.status && reason == other.reason && text == other.text;
+        }
+    };
+
     struct View {
         QVariantMap airspy;
         QVariantMap radio_source;
@@ -2434,6 +2472,7 @@ class MetricsModel : public QObject {
         /* #507: the per-visit cap for the row on air, and whether it is counting. */
         int scan_visit_ms = 0;
         int scan_visit_remaining_ds = 0;
+        ScanQuiet scan_quiet;
         int rx_tone_status = 0;
         int rx_tone_kind = 0;
         int rx_tone_tenths_hz = 0;
@@ -2612,7 +2651,7 @@ class MetricsModel : public QObject {
                    && scan_dwell_state == other.scan_dwell_state && scan_hold_ms == other.scan_hold_ms
                    && scan_hang_ms == other.scan_hang_ms && scan_visit_ms == other.scan_visit_ms
                    && scan_visit_live == other.scan_visit_live
-                   && scan_visit_remaining_ds == other.scan_visit_remaining_ds;
+                   && scan_visit_remaining_ds == other.scan_visit_remaining_ds && scan_quiet == other.scan_quiet;
         }
 
         /* The received group only; the configured text has its own signal and comparison. */

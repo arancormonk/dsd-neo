@@ -43,11 +43,12 @@ dsd_channel_scan_pause_fn dsd_channel_scan_pause_hook_get(void);
 /**
  * A walk off any scan whose timed-out tune settled late (DSD_MANUAL_TUNE_LCN_CYCLE without scan_owned): @p row, walked
  * to in direction @p dir (1 Next, -1 Previous) on the list @p list_rev (dsd_state::lcn_list_rev) at @p requested_hz,
- * @p landed 1 when the tune landed and 0 when it failed. A drop is not passed on: it changes nothing. Called on the
- * decoder thread, outside the P25 SM tick guard.
+ * @p landed 1 when the tune landed and 0 when it failed, @p move_judge and @p move_from_hz what its press kept with it
+ * (dsd_engine_manual_tune_note_walk_judge(); 0 and 0 when it kept nothing). A drop is not passed on: it changes
+ * nothing. Called on the decoder thread, outside the P25 SM tick guard.
  */
 typedef void (*dsd_channel_walk_settle_fn)(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
-                                           uint64_t list_rev, int landed);
+                                           uint64_t list_rev, int landed, int move_judge, long move_from_hz);
 
 /** Install the walk's late settling (NULL: none), with the frontend session. Thread-safe. */
 void dsd_channel_walk_settle_hook_set(dsd_channel_walk_settle_fn fn);

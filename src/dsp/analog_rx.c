@@ -607,7 +607,8 @@ static uint64_t (*g_analog_rx_test_clock)(void) = NULL;
 static int (*g_analog_rx_test_gate)(int published) = NULL;
 
 /* Test-hook entry point (declared in analog_rx_internal.h): replace the clock the stream-pause
-   check and the backlog skip read; NULL restores the monotonic clock. */
+   check and the backlog skip read, and with them dsd_analog_rx_clock_s() and dsd_analog_rx_stale_now();
+   NULL restores the monotonic clock. */
 void
 dsd_analog_rx_test_set_clock(uint64_t (*now_ms)(void)) {
     g_analog_rx_test_clock = now_ms;
@@ -628,6 +629,25 @@ analog_rx_now_ms(void) {
     }
 #endif
     return dsd_realtime_mono_ms();
+}
+
+double
+dsd_analog_rx_clock_s(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_analog_rx_test_clock) {
+        return (double)g_analog_rx_test_clock() / 1000.0;
+    }
+#endif
+    return dsd_realtime_mono_s();
+}
+
+int
+dsd_analog_rx_stale_now(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    const uint64_t stale_after_ms = state->analog_rx.stale_after_ms;
+    return stale_after_ms != 0U && analog_rx_now_ms() > stale_after_ms;
 }
 
 /* The same clock in ns, for the input waits the backlog skip adds up: each is a single sample read, far below a ms. */

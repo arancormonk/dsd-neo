@@ -2084,6 +2084,75 @@ run_vendor_mac_display_only_cases(void) {
     return rc | run_harris_gps_incomplete_cases();
 }
 
+/* A Harris GPS PDU names no radio of its own: it speaks for the open P25 call on its slot. An ended call, or another
+   protocol's, keeps its source in the slot after it is over, and a position must not be filed under that radio. Even
+   the open P25 call names its source only when checked messages gave it (p25_sm_checked_call_identity(), issue #800):
+   one only observed, as here, names none. */
+static int
+test_harris_gps_source_comes_from_the_open_p25_call_only(void) {
+    static const struct {
+        const char* name;
+        int protocol;
+        int ended;
+        uint32_t want_src;
+    } cases[] = {
+        {"open dmr call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0U},
+        {"ended p25 call", DSD_SYNC_P25P2_POS, 1, 0U},
+        {"open p25 call, unchecked identity", DSD_SYNC_P25P2_POS, 0, 0U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24];
+        char label[96];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        const dsd_call_observation call = {
+            .protocol = cases[i].protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 0x1111U,
+            .policy_target_id = 0x1111U,
+            .ota_source_id = 0x0A0B0CU,
+        };
+        (void)dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        if (cases[i].ended) {
+            (void)dsd_call_state_end(&state, 0U, 0.0);
+        }
+        g_nmea_harris_calls = 0;
+        g_nmea_harris_src = 0xFFFFFFFFU;
+        DSD_MEMSET(MAC, 0, sizeof MAC);
+        MAC[1] = 0xAA;
+        MAC[2] = 0xA4;
+        MAC[3] = 0x11;
+        MAC[4] = 0x06;
+        MAC[5] = 0xCC;
+        MAC[6] = 0x03;
+        MAC[7] = 0x1E;
+        MAC[8] = 0x15;
+        MAC[9] = 0x0E;
+        MAC[10] = 0x8A;
+        MAC[11] = 0x53;
+        MAC[12] = 0xC0;
+        MAC[13] = 0xE6;
+        MAC[14] = 0x92;
+        MAC[15] = 0x00;
+        MAC[16] = 0x06;
+        MAC[17] = 0x1C;
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+        DSD_SNPRINTF(label, sizeof label, "harris gps after %s: calls", cases[i].name);
+        rc |= expect_eq_long(label, g_nmea_harris_calls, 1);
+        DSD_SNPRINTF(label, sizeof label, "harris gps after %s: source", cases[i].name);
+        rc |= expect_eq_long(label, (long)g_nmea_harris_src, (long)cases[i].want_src);
+        DSD_SNPRINTF(label, sizeof label, "harris gps after %s: source unverified", cases[i].name);
+        rc |= expect_eq_long(label, g_nmea_harris_source_verified, 0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 static void
 init_multifragment_base(unsigned long long int* mac, int opcode, unsigned data_len) {
     DSD_MEMSET(mac, 0, sizeof(unsigned long long int) * 24U);
@@ -2807,6 +2876,7 @@ main(void) {
         return 101;
     }
     int rc = run_cases();
+    rc |= test_harris_gps_source_comes_from_the_open_p25_call_only();
     dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         FILE* diagnostics = fopen(cap.path, "rb");

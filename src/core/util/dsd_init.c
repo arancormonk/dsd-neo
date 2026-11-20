@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/nonce.h>
@@ -40,6 +41,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "key_set_internal.h"
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
@@ -1235,6 +1237,18 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_voice_gate_arrive_m = -1.0;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
+    state->scan_y_content_seq = 0U;
+    state->scan_y_content_seen = 0U;
+    state->scan_y_content_m = -1.0;
+    state->scan_y_partial_seq = 0U;
+    state->scan_y_partial_seen = 0U;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+    state->scan_y_unchecked_seq = 0U;
+    state->scan_y_unchecked_seen = 0U;
+    state->scan_y_unchecked_m = -1.0;
+    state->scan_y_call_seq = 0U;
+    state->scan_y_stay_call_seq = 0U;
     state->scan_voice_gate_roll_seen = 0;
     state->scan_voice_gate_hold_seen = 0;
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
@@ -1603,8 +1617,21 @@ initState(dsd_state* state) {
     (void)dsd_call_state_ensure(state);
     // No engine run has used this state yet (see dsd_state::engine_fresh).
     state->engine_fresh = 1U;
+    // Outside any run every move holds the DMR slots' voice (dsd_state::run_landed).
+    state->run_landed = 1U;
 
 } //init_state
+
+void
+freeOpts(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    DSD_SECURE_ZERO(opts->rdio_api_key, sizeof opts->rdio_api_key);
+    DSD_SECURE_ZERO(opts->rdio_api_url, sizeof opts->rdio_api_url);
+    DSD_SECURE_ZERO(opts->rr_app_key, sizeof opts->rr_app_key);
+    DSD_SECURE_ZERO(opts->api_token, sizeof opts->api_token);
+}
 
 void
 freeState(dsd_state* state) {
@@ -1616,6 +1643,9 @@ freeState(dsd_state* state) {
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
     dsd_state_trunk_scan_entry_reasons_free(state);
+    dsd_key_state_secure_wipe(state); // its keys go with it, whatever armed them (keyloader or not)
+    retevis_rc2_context_release(state);
+    dmr_vendor_key_contexts_wipe(); // the TYT and Baofeng keys the session loaded, held for the process
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {
@@ -1702,7 +1732,4 @@ freeState(dsd_state* state) {
     dsd_aligned_free(state->dmr_soft_buf);
     state->dmr_soft_buf = NULL;
     state->dmr_soft_p = NULL;
-
-    free(state->rc2_context);
-    state->rc2_context = NULL;
 }

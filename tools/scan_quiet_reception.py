@@ -85,14 +85,29 @@ impulses at unity DC gain, so a held level 3 is the outer deviation:
            symbols at their mode's pulse and deviation, or the committed fixtures as recorded
 
 Analog criterion: 12 dB SINAD of a 1 kHz tone in dsd-neo's monitor audio (TIA-603 for NFM, ETSI EN 300 676-1 for
-AM), at each configured receive width the scan check calibrates: NFM 8, 11.25, 12.5, 16, 20 and 25 kHz, AM 5, 6, 8,
-10, 15 and 20 kHz (the Radio sheet's width steps). NFM carries the tone at 60 % of the transmitter's maximum deviation:
-1.5 kHz for a 12.5 kHz channel's transmitter (the 8 and 12.5 kHz widths), 3 kHz for a 25 kHz channel's (the 25 kHz
-width), both at 11.25, 16 and 20 kHz, where either kind is received and the lower threshold is kept. AM is at 30 %
-depth. The audio is scored by dsd-neo_test_analog_replay (tests/engine/analog_replay.c), which runs the real engine and
-fits the tone to every delivered 20 ms block after the monitor's filters: SINAD is 10 log10(1 + S/(N+D)) from its
-tone_snr_db. Gain is fixed (-n 50) and the replay squelch
-is the -110 dB default, which passes everything; noise alone must fail the metric, and the tool reports that it does.
+AM), at each configured receive width the scan check calibrates or is to calibrate: NFM 8, 10, 11.25, 12, 12.5, 15, 16,
+20 and 25 kHz, AM 5, 6, 8, 8.333, 10, 15 and 20 kHz. NFM carries the tone at 60 % of the transmitter's maximum deviation:
+1.5 kHz for a 12.5 kHz channel's transmitter, 3 kHz for a 25 kHz channel's, both measured at every NFM width (each
+row its own threshold; the lower one is the mode's kept threshold). AM is at 30 % depth, its carrier on the channel,
+and in an edge row off the channel by half the width less the tone, so its upper sideband sits at the width's edge.
+The audio is scored by dsd-neo_test_analog_replay (tests/engine/analog_replay.c), which runs the real engine and fits
+the tone to every delivered 20 ms block after the monitor's filters: SINAD is 10 log10(1 + S/(N+D)) from its
+tone_snr_db. Gain is fixed (-n 50) and the replay squelch is the -110 dB default, which passes everything; noise
+alone must fail the metric, and the tool reports that it does.
+
+Full-deviation containment (voice rows, NFM): a speech-like multitone, VOICE_TONE_COUNT tones log-spaced over
+300-3000 Hz at whole hertz with equal amplitudes (equal power per tone on a log grid: pink-weighted), Schroeder phases,
+scaled so its peak deviation is 5 kHz for a 25 kHz channel's transmitter and 2.5 kHz for a 12.5 kHz channel's, at every
+NFM width. Received when the audio S/N over the multitone band is at least VOICE_SNR_TARGET_DB (12 dB):
+voice_snr_db() takes the host's delivered audio (--analog-audio-out), drops the first VOICE_SETTLE_S, averages the
+power spectrum of whole 1 s blocks (1 Hz bins; every tone is periodic in a block), and with T the bins within
+VOICE_TONE_GUARD_HZ of a tone and B the bins from 300 to 3000 Hz takes N = the mean power of the B bins outside T,
+S = the power in T less |T| N, and S/N = 10 log10(S / (|B| N)): noise and distortion over the whole band against the
+tones. Distortion products that land within the guard of a tone (under 3 % of the band) count as signal.
+
+Row keys name widths exactly: kHz, then "k", then the remaining hertz without trailing zeros (8000 -> 8k, 11250 ->
+11k25, 8333 -> 8k333). An NFM width whose shipped calibration measured one transmitter (8 and 12.5 kHz: the 12.5 kHz
+channel's; 25 kHz: the 25 kHz channel's) keeps that row's bare key and names the other "_narrow" or "_wide".
 
 Everything is deterministic: the noise seeds are fixed (--base-seed), the generators run with fixed arguments and
 seeds, and dsd-neo replays at --iq-replay-rate fast.
@@ -102,11 +117,14 @@ Usage:
         --analog-host build/dev-debug/tests/dsd-neo_test_analog_replay \\
         --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen --out OUT_DIR [--modes LIST] [--jobs N]
 
-It writes OUT_DIR/thresholds.json, OUT_DIR/thresholds.md (each row, then each mode's kept threshold) and
-OUT_DIR/sweep.csv (every run). With --export-sources DIR instead of --out it measures nothing and writes the requested
-rows' clean sources for the scan check's calibration driver (tests/io/signal_quiet_calibrate.cpp; see export_sources()
-and docs/signal-search.md "Quiet-channel calibration"). Exit status 0 when every requested row was measured or
-reported, 1 when a decoder or generator run fails or a capture would clip, 2 on a usage error.
+It writes OUT_DIR/thresholds.json, OUT_DIR/thresholds.md (each row, then each mode's kept threshold),
+OUT_DIR/sweep.csv (every run) and OUT_DIR/driver_modes.tsv, the calibration driver's modes (its --modes-file): each
+digital mode's kept row and every analog row with a threshold, each at its own (write_driver_modes()). With
+--export-sources DIR instead of --out it measures nothing and writes the requested rows' clean sources for the scan
+check's calibration driver (tests/io/signal_quiet_calibrate.cpp; see export_sources() and docs/signal-search.md
+"Quiet-channel calibration"); the driver also needs the p25p1 (neighbour) and am_20k (offset carrier) rows.
+Exit status 0 when every requested row was measured or reported, 1 when a decoder or generator run fails or a capture
+would clip, 2 on a usage error.
 """
 
 import argparse
@@ -170,6 +188,21 @@ DMR_RAMP_S = 0.0015  # ETSI TS 102 361-1 10.2.3.1.1, figure 10.3: regions A and 
 NFM_NARROW_TONE_HZ = 1500.0
 NFM_WIDE_TONE_HZ = 3000.0
 AM_TONE_DEPTH = 0.3
+NFM_WIDTHS_HZ = (8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000, 25000)
+AM_WIDTHS_HZ = (5000, 6000, 8000, 8333, 10000, 15000, 20000)
+# The widths whose shipped calibration measured one transmitter, which keeps the width's bare row key.
+NFM_LEGACY_TRANSMITTER = {8000: "narrow", 12500: "narrow", 25000: "wide"}
+AM_EDGE_GAP_HZ = 1000.0  # the edge row's carrier sits half the width less this (the tone) off the channel
+# The voice rows' multitone (see the module text)
+VOICE_TONE_COUNT = 16
+VOICE_LOW_HZ = 300
+VOICE_HIGH_HZ = 3000
+VOICE_NARROW_PEAK_HZ = 2500.0
+VOICE_WIDE_PEAK_HZ = 5000.0
+VOICE_SNR_TARGET_DB = 12.0
+VOICE_SETTLE_S = 0.5
+VOICE_TONE_GUARD_HZ = 2
+VOICE_FLOOR_DB = -99.0  # the S/N reported when the tones carry no power over the noise
 
 # D-STAR DV (JARL D-STAR standard; MMDVM DStarTX.cpp; OP25 dv_tx.py)
 DSTAR_BIT_RATE = 4800
@@ -207,6 +240,10 @@ class Row:
     unit_weight: int = 1
     analog: bool = False
     regenerated: bool = False  # from a recording's captured symbols, which keep its errors
+    voice: bool = False  # scored by the multitone's audio S/N, not the 1 kHz tone's SINAD
+
+    def target_db(self):
+        return VOICE_SNR_TARGET_DB if self.voice else SINAD_TARGET_DB
 
 
 @dataclass
@@ -223,6 +260,7 @@ class Result:
     threshold_db: float = None
     clean: dict = field(default_factory=dict)
     detail: str = ""
+    analog_row: bool = False
 
 
 def sample_count():
@@ -687,10 +725,59 @@ def nfm_source(deviation):
     return Source(samples, note=f"nfm_synth_samples(): 1 kHz tone at {deviation:.0f} Hz deviation")
 
 
-def am_source():
+def am_source(offset_hz=0.0):
     with builder_constants(AM_SYNTH_DURATION_S=DURATION_S, AM_SYNTH_DEPTH=AM_TONE_DEPTH, AM_SYNTH_NOISE_DB=-math.inf):
         samples = bif.am_synth_samples(0, None, None)
-    return Source(samples, note=f"am_synth_samples(): 1 kHz tone at {AM_TONE_DEPTH:.0%} depth")
+    note = f"am_synth_samples(): 1 kHz tone at {AM_TONE_DEPTH:.0%} depth"
+    if offset_hz:
+        samples = samples * np.exp(2j * math.pi * offset_hz * np.arange(len(samples)) / RATE_HZ)
+        note += f", carrier {offset_hz:+.1f} Hz off the channel"
+    return Source(samples, note=note)
+
+
+def voice_tones():
+    """The multitone's frequencies: VOICE_TONE_COUNT log-spaced from VOICE_LOW_HZ to VOICE_HIGH_HZ, whole hertz."""
+    tones = sorted({round(f) for f in np.geomspace(VOICE_LOW_HZ, VOICE_HIGH_HZ, VOICE_TONE_COUNT)})
+    if len(tones) != VOICE_TONE_COUNT:
+        raise SystemExit("the multitone's frequencies collide at whole hertz")
+    return tones
+
+
+def voice_message():
+    """One second of the multitone (it repeats every second), equal amplitudes, Schroeder phases, peak 1."""
+    t = np.arange(RATE_HZ) / RATE_HZ
+    tones = voice_tones()
+    message = sum(
+        np.cos(2.0 * math.pi * f * t - math.pi * k * (k - 1) / len(tones)) for k, f in enumerate(tones, start=1)
+    )
+    return message / np.max(np.abs(message))
+
+
+def nfm_voice_source(peak_hz):
+    """FM by the multitone at peak deviation peak_hz."""
+    deviation = repeat_to_length(voice_message() * peak_hz)
+    samples = np.exp(2j * math.pi * np.cumsum(deviation) / RATE_HZ)
+    note = f"multitone {VOICE_TONE_COUNT} tones {VOICE_LOW_HZ}-{VOICE_HIGH_HZ} Hz, pink-weighted, peak {peak_hz:.0f} Hz"
+    return Source(samples, note=note)
+
+
+def voice_snr_db(audio, rate):
+    """Audio S/N over the multitone band (the module text has the definition)."""
+    start = round(VOICE_SETTLE_S * rate)
+    blocks = (len(audio) - start) // rate
+    if blocks < 1:
+        return VOICE_FLOOR_DB
+    frames = np.asarray(audio[start : start + blocks * rate], dtype=np.float64).reshape(blocks, rate)
+    power = np.mean(np.abs(np.fft.rfft(frames, axis=1)) ** 2, axis=0)  # bin k is k Hz
+    band = np.arange(VOICE_LOW_HZ, VOICE_HIGH_HZ + 1)
+    tone = np.zeros(len(power), dtype=bool)
+    for f in voice_tones():
+        tone[f - VOICE_TONE_GUARD_HZ : f + VOICE_TONE_GUARD_HZ + 1] = True
+    noise = float(np.mean(power[band[~tone[band]]]))
+    signal = float(np.sum(power[tone])) - np.count_nonzero(tone) * noise
+    if signal <= 0.0 or noise <= 0.0:
+        return VOICE_FLOOR_DB
+    return 10.0 * math.log10(signal / (len(band) * noise))
 
 
 # ---------------------------------------------------------------- rows
@@ -925,7 +1012,12 @@ NARROW_NOTE = " (12.5 kHz channel's tone)"
 WIDE_NOTE = " (25 kHz channel's tone)"
 
 
-def nfm_row(key, mode, width_hz, deviation, label_note=""):
+def width_key(width_hz):
+    """A width's exact key: kHz, "k", then the remaining hertz without trailing zeros (8333 -> 8k333)."""
+    return f"{width_hz // 1000}k{str(width_hz % 1000).zfill(3).rstrip('0')}"
+
+
+def nfm_row(key, mode, width_hz, build, label_note=""):
     return Row(
         key,
         mode,
@@ -933,46 +1025,59 @@ def nfm_row(key, mode, width_hz, deviation, label_note=""):
         width_hz,
         CLEAN,
         ["-fA", "--nfm-bandwidth-hz", str(width_hz)],
-        lambda _w, d=deviation: nfm_source(d),
+        build,
         analog=True,
     )
 
 
-def am_row(width_hz):
-    key = f"am_{width_hz // 1000}k"
+def am_row(width_hz, edge=False):
+    mode = f"am_{width_key(width_hz)}"
+    offset = width_hz / 2.0 - AM_EDGE_GAP_HZ if edge else 0.0
     return Row(
-        key,
-        key,
-        f"AM {width_hz / 1000:g} kHz",
+        mode + ("_edge" if edge else ""),
+        mode + ("_edge" if edge else ""),
+        f"AM {width_hz / 1000:g} kHz" + (" (carrier at the edge)" if edge else ""),
         width_hz,
         CLEAN,
         ["-fM", "--am-bandwidth-hz", str(width_hz)],
-        lambda _w: am_source(),
+        lambda _w, o=offset: am_source(o),
         analog=True,
     )
 
 
+def nfm_rows(width_hz):
+    """Both transmitters' tone rows and voice rows at one NFM width."""
+    mode = f"nfm_{width_key(width_hz)}"
+    rows = []
+    for kind, tone, peak, note in (
+        ("narrow", NFM_NARROW_TONE_HZ, VOICE_NARROW_PEAK_HZ, NARROW_NOTE),
+        ("wide", NFM_WIDE_TONE_HZ, VOICE_WIDE_PEAK_HZ, WIDE_NOTE),
+    ):
+        legacy = NFM_LEGACY_TRANSMITTER.get(width_hz)
+        key = mode if legacy == kind else f"{mode}_{kind}"
+        rows.append(nfm_row(key, mode, width_hz, lambda _w, d=tone: nfm_source(d), "" if legacy == kind else note))
+        voice = nfm_row(
+            f"{mode}_voice_{kind}",
+            f"{mode}_voice",
+            width_hz,
+            lambda _w, p=peak: nfm_voice_source(p),
+            f" (multitone, {peak / 1000:g} kHz peak)",
+        )
+        voice.voice = True
+        rows.append(voice)
+    return rows
+
+
 def analog_rows():
-    """NFM and AM at every width the Radio sheet offers (src/ui/qt/qml/Util.js NFM_WIDTHS_HZ, AM_WIDTHS_HZ), the scan
-    check's calibrated widths: a 12.5 kHz channel's transmitter at 8 and 12.5 kHz, a 25 kHz channel's at 25 kHz, and
-    both at 11.25, 16 and 20 kHz, where either is received, the lower threshold kept."""
-    return [
-        nfm_row("nfm_8k", "nfm_8k", 8000, NFM_NARROW_TONE_HZ),
-        nfm_row("nfm_11k25_narrow", "nfm_11k25", 11250, NFM_NARROW_TONE_HZ, NARROW_NOTE),
-        nfm_row("nfm_11k25_wide", "nfm_11k25", 11250, NFM_WIDE_TONE_HZ, WIDE_NOTE),
-        nfm_row("nfm_12k5", "nfm_12k5", 12500, NFM_NARROW_TONE_HZ),
-        nfm_row("nfm_16k_narrow", "nfm_16k", 16000, NFM_NARROW_TONE_HZ, NARROW_NOTE),
-        nfm_row("nfm_16k_wide", "nfm_16k", 16000, NFM_WIDE_TONE_HZ, WIDE_NOTE),
-        nfm_row("nfm_20k_narrow", "nfm_20k", 20000, NFM_NARROW_TONE_HZ, NARROW_NOTE),
-        nfm_row("nfm_20k_wide", "nfm_20k", 20000, NFM_WIDE_TONE_HZ, WIDE_NOTE),
-        nfm_row("nfm_25k", "nfm_25k", 25000, NFM_WIDE_TONE_HZ),
-        am_row(5000),
-        am_row(6000),
-        am_row(8000),
-        am_row(10000),
-        am_row(15000),
-        am_row(20000),
-    ]
+    """NFM and AM at every width the scan check calibrates or is to calibrate: at each NFM width a 12.5 kHz channel's
+    transmitter and a 25 kHz channel's, with the tone and with the multitone; at each AM width the carrier on the
+    channel and at the width's edge."""
+    rows = []
+    for width in NFM_WIDTHS_HZ:
+        rows += nfm_rows(width)
+    for width in AM_WIDTHS_HZ:
+        rows += [am_row(width), am_row(width, edge=True)]
+    return rows
 
 
 # ---------------------------------------------------------------- measurement
@@ -1032,13 +1137,30 @@ def digital_counts(row, source, sidecar, work_dir):
 
 
 def analog_sinad(row, sidecar):
+    """The row's analog score and the delivered audio's length: the tone's SINAD, or a voice row's audio S/N."""
     cmd = [ARGS.analog_host, "--frontend", "none"] + row.args + ["-n", "50", "--iq-replay", sidecar, "-o", "null"]
+    if row.voice:
+        return voice_score(cmd, sidecar)
     text = run_text(cmd + ["--analog-expect-tone-hz", "1000"])
     match = re.search(r"ANALOG METRIC: .*captured_ms=([0-9.]+) .*tone_snr_db=(-?[0-9.]+)", text)
     if match is None:
         raise SystemExit(f"{sidecar}: no tone measurement in the analog host's output:\n{text[-2000:]}")
     snr = float(match.group(2))
     return 10.0 * math.log10(1.0 + 10.0 ** (snr / 10.0)), float(match.group(1))
+
+
+def voice_score(cmd, sidecar):
+    audio_path = sidecar + ".audio.f32"
+    text = run_text(cmd + ["--analog-audio-out", audio_path])
+    match = re.search(r"ANALOG AUDIO OUT: rate_hz=([0-9]+) samples=([0-9]+)", text)
+    if match is None:
+        raise SystemExit(f"{sidecar}: no delivered audio in the analog host's output:\n{text[-2000:]}")
+    rate = int(match.group(1))
+    audio = np.fromfile(audio_path, dtype=np.float32)
+    os.remove(audio_path)
+    if len(audio) != int(match.group(2)) or rate <= 0:
+        raise SystemExit(f"{sidecar}: the delivered audio file does not match the host's count")
+    return voice_snr_db(audio, rate), 1000.0 * len(audio) / rate
 
 
 def descend(measure, record):
@@ -1080,7 +1202,7 @@ def seed_threshold(row, source, reference, seed, work_dir, rows):
         if row.analog:
             sinad, captured_ms = measured
             rows.append([row.key, seed, f"{snr:.1f}", "", "", "", f"{sinad:.2f}", f"{captured_ms:.0f}"])
-            return sinad >= SINAD_TARGET_DB
+            return sinad >= row.target_db()
         passed, units = measured
         ratio = passed / reference
         rows.append([row.key, seed, f"{snr:.1f}", passed, units, reference, f"{ratio:.3f}", ""])
@@ -1109,9 +1231,9 @@ def clean_check(row, source, result, work_dir, rows):
         sinad, captured_ms = analog_sinad(row, stem + ".iq.json")
         result.clean = {"noise_only_sinad_db": round(sinad, 2), "noise_only_captured_ms": captured_ms}
         rows.append([row.key, "noise", "", "", "", "", f"{sinad:.2f}", f"{captured_ms:.0f}"])
-        if sinad >= SINAD_TARGET_DB:
+        if sinad >= row.target_db():
             result.status = "invalid"
-            result.detail = f"noise alone reaches {sinad:.1f} dB SINAD"
+            result.detail = f"noise alone reaches {sinad:.1f} dB " + ("audio S/N" if row.voice else "SINAD")
             return None
         return 1
     stem = unique_path(work_dir, f"{row.key}_clean")
@@ -1147,12 +1269,14 @@ def clean_check(row, source, result, work_dir, rows):
 
 
 def measure_row(row, work_dir, rows, pool):
-    result = Result(row.key, row.mode, row.label, row.width_hz, row.role, "")
+    result = Result(row.key, row.mode, row.label, row.width_hz, row.role, "", analog_row=row.analog)
     source = row.build(work_dir)
     if len(source.samples) != sample_count():
         raise SystemExit(f"{row.key}: the source holds {len(source.samples)} samples, not {sample_count()}")
     result.source = source.note
-    if row.analog:
+    if row.voice:
+        result.metric = f"{VOICE_SNR_TARGET_DB:g} dB audio S/N over the multitone band"
+    elif row.analog:
         result.metric = "12 dB SINAD, 1 kHz tone"
     elif source.sent is not None:
         result.metric = "frames passing CRC/FEC >= 90 % of frames sent"
@@ -1178,6 +1302,31 @@ def kept_thresholds(results):
         elif best is None:
             kept[result.mode] = (None, result.key)
     return kept
+
+
+DRIVER_CLASSES = {12500: "12k5", 6250: "6k25"}
+
+
+def write_driver_modes(results, kept):
+    """OUT/driver_modes.tsv for tests/io/signal_quiet_calibrate.cpp --modes-file: each digital mode's kept row, and every
+    analog row with a threshold, each at its own (both NFM transmitters, the voice and edge rows). Columns: name, tag
+    (the width's noise-only conditions: the mode for a digital row, nfm_/am_ and the width key for an analog one), row,
+    reception_db, width_hz, class, analog. The driver replaces its built-in digital or analog modes with the file's when
+    the file has any of that kind."""
+    lines = ["name\ttag\trow\treception_db\twidth_hz\tclass\tanalog"]
+    by_key = {result.key: result for result in results}
+    for mode, (value, key) in kept.items():
+        result = by_key[key]
+        if value is not None and not result.analog_row:
+            fields = [mode, mode, key, f"{value:.1f}", result.width_hz, DRIVER_CLASSES[result.width_hz], 0]
+            lines.append("\t".join(str(v) for v in fields))
+    for result in results:
+        if result.analog_row and result.role == CLEAN and result.threshold_db is not None:
+            tag = f"{result.mode.split('_')[0]}_{width_key(result.width_hz)}"
+            fields = [result.key, tag, result.key, f"{result.threshold_db:.1f}", result.width_hz, "analog", 1]
+            lines.append("\t".join(str(v) for v in fields))
+    with open(os.path.join(ARGS.out, "driver_modes.tsv"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
 
 
 def write_reports(results, rows):
@@ -1219,6 +1368,7 @@ def write_reports(results, rows):
         lines.append(f"| {mode} | {'n/a' if value is None else f'{value:.1f}'} | {key} |")
     with open(os.path.join(ARGS.out, "thresholds.md"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+    write_driver_modes(results, kept)
     print("\n".join(lines))
 
 

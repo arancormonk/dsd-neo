@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
@@ -12,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -28,6 +31,8 @@ nxdn_confirm_reset(dsd_state* state) {
     state->nxdn_confirm_strong_waits = 0;
     state->nxdn_confirm_frame_checks = 0;
     state->nxdn_confirm_strong_pending = 0;
+    state->nxdn_confirm_spacing_due = 0;
+    state->nxdn_confirm_frame_spaced = 0;
     state->nxdn_confirm_last_frame_valid = 0;
 }
 
@@ -41,6 +46,7 @@ nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_
                        && since + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP >= NXDN_CONFIRM_FRAME_SYMBOLS
                        && since <= NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
     const int runs_on = sync_runs || spaced;
+    state->nxdn_confirm_spacing_due = 0;
     state->nxdn_confirm_last_frame_symbol = frame_symbol;
     state->nxdn_confirm_last_frame_valid = 1;
     state->nxdn_confirm_frame_isolated = (uint8_t)!runs_on;
@@ -57,6 +63,7 @@ nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_
         state->nxdn_confirm_strong_pending = 0;
         if (spaced) {
             state->nxdn_confirmed = 1;
+            state->nxdn_confirm_spacing_due = 1;
         }
     }
 }
@@ -69,6 +76,9 @@ nxdn_confirm_begin_frame(dsd_state* state) {
     state->nxdn_confirm_frame_evidence = 0;
     state->nxdn_confirm_frame_scch = 0;
     state->nxdn_confirm_frame_checks = 0;
+    /* Only the frame whose start confirmed the check counts it: one begun without a start of its own does not. */
+    state->nxdn_confirm_frame_spaced = state->nxdn_confirm_spacing_due;
+    state->nxdn_confirm_spacing_due = 0;
 }
 
 void
@@ -148,8 +158,15 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
     }
 }
 
+/* Two frames of the variant on air: NXDN96's only when the decoder set runs NXDN96 alone, else NXDN48's, the longer. */
+static uint32_t
+nxdn_confirm_partial_hold_ms(const dsd_opts* opts) {
+    return (opts && opts->frame_nxdn96 == 1 && opts->frame_nxdn48 != 1) ? NXDN_CONFIRM_PARTIAL_HOLD_MS_96
+                                                                        : NXDN_CONFIRM_PARTIAL_HOLD_MS_48;
+}
+
 void
-nxdn_confirm_end_frame(dsd_state* state) {
+nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
@@ -160,23 +177,47 @@ nxdn_confirm_end_frame(dsd_state* state) {
     }
     if (state->nxdn_confirm_frame_evidence == 0) {
         state->nxdn_confirm_weak_streak = 0;
-        return;
     }
     /* The frame's own CRCs confirmed the transmission: a strong one, or the short one that completes or continues a weak
      * streak. A signal search hears that only now, once the frame's channels have published the RAN and call their
      * confirmation unlocked, since it reads them from state when it hears it. */
-    if (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
-        || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES) {
+    if (nxdn_confirm_frame_content_proven(state)) {
         /* Validated NXDN content: the frequency is not dead, even when it carries no control channel. */
         state->nxdn_confirm_lock_m = dsd_decode_now_mono_s();
         dsd_signal_search_note_evidence(state, "NXDN", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        return;
     }
+    if (state->nxdn_confirm_frame_spaced) {
+        /* This frame's spacing confirmed the strong check the frame before left waiting (issue #834): proof of that
+           frame's content, which a scan quiet check hears once, here, whatever this frame checked itself. The frames
+           after it prove nothing by running on. */
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        return;
+    }
+    if (state->nxdn_confirm_frame_evidence == 0) {
+        return;
+    }
+    /* A weak frame whose streak the next frame must complete: the quiet check waits for that frame. */
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, nxdn_confirm_partial_hold_ms(opts));
 }
 
 int
 nxdn_confirm_is_confirmed(const dsd_state* state) {
     return state && state->nxdn_confirmed != 0;
+}
+
+int
+nxdn_confirm_frame_content_proven(const dsd_state* state) {
+    return state && state->nxdn_confirm_frame_evidence != 0
+           && (state->nxdn_confirm_frame_evidence == (uint8_t)NXDN_EVIDENCE_STRONG
+               || state->nxdn_confirm_weak_streak >= NXDN_CONFIRM_WEAK_OBSERVES);
+}
+
+int
+nxdn_confirm_frame_content_counted(const dsd_state* state) {
+    return nxdn_confirm_frame_content_proven(state) || (state && state->nxdn_confirm_frame_spaced != 0);
 }
 
 int

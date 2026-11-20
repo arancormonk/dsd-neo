@@ -115,15 +115,19 @@ cc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_i
     return g_result;
 }
 
+/* What a voice-channel tune returns (g_vc_result, OK unless a case sets it), and the request it was handed. */
+static dsd_trunk_tune_result g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_vc_request;
+
 static dsd_trunk_tune_result
 vc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
     (void)sps;
-    (void)request_id;
+    g_vc_request = request_id;
     g_frequency = freq;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     opts->trunk_is_tuned = 1;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    return g_vc_result;
 }
 
 static dsd_trunk_tune_result
@@ -392,6 +396,146 @@ pending_and_failed_probes(void) {
     rc |= expect(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()),
                  "successful replacement clears the failed frame gate");
     cleanup();
+    return rc;
+}
+
+/* The calls a carrier left behind, as their PI and LC set them: what a DMR tune that leaves the carrier forgets
+   (dmr_sm_note_carrier_tune()), and whether their voice is held. */
+static void
+seed_call_crypto(dsd_state* state) {
+    state->payload_algid = 0x21;
+    state->payload_algidR = 0x21;
+    state->payload_keyid = 5;
+    state->payload_mi = 0x1234U;
+    state->dmr_so = 0x40;
+    state->dmr_enc_class_held[0] = 0U;
+    state->dmr_enc_class_held[1] = 0U;
+}
+
+static int
+call_crypto_kept(const dsd_state* state) {
+    return state->payload_algid == 0x21 && state->payload_algidR == 0x21 && state->payload_keyid == 5
+           && state->payload_mi == 0x1234U && state->dmr_so == 0x40 && state->dmr_enc_class_held[0] == 0U
+           && state->dmr_enc_class_held[1] == 0U;
+}
+
+static int
+call_crypto_left(const dsd_state* state) {
+    return state->payload_algid == 0 && state->payload_algidR == 0 && state->payload_keyid == 0
+           && state->payload_mi == 0U && state->dmr_so == 0 && state->dmr_enc_class_held[0] == 1U
+           && state->dmr_enc_class_held[1] == 1U;
+}
+
+/* A control-channel probe whose tune is still pending has not left the carrier: the calls there keep their ALG, key
+   ID, MI and privacy, and their voice is not held, until the tune lands (issue #834). One that fails leaves them as
+   they were, so a call whose PI is not repeated still decrypts on the carrier the receiver never left. One that lands
+   is judged then, once, before anything the carrier it reached sends is read. */
+static int
+dmr_probe_judges_its_carrier_once_landed(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    int rc = 0;
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    aloha(1);
+    seed_call_crypto(&g_state);
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expire_acquisition(ctx);
+    const uint64_t first = g_request;
+    rc |= expect(first != 0U && ctx->cc_tune_request_id == first, "a probe is pending");
+    rc |= expect(call_crypto_kept(&g_state), "a pending probe leaves the calls' decryption alone");
+    dsd_trunk_tuning_request_publish(first, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(ctx->state == DMR_SM_HUNTING && ctx->cc_tune_request_id == 0U, "the failed probe is resolved");
+    rc |= expect(call_crypto_kept(&g_state), "a probe that failed keeps the calls' decryption");
+
+    /* The next probe, back to the anchor from the frequency the peer last confirmed, lands: the first frame of the
+       carrier it reached finds the calls left. */
+    dmr_sm_note_receiver_unknown(ctx);
+    g_opts.rigctl_sent_freq_hz = 452000000U;
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    ctx->cc_retry_after_m = 0.0;
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    const uint64_t second = g_request;
+    rc |= expect(second != first && ctx->cc_tune_request_id == second && g_cc_tune_freq == 451000000L,
+                 "a second probe, to the anchor, is pending");
+    rc |= expect(call_crypto_kept(&g_state), "the second probe leaves the calls' decryption alone while pending");
+    dsd_trunk_tuning_request_publish(second, DSD_TRUNK_TUNE_RESULT_OK);
+    dmr_sm_resolve_tracked_tune(&g_opts, &g_state); /* the DMR dispatcher, before the frame is read */
+    rc |= expect(call_crypto_left(&g_state), "the landed probe forgets the calls' decryption and holds their voice");
+    seed_call_crypto(&g_state);
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(call_crypto_kept(&g_state), "the landed probe is judged once");
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    cleanup();
+    return rc;
+}
+
+/* Issue #834: a grant's follow whose tune is still pending (an RTL tune past the controller's wait) has not left the
+   carrier yet, and one that then fails never does: the calls there keep their ALG, key ID, MI and privacy, and their
+   voice is not held, until the tune lands. One that lands is judged then, before anything the carrier it reached sends
+   is read. */
+static int
+dmr_grant_follow_judges_its_carrier_once_landed(void) {
+    int rc = 0;
+    for (int lands = 0; lands <= 1; lands++) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        aloha(1);
+        dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+        seed_call_crypto(&g_state);
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        g_vc_request = 0U;
+        dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 452000000L, 2, 0, 1001, 2001);
+        const uint64_t request = g_vc_request;
+        rc |= expect(request != 0U && g_opts.trunk_is_tuned, "a grant's follow is pending, under its own request");
+        rc |= expect(call_crypto_kept(&g_state), "a pending follow leaves the calls' decryption alone");
+        dsd_trunk_tuning_request_publish(request, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+        dmr_sm_resolve_tracked_tune(&g_opts, &g_state); /* the DMR dispatcher, before the frame is read */
+        if (lands) {
+            rc |= expect(call_crypto_left(&g_state), "the landed follow forgets the calls' decryption and holds");
+        } else {
+            rc |= expect(call_crypto_kept(&g_state), "a follow that failed keeps the calls' decryption");
+        }
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        cleanup();
+    }
+    return rc;
+}
+
+/* A rigctl probe is judged from the frequency the peer last confirmed (dsd_opts::rigctl_sent_freq_hz) when the machine
+   has no attribution of its own (an operator move dropped it): a probe to that frequency does not leave the carrier,
+   and keeps its calls' decryption. A probe elsewhere does leave it. */
+static int
+dmr_rigctl_probe_judged_from_the_confirmed_frequency(void) {
+    int rc = 0;
+    for (int elsewhere = 0; elsewhere <= 1; elsewhere++) {
+        if (setup(0.0f)) {
+            cleanup();
+            return 1;
+        }
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        aloha(1);
+        g_result = DSD_TRUNK_TUNE_RESULT_OK;
+        dmr_sm_note_receiver_unknown(ctx);
+        seed_call_crypto(&g_state);
+        g_opts.rigctl_sent_freq_hz = elsewhere ? 459000000U : 452000000U;
+        const int tunes = g_cc_tunes;
+        expire_acquisition(ctx);
+        if (g_cc_tunes == tunes || g_cc_tune_freq != 452000000L) {
+            DSD_FPRINTF(stderr, "rigctl probe: %d tunes, to %ld Hz\n", g_cc_tunes - tunes, g_cc_tune_freq);
+            rc |= expect(0, "the hunt probed the mapped frequency");
+        } else {
+            rc |= expect(elsewhere ? call_crypto_left(&g_state) : call_crypto_kept(&g_state),
+                         elsewhere ? "a rigctl probe away from the confirmed frequency leaves the carrier"
+                                   : "a rigctl probe to the confirmed frequency keeps the calls' decryption");
+        }
+        cleanup();
+    }
     return rc;
 }
 
@@ -1695,6 +1839,7 @@ dmr_settle_tune_deadline(void) {
     single_system_cold_start(0);
     g_hw_model = 1;
     dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    seed_call_crypto(&g_state);
     g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     dmr_cold_start_first_probe(dmr);
     dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
@@ -1702,6 +1847,9 @@ dmr_settle_tune_deadline(void) {
     const int tunes = g_cc_tunes;
     dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
     int rc = expect(g_cc_tunes == tunes + 1 && dmr->cold_start_hunt == 1, "a settle tune replaces the failure");
+    /* Neither the failed probe nor the settle, which tunes the peer to the frequency it just reported, left the
+       carrier (issue #834). */
+    rc |= expect(call_crypto_kept(&g_state), "a failed probe and its settle keep the calls' decryption");
     dmr->cc_tune_deadline_m = dsd_decode_now_mono_s() - 0.1; // the backend never answers it
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
     dmr_sm_tick_ctx(dmr, &g_opts, &g_state);
@@ -1872,6 +2020,77 @@ cap_plus_map(void) {
     g_state.trunk_chan_map[2] = 452000000L;
     g_state.trunk_chan_map[3] = 452000000L;
     g_state.trunk_chan_map[4] = 453000000L;
+}
+
+/* A Connect Plus data channel grant (FID 0x06, opcode 0x06) to @p target on LCN @p lcn, slot 1. */
+static void
+con_plus_data_grant(uint32_t target, uint8_t lcn) {
+    uint8_t bits[196] = {0};
+    uint8_t bytes[24] = {0};
+    bytes[0] = 0x06;
+    bytes[1] = 0x06;
+    bytes[2] = (uint8_t)(target >> 16);
+    bytes[3] = (uint8_t)(target >> 8);
+    bytes[4] = (uint8_t)target;
+    bytes[5] = (uint8_t)(lcn << 4);
+    for (int i = 0; i < 80; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
+    }
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+/* Issue #834: a Capacity Plus status follow, and a Connect Plus data channel follow, whose tune is still pending (an
+   RTL tune past the controller's wait) have not left the carrier yet, and one that then fails never does: the calls
+   there keep their ALG, key ID, MI and privacy, and their voice is not held, until the tune lands, as for a grant's
+   follow. One that lands is judged then. */
+static int
+dmr_status_and_data_follows_judge_their_carrier_once_landed(void) {
+    int rc = 0;
+    for (int data = 0; data <= 1; data++) {
+        for (int lands = 0; lands <= 1; lands++) {
+            if (setup(0.0f)) {
+                cleanup();
+                return 1;
+            }
+            dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+            if (data) {
+                aloha(1);
+                dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+                g_opts.trunk_tune_data_calls = 1;
+                g_state.trunk_chan_map[4] = 453000000L;
+            } else {
+                cap_plus_map();
+                cap_plus_idle(3U);
+            }
+            g_state.last_vc_sync_time = 0;
+            seed_call_crypto(&g_state);
+            g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+            g_vc_request = 0U;
+            if (data) {
+                con_plus_data_grant(3003U, 4U);
+            } else {
+                cap_plus_two_calls(3U);
+            }
+            const uint64_t request = g_vc_request;
+            const char* what = data ? "a Connect Plus data follow" : "a Capacity Plus status follow";
+            char label[160];
+            DSD_SNPRINTF(label, sizeof label, "%s is pending, under its own request", what);
+            rc |= expect(request != 0U, label);
+            DSD_SNPRINTF(label, sizeof label, "%s pending leaves the calls' decryption alone", what);
+            rc |= expect(call_crypto_kept(&g_state), label);
+            dsd_trunk_tuning_request_publish(request, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+            dmr_sm_resolve_tracked_tune(&g_opts, &g_state);
+            DSD_SNPRINTF(label, sizeof label,
+                         lands ? "%s that landed forgets the calls' decryption and holds"
+                               : "%s that failed keeps the calls' decryption",
+                         what);
+            rc |= expect(lands ? call_crypto_left(&g_state) : call_crypto_kept(&g_state), label);
+            g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+            cleanup();
+        }
+    }
+    return rc;
 }
 
 static int
@@ -2561,6 +2780,10 @@ main(void) {
     rc |= held_call_return(2.0f);
     rc |= hunt_and_reacquire();
     rc |= pending_and_failed_probes();
+    rc |= dmr_probe_judges_its_carrier_once_landed();
+    rc |= dmr_grant_follow_judges_its_carrier_once_landed();
+    rc |= dmr_status_and_data_follows_judge_their_carrier_once_landed();
+    rc |= dmr_rigctl_probe_judged_from_the_confirmed_frequency();
     rc |= dmr_deferred_mapped_probe_is_retried();
     rc |= dmr_probe_drops_the_back_retry();
     rc |= dmr_deferred_candidate_probe_is_retried();

@@ -14,10 +14,14 @@ strong is 30 dB, far above every mode's reception threshold; --level near is 2 d
 DMR MS 7.5 and P25 8.0 dB, the calibration's kept thresholds).
 
 The scene runs on tools/bench_signal_search_tcp.py's paced rtl_tcp source, logging every retune. The tool runs the
-real dsd-neo against it for --seconds with --scan-skip-silent or --no-scan-skip-silent, --scan-max-visit-ms 8000 and
+real dsd-neo against it for --seconds with --scan-skip-silent or --no-scan-skip-silent, --scan-max-visit-ms 8000 (or
+--max-visit-ms; 0 runs with no visit cap) and
 one of three scans: --trunk-scan conventional targets (--scan trunk), a typed -Y channel map (--scan typed) or an
 untyped -Y channel map under -ft (--scan untyped, which has no analog decoder, so it cannot hear the NFM calls). Silent
-channels take the three modes in turn. NFM rows and targets are 12.5 kHz wide with a -42 dB squelch, 5 to 6 dB over
+channels take the three modes in turn, or the modes --silent-modes lists: nxdn48 and dpmr give noise rows whose raw
+frame syncs the protocol's checks reject (an NXDN48 target with a 2000 ms dwell; dPMR has no trunk-scan target type,
+so --scan trunk leaves its rows out of the target CSV). The untyped map has no mode column: every row runs -ft's DMR
+and P25 decoders, so --scan untyped takes no --silent-modes. NFM rows and targets are 12.5 kHz wide with a -42 dB squelch, 5 to 6 dB over
 the scene's noise in the channel. It reads the retune log, dsd-neo's output (each line stamped as it arrives), its
 frame log, its per-call recordings and their journal, and its RTL perf CSV, and reports:
 
@@ -34,13 +38,23 @@ frame log, its per-call recordings and their journal, and its RTL perf CSV, and 
                 whole process's CPU time, each per second of run
   drops         the input ring drops the RTL stream counted (a retune that discards a stale block counts too)
 
+With --by-mode it adds, per mode the silent channels run (under --scan untyped, the one decoder set -ft runs on every
+row), every scored visit to a silent channel of that mode: how
+many were skipped (a skip logged inside the visit) as a share of all of them, visits that never measured included; the
+skip latency (the scene's retune onto the channel to the skip's line, median and p95); and how each visit ended:
+skipped, left early with no skip (under 1.5 s), left at its dwell or hangtime (1.5 to 3.5 s), or held past it (a
+-Y row whose syncs refresh its hangtime, up to the 8 s visit cap); and the visits to an active channel that left while
+its call was still on air with at least LEFT_MID_CALL_S of it to go (a call cut short), with those that left within the
+call's first LEFT_AT_ONSET_S also reported on their own.
+
 Usage, from the repository root:
     python3 tools/bench_scan_skip_silent.py --dsd build/dev-release/apps/dsd-cli/dsd-neo \\
         --dmr-synth-gen build/dev-debug/tests/dsd-neo_test_dmr_synth_gen --scan typed --skip on --jitter 3 --out DIR
     python3 tools/bench_scan_skip_silent.py --summary DIR... (one table over earlier runs' result.json files)
     python3 tools/bench_scan_skip_silent.py --rescore --dmr-synth-gen ... --out DIR (score a run again)
 
-A frontend (the Qt or Android app) is measured with --serve PORT --skip on|off --out DIR: the tool serves the scene
+A frontend (the Qt or Android app) is measured with --serve PORT --scan trunk|typed|untyped --skip on|off --out DIR
+(--scan names the list the app scans, for --by-mode): the tool serves the scene
 on that loopback port for --seconds, to one client after another, and writes the lists (trunk.csv is the scan list's
 target CSV) and the retunes to DIR. Then put the app's logcat (adb logcat -v epoch) in a file, its recording journal
 in DIR/calls.jsonl and its recordings in DIR/calls/, and score the run with --analyze LOGCAT --out DIR: its digital
@@ -50,6 +64,7 @@ hardware, and serves the loopback interface only.
 
 import argparse
 import collections
+import csv
 import json
 import math
 import os
@@ -84,6 +99,13 @@ THRESHOLD_DB = {"nfm": 9.5, "dmr": 7.5, "p25": 8.0}
 STRONG_DB = 30.0
 NEAR_MARGIN_DB = 2.0
 ACTIVE = ("nfm", "dmr", "p25")
+SILENT_MODES = ACTIVE + ("nxdn48", "dpmr")  # the modes a silent channel can run (--silent-modes)
+UNTYPED_MODE = "-ft (dmr, p25)"  # --by-mode's one row under --scan untyped: what every untyped row decodes
+NXDN48_DWELL_MS = 2000
+EARLY_S = 1.5  # --by-mode's visit end buckets: under this a visit left early, past HELD_S it was held
+HELD_S = 3.5
+LEFT_MID_CALL_S = 0.5  # --by-mode: a visit to an active channel that ends with this much of its call still to go
+LEFT_AT_ONSET_S = 0.2  # --by-mode: of those, the ones that ended this soon after the call began (reported on their own)
 P25_LDU_S = 0.18
 DMR_FRAMES_PER_BURST = 3
 SCHEDULE_PHASE_S = 7.3  # the schedule's shift per seed, in seconds (mod PERIOD_S)
@@ -100,9 +122,11 @@ AMBE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) FRAME AMBE slot=\d+ data=(
 
 
 class Channel:
-    def __init__(self, index, kind):
+    def __init__(self, index, kind, silent_index=None):
         self.index = index
         self.kind = kind  # "silent", "nfm", "dmr" or "p25"
+        self.silent_index = index if silent_index is None else silent_index  # its place among the silent channels
+        self.mode = None  # the mode a saved run's typed map gave it (apply_saved_modes()), if any
         self.frequency = BASE_HZ + index * SPACING_HZ
         self.starts: np.ndarray | None = None  # call start times, scene time s
         self.snr_db: float | None = None
@@ -165,13 +189,22 @@ def schedule(seed, k, jitter_s):
     return first + PERIOD_S * np.arange(count) + rng.uniform(-jitter_s, jitter_s, count)
 
 
-def build_scene(silent, level, seed, jitter_s, work_dir):
-    """The channels in frequency order, the three active ones spread among the silent ones."""
+def scene_layout(silent):
+    """The channels in frequency order, the three active ones spread among the silent ones, each silent one numbered
+    among the silent ones (the silent modes go to them in turn)."""
     count = silent + len(ACTIVE)
     kinds = ["silent"] * count
     for k, kind in enumerate(ACTIVE):
         kinds[(k * count) // len(ACTIVE) + count // (2 * len(ACTIVE))] = kind
-    channels = [Channel(i, kind) for i, kind in enumerate(kinds)]
+    channels = []
+    for i, kind in enumerate(kinds):
+        channels.append(Channel(i, kind, sum(1 for c in channels if c.kind == "silent")))
+    return channels
+
+
+def build_scene(silent, level, seed, jitter_s, work_dir):
+    """The channels in frequency order (scene_layout()), the active ones with their calls."""
+    channels = scene_layout(silent)
     n = round(CALL_S * bif.SAMPLE_RATE_HZ)
     for k, kind in enumerate(ACTIVE):
         channel = next(c for c in channels if c.kind == kind)
@@ -274,20 +307,47 @@ class Scene(tcp_bench.Source):
 # ---------------------------------------------------------------- channel lists and the run
 
 
-def write_lists(channels, out_dir):
+def channel_mode(channel, silent_modes=ACTIVE):
+    """The mode a channel runs: an active channel its own, a silent one the silent modes in turn."""
+    if channel.kind != "silent":
+        return channel.kind
+    return channel.mode or silent_modes[channel.silent_index % len(silent_modes)]
+
+
+def apply_saved_modes(channels, out_dir):
+    """A saved run scored again (--rescore, --analyze): each silent channel takes the mode the run's own typed map
+    (OUT_DIR/typed.csv) gave its frequency, so a run made under another mode rotation is scored as it ran."""
+    path = os.path.join(out_dir, "typed.csv")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="ascii") as typed:
+        saved = {int(row["frequency_hz"]): row["mode"] for row in csv.DictReader(typed)}
+    for c in channels:
+        if c.kind == "silent" and c.frequency in saved:
+            c.mode = saved[c.frequency]
+
+
+def write_lists(channels, out_dir, silent_modes=ACTIVE):
     """The target CSV (--scan trunk) and the typed and untyped channel maps (-Y). Silent channels take the modes in
-    turn, so every mode has silent rows."""
+    turn, so every mode has silent rows; a dPMR row has no target type and is left out of the target CSV."""
     nfm_options = f"--nfm-bandwidth-hz {CLASS_WIDTH_HZ} --squelch-db {NFM_SQUELCH_DB}"
-    target_type = {"nfm": "nfm-conventional", "dmr": "dmr-conventional", "p25": "p25-conventional"}
+    target_type = {
+        "nfm": "nfm-conventional",
+        "dmr": "dmr-conventional",
+        "p25": "p25-conventional",
+        "nxdn48": "nxdn48-conventional",
+    }
     paths = {key: os.path.join(out_dir, key + ".csv") for key in ("trunk", "typed", "untyped")}
     with open(paths["trunk"], "w", encoding="ascii") as trunk, open(paths["typed"], "w", encoding="ascii") as typed:
         trunk.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,options\n")
         typed.write("channel,frequency_hz,name,mode,options\n")
         for c in channels:
-            kind = c.kind if c.kind != "silent" else ACTIVE[c.index % len(ACTIVE)]
+            kind = channel_mode(c, silent_modes)
             modulation = "c4fm" if kind == "p25" else ""
             options = nfm_options if kind == "nfm" else ""
-            trunk.write(f"{c.name},{target_type[kind]},{c.frequency},,,,,{modulation},,{options}\n")
+            dwell = str(NXDN48_DWELL_MS) if kind == "nxdn48" else ""
+            if kind in target_type:
+                trunk.write(f"{c.name},{target_type[kind]},{c.frequency},,{dwell},,,{modulation},,{options}\n")
             typed.write(f"{c.index + 1},{c.frequency},{c.name},{kind},{options}\n")
     with open(paths["untyped"], "w", encoding="ascii") as untyped:
         untyped.write("channel,frequency_hz,name\n")
@@ -298,7 +358,10 @@ def write_lists(channels, out_dir):
 
 def dsd_command(args, port, lists):
     cmd = [str(Path(args.dsd).resolve()), "--frontend", "none", "-i", f"rtltcp:127.0.0.1:{port}:{BASE_HZ}:0:0:48:0:1"]
-    cmd += ["-o", "null", "--scan-max-visit-ms", "8000", "--frame-log", "frames.log"]
+    cmd += ["-o", "null"]
+    # Always given, 0 included: a cap a DSD_NEO_CONFIG file sets must not stay in force on an uncapped run.
+    cmd += ["--scan-max-visit-ms", str(args.max_visit_ms)]
+    cmd += ["--frame-log", "frames.log"]
     cmd += ["-P", "-7", "calls", "--wav-journal", "calls.jsonl", "--analog-record-preroll-ms", "0"]
     cmd += ["--scan-skip-silent" if args.skip == "on" else "--no-scan-skip-silent"]
     if args.scan == "trunk":
@@ -311,9 +374,10 @@ def dsd_command(args, port, lists):
 
 
 def stamp_lines(pipe, log):
-    """Each line dsd-neo writes, prefixed with the monotonic time it arrived (the retune log's clock)."""
+    """Each line dsd-neo writes, prefixed with the monotonic time it arrived (the retune log's clock). A line's end is
+    LF, or CRLF where dsd-neo runs on Windows: either is taken off, so no line keeps a carriage return."""
     for raw in pipe:
-        text = ANSI.sub("", raw.decode("utf-8", "replace")).rstrip("\n")
+        text = ANSI.sub("", raw.decode("utf-8", "replace")).rstrip("\r\n")
         log.write(f"{time.monotonic():.3f} {text}\n")
 
 
@@ -331,7 +395,7 @@ def run(args):
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
     channels = scene_channels(args.silent, args.level, args.seed, args.jitter)
-    lists = write_lists(channels, out_dir)
+    lists = write_lists(channels, out_dir, args.silent_modes)
     scene = Scene(channels, args.seed)
     scene.thread.start()
     cmd = dsd_command(args, scene.port, lists)
@@ -371,6 +435,10 @@ def run(args):
         "end_s": end_s,
         "tunes": scene.tunes,
     }
+    if args.silent_modes != ACTIVE or args.by_mode:
+        record["silent_modes"] = list(args.silent_modes)
+        record["by_mode"] = bool(args.by_mode)
+        record["max_visit_ms"] = args.max_visit_ms
     with open(os.path.join(out_dir, "run.json"), "w", encoding="utf-8") as handle:
         json.dump(record, handle, indent=1)
     return record, channels
@@ -544,6 +612,10 @@ def score(record, channels, out_dir):
         "process_cpu_pct": 100.0 * record["process_cpu_s"] / record["wall_s"] if record["process_cpu_s"] else None,
         **perf,
     }
+    if record.get("by_mode"):
+        result["silent_modes"] = record["silent_modes"]
+        result["silent_by_mode"] = silent_by_mode(record, channels, lines, skips)
+        result["left_mid_call"] = left_mid_call(record, channels)
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=1)
     return result
@@ -564,6 +636,67 @@ def skips_on_air(skips, visit_list):
             whole += start <= landed and t <= start + CALL_S
             started += landed < start < t
     return [whole, started]
+
+
+def silent_by_mode(record, channels, lines, skips):
+    """--by-mode: per mode the silent channels run, every scored visit to one of them: skipped or how it ended, and the
+    skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line. An untyped map's
+    rows all run -ft, whatever mode the typed map would give them: their visits are one row, UNTYPED_MODE. A frontend
+    run's record says which list it scanned in "scan_variant" ("scan" is "frontend" there, which picks its scoring)."""
+    modes = tuple(record["silent_modes"])
+    untyped = record.get("scan_variant", record["scan"]) == "untyped"
+    started = record["scene_started"]
+    tunes = record["tunes"]
+    spans = []  # (channel, start mono s from the scene's start, end mono s), the visits() order and bounds
+    for (_t, mono, centre, _rate), nxt in zip(tunes, tunes[1:] + [(0, None, 0, 0)]):
+        near = min(channels, key=lambda c: abs(c.frequency - centre))
+        end = (nxt[1] - started) if nxt[1] is not None else record["wall_s"]
+        spans.append((near if abs(near.frequency - centre) < SPACING_HZ / 2 else None, mono - started, end))
+    lead = next((i for i, (c, _v0, _v1) in enumerate(spans) if c is not None), len(spans))
+    out = {}
+    for c, v0, v1 in spans[lead + 1 : -1]:
+        if c is None or c.kind != "silent":
+            continue
+        mode = UNTYPED_MODE if untyped else channel_mode(c, modes)
+        row = out.setdefault(mode, {"visits": 0, "skipped": 0, "ends": {}, "latency_s": []})
+        row["visits"] += 1
+        skip = next((t for t, hz in skips if round(hz) == c.frequency and v0 <= t <= v1 + 0.05), None)
+        if skip is not None:
+            row["skipped"] += 1
+            row["latency_s"].append(skip - v0)
+            end = "skipped"
+        elif v1 - v0 < EARLY_S:
+            end = "left early, no skip"
+        elif v1 - v0 <= HELD_S:
+            end = "left at its dwell or hangtime"
+        else:
+            end = "held past it"
+        row["ends"][end] = row["ends"].get(end, 0) + 1
+    for row in out.values():
+        latency = row.pop("latency_s")
+        row["share"] = row["skipped"] / row["visits"] if row["visits"] else None
+        row["skip_latency_median_s"] = statistics.median(latency) if latency else None
+        row["skip_latency_p95_s"] = float(np.percentile(latency, 95)) if latency else None
+    return out
+
+
+def left_mid_call(record, channels):
+    """--by-mode: per active mode, the visits that left the channel while a call was on air with LEFT_MID_CALL_S or more
+    of it still to go (scene time, the scored visits only), and under "<mode> in its first 200 ms" those of them that left
+    within the call's first LEFT_AT_ONSET_S (counted in the mode's total too)."""
+    out = {}
+    scored = visits(record, channels)
+    lead = next((i for i, (c, _v0, _v1) in enumerate(scored) if c is not None), len(scored))
+    for c, v0, v1 in scored[lead + 1 : -1]:
+        if c is None or c.kind == "silent":
+            continue
+        start = c.call_at(v1)
+        cut = start is not None and start <= v1 and start + CALL_S - v1 >= LEFT_MID_CALL_S
+        out[c.kind] = out.get(c.kind, 0) + (1 if cut else 0)
+        if cut and v1 - start < LEFT_AT_ONSET_S:
+            onset = f"{c.kind} in its first {LEFT_AT_ONSET_S * 1000:.0f} ms"
+            out[onset] = out.get(onset, 0) + 1
+    return out
 
 
 def perf_summary(path):
@@ -598,6 +731,25 @@ def fmt(value, spec=".2f"):
     return "-" if value is None else format(value, spec)
 
 
+def by_mode_table(results):
+    """--by-mode's table: one row per run and silent mode."""
+    lines = [
+        "| scan | skip | seed | silent mode | visits | skipped | share | skip latency median s | p95 s | visit ends |",
+        "|" + "---|" * 10,
+    ]
+    for r in sorted(results, key=lambda r: (r["scan"], r["seed"], r["skip"])):
+        if "left_mid_call" in r:
+            cut = ", ".join(f"{k} {v}" for k, v in sorted(r["left_mid_call"].items()))
+            lines.append(f"| {r['scan']} | {r['skip']} | {r['seed']} | (active channels left mid-call: {cut}) |")
+        for mode, row in sorted(r.get("silent_by_mode", {}).items()):
+            ends = ", ".join(f"{k} {v}" for k, v in sorted(row["ends"].items(), key=lambda kv: -kv[1]))
+            cells = [r["scan"], r["skip"], str(r["seed"]), mode, str(row["visits"]), str(row["skipped"])]
+            cells += [fmt(row["share"], ".1%"), fmt(row["skip_latency_median_s"], ".3f")]
+            cells += [fmt(row["skip_latency_p95_s"], ".3f"), ends]
+            lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def summary_table(results):
     lines = [
         (
@@ -627,19 +779,38 @@ def summary_table(results):
 # ---------------------------------------------------------------- serving a frontend
 
 
+def frontend_record(args):
+    """A frontend run's record (--serve), the silent channels' mode list, the list it scans (--scan, as
+    "scan_variant": "scan" is "frontend", which scores its calls by their recordings) and the report option included,
+    so --analyze can report its visits by mode."""
+    record = {"scan": "frontend", "skip": args.skip, "level": args.level, "seed": args.seed, "silent": args.silent}
+    record["scan_variant"] = args.scan
+    record.update({"jitter_s": args.jitter, "wall_offset_s": time.time() - time.monotonic()})
+    record.update({"process_cpu_s": None, "load_average_end": None})
+    record.update({"silent_modes": list(args.silent_modes), "by_mode": bool(args.by_mode)})
+    return record
+
+
+def report_options(record, args):
+    """A saved run scored again (--rescore, --analyze) reports by mode when this scoring asks for it (--by-mode),
+    whatever the run saved; a run that saved no mode list ran the default one."""
+    if args.by_mode:
+        record["by_mode"] = True
+        record.setdefault("silent_modes", list(ACTIVE))
+    return record
+
+
 def serve(args):
     """Serve the scene to whatever connects, for --seconds, rewriting OUT_DIR/run.json (the retunes so far) every
     second; --analyze scores it afterwards."""
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
     channels = scene_channels(args.silent, args.level, args.seed, args.jitter)
-    write_lists(channels, out_dir)
+    write_lists(channels, out_dir, args.silent_modes)
     scene = Scene(channels, args.seed, port=args.serve, keep_serving=True)
     scene.thread.start()
     print(f"serving the scene on 127.0.0.1:{scene.port}; lists in {out_dir}", flush=True)
-    record = {"scan": "frontend", "skip": args.skip, "level": args.level, "seed": args.seed, "silent": args.silent}
-    record.update({"jitter_s": args.jitter, "wall_offset_s": time.time() - time.monotonic()})
-    record.update({"process_cpu_s": None, "load_average_end": None})
+    record = frontend_record(args)
     started = time.monotonic()
     try:
         while time.monotonic() - started < args.seconds:
@@ -676,7 +847,15 @@ def analyze(args, record, channels):
         log.writelines(f"{t - shift:.3f} {text}\n" for t, text in lines)
     result = score(record, channels, os.path.abspath(args.out))
     print(f"clock shift {shift:+.3f} s from {len(gaps)} retunes")
+    print_result(result)
+
+
+def print_result(result):
+    """One run's table, and its per-mode table when it has one."""
     print(summary_table([result]))
+    if "silent_by_mode" in result:
+        print()
+        print(by_mode_table([result]))
 
 
 def parse_args():
@@ -687,6 +866,16 @@ def parse_args():
     parser.add_argument("--skip", choices=("on", "off"), default="on")
     parser.add_argument("--level", choices=("strong", "near"), default="strong")
     parser.add_argument("--silent", type=int, default=12, help="silent channels (default 12)")
+    parser.add_argument(
+        "--silent-modes",
+        default=",".join(ACTIVE),
+        help=f"comma-separated modes the silent channels take in turn, of {','.join(SILENT_MODES)} "
+        f"(default {','.join(ACTIVE)})",
+    )
+    parser.add_argument("--by-mode", action="store_true", help="also report each silent mode's visits and skips")
+    parser.add_argument(
+        "--max-visit-ms", type=int, default=8000, help="--scan-max-visit-ms for dsd-neo, 0 for none (default 8000)"
+    )
     parser.add_argument("--seconds", type=float, default=600.0, help="run length (default 600)")
     parser.add_argument("--seed", type=int, default=1, help="noise and schedule seed (default 1)")
     parser.add_argument(
@@ -709,6 +898,22 @@ def parse_args():
         parser.error("give --dsd, or --serve PORT")
     if args.silent < 1:
         parser.error("--silent must be at least 1")
+    args.silent_modes = tuple(m.strip() for m in args.silent_modes.split(",") if m.strip())
+    if not args.silent_modes or any(m not in SILENT_MODES for m in args.silent_modes):
+        parser.error(f"--silent-modes takes modes of {','.join(SILENT_MODES)}")
+    if args.scan == "untyped" and args.silent_modes != ACTIVE:
+        parser.error(
+            "--scan untyped runs every row under -ft (DMR and P25 only) from a map with no mode column: "
+            "--silent-modes applies to --scan typed and --scan trunk"
+        )
+    # Only a run about to start: a saved one (--rescore, --analyze) is scored with the map it ran (apply_saved_modes()).
+    if not (args.rescore or args.analyze) and args.scan == "trunk" and all(
+        channel_mode(c, args.silent_modes) == "dpmr" for c in scene_layout(args.silent) if c.kind == "silent"
+    ):
+        parser.error(
+            "--scan trunk has no dPMR target type, and the silent modes give every silent channel dPMR: no silent "
+            "channel would run; give another silent mode first, or more silent channels"
+        )
     reception.ARGS = argparse.Namespace(dsd=args.dsd, dmr_synth_gen=args.dmr_synth_gen)
     return args
 
@@ -721,22 +926,25 @@ def main():
             with open(os.path.join(out_dir, "result.json"), encoding="utf-8") as handle:
                 results.append(json.load(handle))
         print(summary_table(results))
+        if any("silent_by_mode" in r for r in results):
+            print()
+            print(by_mode_table(results))
         return
     if args.serve:
         serve(args)
         return
     if args.rescore or args.analyze:
         with open(os.path.join(args.out, "run.json"), encoding="utf-8") as handle:
-            record = json.load(handle)
+            record = report_options(json.load(handle), args)
         channels = scene_channels(record["silent"], record["level"], record["seed"], record["jitter_s"])
+        apply_saved_modes(channels, os.path.abspath(args.out))
         if args.analyze:
             analyze(args, record, channels)
         else:
-            print(summary_table([score(record, channels, os.path.abspath(args.out))]))
+            print_result(score(record, channels, os.path.abspath(args.out)))
         return
     record, channels = run(args)
-    result = score(record, channels, os.path.abspath(args.out))
-    print(summary_table([result]))
+    print_result(score(record, channels, os.path.abspath(args.out)))
     if record["exit"] not in (0, -15):
         raise SystemExit(f"dsd-neo exited {record['exit']}")
 

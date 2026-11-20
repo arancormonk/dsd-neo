@@ -248,6 +248,16 @@ retevis_rc2_apply_frame49(dsd_state* state, char ambe_d[49]) {
 
 /* Key creation for Retevis AP */
 void
+retevis_rc2_context_release(dsd_state* state) {
+    if (state == NULL || state->rc2_context == NULL) {
+        return;
+    }
+    DSD_SECURE_ZERO(state->rc2_context, sizeof(CryptoContext));
+    free(state->rc2_context);
+    state->rc2_context = NULL;
+}
+
+void
 retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_keys) {
     if (state == NULL || input == NULL) {
         return;
@@ -257,8 +267,8 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
     const int parse_rc = dsd_vendor_ap_key_parse(input, &parsed);
     if (parse_rc != DSD_VENDOR_AP_KEY_OK) {
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key parse failed: expected 32 or 64 hex characters\n");
-        free(state->rc2_context);
-        state->rc2_context = NULL;
+        DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+        retevis_rc2_context_release(state);
         state->retevis_ap = 0;
         return;
     }
@@ -273,6 +283,8 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
         (void)dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key_bytes, sizeof(key_bytes));
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 256-bit key loaded with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key_bytes, sizeof(key_bytes)));
+        DSD_SECURE_ZERO(key_bytes, sizeof(key_bytes));
+        DSD_SECURE_ZERO(key_text, sizeof(key_text));
     } else {
         unsigned char key1[16];
         DSD_MEMSET(key1, 0, sizeof(key1));
@@ -281,8 +293,9 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
 
         if (dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
             DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key parse failed: invalid 128-bit key\n");
-            free(state->rc2_context);
-            state->rc2_context = NULL;
+            DSD_SECURE_ZERO(key1, sizeof(key1));
+            DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+            retevis_rc2_context_release(state);
             state->retevis_ap = 0;
             return;
         }
@@ -293,17 +306,23 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
         char key_text[33];
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit key loaded with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key1, sizeof(key1)));
+        DSD_SECURE_ZERO(key1, sizeof(key1));
+        DSD_SECURE_ZERO(key2, sizeof(key2));
+        DSD_SECURE_ZERO(key_text, sizeof(key_text));
     }
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
 
     // Store context in DSD state
-    free(state->rc2_context);
+    retevis_rc2_context_release(state);
     state->rc2_context = malloc(sizeof(CryptoContext));
     if (state->rc2_context == NULL) {
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key allocation failed\n");
+        DSD_SECURE_ZERO(&rc2_ctx, sizeof(rc2_ctx));
         state->retevis_ap = 0;
         return;
     }
     DSD_MEMCPY(state->rc2_context, &rc2_ctx, sizeof(CryptoContext));
+    DSD_SECURE_ZERO(&rc2_ctx, sizeof(rc2_ctx));
 
     state->retevis_ap = 1;
 }

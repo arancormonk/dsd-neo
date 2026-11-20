@@ -1428,6 +1428,25 @@ number of samples must not be a multiple of the front end's total decimation; sp
 capture's rate, as `replay_ab.sh` does (copy i of n shifted floor(i P / n) + i samples, P the samples in one 2400-baud
 symbol, and one sample more where that lands on a multiple of the decimation).
 
+#### Real calls on a -Y row (issue #834)
+
+I/Q replay defers every retune, so a `-Y` scan replayed with `--iq-replay` never lands a step. `DECODE_IQ_Y_CALL_HOLD`
+(`tests/y_call_hold_check.py`; radio builds with a GNU or Clang toolchain, not macOS, since the host links with
+`--wrap`) therefore runs
+`dsd-neo_test_y_call_hold_replay`, a host that notes row zero's landing itself at the first hunt, on the replay's clock.
+Each call fixture, followed by as much of `noise_floor` as the leave bound needs (the bound plus 1 s after the call), is
+the landed row of a two-row map with no visit cap, in four legs: typed (the row's own mode) at `-t 1` with skip-silent
+off and on, typed at `-t 2`, and untyped under `-fa` (the default set) at `-t 1`; `--all-legs` runs every set at both
+hangtimes with skip-silent off and on. It fails a frame-boundary step before the call's last sync, and a row still held
+more than the hangtime plus 2 s after it (3.5 s for NXDN, which holds a `-Y` row 2 s past each frame whose own CRCs
+proved its content), whether the row left late or the run ended first. A call with no PROVEN or
+PARTIAL note in its decoder set is what the rule exists to leave: it is reported as `unchecked` and only has to leave
+within the same bound from the landing (today the off-air `dpmr` capture, typed and under `-fa`, and `dstar` under
+`-fa`, which the default set does not decode as D-STAR within the capture). The host prints a `YHOLD` line for every
+sync (PROVEN and PARTIAL notes so far, the hangtime anchor) and every step attempt, which is the timeline to read when
+a case fails. Steps `noCarrier()` takes between a call's frames are the hangtime working as set and are reported, not
+failed.
+
 #### Received tone (CTCSS) on the analog monitor
 
 `DECODE_IQ_ANALOG_CTCSS_1000`, `_670`, `_DROP` and `_NOTONE` (issue #522) replay synthetic NFM under `-fA -o null`, so
@@ -2143,6 +2162,18 @@ per-call recording must hold its own audio (normalised correlation with the expe
 after the first, its frame-by-frame loudness, since the bursts the voice gate holds at the change change the vocoder's
 synthesis after them).
 
+`DMR_SYNTH_BP_KEY` (`tests/protocol/dmr/dmr_bp_key_check.py`) uses the generator's Basic Privacy (`--alg bp
+--bp-key N`: the LC's privacy bit under FID 0x10, no PI header, the project's Basic Privacy keystream) and its
+`--no-hdr` (no voice LC header: the call is named only by its embedded LC). An RC4 call on talkgroup 123 ends, then a
+Basic Privacy call on talkgroup 456 starts on a colour code `--dcc-allow 2` refuses and changes to 2 after its first
+superframe, so its first frames are not admitted and come before its LC. Its own key decrypts it (its frames carry the
+plaintext, and play), no key mutes it, and a key for the ended call's talkgroup is not its key: it stays muted, where
+the frames before its LC once loaded that key and the call then played, decrypted with it. The same case decodes two
+Basic Privacy calls under one key, once on both slots (talkgroups 123 and 124) and once back to back on slot 1
+(123, then 456, joined on the generator's burst grid so the carrier never drops), with a key for talkgroup 123 only:
+the call whose talkgroup has no key is muted and never recorded, where the key loaded for 123 once decrypted it
+too. With `-b` and no keys file, every call of both signals decrypts.
+
 The expectation file gives, for every transmitted voice frame, the 49 bits a correct decoder prints: the plaintext
 (for an encrypted call the plaintext that decrypts from the ciphertext actually sent, whose four late-entry bits carry
 the fragment nibble). The MI/IV LFSRs, the late-entry layout and the RC4 keystream are written independently in the
@@ -2735,6 +2766,7 @@ write or two).
 | `--analog-record-{min,max}-audio-ms MS` | Bounds on `audio_ms`, where its first sample that is not 0 was. |
 | `--analog-record-min-level R` | Lower bound, 0 to 1, on how far each recording's level dips over its burst's first 300 ms: in 2.5 ms windows, the recording's RMS over the scene voice's RMS in the same window, the smallest against their median. The host prints `ANALOG LEVEL: n=N min=R`. |
 | `--analog-keep-output` | Keep the session's own output settings instead of capturing the monitor (issue #668): with `-o null` the output stays muted. The host prints `ANALOG OUTPUT: audio_out=A type=T played=N` and fails unless the output is off and nothing reached it. |
+| `--analog-audio-out FILE` | Write every block the monitor delivered to `FILE` as native float32 samples (full scale 1.0) at the analog sink rate, and print `ANALOG AUDIO OUT: rate_hz=R samples=N`; a file that cannot be written fails the run (issue #834). `tools/scan_quiet_reception.py` scores its NFM voice rows (a multitone's audio S/N) from it. Pinned by `DECODE_IQ_ANALOG_AUDIO_OUT` (1480 ms captured, 71040 samples at 48 kHz), `DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL` (the file read back: one float32 per sample, its RMS the `ANALOG METRIC` line's `rms_dbfs` within 0.01 dB) and `DECODE_IQ_ANALOG_NEG_AUDIO_OUT_UNWRITABLE`. |
 | `--analog-iq-gain-db DB` | Replay a copy of the capture with every sample scaled by `DB` about the cu8 midpoint: the same air, noise included, as a receiver with that much more (or less) gain records it. It works on the committed fixtures only (`tests/fixtures/iq`, opened by their directory entries there, never by a path from the command line or a sidecar). The copy goes to a private temporary directory the host removes at exit, and the host prints `capture scaled by +10.0 dB, N of M bytes clipped`; it stops (exit 2) when more than one byte in a thousand would clip, or when the capture is not a committed fixture. The auto squelch's `_HOT` cases use it, so a hotter receiver costs no committed fixture. |
 
 A case that expects silence (a muted or rejected transmission) pairs `--analog-max-audible-ms 0` with
@@ -3596,6 +3628,14 @@ repeats. A burst's start is where its carrier comes on. The scenes:
 | `level-blip` | One 40 ms burst from 45 ms into the tenth 960-sample block at 8192 Hz. |
 | `udp-tap-pause` | The `onsets` kind's discriminator tap at 48 kHz sent live the same way: noise, a 1 s burst that runs to the sender's 1 s stop, then noise alone. |
 | `udp-pause` | Sent live to `-i udp` at 8192 Hz in 20 ms datagrams, paced in real time: nine 960-sample blocks of the floor, 200 samples of an old source's burst (part of the tenth block), then the sender stops for a second and a new source's 1 s burst follows. The old burst is no burst of its own to the checker: a recording that holds it starts before the new one. |
+
+The two udp scenes run the analog tap's clock, on which it tells a paused input and sets the stale deadline that
+`dsd_engine_analog_call_due()` and the scanners read, on the scene's own time (`dsd_analog_rx_test_set_clock()`; the
+host builds `analog_rx.c` in with `DSD_NEO_TEST_HOOKS`): the samples the decoder has read, and in a silence the sender
+makes (its stop, the end) the real time since the decoder found the input empty there, up to the silence's length. A
+decoder held up mid-burst (a loaded host, a sanitizer build) therefore never reads as a stream pause, while the
+sender's 1 s stop still does. Before that, a stall of 0.7 s in the burst left `DECODE_UDP_ANALOG_RECORD_NOISE_PAUSE`
+with no recording.
 
 After the run the host reads the journal and finds each published recording in the scene: 50 ms pieces of it (its
 loudest, then from its middle outwards) are compared with the scene's voice around every burst, by normalised

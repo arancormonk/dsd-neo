@@ -12,6 +12,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_UDP_INPUT_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -53,6 +54,19 @@ int udp_input_read_sample(dsd_opts* opts, int16_t* out);
  * @return 1 with a sample, 0 on shutdown or a stopped input, -1 when no sample arrived in time.
  */
 int udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+
+/**
+ * @brief Drop the samples the ring held when @p cut was marked and the decoder has not read: what a rigctl peer sent
+ * before its retune (issue #834). The mark moved every datagram the socket held into the ring first, so those count
+ * too. Samples written into the ring after the mark are kept. A cut measured on another
+ * input, or on this one before it was restarted, drops nothing (dsd_input_backlog_cut_applies()).
+ *
+ * @param opts Decoder options containing UDP context.
+ * @param cut  The mark of the retune (dsd_input_backlog_mark()).
+ * @return The samples dropped, DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark already, or
+ *         DSD_INPUT_DISCARD_NOT_APPLICABLE when the cut does not apply (no input, another input's cut).
+ */
+long udp_input_discard_through(dsd_opts* opts, const dsd_input_cut* cut);
 
 #ifdef __cplusplus
 }

@@ -14,8 +14,9 @@
 # EVENT_COUNT_REGEX with EVENT_COUNT, each refused without the other (with
 # EVENT_EXPECTED: the event history must hold exactly EVENT_COUNT
 # non-overlapping matches of it, 0 included),
-# and AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
-# at least that many bytes, not all of them zero).
+# AUDIO_MIN_BYTES with WORK_DIR (the run's decoded-audio WAV, -w, must hold
+# at least that many bytes, not all of them zero), and ANALOG_AUDIO_OUT (the
+# analog replay host's --analog-audio-out file, which the run must write there).
 #
 # Optional -DREFERENCE_FIXTURE: another recording of the same signal (its native
 # rate, say). EXPECTED is then a pattern for any value of a decoded field (an
@@ -105,10 +106,20 @@ if(DEFINED REFERENCE_FIXTURE)
     endif()
 endif()
 
+# Optional -DANALOG_AUDIO_OUT: the analog replay host's --analog-audio-out file.
+# It goes on the command line as one argument, never through MODE's
+# separate_arguments(), so a path holding a space (a build directory's) stays
+# whole, and the run must write it there.
+set(_analog_audio_out_args)
+if(DEFINED ANALOG_AUDIO_OUT)
+    file(REMOVE "${ANALOG_AUDIO_OUT}")
+    set(_analog_audio_out_args --analog-audio-out "${ANALOG_AUDIO_OUT}")
+endif()
+
 execute_process(
     COMMAND
-        "${DSD_BIN}" --frontend none ${_mode_args} ${_event_args} ${_audio_args}
-        --iq-replay "${FIXTURE}" -o null
+        "${DSD_BIN}" --frontend none ${_mode_args} ${_analog_audio_out_args}
+        ${_event_args} ${_audio_args} --iq-replay "${FIXTURE}" -o null
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err
@@ -199,6 +210,20 @@ if(DEFINED NOT_EXPECTED AND NOT "${NOT_EXPECTED}" STREQUAL "")
         message(
             FATAL_ERROR
             "iq_decode_check: forbidden output /${NOT_EXPECTED}/ matched '${_hit}'\n${_all}"
+        )
+    endif()
+endif()
+
+if(DEFINED ANALOG_AUDIO_OUT)
+    set(_analog_audio_out_size 0)
+    if(EXISTS "${ANALOG_AUDIO_OUT}")
+        file(SIZE "${ANALOG_AUDIO_OUT}" _analog_audio_out_size)
+    endif()
+    file(REMOVE "${ANALOG_AUDIO_OUT}")
+    if(_analog_audio_out_size EQUAL 0)
+        message(
+            FATAL_ERROR
+            "iq_decode_check: the run wrote no delivered audio to '${ANALOG_AUDIO_OUT}'\n${_all}"
         )
     endif()
 endif()

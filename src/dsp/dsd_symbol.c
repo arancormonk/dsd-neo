@@ -39,6 +39,8 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/input_backlog_opening.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_tones.h>
@@ -64,7 +66,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/dsp/unflushed_retune.h"
 #include "dsd-neo/platform/sockets.h"
+#include "frame_sync_unflushed.h"
 #include "pcm_input_staging.h"
 #include "symbol_anchor_internal.h"
 
@@ -2772,6 +2776,15 @@ symbol_rtl_read_one(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_
     return 1;
 }
 
+/* The I/Q replay centre the sample was captured on (issue #575): only a new one goes to the hook, so a sample on the
+   centre already held costs one compare and no call. */
+static inline void
+symbol_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz) {
+    if (dsd_opts_iq_replay_center_is_new(opts, center_hz)) {
+        dsd_frame_sync_note_replay_center(opts, state, center_hz);
+    }
+}
+
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
     for (;;) {
@@ -2824,7 +2837,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
         /* The cache checks each sample's batch against this generation. */
         work->rtl_sample_generation = work->rtl_stream_generation;
         opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-        dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
+        symbol_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
         return 1;
     }
     if (!symbol_rtl_read_one(opts, state, sample_out, work, &work->rtl_sample_generation)) {
@@ -2834,7 +2847,7 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
        on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    symbol_note_replay_center(opts, state, replay_center_hz);
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     if (!work->rtl_symbol_rate_output && !work->cqpsk_symbol_rate && !work->rtl_fsk_discriminator_output) {
         *sample_out *= opts->rtl_volume_multiplier;
@@ -2929,13 +2942,21 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
         opts->tcp_sockfd =
             dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, NULL);
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+            /* The new connection exists: a watchdog retune marked from now on may find the old channel's audio on it,
+               and is measured on it, its reader going on from that count; one marked during the backoff measured no
+               input and is not this one's drop (issue #834). */
+            dsd_input_backlog_opening(opts->tcp_sockfd, dsd_pcm_stream_socket_arrived);
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
+                /* No input took the opening's posts: they are not the drop of whatever opens next. */
+                dsd_frame_sync_forget_unflushed_retunes();
                 return 0;
             }
-            /* A new stream, whatever the old one's resampler tail still returns first (issue #628). */
+            /* A new stream, whatever the old one's resampler tail still returns first (issue #628). A watchdog retune
+               posted before it existed is not its drop; one posted since it was opened is (issue #834). */
             dsd_opts_note_pcm_stream(opts);
+            dsd_frame_sync_forget_unflushed_retunes();
             LOG_INFO("TCP Socket Reconnected Successfully.\n");
             return 1;
         }
@@ -2976,6 +2997,12 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     if (reconnected) {
         dsd_opts_reset_pcm_input_state(opts);
+        /* A retune the watchdog posted once the new connection existed is its drop (the post was measured on it when
+           it opened): taken before its first sample is read, not at the next symbol. */
+        frame_sync_take_unflushed_retunes(opts, state);
+        if (state->input_drop_pending) {
+            dsd_symbol_apply_input_drop(opts, state);
+        }
     }
     /* The new connection is waited on as any other: one that stays quiet, or sends a part of a sample, leaves the
        hunt for the engine's tick, which ends the reception the reconnect cut (dsd_engine_analog_call_due()). */
@@ -3214,7 +3241,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
         return 0;
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-    dsd_frame_sync_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
+    symbol_note_replay_center(opts, state, state->rtl_symbol_cache_center_hz);
     state->lastsample = work->sample;
     /* One sample per symbol here, which the measurement recognises as a grid with no
        sub-symbol structure to report on. */
@@ -3714,8 +3741,60 @@ symbol_search_yields(const dsd_opts* opts, dsd_state* state) {
     return (state->symbolcnt & 63) == 0 && dsd_frame_sync_hook_signal_search_should_yield(opts, state);
 }
 
+void
+dsd_symbol_apply_input_drop(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !state->input_drop_pending) {
+        return;
+    }
+    state->input_drop_pending = 0U;
+    /* Asked for on an input since replaced (an input switch, a reopened stream): the new input holds no old channel. */
+    if (state->input_drop_generation != opts->pcm_input_generation) {
+        return;
+    }
+    /* What the input held at the mark goes; what arrived after it is the new channel's. A device keeps the audio it
+       captured since the mark; a stream or ring drops up to the count marked on it. */
+    const dsd_input_cut* cut = &state->input_drop_cut;
+    long dropped = DSD_INPUT_DISCARD_NOT_APPLICABLE;
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+            if (opts->audio_in_stream) {
+                (void)dsd_audio_discard_input(opts->audio_in_stream, cut->marked_ns);
+            }
+            break;
+        case AUDIO_IN_UDP: dropped = dsd_net_audio_input_hook_udp_discard_through(opts, cut); break;
+        case AUDIO_IN_TCP: dropped = dsd_net_audio_input_hook_tcp_discard_through(opts->tcp_in_ctx, cut); break;
+        case AUDIO_IN_STDIN: dropped = dsd_pcm_stream_discard_through(opts->audio_in_stdin, cut); break;
+        default: break;
+    }
+    /* A low-rate stream's staged upsampled outputs and FIR history came from the last samples the decoder read: from
+       before the mark when the cut applied and the decoder had not read past it already, and then they go with the
+       rest, so no old-channel audio is mixed into the new channel's first samples. Read past it (a confirmation taken
+       late), they start again from the last sample, the new channel's. A cut that does not apply (stdin from a file,
+       another input's cut) keeps them, as it keeps the input. */
+    if (dsd_pcm_input_uses_staged_resampler(opts)) {
+        if (dropped >= 0) {
+            dsd_pcm_input_forget_staged(opts);
+        } else if (dropped == DSD_INPUT_DISCARD_READ_PAST) {
+            /* The last sample read is the new channel's, but its staged outputs and the FIR history may still hold
+               samples from before the mark: rebuilt from it alone. */
+            dsd_pcm_input_restart_staged(opts);
+        }
+    }
+}
+
 static float
 symbol_read(dsd_opts* opts, dsd_state* state, int have_sync) {
+    /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834): this
+       decoder thread's, or one the P25 watchdog posted, taken here at the next read after it. Only a rigctl retune is
+       posted, and only while rigctl is in use (dsd_engine_note_rigctl_retune()), so a run without it never loads the
+       shared count here (on the MSVC atomics fallback a locked operation per symbol); a post outstanding when rigctl
+       stops is taken there (svc_rigctl_connect()), and a tune notice's reconcile takes any post too. */
+    if (opts->use_rigctl == 1) {
+        frame_sync_take_unflushed_retunes(opts, state);
+    }
+    if (state->input_drop_pending) {
+        dsd_symbol_apply_input_drop(opts, state);
+    }
     /* Long protocol readers also leave a search visit at its deadline, or once a read gave up on a stalled input, and
        leave the frame a gap in the radio stream cut. Completing their bounded frame with unusable symbols lets the
        engine regain its tick guard safely. The recorded interruption marks them on every input: the frame decoders

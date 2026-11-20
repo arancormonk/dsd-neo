@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -984,6 +985,13 @@ dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
            && ctx->state->input_interrupted == 0;
 }
 
+/* Content a scan quiet check counts as activity (issue #834): a burst whose own check proves it (as for the TDMA
+   carrier above), or a RAS signature -F accepts, which the trunk scan and a Signal search take as activity too. */
+static int
+dmr_dburst_proves_content(const dmr_data_burst_ctx* ctx) {
+    return dmr_dburst_proves_tdma_carrier(ctx) || (ctx->is_ras == 1U && ctx->state->input_interrupted == 0);
+}
+
 /* The carrier's RAS evidence (dmr_ras.c), noted before the burst dispatches: a retune its handler makes resets it with
    the carrier left. The second signature confirms RAS; without relaxed CRC the operator is told once that -F decodes
    what this carrier sends, or, with -F configured under a scan row's own --strict-crc, that the channel keeps strict
@@ -1059,6 +1067,9 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
     }
     if (dmr_dburst_proves_tdma_carrier(&ctx)) {
         state->tdma_carrier = 1U;
+    }
+    if (dmr_dburst_proves_content(&ctx)) {
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
     const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
     state->event_crc_invalid[ctx.slot] = (uint8_t)(saved_crc_invalid | ctx.crc_flags);

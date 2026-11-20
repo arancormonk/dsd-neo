@@ -15,6 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_NET_AUDIO_INPUT_HOOKS_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
 
 #include <stdint.h>
@@ -37,11 +38,15 @@ typedef struct {
     /* A UDP read that gives up after timeout_ms with no sample (-1), so the decoder can apply a queued command while
        the input is silent (issue #634). */
     int (*udp_read_sample_wait)(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+    /* Drop the samples the input held at a rigctl retune's mark (issue #834): the peer's audio from before it. */
+    long (*tcp_discard_through)(tcp_input_ctx* ctx, const dsd_input_cut* cut);
+    long (*udp_discard_through)(dsd_opts* opts, const dsd_input_cut* cut);
     /* A bounded, cancellable TCP connect (ConnectBounded()), for the TCP audio reconnect. */
     dsd_socket_t (*tcp_connect)(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context);
 } dsd_net_audio_input_hooks;
 
-void dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks);
+/* Install @p hooks (copied); NULL installs none. */
+void dsd_net_audio_input_hooks_set(const dsd_net_audio_input_hooks* hooks);
 
 tcp_input_ctx* dsd_net_audio_input_hook_tcp_open(dsd_socket_t sockfd, int samplerate);
 void dsd_net_audio_input_hook_tcp_close(tcp_input_ctx* ctx);
@@ -54,6 +59,11 @@ int dsd_net_audio_input_hook_udp_read_sample(dsd_opts* opts, int16_t* out);
 /** 1 with a sample, 0 on stop, -1 when none arrived within @p timeout_ms. Without the hook it waits as
     dsd_net_audio_input_hook_udp_read_sample() does, and never returns -1. */
 int dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms);
+/** The samples the input dropped (tcp_input_discard_through(), udp_input_discard_through()),
+    DSD_INPUT_DISCARD_READ_PAST when the decoder had read past the mark, or DSD_INPUT_DISCARD_NOT_APPLICABLE when the
+    cut does not apply, and without the hook. */
+long dsd_net_audio_input_hook_tcp_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut);
+long dsd_net_audio_input_hook_udp_discard_through(dsd_opts* opts, const dsd_input_cut* cut);
 /** The connected socket, or DSD_INVALID_SOCKET (also without the hook). */
 dsd_socket_t dsd_net_audio_input_hook_tcp_connect(const char* host, int port, int resolve,
                                                   dsd_socket_cancel_fn cancelled, void* context);

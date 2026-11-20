@@ -113,7 +113,7 @@ nxdn_frame(enum frame_kind kind) {
             nxdn_confirm_note_evidence(g_state, NXDN_EVIDENCE_STRONG);
         }
     }
-    nxdn_confirm_end_frame(g_state);
+    nxdn_confirm_end_frame(NULL, g_state);
 }
 
 static void

@@ -212,6 +212,12 @@ typedef struct {
     double cc_retry_after_m;
     double cc_tune_deadline_m;
     uint64_t cc_tune_request_id;
+    /* A tracked tune's carrier judgement (dmr_sm_note_tracked_carrier_tune(), issue #834): the request it waits on (0:
+       none), the receiver the tune would leave and where it goes. Judged once that request lands, dropped when the
+       backend reports it failed (the receiver stayed). Decoder thread only. */
+    uint64_t cc_leave_request_id;
+    long cc_leave_from_hz;
+    long cc_leave_to_hz;
     int cc_acquiring;
     int cc_confirmed;
 
@@ -267,7 +273,7 @@ void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* s
 
 /** Hand an accepted CC tune to the DMR owner. Clears outgoing voice/probe state;
  * a nonzero request ID is resolved before starting the acquisition deadline. */
-void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
+void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz,
                                  uint64_t request_id);
 /** Return to the explicit DMR control/rest frequency, clearing an obsolete P25
  * alias only on acceptance. Preserve the previous destination on failure. */
@@ -282,7 +288,7 @@ void dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
  * current generation; nonzero frequency must match the received channel. */
 void dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz);
 /** Retain an already confirmed CC only; never validate a probe from raw/relaxed evidence. */
-void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state);
+void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Process an event and update state machine.
@@ -330,6 +336,67 @@ int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
  *  leaves that carrier. */
 long dmr_sm_receiver_frequency(const dsd_opts* opts);
 
+/** @brief After a DMR tune that is not the machine's follow, move or status follow (a Capacity Plus rest move, a
+ *  Connect Plus data tune, a control channel probe or settle) took the receiver from @p receiver_hz (where it was
+ *  before the tune, as dmr_sm_receiver_frequency() reads it; 0 unknown) to @p freq_hz: when it left that carrier, the left
+ *  calls' privacy bit and talkgroup keys (dmr_forget_call_decryption()), ALG, key ID and MI and each slot's MI chain
+ *  are forgotten, as a release forgets them, so the next carrier's frames before their own PI or LC never decrypt with
+ *  them, and their voice is held until their calls say whether they are encrypted (dmr_enc_class_hold()). The FID is
+ *  left. A tune that stays on the carrier keeps everything: this judgement alone decides, never the engine's reading
+ *  of the tuner. */
+void dmr_sm_note_carrier_tune(dsd_state* state, long receiver_hz, long freq_hz);
+
+/** @brief dmr_sm_note_carrier_tune() for a tune the machine tracks by @p request_id (a control channel probe, a settle
+ *  tune, the Capacity Plus rest move), whose @p result may be PENDING: the receiver has not moved yet, and an RTL tune
+ *  that later fails leaves it where it was. A pending tune that would leave the carrier is judged once its request
+ *  lands, before the machine or a DMR frame reads anything the carrier it reached sends (dmr_sm_resolve_tracked_tune()),
+ *  and the judgement is dropped if the backend reports it failed, so the calls of the carrier the receiver never left
+ *  keep their decryption. A request the machine gives up on before it resolves (its deadline, a follow) is judged as
+ *  landed, the safe side: the receiver may still reach it. Any other result is judged at once. An earlier judgement
+ *  still waiting is settled first, by its own request. */
+void dmr_sm_note_tracked_carrier_tune(dmr_sm_ctx_t* ctx, dsd_state* state, dsd_trunk_tune_result result,
+                                      uint64_t request_id, long receiver_hz, long freq_hz);
+
+/** @brief Before a DMR frame is read: a tracked tune whose judgement still waits (dmr_sm_note_tracked_carrier_tune())
+ *  and whose request has resolved is settled now, so the frame of the carrier it reached is never read with the calls
+ *  it left. One load while nothing waits. */
+void dmr_sm_resolve_tracked_tune(const dsd_opts* opts, dsd_state* state);
+
+/** @brief An operator's move the tuner accepted, from @p receiver_hz (dmr_sm_receiver_frequency() read before the tune;
+ *  0 unknown) to @p freq_hz: a manual return to the control channel, a lockout or skip return, a channel or candidate
+ *  cycle. Called once the move ended the left calls (their rows keep the FID): judged as the machine's own follows
+ *  are, so a move that left the carrier forgets the left calls' privacy, ALG, key ID, MI and per-slot talkgroup key and
+ *  holds the next carrier's voice until its calls say whether they are encrypted (dmr_sm_leave_carrier()). A move to
+ *  the carrier the receiver is on keeps everything. */
+void dmr_sm_note_operator_leave(dsd_opts* opts, dsd_state* state, long receiver_hz, long freq_hz);
+
+/** @brief An operator's move on the io_control leg under trunking another protocol owns (P25, NXDN), with DMR decoding
+ *  on, from @p receiver_hz (the engine's reading before the tune, dsd_engine_receiver_frequency(); 0 unknown) to
+ *  @p freq_hz. Called once the move ended the left calls: judged as the engine's tune hook judges another machine's
+ *  tune, by that reading, never the machine's own, so a move that left the carrier forgets the left calls' privacy bit,
+ *  FID and per-slot talkgroup key and holds the next carrier's voice until its calls say whether they are encrypted.
+ *  The machine, which does not own the trunk, is left as it is. */
+void dmr_sm_note_foreign_operator_leave(dsd_state* state, long receiver_hz, long freq_hz);
+
+/** @brief The DMR machine's own tunes: dsd_trunk_tuning_hook_tune_to_freq() / _to_cc() (no TED SPS override) inside a
+ *  dsd_trunk_tuning_caller_judges_begin() / _end() pair, so the engine's tune hook leaves the judgement of a leave, for
+ *  the DMR calls' privacy and the hold, to the machine (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()). */
+static inline dsd_trunk_tune_result
+dmr_sm_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
+    dsd_trunk_tuning_caller_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq_hz, 0, out_request_id);
+    dsd_trunk_tuning_caller_judges_end();
+    return result;
+}
+
+static inline dsd_trunk_tune_result
+dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_request_id) {
+    dsd_trunk_tuning_caller_judges_begin();
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq_hz, 0, out_request_id);
+    dsd_trunk_tuning_caller_judges_end();
+    return result;
+}
+
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
@@ -337,8 +404,11 @@ int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
  *  where the receiver was before the tune (dmr_sm_receiver_frequency(); 0 unknown): a follow that leaves that carrier
  *  ends its calls (EXPLICIT) there, one that stays on it keeps the calls on the air and their identities. @p slot is the
- *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. */
-void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz);
+ *  selected LSN's slot (-1: none): it holds the carrier during acquisition, whatever its identity. @p result and
+ *  @p request_id are the follow tune's: one still in flight (PENDING under a request) ends the left calls now but
+ *  judges their decryption once it lands, and a tune that fails takes nothing from them, as for a grant's follow. */
+void dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int slot, long receiver_hz,
+                               dsd_trunk_tune_result result, uint64_t request_id);
 
 /* ----------------------------------------------------------------------------
  * Talkgroup priority and preemption

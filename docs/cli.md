@@ -430,8 +430,22 @@ Windows console runs:
   pass. X2-TDMA says whether a superframe is encrypted only after its first three voice frames: those frames follow the
   slot's previous superframe, so when a call changes between clear and encrypted, those three frames (60 ms) take the
   old verdict once, for audio, recording and capture alike. At the start of a transmission nothing is known yet, so they
-  are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without `-q`. YSF
-  frames are captured once a FICH has verified the transmission on the carrier.
+  are saved only where both clear and encrypted audio would be: with encrypted audio unmuted and without `-q`. DMR
+  follows the same rule after a channel change: a DMR call that is already under way when the receiver arrives is
+  muted, and left out of the per-call WAV and the MBE capture, until the call says whether it is encrypted. That is
+  usually under a quarter of a second. It takes longer when reception is poor or the call sends a talker alias or GPS
+  position in that place, and a call whose encryption details never decode stays muted. A call heard from its start
+  loses nothing. Every channel change does this except the run's first landing: a trunked call followed, a return to
+  the control channel, a `-Y` step, a trunk-scan switch, a frequency you enter, a signal search step, a replay retune.
+  So does the release of a call on the same channel, including a return to the control channel when none is known.
+  The single-slot decoder without trunking (`-fr`, `-nm`) does not do this, as before: it plays both timeslots on one
+  channel, so one slot's encryption details and call can carry over to the other slot's call there. Nor does direct-mode
+  DMR (radio to radio, no repeater) on any decoder, which plays both timeslots on one channel too.
+  With encrypted audio unmuted and without `-q` the held frames play, and a key forced onto every frame (`-4` with a
+  Basic Privacy or Hytera key, `-S`, or a vendor key: `-A`, `-2`, `-!`, `-@`, `-5`, `-9`, `--dmr-baofeng-pc5`,
+  `--dmr-csi-ee72`) decrypts them, as before. A key the call's own signalling selects waits for that
+  signalling to pass its check. On a rigctl peer, audio still inside the radio software right after a retune can end
+  that wait early (see `-U`). YSF frames are captured once a FICH has verified the transmission on the carrier.
 - `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
   filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
   text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
@@ -454,17 +468,18 @@ Windows console runs:
   labels the traffic takes that place, scanning or not; other lines from a receiver that is not scanning a named channel
   are unchanged.
   A DMR, P25 Phase 2 or X2-TDMA line ends with the over-the-air slot, `Slot 1;` or `Slot 2;`. The single-slot DMR
-  decoder (`-fr`, `-nm`) carries both slots on one lane and logs the slot its bursts' CACH proved (`Slot 1;` while
-  none is proven). In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
-  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]`), while
-  FDMA rows carry no slot tag. An analog line names its mode after the `ANALOG` token, `NFM` or `AM` as dsd-neo
-  demodulated it, and no mode on audio input, where another receiver did. It names the tuned frequency as digital lines
-  do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on audio input (earlier versions wrote
-  `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input an analog line names the
-  frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan` target confirmed it
-  tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency changed on the peer
-  itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was received with, as Call
-  Info's `Rx tone:` line writes it:
+  decoder (`-fr`, `-nm`) without trunking carries both slots on one lane and logs the slot its bursts' CACH proved
+  (`Slot 1;` while none is proven); with trunking (`-T`) it decodes a repeater's calls on their own slots, as the
+  two-slot decoder does. In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
+  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]` by decoder lane (the single-slot decoder's rows are all `[S1]` without
+  trunking, and its calls' own slots with it), while FDMA rows carry no slot tag. An analog line names its mode after
+  the `ANALOG` token, `NFM` or `AM` as dsd-neo demodulated it, and no mode on audio input, where another receiver did.
+  It names the tuned frequency as digital lines do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on
+  audio input (earlier versions wrote `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input
+  an analog line names the frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan`
+  target confirmed it tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency
+  changed on the peer itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was
+  received with, as Call Info's `Rx tone:` line writes it:
   `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
   `ANALOG; CTCSS 100.0 Hz;`. A call with no tone, or whose tone was never confirmed, names none; a tone lost just
@@ -517,7 +532,8 @@ Windows console runs:
   line was written. A failure that reaches an already committed row through late detail (an alias or
   position decoded after the row committed) updates history and the API feed but appends nothing to
   `-J`; a reacquired transmission that merges into the row appends its `Reacquired:` continuation with
-  the merged row's marker. A DMR embedded talker alias or GPS LC whose checksum failed is never applied.
+  the merged row's marker. A DMR embedded talker alias or GPS LC whose checksum failed is never applied, and a
+  talker alias, position or text is added only to a call of the protocol that sent it.
   A `-L` location file never receives a position decoded from a PDU that would carry either marker
   (see `-L`).
 
@@ -2387,6 +2403,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   own `-F` or `--strict-crc` all turn every one of these gates on or off together, DMR's relaxed control-channel
   heartbeat included. While a scan row sets its own, the row decides until it leaves; the toggle edits the configured
   value beneath it and says so.
+  - DMR encryption lockout acts only on a voice LC whose check passed, or one `-F` accepted as RAS: a RAS system
+    needs `-F` for it.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
@@ -2460,14 +2478,23 @@ channel is delayed.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
-  later of `-T`/`-Y` wins. For NXDN the hold is refreshed only by frames whose content passed a CRC, so an open squelch
-  on an empty channel no longer parks the scan. `-Y` scans only a channel map you import (`-C`, a config `chan_csv`, or
-  an import during the session). With none, at start or after Clear channel map, it stays on its frequency until one is
-  imported: channels a DMR site announces over the air are recorded, but `-Y` never steps to them, and neither the voice
-  gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan Timing row reads `No channel map`
-  meanwhile, with no countdown. With a list, channels learned over the air (a DMR site's announcements, a P25 or NXDN
-  grant resolved) are not a new list: a row whose tune lands late still becomes the row on air, with its name and
-  keys, and no row's warning or `Skipped at every visit` status line is repeated for them.
+  later of `-T`/`-Y` wins. Only frames whose content passed their protocol's checks keep a row past `-t`: noise that
+  keeps matching a sync word (NXDN48 noise in particular) no longer holds a row on an empty channel, and the row
+  leaves once `-t` has passed since it landed or since its last checked frame (on an RTL-SDR-family receiver, also
+  not before `-t` has passed since the radio started listening again after the retune's short mute). A frame whose verdict is still open (one
+  waiting on part of its checks, or a dPMR frame type with no check of its own) holds the row up to 1 s after each such
+  frame; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they come; DMR, P25, ProVoice and
+  EDACS syncs restart `-t` as before ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is
+  refreshed only by a frame whose own content passed its CRC (a lone short CRC that a noise frame passes by chance does
+  not count), so an open squelch on an empty channel no longer parks the scan. The one exception: when an NXDN48
+  call's first frame passed a strong CRC on its own, the next frame arriving one frame later confirms it and starts the
+  hold, even with no passing CRC of its own; later frames without one do not refresh it. `-Y` scans only a channel map you
+  import (`-C`, a config `chan_csv`, or an import during the session). With none, at start or after Clear channel map,
+  it stays on its frequency until one is imported: channels a DMR site announces over the air are recorded, but `-Y`
+  never steps to them, and neither the voice gate nor `--scan-max-visit-ms` ends a reception on their account. The Scan
+  Timing row reads `No channel map` meanwhile, with no countdown. With a list, channels learned over the air (a DMR
+  site's announcements, a P25 or NXDN grant resolved) are not a new list: a row whose tune lands late still becomes the
+  row on air, with its name and keys, and no row's warning or `Skipped at every visit` status line is repeated for them.
 - Live per-channel edits: while a `-Y` typed channel map or a `--trunk-scan` list runs, the row on air's squelch,
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
@@ -2500,10 +2527,13 @@ channel is delayed.
   waiting out the `-t` hangtime. The check reads the channel's power against the receiver's noise for about 100 ms,
   and a row is skipped at most once a visit. A row carrying a signal DSD-neo can receive normally reads busy and keeps
   its normal timing, and so do a held row, an open analog carrier and a row whose voice the voice gate has heard; weak
-  or very short transmissions can be missed. It is off by default and is one setting for the session, never a row
-  option.
-  Some receivers, widths, sample rates and decoder sets get no check (an untyped row under Auto among them); the list,
-  the log line and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
+  or very short transmissions can be missed. Only frames whose content passed their protocol's checks end the check,
+  so noise that merely matches a sync word does not keep a silent row. It is off by default and is one setting for
+  the session, never a row option.
+  While a row is being checked the Scan Timing row reads `Quiet check` instead of `Hangtime`. Some receivers, widths,
+  sample rates and decoder sets get no check (an untyped row under Auto among them): the row then reads `No check:`
+  and the reason (`input`, `tuner`, `rate`, `width` or `modes`), and the log says once how to fix it. The list, the
+  log lines and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
@@ -2695,6 +2725,38 @@ channel is delayed.
     reduced key its own) is locked out instead of followed, and a followed call that turns out so is left.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532; `0` is the default too, and a port over 65535 is an error)
+  - When the radio software confirms a tune to another frequency (a trunked call followed, a return to the control
+    channel, a `-Y` step, a frequency you enter, or a return the trunking watchdog makes), DSD-neo drops the audio it
+    already held from the old channel when it asked for the tune, just before it reads the next sample, and keeps
+    everything that arrived after it asked, even audio the radio software sent before its answer, and even when that new
+    audio is what ended a wait for input: on UDP input what its receive buffer
+    and the system's socket held, on TCP input what its read buffer and the connection held, and on stdin fed by another program what the pipe
+    held. On sound-card input (PulseAudio on Linux and macOS, PortAudio on Windows, AAudio on Android), which says
+    nothing of when its audio arrived, DSD-neo drops what the sound system has handed over but it has not read yet, and
+    keeps the newest part of it, as much audio as the time since it asked for the tune (the audio captured since). That
+    drop is approximate: it assumes the sound keeps coming, so when the source stops sending during the retune, some
+    of the old channel's audio can be kept and heard as the new channel's first moments. What
+    one retune drops at a time is bounded: on TCP and stdin about 4 seconds of 48 kHz mono audio, the rest going with the
+    next reads, before any of it is decoded; on UDP what its buffer holds (about 1 second at 48 kHz), and on sound-card
+    input about 2 seconds; no drop spends more than a quarter of a second reading at a time, and none waits for audio, so a sound source that stops sending during the retune cannot hold DSD-neo up. A
+    tune asked for while TCP input reconnects drops what the new connection held when it was asked for. It also starts
+    its timing over, so nothing measured on the old channel carries onto the new one (a DMR call's encryption sequence,
+    the place of a P25 end-of-call). An RTL-family input does the same already, because a retune clears its stream.
+    Rigctl tuning while reading an RTL-family input is not a supported mix: DSD-neo tunes that input itself, and a
+    rigctl move clears nothing in it. A
+    tune to the frequency the radio software is already on, one it refuses, and one it does not answer drop nothing.
+    When the radio software's answer to a tune is lost or cannot be read, DSD-neo no longer knows where the radio is,
+    since it may have moved: the next tune is always sent, and it drops what the input held, even a tune back to the
+    frequency it had before. An answer that comes too late (after `DSD_NEO_RIGCTL_RCVTIMEO`) is still read, as the
+    answer to the next request: as before, DSD-neo cannot tell late answers apart from current ones, so a slow radio
+    program can make a tune look confirmed when it was not. A file, or stdin read from a file, is never dropped.
+  - What DSD-neo cannot drop is audio that is still inside the radio software, or in the sound system on its way to
+    DSD-neo, when it asks for the tune. It arrives after the retune and is read as the new channel's. So for the
+    first moments after a retune, the old channel can still be heard: an end-of-call there can end the call just
+    followed, a call header there can show the old channel's call on the new one, and a DMR call header there can end
+    the new channel's encryption wait early (see `-d`). How long this lasts depends on how much audio the radio
+    software and the audio path between it and DSD-neo hold back. A low-latency audio path shortens it: keep the radio
+    software's audio buffering small, and prefer a direct network audio stream (UDP or TCP) over a virtual sound card.
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode), the FM passband the peer is asked for wherever it
   does not demodulate the analog monitor: on digital modes, and on an RTL-family input, where the peer only follows the
   frequency and is asked for `-B` alone. On audio input, where the peer demodulates, the analog monitor asks for its own
@@ -2735,7 +2797,8 @@ channel is delayed.
     countdown with a `7.0s` total, while `-t 0` shows `0.00 sec` above a `1.0s` total. These describe the setting
     and the scanner's timing window, respectively. The one-second window for `-t 0` means waiting for the next
     clock-second boundary, not a guaranteed full second of silence after the last sync. NXDN holds the scan two
-    extra seconds after each confirmed frame, so its countdown can initially exceed the displayed total.
+    extra seconds after each frame whose own content passed its CRC, so its countdown can initially exceed the
+    displayed total.
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.

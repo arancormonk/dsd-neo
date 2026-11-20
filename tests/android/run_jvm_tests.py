@@ -16,6 +16,24 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 
+# The compiler and the tests run in short-lived JVMs. C1 alone and the serial collector do their work in about a third of
+# the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
+# the usb suite outlasted CTest's 90 s beside a full parallel build.
+JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+# The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
+# so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
+# and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone, as is one an argument file
+# the launcher expands there, or a HotSpot options file named in any of them, may select (names_argument_file(),
+# names_options_file()).
+# Matched against whole arguments, as the JVM splits these options (jvm_option_words()).
+COLLECTOR_SELECTION = re.compile(r"-XX:\+Use\w*GC")
+JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+# kotlinc takes its JVM's options from JAVA_OPTS, in both launchers (bin/kotlinc and bin/kotlinc.bat), and puts each
+# word on the java command line itself. Not as -J arguments: Windows runs kotlinc.bat, and cmd.exe splits a batch file's
+# arguments at "=", so -J-XX:TieredStopAtLevel=1 reached the JVM as -XX:TieredStopAtLevel and a stray 1. A set JAVA_OPTS
+# replaces the launchers' default heap options, so they go in with it (Kotlin 2.4's default).
+KOTLINC_DEFAULT_JAVA_OPTS = "-Xmx512M -Xms128M"
+
 # A double-quoted literal on one line, and the escapes the golden records use (C and Kotlin agree on these).
 STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "\\": "\\", '"': '"'}
@@ -1766,6 +1784,100 @@ def cached_compiler():
     return jars
 
 
+def jvm_option_words(text, quotes="\"'"):
+    """@p text split into arguments as HotSpot splits JAVA_TOOL_OPTIONS (and the launcher JDK_JAVA_OPTIONS): at
+    whitespace outside quotes, a run in one of @p quotes taken as it is and its quotes dropped, anywhere in a word
+    (-XX:+"UseG1GC" is -XX:+UseG1GC; -Dname="-XX:+UseG1GC" is one property)."""
+    words, word, quote, quoted = [], [], None, False
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                word.append(char)
+        elif char in quotes:
+            quote, quoted = char, True
+        elif char.isspace():
+            if word or quoted:
+                words.append("".join(word))
+            word, quoted = [], False
+        else:
+            word.append(char)
+    if word or quoted:
+        words.append("".join(word))
+    return words
+
+
+def selects_collector(words):
+    """Whether the JVM arguments @p words select a garbage collector: one whole argument -XX:+Use...GC."""
+    return any(COLLECTOR_SELECTION.fullmatch(word) for word in words)
+
+
+def java_opts_words(text, kotlinc):
+    """@p text, JAVA_OPTS, split as the @p kotlinc launcher puts it on the java command line: bin/kotlinc expands it
+    unquoted, so the shell splits it at whitespace and its quotes are literal; kotlinc.bat hands it to java.exe, whose
+    command line takes double quotes only."""
+    if str(kotlinc).lower().endswith(".bat"):
+        return jvm_option_words(text, quotes='"')
+    return text.split()
+
+
+def names_argument_file(words):
+    """Whether the java launcher arguments @p words name an argument file (@path), which the launcher expands in their
+    place on its command line and in JDK_JAVA_OPTIONS ("@@" is a literal "@"). The JVM-wide JAVA_TOOL_OPTIONS and
+    _JAVA_OPTIONS expand none."""
+    return any(word.startswith("@") and not word.startswith("@@") for word in words)
+
+
+def names_options_file(words):
+    """Whether the JVM arguments @p words name a file of HotSpot options: -XX:Flags= (its lines +Name, -Name or
+    Name=value) or -XX:VMOptionsFile= (options as on the command line). HotSpot reads either wherever it takes
+    options, JAVA_TOOL_OPTIONS and _JAVA_OPTIONS included."""
+    return any(word.startswith(("-XX:Flags=", "-XX:VMOptionsFile=")) for word in words)
+
+
+def jvm_options(environ, given=()):
+    """JVM_OPTIONS for a JVM started with the arguments @p given under @p environ, without the serial collector when
+    @p given or the JVM-wide options in @p environ select a collector already, or may: an argument file the launcher
+    expands there (in @p given, or in JDK_JAVA_OPTIONS), or a HotSpot options file named in any of them, can select
+    one, and is not read here."""
+    wide = {name: jvm_option_words(environ.get(name, "")) for name in JVM_WIDE_OPTIONS}
+    sources = [list(given), *wide.values()]
+    selected = any(selects_collector(words) or names_options_file(words) for words in sources)
+    if selected or names_argument_file(given) or names_argument_file(wide["JDK_JAVA_OPTIONS"]):
+        return tuple(option for option in JVM_OPTIONS if not selects_collector([option]))
+    return JVM_OPTIONS
+
+
+def kotlinc_environment(environ, kotlinc):
+    """@p environ with jvm_options() in JAVA_OPTS, for the @p kotlinc launcher: after the options already set there, or
+    after the launchers' default when none are."""
+    given = environ.get("JAVA_OPTS", "").strip()
+    words = java_opts_words(given, kotlinc)
+    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, words)))}
+
+
+def compile_command(java, kotlinc, cached, files, output, environ):
+    """The compile of @p files into the jar @p output: its argv, its environment and the classpath the tests run on. With
+    kotlinc, the JVM options go through JAVA_OPTS and no argument carries one; with the cached compiler, java takes them
+    as arguments itself."""
+    if kotlinc:
+        argv = [kotlinc, "-include-runtime", *map(str, files), "-d", str(output)]
+        return argv, kotlinc_environment(environ, kotlinc), str(output)
+    classpath = os.pathsep.join(map(str, cached))
+    argv = [
+        java, *jvm_options(environ), "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+        "-no-stdlib", "-no-reflect", "-classpath", classpath, *map(str, files), "-d", str(output),
+    ]
+    return argv, dict(environ), os.pathsep.join((str(output), classpath))
+
+
+def test_command(java, runtime, test, environ):
+    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ."""
+    # Top-level functions in Foo.kt compile into the class FooKt.
+    return [java, *jvm_options(environ), "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
+
+
 def run_build(name, build, java, kotlinc, cached):
     app = REPO / APP_SOURCES
     files = [
@@ -1775,17 +1887,10 @@ def run_build(name, build, java, kotlinc, cached):
     ]
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
-        if kotlinc:
-            compiler = [kotlinc, "-include-runtime"]
-            runtime = str(output)
-        else:
-            classpath = os.pathsep.join(map(str, cached))
-            compiler = [java, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect", "-classpath", classpath]
-            runtime = os.pathsep.join((str(output), classpath))
-        subprocess.run([*compiler, *map(str, files), "-d", str(output)], check=True)
+        argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
+        subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            # Top-level functions in Foo.kt compile into the class FooKt.
-            subprocess.run([java, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"], check=True, timeout=30)
+            subprocess.run(test_command(java, runtime, test, os.environ), check=True, timeout=30)
 
 
 def run_suite(name, suite, java, kotlinc, cached):

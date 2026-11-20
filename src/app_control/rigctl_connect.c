@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -43,6 +44,9 @@ svc_rigctl_connect(dsd_opts* opts, dsd_state* state, const char* host, int port)
             return -1;
         }
         p25_sm_tick_guard_enter();
+        /* A retune posted while rigctl was in use is taken now: the symbol reader checks for posts only while it is
+           (issue #834), and none comes once it is off. */
+        dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
         DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", next_host);
         opts->rigctlportno = port;
         opts->rigctl_sockfd = DSD_INVALID_SOCKET;

@@ -59,6 +59,8 @@ static int g_pdu_trunking_calls;
 static int g_status_ensure_started_calls;
 static int g_status_classify_calls;
 static int g_last_pdu_data_len;
+/* Issue #834: the -Y content count when the header was dispatched (-1: none dispatched). */
+static int g_content_seq_at_header = -1;
 static uint8_t g_header_crc_invalid[2];
 static uint8_t g_data_crc_invalid[2];
 
@@ -143,6 +145,7 @@ p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input) {
     DSD_MEMCPY(g_header_crc_invalid, state->event_crc_invalid, sizeof(g_header_crc_invalid));
     (void)input;
     g_pdu_header_calls++;
+    g_content_seq_at_header = (int)state->scan_y_content_seq;
 }
 
 void
@@ -859,6 +862,10 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     rc |= expect_int("process header dispatch", g_pdu_header_calls, 1);
     rc |= expect_int("process no data dispatch for zero block", g_pdu_data_calls, 0);
     rc |= expect_int("process fec ok", (int)state.p25_p1_fec_ok, 1);
+    /* Issue #834: a header that passed its CRC is activity to a scan quiet check, whatever the NID made of the NAC. */
+    rc |= expect_int("process header is proven content", (int)state.scan_y_content_seq, 1);
+    /* Before the header is dispatched: a trunking message may retune. */
+    rc |= expect_int("proven before the header is dispatched", g_content_seq_at_header, 1);
     rc |= expect_active_voice_call("process MPDU preserves voice", &state, 77U, 88U);
     rc |= expect_int("process classifies status", g_status_classify_calls, 1);
     /* The PDU's length on air from its CRC-checked header: the header alone, one block, 180 dibits. */

@@ -46,6 +46,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/rate_converter.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/edacs/edacs_bch.h>
@@ -422,7 +423,9 @@ edacs_read_sample_rtl(dsd_opts* opts, dsd_state* state, short* out, float* voice
        captured on (issue #575). */
     uint32_t replay_center_hz = 0U;
     (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-    dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    if (dsd_opts_iq_replay_center_is_new(opts, replay_center_hz)) {
+        dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+    }
     /* EDACS keeps the stream on the digital family, so this is the FSK discriminator output, on the modem's fixed
        scale (fsk_modem.h): the PCM range holds +/-6553 Hz, past EDACS voice's 5 kHz, and noise beyond it saturates;
        the release register reads it. The monitor's volume trim is not applied to it (nor to any FSK direct output,
@@ -686,6 +689,12 @@ edacs_collect_analog_triplet_lanes(dsd_opts* opts, dsd_state* state, dsd_rate_co
 #ifdef USE_RADIO
     state->edacs_no_stream_seen = 0U;
 #endif
+    /* A rigctl peer's confirmed retune left the frequency left's samples queued in the input (issue #834): this
+       reader is the decoder thread's next input read on an EDACS voice channel. */
+    dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    if (state->input_drop_pending) {
+        dsd_symbol_apply_input_drop(opts, state);
+    }
     short* const analog[3] = {analog1, analog2, analog3};
     const int rtl = opts->audio_in_type == AUDIO_IN_RTL;
     if (!edacs_collect_input_triplet(opts, state, conv, voice_conv, analog, rtl ? voice : NULL, flags, pwr)) {

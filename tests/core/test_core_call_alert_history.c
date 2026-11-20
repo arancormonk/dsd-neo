@@ -438,7 +438,12 @@ update_test_crypto(dsd_state* state, uint8_t slot, dsd_call_crypto_state classif
         .observed_m = g_observed_m,
     };
     g_observed_m += 0.1;
-    return dsd_call_state_update_crypto(state, slot, &update);
+    // Written as the slot call's own protocol's: these cases are about what an update does, not whose call it is.
+    dsd_call_snapshot call;
+    const int protocol = dsd_call_state_get(state, slot, &call) > 0 && call.protocol != DSD_SYNC_NONE
+                             ? call.protocol
+                             : DSD_SYNC_P25P1_POS;
+    return dsd_call_state_update_crypto(state, slot, protocol, &update);
 }
 
 static int
@@ -974,8 +979,8 @@ test_noncanonical_notice_leaves_the_canonical_staged_row_alone(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
     dsd_call_snapshot canonical;
     assert(dsd_call_state_get(&state, 0U, &canonical) == 1);
-    int rc =
-        expect_int("canonical call takes its alias", dsd_event_enrich_alias(&state, 0U, canonical.epoch, "Unit 7"), 1);
+    int rc = expect_int("canonical call takes its alias",
+                        dsd_event_enrich_alias(&state, 0U, canonical.protocol, canonical.epoch, "Unit 7"), 1);
     DSD_MEMCPY(&before, &event_history[0].Event_History_Items[0], sizeof before);
 
     opts.rtlsdr_center_freq = 852000000U;
@@ -1138,7 +1143,7 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     dsd_call_snapshot call_b;
     assert(dsd_call_state_get(&state, 0U, &call_b) == 1);
     rc |= expect_int("enrichment before the epoch opens is declined",
-                     dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 0);
+                     dsd_event_enrich_gps(&state, 0U, call_b.protocol, call_b.epoch, "APRS - Lat: 41d"), 0);
     rc |= expect_int(
         "direct detail before the epoch opens is declined",
         dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 0);
@@ -1149,7 +1154,7 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
 
     // The detail repeats once B is open and lands on B's own row.
     rc |= expect_int("enrichment of the open call lands",
-                     dsd_event_enrich_gps(&state, 0U, call_b.epoch, "APRS - Lat: 41d"), 1);
+                     dsd_event_enrich_gps(&state, 0U, call_b.protocol, call_b.epoch, "APRS - Lat: 41d"), 1);
     // Detail of another protocol family is no detail of B: D-STAR slow data while B, a DMR call, is still open.
     rc |= expect_int(
         "another protocol's detail on the open call is declined",
@@ -1170,8 +1175,8 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     rc |= expect_str_eq("A's row carries none of B's detail", event_history[0].Event_History_Items[2].gps_s, "");
 
     // Enrichment still reaches the call's committed row once it ended and committed.
-    rc |= expect_int("late enrichment reaches B's committed row", dsd_event_enrich_text(&state, 0U, call_b.epoch, "73"),
-                     1);
+    rc |= expect_int("late enrichment reaches B's committed row",
+                     dsd_event_enrich_text(&state, 0U, call_b.protocol, call_b.epoch, "73"), 1);
     rc |= expect_str_eq("late text on the committed row", event_history[0].Event_History_Items[1].text_message, "73");
     dsd_state_ext_free_all(&state);
     return rc;
@@ -1210,9 +1215,9 @@ test_enrichment_before_the_epoch_opens_spares_the_outgoing_row(void) {
         dsd_call_snapshot call_b;
         assert(dsd_call_state_get(&state, 0U, &call_b) == 1);
         DSD_SNPRINTF(label, sizeof label, "%s: B's alias is declined", name);
-        rc |= expect_int(label, dsd_event_enrich_alias(&state, 0U, call_b.epoch, "Unit 201"), 0);
+        rc |= expect_int(label, dsd_event_enrich_alias(&state, 0U, call_b.protocol, call_b.epoch, "Unit 201"), 0);
         DSD_SNPRINTF(label, sizeof label, "%s: B's position is declined", name);
-        rc |= expect_int(label, dsd_event_enrich_gps(&state, 0U, call_b.epoch, "LIP: 22.5S 45.0W"), 0);
+        rc |= expect_int(label, dsd_event_enrich_gps(&state, 0U, call_b.protocol, call_b.epoch, "LIP: 22.5S 45.0W"), 0);
         DSD_SNPRINTF(label, sizeof label, "%s: the outgoing staged alias stays empty", name);
         rc |= expect_str_eq(label, staged->alias, "");
         DSD_SNPRINTF(label, sizeof label, "%s: the outgoing staged GPS stays empty", name);
@@ -2188,7 +2193,7 @@ test_m17_dstar_dpmr_current_strings(void) {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED,
         .audio_permitted = 0U,
     };
-    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DPMR_FS2_POS, &crypto);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_str_eq("dpmr sysid", item->sysid_string, "DPMR_CC_9");
@@ -2228,7 +2233,7 @@ test_nxdn_current_includes_channel_encryption_and_policy_labels(void) {
         .kid = 0x2AU,
         .audio_permitted = 0U,
     };
-    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_NXDN_POS, &crypto);
     if (append_policy_label(&state, 51002U, "D", "Dispatch") != 0
         || append_policy_label(&state, 41001U, "A", "Unit 41001") != 0) {
         DSD_FPRINTF(stderr, "failed to append NXDN policy labels\n");
@@ -2439,7 +2444,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     crypto.classification = DSD_CALL_CRYPTO_CLEAR;
     crypto.audio_permitted = 1U;
     crypto.observed_m = 1.1;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     int rc = 0;
@@ -2454,7 +2459,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     crypto.kid = 0x2222U;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 1.2;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     current = &event_history[0].Event_History_Items[0];
     rc |= expect_int("crypto refinement stays current", (int)event_history[0].Event_History_Items[1].target_id, 0);
@@ -6450,7 +6455,7 @@ test_commit_rev_tracks_committed_rows_only(void) {
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&state, 0U, &call) == 1);
     rc |= expect_int("late alias enriches the committed row",
-                     dsd_event_enrich_alias(&state, 0U, call.epoch, "LATE ALIAS"), 1);
+                     dsd_event_enrich_alias(&state, 0U, call.protocol, call.epoch, "LATE ALIAS"), 1);
     const uint64_t enriched_rev = event_history[0].commit_rev;
     rc |= expect_int("enrichment advances commit_rev", enriched_rev > committed_rev ? 1 : 0, 1);
 
@@ -7136,8 +7141,8 @@ test_reacquired_segment_contributes_alias_and_gps(void) {
     dsd_call_snapshot reacquired;
     assert(dsd_call_state_get(&state, 0U, &reacquired) > 0);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(dsd_event_enrich_alias(&state, 0U, reacquired.epoch, "UNIT 12") == 1);
-    assert(dsd_event_enrich_gps(&state, 0U, reacquired.epoch, "lat 1.0 lon 2.0") == 1);
+    assert(dsd_event_enrich_alias(&state, 0U, reacquired.protocol, reacquired.epoch, "UNIT 12") == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, reacquired.protocol, reacquired.epoch, "lat 1.0 lon 2.0") == 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -7358,7 +7363,7 @@ test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row(void) {
     dsd_call_snapshot reacquired;
     assert(dsd_call_state_get(&state, 0U, &reacquired) > 0);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(dsd_event_enrich_alias(&state, 0U, reacquired.epoch, "B UNIT") == 1);
+    assert(dsd_event_enrich_alias(&state, 0U, reacquired.protocol, reacquired.epoch, "B UNIT") == 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -7658,9 +7663,9 @@ test_merge_logs_metadata_the_segment_added(void) {
     rc |= expect_int("reacquired segment has a call snapshot", dsd_call_state_get(&state, 0U, &reacquired) > 0, 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("reacquired segment takes the alias",
-                     dsd_event_enrich_alias(&state, 0U, reacquired.epoch, "UNIT 12 FIRE"), 1);
+                     dsd_event_enrich_alias(&state, 0U, reacquired.protocol, reacquired.epoch, "UNIT 12 FIRE"), 1);
     rc |= expect_int("reacquired segment takes the gps fix",
-                     dsd_event_enrich_gps(&state, 0U, reacquired.epoch, "lat 3.0 lon 4.0"), 1);
+                     dsd_event_enrich_gps(&state, 0U, reacquired.protocol, reacquired.epoch, "lat 3.0 lon 4.0"), 1);
     rc |= expect_int("reacquired segment ends", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -7700,7 +7705,7 @@ test_merge_upgrades_partial_alias(void) {
     dsd_call_snapshot first;
     assert(dsd_call_state_get(&state, 0U, &first) > 0);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(dsd_event_enrich_alias(&state, 0U, first.epoch, "UNIT") == 1);
+    assert(dsd_event_enrich_alias(&state, 0U, first.protocol, first.epoch, "UNIT") == 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(expect_str_eq("first segment logs the partial alias", event_history[0].Event_History_Items[1].alias, "UNIT")
@@ -7712,7 +7717,7 @@ test_merge_upgrades_partial_alias(void) {
     dsd_call_snapshot second;
     assert(dsd_call_state_get(&state, 0U, &second) > 0);
     dsd_event_sync_slot(&opts, &state, 0U);
-    assert(dsd_event_enrich_alias(&state, 0U, second.epoch, "UNIT 12 FIRE") == 1);
+    assert(dsd_event_enrich_alias(&state, 0U, second.protocol, second.epoch, "UNIT 12 FIRE") == 1);
     assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -8593,7 +8598,7 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
         dsd_event_sync_slot(&opts, &state, 0U);
         dsd_call_snapshot call;
         assert(dsd_call_state_get(&state, 0U, &call) == 1);
-        assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "voice position") == 1);
+        assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "voice position") == 1);
         assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
         dsd_event_sync_slot(&opts, &state, 0U);
         if (pass != 0) {
@@ -8622,9 +8627,9 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
     // Even an otherwise identical carrier repeat must not hide a newly failed CRC.
     const dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 1;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 0;
     assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -8668,7 +8673,7 @@ test_crc_invalid_enrichment_marks_voice(void) {
             dsd_event_sync_slot(&opts, &state, 0U);
         }
         state.event_crc_invalid[0] = 1;
-        assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "lat 1.0 lon 2.0") == 1);
+        assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "lat 1.0 lon 2.0") == 1);
         state.event_crc_invalid[0] = 0;
         if (!late) {
             assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
@@ -8741,11 +8746,11 @@ test_crc_ras_marker_and_escalation(void) {
     // must land on a RAS-only call and escalate the row.
     const dsd_call_crypto_update crypto = {
         .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = DSD_CRC_FAILED;
-    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) == 1);
     state.event_crc_invalid[0] = 0U;
     assert(dsd_call_state_get(&state, 0U, &call) == 1);
     rc |= expect_int("failure lands on a RAS call", call.crc_invalid, both);
@@ -8767,7 +8772,7 @@ test_crc_ras_marker_and_escalation(void) {
            == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) == 1);
-    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "ras position") == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "ras position") == 1);
     state.event_crc_invalid[0] = 0U;
     assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -8779,7 +8784,7 @@ test_crc_ras_marker_and_escalation(void) {
     rc |= expect_has_substr("-J marks the RAS detail line", log, "[RAS] GPS: ras position");
     const int lines_before = count_lines(log);
     state.event_crc_invalid[0] = DSD_CRC_FAILED;
-    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "failed position") == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "failed position") == 1);
     state.event_crc_invalid[0] = 0U;
     rc |= expect_int("late failure swaps the committed marker", count_substr(committed->event_string, "[CRC ERR]"), 1);
     rc |= expect_int("late failure leaves no RAS marker", strstr(committed->event_string, "[RAS]") != NULL, 0);
@@ -8837,7 +8842,7 @@ test_crc_ras_marker_and_escalation(void) {
     DSD_MEMSET(committed->event_string + sizeof ras_prefix - 1U, 'Y', cap - sizeof ras_prefix);
     committed->event_string[cap - 1U] = '\0';
     state.event_crc_invalid[0] = DSD_CRC_FAILED;
-    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "full row position") == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "full row position") == 1);
     state.event_crc_invalid[0] = 0U;
     rc |= expect_int("full row swaps the marker",
                      strncmp(committed->event_string, "2026-04-30 00:00:00 [CRC ERR] YYYY", 34) == 0, 1);
@@ -8856,7 +8861,7 @@ test_crc_ras_marker_and_escalation(void) {
     rc |= expect_int("labelled row starts clean", committed->crc_invalid, 0);
     DSD_SNPRINTF(committed->event_string, cap, "%s", "2026-04-30 00:00:00 [RAS] DMR TGT: 00000700; ");
     state.event_crc_invalid[0] = DSD_CRC_FAILED;
-    assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "labelled position") == 1);
+    assert(dsd_event_enrich_gps(&state, 0U, call.protocol, call.epoch, "labelled position") == 1);
     state.event_crc_invalid[0] = 0U;
     rc |= expect_has_substr("channel label survives the marker", committed->event_string,
                             "00:00:00 [CRC ERR] [RAS] DMR TGT: 00000700;");

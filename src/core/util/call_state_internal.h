@@ -30,6 +30,13 @@ void dsd_call_state_normalize_identity_text(char* dst, const char* src);
  * whose epoch never named a call (dsd_events.c). NULL-safe.
  */
 int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
+/*
+ * Whether an update from @p protocol's signalling may describe the call @p snapshot holds: a call of that protocol
+ * (dsd_call_state_protocol_family(), P25 Phase 1 and Phase 2 one protocol). A call that names no protocol is no
+ * protocol's. Every crypto, identity and event-row enrichment writer is checked by it (dsd_call_state_update_crypto(),
+ * dsd_event_enrich_alias(), dsd_event_set_open_call_detail()).
+ */
+int dsd_call_state_update_is_protocols(const dsd_call_snapshot* snapshot, int protocol);
 
 /**
  * True for protocols whose voice traffic never carries per-call identity (standalone X2-TDMA and

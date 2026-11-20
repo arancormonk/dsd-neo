@@ -14,6 +14,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -88,12 +89,13 @@ format_confirmed_access(dsd_signal_search_hit* hit) {
 /* Watch the received tone on a live publication of the hit. A lock continues the candidate only as the same lock of
    the same reception (its generation and lock epoch), so a tone lost and found again, or replaced, between two
    publications, which may be seconds apart, starts its time over. Anything but a lock ends the candidate and keeps the
-   tones already seen. Staleness is the view's, on the real-time clock; held time is decode time. */
+   tones already seen. Staleness is the view's, on the clock the tap set the publication's deadline on; held time is
+   decode time. */
 static void
 observe_tone(void) {
     search_tone* tone = &observer.tone;
     dsd_app_rx_tone view;
-    if (dsd_app_rx_tone_view(observer.opts, observer.state, dsd_realtime_mono_s(), &view) <= 0
+    if (dsd_app_rx_tone_view(observer.opts, observer.state, dsd_analog_rx_clock_s(), &view) <= 0
         || view.status != DSD_APP_RX_TONE_LOCKED) {
         tone->candidate[0] = '\0';
         return;

@@ -12,14 +12,17 @@
  * so it has to repeat.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "dpmr_confirm.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_failures;
@@ -39,7 +42,7 @@ run_frame(dsd_state* state, int evidence) {
     if (evidence != 0) {
         dpmr_confirm_note_evidence(state, (dpmr_evidence)evidence);
     }
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(NULL, state);
 }
 
 /* "Consecutive" is in time, where frames say where they begin: the second frame's FS2 one frame after the first's,
@@ -110,6 +113,71 @@ count_search_report(const dsd_state* state, const char* protocol, int sync, int 
     g_search_reports++;
 }
 
+/* Issue #834: what a scan quiet check hears through the content-evidence hook, the last note and how many. */
+static int g_quiet_notes;
+static int g_quiet_level;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    g_quiet_notes++;
+    g_quiet_level = level;
+    g_quiet_hold_ms = hold_ms;
+}
+
+static void
+quiet_notes_clear(void) {
+    g_quiet_notes = 0;
+    g_quiet_level = 0;
+    g_quiet_hold_ms = 0U;
+}
+
+/* The recorder installed (or, with @p on 0, nothing). */
+static void
+quiet_notes_install(int on) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = on ? record_quiet_note : NULL;
+    dsd_frame_sync_hooks_set(on ? &hooks : NULL);
+    quiet_notes_clear();
+}
+
+/* One frame as run_frame(), closed with @p opts: the last note's level, 0 for none. */
+static int
+quiet_frame(const dsd_opts* opts, dsd_state* state, int evidence) {
+    quiet_notes_clear();
+    dpmr_confirm_begin_frame(state);
+    if (evidence != 0) {
+        dpmr_confirm_note_evidence(state, (dpmr_evidence)evidence);
+    }
+    dpmr_confirm_end_frame(opts, state);
+    expect("a frame makes one note at most", g_quiet_notes <= 1, 1);
+    return g_quiet_notes ? g_quiet_level : 0;
+}
+
+/* A frame's verdict for a scan quiet check, where a signal search hears it: PROVEN for both halves, or for the half
+   that completes a weak streak; PARTIAL (two FS2 spans, 320 ms) for one half a later frame must complete; nothing for
+   a frame that checked nothing, or with the setting off. */
+static void
+test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    quiet_notes_install(1);
+    dpmr_confirm_reset(state);
+    expect("setting off: both halves note nothing", quiet_frame(&opts, state, DPMR_EVIDENCE_STRONG), 0);
+    opts.scan_skip_silent = 1;
+    dpmr_confirm_reset(state);
+    expect("both halves are PROVEN", quiet_frame(&opts, state, DPMR_EVIDENCE_STRONG), DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("an empty frame notes nothing", quiet_frame(&opts, state, 0), 0);
+    expect("one half is PARTIAL", quiet_frame(&opts, state, DPMR_EVIDENCE_WEAK), DSD_CONTENT_EVIDENCE_PARTIAL);
+    expect("held for two FS2 spans", (int)g_quiet_hold_ms, (int)DPMR_CONFIRM_PARTIAL_HOLD_MS);
+    expect("the half completing it is PROVEN", quiet_frame(&opts, state, DPMR_EVIDENCE_WEAK),
+           DSD_CONTENT_EVIDENCE_PROVEN);
+    quiet_notes_install(0);
+    dpmr_confirm_reset(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -160,7 +228,7 @@ main(void) {
     dpmr_confirm_begin_frame(state);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(NULL, state);
     expect("weak evidence counts once per frame", dpmr_confirm_is_confirmed(state), 0);
 
     /* Strong evidence after a weak one in the same frame still confirms immediately. */
@@ -169,7 +237,7 @@ main(void) {
     dpmr_confirm_begin_frame(state);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(NULL, state);
     expect("strong evidence overrides a pending streak", dpmr_confirm_is_confirmed(state), 1);
 
     /* A signal search hears a frame's confirmation when the frame closes, after the frame has published the identity,
@@ -181,7 +249,7 @@ main(void) {
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     expect("a strong CCH is not reported to search mid-frame", g_search_reports, 0);
     expect("a strong CCH still confirms at once", dpmr_confirm_is_confirmed(state), 1);
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(NULL, state);
     expect("the confirming frame reports once, at its end", g_search_reports, 1);
     run_frame(state, 0);
     expect("a frame that proved nothing reports nothing", g_search_reports, 1);
@@ -190,18 +258,20 @@ main(void) {
     dpmr_confirm_begin_frame(state);
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
     expect("the frame completing a weak streak is not reported mid-frame", g_search_reports, 1);
-    dpmr_confirm_end_frame(state);
+    dpmr_confirm_end_frame(NULL, state);
     expect("the frame completing a weak streak reports at its end", g_search_reports, 2);
     /* Each reported frame notes the call it published, with its evidence; no other frame does. */
     expect("a call note with every report", g_call_notes, g_search_reports);
     dsd_signal_search_evidence_set(NULL);
     dsd_signal_search_call_set(NULL);
 
+    test_quiet_check_hears_the_frame_verdict(state);
+
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     dpmr_confirm_reset(NULL);
     dpmr_confirm_begin_frame(NULL);
     dpmr_confirm_note_evidence(NULL, DPMR_EVIDENCE_STRONG);
-    dpmr_confirm_end_frame(NULL);
+    dpmr_confirm_end_frame(NULL, NULL);
     expect("null state is not confirmed", dpmr_confirm_is_confirmed(NULL), 0);
 
     free(state);

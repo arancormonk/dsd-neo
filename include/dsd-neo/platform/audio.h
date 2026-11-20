@@ -112,6 +112,50 @@ dsd_audio_stream* dsd_audio_open_output(const dsd_audio_params* params);
 int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
+ * @brief Drop the input samples the stream holds now, unread, but for those captured since @p marked_ns (issue #834: a
+ * rigctl peer's audio from before its retune; the audio captured since the retune was asked for is kept).
+ *
+ * A device captures in real time, so the newest frames it holds, as many as the time since the mark lasts, are the
+ * audio captured since then. That time is read after the backend counts what it holds (or, on PulseAudio, after its
+ * reads), so audio captured while the caller waited before the count is kept, and the frame count rounds up: a
+ * drop keeps more rather than less. Frames an earlier drop kept and no read took are the oldest the stream holds. A
+ * drop may lose only audio held before the mark: once it cannot tell old audio from new (the device overran and threw
+ * audio away), it stops, and keeps what it holds. The memory a drop keeps audio in is taken before it reads anything
+ * (PulseAudio's ring of the newest frames, which then becomes the stream's kept frames; PortAudio's and AAudio's chunk
+ * buffer, which an overrun's chunk is kept in): without it the drop reads nothing and fails, so running out of memory
+ * never loses audio captured after the mark. No backend waits for audio: a source that stops delivering (one
+ * suspended during the retune) ends the drop at once. Per backend:
+ * - PulseAudio (Linux, macOS): everything the client holds now (the rest of the record fragment being read, the queue
+ *   behind it) is read without a wait; what the server has not sent yet stays there and is read after the drop. At
+ *   most 2 s of frames at the stream's rate, exact to one 32-frame read (the cap is checked before each read, so up to
+ *   31 frames past it), no read begun after 250 ms on the monotonic clock. The client cannot say when a frame it holds
+ *   was captured, so the newest frames read are kept in the stream and returned first by dsd_audio_read(). The keep is
+ *   counted by time, not from a count taken first, so a server overrun (which throws the oldest audio away before it
+ *   is read) loses no audio captured after the mark. The drop is approximate (issue #834): it assumes the source kept
+ *   delivering, so audio held at the mark from a source that stopped since is kept as if it came after.
+ * - PortAudio (Windows): one snapshot of the frames the stream reports available at the call
+ *   (Pa_GetStreamReadAvailable(), at most its input buffer), less those kept, read without a wait: each read asks for
+ *   no more than the stream reports available just before it (a blocking read of frames no longer held would wait for
+ *   new capture), and the drop ends when it holds none. At most 2 s of frames at the stream's rate, no read begun
+ *   250 ms or more after its first on the monotonic clock. A read that reports an
+ *   overrun (paInputOverflowed) ends it: its frames are kept, returned first by dsd_audio_read(), and the rest stays in
+ *   the device.
+ * - AAudio (Android): the frames the device wrote and no read took (AAudioStream_getFramesWritten() less
+ *   AAudioStream_getFramesRead()), less those kept, read with no wait: at most 96000 frames (2 s at 48 kHz), no read
+ *   begun after 250 ms. A read whose chunk may hold audio captured after the mark ends it, as on PortAudio: the
+ *   device's overrun count (AAudioStream_getXRunCount()) moved, or, since some input devices always report 0 there,
+ *   the device has written more than its buffer capacity past the chunk's frame position, so the chunk may have been
+ *   overwritten.
+ * Audio still on its way to DSD-neo (in the producer, or in the sound server) arrives after the call and is kept.
+ *
+ * @param stream     Input stream handle.
+ * @param marked_ns  The retune's mark on the monotonic clock (dsd_time_monotonic_ns(), dsd_input_cut::marked_ns): the
+ *                   audio captured since is kept (a mark later than the count keeps nothing).
+ * @return Frames dropped, or negative on error (an output stream included).
+ */
+int dsd_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns);
+
+/**
  * @brief Write audio samples to output stream.
  *
  * May block until buffer space is available.

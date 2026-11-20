@@ -437,6 +437,13 @@ nxdn_print_rf_channel_type(const nxdn_frame_ctx* ctx) {
     }
 }
 
+/* A conventional -Y scan, whose hold only a frame with its content counted starts or refreshes (issue #834,
+   nxdn_finish_decoded_frame()). */
+static int
+nxdn_y_conventional(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_enable != 1;
+}
+
 #ifdef LIMAZULUTWEAKS
 static void
 nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
@@ -481,7 +488,11 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
         nxdn_cipher_force(state, 0x1);
     }
 
-    state->last_cc_sync_time = dsd_decode_time() + 2;
+    /* Read before any check of the frame's payload: on a conventional -Y scan the hold is the confirmation gate's alone
+       (nxdn_finish_decoded_frame()), or a voice-shaped noise frame whose LICH passes would keep the row for good. */
+    if (!nxdn_y_conventional(opts)) {
+        state->last_cc_sync_time = dsd_decode_time() + 2;
+    }
 }
 #else
 static void
@@ -833,10 +844,19 @@ nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
     nxdn_step_cipher_after_signalling(state, ctx);
     /* A data frame whose only checked content was an SCCH TS 1-E does not define (nxdn_channel_result::scch_invalid)
        shows nothing more about a carrier already confirmed: it neither stamps it active nor extends the scanner's hold.
-       A transmission this frame's spacing confirmed (a check the frame before left pending) starts its hold here. */
+       A transmission this frame's spacing confirmed (a check the frame before left pending) was not confirmed before
+       it, so the frame starts the carrier's stamp here. */
     const int diagnostic_only_frame = ctx->confirmed_before && !ctx->voice && ctx->result->scch_invalid != 0U
                                       && state->nxdn_confirm_frame_evidence == 0U;
-    if (nxdn_confirm_is_confirmed(state) && !diagnostic_only_frame) {
+    /* On a conventional -Y scan the hold needs this frame's content counted, as the quiet check hears it (issue #834):
+       its own content proven, or, once, the spacing that confirmed the frame before's strong check
+       (nxdn_confirm_frame_content_counted()). A transmission confirmed once lets every later frame whose LICH parity
+       passes through, receiver noise after the call included, and a hold refreshed by those, or by a lone short CRC one
+       of them passes by chance, would keep the row. Trunked receivers and a plain conventional one keep the
+       transmission's. */
+    const int y_conventional = nxdn_y_conventional(opts);
+    if (nxdn_confirm_is_confirmed(state) && !diagnostic_only_frame
+        && (!y_conventional || nxdn_confirm_frame_content_counted(state))) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
             /* Hold the scanner a little past this frame so the gap to the next one does
@@ -965,7 +985,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
-    nxdn_confirm_end_frame(state);
+    nxdn_confirm_end_frame(opts, state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
     if (left_carrier) {

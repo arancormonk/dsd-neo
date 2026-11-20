@@ -241,6 +241,19 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
     return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
 }
 
+// Whether the DMR voice hold applies: not on the single-slot decoder without trunking, nor to direct-mode traffic,
+// whose one lane carries both slots (issue #834).
+int
+dsd_dmr_voice_hold_applies(const dsd_opts* opts, const dsd_state* state) {
+    if (opts != NULL && opts->dmr_mono == 1 && opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (state != NULL && (DSD_SYNC_IS_DMR_MS(state->synctype) || state->dmr_ms_mode == 1)) {
+        return 0;
+    }
+    return 1;
+}
+
 // The --dmr-force-algid value, or 0 when none is in force. state->M doubles as the scrambler
 // key for 0/1 and as the 0x16 Hytera marker, neither of which is a forced ALG ID.
 int

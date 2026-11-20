@@ -46,6 +46,7 @@
 #ifndef DSD_NEO_PROTOCOL_DPMR_DPMR_CONFIRM_H
 #define DSD_NEO_PROTOCOL_DPMR_DPMR_CONFIRM_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -66,6 +67,10 @@ typedef enum {
  * and the slip either way a run allows. */
 #define DPMR_CONFIRM_FRAME_SYMBOLS      384U
 #define DPMR_CONFIRM_FRAME_SYMBOLS_SLIP 1U
+
+/** @brief How long a scan quiet check waits for the frame that completes a weak streak (issue #834): two FS2 spans of
+ * 384 symbols at 2400 symbols/s. */
+#define DPMR_CONFIRM_PARTIAL_HOLD_MS    320U
 
 /** @brief Forget everything learned about the current transmission. */
 void dpmr_confirm_reset(dsd_state* state);
@@ -96,9 +101,12 @@ void dpmr_confirm_note_evidence(dsd_state* state, dpmr_evidence evidence);
  *
  * A frame whose own evidence confirmed the transmission is reported to a signal search here,
  * once, after the frame has published what its confirmation unlocked: the search reads the
- * call and colour code from state when it hears it.
+ * call and colour code from state when it hears it. A scan quiet check hears it here too, through
+ * @p opts (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for that frame, PARTIAL
+ * (DPMR_CONFIRM_PARTIAL_HOLD_MS) for one weak half whose streak a later frame must complete,
+ * nothing for a frame that checked nothing. @p opts may be NULL (no quiet check).
  */
-void dpmr_confirm_end_frame(dsd_state* state);
+void dpmr_confirm_end_frame(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */
 int dpmr_confirm_is_confirmed(const dsd_state* state);

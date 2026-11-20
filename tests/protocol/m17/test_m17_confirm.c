@@ -16,11 +16,15 @@
  * Sibling of tests/protocol/nxdn/test_nxdn_confirm.c.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "m17_confirm.h"
 
@@ -39,9 +43,99 @@ static void
 run_frame(dsd_state* state, int evidence) {
     m17_confirm_begin_frame(state);
     if (evidence != 0) {
-        m17_confirm_note_evidence(state, (m17_evidence)evidence);
+        m17_confirm_note_evidence(NULL, state, (m17_evidence)evidence);
     }
     m17_confirm_end_frame(state);
+}
+
+/* Issue #834: what a scan quiet check hears through the content-evidence hook, the last note and how many. */
+static int g_quiet_notes;
+static int g_quiet_level;
+static uint32_t g_quiet_hold_ms;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    g_quiet_notes++;
+    g_quiet_level = level;
+    g_quiet_hold_ms = hold_ms;
+}
+
+static void
+quiet_notes_clear(void) {
+    g_quiet_notes = 0;
+    g_quiet_level = 0;
+    g_quiet_hold_ms = 0U;
+}
+
+/* The recorder installed (or, with @p on 0, nothing). */
+static void
+quiet_notes_install(int on) {
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = on ? record_quiet_note : NULL;
+    dsd_frame_sync_hooks_set(on ? &hooks : NULL);
+    quiet_notes_clear();
+}
+
+/* One frame noting each of @p evidence[0..count) with @p opts: the last note's level, 0 for none. */
+static int
+quiet_frame(const dsd_opts* opts, dsd_state* state, const int* evidence, int count) {
+    quiet_notes_clear();
+    m17_confirm_begin_frame(state);
+    for (int i = 0; i < count; i++) {
+        m17_confirm_note_evidence(opts, state, (m17_evidence)evidence[i]);
+    }
+    m17_confirm_end_frame(state);
+    expect("a frame makes one note at most", g_quiet_notes <= 1, 1);
+    return g_quiet_notes ? g_quiet_level : 0;
+}
+
+/* A check's verdict for a scan quiet check, where a signal search hears it (inside m17_confirm_note_evidence()):
+   PROVEN for an LSF or packet CRC or a BERT lock, and for the LICH completing a weak streak; PARTIAL (two stream
+   frames, 80 ms) for one clean LICH a later frame must complete; nothing for an empty frame, or with the setting off.
+   A LICH after a CRC in the same frame adds nothing. */
+static void
+test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    static const int k_strong[] = {M17_EVIDENCE_STRONG};
+    static const int k_weak[] = {M17_EVIDENCE_WEAK};
+    static const int k_strong_weak[] = {M17_EVIDENCE_STRONG, M17_EVIDENCE_WEAK};
+    quiet_notes_install(1);
+    m17_confirm_reset(state);
+    expect("setting off: an LSF CRC notes nothing", quiet_frame(&opts, state, k_strong, 1), 0);
+    opts.scan_skip_silent = 1;
+    m17_confirm_reset(state);
+    expect("an LSF CRC is PROVEN", quiet_frame(&opts, state, k_strong, 1), DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("an empty frame notes nothing", quiet_frame(&opts, state, NULL, 0), 0);
+    expect("one LICH is PARTIAL", quiet_frame(&opts, state, k_weak, 1), DSD_CONTENT_EVIDENCE_PARTIAL);
+    expect("held for two stream frames", (int)g_quiet_hold_ms, (int)M17_CONFIRM_PARTIAL_HOLD_MS);
+    expect("the second LICH is PROVEN", quiet_frame(&opts, state, k_weak, 1), DSD_CONTENT_EVIDENCE_PROVEN);
+    m17_confirm_reset(state);
+    expect("a LICH after a CRC adds nothing", quiet_frame(&opts, state, k_strong_weak, 2), DSD_CONTENT_EVIDENCE_PROVEN);
+    /* A frame with no check of its own (a packet frame before its CRC): PARTIAL, unless the frame proved something. */
+    quiet_notes_clear();
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_end_frame(state);
+    expect("an unchecked frame is PARTIAL", g_quiet_notes == 1 && g_quiet_level == DSD_CONTENT_EVIDENCE_PARTIAL, 1);
+    expect("held for two frames", (int)g_quiet_hold_ms, (int)M17_CONFIRM_PARTIAL_HOLD_MS);
+    quiet_notes_clear();
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_evidence(&opts, state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_end_frame(state);
+    expect("after a CRC in the frame: nothing more", g_quiet_notes == 1 && g_quiet_level == DSD_CONTENT_EVIDENCE_PROVEN,
+           1);
+    opts.scan_skip_silent = 0;
+    quiet_notes_clear();
+    m17_confirm_note_unchecked_frame(&opts, state);
+    m17_confirm_note_unchecked_frame(&opts, NULL);
+    expect("setting off: nothing", g_quiet_notes, 0);
+    opts.scan_skip_silent = 1;
+    quiet_notes_install(0);
+    m17_confirm_reset(state);
 }
 
 int
@@ -87,9 +181,9 @@ main(void) {
      * otherwise a single lucky frame would confirm itself. */
     m17_confirm_reset(state);
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
     m17_confirm_end_frame(state);
     expect("weak evidence counts once per frame", m17_confirm_is_confirmed(state), 0);
 
@@ -97,15 +191,17 @@ main(void) {
     m17_confirm_reset(state);
     run_frame(state, M17_EVIDENCE_WEAK);
     m17_confirm_begin_frame(state);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
-    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_WEAK);
+    m17_confirm_note_evidence(NULL, state, M17_EVIDENCE_STRONG);
     m17_confirm_end_frame(state);
     expect("strong evidence overrides a pending streak", m17_confirm_is_confirmed(state), 1);
+
+    test_quiet_check_hears_the_frame_verdict(state);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     m17_confirm_reset(NULL);
     m17_confirm_begin_frame(NULL);
-    m17_confirm_note_evidence(NULL, M17_EVIDENCE_STRONG);
+    m17_confirm_note_evidence(NULL, NULL, M17_EVIDENCE_STRONG);
     m17_confirm_end_frame(NULL);
     expect("null state is not confirmed", m17_confirm_is_confirmed(NULL), 0);
 

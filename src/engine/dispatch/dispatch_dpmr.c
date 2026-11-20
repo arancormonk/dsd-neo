@@ -134,6 +134,8 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     }
+    /* FS1, FS3 and FS4 check nothing: to a scan quiet check the frame waits for a verdict (issue #834). */
+    dpmr_confirm_note_unchecked_frame(opts, state);
     //dPMR
     return DSD_FRAME_VERDICT_PRODUCTIVE;
 }

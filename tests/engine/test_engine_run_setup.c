@@ -500,6 +500,44 @@ test_receiver_failure_is_not_successful_completion(void) {
     return rc;
 }
 
+/* Each DMR slot's voice hold as the run's start hook found it (dmr_enc_class_hold()), and whether the run had landed
+   (dsd_state::run_landed). */
+static int
+record_dmr_hold_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    uint8_t* held = (uint8_t*)context;
+    held[0] = state->dmr_enc_class_held[0];
+    held[1] = state->dmr_enc_class_held[1];
+    held[2] = state->run_landed;
+    dsd_exitflag_store(1);
+    return 0;
+}
+
+/* A host that runs one session after another on its one state (Android): a DMR slot's voice held for a move the
+   earlier run made is not held for the next run's first landing, which no source change marks on the same device, and
+   whether that run has landed is its own (dsd_state::run_landed). */
+static int
+test_reused_state_starts_with_no_dmr_hold(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    uint8_t held[3] = {9U, 9U, 9U};
+    const dsd_engine_lifecycle_hooks hooks = {.start = record_dmr_hold_at_start, .context = held};
+    int rc = expect_true("the first run", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
+    state->run_landed = 0U;
+    held[0] = held[1] = held[2] = 9U;
+    rc |= expect_true("the next run on the same state", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+    rc |= expect_true("the next run starts with no DMR slot held", held[0] == 0U && held[1] == 0U);
+    /* A run with no scan configured lands where its first stream opens, whatever the earlier run left: a scan started
+       from the menu later makes a carrier move like any other. */
+    rc |= expect_true("the next run, with no scan configured, has landed", held[2] == 1U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_conflicting_scan_modes_fail_before_live_setup(void) {
     dsd_opts* opts = NULL;
@@ -2388,6 +2426,7 @@ main(void) {
     rc |= test_startup_asks_the_session_passband();
 #endif
     rc |= test_receiver_failure_is_not_successful_completion();
+    rc |= test_reused_state_starts_with_no_dmr_hold();
     rc |= test_config_channel_map_weighs_the_tone_filter();
     rc |= test_noise_squelch_needs_fm();
     rc |= test_squelch_notices_for_edacs_and_the_encoder();

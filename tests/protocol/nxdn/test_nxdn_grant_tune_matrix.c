@@ -904,7 +904,7 @@ nxdn_run_scch_identity_context_case(void) {
         .mi = 0x12345678U,
         .audio_permitted = 0U,
     };
-    (void)dsd_call_state_update_crypto(&g_state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(&g_state, 0U, DSD_SYNC_NXDN_POS, &crypto);
     (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
     dsd_call_snapshot call;
     (void)dsd_call_state_get(&g_state, 0U, &call);

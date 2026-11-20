@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <math.h>
@@ -134,6 +135,21 @@ capture_evidence(const dsd_state* state, const char* protocol, int sync, int slo
     (void)access;
     g_evidence++;
     DSD_SNPRINTF(g_evidence_protocol, sizeof(g_evidence_protocol), "%s", protocol);
+}
+
+/* Issue #834: PROVEN content notes a scan quiet check hears, and the messages dispatched before the first one. */
+static int g_proven = 0;
+static int g_mac_before_proven = -1;
+
+static void
+capture_content_evidence(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        if (g_proven++ == 0) {
+            g_mac_before_proven = g_mac_count;
+        }
+    }
 }
 
 static void
@@ -1014,6 +1030,9 @@ main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
     dsd_signal_search_evidence_set(capture_evidence);
     dsd_signal_search_site_set(capture_site);
+    dsd_frame_sync_hooks fs_hooks = {0};
+    fs_hooks.content_evidence = capture_content_evidence;
+    dsd_frame_sync_hooks_set(&fs_hooks);
     dsd_rtl_stream_metrics_hooks ber_hooks = {0};
     ber_hooks.p25p1_ber_update = capture_p25p1_ber;
     dsd_rtl_stream_metrics_hooks_set(&ber_hooks);
@@ -1026,6 +1045,7 @@ main(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     // Issue #657: a control frame leaves the user's slot preference as set (it used to reset it to Auto).
     opts.slot_preference = 1;
+    opts.scan_skip_silent = 1; /* the quiet check's hook hears the notes */
 
     /* The TSDU reports that its TSBKs passed their CRC: the dispatcher proves the carrier P25 by it. */
     const int two_block_passed = processTSBK(&opts, &state);
@@ -1048,6 +1068,11 @@ main(void) {
     /* A block whose CRC passes is the P25 evidence a Signal search confirms a control channel by: its NID alone is
        not, since a list-decoded BCH takes several percent of random words. */
     rc |= expect_eq_int("each crc-valid block is search evidence", g_evidence, 2);
+    /* Issue #834: and activity to a scan quiet check, whatever the NID made of the NAC, noted before the block's
+       message is dispatched (a grant may retune). */
+    rc |= expect_eq_int("each crc-valid block is proven content", g_proven, 2);
+    rc |= expect_eq_int("and the -Y step's count", (int)state.scan_y_content_seq, 2);
+    rc |= expect_eq_int("proven before the first message", g_mac_before_proven, 0);
     rc |= expect_eq_int("search evidence names p25",
                         g_evidence_protocol[0] == 'P' && g_evidence_protocol[1] == '2' && g_evidence_protocol[2] == '5'
                             && !g_evidence_protocol[3],
@@ -1088,6 +1113,8 @@ main(void) {
     rc |= expect_eq_int("corrupt block fails its crc", state.p25_p1_fec_err > 0, 1);
     rc |= expect_eq_int("radio ber hook sees the crc failure", g_ber_err, (int)state.p25_p1_fec_err);
     rc |= expect_eq_int("only crc-valid blocks are search evidence", g_evidence, (int)state.p25_p1_fec_ok);
+    rc |= expect_eq_int("only crc-valid blocks are proven content", (int)state.scan_y_content_seq,
+                        (int)state.p25_p1_fec_ok);
     /* Its last-block flag is no length: the CRC did not vouch for it. */
     rc |= expect_eq_int("tsdu with a failed block has no length", (int)state.p25_p1_unit_dibits, 0);
 

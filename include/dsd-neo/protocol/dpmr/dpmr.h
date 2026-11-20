@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DPMR_DPMR_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DPMR_DPMR_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -32,6 +33,14 @@ void dpmr_confirm_reset(dsd_state* state);
  * whether a sync alone may open a call row, which it may not until something has decoded.
  */
 int dpmr_confirm_is_confirmed(const dsd_state* state);
+
+/**
+ * @brief A dPMR frame whose sync the decoder accepts but which carries no check of its own (FS1, FS3, FS4: dispatch
+ * reads nothing beyond the sync) to a scan quiet check, through @p opts (issue #834): PARTIAL, held for
+ * DPMR_CONFIRM_PARTIAL_HOLD_MS, so a key-up just after a quiet reading waits for its first CCH verdict. @p opts may be
+ * NULL (no quiet check).
+ */
+void dpmr_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state);
 
 /** @brief dPMRVoiceFS2Frame_t::Scrambled values (issue #655). */
 enum {

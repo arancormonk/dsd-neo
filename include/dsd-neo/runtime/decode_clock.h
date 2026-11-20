@@ -36,10 +36,10 @@
  *   initState() whose seeds the engine rebases
  *   (dsd_state_rebase_decode_timestamps()). The engine enforces that: it enters
  *   REPLAY only while dsd_state::engine_fresh says no run has used the state. A
- *   replay run on a state an earlier run used (the Android service reuses its
- *   state when a start races the previous run's stopSelfLatest(),
- *   DecoderService.kt) stays on SYSTEM, with one warning; its decode times are
- *   then not the capture's. The system clock only moves forward, so a stamp the
+ *   replay run on a state an earlier run used (an embedding host that runs
+ *   again on its state; the Android service resets its objects for every
+ *   configure, android/session_objects.h) stays on SYSTEM, with one warning;
+ *   its decode times are then not the capture's. The system clock only moves forward, so a stamp the
  *   earlier run took on it stays behind now. An earlier replay of a capture
  *   stamped ahead of this device's clock is the exception: leaving REPLAY rebases
  *   only the init seeds, so its protocol stamps keep the capture's later time.

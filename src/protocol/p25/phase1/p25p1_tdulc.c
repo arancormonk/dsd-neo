@@ -16,6 +16,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -38,6 +39,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p1_current_call.h"
+#include "p25p1_terminator_end.h"
 
 static int
 soft_abs_i16(int16_t v) {
@@ -293,7 +296,13 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
        control it carries belongs to the call it ended: capture that call first (issue #800, spec N2). */
     dsd_event_closing_call closing;
     (void)dsd_event_capture_closing_call(state, 0U, &closing);
+    /* Where this TDULC's link control is read, its sync and NID behind it, on the stream they were read on, and the
+       call open before its end. */
+    const p25p1_terminator_place place = p25p1_terminator_place_now(state);
+    dsd_call_snapshot open_call;
+    const uint64_t open_epoch = p25p1_current_call(state, &open_call) ? open_call.epoch : 0U;
     p25_sm_emit_tdu(opts, state);
+    const uint64_t ended_epoch = p25p1_terminator_note_end_at(state, open_epoch, &place, P25P1_TDULC_DIBITS);
 
     state->dmr_so = 0;
 
@@ -328,7 +337,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         // As on LDU1: only the hard decode checks the link control; tdulc_recover_reedsolomon() counts each
         // soft-erasure recovery (spec 2.20).
         state->p25_p1_lcw_soft = (uint8_t)(state->p25_p1_soft_rs_ok != soft_rs_before);
-        p25_lcw_from_tdulc(opts, state, LCW_bits, 0, &closing);
+        p25_lcw_from_tdulc(opts, state, LCW_bits, 0, &closing, ended_epoch);
         state->p25_p1_lcw_soft = 0U;
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else {

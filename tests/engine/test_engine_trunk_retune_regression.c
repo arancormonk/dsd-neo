@@ -218,6 +218,9 @@ dsd_recent_activity_clear_all(dsd_state* state) {
 static int g_tune_generation_advance_calls = 0;
 static uint64_t g_tune_request_next = 0U;
 static uint64_t g_tune_request_pending = 0U;
+/* The request last completed, and how. */
+static uint64_t g_tune_request_done = 0U;
+static dsd_trunk_tune_result g_tune_request_done_result = DSD_TRUNK_TUNE_RESULT_FAILED;
 static dsdneoRuntimeConfig g_runtime_config;
 
 void
@@ -229,26 +232,27 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_enc_class_reset(dsd_state* state, uint8_t slot) {
-    (void)state;
-    (void)slot;
+dmr_forget_call_privacy(dsd_state* state) {
+    dmr_forget_call_decryption(state);
+    state->dmr_fid = state->dmr_fidR = 0U;
 }
 
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_le_vendor_reset(dsd_state* state, uint8_t slot) {
-    state->dmr_le_vendor[slot != 0U ? 1U : 0U] = 0U;
+dmr_forget_call_decryption(dsd_state* state) {
+    state->dmr_so = state->dmr_soR = 0U;
+    for (int idx = 0; idx < 2; idx++) {
+        state->dmr_le_vendor[idx] = 0U;
+        state->dmr_pi_precall_rx[idx] = 0U;
+        state->dmr_pi_precall_algid[idx] = 0U;
+        state->dmr_pi_precall_kid[idx] = 0U;
+        state->dmr_pi_precall_m[idx] = 0.0;
+        state->dmr_crypto_inherited[idx] = 0U;
+    }
 }
 
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_pi_precall_reset(dsd_state* state, uint8_t slot) {
-    const uint8_t idx = slot != 0U ? 1U : 0U;
-    state->dmr_pi_precall_rx[idx] = 0U;
-    state->dmr_pi_precall_algid[idx] = 0U;
-    state->dmr_pi_precall_kid[idx] = 0U;
-    state->dmr_pi_precall_m[idx] = 0.0;
-    state->dmr_crypto_inherited[idx] = 0U;
+dmr_enc_class_hold(dsd_state* state) {
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
 }
 
 void
@@ -349,6 +353,27 @@ p25_sm_hunt_probe_in_flight(const p25_sm_ctx_t* ctx) {
     return g_p25_hunt_in_flight;
 }
 
+/* From runtime/trunk_tuning_hooks.c: a tune its caller judges (dsd_trunk_tuning_caller_judges_begin()), as the real
+   one counts it on this thread. */
+static int g_caller_judges_depth = 0;
+
+void
+dsd_trunk_tuning_caller_judges_begin(void) {
+    g_caller_judges_depth++;
+}
+
+void
+dsd_trunk_tuning_caller_judges_end(void) {
+    if (g_caller_judges_depth > 0) {
+        g_caller_judges_depth--;
+    }
+}
+
+int
+dsd_trunk_tuning_caller_judges(void) {
+    return g_caller_judges_depth > 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_generation_advance(void) {
@@ -374,6 +399,9 @@ dsd_trunk_tuning_request_status(uint64_t request_id, double* out_completed_m) {
     if (out_completed_m) {
         *out_completed_m = 0.0;
     }
+    if (request_id != 0U && request_id == g_tune_request_done) {
+        return g_tune_request_done_result;
+    }
     return request_id != 0U && request_id == g_tune_request_pending ? DSD_TRUNK_TUNE_RESULT_PENDING
                                                                     : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
@@ -385,6 +413,8 @@ dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result res
         return;
     }
     g_tune_request_pending = 0U;
+    g_tune_request_done = request_id;
+    g_tune_request_done_result = result;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         dsd_trunk_tuning_generation_advance();
     }
@@ -445,12 +475,24 @@ dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
     return g_trunk_scan_active_p25_class || g_trunk_scan_active_p25_target;
 }
 
+/* The frequency the stand-in peer last confirmed: every stand-in failure is a complete refusal, which leaves it. */
+static uint32_t g_setfreq_confirmed_hz;
+
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_setfreq_calls++;
     g_last_setfreq_hz = freq;
+    if (g_setfreq_result) {
+        g_setfreq_confirmed_hz = (uint32_t)freq;
+    }
     return g_setfreq_result;
+}
+
+uint32_t
+RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    (void)sockfd;
+    return g_setfreq_confirmed_hz;
 }
 
 /* Records the demodulator and passband each tune asks the rigctl peer for, and through which call (issue #526). */
@@ -2790,6 +2832,125 @@ check_rxid_tunes_reset_dmr_ras(dsd_opts* opts, dsd_state* state) {
     opts->trunk_is_tuned = 0;
 }
 
+/* What a tune that left a carrier forgets of the DMR calls' decryption, and the hold on their voice
+   (dmr_forget_call_decryption(), dmr_forget_call_privacy(), dmr_enc_class_hold()), is the decoder thread's to write:
+   it reads and writes them in its frames and in the no-carrier pass, which runs outside the P25 SM tick guard. The P25
+   watchdog's tunes, a grant and a return to the control channel, run on its own thread and only ask for it
+   (dsd_state::dmr_leave_pending), which the decoder thread applies before its next frame
+   (dsd_engine_apply_dmr_leave()). The decoder thread's own tunes forget at once, as before. */
+static void
+seed_left_dmr_call(dsd_state* state) {
+    state->dmr_so = 0x40;
+    state->dmr_soR = 0x40;
+    state->dmr_fid = 0x10;
+    state->dmr_fidR = 0x10;
+    state->dmr_enc_class_held[0] = 0U;
+    state->dmr_enc_class_held[1] = 0U;
+}
+
+static void
+check_dmr_leave_waits_for_the_decoder(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    for (int kind = 0; kind < 3; kind++) {
+        opts->trunk_is_tuned = kind == 1 ? 1 : 0;
+        state->p25_cc_freq = 851000000;
+        state->trunk_cc_freq = 851000000;
+        state->p25_vc_freq[0] = 853000000;
+        opts->rtlsdr_center_freq = kind == 1 ? 853000000U : 851000000U;
+        opts->rigctl_sent_freq_hz = opts->rtlsdr_center_freq;
+        state->dmr_leave_pending = 0U;
+        seed_left_dmr_call(state);
+        g_setfreq_result = true;
+        state->frame_dispatch_active = 0;
+        if (kind < 2) {
+            dsd_engine_set_decoder_thread(0);
+            g_tick_guard_held = 1;
+        }
+        if (kind == 1) {
+            /* the watchdog's return to the control channel: the release forgets the left calls' privacy */
+            assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        } else {
+            /* a grant: the watchdog's (0), then the decoder thread's own (2) */
+            assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        }
+        g_tick_guard_held = 0;
+        dsd_engine_set_decoder_thread(1);
+        if (kind < 2) {
+            if (state->dmr_so != 0x40 || state->dmr_enc_class_held[0] != 0U || state->dmr_leave_pending == 0U) {
+                DSD_FPRINTF(stderr,
+                            "the watchdog's %s wrote the DMR calls' decryption on its own thread (SO %u, held %u, "
+                            "pending %u)\n",
+                            kind == 1 ? "return" : "grant", (unsigned)state->dmr_so,
+                            (unsigned)state->dmr_enc_class_held[0], (unsigned)state->dmr_leave_pending);
+            }
+            assert(state->dmr_so == 0x40 && state->dmr_soR == 0x40);
+            assert(state->dmr_enc_class_held[0] == 0U && state->dmr_enc_class_held[1] == 0U);
+            assert(state->dmr_leave_pending != 0U);
+            /* The decoder thread's next frame applies it. */
+            assert(dsd_engine_apply_dmr_leave(state) == 1);
+            assert(state->dmr_leave_pending == 0U);
+            assert(dsd_engine_apply_dmr_leave(state) == 0);
+        } else {
+            assert(state->dmr_leave_pending == 0U);
+        }
+        assert(state->dmr_so == 0 && state->dmr_soR == 0);
+        assert(state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+        /* The release forgets the FID too; a grant's leave keeps it for the left calls' rows. */
+        assert(kind == 1 ? state->dmr_fid == 0 : state->dmr_fid == 0x10);
+    }
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
+}
+
+#ifdef USE_RADIO
+/* Issue #834: an RTL tune still in flight (the controller's bounded wait ran out) has not moved the receiver yet, and
+   may never: a probe that then fails leaves it on the carrier, whose DMR calls keep their decryption and play on. The
+   DMR leave waits for the request: it is applied once the request lands, and never when it fails. A grant's tune and a
+   control-channel tune alike. */
+static void
+check_dmr_leave_waits_for_a_pending_tune(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_last_applied_freq = 851000000U;
+    opts->rtlsdr_center_freq = 851000000U;
+    for (int lands = 0; lands < 2; lands++) {
+        for (int cc = 0; cc < 2; cc++) {
+            seed_left_dmr_call(state);
+            const uint64_t id = dsd_trunk_tuning_request_begin();
+            const dsd_trunk_tune_result result =
+                cc ? dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 0, id)
+                   : dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, id);
+            assert(result == DSD_TRUNK_TUNE_RESULT_PENDING);
+            (void)dsd_engine_apply_dmr_leave(state);
+            if (state->dmr_so != 0x40 || state->dmr_enc_class_held[0] != 0U) {
+                DSD_FPRINTF(stderr, "a %s tune still in flight left the DMR calls' carrier (SO %u, held %u)\n",
+                            cc ? "control-channel" : "grant's", (unsigned)state->dmr_so,
+                            (unsigned)state->dmr_enc_class_held[0]);
+            }
+            assert(state->dmr_so == 0x40 && state->dmr_enc_class_held[0] == 0U);
+            dsd_trunk_tuning_request_complete(id, lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
+            (void)dsd_engine_apply_dmr_leave(state);
+            if (lands) {
+                /* Landed: the receiver left the carrier. */
+                assert(state->dmr_so == 0 && state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+            } else {
+                /* Failed: still on the carrier, nothing left behind. */
+                assert(state->dmr_so == 0x40 && state->dmr_enc_class_held[0] == 0U);
+            }
+            assert(dsd_engine_apply_dmr_leave(state) == 0);
+        }
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_freq = 0U;
+    state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 0U;
+}
+#endif
+
 /* An Auto (-fa) trunked session on rigctl that no protocol has proven yet: P25 presumes the control channel. */
 static void
 auto_probe_session(dsd_opts* opts, dsd_state* state) {
@@ -3158,6 +3319,10 @@ main(void) {
     check_departures_close_orphaned_recordings(opts, state);
     check_rxid_decoder_tunes(opts, state);
     check_rxid_tunes_reset_dmr_ras(opts, state);
+    check_dmr_leave_waits_for_the_decoder(opts, state);
+#ifdef USE_RADIO
+    check_dmr_leave_waits_for_a_pending_tune(opts, state);
+#endif
 
     /* RTL input driven by rigctl still needs the generic output drain because
      * the RTL stream backend will not run its retune drain policy. */

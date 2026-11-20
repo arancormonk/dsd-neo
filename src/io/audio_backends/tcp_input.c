@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/io/tcp_input.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
@@ -69,6 +70,14 @@ tcp_input_read_sample_wait(tcp_input_ctx* ctx, int16_t* out, unsigned int timeou
         return 0;
     }
     return got == DSD_PCM_STREAM_SAMPLE ? 1 : -1;
+}
+
+long
+tcp_input_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
+    if (!ctx || !ctx->valid) {
+        return DSD_INPUT_DISCARD_NOT_APPLICABLE;
+    }
+    return dsd_pcm_stream_discard_through(ctx->stream, cut);
 }
 
 int

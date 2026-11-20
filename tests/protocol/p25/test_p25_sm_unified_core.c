@@ -515,7 +515,7 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
     }
     const double first_start_m = ctx.slots[0].last_start_m;
     if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0x2468, mi, 1000) != DSD_P25_CRYPTO_CLEAR
-        || dsd_event_enrich_alias(&g_state, 0U, call.epoch, "RETX-ALIAS") <= 0) {
+        || dsd_event_enrich_alias(&g_state, 0U, call.protocol, call.epoch, "RETX-ALIAS") <= 0) {
         DSD_FPRINTF(stderr, "FAIL: Raw PTT retransmission fixture did not seed crypto/alias metadata\n");
         return 1;
     }

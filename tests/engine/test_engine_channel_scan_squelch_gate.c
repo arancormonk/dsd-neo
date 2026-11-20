@@ -39,6 +39,7 @@
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_entry_internal.h"
+#include "scan_quiet.h"
 #include "scan_step_untyped.h"
 
 static int g_pushes;
@@ -95,6 +96,30 @@ dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
+
+/* The -Y landing's quiet-check publication (engine.c, issue #834), which ENGINE_NO_CARRIER_RESET drives. */
+void
+dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+/* The quiet check's status for the -Y timing writer (scan_quiet.c, issue #834 R6), which ENGINE_NO_CARRIER_RESET
+   drives; stubbed so the check, and the trunk scan it reads, stay out of this link. */
+int
+scan_quiet_stay_shows_status(uint8_t stay_reason) {
+    (void)stay_reason;
+    return 0;
+}
+
+void
+scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_visit_ref* ref,
+                       dsd_scan_timing_publication* report) {
+    (void)opts;
+    (void)state;
+    (void)ref;
+    (void)report;
+}
 
 int
 dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now) {

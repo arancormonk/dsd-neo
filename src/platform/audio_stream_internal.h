@@ -6,11 +6,13 @@
 #ifndef DSD_NEO_SRC_PLATFORM_AUDIO_STREAM_INTERNAL_H
 #define DSD_NEO_SRC_PLATFORM_AUDIO_STREAM_INTERNAL_H
 
+#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep -- the input carry's inline helpers copy with DSD_MEMCPY.
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/threading.h>
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #if defined(DSD_NEO_AUDIO_BACKEND_PULSE) || defined(DSD_NEO_AUDIO_BACKEND_PORTAUDIO)
 #include "audio_output_recovery.h"
@@ -29,12 +31,121 @@ typedef AAudioStream dsd_audio_backend_handle;
 typedef void dsd_audio_backend_handle;
 #endif
 
+/* The frames @p keep_ns of input lasts at @p rate, rounded up and at most @p limit: what an input discard keeps of the
+   newest input (dsd_audio_discard_input()). Only @p limit, the frames the discard found held, bounds it (issue #834):
+   no fixed time cuts it short. */
+static inline uint64_t
+audio_input_keep_frames(uint64_t keep_ns, int rate, uint64_t limit) {
+    if (rate <= 0 || keep_ns == 0U) {
+        return 0U;
+    }
+    const uint64_t per_s = (uint64_t)rate;
+    const uint64_t whole_s = keep_ns / 1000000000ULL;
+    if (whole_s >= limit / per_s + 1U) {
+        return limit; /* whole_s * rate alone reaches past the limit */
+    }
+    const uint64_t frames =
+        whole_s * per_s
+        + ((keep_ns % 1000000000ULL) * per_s + 999999999ULL) / 1000000000ULL; /* no overflow: rate < 2^31 */
+    return frames < limit ? frames : limit;
+}
+
+/* The frames an input discard keeps (dsd_audio_discard_input()): those captured from the mark @p marked_ns until
+   @p now_ns, both on the monotonic clock, rounded up and at most @p limit. @p now_ns is read after the backend counted
+   what it holds, so the audio captured while the caller waited before that count is kept too. A mark after @p now_ns
+   keeps nothing. */
+static inline uint64_t
+audio_input_keep_since(uint64_t marked_ns, uint64_t now_ns, int rate, uint64_t limit) {
+    return audio_input_keep_frames(now_ns > marked_ns ? now_ns - marked_ns : 0U, rate, limit);
+}
+
+/* The frames an input discard kept (dsd_audio_discard_input()), interleaved, which dsd_audio_read() returns before the
+   device's, and the next one it returns. PulseAudio keeps the newest frames it read there (it reads all the client
+   holds, and only the time since the mark says how much of it came after); PortAudio and AAudio the chunk a device
+   overrun made them stop at, since it may hold audio captured after the mark. */
+struct audio_input_carry {
+    int16_t* frames;
+    size_t len;
+    size_t pos;
+};
+
+/* The frames the carry still holds. */
+static inline size_t
+audio_input_carry_left(const struct audio_input_carry* carry) {
+    return carry != NULL && carry->pos < carry->len ? carry->len - carry->pos : 0U;
+}
+
+/* Up to @p frames of the carry's frames of @p channels, into @p buffer: the frames copied. */
+static inline size_t
+audio_input_carry_take(struct audio_input_carry* carry, int channels, int16_t* buffer, size_t frames) {
+    size_t take = audio_input_carry_left(carry);
+    if (take > frames) {
+        take = frames;
+    }
+    if (take > 0U) {
+        const size_t ch = (size_t)channels;
+        DSD_MEMCPY(buffer, carry->frames + carry->pos * ch, take * ch * sizeof(int16_t));
+        carry->pos += take;
+    }
+    return take;
+}
+
+/* Drop up to @p frames of the carry's oldest frames: the frames dropped. */
+static inline size_t
+audio_input_carry_drop(struct audio_input_carry* carry, size_t frames) {
+    size_t drop = audio_input_carry_left(carry);
+    if (drop > frames) {
+        drop = frames;
+    }
+    if (carry != NULL) {
+        carry->pos += drop;
+    }
+    return drop;
+}
+
+/* The buffer an input discard reads its chunks into, of @p frames frames of @p channels, allocated before it reads
+   anything (issue #834): a chunk the discard cannot tell old from new is handed to the carry whole
+   (audio_input_carry_adopt()), so nothing is allocated once the device gave the audio up. NULL when memory runs out:
+   the discard then reads nothing, and every frame stays in the device. */
+static inline int16_t*
+audio_input_chunk_reserve(size_t frames, int channels) {
+    const size_t samples = frames * (size_t)channels;
+    return samples > 0U ? (int16_t*)malloc(samples * sizeof(int16_t)) : NULL;
+}
+
+/* The carry becomes @p frames frames held in @p owned (allocated, the carry frees it from then on), whatever it held. */
+static inline void
+audio_input_carry_adopt(struct audio_input_carry* carry, int16_t* owned, size_t frames) {
+    free(carry->frames);
+    carry->frames = owned;
+    carry->len = owned != NULL ? frames : 0U;
+    carry->pos = 0U;
+}
+
+/* Free the carry and what it holds. */
+static inline void
+audio_input_carry_free(struct audio_input_carry* carry) {
+    if (carry != NULL) {
+        free(carry->frames);
+        free(carry);
+    }
+}
+
 struct dsd_audio_stream {
     dsd_audio_backend_handle* handle;
     int is_input;
     int route_registered;
     int channels;
     int sample_rate;
+    /* Input streams of PulseAudio, PortAudio and AAudio (NULL elsewhere): the frames an input discard kept because
+       they may have been captured after its mark (dsd_audio_discard_input()), which dsd_audio_read() returns before
+       the device's. Allocated with the stream. In the part every backend's layout shares, so a stream sized without
+       the backend's own fields still holds it. */
+    struct audio_input_carry* input_carry;
+    /* PulseAudio input streams (NULL elsewhere): the record stream (audio_pulse_record.h), which reads what the client
+       holds without waiting, since an input discard must never wait for the source. Output streams use `handle`
+       (pa_simple), inputs this. In the shared part for the same reason as `input_carry`. */
+    struct pulse_record* record;
 
     /* Async output pump (playback streams only) */
     int use_async;

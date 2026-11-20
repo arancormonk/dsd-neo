@@ -108,7 +108,7 @@ reset_fakes(void) {
 
 int
 main(void) {
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     assert(dsd_net_audio_input_hook_tcp_open((dsd_socket_t)1, 48000) == NULL);
     dsd_net_audio_input_hook_tcp_close(NULL);
     assert(dsd_net_audio_input_hook_tcp_read_sample_wait(NULL, NULL, 100U) == 0);
@@ -116,7 +116,7 @@ main(void) {
     dsd_net_audio_input_hook_udp_stop(NULL);
     assert(dsd_net_audio_input_hook_udp_read_sample(NULL, NULL) == 0);
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){
         .tcp_open = fake_tcp_open,
         .tcp_close = fake_tcp_close,
         .tcp_read_sample_wait = fake_tcp_read_sample_wait,

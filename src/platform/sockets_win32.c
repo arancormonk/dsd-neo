@@ -208,6 +208,15 @@ dsd_socket_set_nonblocking(dsd_socket_t sock, int nonblock) {
     return ioctlsocket(sock, FIONBIO, &mode);
 }
 
+long
+dsd_socket_readable_bytes(dsd_socket_t sock) {
+    u_long ready = 0;
+    if (sock == DSD_INVALID_SOCKET || ioctlsocket(sock, FIONREAD, &ready) != 0) {
+        return -1;
+    }
+    return ready > (u_long)LONG_MAX ? LONG_MAX : (long)ready;
+}
+
 int
 dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms) {
     if ((events & (DSD_SOCKET_WAIT_READ | DSD_SOCKET_WAIT_WRITE)) == 0) {

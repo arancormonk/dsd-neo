@@ -38,6 +38,7 @@
 #ifndef DSD_NEO_PROTOCOL_NXDN_NXDN_CONFIRM_H
 #define DSD_NEO_PROTOCOL_NXDN_NXDN_CONFIRM_H
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -58,6 +59,11 @@ typedef enum {
  * NXDN96 one at 4800), and the slip either way a run allows. */
 #define NXDN_CONFIRM_FRAME_SYMBOLS      192U
 #define NXDN_CONFIRM_FRAME_SYMBOLS_SLIP 1U
+
+/** @brief How long a scan quiet check waits for the frame that completes a weak streak (issue #834): two frames, 80 ms
+ * each on NXDN48 (IDAS Type-D and DCR included), 40 ms on NXDN96. */
+#define NXDN_CONFIRM_PARTIAL_HOLD_MS_48 160U
+#define NXDN_CONFIRM_PARTIAL_HOLD_MS_96 80U
 
 /** @brief Forget everything learned about the current transmission. */
 void nxdn_confirm_reset(dsd_state* state);
@@ -96,9 +102,13 @@ void nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence);
  *
  * A frame whose own CRCs confirmed the transmission is reported to a signal search here, once,
  * after the frame's channels have published what the confirmation unlocked: the search reads
- * the RAN and call from state when it hears it.
+ * the RAN and call from state when it hears it. A scan quiet check hears it here too, through @p opts
+ * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for that frame, and for the frame whose
+ * spacing confirmed the strong check the frame before left waiting (once: the frames after it only run
+ * on), PARTIAL for a weak frame whose streak a later one must complete (NXDN_CONFIRM_PARTIAL_HOLD_MS_48
+ * or _96), nothing for a frame that checked nothing. @p opts may be NULL (no quiet check).
  */
-void nxdn_confirm_end_frame(dsd_state* state);
+void nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Report a CRC-good SCCH in this frame, besides its weak evidence.
@@ -127,6 +137,28 @@ int nxdn_confirm_is_confirmed(const dsd_state* state);
  * nxdn_confirm_end_frame().
  */
 int nxdn_confirm_frame_proved(const dsd_state* state);
+
+/**
+ * @brief Whether this frame's own CRCs proved its content: a strong check, or the short one that completes or continues
+ * a weak streak.
+ *
+ * Narrower than nxdn_confirm_frame_proved(), which a lone short CRC satisfies. It is the frame a scan quiet check hears
+ * as PROVEN content (nxdn_confirm_end_frame()), and the frame that refreshes a conventional -Y scan's hold (issue #834),
+ * so both read "checked" the same way; a frame whose spacing confirmed the frame before counts too
+ * (nxdn_confirm_frame_content_counted()). Read it after nxdn_confirm_end_frame().
+ */
+int nxdn_confirm_frame_content_proven(const dsd_state* state);
+
+/**
+ * @brief Whether this frame counts as proven content for a scan: its own CRCs proved it
+ * (nxdn_confirm_frame_content_proven()), or its spacing confirmed the strong check the frame before left waiting
+ * (nxdn_confirm_note_frame_start()), counted once, for this frame only, as proof of that frame's content.
+ *
+ * It is the frame a scan quiet check hears as PROVEN content (nxdn_confirm_end_frame()) and the frame that starts or
+ * refreshes a conventional -Y scan's hold (issue #834). The frames after it, which only run on, count nothing. Read it
+ * after nxdn_confirm_end_frame().
+ */
+int nxdn_confirm_frame_content_counted(const dsd_state* state);
 
 #ifdef __cplusplus
 }

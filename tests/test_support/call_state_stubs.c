@@ -155,7 +155,8 @@ dsd_call_state_protocol_family(int protocol) {
 }
 
 int
-dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const dsd_call_crypto_update* update) {
+    (void)protocol;
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || update == NULL) {
         return -1;
     }
@@ -175,8 +176,9 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
 }
 
 int
-dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
-    return dsd_call_state_update_crypto(state, slot, update);
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
+                                      const dsd_call_crypto_update* update) {
+    return dsd_call_state_update_crypto(state, slot, protocol, update);
 }
 
 int
@@ -309,7 +311,8 @@ dsd_call_state_stub_event_sync_count(uint8_t slot) {
 }
 
 int
-dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* alias) {
+    (void)protocol;
     (void)state;
     (void)slot;
     (void)epoch;
@@ -318,13 +321,15 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
 }
 
 int
-dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                          const char* alias) {
     (void)opts;
-    return dsd_event_enrich_alias(state, slot, epoch, alias);
+    return dsd_event_enrich_alias(state, slot, protocol, epoch, alias);
 }
 
 int
-dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps) {
+dsd_event_enrich_gps(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* gps) {
+    (void)protocol;
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U
         || gps == NULL || dsd_call_state_get(state, slot, &call) <= 0 || call.epoch != epoch) {
@@ -442,10 +447,12 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd
 }
 
 int
-dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
-                                  int signaled_id, int effective_id, int available, int fallback) {
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch,
+                                  dsd_call_key_source source, int signaled_id, int effective_id, int available,
+                                  int fallback) {
     (void)state;
     (void)slot;
+    (void)protocol;
     (void)epoch;
     (void)source;
     (void)signaled_id;

@@ -710,8 +710,8 @@ or realtime. These replays are outside it altogether:
   replay restarted mid-run; decode timestamps now follow the system clock." Any call in progress ends first, on the
   capture's clock: its history row, per-call WAV and rdio-scanner sidecar keep the capture's times.
 - **A replay on a reused decoder state.** Only a run on a decoder state no earlier run has used moves onto the
-  capture's clock. An embedding host can run again on the state its last run used: the Android service does when a
-  start races the previous run's teardown. A replay started as that run's input then decodes on the system clock, and
+  capture's clock. The command line and the Android app start every run on a fresh state, but an embedding host can
+  run again on the state its last run used. A replay started as that run's input then decodes on the system clock, and
   the log says so once: "IQ replay: this run reuses a decoder state an earlier run used; replay timing stays on the
   system clock for this run, and decode times are not anchored to the capture." The earlier run's stamps are on the
   system clock, and moving the clock back to an older capture's time would hold its throttles and timers until the

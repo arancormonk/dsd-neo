@@ -469,6 +469,31 @@ dsd_trunk_tuning_note_result(uint64_t request_id, dsd_trunk_tune_result result) 
     return dsd_trunk_tuning_request_status(request_id, NULL);
 }
 
+#if defined(_MSC_VER)
+#define DSD_TRUNK_TUNING_THREAD_LOCAL __declspec(thread)
+#else
+#define DSD_TRUNK_TUNING_THREAD_LOCAL _Thread_local
+#endif
+/* How deep this thread is in tunes their caller judges (dsd_trunk_tuning_caller_judges_begin()). */
+static DSD_TRUNK_TUNING_THREAD_LOCAL int s_caller_judges_depth = 0;
+
+void
+dsd_trunk_tuning_caller_judges_begin(void) {
+    s_caller_judges_depth++;
+}
+
+void
+dsd_trunk_tuning_caller_judges_end(void) {
+    if (s_caller_judges_depth > 0) {
+        s_caller_judges_depth--;
+    }
+}
+
+int
+dsd_trunk_tuning_caller_judges(void) {
+    return s_caller_judges_depth > 0;
+}
+
 void
 dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks) {
     g_trunk_tuning_hooks = hooks;

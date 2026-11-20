@@ -20,6 +20,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -91,7 +92,8 @@ alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t src, 
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
-    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->ota_source_id != src) {
+    // A P25 alias names a P25 call's talker: another protocol's call the slot still holds is not one.
+    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->ota_source_id != src || !DSD_SYNC_IS_P25(out->protocol)) {
         return 0;
     }
     // Motorola P25 systems transmit the talker alias during hangtime, after the
@@ -637,7 +639,7 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
         (void)dsd_alias_learn_radio(opts, state, NULL, rid, str, metadata);
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
-        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, alias);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, DSD_SYNC_P25P1_POS, call.epoch, alias);
     } else if (rid != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source mismatch;");
     }
@@ -917,7 +919,8 @@ l3h_alias_resolve_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* 
     if (dsd_call_state_get(state, slot_idx, out) <= 0) {
         return 0;
     }
-    if (out->phase != DSD_CALL_PHASE_ACTIVE && out->phase != DSD_CALL_PHASE_ENDED) {
+    if ((out->phase != DSD_CALL_PHASE_ACTIVE && out->phase != DSD_CALL_PHASE_ENDED)
+        || !DSD_SYNC_IS_P25(out->protocol)) {
         return 0;
     }
     return out->ota_source_id != 0U && out->ota_source_id <= UINT32_MAX;
@@ -1012,7 +1015,7 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
-        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, str);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, DSD_SYNC_P25P1_POS, call.epoch, str);
     } else {
         DSD_FPRINTF(stderr, " Alias Deferred: no attributable call for this slot;");
     }
@@ -1048,8 +1051,9 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
 
     dsd_call_snapshot call;
     uint8_t slot_idx = alias_slot_index(slot);
+    // The Tait alias names no radio: its talker is the open P25 call's, never another protocol's call.
     uint32_t rid = dsd_call_state_get(state, slot_idx, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-                           && call.ota_source_id <= UINT32_MAX
+                           && DSD_SYNC_IS_P25(call.protocol) && call.ota_source_id <= UINT32_MAX
                        ? (uint32_t)call.ota_source_id
                        : 0U;
     uint16_t nac = state->nac;
@@ -1058,7 +1062,7 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
         char metadata[64];
         DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
         (void)dsd_alias_learn_radio(opts, state, NULL, rid, (const char*)alias, metadata);
-        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, call.epoch, (const char*)alias);
+        (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, DSD_SYNC_P25P1_POS, call.epoch, (const char*)alias);
     }
 }
 
@@ -1071,14 +1075,15 @@ dmr_talker_alias_format_name(uint8_t format) {
 
 // ---- DMR talker alias learning (dmr_talker_alias_assembly) ----
 
-// The slot's ACTIVE call and the tuning generation: the binding a piece of the alias arriving now belongs to.
+// The slot's ACTIVE DMR call and the tuning generation: the binding a piece of the alias arriving now belongs to. A
+// slot keeps another protocol's call whose end never decoded; a DMR alias is never its talker's.
 static dmr_talker_alias_assembly
 dmr_talker_alias_binding_now(const dsd_state* state, uint8_t slot) {
     dmr_talker_alias_assembly now;
     DSD_MEMSET(&now, 0, sizeof now);
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && call.ota_source_id <= UINT32_MAX) {
+        && DSD_SYNC_IS_DMR(call.protocol) && call.ota_source_id <= UINT32_MAX) {
         now.source = (uint32_t)call.ota_source_id;
         now.epoch = call.epoch;
     }
@@ -1618,7 +1623,7 @@ dmr_talker_alias_lc_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot,
     if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; ", alias_string);
-        (void)dsd_event_enrich_alias(state, slot, call.epoch, alias);
+        (void)dsd_event_enrich_alias(state, slot, DSD_SYNC_DMR_BS_VOICE_POS, call.epoch, alias);
     }
     dmr_talker_alias_maybe_learn(opts, state, slot, block_num, end, max_chars, alias_string);
 }

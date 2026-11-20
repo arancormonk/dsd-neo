@@ -403,7 +403,8 @@ test_other_protocol_call(void) {
     fixture_close(&f);
 }
 
-/* Dispatch a link control as the TDULC that ended @p closing's call does (processTDULC() captures it first). */
+/* Dispatch a link control as the TDULC that ended @p closing's call does (processTDULC() captures it first and passes
+ * the epoch of the call it ended). */
 static void
 send_terminator_lc(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[PART_OCTETS],
                    const dsd_event_closing_call* closing) {
@@ -412,7 +413,50 @@ send_terminator_lc(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octet
     for (int i = 0; i < 72; i++) {
         lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
     }
-    p25_lcw_from_tdulc(f->opts, f->st, lcw, 0, closing);
+    p25_lcw_from_tdulc(f->opts, f->st, lcw, 0, closing, closing->epoch);
+}
+
+/* Issue #800: a TDULC that ended no call binds its GPS link control to no call. On a trunked voice channel a header can
+ * open a call that names no source before any voice frame; the trunk state machine declines the TDULC's end and the
+ * call stays open (closing captured, ended epoch 0). A Motorola APX report in that TDULC still counts, anonymous, in
+ * the feed and the location file, but no history row takes it: the open call's row is not its call's, though an
+ * anonymous fix would pass the typed-source rule on a call that names no source. */
+static void
+test_terminator_that_ended_no_call(void) {
+    fixture f;
+    fixture_open(&f);
+    const dsd_call_observation header = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = TG_A,
+        .policy_target_id = TG_A,
+        .observed_m = 1.0,
+    };
+    expect_true("unbound terminator: header call opened",
+                dsd_call_state_observe(f.st, &header, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_event_sync_slot(f.opts, f.st, 0U);
+    dsd_event_closing_call closing;
+    expect_true("unbound terminator: call captured", dsd_event_capture_closing_call(f.st, 0U, &closing) == 1);
+    const uint8_t apx_lc[PART_OCTETS] = {0x00, 0x20, 0x00, 0x00, 0x30, 0x00, 0x00};
+    uint8_t bytes[9] = {0x06, 0x90, apx_lc[0], apx_lc[1], apx_lc[2], apx_lc[3], apx_lc[4], apx_lc[5], apx_lc[6]};
+    uint8_t lcw[72];
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+    p25_lcw_from_tdulc(f.opts, f.st, lcw, 0, &closing, 0U);
+    dsd_position_fix fix;
+    expect_true("unbound terminator: anonymous record kept",
+                feed_next(&f, &fix) && fix.source_id == 0U && (fix.flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) != 0U);
+    char last[256];
+    expect_true("unbound terminator: location row", lrrp_rows(&f, last) == 1);
+    dsd_call_snapshot call;
+    expect_true("unbound terminator: the call still open", dsd_call_state_get(f.st, 0U, &call) > 0
+                                                               && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                               && call.epoch == closing.epoch);
+    expect_true("unbound terminator: the open call's row takes nothing",
+                row0(&f)->pos.valid == 0U && row0(&f)->gps_s[0] == '\0');
+    fixture_close(&f);
 }
 
 /* The call's committed row: the one that names @p src, wherever the end pushed it. */
@@ -790,7 +834,7 @@ test_unchecked_report_prints_no_content(void) {
 }
 
 /* Dispatch one link control with the RS verdict @p errors (irrecoverable errors), through p25_lcw() or, with @p tdulc,
- * p25_lcw_from_tdulc(); never a soft-erasure retry. */
+ * p25_lcw_from_tdulc() as the TDULC that ends the open call; never a soft-erasure retry. */
 static void
 send_lc_verdict(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[PART_OCTETS], uint8_t errors,
                 int tdulc) {
@@ -800,36 +844,47 @@ send_lc_verdict(fixture* f, uint8_t format, uint8_t mfid, const uint8_t octets[P
         lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
     }
     if (tdulc) {
-        p25_lcw_from_tdulc(f->opts, f->st, lcw, errors, NULL);
+        dsd_event_closing_call closing;
+        (void)dsd_event_capture_closing_call(f->st, 0U, &closing);
+        end_call(f);
+        p25_lcw_from_tdulc(f->opts, f->st, lcw, errors, &closing, closing.epoch);
     } else {
         p25_lcw(f->opts, f->st, lcw, errors);
     }
 }
 
 /* A link control whose RS decode left irrecoverable errors is no checked provenance, whichever entry point it comes
- * through: neither a GPS half nor a voice user's identity counts, even with no soft-erasure retry. */
+ * through: neither a GPS half nor a voice user's identity counts, even with no soft-erasure retry. Part A rides an
+ * LDU1; Part B another LDU1 or the TDULC that ends the call (a TDULC binds only the call it ended, so a Part A in one
+ * never pairs). With both halves hard-decoded, the same sequence gives the fix. */
 static void
 test_uncorrectable_verdict(void) {
     for (int tdulc = 0; tdulc < 2; tdulc++) {
-        char label[160];
-        fixture f;
-        fixture_open(&f);
-        (void)start_call(&f, TG_A, SRC_A);
-        body_fields b = fields_default();
-        uint8_t body[BODY_OCTETS];
-        make_body(&b, body);
-        char last[256];
-        dsd_position_fix fix;
+        for (int bad = 0; bad <= 2; bad++) {
+            char label[160];
+            fixture f;
+            fixture_open(&f);
+            (void)start_call(&f, TG_A, SRC_A);
+            body_fields b = fields_default();
+            uint8_t body[BODY_OCTETS];
+            make_body(&b, body);
+            char last[256];
+            dsd_position_fix fix;
 
-        send_lc_verdict(&f, LCO_A_ODD, MFID_HARRIS, body, 1U, tdulc);
-        send_lc_verdict(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 0U, tdulc);
-        DSD_SNPRINTF(label, sizeof label, "uncorrectable Part A (tdulc %d): no fix", tdulc);
-        expect_true(label, lrrp_rows(&f, last) == 0 && !feed_next(&f, &fix));
-        send_lc_verdict(&f, LCO_A_ODD, MFID_HARRIS, body, 0U, tdulc);
-        send_lc_verdict(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, 1U, tdulc);
-        DSD_SNPRINTF(label, sizeof label, "uncorrectable Part B (tdulc %d): no fix", tdulc);
-        expect_true(label, lrrp_rows(&f, last) == 0 && !feed_next(&f, &fix));
-        fixture_close(&f);
+            send_lc_verdict(&f, LCO_A_ODD, MFID_HARRIS, body, (uint8_t)(bad == 1), 0);
+            send_lc_verdict(&f, LCO_B_ODD, MFID_HARRIS, body + PART_OCTETS, (uint8_t)(bad == 2), tdulc);
+            const int rows = lrrp_rows(&f, last);
+            const int kept = feed_next(&f, &fix);
+            if (bad == 0) {
+                DSD_SNPRINTF(label, sizeof label, "hard halves (tdulc %d): the fix", tdulc);
+                expect_true(label, rows == 1 && kept && fix.source_id == SRC_A);
+            } else {
+                DSD_SNPRINTF(label, sizeof label, "uncorrectable Part %c (tdulc %d): no fix", bad == 1 ? 'A' : 'B',
+                             tdulc);
+                expect_true(label, rows == 0 && !kept);
+            }
+            fixture_close(&f);
+        }
     }
 
     // A voice user with irrecoverable errors names the call, but not as checked provenance.
@@ -1184,6 +1239,7 @@ main(void) {
     test_alias_between_halves();
     test_ended_call();
     test_terminator();
+    test_terminator_that_ended_no_call();
     test_reception_change();
     test_phase_change();
     test_event_log_one_label();

@@ -536,9 +536,10 @@ static const NcMenuItem TRUNK_FOLLOW_ITEMS[] = {
      .on_select = act_scan_voice_only},
     {.id = "follow.skip_silent",
      .label_fn = lbl_scan_skip_silent,
-     .help =
-         "Skip a quiet conventional scan channel after a quick signal check; weak or very short transmissions can be "
-         "missed. Unsupported receivers keep normal timing; holds still apply.",
+     .help = "Skip a silent conventional scan channel after a quick signal check; weak or very short transmissions "
+             "can be missed, and holds still apply. The Scan Timing row reads \"Quiet check\" while a channel is "
+             "checked, or \"No check: input\" (or tuner, rate, width, modes) where it cannot be; those channels "
+             "keep normal timing, and the log says how to fix it.",
      .on_select = act_scan_skip_silent},
     {.id = "follow.voice_qualify",
      .label_fn = lbl_scan_voice_qualify,

@@ -737,7 +737,7 @@ main(void) {
         .audio_permitted = 1U,
         .observed_m = 1.1,
     };
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     assert(dsd_recent_activity_publish(state, 0U, &observation, "Active Ch: 1234 TG: 321; ", 1000U) == 1);
 
     dsd_tg_policy_entry entry;
@@ -892,7 +892,7 @@ main(void) {
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 2.1;
-    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_update_crypto(state, 0U, DSD_SYNC_P25P2_POS, &crypto) == 1);
     assert(dsd_recent_activity_publish(state, 0U, &observation, "mutated TG: 999; ", 2000U) == 1);
     history[0].Event_History_Items[1].source_id = 999U;
     history[0].Event_History_Items[1].site_id.dmr_t3_syscode = 0x0123U;

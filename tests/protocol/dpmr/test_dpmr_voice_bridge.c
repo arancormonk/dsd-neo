@@ -29,6 +29,7 @@
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -48,6 +49,8 @@ static int g_boundary_at = -1;
 /* The 24-bit channel code the first CC field carries (its twelve dibits follow the first CCH and TCH group); 0 sends
    zeros, which decode to no channel code. */
 static uint32_t g_channel_code;
+/* Nonzero: every Hamming block decodes to ones, so both CCH halves fail their CRC-7, as a noise frame's do. */
+static int g_cch_noise;
 
 enum { DPMR_TEST_FIRST_CC_DIBIT = 36 + 144, DPMR_TEST_CC_DIBITS = 12 };
 
@@ -73,6 +76,7 @@ reset_capture(void) {
     g_channel_code = 0U;
     g_fail_half = -1;
     g_hamming_calls = 0;
+    g_cch_noise = 0;
 }
 
 int
@@ -97,7 +101,7 @@ bool
 Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCodewords) {
     (void)rxBits;
     if (decodedBits != NULL && nbCodewords > 0) {
-        DSD_MEMSET(decodedBits, 0, (size_t)nbCodewords * 8U);
+        DSD_MEMSET(decodedBits, g_cch_noise ? 1 : 0, (size_t)nbCodewords * 8U);
         if (g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6) {
             decodedBits[0] = 1;
         }
@@ -160,6 +164,32 @@ static int
 expect_u64(const char* tag, unsigned long long got, unsigned long long want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got 0x%llX want 0x%llX\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_text(const char* tag, const char* text, const char* needle, int want_present) {
+    const int present = strstr(text, needle) != NULL;
+    if (present != want_present) {
+        DSD_FPRINTF(stderr, "%s: \"%s\" %s in \"%s\"\n", tag, needle, present ? "present" : "missing", text);
+        return 1;
+    }
+    return 0;
+}
+
+/* What dpmr_print_ids() writes for @p state, or a failure. */
+static int
+capture_print_ids(const dsd_state* state, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dpmr_print_ids") != 0) {
+        DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+        return 1;
+    }
+    dpmr_print_ids(state);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, out, out_size) != 0) {
+        DSD_FPRINTF(stderr, "capture stderr failed\n");
         return 1;
     }
     return 0;
@@ -540,9 +570,8 @@ test_unconfirmed_superframe_part_publishes_nothing(void) {
     return rc;
 }
 
-/* The printer only prints (issue #575). It reads the canonical call, whose caller text outlives the transmission
-   that decoded it, and never checks confirmation, so it is no place to publish this carrier's colour code from:
-   dpmr_publish_call() does that, on the confirmed path. */
+/* The printer only prints (issue #575). It shows what the canonical call holds, so it is no place to publish this
+   carrier's colour code from: dpmr_publish_call() does that, on the confirmed path. */
 static int
 test_id_print_does_not_publish_the_color_code(void) {
     static dsd_state state;
@@ -675,13 +704,109 @@ test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
     state.dpmr_confirmed = 0;
     state.dPMRVoiceFS2Frame.ColorCode[0] = 21U;
 
-    dpmr_print_ids(&state);
+    char printed[256];
+    rc |= capture_print_ids(&state, printed, sizeof(printed));
     dpmr_publish_call(&opts, &state);
 
     dsd_call_snapshot call;
     rc |= expect_int("retained-caller-text", dsd_call_state_get(&state, 0U, &call) > 0, 1);
-    rc |= expect_int("retained-caller-is-printed", strcmp(call.source_text, "200000*"), 0);
+    rc |= expect_int("retained-caller-is-kept", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("unconfirmed-no-color-code", state.dpmr_color_code, -1);
+    /* The retained text belongs to the earlier transmission: this unconfirmed frame decoded no identity to show. */
+    rc |= expect_text("retained-target-not-printed", printed, "1000000", 0);
+    rc |= expect_text("retained-caller-not-printed", printed, "200000*", 0);
+    rc |= expect_text("unconfirmed-prints-target-crc-err", printed, "TG=(CRC ERR)", 1);
+    rc |= expect_text("unconfirmed-prints-caller-crc-err", printed, "Src=(CRC ERR)", 1);
+    return rc;
+}
+
+/* A confirmed transmission shows the identities its own frames published, and the channel code read with them. */
+static int
+test_confirmed_call_prints_its_identities(void) {
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DPMR_FS2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "200000*");
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+
+    char printed[256];
+    rc |= capture_print_ids(&state, printed, sizeof(printed));
+    rc |= expect_text("confirmed-prints-target", printed, "TG=1000000", 1);
+    rc |= expect_text("confirmed-prints-caller", printed, "Src=200000*", 1);
+    rc |= expect_text("confirmed-prints-channel-code", printed, "Channel Code=12", 1);
+    rc |= expect_text("confirmed-no-crc-err", printed, "CRC ERR", 0);
+    return rc;
+}
+
+/* A noise frame that syncs as dPMR after another protocol's call (seen on a D-STAR capture under -fa) printed that
+   call's callsigns in green as the frame's TG and Src: the printer read the canonical call whoever had written it.
+   Neither CCH half of this frame passes its CRC-7, so it has no identity to show, whether the other call has ended or
+   is still open. */
+static int
+test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
+    int rc = 0;
+    for (int still_open = 0; still_open < 2; still_open++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_capture();
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "CQCQCQ");
+        DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "N0CALL");
+        (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        if (!still_open) {
+            (void)dsd_call_state_end(&state, 0U, 0.0);
+        }
+        state.synctype = DSD_SYNC_DPMR_FS2_POS;
+        state.dpmr_color_code = -1;
+        state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        g_cch_noise = 1;
+
+        dsd_test_capture_stderr cap;
+        char printed[512];
+        if (dsd_test_capture_stderr_begin(&cap, "dpmr_noise_frame") != 0) {
+            DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+            return 1;
+        }
+        const int verdict = processdPMRvoice(&opts, &state);
+        if (dsd_test_capture_stderr_end(&cap) != 0
+            || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+            DSD_FPRINTF(stderr, "capture stderr failed\n");
+            return 1;
+        }
+
+        rc |= expect_int("noise-verdict", verdict, 0);
+        rc |= expect_int("noise-crc-0", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+        rc |= expect_int("noise-crc-1", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[1], 0);
+        rc |= expect_int("noise-unconfirmed", state.dpmr_confirmed, 0);
+        rc |= expect_int("noise-no-voice", (int)g_mbe_calls, 0);
+        rc |= expect_text("noise-no-foreign-target", printed, "CQCQCQ", 0);
+        rc |= expect_text("noise-no-foreign-caller", printed, "N0CALL", 0);
+        rc |= expect_text("noise-target-crc-err", printed, "TG=(CRC ERR)", 1);
+        rc |= expect_text("noise-caller-crc-err", printed, "Src=(CRC ERR)", 1);
+
+        /* The other protocol's call is left as it was. */
+        dsd_call_snapshot call;
+        rc |= expect_int("noise-other-call-kept", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+        rc |= expect_int("noise-other-call-protocol", call.protocol, DSD_SYNC_DSTAR_VOICE_POS);
+        rc |= expect_int("noise-other-call-phase", (int)call.phase,
+                         still_open ? (int)DSD_CALL_PHASE_ACTIVE : (int)DSD_CALL_PHASE_ENDED);
+    }
     return rc;
 }
 
@@ -938,6 +1063,8 @@ main(void) {
     rc |= test_confirmed_target_only_call_publishes_the_color_code();
     rc |= test_dpmr_channel_not_colour_code();
     rc |= test_unconfirmed_frame_with_retained_caller_publishes_no_color_code();
+    rc |= test_confirmed_call_prints_its_identities();
+    rc |= test_noise_frame_after_another_protocols_call_prints_no_identity();
     rc |= test_id_print_side_effects_suppress_invalid_ids();
     rc |= test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice();
     rc |= test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing();

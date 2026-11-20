@@ -9,6 +9,8 @@
  */
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/platform/input_backlog_opening.h>
 #include <dsd-neo/platform/pcm_stream.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -23,6 +25,7 @@
 #include <io.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -224,6 +227,590 @@ test_socket_idle_then_close(void) {
     socket_pair_close(&pair);
 }
 
+/* Wait until @p sock holds @p bytes ready to read. The bytes were sent already: the bound (10 s) only turns a lost send
+   into a failure, never a slow host. */
+static int
+socket_holds(dsd_socket_t sock, long bytes) {
+    for (int tries = 0; tries < 1000; tries++) {
+        if (dsd_socket_readable_bytes(sock) >= bytes) {
+            return 1;
+        }
+        dsd_sleep_ms(10U);
+    }
+    return 0;
+}
+
+/* Issue #834: a discard drops the whole samples the reader held at the mark and those the socket had ready then,
+   without a wait, keeps a part of a sample so the samples after it stay whole, and keeps what arrived after the mark,
+   before the discard or after it. */
+static void
+test_socket_discard_through(void) {
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the discard");
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket for the discard");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == 0U, "the stream is the input marked on, holding nothing");
+    check(dsd_pcm_stream_discard_through(NULL, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a NULL discard drops nothing, the cut applying to no input");
+    /* Nothing held at the mark: nothing dropped, and no read made. A discard that waited would block on the idle socket
+       for good (it has no receive timeout), so the test would not end: no bound on the clock decides it. */
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing held at the mark: nothing dropped");
+    /* 1, 2, 3, then the low byte of 0x0504: one sample the reader buffers, two and a half ready on the socket. */
+    const uint8_t before[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U, 0x00U, 0x04U};
+    check(dsd_socket_send(pair.server, before, 2U, 0) == 2, "send the first sample");
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 1, "the first sample");
+    check(dsd_socket_send(pair.server, before + 2U, sizeof before - 2U, 0) == (int)(sizeof before - 2U), "send");
+    check(socket_holds(pair.client, (long)(sizeof before - 2U)), "the bytes arrived");
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == sizeof before, "the mark counts the bytes read in and ready");
+    /* 0x0605 arrives after the mark, before the discard: the new channel's. */
+    const uint8_t late[] = {0x05U, 0x06U};
+    check(dsd_socket_send(pair.server, late, sizeof late, 0) == (int)sizeof late, "send after the mark");
+    check(socket_holds(pair.client, (long)(sizeof before - 2U + sizeof late)), "it arrived");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "the two whole samples held at the mark go");
+    const uint8_t after[] = {0x00U};
+    check(dsd_socket_send(pair.server, after, sizeof after, 0) == (int)sizeof after, "send after the discard");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 0x0504,
+          "the part of a sample is kept: the next sample is whole");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 6,
+          "and what came after the mark is kept");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == DSD_INPUT_DISCARD_READ_PAST,
+          "a second discard on the same mark drops nothing: the reader read past it");
+    dsd_pcm_stream_close(stream);
+    check(dsd_input_backlog_cut_applies(&cut, stream) == 0, "a closed stream is no input to drop on");
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: a drop that finds the bytes the mark counted not ready yet (a socket's low-water mark, an interrupted
+   wait) keeps them owed: they were queued at the mark, so they are the old channel's when they come, and go before any
+   sample after them is returned. Simulated on a pipe: the counted bytes leave it underneath and come back later. */
+static void
+test_fd_discard_keeps_a_debt_not_ready(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the owed drop");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the owed drop");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    put_bytes(fds[1], old_audio, sizeof old_audio);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    uint8_t hidden[sizeof old_audio];
+    check(dsd_read(fds[0], hidden, sizeof hidden) == (ssize_t)sizeof hidden, "the counted bytes not ready yet");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 0, "nothing ready to drop yet");
+    put_bytes(fds[1], old_audio, sizeof old_audio);
+    const uint8_t new_audio[] = {0x09U, 0x00U};
+    put_bytes(fds[1], new_audio, sizeof new_audio);
+    int16_t s = 0;
+    int got = DSD_PCM_STREAM_TIMEOUT;
+    for (int i = 0; i < 8 && got == DSD_PCM_STREAM_TIMEOUT; i++) {
+        got = dsd_pcm_stream_read_wait(stream, &s, 100U);
+    }
+    check(got == DSD_PCM_STREAM_SAMPLE && s == 9, "the old bytes go when they come; the first sample is the new one");
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+}
+
+/* Issue #834: stdin from another program (a pipe) drops what it held at the mark; a regular file, which nothing feeds,
+   drops nothing; and a mark made on another input drops nothing of this one. */
+static void
+test_fd_discard_through(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the discard");
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the discard");
+    const uint8_t held[] = {0x01U, 0x00U, 0x02U, 0x00U, 0x03U};
+    put_bytes(fds[1], held, sizeof held);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == sizeof held, "the mark counts what the pipe holds");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "a pipe drops its two whole samples");
+    const uint8_t after[] = {0x00U, 0x07U, 0x00U};
+    put_bytes(fds[1], after, sizeof after);
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3, "the part sample is kept");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 7, "and what came after");
+    /* Another input attached since: its mark is no mark of this one. */
+    int other[2] = {-1, -1};
+    check(make_pipe(other) == 0, "a second pipe");
+    dsd_pcm_stream* other_stream = dsd_pcm_stream_open_fd(other[0]);
+    const uint8_t more[] = {0x08U, 0x00U};
+    put_bytes(fds[1], more, sizeof more);
+    dsd_input_backlog_mark(&cut);
+    check(dsd_pcm_stream_discard_through(stream, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a mark on another input drops nothing of this one: it does not apply");
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 8, "it reads on");
+    dsd_pcm_stream_close(other_stream);
+    (void)dsd_close(other[0]);
+    (void)dsd_close(other[1]);
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-pcm-discard");
+    check(fd >= 0, "temp file for the discard");
+    if (fd < 0) {
+        return;
+    }
+    const uint8_t file_bytes[] = {0x05U, 0x00U, 0x06U, 0x00U};
+    put_bytes(fd, file_bytes, sizeof file_bytes);
+    (void)dsd_close(fd);
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    check(file != NULL, "reopen the file for the discard");
+    dsd_pcm_stream* file_stream = file ? dsd_pcm_stream_open_fd(dsd_fileno(file)) : NULL;
+    dsd_input_backlog_mark(&cut);
+    check(dsd_pcm_stream_discard_through(file_stream, &cut) == DSD_INPUT_DISCARD_NOT_APPLICABLE,
+          "a regular file drops nothing: no cut applies to it");
+    check(dsd_pcm_stream_read_wait(file_stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 5, "it reads on");
+    dsd_pcm_stream_close(file_stream);
+    if (file) {
+        (void)fclose(file);
+    }
+    (void)remove(path);
+}
+
+#ifdef F_SETPIPE_SZ
+/* Issue #834: a pipe that held more old audio at the mark than one drop takes (the buffer and 20 refills, about 4 s
+   of 48 kHz mono): the drop stops at its bound, and the rest of the old audio is still owed. The reader pays it before
+   it returns a sample, so the first sample read is the one written after the mark. */
+static void
+test_fd_discard_past_its_bound(void) {
+    int fds[2] = {-1, -1};
+    if (make_pipe(fds) != 0) {
+        check(0, "pipe for the bounded discard");
+        return;
+    }
+    /* Room for all of it at once: the bound is 21 buffers of 19200 bytes, 403200 bytes. */
+    const size_t old_bytes = 21U * 19200U + 4000U;
+    if (fcntl(fds[1], F_SETPIPE_SZ, 1 << 20) < (int)old_bytes) {
+        DSD_FPRINTF(stderr, "pcm stream: the pipe cannot hold %zu bytes, the bounded discard is not run\n", old_bytes);
+        (void)dsd_close(fds[0]);
+        (void)dsd_close(fds[1]);
+        return;
+    }
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_fd(fds[0]);
+    check(stream != NULL, "open on the pipe for the bounded discard");
+    static uint8_t old_audio[21U * 19200U + 4000U];
+    for (size_t i = 0; i < old_bytes; i += 2U) {
+        old_audio[i] = 0x01U; /* sample 1, the old channel's */
+        old_audio[i + 1U] = 0x00U;
+    }
+    put_bytes(fds[1], old_audio, old_bytes);
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 1U && cut.arrived == old_bytes, "the mark counts all the old audio");
+    const uint8_t new_audio[] = {0x07U, 0x00U};
+    put_bytes(fds[1], new_audio, sizeof new_audio);
+    const long dropped = dsd_pcm_stream_discard_through(stream, &cut);
+    check(dropped > 0 && (uint64_t)dropped * 2U < old_bytes, "one drop stops at its bound");
+    int16_t s = 0;
+    const int got = dsd_pcm_stream_read_wait(stream, &s, 1000U);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "the old audio past the bound is not read (read %d, %d; want a sample of 7)", got,
+                 (int)s);
+    check(got == DSD_PCM_STREAM_SAMPLE && s == 7, label);
+    dsd_pcm_stream_close(stream);
+    (void)dsd_close(fds[0]);
+    (void)dsd_close(fds[1]);
+}
+#endif
+
+/* A retune confirmed off the decoder thread the moment it was asked for: its mark, posted at once. */
+static void
+post_now(void) {
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_input_backlog_post(&cut);
+}
+
+/* Issue #834: a retune posted while no input is open, and none is being opened (the backoff before a TCP reconnect),
+   moved the peer before the next input began: that input's first samples arrived after it, so it is not measured on
+   that input and its drop never runs. */
+static void
+test_post_before_the_input_opens(void) {
+    dsd_input_backlog_retire();
+    post_now();
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the early post");
+    const uint8_t fresh[] = {0x65U, 0x00U, 0x66U, 0x00U};
+    check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send the new channel's audio");
+    check(socket_holds(pair.client, (long)sizeof fresh), "it arrived");
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket after the early post");
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    const int held = dsd_input_backlog_take(&cut);
+    char what[160];
+    DSD_SNPRINTF(what, sizeof what, "a post made before the input began is not its drop (held %d, measured %u, %llu)",
+                 held, (unsigned)cut.measured, (unsigned long long)cut.arrived);
+    check(!held, what);
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 0x65,
+          "its first sample is read");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: once a replacement input begins opening (its connection made), a retune posted before its reader
+   attaches may find the old channel's audio on it: it is measured on the connection when posted, and stands on the
+   reader that attaches. One posted before the opening began is retired by it, and an opening no reader took (a failed
+   open, then dsd_input_backlog_forget()) leaves no post for the next input. */
+static void
+test_post_while_the_input_opens(void) {
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
+    check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
+
+    dsd_input_backlog_retire();
+    post_now();
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    check(dsd_input_backlog_take(NULL) == 0, "a post made before the opening began is retired by it");
+    post_now();
+    dsd_input_backlog_forget();
+    check(dsd_input_backlog_take(NULL) == 0, "an opening that ended unopened leaves no post");
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    check(cut.measured == 0U, "and its connection is no input any more");
+
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    post_now();
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket being opened");
+    dsd_input_backlog_forget();
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    check(dsd_input_backlog_take(&cut) == 1 && cut.measured == 1U && cut.arrived == sizeof old_audio
+              && dsd_input_backlog_cut_applies(&cut, stream),
+          "a post made while it opened stands on its reader and survives the replacement");
+    const uint8_t fresh[] = {0x03U, 0x00U};
+    check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send new audio");
+    check(socket_holds(pair.client, (long)(sizeof old_audio + sizeof fresh)), "it arrived too");
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 2, "the drop takes the old audio");
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3, "and keeps the new");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: a retune posted while a replacement input opens is measured when it is posted, on the connection that
+   exists: audio that reaches the connection after the post, before its reader attaches, is the new channel's and stays.
+   One old sample is queued, the post is made, one new sample arrives, then the reader attaches: the drop takes the old
+   sample only. */
+static void
+test_post_while_the_input_opens_is_measured_when_posted(void) {
+    dsd_input_backlog_retire();
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the measured opening");
+    const uint8_t old_audio[] = {0x01U, 0x00U};
+    check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
+    check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    post_now();
+    const uint8_t fresh[] = {0x03U, 0x00U};
+    check(dsd_socket_send(pair.server, fresh, sizeof fresh, 0) == (int)sizeof fresh, "send new audio");
+    check(socket_holds(pair.client, (long)(sizeof old_audio + sizeof fresh)), "it arrived before the reader");
+    dsd_pcm_stream* stream = dsd_pcm_stream_open_socket(pair.client);
+    check(stream != NULL, "open on the socket being opened");
+    dsd_input_backlog_forget();
+    dsd_input_cut cut;
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    const int held = dsd_input_backlog_take(&cut);
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what,
+                 "the post counts what the connection held when it was posted (held %d, measured %u, %llu bytes, "
+                 "expected 2)",
+                 held, (unsigned)cut.measured, (unsigned long long)cut.arrived);
+    check(held == 1 && cut.measured == 1U && cut.arrived == sizeof old_audio, what);
+    check(dsd_pcm_stream_discard_through(stream, &cut) == 1, "the drop takes the old sample only");
+    int16_t s = 0;
+    check(dsd_pcm_stream_read_wait(stream, &s, 1000U) == DSD_PCM_STREAM_SAMPLE && s == 3,
+          "and the new sample that came before the reader is read");
+    dsd_pcm_stream_close(stream);
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: the backlog keeps the opening's connection itself, never the caller's address of it. The variable the
+   caller passed it from may change or go away while the opening lasts (the options a reconnect wrote it into can be
+   replaced or freed): the opening still counts its own connection. A run boundary (dsd_input_backlog_retire(), at a
+   run's start and end) and an input replacement (dsd_input_backlog_forget()) end the opening, after which a mark
+   measures nothing. */
+static void
+test_opening_keeps_its_own_connection(void) {
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the kept opening");
+    const uint8_t old_audio[] = {0x01U, 0x00U, 0x02U, 0x00U};
+    check(dsd_socket_send(pair.server, old_audio, sizeof old_audio, 0) == (int)sizeof old_audio, "send old audio");
+    check(socket_holds(pair.client, (long)sizeof old_audio), "it arrived");
+
+    const int ends_by_retire[] = {1, 0};
+    for (size_t i = 0; i < sizeof ends_by_retire / sizeof ends_by_retire[0]; i++) {
+        dsd_input_backlog_retire();
+        dsd_socket_t callers_copy = pair.client;
+        dsd_input_backlog_opening(callers_copy, dsd_pcm_stream_socket_arrived);
+        callers_copy = DSD_INVALID_SOCKET;
+        dsd_input_cut cut;
+        DSD_MEMSET(&cut, 0, sizeof cut);
+        dsd_input_backlog_mark(&cut);
+        char what[192];
+        DSD_SNPRINTF(what, sizeof what,
+                     "the opening counts its own connection after the caller's copy changed (measured %u, %llu bytes, "
+                     "expected 4)",
+                     (unsigned)cut.measured, (unsigned long long)cut.arrived);
+        check(cut.measured == 1U && cut.arrived == sizeof old_audio, what);
+        if (ends_by_retire[i]) {
+            dsd_input_backlog_retire();
+        } else {
+            dsd_input_backlog_forget();
+        }
+        dsd_input_backlog_mark(&cut);
+        check(cut.measured == 0U,
+              ends_by_retire[i] ? "a run boundary ends the opening" : "an input replacement ends the opening");
+        check(callers_copy == DSD_INVALID_SOCKET, "the caller's copy stays its own");
+    }
+    socket_pair_close(&pair);
+}
+
+/* A queue whose count is the uint64_t it points to. */
+static uint64_t
+fake_queue_arrived(const void* queue) {
+    return *(const uint64_t*)queue;
+}
+
+/* Issue #834: an input whose start fails after its queue attached (a UDP receive thread that did not start) undoes the
+   attach. The queue it replaced, which a switch keeps running, is the input again on its own attachment: a mark taken
+   on it before still applies, and one taken now is measured on it. A cut or post measured on the failed queue applies
+   to nothing, not even a later queue at the same address. An attach that went on from an opening has no queue to put
+   back, so its failure only detaches. */
+static void
+test_failed_start_puts_back_the_replaced_queue(void) {
+    static uint64_t kept = 10U;
+    static uint64_t failed = 20U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_cut before;
+    dsd_input_backlog_mark(&before);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_cut on_failed;
+    dsd_input_backlog_mark(&on_failed);
+    post_now();
+    dsd_input_backlog_attach_failed(&failed);
+    check(dsd_input_backlog_take(NULL) == 0, "a post measured on the queue that failed is retired");
+    check(dsd_input_backlog_cut_applies(&before, &kept), "a mark taken on the kept queue before still applies");
+    dsd_input_cut after;
+    dsd_input_backlog_mark(&after);
+    check(after.measured == 1U && after.arrived == kept && dsd_input_backlog_cut_applies(&after, &kept),
+          "a mark taken now is measured on the kept queue");
+    check(!dsd_input_backlog_cut_applies(&on_failed, &failed), "a mark on the failed queue applies to nothing");
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(!dsd_input_backlog_cut_applies(&on_failed, &failed),
+          "nor to a later queue at the same address on a new attachment");
+    dsd_input_backlog_mark(&after);
+    dsd_input_backlog_attach_failed(&kept);
+    dsd_input_cut still;
+    dsd_input_backlog_mark(&still);
+    check(still.measured == 1U && still.arrived == failed && dsd_input_backlog_cut_applies(&after, &failed),
+          "a failed start of a queue that is not attached changes nothing");
+    dsd_input_backlog_detach(&failed);
+
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening's attach");
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut none;
+    dsd_input_backlog_mark(&none);
+    check(none.measured == 0U, "an attach that went on from an opening only detaches when its start fails");
+    socket_pair_close(&pair);
+    dsd_input_backlog_retire();
+}
+
+/* Issue #834: a device input (PulseAudio, PortAudio, AAudio) attaches no queue, so a retune the watchdog posts on it is
+   unmeasured, and stands on the mark's time. A switch to UDP retires it at its attach (nothing the new input holds was
+   queued before it), but when the UDP receive thread does not start the device runs on: the post comes back with it,
+   so the device still drops its old audio. */
+static void
+test_failed_start_restores_a_device_post(void) {
+    static uint64_t failed = 30U;
+    dsd_input_backlog_retire();
+    dsd_input_cut device_mark;
+    dsd_input_backlog_mark(&device_mark);
+    check(device_mark.measured == 0U, "a device input is not measured");
+    dsd_input_backlog_post(&device_mark);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(dsd_input_backlog_take(NULL) == 0, "the switch's attach retires the device's post");
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut taken;
+    DSD_MEMSET(&taken, 0, sizeof taken);
+    check(dsd_input_backlog_take(&taken) == 1 && taken.order == device_mark.order && taken.measured == 0U
+              && taken.marked_ns == device_mark.marked_ns,
+          "the failed start gives the device its post back");
+
+    /* Only the attach that retired it gives it back: one that ended (a stop) before another attach failed does not. */
+    dsd_input_backlog_post(&device_mark);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_detach(&failed);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_attach_failed(&failed);
+    check(dsd_input_backlog_take(NULL) == 0, "a post the failed start's own attach did not retire is not brought back");
+    dsd_input_backlog_retire();
+}
+
+/* A post measured on the queue a switch replaces, still pending when the switch's queue attaches, is no drop of the new
+   input; but if its start fails, the queue it was measured on is read again with the old channel's audio it held, so
+   the post comes back with it. A confirmation posted on the new queue meanwhile does not take its place, nor does the
+   decoder's take of what is pending while the new queue stands. Once the new input stands it is gone. */
+static void
+test_failed_start_restores_the_replaced_queues_post(void) {
+    static uint64_t kept = 60U;
+    static uint64_t failed = 70U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&kept, fake_queue_arrived);
+    dsd_input_cut on_kept;
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    post_now(); /* a retune confirmed on the new queue */
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_kept.order
+              && dsd_input_backlog_cut_applies(&held, &kept),
+          "a failed start gives the kept queue its post back over one posted on the failed queue");
+
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    check(dsd_input_backlog_take(NULL) == 0, "the replaced queue's post is no drop of the new queue");
+    dsd_input_backlog_attach_failed(&failed);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_kept.order
+              && dsd_input_backlog_cut_applies(&held, &kept),
+          "nor is it lost to a take while the new queue stood");
+
+    dsd_input_backlog_mark(&on_kept);
+    dsd_input_backlog_post(&on_kept);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_forget(); /* the new input stands */
+    check(dsd_input_backlog_take(NULL) == 0, "once the new input stands the replaced queue's post is gone");
+    dsd_input_backlog_detach(&failed);
+    dsd_input_backlog_retire();
+}
+
+/* A mark taken while a TCP input opened stands on the reader that attached to its connection. Confirmed only after a
+   switch's queue attached in the reader's place, it is no drop of that queue; but if the switch's start fails, the
+   reader is read again with the old channel's audio its connection held, so the post comes back on it. */
+static void
+test_failed_start_restores_a_late_post_from_an_opening(void) {
+    static uint64_t reader = 80U;
+    static uint64_t failed = 90U;
+    socket_pair pair;
+    check(socket_pair_open(&pair) == 0, "loopback connection for the opening");
+    dsd_input_backlog_retire();
+    dsd_input_backlog_opening(pair.client, dsd_pcm_stream_socket_arrived);
+    dsd_input_cut on_opening;
+    dsd_input_backlog_mark(&on_opening);
+    check(on_opening.measured == 1U, "a mark on the opening is measured on its connection");
+    dsd_input_backlog_attach(&reader, fake_queue_arrived);
+    dsd_input_backlog_attach(&failed, fake_queue_arrived);
+    dsd_input_backlog_post(&on_opening);
+    check(dsd_input_backlog_take(NULL) == 0, "the opening's late post is no drop of the switch's queue");
+    dsd_input_backlog_post(&on_opening);
+    dsd_input_backlog_attach_failed(&failed);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_opening.order
+              && dsd_input_backlog_cut_applies(&held, &reader),
+          "a failed start gives the reader the post marked while its connection opened");
+    dsd_input_backlog_detach(&reader);
+    dsd_input_backlog_retire();
+    socket_pair_close(&pair);
+}
+
+/* Issue #834: a watchdog marks the input, sends its tune, and posts the mark only when the peer confirms. If the input
+   was replaced in between (a TCP reconnect: the old connection's queue detached, the new one attached, and the decoder
+   forgot the posts then pending, of which there was none yet), the late post is no drop of the new input: it is
+   refused, so the decoder neither drops nor moves its timeline for it. A post marked on the queue attached now still
+   stands, as does one a device input posts with no queue attached. The legitimate opening-to-reader handoff is
+   test_post_while_the_input_opens(). */
+static void
+test_late_post_from_a_replaced_input(void) {
+    static uint64_t old_queue = 40U;
+    static uint64_t new_queue = 50U;
+    dsd_input_backlog_retire();
+    dsd_input_backlog_attach(&old_queue, fake_queue_arrived);
+    dsd_input_cut on_old;
+    dsd_input_backlog_mark(&on_old);
+    dsd_input_backlog_detach(&old_queue);
+    dsd_input_backlog_attach(&new_queue, fake_queue_arrived);
+    dsd_input_backlog_forget();
+    dsd_input_backlog_post(&on_old);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    const int taken = dsd_input_backlog_take(&held);
+    char what[192];
+    DSD_SNPRINTF(what, sizeof what,
+                 "a post marked on the replaced input is refused (held %d, measured %u, %llu, applies %d)", taken,
+                 (unsigned)held.measured, (unsigned long long)held.arrived,
+                 taken ? dsd_input_backlog_cut_applies(&held, &new_queue) : 0);
+    check(!taken, what);
+    dsd_input_cut on_new;
+    dsd_input_backlog_mark(&on_new);
+    dsd_input_backlog_post(&on_new);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_new.order
+              && dsd_input_backlog_cut_applies(&held, &new_queue),
+          "a post marked on the input attached now stands");
+    /* A post marked on the new queue, which stopped before the post came (no input now): refused too. */
+    dsd_input_backlog_mark(&on_new);
+    dsd_input_backlog_detach(&new_queue);
+    dsd_input_backlog_post(&on_new);
+    check(dsd_input_backlog_take(NULL) == 0, "a post marked on an input that stopped since is refused");
+    /* A device input attaches no queue: its post is unmeasured, and stands on the mark's time. */
+    dsd_input_cut device;
+    dsd_input_backlog_mark(&device);
+    dsd_input_backlog_post(&device);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.measured == 0U && held.order == device.order,
+          "a device input's post stands");
+    /* A device input attaches no queue. Replaced between a watchdog's mark and its confirmation (another device opened,
+       dsd_input_backlog_forget()), its late post is no drop of the replacement either. */
+    dsd_input_backlog_retire();
+    dsd_input_cut on_device;
+    dsd_input_backlog_mark(&on_device);
+    dsd_input_backlog_forget();
+    dsd_input_backlog_post(&on_device);
+    DSD_MEMSET(&held, 0, sizeof held);
+    const int device_taken = dsd_input_backlog_take(&held);
+    DSD_SNPRINTF(what, sizeof what, "a post marked on a device input since replaced is refused (held %d, order %llu)",
+                 device_taken, (unsigned long long)held.order);
+    check(!device_taken, what);
+    /* A switch's attach is in flight when the post marked on the input it replaces comes: refused while the new input
+       stands, back once its start fails, since the input it was marked on is the one read again. */
+    dsd_input_backlog_attach(&old_queue, fake_queue_arrived);
+    dsd_input_backlog_mark(&on_old);
+    dsd_input_backlog_attach(&new_queue, fake_queue_arrived);
+    dsd_input_backlog_post(&on_old);
+    dsd_input_backlog_attach_failed(&new_queue);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == on_old.order
+              && dsd_input_backlog_cut_applies(&held, &old_queue),
+          "a post of the input a failed start puts back stands on it");
+    dsd_input_backlog_detach(&old_queue);
+    dsd_input_backlog_retire();
+}
+
 static void
 test_no_stream(void) {
     int16_t s = 7;
@@ -232,6 +819,26 @@ test_no_stream(void) {
     check(dsd_pcm_stream_read_wait(NULL, &s, 0U) == DSD_PCM_STREAM_END && s == 7, "a NULL bounded read");
     check(!dsd_pcm_stream_failed(NULL), "NULL never failed");
     dsd_pcm_stream_close(NULL);
+}
+
+/* Issue #834: each post carries the mark its retune took before it was asked for, so two watchdog retunes may post in
+   either order: the later mark is held, as its drop takes at least as much. */
+static void
+test_later_mark_is_held(void) {
+    dsd_input_backlog_retire();
+    dsd_input_cut early;
+    dsd_input_cut late;
+    dsd_input_backlog_mark(&early);
+    dsd_input_backlog_mark(&late);
+    dsd_input_backlog_post(&late);
+    dsd_input_backlog_post(&early);
+    dsd_input_cut held;
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == late.order, "the later mark is held, posted first");
+    dsd_input_backlog_post(&early);
+    dsd_input_backlog_post(&late);
+    DSD_MEMSET(&held, 0, sizeof held);
+    check(dsd_input_backlog_take(&held) == 1 && held.order == late.order, "and posted last");
 }
 
 int
@@ -245,6 +852,22 @@ main(void) {
     test_pipe_samples_then_end();
     test_regular_file();
     test_socket_idle_then_close();
+    test_socket_discard_through();
+    test_fd_discard_through();
+    test_fd_discard_keeps_a_debt_not_ready();
+#ifdef F_SETPIPE_SZ
+    test_fd_discard_past_its_bound();
+#endif
+    test_post_before_the_input_opens();
+    test_post_while_the_input_opens();
+    test_post_while_the_input_opens_is_measured_when_posted();
+    test_opening_keeps_its_own_connection();
+    test_failed_start_puts_back_the_replaced_queue();
+    test_failed_start_restores_a_device_post();
+    test_failed_start_restores_the_replaced_queues_post();
+    test_failed_start_restores_a_late_post_from_an_opening();
+    test_late_post_from_a_replaced_input();
+    test_later_mark_is_held();
     dsd_socket_cleanup();
     if (g_failures != 0) {
         return 1;

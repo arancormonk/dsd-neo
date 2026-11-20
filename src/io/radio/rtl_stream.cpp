@@ -67,6 +67,8 @@ RtlSdrOrchestrator::~RtlSdrOrchestrator() {
     stop();
     if (opts_) {
         dsd_rtl_stream_unregister_requested_ppm_opts(opts_, caller_opts_);
+        // A whole copy of the caller's options: its API keys go with it.
+        DSD_SECURE_ZERO(opts_, sizeof(dsd_opts));
         free(opts_);
         opts_ = nullptr;
     }

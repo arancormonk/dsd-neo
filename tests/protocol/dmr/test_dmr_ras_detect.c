@@ -20,6 +20,7 @@
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
@@ -403,7 +404,7 @@ static void
 lock_colour_code(dsd_state* state, unsigned int color_code) {
     dmr_confidence_reset(state);
     for (int i = 0; i < 2; i++) {
-        (void)dmr_confidence_note_data_burst(state, color_code);
+        (void)dmr_confidence_note_data_burst(NULL, state, color_code);
     }
 }
 
@@ -426,7 +427,7 @@ test_bs_colour_relock_resets(void) {
     lock_colour_code(rig.state, 1U);
     CHECK("locked on colour code 1", rig.state->dmr_confidence_locked == 1U && rig.state->dmr_color_code == 1U);
     CHECK("the carrier's first lock keeps the evidence", rig.state->dmr_ras_signatures == 1U);
-    (void)dmr_confidence_note_data_burst(rig.state, 1U);
+    (void)dmr_confidence_note_data_burst(NULL, rig.state, 1U);
     if (send_ras(&rig) != 0) {
         rig_close(&rig);
         return 1;
@@ -434,7 +435,7 @@ test_bs_colour_relock_resets(void) {
     CHECK("the locked colour code keeps the evidence", dmr_ras_confirmed(rig.state) && has_ras_part(rig.state));
 
     for (int i = 0; i < 4; i++) {
-        (void)dmr_confidence_note_data_burst(rig.state, 2U);
+        (void)dmr_confidence_note_data_burst(NULL, rig.state, 2U);
     }
     CHECK("relocked on colour code 2", rig.state->dmr_confidence_color_code == 2U);
     CHECK("the relock drops the confirmation", !dmr_ras_confirmed(rig.state) && !has_ras_part(rig.state));
@@ -443,7 +444,7 @@ test_bs_colour_relock_resets(void) {
         return 1;
     }
     for (int i = 0; i < 4; i++) {
-        (void)dmr_confidence_note_data_burst(rig.state, 3U);
+        (void)dmr_confidence_note_data_burst(NULL, rig.state, 3U);
     }
     CHECK("relocked on colour code 3", rig.state->dmr_confidence_color_code == 3U);
     if (send_ras(&rig) != 0) {
@@ -482,6 +483,85 @@ test_bs_colour_relock_resets(void) {
     return failed;
 }
 
+/* Issue #834: PROVEN content notes the scan quiet check hears through the content-evidence hook. */
+static int g_quiet_proven;
+static int g_quiet_other;
+
+static void
+record_quiet_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_quiet_proven++;
+    } else {
+        g_quiet_other++;
+    }
+}
+
+/* One burst of @p kind (0: a clean CSBK, 1: the RAS signature, 2: a CSBK whose CRC failed, 3: one beyond the unique
+   decoding radius) through the real handler, on a base station or a mobile (@p ms) carrier with no colour-code lock,
+   with -F @p relaxed and skip-silent @p on: the PROVEN notes it made, -1 when the rig failed. What it printed and the
+   carrier's RAS and TDMA facts go to @p out, @p ras and @p tdma. */
+static int
+quiet_burst(int kind, int ms, int relaxed, int on, char* out, size_t out_sz, int* ras, int* tdma) {
+    burst_rig rig;
+    if (rig_open(&rig, relaxed) != 0) {
+        return -1;
+    }
+    rig.opts->scan_skip_silent = on;
+    rig.state->dmr_ms_mode = ms;
+    uint8_t bytes[12];
+    DSD_MEMCPY(bytes, k_csbk, sizeof bytes);
+    if (kind != 0) {
+        bytes[11] ^= 0x01U;
+    }
+    g_quiet_proven = 0;
+    g_quiet_other = 0;
+    const int rc = rig_send(&rig, bytes, kind == 1 || kind == 3 ? k_r_ras : k_r_none, kind == 3 ? k_scattered : NULL,
+                            kind == 3 ? 5U : 0U);
+    DSD_SNPRINTF(out, out_sz, "%s", rig.out);
+    *ras = dmr_ras_confirmed(rig.state) || has_ras_part(rig.state);
+    *tdma = rig.state->tdma_carrier;
+    rig_close(&rig);
+    return rc != 0 ? -1 : g_quiet_proven;
+}
+
+/* A burst whose own check passed proves the carrier to a scan quiet check, with no colour-code lock, on a mobile
+   carrier as on a base station; so does a RAS signature -F accepts. A RAS signature under strict CRC, a failed CRC and
+   a burst beyond the decoding radius note nothing; nothing is PARTIAL here. What the handler prints, the carrier's RAS
+   evidence and its TDMA proof are the same with the setting on as off: the notes change no decode, CRC verdict or
+   publication. */
+static int
+test_quiet_check_hears_proven_bursts(void) {
+    int failed = 0;
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+    static const char* const tags[4] = {"clean CSBK", "RAS signature", "failed CRC", "beyond the radius"};
+    for (int kind = 0; kind < 4; kind++) {
+        for (int ms = 0; ms <= 1; ms++) {
+            for (int relaxed = 0; relaxed <= 1; relaxed++) {
+                static char out_off[8192];
+                static char out_on[8192];
+                int ras_off = 0;
+                int ras_on = 0;
+                int tdma_off = 0;
+                int tdma_on = 0;
+                const int off = quiet_burst(kind, ms, relaxed, 0, out_off, sizeof out_off, &ras_off, &tdma_off);
+                const int on = quiet_burst(kind, ms, relaxed, 1, out_on, sizeof out_on, &ras_on, &tdma_on);
+                const int want = kind == 0 || (kind == 1 && relaxed) ? 1 : 0;
+                CHECK(tags[kind], off == 0);
+                CHECK(tags[kind], on == want);
+                CHECK(tags[kind], g_quiet_other == 0);
+                CHECK(tags[kind], strcmp(out_off, out_on) == 0 && ras_off == ras_on && tdma_off == tdma_on);
+            }
+        }
+    }
+    dsd_frame_sync_hooks_set(NULL);
+    return failed;
+}
+
 int
 main(void) {
     int failed = 0;
@@ -497,6 +577,7 @@ main(void) {
     failed |= test_bursts_of_no_carrier_do_not_count();
     failed |= test_reset_forgets_the_evidence();
     failed |= test_bs_colour_relock_resets();
+    failed |= test_quiet_check_hears_proven_bursts();
     if (failed) {
         return 1;
     }

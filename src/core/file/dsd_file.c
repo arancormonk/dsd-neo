@@ -3063,7 +3063,7 @@ sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
         .mi = state->payload_mi,
         .audio_permitted = (uint8_t)(ctx->is_enc == 0U || ctx->ks_available != 0U),
     };
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, state->synctype, &crypto);
 }
 
 static void

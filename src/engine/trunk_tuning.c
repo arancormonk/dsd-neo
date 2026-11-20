@@ -22,6 +22,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
@@ -184,6 +185,27 @@ dsd_engine_set_decoder_thread(int is_decoder) {
     s_decoder_thread = is_decoder ? 1 : 0;
 }
 
+void
+dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
+                              const dsd_input_cut* mark) {
+    if (!opts || !state || !mark || opts->use_rigctl != 1
+        || (sent_before_hz != 0U && (long int)sent_before_hz == freq_hz)) {
+        return;
+    }
+    if (!s_decoder_thread) {
+        /* The decoder thread moves the epoch and asks for the drop at its next input read, or at this tune's notice
+           if no read comes first. */
+        dsd_frame_sync_note_off_thread_unflushed_retune(mark);
+        return;
+    }
+    state->symbol_clock_epoch++;
+    /* The input still holds the frequency left's samples: the decoder thread drops them at its next input read
+       (dsd_symbol_apply_input_drop()), outside this tune, up to where the input stood before the leg asked the peer
+       to move. This thread took no other mark since (a take of a watchdog post runs before a leg, never inside one),
+       so it is the newest the thread asks for; a post marked after it replaces it. */
+    (void)dsd_frame_sync_request_input_drop(opts, state, mark);
+}
+
 /* Off the decoder thread, a tune request's one read of the P25p1 decision the decoder publishes
    (dsd_frame_sync_p25p1_read_decision()): taken when the outermost request on this thread begins, and used for every
    read the request makes, and the requests it makes (a return's control-channel tune): the chain it tunes and the
@@ -259,6 +281,64 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_note_chain_change(before, after);
 }
 
+/* The DMR calls of a carrier the receiver left: their decryption (DSD_DMR_LEAVE_DECRYPTION) or privacy
+   (DSD_DMR_LEAVE_PRIVACY) goes, and each slot's voice is held until its next call says whether it is encrypted. */
+static void
+dsd_engine_dmr_leave_now(dsd_state* state, unsigned int what) {
+    if (what & DSD_DMR_LEAVE_PRIVACY) {
+        dmr_forget_call_privacy(state);
+    } else {
+        dmr_forget_call_decryption(state);
+    }
+    dmr_enc_class_hold(state);
+}
+
+/* The decoder thread writes those fields in its frames and in the no-carrier pass, outside the P25 SM tick guard, so a
+   tune off it (the P25 watchdog's, which holds the guard) only asks for them (dsd_state::dmr_leave_pending), and the
+   decoder thread applies the request before its next frame (dsd_engine_apply_dmr_leave()), as it applies the received
+   identity's drop. A tune a frame's handler makes runs inside that frame, on the decoder thread, and leaves at once. */
+static void
+dsd_engine_dmr_leave(dsd_state* state, unsigned int what) {
+    if (!s_decoder_thread && !state->frame_dispatch_active) {
+        state->dmr_leave_pending = (uint8_t)(state->dmr_leave_pending | what);
+        return;
+    }
+    dsd_engine_dmr_leave_now(state, what);
+}
+
+/* A move a tune still in flight would make (issue #834): the DMR leave waits for its request
+   (dsd_state::dmr_leave_request), so a tune that fails, and leaves the receiver where it was, takes nothing from the
+   calls there. One with no request ID to follow, or while another such leave still waits (either may land), leaves
+   now. */
+static void
+dsd_engine_dmr_leave_after(dsd_state* state, uint64_t request_id) {
+    if (request_id == 0U || state->dmr_leave_request != 0U) {
+        dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_DECRYPTION);
+    }
+    state->dmr_leave_request = request_id;
+}
+
+int
+dsd_engine_apply_dmr_leave(dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    unsigned int what = state->dmr_leave_pending;
+    if (state->dmr_leave_request != 0U) {
+        const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(state->dmr_leave_request, NULL);
+        if (result != DSD_TRUNK_TUNE_RESULT_PENDING) {
+            state->dmr_leave_request = 0U;
+            what |= result == DSD_TRUNK_TUNE_RESULT_OK ? DSD_DMR_LEAVE_DECRYPTION : 0U;
+        }
+    }
+    if (what == 0U) {
+        return 0;
+    }
+    state->dmr_leave_pending = 0U;
+    dsd_engine_dmr_leave_now(state, what);
+    return 1;
+}
+
 void
 dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -278,22 +358,17 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     dmr_reset_blocks(opts, state);
 
     // The DMR heal stash mirrors the payload crypto being cleared below; hopping back to the
-    // control channel leaves nothing the stash could legitimately be restored onto.
-    state->dmr_heal_valid[0] = 0;
-    state->dmr_heal_valid[1] = 0;
-    // The live service options and the classification they establish belong to the channel
-    // being left; a stale privacy bit here would mute the opening bursts of the next tuned
-    // call until its first LC decodes.
-    state->dmr_so = 0;
-    state->dmr_soR = 0;
-    state->dmr_fid = 0;
-    state->dmr_fidR = 0;
-    dmr_enc_class_reset(state, 0);
-    dmr_enc_class_reset(state, 1);
-    dmr_le_vendor_reset(state, 0);
-    dmr_le_vendor_reset(state, 1);
-    dmr_pi_precall_reset(state, 0);
-    dmr_pi_precall_reset(state, 1);
+    // control channel leaves nothing the stash could legitimately be restored onto. The live
+    // service options and the classification they establish belong to the channel being left;
+    // a stale privacy bit here would mute the opening bursts of the next tuned call until its
+    // first LC decodes. Nor does the next call key from the left calls' talkgroups. Until each slot's next call says
+    // whether it is encrypted, by its LC or PI header, its voice is held (dmr_enc_class_hold()). A release whose caller
+    // judges the move itself (dsd_trunk_tuning_caller_judges(): a trunk-scan forced advance, whose park judges it, and
+    // a carrier boundary) leaves both to that caller, so the move is judged once. Off the decoder thread (the P25
+    // watchdog's return) both wait for the decoder thread's next frame (dsd_engine_dmr_leave()).
+    if (!dsd_trunk_tuning_caller_judges()) {
+        dsd_engine_dmr_leave(state, DSD_DMR_LEAVE_PRIVACY);
+    }
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -831,15 +906,19 @@ dsd_engine_rigctl_ask_session_passband(const dsd_opts* opts, const dsd_state* st
     }
 }
 
-/* The rigctl leg of a tune: the modulation request, then the frequency. A tune that fails leaves the row on air where
- * it was, so what the modulation request changed on the peer is put back (RevertModulation()): an am row's AM
- * accepted before its frequency was refused, or the switch to AM that read the peer's own AM passband before the am
- * row's width was refused, would otherwise have the row still on air heard through AM, and an nfm row's own passband
- * accepted before its frequency was refused, through that passband (issue #526). */
+/* The rigctl leg of a tune: the modulation request, then the input's mark into @p mark (issue #834), then the
+ * frequency. A tune that fails leaves the row on air where it was, so what the modulation request changed on the peer
+ * is put back (RevertModulation()): an am row's AM accepted before its frequency was refused, or the switch to AM that
+ * read the peer's own AM passband before the am row's width was refused, would otherwise have the row still on air
+ * heard through AM, and an nfm row's own passband accepted before its frequency was refused, through that passband
+ * (issue #526). */
 static int
-dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq) {
+dsd_engine_tune_rigctl(const dsd_opts* opts, const dsd_state* state, long int freq, dsd_input_cut* mark) {
     const dsd_rigctl_modulation before = CachedModulation(opts->rigctl_sockfd);
     if (dsd_engine_tune_rigctl_modulation(opts, state)) {
+        /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
+           the old frequency while it answered the modulation request. */
+        dsd_input_backlog_mark(mark);
         if (SetFreq(opts->rigctl_sockfd, freq)) {
             return 1;
         }
@@ -945,7 +1024,11 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
 #endif
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        if (!dsd_engine_tune_rigctl(opts, state, freq)) {
+        const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
+        dsd_input_cut mark;
+        if (!dsd_engine_tune_rigctl(opts, state, freq, &mark)) {
+            /* Unknown (0) when the peer may have moved: the next tune counts as a move. */
+            opts->rigctl_sent_freq_hz = RigctlConfirmedFreq(opts->rigctl_sockfd);
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_backend_rigctl_moved = 1;
@@ -957,6 +1040,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
+            /* No RTL leg follows, so no stream flush says the radio moved. */
+            dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, freq, &mark);
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
     }
@@ -1110,15 +1195,22 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
 }
 #endif
 
-/* Where the receiver is before a tune (issue #809 B4): on an RTL stream tuned directly, the frequency the stream last
-   applied, since a timed-out tune names its target in opts->rtlsdr_center_freq before it lands and a later failure
-   leaves the radio where it was; otherwise the decoder's tuner frequency, which a rigctl tune sets once it is done. */
+/* Where the receiver is before a tune (issue #809 B4), with no rigctl round trip. On a rigctl peer, the frequency it
+   last confirmed on this connection (opts->rigctl_sent_freq_hz, which every rigctl tune leg sets on success); 0,
+   unknown, after a connect or reconnect before anything was sent, which every judge counts as a leave. Never the
+   decoder's tuner frequency there: a reconnect keeps it at what the old peer was last sent, and the untyped -Y step's
+   rigctl leg does not set it. On an RTL stream tuned directly, the frequency the stream last applied, since a timed-out
+   tune names its target in opts->rtlsdr_center_freq before it lands and a later failure leaves the radio where it was;
+   otherwise the decoder's tuner frequency. */
 static uint32_t
 dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->use_rigctl == 1) {
+        return opts->rigctl_sent_freq_hz;
+    }
 #ifdef USE_RADIO
     uint32_t applied = 0U;
-    if (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
-        && rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && rtl_stream_get_last_applied_freq(&applied) == 0
+        && applied != 0U) {
         return applied;
     }
 #else
@@ -1127,18 +1219,45 @@ dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
     return opts->rtlsdr_center_freq;
 }
 
-/* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
-   receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
-   B4), and the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however
-   short, never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is
-   active, and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune
-   to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. */
+uint32_t
+dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0U;
+    }
+    return dsd_engine_receiver_hz(opts, state);
+}
+
+/* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it, the one reading of the receiver every
+   judge of a move uses, on a rigctl peer the frequency it last confirmed) to @p freq: when the tune moved the receiver
+   off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809 B4), and
+   the P25 patch table's listening clock breaks continuity, so the time away from the control channel, however short,
+   never counts as listening to it. Only that: a call the move carries over as one (a TETRA reallocation) is active,
+   and its recording closes at its own commit; the patch table is the system's, which a trunk move keeps. A tune to the
+   carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and closes nothing. A tune
+   another trunk machine made (P25, NXDN) also leaves behind what DMR calls said of their encryption, judged by this
+   reading of the receiver: their privacy bit and talkgroup keys go, the FID staying for the rows
+   (dmr_forget_call_decryption()), and the next carrier's voice is held until its calls say (dmr_enc_class_hold()). A
+   tune its caller judges (dsd_trunk_tuning_caller_judges(): the DMR machine's own, which this reading can disagree
+   with on a composite control channel, a trunk-scan park, a return to the control channel, an operator's manual move)
+   is left to that caller, so every move is judged once. Off the decoder thread (the P25 watchdog's tunes) the DMR part
+   waits for the decoder thread's next frame (dsd_engine_dmr_leave()). */
 static void
-dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
+dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq,
+                               uint64_t pending_request) {
     if ((long int)from_hz != freq) {
         dsd_event_flush_orphan_recordings(opts, state);
         dsd_p25_patch_listen_break(state);
+        if (!dsd_trunk_tuning_caller_judges()) {
+            dsd_engine_dmr_leave_after(state, pending_request);
+        }
     }
+}
+
+/* The request a tune's DMR leave waits for (dsd_engine_dmr_leave_after()): an RTL tune still in flight that no rigctl
+   leg moved first, else 0, a move made. */
+static uint64_t
+dsd_engine_tune_pending_request(dsd_trunk_tune_result result, uint64_t request_id) {
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING && !s_backend_rigctl_moved ? request_id : 0U;
 }
 
 /**
@@ -1168,9 +1287,14 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     const long int cc = dsd_engine_resolve_cc_freq(state);
     const int trunk_enabled = (opts->trunk_enable == 1);
     const int retunes = trunk_enabled && cc != 0;
+    /* The release below judges the return: it ends the left calls, then forgets their privacy and holds the next
+       carrier's voice once (dsd_engine_release_tuned_call_state()). The control-channel tune and the audio close after
+       the release leave that to it (dsd_trunk_tuning_caller_judges()). */
     if (retunes) {
         const int cc_sps = dsd_engine_compute_cc_sps(opts, state);
+        dsd_trunk_tuning_caller_judges_begin();
         tune_result = dsd_engine_trunk_tune_to_cc_request(opts, state, cc, cc_sps, request_id);
+        dsd_trunk_tuning_caller_judges_end();
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return tune_result;
         }
@@ -1179,7 +1303,9 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     dsd_engine_release_tuned_call_state(opts, state);
     if (retunes) {
         /* The release ended the voice channel's calls before the receiver's audio of it closes. */
-        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc);
+        dsd_trunk_tuning_caller_judges_begin();
+        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc, 0U);
+        dsd_trunk_tuning_caller_judges_end();
     }
 
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
@@ -1311,7 +1437,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     dsd_engine_update_vc_tune_state(opts, state, freq);
-    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq, dsd_engine_tune_pending_request(result, request_id));
     return result;
 }
 
@@ -1396,7 +1522,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     /* A hunt's probe, a settle, a protocol's own return: each leaves its carrier, which may carry voice (a DMR XPT or
        Capacity Plus control channel is a voice repeater). */
-    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq, dsd_engine_tune_pending_request(result, request_id));
     return result;
 }
 

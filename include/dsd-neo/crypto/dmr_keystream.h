@@ -26,6 +26,11 @@ void tyt_ep_aes_keystream_creation(dsd_state* state, const char* input, int show
 void tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys);
 void retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_keys);
 int retevis_rc2_apply_frame49(dsd_state* state, char ambe_d[49]);
+/** Wipe (DSD_SECURE_ZERO) and free the Retevis AP RC2 key schedule the state holds, if any. */
+void retevis_rc2_context_release(dsd_state* state);
+/** Wipe (DSD_SECURE_ZERO) the TYT AP (PC4) and Baofeng AP (PC5) key schedules and the TYT EP keystream. They are
+ * the crypto module's, one set for the process, not the state's: freeState() wipes them with the session's keys. */
+void dmr_vendor_key_contexts_wipe(void);
 int baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input, int show_keys);
 int baofeng_pc5_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int connect_systems_ee72_key_creation(dsd_state* state, const char* input, int show_keys);

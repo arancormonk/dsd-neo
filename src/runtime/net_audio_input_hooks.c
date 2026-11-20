@@ -7,13 +7,14 @@
 #include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/platform/input_backlog.h"
 #include "dsd-neo/platform/sockets.h"
 
 static dsd_net_audio_input_hooks g_net_audio_input_hooks = {0};
 
 void
-dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks) {
-    g_net_audio_input_hooks = hooks;
+dsd_net_audio_input_hooks_set(const dsd_net_audio_input_hooks* hooks) {
+    g_net_audio_input_hooks = hooks ? *hooks : (dsd_net_audio_input_hooks){0};
 }
 
 tcp_input_ctx*
@@ -68,6 +69,18 @@ dsd_net_audio_input_hook_udp_read_sample_wait(dsd_opts* opts, int16_t* out, unsi
         return dsd_net_audio_input_hook_udp_read_sample(opts, out);
     }
     return g_net_audio_input_hooks.udp_read_sample_wait(opts, out, timeout_ms);
+}
+
+long
+dsd_net_audio_input_hook_tcp_discard_through(tcp_input_ctx* ctx, const dsd_input_cut* cut) {
+    return g_net_audio_input_hooks.tcp_discard_through ? g_net_audio_input_hooks.tcp_discard_through(ctx, cut)
+                                                       : DSD_INPUT_DISCARD_NOT_APPLICABLE;
+}
+
+long
+dsd_net_audio_input_hook_udp_discard_through(dsd_opts* opts, const dsd_input_cut* cut) {
+    return g_net_audio_input_hooks.udp_discard_through ? g_net_audio_input_hooks.udp_discard_through(opts, cut)
+                                                       : DSD_INPUT_DISCARD_NOT_APPLICABLE;
 }
 
 dsd_socket_t

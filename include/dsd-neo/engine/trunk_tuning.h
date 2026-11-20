@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 
@@ -44,6 +45,42 @@ int dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* st
  * dsd_engine_run_with_lifecycle() marks the thread it runs on for the run.
  */
 void dsd_engine_set_decoder_thread(int is_decoder);
+/**
+ * @brief A rigctl peer confirmed (RPRT 0) a tune to @p freq_hz, and no RTL leg retunes the stream after it.
+ *
+ * An RTL retune flushes the stream: the decoder reads nothing of the frequency left, and the RTL readers move
+ * dsd_state::symbol_clock_epoch. The audio a rigctl peer sends goes on across its retune, so this is that flush for it
+ * (issue #834): unless the peer was on @p freq_hz already (@p sent_before_hz, dsd_opts::rigctl_sent_freq_hz before the
+ * tune; 0 when none was sent), the epoch moves, so no span the decoders measure on the symbol clock (a DMR slot's MI
+ * chain, a P25 Phase 1 terminator's place, the DMR polarity run) reaches across the tune, and the samples the input
+ * held at @p mark are dropped at the decoder thread's next input read (dsd_state::input_drop_pending,
+ * dsd_symbol_apply_input_drop()); what arrived after it is kept. @p mark is the input's mark the leg took immediately
+ * before it sent the frequency, after any passband request (dsd_input_backlog_mark()): the peer is on the old
+ * frequency until it takes the frequency, also while it answers a passband request, and it may move and send the new
+ * channel's audio before it answers the frequency, which audio came after the mark. Off the decoder thread (the P25 watchdog) the tune posts the mark and
+ * a count, and both happen at the decoder thread's next input read (frame_sync_take_unflushed_retunes()), or at the
+ * tune notice's reconcile if no read came first (dsd_frame_sync_apply_off_thread_tunes()).
+ * Called by each rigctl leg, once its frequency request was answered RPRT 0, never for a request refused or whose reply
+ * was lost: the backend tune (dsd_engine_tune_with_backend()), the legacy -Y step and control-channel return, and
+ * app-control's io_control leg.
+ */
+/** dsd_state::dmr_leave_pending: the calls' decryption goes (dmr_forget_call_decryption()), the FID staying. */
+#define DSD_DMR_LEAVE_DECRYPTION 1U
+/** dsd_state::dmr_leave_pending: their privacy goes too, the FID included (dmr_forget_call_privacy()). */
+#define DSD_DMR_LEAVE_PRIVACY    2U
+
+/**
+ * @brief Apply what a tune off the decoder thread that left a carrier asked of the DMR calls (dsd_state::
+ * dmr_leave_pending): their decryption or privacy goes, and each slot's voice is held (dmr_enc_class_hold()). Decoder
+ * thread, under the P25 SM tick guard or where no watchdog tick runs: before each frame, after the synced frame's
+ * ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state.
+ *
+ * @return 1 when something was pending, 0 otherwise.
+ */
+int dsd_engine_apply_dmr_leave(dsd_state* state);
+
+void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint32_t sent_before_hz, long int freq_hz,
+                                   const dsd_input_cut* mark);
 /**
  * @brief Tune a scanner row or target (the -Y channel scan, --trunk-scan).
  *
@@ -149,6 +186,14 @@ void dsd_engine_legacy_tune_caches_forget(void);
  * the crypto/audio gating state, and drops trunk_is_tuned; does not tune.
  */
 void dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
+
+/** @brief Where the receiver is, the one reading every judge of a move uses (the engine's tune hooks' leave judge and
+ *  the judge of an operator's move that reads no tuner): on a rigctl peer, the frequency the peer last confirmed on
+ *  this connection (opts->rigctl_sent_freq_hz, which every rigctl tune leg sets on success; 0, unknown, after a connect
+ *  or reconnect before anything was sent, which every judge counts as a leave); otherwise the frequency the RTL stream
+ *  last applied, else the decoder's tuner frequency (opts->rtlsdr_center_freq). It makes no rigctl round trip. An
+ *  outside retune of the peer (its own knob, another client) is not seen. */
+uint32_t dsd_engine_receiver_frequency(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Retire failed tune requests once no tune owner is active (trunking, trunk scan, signal search, a typed -Y list), so

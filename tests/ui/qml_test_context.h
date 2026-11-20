@@ -7241,6 +7241,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanVisitMs")] = 0;
         metrics[QStringLiteral("scanVisitLive")] = false;
         metrics[QStringLiteral("scanVisitRemainingDs")] = 0;
+        // The silent-channel skip's status (#834): none at rest, so the plain phrase and no sentence.
+        metrics[QStringLiteral("scanQuietStatus")] = 0;
+        metrics[QStringLiteral("scanQuietReason")] = 0;
+        metrics[QStringLiteral("scanQuietText")] = QString();
         // The received sub-audible tone (#522): no analog FM monitor at rest, so the row is
         // down. The configured policy is its own reading and says "off" with no policy set.
         metrics[QStringLiteral("rxToneVisible")] = false;

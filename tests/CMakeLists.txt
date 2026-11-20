@@ -2064,6 +2064,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_process
@@ -2081,6 +2082,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dstar_confirm
@@ -2204,6 +2206,7 @@ add_executable(
     protocol/dpmr/test_dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_confirm
@@ -2222,6 +2225,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_sync_dispatch
@@ -2244,6 +2248,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
@@ -2251,7 +2256,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
-target_link_libraries(dsd-neo_test_dpmr_voice_bridge PRIVATE dsd-neo_platform)
+target_link_libraries(
+    dsd-neo_test_dpmr_voice_bridge
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 
 # Conformance of the CCH pipeline against external reference vectors. Unlike the
@@ -2267,6 +2275,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_reference_vectors
@@ -2856,6 +2865,32 @@ target_include_directories(
 )
 add_test(NAME NXDN_FRAME_ROUTING COMMAND dsd-neo_test_nxdn_frame_routing)
 
+# The same cases with the LimaZulu tweak compiled in (-DLZ=ON), which every other build leaves out: its voice-frame
+# branch runs before the confirmation gate, so a build-time constant selects it (docs/testing.md).
+add_executable(
+    dsd-neo_test_nxdn_frame_routing_lz
+    protocol/nxdn/test_nxdn_frame_routing.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+)
+target_compile_definitions(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE LIMAZULUTWEAKS
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE dsd-neo_test_receive_support
+)
+target_include_directories(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_FRAME_ROUTING_LZ COMMAND dsd-neo_test_nxdn_frame_routing_lz)
+
 add_executable(
     dsd-neo_test_nxdn_confirm
     protocol/nxdn/test_nxdn_confirm.c
@@ -2863,6 +2898,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_confirm
@@ -8198,9 +8234,10 @@ target_include_directories(
     dsd-neo_test_core_key_set
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# ${LIBS} for initState()/freeState() (codec2): the final teardown wipes the keys.
 target_link_libraries(
     dsd-neo_test_core_key_set
-    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr ${LIBS}
 )
 add_test(NAME CORE_KEY_SET COMMAND dsd-neo_test_core_key_set)
 
@@ -8707,6 +8744,35 @@ add_test(
     NAME CORE_AUDIO_INPUT_SWITCH
     COMMAND dsd-neo_test_core_audio_input_switch
 )
+
+# A switch to UDP whose receive thread does not start keeps the running TCP or stdin reader as the input a rigctl
+# retune's drop is measured on (issue #834), with the real backends. udp_input.c is built in with its thread-start
+# seam (DSD_NEO_TEST_HOOKS), and the readers run on POSIX pipes and loopback sockets.
+if(NOT APPLE AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_core_audio_input_switch_backlog
+        core/test_core_audio_input_switch_backlog.c
+        ${PROJECT_SOURCE_DIR}/src/io/audio_backends/udp_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/audio_backends
+    )
+    target_compile_definitions(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_core_audio_input_switch_backlog
+        PRIVATE dsd-neo_core dsd-neo_io_audio
+    )
+    add_test(
+        NAME CORE_AUDIO_INPUT_SWITCH_BACKLOG
+        COMMAND dsd-neo_test_core_audio_input_switch_backlog
+    )
+endif()
 
 # The one-channel mix of two slots (issue #518): fresh talkers summed through the mixer's limiter, and the DMR
 # superframe mix's sources.
@@ -9509,6 +9575,42 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime
 )
 
+# A rigctl peer's confirmed retune starts a new symbol timeline and drops the audio input's queued samples
+# (issue #834): the real rigctl client against a peer on a loopback socket.
+add_executable(
+    dsd-neo_test_engine_rigctl_retune
+    engine/test_engine_rigctl_retune.c
+)
+target_include_directories(
+    dsd-neo_test_engine_rigctl_retune
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+        ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1
+)
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_rigctl_retune
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_rigctl_retune
+        PRIVATE dsd-neo_engine dsd-neo_app_control ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(NAME ENGINE_RIGCTL_RETUNE COMMAND dsd-neo_test_engine_rigctl_retune)
+
 add_executable(
     dsd-neo_test_engine_no_carrier_reset
     engine/test_engine_no_carrier_reset.c
@@ -9518,6 +9620,7 @@ target_include_directories(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/engine
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
@@ -9549,6 +9652,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_input_listening_since_ns"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=RigctlConfirmedFreq"
             "-Wl,--wrap=SetModulation"
             "-Wl,--wrap=SetModulationKind"
             "-Wl,--wrap=SetScanRowModulation"
@@ -9573,6 +9677,12 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_signal_quiet_cancel"
             "-Wl,--wrap=dsd_signal_quiet_rate_supported"
             "-Wl,--wrap=dsd_signal_quiet_analog_supported"
+            # The DMR privacy forgets and voice holds each move makes, counted (one judge per move).
+            "-Wl,--wrap=dmr_enc_class_hold"
+            "-Wl,--wrap=dmr_forget_call_privacy"
+            "-Wl,--wrap=dmr_forget_call_decryption"
+            # A rigctl peer's io_control leg, faked where a case asks (the rigctl reconnect move).
+            "-Wl,--wrap=io_control_set_freq_tagged"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -10266,6 +10376,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_modes_rigctl.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/net_audio_input_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rigctl_passband.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
@@ -10286,6 +10397,8 @@ target_sources(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
         ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
+        ${PROJECT_SOURCE_DIR}/src/dsp/unflushed_retune.c
         ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 add_test(
@@ -10389,6 +10502,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
     ${PROJECT_SOURCE_DIR}/src/dsp/analog_tone_policy.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_p25p1_compare.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_unflushed.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/unflushed_retune.c
     # The scan quiet check (issue #834), over a fake signal tap.
     ${PROJECT_SOURCE_DIR}/src/engine/scan_quiet.c
     # The session's unit activity log across a target switch, read through the view every frontend shows.
@@ -10688,9 +10803,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
+# src/engine for scan_quiet.h, whose status call the -Y timing writer makes (issue #834; stubbed in the test).
 target_include_directories(
     dsd-neo_test_engine_scan_voice_gate
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
 )
 target_link_libraries(
     dsd-neo_test_engine_scan_voice_gate
@@ -10830,6 +10946,26 @@ target_link_libraries(
     dsd-neo_test_scan_mode_replay
     PRIVATE dsd-neo_engine ${LIBS}
 )
+
+# The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
+# landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
+# radio pipeline, and the host's link wraps a GNU-style linker.
+if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
+    target_include_directories(
+        dsd-neo_test_y_call_hold_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_y_call_hold_replay
+        PRIVATE
+            dsd-neo_engine
+            ${LIBS}
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=dsd_engine_channel_scan_step"
+            "-Wl,--wrap=dsd_engine_scan_untyped_find_row"
+    )
+endif()
 
 add_executable(
     dsd-neo_test_runtime_decode_mode
@@ -12842,6 +12978,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
     ${PROJECT_SOURCE_DIR}/src/runtime/exitflag.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_sync_dispatch
@@ -14022,6 +14159,7 @@ add_executable(
     protocol/m17/test_m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_m17_confirm
@@ -14079,6 +14217,7 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -14113,6 +14252,7 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_release
     protocol/dmr/test_dmr_t3_sm_release.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -14147,6 +14287,7 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -14185,6 +14326,7 @@ add_executable(
     dsd-neo_test_dmr_t3_shim
     protocol/dmr/test_dmr_t3_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
@@ -14228,6 +14370,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -14278,6 +14421,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -14323,6 +14467,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -14372,6 +14517,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -15425,6 +15571,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
@@ -15456,6 +15603,11 @@ target_link_libraries(
         dsd-neo_test_receive_support
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
+)
+# DSD_NEO_TEST_HOOKS: the call state's snapshot copy count (a standalone burst copies no call but a voice header's).
+target_compile_definitions(
+    dsd-neo_test_dmr_data_sync
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 
@@ -15600,10 +15752,13 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_dmr_data_header_air
         protocol/dmr/test_dmr_data_header_air.c
         test_support/dmr_bptc_test_encoder.c
+        test_support/dmr_rs_test_encoder.c
     )
     target_include_directories(
         dsd-neo_test_dmr_data_header_air
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/dmr
     )
     target_link_libraries(
         dsd-neo_test_dmr_data_header_air
@@ -15622,6 +15777,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=getDibitSoft"
             "LINKER:--wrap=get_dibit_and_analog_signal"
+            "LINKER:--wrap=getSymbol"
     )
     add_test(NAME DMR_DATA_HEADER_AIR COMMAND dsd-neo_test_dmr_data_header_air)
 endif()
@@ -15734,6 +15890,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dmr_ms_data
@@ -18327,6 +18484,20 @@ if(Python3_Interpreter_FOUND)
         DMR_SYNTH_MS_TAIL
         PROPERTIES LABELS "dmr-synth" TIMEOUT 120
     )
+    # A Basic Privacy call whose first frames are not admitted yet, after an ended call on another talkgroup: the right
+    # key decrypts it, no key mutes it, and the ended call's talkgroup key is not its key
+    # (protocol/dmr/dmr_bp_key_check.py).
+    add_test(
+        NAME DMR_SYNTH_BP_KEY
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dmr/dmr_bp_key_check.py
+            $<TARGET_FILE:dsd-neo> $<TARGET_FILE:dsd-neo_test_dmr_synth_gen>
+    )
+    set_tests_properties(
+        DMR_SYNTH_BP_KEY
+        PROPERTIES LABELS "dmr-synth" TIMEOUT 120
+    )
 endif()
 
 set(_DSD_SYNTH_K256
@@ -18685,6 +18856,34 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_io_udp_input PRIVATE dsd-neo_io_audio)
 add_test(NAME IO_UDP_INPUT COMMAND dsd-neo_test_io_udp_input)
 
+# A rigctl retune's mark of the UDP input counts the datagrams still queued in the socket (issue #834): udp_input.c is
+# built in with its receive-hold seam (DSD_NEO_TEST_HOOKS), as for CORE_AUDIO_INPUT_SWITCH_BACKLOG.
+if(NOT APPLE AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_io_udp_input_ingress
+        io/test_io_udp_input_ingress.c
+        ${PROJECT_SOURCE_DIR}/src/io/audio_backends/udp_input.c
+    )
+    target_include_directories(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/audio_backends
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_udp_input_ingress
+        PRIVATE dsd-neo_core dsd-neo_io_audio
+    )
+    add_test(
+        NAME IO_UDP_INPUT_INGRESS
+        COMMAND dsd-neo_test_io_udp_input_ingress
+    )
+endif()
+
 add_executable(dsd-neo_test_io_udp_bind io/test_io_udp_bind.c)
 target_include_directories(
     dsd-neo_test_io_udp_bind
@@ -19014,6 +19213,53 @@ target_link_libraries(
     PRIVATE dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME PLATFORM_PCM_STREAM COMMAND dsd-neo_test_platform_pcm_stream)
+
+# The headers nearly every translation unit includes (state.h and the input backlog's) bring in no system socket or
+# Windows header, whose near and far macros broke tests on Windows (issue #834): this one fails to compile if they do.
+add_executable(
+    dsd-neo_test_platform_headers_no_system_sockets
+    platform/test_platform_headers_no_system_sockets.c
+)
+target_include_directories(
+    dsd-neo_test_platform_headers_no_system_sockets
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME PLATFORM_HEADERS_NO_SYSTEM_SOCKETS
+    COMMAND dsd-neo_test_platform_headers_no_system_sockets
+)
+
+# A backlog mark taken while the decoder refills the reader (issue #834), its readiness query wrapped through a GNU ld
+# --wrap seam so the refill runs inside it, and the monotonic clock wrapped so a drop can pause past its time cap.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_platform_pcm_stream_mark
+        platform/test_platform_pcm_stream_mark.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE dsd-neo_platform dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_platform_pcm_stream_mark
+        PRIVATE
+            -Wl,--wrap=dsd_fd_readable_bytes
+            -Wl,--wrap=dsd_socket_readable_bytes
+            -Wl,--wrap=dsd_time_monotonic_ms
+            -Wl,--wrap=dsd_read
+            -Wl,--wrap=dsd_fd_wait_readable
+            -Wl,--wrap=dsd_mutex_init
+            -Wl,--wrap=dsd_mutex_lock
+    )
+    add_test(
+        NAME PLATFORM_PCM_STREAM_MARK
+        COMMAND dsd-neo_test_platform_pcm_stream_mark
+    )
+endif()
 
 # A writerless FIFO is refused at once, never waited on (POSIX only: needs mkfifo and fork).
 if(UNIX)
@@ -21203,6 +21449,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_nxdn_alias_fallback
     dsd-neo_test_nxdn_element_bounds
     dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_nxdn_frame_routing_lz
     dsd-neo_test_nxdn_grant_policy
     dsd-neo_test_nxdn_grant_tune_matrix
     dsd-neo_test_nxdn_crc32_bits
@@ -21279,6 +21526,7 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     dsd-neo_test_dmr_tms_utf16le
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_nxdn_frame_routing_lz
     dsd-neo_test_p25_p1_hdu_helpers
     dsd-neo_test_p25_p1_ldu1_helpers
     dsd-neo_test_p25_p1_ldu2_helpers
@@ -21372,6 +21620,23 @@ if(DSD_HAS_RADIO)
             DECODE_IQ_RECEIVE_POLICY
             PROPERTIES LABELS "iq-decode" TIMEOUT 180
         )
+        # A -Y row keeps a real call while its frames come and leaves it once the call ends (issue #834 item 3): each
+        # call fixture, with as much receiver-noise tail as the leave bound needs, on a landed -Y row: typed at -t 1
+        # with skip-silent off and on, typed at -t 2, and under -fa (the script's LEGS).
+        if(TARGET dsd-neo_test_y_call_hold_replay)
+            add_test(
+                NAME DECODE_IQ_Y_CALL_HOLD
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/y_call_hold_check.py
+                    $<TARGET_FILE:dsd-neo_test_y_call_hold_replay>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                DECODE_IQ_Y_CALL_HOLD
+                PROPERTIES LABELS "iq-decode" TIMEOUT 180
+            )
+        endif()
         # M17 and EDACS decode the same from a PCM file, stdin and TCP (issue #667 D12): stdin and TCP share one
         # buffered reader with bounded waits. POSIX only, for the pipe and the SIGINT that ends an M17-only session.
         if(NOT WIN32)
@@ -24605,15 +24870,25 @@ endif()
 # line; the negative controls at the end of this block show that a missed bound fails.
 # Thresholds sit well clear of the values measured when each case was added;
 # docs/testing.md records those values and what each case pins.
-add_executable(dsd-neo_test_analog_replay engine/analog_replay.c)
+# analog_rx.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_dsp's copy, so a udp scene runs the analog tap's
+# clock, and every reader of its stale deadline, on the scene's own time (a decoder held up mid-burst is no pause).
+add_executable(
+    dsd-neo_test_analog_replay
+    engine/analog_replay.c
+    ../src/dsp/analog_rx.c
+)
 target_include_directories(
     dsd-neo_test_analog_replay
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
 )
 # --analog-iq-gain-db reads the committed fixtures only, from this directory.
 target_compile_definitions(
     dsd-neo_test_analog_replay
     PRIVATE
+        DSD_NEO_TEST_HOOKS
         "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
 )
 target_link_libraries(
@@ -24640,6 +24915,8 @@ add_test(
 # expected defaults to "ANALOG AUDIO OK" (pass "" to keep the default); a case
 # that also asserts a log line names that line instead, since exit code 0 already
 # means every audio bound held. not_expected is a regex that must not appear.
+# dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected [audio_out]]]): audio_out is the
+# --analog-audio-out file the run must write, passed apart from mode so a path holding a space stays whole.
 function(dsd_neo_add_analog_replay_test test_name fixture mode)
     set(_expected "ANALOG AUDIO OK")
     if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
@@ -24649,6 +24926,10 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
     if(ARGC GREATER 4)
         set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
     endif()
+    set(_audio_out_arg)
+    if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
+        set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV5}")
+    endif()
     add_test(
         NAME ${test_name}
         COMMAND
@@ -24656,7 +24937,7 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
             "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
             "-DMODE=${mode}"
             "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-            "-DEXPECTED=${_expected}" ${_not_expected_arg} -P
+            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg} -P
             "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
     set_tests_properties(
@@ -25256,6 +25537,38 @@ if(DSD_HAS_RADIO)
             PROPERTIES ENVIRONMENT "DSD_NEO_DEEMPH=${_deemph}"
         )
     endforeach()
+    # --analog-audio-out writes every delivered sample (tools/scan_quiet_reception.py
+    # scores its voice rows from it): the 1480 ms the host captured are 71040 samples at
+    # the 48 kHz sink, and the run still passes its bounds. The file's name holds a
+    # space, as any path in a build directory with one does: it must be written whole.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_AUDIO_OUT
+        nfm_tone_synth
+        "${_analog_nfm_tone_fixed50}"
+        "captured_ms=1480[.]00 .*ANALOG AUDIO OUT: rate_hz=48000 samples=71040.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+        "${CMAKE_CURRENT_BINARY_DIR}/analog audio out.f32"
+    )
+    # The same file read back: one float32 per delivered sample, whose RMS is the ANALOG
+    # METRIC line's rms_dbfs within 0.01 dB, so a scale, format or stale-slice error in
+    # the writer fails where the sample count alone would pass. The run must stay off the
+    # CQPSK path, as its sibling's must.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/analog_audio_out_check.py
+                $<TARGET_FILE:dsd-neo_test_analog_replay>
+                ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nfm_tone_synth.iq.json
+                "${_analog_nfm_tone_fixed50}" "${_analog_off_path}"
+        )
+        set_tests_properties(
+            DECODE_IQ_ANALOG_AUDIO_OUT_LEVEL
+            PROPERTIES LABELS "iq-decode;analog" TIMEOUT 120
+        )
+    endif()
     # A fixed -n keeps the speech AGC's limiter (issue #518): open-squelch receiver noise
     # (noise_floor) at -n 50 with the 750 us de-emphasis made up (+13.65 dB at 1 kHz)
     # measures -10.92 dBFS RMS with its peaks held at -1.00 dBFS, none clipped; the fixed
@@ -26104,10 +26417,12 @@ if(DSD_HAS_RADIO)
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
     # them a host whose checks never fired would pass every case above.
-    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected [trailing]]])
+    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected [trailing [audio_out]]]])
     # rc defaults to 1; not_expected is a regex that must not appear, such as a bound
     # that has to keep holding; trailing goes after "-o null", so a host option can be
-    # the last argument. Pass "" to leave an optional argument at its default.
+    # the last argument; audio_out is the --analog-audio-out path, passed apart from mode
+    # so a path holding a space stays whole. Pass "" to leave an optional argument at its
+    # default.
     function(
         dsd_neo_add_analog_replay_fail_test
         test_name
@@ -26127,6 +26442,10 @@ if(DSD_HAS_RADIO)
         if(ARGC GREATER 6 AND NOT "${ARGV6}" STREQUAL "")
             set(_trailing_arg "-DTRAILING=${ARGV6}")
         endif()
+        set(_audio_out_arg)
+        if(ARGC GREATER 7 AND NOT "${ARGV7}" STREQUAL "")
+            set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV7}")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
@@ -26135,7 +26454,7 @@ if(DSD_HAS_RADIO)
                 "-DMODE=${mode}"
                 "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
                 "-DEXPECTED=${expected}" ${_rc_arg} ${_not_expected_arg}
-                ${_trailing_arg} -P
+                ${_trailing_arg} ${_audio_out_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/analog_replay_fail_check.cmake"
         )
         set_tests_properties(
@@ -26190,6 +26509,19 @@ if(DSD_HAS_RADIO)
         nfm_tone_synth
         "-fA --analog-min-snr-db 20"
         "ANALOG AUDIO FAIL: tone SNR dB not measured"
+    )
+    # An --analog-audio-out file that cannot be written (here a directory, whose name
+    # holds a space so the whole path must reach the host) fails the run, naming it.
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/analog audio out dir")
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_AUDIO_OUT_UNWRITABLE
+        nfm_tone_synth
+        "-fA"
+        "FAIL: could not write the delivered audio to [^\n]*/analog audio out dir"
+        ""
+        ""
+        ""
+        "${CMAKE_CURRENT_BINARY_DIR}/analog audio out dir"
     )
     # The received-tone lock bound (issue #522): a limit below the lock time
     # nfm_ctcss_synth_1000 measures fails on the measured value, and on a replay with no
@@ -26472,6 +26804,18 @@ if(DSD_ENABLE_QT_UI)
             DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
+    # Qt6GuiPrivate (found above) lets the test set the application state as the platform does, for a controller made
+    # while the app is already off screen.
+    if(TARGET Qt6::GuiPrivate)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_controller
+            PRIVATE Qt6::GuiPrivate
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_controller
+            PRIVATE DSD_TEST_QPA_APP_STATE=1
+        )
+    endif()
     add_test(NAME UI_QT_CONTROLLER COMMAND dsd-neo_test_ui_qt_controller)
     set_tests_properties(
         UI_QT_CONTROLLER
@@ -26931,8 +27275,19 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/android/test_r8.py
     )
+    # run_jvm_tests.py's compile command, as Windows hands it to kotlinc.bat: cmd.exe splits a batch
+    # file's arguments at "=", so the JVM options go through JAVA_OPTS. Stdlib only; starts no JVM.
+    add_test(
+        NAME ANDROID_JVM_RUNNER_COMMAND
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/test_run_jvm_tests.py
+    )
     # Production Android Kotlin on the JVM, one CTest per suite of run_jvm_tests.py. Each compiles Kotlin, which is
-    # memory-hungry, so they never run at once.
+    # memory-hungry, so they never run at once. The time is CPU spent in cold compiler JVMs, a few seconds a compile on
+    # an idle host but over 40 s beside a full parallel build, so the timeout leaves room for two compiles at that pace.
+    # It also covers the two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and
+    # location took 61 s.
     add_test(
         NAME ANDROID_LOCATION_JVM
         COMMAND
@@ -27086,14 +27441,8 @@ if(Python3_Interpreter_FOUND)
         ANDROID_FILE_BROWSER_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
-            TIMEOUT 90
+            TIMEOUT 300
             RESOURCE_LOCK android_kotlin_jvm
-    )
-    # The two longest suites: beside parallel QML suites engine_stop ran past 90 s (47 s alone) and location took 61 s.
-    set_tests_properties(
-        ANDROID_ENGINE_STOP_JVM
-        ANDROID_LOCATION_JVM
-        PROPERTIES TIMEOUT 180
     )
     add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS
@@ -27278,6 +27627,32 @@ if(Python3_Interpreter_FOUND)
         TOOLS_BUILD_IQ_FIXTURES_TETRA
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
+    # tools/scan_quiet_reception.py's exact-width rows, multitone score and the modes
+    # file it hands the quiet check's calibration driver (issue #834). numpy, as above.
+    add_test(
+        NAME TOOLS_SCAN_QUIET_RECEPTION
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_scan_quiet_reception.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_SCAN_QUIET_RECEPTION
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
+    # tools/bench_scan_skip_silent.py reports per mode only what the run decoded: an
+    # untyped -Y map runs -ft on every row (issue #834). numpy, as above.
+    add_test(
+        NAME TOOLS_BENCH_SCAN_SKIP_SILENT
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_bench_scan_skip_silent.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_BENCH_SCAN_SKIP_SILENT
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
@@ -27355,6 +27730,27 @@ if(Python3_Interpreter_FOUND)
                 TIMEOUT 120
         )
     endif()
+    # tests/analog_audio_out_check.py reads the analog host's lines with CRLF ends
+    # (Windows) as it does with LF ones. Stdlib only, so it runs wherever Python does.
+    add_test(
+        NAME TOOLS_ANALOG_AUDIO_OUT_CHECK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_analog_audio_out_check.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(TOOLS_ANALOG_AUDIO_OUT_CHECK PROPERTIES TIMEOUT 60)
+    # tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD) refuses a selection that runs
+    # nothing: filters outside the default legs, an unknown set or call, a missing host
+    # or fixture directory. Stdlib only; runs no host.
+    add_test(
+        NAME TOOLS_Y_CALL_HOLD_CHECK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_y_call_hold_check.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(TOOLS_Y_CALL_HOLD_CHECK PROPERTIES TIMEOUT 60)
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.
@@ -28163,7 +28559,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_signal_search_provenance
-    PRIVATE dsd-neo_runtime
+    PRIVATE dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME APP_SIGNAL_SEARCH_PROVENANCE

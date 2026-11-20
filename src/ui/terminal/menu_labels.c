@@ -954,12 +954,16 @@ lbl_key_hytera(const void* v, char* b, size_t n) {
         return b;
     }
     const dsd_state* s = c->state;
-    const int loaded = (s->H != 0ULL && s->tyt_bp == 0);
+    /* The key the user loaded: a talkgroup's key the autoload put in the working key is its call's. */
+    ui_dmr_key key;
+    ui_dmr_key_loaded(s, &key);
+    const int loaded = (key.words[5] != 0ULL && s->tyt_bp == 0);
+    const unsigned int segment_count = ui_dmr_key_hytera_segment_count(&key);
+    ui_dmr_key_clear(&key);
     if (!loaded) {
         DSD_SNPRINTF(b, n, "Hytera privacy key (hex)...");
         return b;
     }
-    const unsigned int segment_count = ui_hytera_key_segment_count(s);
     const char* kind = (segment_count == 1U) ? "40-bit" : ((segment_count == 2U) ? "128-bit" : "256-bit");
     DSD_SNPRINTF(b, n, "Hytera privacy key (hex)... [%s]", kind);
     return b;

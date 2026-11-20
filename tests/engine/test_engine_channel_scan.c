@@ -274,6 +274,13 @@ dsd_engine_legacy_tune_caches_forget(void) {
     g_legacy_cache_forgets++;
 }
 
+/* The -Y landing's quiet-check publication (engine.c, issue #834), which ENGINE_NO_CARRIER_RESET drives. */
+void
+dsd_engine_scan_quiet_publish_row(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
 /* The untyped step's entry (engine.c), which ENGINE_NO_CARRIER_RESET drives for real: here a scripted result, with the
    row asked for and whether slot 0's call was still open when the row was tuned. An OK commits the row's cursor, as the
    real one does. */

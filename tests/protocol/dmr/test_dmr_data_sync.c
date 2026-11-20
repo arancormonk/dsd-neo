@@ -182,7 +182,7 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
                                      g_handler_observes == 1 ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE);
         /* The header's crypto publication, which moves the revision again as the real one does. */
         const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
-        (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_DATA_POS, &crypto);
     }
     if (g_handler_writes_fix) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s", "lrrp-fix");
@@ -246,7 +246,8 @@ dmr_debug_format_burst(char* out, size_t out_size, const dsd_state* state, uint8
 
 dmr_confidence_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code) {
+dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+    (void)opts;
     (void)state;
     (void)color_code;
     g_confidence_calls++;
@@ -1064,6 +1065,39 @@ test_burst_origin_from_sync(void) {
     }
 }
 
+/* A standalone burst on the single-slot decoder copies no call unless it is a voice LC header: a PI header, a data
+   header or an idle burst costs no call copy, and a header reads its lane's call once, after its dispatch (its mark
+   before it is the lane's epoch and revision alone). */
+static void
+test_mono_burst_copies_no_call_but_a_headers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    static const uint8_t bursts[] = {0U, 6U, 9U, 1U};
+    for (size_t i = 0; i < sizeof bursts; i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        opts.dmr_mono = 1;
+        state.dmr_stereo = 0;
+        state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+        g_decoded_slot = 1;
+        g_decoded_burst = bursts[i];
+        g_handler_observes = bursts[i] == 1U;
+        g_handler_target = 700U;
+        assert(dsd_call_state_ensure(&state) == 1); /* A live decoder's state always has its call store. */
+        const long before = dsd_call_state_test_snapshot_copies();
+        dmr_data_sync(&opts, &state);
+        const long copies = dsd_call_state_test_snapshot_copies() - before;
+        assert(g_handler_calls == 1 && g_handler_burst == bursts[i]);
+        assert(copies == (bursts[i] == 1U ? 1L : 0L));
+        dsd_state_ext_free_all(&state);
+    }
+    g_handler_observes = 0;
+}
+
 int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
@@ -1071,6 +1105,7 @@ main(void) {
     test_ms_back_to_back_colour_codes();
     test_ms_colour_change_resets_ras();
     test_data_burst_receive_slot();
+    test_mono_burst_copies_no_call_but_a_headers();
     test_mono_option_keeps_bs_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();

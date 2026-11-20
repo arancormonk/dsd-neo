@@ -148,7 +148,7 @@ static uint64_t
 enter_frequency(fixture* f, uint32_t hz) {
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, hz, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, hz, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     assert((pending_id & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U);
     assert(f->opts->rtlsdr_center_freq == hz);
     dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
@@ -315,7 +315,7 @@ test_newer_entry_failing_in_its_wait_reverts_the_cached_centre(fixture* f) {
     dsd_thread_t controller_thread;
     assert(dsd_thread_create(&controller_thread, fail_the_coalesced_request, &controller_side) == 0);
     uint64_t pending_id = UINT64_MAX;
-    const int rc = io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &pending_id);
+    const int rc = io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &pending_id, NULL);
     assert(dsd_thread_join(controller_thread) == 0);
     assert(rc == RTL_STREAM_TUNE_FAILED);
     assert(pending_id == 0U);
@@ -397,7 +397,7 @@ test_displaced_step_reports_its_drop(fixture* f) {
     fixture_begin(f);
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     uint64_t step_id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &step_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &step_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_UNTYPED_STEP, step_id, ENTRY_A_HZ, prior_hz, 2, 5U,
                                         7U);
     take_request(step_id, ENTRY_A_HZ);
@@ -533,7 +533,7 @@ test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
     /* An untyped -Y step's landing commits its row. */
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     dsd_engine_manual_tune_note_pending(f->state, DSD_MANUAL_TUNE_UNTYPED_STEP, id, ENTRY_A_HZ, prior_hz, 0, 1U, 1U);
     take_request(id, ENTRY_A_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
@@ -553,7 +553,7 @@ test_walk_records_what_settles_it(fixture* f) {
     f->state->lcn_list_rev = 9U;
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     uint64_t id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_A_HZ, prior_hz, 2, -1, 1);
     assert(dsd_engine_manual_tune_noted() == 1);
     dsd_engine_manual_tune_note_lcn_cycle(f->state, 0U, ENTRY_B_HZ, prior_hz, 1, 1, 0);
@@ -570,7 +570,7 @@ test_walk_records_what_settles_it(fixture* f) {
 
     /* A walk off any scan fails late, unannounced: the walk passes the row itself. */
     id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_B_HZ, ENTRY_A_HZ, 1, 1, 0);
     take_request(id, ENTRY_B_HZ);
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_FAILED, ENTRY_A_HZ) == 0);
@@ -584,7 +584,7 @@ test_walk_records_what_settles_it(fixture* f) {
 
     /* A newer entry noted over a walk's record: the walk's drop is not reported, the entry is polled on its own. */
     id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_B_HZ, &id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     dsd_engine_manual_tune_note_lcn_cycle(f->state, id, ENTRY_B_HZ, ENTRY_A_HZ, 1, 1, 1);
     const uint64_t entry_id = enter_frequency(f, ENTRY_A_HZ + 12500U);
     assert(dsd_engine_manual_tune_settled_ready() == 0);
@@ -631,7 +631,7 @@ static uint64_t
 import_tune(fixture* f) {
     const uint32_t prior_hz = f->opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
-    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &pending_id) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(io_control_set_freq_tagged(f->opts, f->state, ENTRY_A_HZ, &pending_id, NULL) == RTL_STREAM_TUNE_TIMEOUT);
     DSD_SNPRINTF(f->state->ui_msg, sizeof f->state->ui_msg, "%s", RR_OWN_TOAST);
     f->state->ui_msg_expire = dsd_realtime_time() + 8;
     dsd_engine_manual_tune_note_rr_import(f->state, pending_id, ENTRY_A_HZ, prior_hz, RR_FAILURE_TEXT, RR_LANDED_TEXT);

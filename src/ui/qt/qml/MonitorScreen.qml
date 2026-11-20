@@ -598,11 +598,40 @@ Item {
                 // the same line. Which budgets appear at all was decided in
                 // app-control; a zero here means "the view withheld it".
                 LiveText {
+                    id: scanTimingRow
                     width: parent.width
                     objectName: "scanTimingRow"
                     // The countdowns tick; why the scan stays, and its state, are heard at once.
-                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayPhrase, metrics.scanDwellState,
+                    // Keyed on the stay itself, not its phrase: the silent-channel skip's
+                    // variants of it (#834) come and go within one stay and are heard at the
+                    // pace of the countdown. So are the voice gate's own variants of one stay
+                    // (Qualify, Voice tail): a sync that starts the qualify window is already
+                    // a step of speechStep, and voice ending changes the reason itself.
+                    step: [screen.speechStep, metrics.scanTimingVisible, metrics.scanStayReason, metrics.scanDwellState,
                         metrics.scanVisitLive].join("|")
+                    // The skip status whose sentence was last said (#834). The line's words are
+                    // followed by what a "Quiet check" or "No check: tuner" means once, at the
+                    // first rename after the status or its reason changes, not at every rename
+                    // a hop makes on a session that cannot check. It cannot go in the
+                    // description: Qt's Android bridge sends name and description as one
+                    // text on every rename (androidjniaccessibility.cpp,
+                    // descriptionForInterface()).
+                    property string quietSaid: ""
+                    speech: function () {
+                        var key = metrics.scanQuietStatus + "/" + metrics.scanQuietReason;
+                        if (!metrics.scanQuietText || key === scanTimingRow.quietSaid)
+                            return scanTimingRow.text;
+                        scanTimingRow.quietSaid = key;
+                        return scanTimingRow.text + ". " + metrics.scanQuietText;
+                    }
+                    // A new rotation says it again. Only that clears the key: a sheet
+                    // opened over the Monitor stops the pacer but leaves the line
+                    // visible, so the key persists across the sheet and an unchanged
+                    // status is not said again once it closes.
+                    onVisibleChanged: {
+                        if (!visible)
+                            quietSaid = "";
+                    }
                     // Kept for the whole rotation, blank between stays (#718): the view
                     // publishes and withdraws it with each followed call, and a line
                     // coming and going would move everything below the header.

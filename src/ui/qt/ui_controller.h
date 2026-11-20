@@ -26,6 +26,7 @@
 #include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -144,6 +145,20 @@ class UiController : public QObject {
     /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
     bool invalidateForTarget(const dsd_state* snapshot);
     void onSessionStateChanged();
+    /** @brief Off screen (Suspended or Hidden) the GUI thread may read no snapshot for hours: its buffers keep no key
+     *  until it is on screen again, reads made meanwhile included (withholdSnapshotKeys()). */
+    void onApplicationStateChanged(Qt::ApplicationState state);
+    /**
+     * @brief Wipe the key material of the GUI thread's snapshot buffers (the state's keys, the options' API keys),
+     * which this thread alone reads: a session stopped while it reads none (from the notification, with the app in the
+     * background) would leave them there until its next read. That read copies them again while a session runs.
+     */
+    static void wipeSnapshotKeys();
+    /**
+     * @brief While @p withhold, the GUI thread's snapshot buffers hold no key material even across reads (a hidden
+     * tick, another GUI-thread reader): dsd_app_snapshot_consumer_withhold_keys() and its options twin.
+     */
+    static void withholdSnapshotKeys(bool withhold);
     void clearLiveModels();
 
     bool m_autoStartBlocked = true; // Closed until Main.qml installs its binding.

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
@@ -735,25 +736,29 @@ test_voice_lc_holds_the_channel_only_when_admitted(void) {
         assert(state.last_cc_sync_time != 0);
         assert(slot == 1 ? state.last_vc_sync_time == 0 : state.last_vc_sync_time != 0);
     }
-    /* The single-slot output (-nm) folds a standalone TS2 LC onto lane 0; the burst's own CACH slot, which
-       dmr_data_sync() hands it as the lane's receive slot, still judges it. */
-    dsd_state_ext_free_all(&state);
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.trunk_enable = 1;
-    opts.trunk_is_tuned = 1;
-    opts.dmr_mono = 1;
-    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
-    opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
-    state.trunk_cc_freq = 851012500L;
-    state.currentslot = 1;
-    state.dmr_stereo = 0;
-    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
-    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
-    irr = 0U;
-    dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
-    assert(state.currentslot == 0 && state.last_vc_sync_time == 0);
+    /* The single-slot output (-nm) under trunking runs a BS carrier's bursts on both slots, so a standalone TS2 LC
+       stays on slot 2, as on the dual-slot decoder; the burst's own CACH slot, which dmr_data_sync() hands it as the
+       lane's receive slot, judges it. Without trunking the single-slot decoder folds it onto lane 0, where its voice
+       is decoded. */
+    for (int trunked = 1; trunked >= 0; trunked--) {
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_enable = trunked;
+        opts.trunk_is_tuned = 1;
+        opts.dmr_mono = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+        opts.receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 1; /* --slot-allow 1 */
+        state.trunk_cc_freq = 851012500L;
+        state.currentslot = 1;
+        state.dmr_stereo = 0;
+        state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS2;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        build_regular_flco(lc_bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+        irr = 0U;
+        dmr_flco(&opts, &state, lc_bits, 1U, &irr, 1U);
+        assert(state.currentslot == (trunked ? 1 : 0) && state.last_vc_sync_time == 0);
+    }
     dsd_state_ext_free_all(&state);
 }
 
@@ -1649,6 +1654,48 @@ test_reacquired_epoch_restores_cleared_slot_crypto(void) {
     assert(state.payload_keyidR == 0x55);
     assert(state.payload_miR == 0xABCDEF0123ULL);
     dsd_state_ext_free_all(&state);
+}
+
+// The heal restores the slot's live crypto and its classification, but it is no check of the call's: a slot whose voice
+// is held (the receiver moved off its carrier) stays held, even when an embedded LC whose checksum failed wrote the
+// FID and service options the heal puts back. A slot a checked LC already released is restored as before. The heal's
+// 0.25 s reacquire gap runs on the decode clock, frozen here, so a host pause between the terminator and the media
+// mark cannot run it out.
+static void
+test_heal_keeps_a_voice_hold(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    dsd_decode_clock_use_test(50000000000ULL);
+    for (int checked = 0; checked <= 1; checked++) {
+        uint32_t irr = 0;
+        dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_stereo = 1;
+        state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state.currentslot = 0;
+        dmr_enc_class_hold(&state);
+        seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 101U, 202U);
+        build_regular_flco(bits, 0x00U, 0x10U, 0x00U, 101U, 202U);
+        dmr_flco(&opts, &state, bits, (uint32_t)checked, &irr, 3U);
+        assert(state.dmr_fid == 0x10U && state.dmr_enc_class_held[0] == (checked ? 0U : 1U));
+        build_regular_flco(bits, 0x00U, 0x10U, 0x00U, 101U, 202U);
+        dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+        assert(state.dmr_heal_valid[0] == 1U && state.dmr_fid == 0U);
+        assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        assert(state.dmr_fid == 0x10U && state.dmr_heal_valid[0] == 0U);
+        assert(dmr_enc_class_established_clear(&state, 0U) == 1);
+        assert(state.dmr_enc_class_held[0] == (checked ? 0U : 1U));
+        assert(state.dmr_enc_class_held[1] == 1U);
+    }
+    dsd_state_ext_free_all(&state);
+    dsd_decode_clock_use_system();
 }
 
 // The heal must put back what the vocoder was actually decrypting with, not what the canonical
@@ -3314,10 +3361,10 @@ test_terminator_privacy_bit_does_not_lock_out(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// On RAS systems under the aggressive default every LC arrives with the masked CRC failed, so
-// the header is weak evidence too: the first encrypted observation classifies tentatively and
-// the lockout waits for the repeat -- which a real encrypted call supplies within one embedded
-// LC cadence.
+// On RAS systems every LC arrives with the masked CRC failed. Such an LC, header or embedded, names its talkgroup with
+// no check, so however often it repeats it arms no lockout, which records an event and drops the channel (AGENTS.md,
+// CRC/FEC provenance); it would otherwise lock out whatever talkgroup a corrupt LC named. -F accepts RAS LCs
+// (CRCCorrect 1), and one of those arms it.
 static void
 test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     static dsd_opts opts;
@@ -3346,8 +3393,51 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 3U);
     assert(irr == 0);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);
+}
+
+/* The keys file keys talkgroups 123 (Basic Privacy 51) and 202 (68); slot 1's call on talkgroup 123 is keyed with 51.
+   Its embedded LC whose checksum failed reads talkgroup 202 with the privacy bit: that is no check of the call's
+   identity, so the key line shows the key the call is keyed with (51), never the one talkgroup 202 would select. A
+   checked LC naming talkgroup 202 is that call's word, and shows 68. */
+static void
+test_failed_lc_prints_no_talkgroup_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char out[4096];
+    for (uint32_t crc = 0U; crc <= 1U; crc++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.show_keys = 1;
+        state.currentslot = 0;
+        state.keyloader = 1;
+        state.rkey_array[123] = 51ULL;
+        state.rkey_array_loaded[123] = 1U;
+        state.rkey_array[202] = 68ULL;
+        state.rkey_array_loaded[202] = 1U;
+        uint32_t keyed_from = 0U;
+        (void)keyring_dmr_tg_autoload_apply(&state, 0U, 123U, &keyed_from);
+        assert(state.K == 51ULL);
+        uint8_t bits[80];
+        uint32_t irr = 0;
+        build_regular_flco(bits, 0x00U, 0x10U, 0x40U, 202U, 2002U);
+        dsd_test_capture_stderr cap;
+        assert(dsd_test_capture_stderr_begin(&cap, "dmr_failed_lc_key") == 0);
+        dmr_flco(&opts, &state, bits, crc, &irr, 3U);
+        assert(dsd_test_capture_stderr_end(&cap) == 0);
+        assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+        (void)remove(cap.path);
+        assert(strstr(out, crc ? "Key 68 " : "Key 51 ") != NULL);
+        assert(strstr(out, crc ? "Key 51 " : "Key 68 ") == NULL);
+        dsd_state_ext_free_all(&state);
+    }
 }
 
 #define MAPPED_TG_TARGET       123U
@@ -4123,6 +4213,7 @@ main(void) {
     InitAllFecFunction();
 
     test_repeated_voice_lc_header_keeps_one_epoch();
+    test_failed_lc_prints_no_talkgroup_key();
     test_voice_lc_holds_the_channel_only_when_admitted();
     test_stale_headerless_epoch_does_not_absorb_next_header();
     test_repeated_voice_lc_headers_commit_one_history_row();
@@ -4134,6 +4225,7 @@ main(void) {
     test_protected_td_lc_shape_does_not_wipe_data_session();
     test_reacquired_epoch_restores_cleared_slot_crypto();
     test_heal_restores_live_mi_and_basic_privacy_fid();
+    test_heal_keeps_a_voice_hold();
     test_stale_heal_stash_does_not_leak_into_later_call();
     test_terminator_after_sync_loss_end_still_stashes_crypto();
     test_corroborated_terminator_drops_the_heal_stash();

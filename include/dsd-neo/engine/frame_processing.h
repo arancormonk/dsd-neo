@@ -93,7 +93,9 @@ typedef enum {
  *     with the evidence that vouched for its transmissions: every confirmation gate restarts, as the no-carrier pass
  *     restarts them, so the next carrier proves itself again; and with every multi-frame assembly that can publish an
  *     identity or a code (an NXDN SACCH superframe, a DMR short LC or talker alias, an M17 LSF...), which the next
- *     carrier's next piece could otherwise complete.
+ *     carrier's next piece could otherwise complete. So does how the ended DMR calls were encrypted
+ *     (dmr_forget_call_privacy()), so the next carrier's frames before their own LC decrypt with no privacy bit and no
+ *     talkgroup key of theirs; a key set directly stays loaded.
  *  4. With trunking off, what the trunking-off no-carrier pass forgets of it goes too
  *     (dsd_engine_forget_untrunked_carrier_state()).
  *  5. state->carrier_seq moves, so a decoder that buffered the left carrier's bursts drops them.
@@ -144,6 +146,19 @@ void dsd_engine_note_stream_source(dsd_opts* opts, dsd_state* state, int guard_h
  *  to their allocations. Nothing when TETRA is off, the input is no stream, or the start in force said them already.
  *  Decoder thread. */
 void dsd_engine_note_iq_stream_tetra(const dsd_opts* opts);
+
+/** A run's start: no DMR slot's voice is held for a move an earlier run on this state made (dmr_enc_class_hold()), and
+ *  the run has landed already (its first stream opens on the carrier it decodes, dsd_state::run_landed) unless a trunk
+ *  scan configured for it (--trunk-scan) is to make its first landing, which it does by parking before anything
+ *  decodes. A -Y scan decodes the start frequency its stream opens on until its first step, so that start is the run's
+ *  first landing and the step holds. A scan started later in the run, from the menu, lands after the run did, so its
+ *  first landing holds as any carrier move does. */
+void dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state);
+
+/** The run's first radio stream start (the engine's own, before the frontends start): dsd_engine_note_stream_source(),
+ *  whose source boundary forgets what a stream an earlier run on this state opened left (another device, or any I/Q
+ *  replay start), then the run's first landing is not held (dmr_enc_class_hold()): no move of this run has happened. */
+void dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state);
 
 /** An I/Q replay's retune the capture recorded, which the read path adopted (dsd_frame_sync_note_replay_center()),
  * before it returns the first sample the new carrier carries (issue #575). With trunking off it is another

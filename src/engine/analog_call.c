@@ -186,7 +186,8 @@ dsd_engine_analog_call_due(const dsd_state* state) {
     if (analog_call_epoch_moved(state, call)) {
         return 1;
     }
-    return state->analog_rx.stale_after_ms && dsd_realtime_mono_ms() > state->analog_rx.stale_after_ms;
+    /* On the clock the tap set the deadline on. */
+    return dsd_analog_rx_stale_now(state);
 }
 
 static void
@@ -826,7 +827,7 @@ analog_call_note_media(dsd_opts* opts, dsd_state* state, double now_m) {
         .audio_permitted = 1,
         .observed_m = now_m,
     };
-    (void)dsd_call_state_update_crypto(state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0, DSD_SYNC_ANALOG, &crypto);
     (void)dsd_call_state_update_media(state, 0, 1, now_m);
     dsd_event_sync_slot(opts, state, 0);
 }
@@ -854,6 +855,8 @@ analog_call_qualify(dsd_opts* opts, dsd_state* state, analog_call* call, double 
     call->active = 1;
     call->candidate = 0;
     call->received = 0;
+    /* An admitted call explains the -Y stay it is heard on (issue #834): no "No check" status for the rest of it. */
+    state->scan_y_call_seq++;
     analog_call_note_media(opts, state, now_m);
 }
 
@@ -968,7 +971,7 @@ dsd_engine_analog_call_block(dsd_opts* opts, dsd_state* state, const dsd_analog_
     /* The carrier itself heard is activity to a scan quiet check (issue #834), qualified or not: one heard while its
        tone check is pending counts, though it may end before the tone is judged. One load while skip-silent is off. */
     if (opts->scan_skip_silent && block->found_carrier) {
-        dsd_engine_scan_quiet_note_sync(state);
+        dsd_engine_scan_quiet_note_activity(state);
     }
     const int input = block->input;
     /* A RECEPTION or lead-in block's one decode-clock read, before any of its file work on any path: the

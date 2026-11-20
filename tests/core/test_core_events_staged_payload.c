@@ -65,8 +65,8 @@ seed_enriched_call(void) {
     dsd_event_sync_slot(&g_opts, &g_state, 0);
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&g_state, 0, &call) == 1);
-    assert(dsd_event_enrich_gps(&g_state, 0, call.epoch, "GPS A") == 1);
-    assert(dsd_event_enrich_text(&g_state, 0, call.epoch, "text A") == 1);
+    assert(dsd_event_enrich_gps(&g_state, 0, call.protocol, call.epoch, "GPS A") == 1);
+    assert(dsd_event_enrich_text(&g_state, 0, call.protocol, call.epoch, "text A") == 1);
 }
 
 static int

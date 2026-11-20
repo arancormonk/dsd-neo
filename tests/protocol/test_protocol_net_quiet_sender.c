@@ -294,7 +294,7 @@ edacs_triplet_across_stall(int timeouts, short* a1, short* a2, short* a3) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
     hooks.tcp_read_sample_wait = fake_tcp_read_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     edacs_test_set_quiet_clock(fake_now_ms);
     double pwr = -1.0;
     const int got = edacs_collect_analog_triplet(&g_opts, &g_state, NULL, a1, a2, a3, &pwr);
@@ -583,7 +583,7 @@ main(void) {
     rc |= test_m17_quiet_sender();
     rc |= test_m17_close();
     rc |= test_m17_stdin_shutdown();
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_socket_cleanup();
     if (rc == 0) {
         printf("PROTOCOL_NET_QUIET_SENDER: OK\n");

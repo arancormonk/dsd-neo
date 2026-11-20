@@ -756,10 +756,10 @@ test_text_only_after_gps(void) {
     dsd_rxid_note_dmr_t3_syscode(&g_state, 0x0A3FU);
     const dsd_position_fix f = admitted(DSD_SYNC_DMR_BS_VOICE_POS, 111U, 225000000, 450000000);
     assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch, &f, "GPS A") == 1);
-    assert(dsd_event_enrich_text(&g_state, 0U, epoch, "hello") == 1);
+    assert(dsd_event_enrich_text(&g_state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, epoch, "hello") == 1);
     expect_row_fix(row(0), &f, "GPS A");
     assert(strcmp(row(0)->text_message, "hello") == 0);
-    assert(dsd_event_enrich_gps(&g_state, 0U, epoch, "GPS text only") == 1);
+    assert(dsd_event_enrich_gps(&g_state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, epoch, "GPS text only") == 1);
     assert(strcmp(row(0)->gps_s, "GPS text only") == 0);
     assert(row(0)->pos.valid == 0U && row(0)->pos.rev == 0U && row(0)->pos.lat_e7 == 0);
     /* The sender identity stays with the row. */
@@ -780,7 +780,7 @@ merge_case(int newer_first, int second_text_only) {
     const uint64_t epoch2 = observe(DSD_SYNC_DMR_BS_VOICE_POS, 111U, NULL, DSD_CALL_BOUNDARY_BEGIN);
     assert(epoch2 != epoch1);
     if (second_text_only) {
-        assert(dsd_event_enrich_gps(&g_state, 0U, epoch2, "text only") == 1);
+        assert(dsd_event_enrich_gps(&g_state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, epoch2, "text only") == 1);
     } else {
         assert(dsd_event_enrich_position(NULL, &g_state, 0U, epoch2, second, newer_first ? "older" : "newer") == 1);
     }

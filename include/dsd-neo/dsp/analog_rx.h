@@ -445,6 +445,25 @@ int dsd_analog_rx_carrier_observed_now(const dsd_opts* opts, const dsd_state* st
 int dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief The clock the tap sets dsd_state::analog_rx.stale_after_ms on, in seconds: dsd_realtime_mono_s(), or the test
+ * clock a test build installs in its place.
+ *
+ * A reader that ages the publication on the decoder thread against a time of its own, as
+ * dsd_app_rx_tone_view() takes one, passes this one, so both sides of the comparison are on one clock. Read-only.
+ */
+double dsd_analog_rx_clock_s(void);
+
+/**
+ * @brief Whether the publication is past its stale deadline now: dsd_state::analog_rx.stale_after_ms is set and the
+ * clock the tap set it on has passed it.
+ *
+ * The decoder thread's readers ask this rather than read a clock of their own, so the deadline and the time it is
+ * compared with always come from the same clock (in a test build the tap's clock may be a test clock). 0 without
+ * @p state, and while no deadline is set (an input that does not pause). Read-only.
+ */
+int dsd_analog_rx_stale_now(const dsd_state* state);
+
+/**
  * @brief Whether the monitor block now being completed began before a boundary the tap knows of (issue #526).
  *
  * Set when the tap's own generation check found a retune or an applied receive-profile change part-way through the

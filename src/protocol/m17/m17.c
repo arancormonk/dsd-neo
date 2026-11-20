@@ -35,6 +35,8 @@
 #include <dsd-neo/dsp/analog_audio.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/analog_voice.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -412,7 +414,8 @@ m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
         const int available = classification == DSD_CALL_CRYPTO_DECRYPTABLE         ? 1
                               : classification >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? 0
                                                                                     : -1;
-        (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available, 0);
+        (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_M17_LSF_POS, call.epoch, DSD_CALL_KEY_DIRECT,
+                                                call.kid, -1, available, 0);
     }
 }
 
@@ -467,7 +470,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
         .received = (uint8_t)DSD_CALL_CRYPTO_RX_ALG,
         .enc_observed = res->et == 0U ? DSD_CALL_ENC_OBSERVED_CLEAR : DSD_CALL_ENC_OBSERVED_ENCRYPTED,
     };
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_M17_LSF_POS, &crypto);
     m17_note_key_selection(state, crypto.classification);
     if (opts) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
@@ -1529,7 +1532,7 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
         /* Six Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
          * Golay accepts enough random words that a clean LICH still turns up on noise, so it
          * has to repeat before the decoder acts on the stream (#399). */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_WEAK);
         M17prepareStream(opts, state, m17_bits);
     }
     m17_confirm_end_frame(state);
@@ -1715,7 +1718,7 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
      * test transmission from the alternating run that reaches this matcher on noise (#399). */
     const int locked = state->m17_bert_locked != 0U;
     if (locked) {
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
     m17_confirm_end_frame(state);
 
@@ -1739,7 +1742,7 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
         /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). Noted once the LSF's
          * call is published: a signal search reads the callsigns and CAN from that call when it hears the
          * confirmation, and this LSF may be the only one the transmission delivers. */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {
@@ -2445,7 +2448,9 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, 
                was captured on (issue #575). */
             uint32_t replay_center_hz = 0U;
             (void)dsd_rtl_stream_metrics_hook_replay_advance_decode_clock(&replay_center_hz);
-            dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+            if (dsd_opts_iq_replay_center_is_new(opts, replay_center_hz)) {
+                dsd_frame_sync_note_replay_center(opts, state, replay_center_hz);
+            }
             if (gated < 0) {
                 gated = dsd_squelch_stream_gate_running(opts, state);
             }
@@ -2491,6 +2496,17 @@ int
 m17_encoder_read_block(dsd_opts* opts, dsd_state* state, m17_encoder_input* in, short* out, size_t nsam) {
     if (!opts || !state || !in || !out) {
         return M17_STR_READ_ERROR;
+    }
+    /* A rigctl peer's confirmed retune (a manual tune, a watchdog's post) left the channel it left's audio queued in
+       the input (issue #834): the encoder reads its blocks itself, not through symbol_read(), so it takes the drop
+       before its next block, as that reader does, and the input filter's memory of the old channel goes with it. */
+    if (opts->use_rigctl == 1) {
+        dsd_frame_sync_take_off_thread_unflushed_retunes(opts, state);
+    }
+    if (state->input_drop_pending) {
+        dsd_symbol_apply_input_drop(opts, state);
+        dsd_voice_bandpass_reset(&in->lowpass);
+        in->sample = 0.0f;
     }
     /* Only an RTL stream carries the dynamic squelch's gate; every other read leaves it to the level squelch. */
     in->squelch_gated = 0;
@@ -2578,7 +2594,7 @@ m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst,
         .classification = DSD_CALL_CRYPTO_CLEAR,
         .audio_permitted = 1U,
     };
-    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_M17_LSF_POS, &crypto);
     m17_note_key_selection(state, crypto.classification);
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
     state->m17_can = can;
@@ -3806,7 +3822,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
 
     if (crc_cmp == crc_ext) {
         /* A CRC-16 over the reassembled packet is proof the chain that carried it was real. */
-        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if ((crc_cmp == crc_ext || opts->aggressive_framesync == 0) && app_len > 0U) {
@@ -3895,6 +3911,8 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
             return 0;
         }
         state->m17_pbc_ct++;
+        /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
+        m17_confirm_note_unchecked_frame(opts, state);
     }
 
     //ending linebreak

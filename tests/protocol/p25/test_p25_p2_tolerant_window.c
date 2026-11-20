@@ -1042,6 +1042,58 @@ test_window_proves_p25(void) {
     return rc;
 }
 
+/* The content notes a scan quiet check hears through the content-evidence hook (issue #834): PROVEN and PARTIAL. */
+static int g_proven_notes;
+static int g_partial_notes;
+
+static void
+count_content_note(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_proven_notes++;
+    } else {
+        g_partial_notes++;
+    }
+}
+
+/* A scan quiet check hears a tolerant sync's window only behind its verdict, through the real dispatcher: a rejected
+   near-miss notes no checked content (its I-ISCHs decode and its signalling would pass its CRCs, but the verdict comes
+   first), and moves no -Y content count; one whose verdict passes notes its checked content. Skip-silent is on. */
+static int
+test_rejected_window_notes_no_content(void) {
+    int rc = 0;
+    for (int passes = 0; passes <= 1; passes++) {
+        fresh_decoder();
+        g_opts->scan_skip_silent = 1;
+        rc |= anchored_by_exact_window_of(1);
+        rc |= expect("tolerant sync", sync_tolerant(3) == 6);
+        g_build_code = passes ? TEST_CODE : OTHER_CODE;
+        build(6, 0);
+        g_build_code = TEST_CODE;
+        if (!passes) {
+            set_duid(2, 0x03U);
+            set_duid(3, 0x03U);
+        }
+        g_proven_notes = 0;
+        g_partial_notes = 0;
+        const uint64_t content_before = g_state->scan_y_content_seq;
+        g_feed_pos = 0;
+        const dsd_frame_verdict verdict = dsd_dispatch_handle_p25p2(g_opts, g_state);
+        g_feed_pos = -1;
+        if (passes) {
+            rc |= expect("passed near-miss: productive", verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
+            rc |= expect("passed near-miss: its checked content is PROVEN",
+                         g_proven_notes >= 1 && g_state->scan_y_content_seq > content_before);
+        } else {
+            rc |= expect("rejected near-miss: unproductive", verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+            rc |= expect("rejected near-miss: no content note",
+                         g_proven_notes == 0 && g_partial_notes == 0 && g_state->scan_y_content_seq == content_before);
+        }
+    }
+    return rc;
+}
+
 /* The fourth ISCH a window would hold (bits 1400-1439, the next sync) is never read, whatever p2bit holds there: a
    channel-1 I-ISCH placed there does not position a window its own ISCHs leave to continuity. */
 static int
@@ -1074,6 +1126,7 @@ main(void) {
     dsd_frame_sync_hooks_get(&saved_hooks);
     dsd_frame_sync_hooks hooks = saved_hooks;
     hooks.p25_sm_vc_sync = count_vc_sync;
+    hooks.content_evidence = count_content_note;
     dsd_frame_sync_hooks_set(&hooks);
     int rc = 0;
     rc |= test_failed_window_has_no_effects();
@@ -1087,6 +1140,7 @@ main(void) {
     rc |= test_input_end_cuts_the_window();
     rc |= test_fourth_isch_ignored();
     rc |= test_window_proves_p25();
+    rc |= test_rejected_window_notes_no_content();
     dsd_frame_sync_hooks_set(&saved_hooks);
     dsd_state_ext_free_all(g_state);
     free(g_state->event_history_s);

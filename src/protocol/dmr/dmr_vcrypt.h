@@ -42,6 +42,12 @@ enum {
 /** Whether @p algid keys its keystream by a per-superframe MI (AES, DES, RC4, Hytera Enhanced, Kirisun). */
 int dmr_vcrypt_algid_uses_mi(int algid);
 
+/** Whether the ALG ID @p algid a PI header or Hytera Enhanced LC of vendor @p mfid carries (after the DMRA
+    normalisation) names a cipher the voice decrypts: DMRA (MFID 0x10) RC4 0x21, DES 0x22, AES-128 0x24, AES-256 0x25;
+    Hytera Enhanced (0x68) RC4 0x02; Kirisun (0x0A) Advanced 0x36 and Universal 0x37. Any other identifier names none,
+    so its frames have nothing to be judged by. */
+int dmr_vcrypt_vendor_cipher_known(uint8_t mfid, int algid);
+
 /** The slot's cipher, key id or MI was replaced by material that anchors no superframe (an SB identifier naming another
     cipher, a PI accepted without a passing CRC): the chain is unknown until the slot is re-keyed. Collected late-entry
     fragments stay, to re-key it. */

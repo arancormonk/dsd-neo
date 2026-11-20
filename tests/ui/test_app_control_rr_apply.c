@@ -19,6 +19,7 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -51,10 +52,14 @@ static int g_manual_tune_supersedes = 0;
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,
-                                      uint64_t* out_pending_id);
+                                      uint64_t* out_pending_id, dsd_input_cut* rigctl_mark);
 
 int
-__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id) {
+__wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz, uint64_t* out_pending_id,
+                                  dsd_input_cut* rigctl_mark) {
+    if (rigctl_mark) {
+        dsd_input_backlog_mark(rigctl_mark); /* as the real rigctl leg marks, immediately before the frequency */
+    }
     (void)state;
     if (out_pending_id) {
         *out_pending_id = g_io_control_tune_result == RTL_STREAM_TUNE_TIMEOUT ? g_io_control_tune_pending_id : 0U;

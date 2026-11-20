@@ -22,7 +22,6 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
@@ -50,7 +49,11 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef SOFTID
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include "p25p1_current_call.h"
+#else
+#include <dsd-neo/core/constants.h>
 #endif
 
 static void
@@ -409,7 +412,7 @@ p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
 
     char str[16];
     dsd_call_snapshot call;
-    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int has_call = p25p1_current_call(state, &call);
     int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     k = 0;
     for (int i = 0; i < 16; i++) {
@@ -435,7 +438,7 @@ p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
             == 0) {
             (void)dsd_tg_policy_learn_exact(state, &alias_entry);
         }
-        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
+        (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P1_POS, call.epoch, str);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

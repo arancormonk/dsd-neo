@@ -72,8 +72,8 @@ int dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* 
  *
  * Selects REPLAY only on a state fresh from initState() (dsd_state::engine_fresh, which dsd_engine_run_with_lifecycle()
  * clears once it has called this). Only the init seeds are rebased, so a stamp an earlier run left in a reused state
- * (the Android service reuses its state when a start races the previous run's stopSelfLatest(), DecoderService.kt)
- * would sit ahead of the capture's wall time. On such a state the clock stays on SYSTEM, with one warning that the
+ * would sit ahead of the capture's wall time. No host in this tree reuses one (the Android service resets its objects
+ * for every configure, android/session_objects.h); the check covers an embedding host that runs again on its state. On such a state the clock stays on SYSTEM, with one warning that the
  * run's replay timing is not anchored to the capture. The system clock only moves forward, so every stamp the earlier
  * run took on it stays behind now. The exception is an earlier replay of a capture stamped ahead of this device's
  * clock (recorded elsewhere, or on a clock that is behind): the leave rebases only the init seeds, so that run's

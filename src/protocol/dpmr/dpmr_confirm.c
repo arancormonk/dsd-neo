@@ -4,6 +4,7 @@
  */
 
 #include "dpmr_confirm.h"
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 
 #include <dsd-neo/core/state.h>
@@ -11,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 void
@@ -83,7 +85,7 @@ dpmr_confirm_note_evidence(dsd_state* state, dpmr_evidence evidence) {
 }
 
 void
-dpmr_confirm_end_frame(dsd_state* state) {
+dpmr_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
@@ -98,7 +100,16 @@ dpmr_confirm_end_frame(dsd_state* state) {
         || state->dpmr_confirm_weak_streak >= DPMR_CONFIRM_WEAK_OBSERVES) {
         dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        return;
     }
+    /* One half whose streak the next frame must complete: the quiet check waits for that frame. */
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, DPMR_CONFIRM_PARTIAL_HOLD_MS);
+}
+
+void
+dpmr_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state) {
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PARTIAL, DPMR_CONFIRM_PARTIAL_HOLD_MS);
 }
 
 int

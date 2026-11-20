@@ -15,6 +15,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
+#include "frame_sync_unflushed.h"
 
 /*
  * The decoder thread owns the comparison and the learned modulation; the hunt writes them outside the P25 SM tick
@@ -104,9 +105,13 @@ dsd_frame_sync_off_thread_tune_pending(void) {
 }
 
 void
-dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state) {
+dsd_frame_sync_off_thread_tunes_reset(dsd_state* state) {
     s_off_thread_tunes_seen = off_thread_tunes_count(atomic_load(&s_off_thread_tunes));
+    frame_sync_unflushed_retunes_reset();
     if (state) {
+        /* Nor does an input drop an earlier run asked for (a rigctl retune just before Stop, issue #834) belong to this
+           run's input, which opens holding nothing of the old channel. */
+        state->input_drop_pending = 0U;
         dsd_frame_sync_p25p1_mod_compare_publish(state);
     } else {
         atomic_store(&s_published, 0);
@@ -127,6 +132,9 @@ dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state) {
     s_off_thread_tunes_seen = off_thread_tunes_count(tunes);
     /* The carrier the tune left sent the histories: nothing of them pairs with the carrier it reached. */
     dsd_state_forget_sync_join_histories(state);
+    /* A tune that moved a radio whose samples no retune flushes (a rigctl peer's audio) posted its count before this
+       notice; the decoder's reads take it as a rule, and this catches one no read met yet (issue #834). */
+    frame_sync_take_unflushed_retunes(opts, state);
     /* The latest tune set the decoder's modulation and the front end on the chain it read (the learned modulation of
      * its read): the decoder follows it, whatever the comparison did since. */
     const int chain = decision_learned(tunes);

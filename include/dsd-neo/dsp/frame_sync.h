@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/input_backlog.h>
 #include <time.h> // IWYU pragma: keep
 
 #ifdef __cplusplus
@@ -266,23 +267,64 @@ void dsd_frame_sync_p25p1_read_decision(dsd_p25p1_decision* out);
  */
 void dsd_frame_sync_note_off_thread_tune(const dsd_p25p1_decision* read);
 
+/**
+ * @brief Note, before that tune's notice (dsd_frame_sync_note_off_thread_tune()), that a tune made off the decoder
+ * thread moved a radio whose samples no retune flushes: a rigctl peer heard through an audio input. @p cut is the mark
+ * of the input the tune took before it asked the peer to move (dsd_input_backlog_mark()), held for the decoder thread
+ * (dsd_input_backlog_post()). At its next input read (frame_sync_take_unflushed_retunes()), or at the notice's
+ * reconcile if no read came first (dsd_frame_sync_apply_off_thread_tunes()), the decoder thread moves
+ * dsd_state::symbol_clock_epoch, as the RTL readers move it at a stream flush, and asks for what the input held at the
+ * mark to be dropped (dsd_state::input_drop_pending). A post an input replacement retires is never taken
+ * (dsd_frame_sync_forget_unflushed_retunes()). Safe from any thread.
+ */
+void dsd_frame_sync_note_off_thread_unflushed_retune(const dsd_input_cut* cut);
+
+/**
+ * @brief Ask for an input drop (issue #834): a rigctl peer confirmed a retune asked for at @p cut, while the audio
+ * input still held the frequency left's samples. Decoder thread; carried out at its next input read
+ * (dsd_symbol_apply_input_drop()), of what the input held at @p cut only.
+ *
+ * For one input (dsd_opts::pcm_input_generation) the cutoff is the newest mark (dsd_input_cut::order), whichever path
+ * asks and in whatever order: a mark older than the one last asked for on the input, pending or carried out, asks for
+ * nothing (a watchdog post the decoder thread takes after its own later retune marked the input). A request on a newer
+ * input replaces whatever an older input's was.
+ *
+ * @param opts Decoder options (the input).
+ * @param state Decoder state taking the request.
+ * @param cut Where the input stood before the retune was asked for (dsd_input_backlog_mark()).
+ * @return 1 when @p cut is now the input's cutoff, 0 when a newer one stands.
+ */
+int dsd_frame_sync_request_input_drop(const dsd_opts* opts, dsd_state* state, const dsd_input_cut* cut);
+
+/**
+ * @brief On the decoder thread, take an unflushed retune posted off it
+ * (dsd_frame_sync_note_off_thread_unflushed_retune()) at once: the epoch moves and the input drop is asked for, unless
+ * a newer cutoff stands (the decoder thread's own retune since the post, which moved the epoch). Every
+ * input reader runs it before it reads (the symbol reader inline while rigctl is in use, the only time a post is made;
+ * EDACS analog voice through this), so a watchdog tune's drop comes at the next read after its post, and a failed
+ * rigctl reconnect runs it as it turns rigctl off. One relaxed load when nothing is posted.
+ */
+void dsd_frame_sync_take_off_thread_unflushed_retunes(const dsd_opts* opts, dsd_state* state);
+
 /** @brief Whether a tune off the decoder thread awaits dsd_frame_sync_apply_off_thread_tunes(). Decoder thread. */
 int dsd_frame_sync_off_thread_tune_pending(void);
 
 /**
  * @brief On the decoder thread, reconcile the tunes made off it since the last call, whatever the comparison did since:
- * forget the sync join histories, make the learned modulation the chain the latest tune set, end a comparison still
- * running there without a verdict, drop a verdict reached since on a comparison that tune captured, and put rf_mod and
- * the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the P25 SM tick guard
- * (taken when the caller does not hold it). 1 when one was reconciled.
+ * forget the sync join histories, move the symbol clock epoch for a radio moved on an unflushed stream
+ * (dsd_frame_sync_note_off_thread_unflushed_retune()), make the learned modulation the chain the latest tune set, end
+ * a comparison still running there without a verdict, drop a verdict reached since on a comparison that tune captured,
+ * and put rf_mod and the front end (@p opts) back on the chain the tune set if a step since moved them. Runs under the
+ * P25 SM tick guard (taken when the caller does not hold it). 1 when one was reconciled.
  */
 int dsd_frame_sync_apply_off_thread_tunes(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief A run boundary (a new session on @p state, or its end): seed the published decision from @p state (or with
- * nothing learned for NULL) and drop the notices posted so far, before the P25 watchdog starts. Decoder thread.
+ * nothing learned for NULL) and drop the notices posted so far, and @p state's pending input drop, before the P25
+ * watchdog starts. Decoder thread.
  */
-void dsd_frame_sync_off_thread_tunes_reset(const dsd_state* state);
+void dsd_frame_sync_off_thread_tunes_reset(dsd_state* state);
 
 /**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.

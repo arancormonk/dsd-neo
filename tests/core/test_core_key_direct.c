@@ -5,6 +5,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <mbelib-neo/mbelib.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -153,6 +155,199 @@ bootstrap_snapshot_secrets(void) {
     DSD_SECURE_ZERO(key, sizeof key);
     DSD_SECURE_ZERO(&state, sizeof state);
     DSD_SECURE_ZERO(&opts, sizeof opts);
+}
+
+/* Every key copy a state snapshot carries: the scalar and AES keys, the talkgroup autoload's copies of them and its
+   slot keys, the CSI key, and the scalar key presence. */
+#define SNAPSHOT_KEY(field) {offsetof(dsd_state, field), sizeof(((dsd_state*)0)->field)}
+
+static const struct {
+    size_t offset;
+    size_t size;
+} k_snapshot_keys[] = {
+    SNAPSHOT_KEY(K),
+    SNAPSHOT_KEY(K1),
+    SNAPSHOT_KEY(K2),
+    SNAPSHOT_KEY(K3),
+    SNAPSHOT_KEY(K4),
+    SNAPSHOT_KEY(R),
+    SNAPSHOT_KEY(RR),
+    SNAPSHOT_KEY(H),
+    SNAPSHOT_KEY(dmr_tg_autoload),
+    SNAPSHOT_KEY(A1),
+    SNAPSHOT_KEY(A2),
+    SNAPSHOT_KEY(A3),
+    SNAPSHOT_KEY(A4),
+    SNAPSHOT_KEY(aes_key),
+    SNAPSHOT_KEY(csi_ee_key),
+    SNAPSHOT_KEY(scalar_key_present),
+    SNAPSHOT_KEY(basic_key_present),
+};
+
+#undef SNAPSHOT_KEY
+
+static void
+snapshot_keys_fill(dsd_state* state, uint8_t value) {
+    for (size_t i = 0; i < sizeof k_snapshot_keys / sizeof k_snapshot_keys[0]; ++i) {
+        DSD_MEMSET((uint8_t*)state + k_snapshot_keys[i].offset, value, k_snapshot_keys[i].size);
+    }
+}
+
+static int
+snapshot_keys_are(const dsd_state* state, uint8_t value) {
+    for (size_t i = 0; i < sizeof k_snapshot_keys / sizeof k_snapshot_keys[0]; ++i) {
+        const uint8_t* at = (const uint8_t*)state + k_snapshot_keys[i].offset;
+        for (size_t b = 0; b < k_snapshot_keys[i].size; ++b) {
+            if (at[b] != value) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* The state snapshot outlives its session (snapshot.h): the frontend keeps reading the last one after a stop, and on
+   Android until the next session publishes. Its key copies (the scalar and AES keys, the talkgroup autoload's copies
+   of them and its slot keys, the CSI key) do not: the stop wipes the published copy and the consumer's, whatever else
+   stays. */
+static void
+stopped_session_snapshot_keeps_no_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    snapshot_keys_fill(&state, 0x5AU);
+    state.payload_algid = 0x21;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0x5AU), "a running session's snapshot has its keys");
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(snapshot && snapshot_keys_are(snapshot, 0U), "a reader's wipe clears its buffer's keys");
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0x5AU), "its next read in a running session copies them again");
+    dsd_app_frontend_runtime_stop();
+    /* A reader that reads no more (the terminal UI thread at its exit) wipes its own buffer, with no next read. */
+    const dsd_state* last_read = snapshot;
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(last_read && snapshot_keys_are(last_read, 0U), "a reader that read its last keeps no key in its buffer");
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot_keys_are(snapshot, 0U), "a stopped session's snapshot keeps no key");
+    check(snapshot && snapshot->payload_algid == 0x21, "a stopped session's snapshot keeps the rest");
+    snapshot_keys_fill(&state, 0U);
+    freeState(&state);
+}
+
+/* The NXDN/dPMR working register (nxdn_payload_mi) holds the scrambler key at a scrambled call's start and the
+   scrambler state run on from it after, so every snapshot key wipe clears it with R: a reader's own wipe, a reader that
+   withholds keys, and the stop. An IV a VCALL_IV carried over the air (nxdn_iv_on_air) is no key and stays. */
+static void
+snapshot_wipes_nxdn_key_register(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const unsigned long long key = 0x1F2E3ULL;
+    const unsigned long long on_air_iv = 0x1122334455667788ULL;
+
+    initOpts(&opts);
+    initState(&state);
+    state.R = key;
+    state.nxdn_payload_mi = key; /* nxdn_reset_payload_seed_if_forced(): the key loaded as the seed */
+    state.nxdn_iv_on_air = 0U;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == key, "a running session's snapshot has the scrambler register");
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL && snapshot->R == 0ULL,
+          "a reader's wipe clears the scrambler register with the key");
+    dsd_app_snapshot_consumer_withhold_keys(1);
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL, "a reader that withholds keys holds no scrambler register");
+    dsd_app_snapshot_consumer_withhold_keys(0);
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == key, "its next read with keys copies the register again");
+    dsd_app_frontend_runtime_stop();
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL, "a stopped session's snapshot keeps no scrambler register");
+    state.R = 0ULL;
+    freeState(&state);
+
+    initOpts(&opts);
+    initState(&state);
+    state.R = key;
+    state.nxdn_payload_mi = on_air_iv; /* a CRC-verified VCALL_IV */
+    state.nxdn_iv_on_air = 1U;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    dsd_app_frontend_runtime_stop();
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->R == 0ULL && snapshot->nxdn_payload_mi == on_air_iv && snapshot->nxdn_iv_on_air == 1U,
+          "a stopped session's snapshot keeps an IV received over the air");
+    freeState(&state);
+}
+
+static int
+opts_secrets_are_empty(const dsd_opts* opts) {
+    for (size_t i = 0; i < sizeof opts->rdio_api_key; ++i) {
+        if (opts->rdio_api_key[i] != '\0') {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof opts->rdio_api_url; ++i) {
+        if (opts->rdio_api_url[i] != '\0') {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof opts->rr_app_key; ++i) {
+        if (opts->rr_app_key[i] != '\0') {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof opts->api_token; ++i) {
+        if (opts->api_token[i] != '\0') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The options snapshot outlives its session as the state snapshot does. While the session runs, a frontend reads the
+   rdio-scanner API key and URL and the RadioReference API key from it (the terminal UI's RadioReference panel and its
+   config save); the API token never reaches it. The stop wipes them from the published copy and the consumer's,
+   whatever else stays. */
+static void
+stopped_session_opts_snapshot_keeps_no_api_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    DSD_SNPRINTF(opts.rdio_api_key, sizeof opts.rdio_api_key, "%s", "rdio-test-key");
+    DSD_SNPRINTF(opts.rdio_api_url, sizeof opts.rdio_api_url, "%s", "https://name:word@rdio.invalid/api");
+    DSD_SNPRINTF(opts.rr_app_key, sizeof opts.rr_app_key, "%s", "rr-test-key");
+    DSD_SNPRINTF(opts.api_token, sizeof opts.api_token, "%s", "api-test-token");
+    DSD_SNPRINTF(opts.rr_username, sizeof opts.rr_username, "%s", "listener");
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_opts* snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && strcmp(snapshot->rdio_api_key, "rdio-test-key") == 0
+              && strcmp(snapshot->rdio_api_url, "https://name:word@rdio.invalid/api") == 0
+              && strcmp(snapshot->rr_app_key, "rr-test-key") == 0 && snapshot->api_token[0] == '\0',
+          "a running session's options snapshot has the API keys its frontends read, never the token");
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+    check(snapshot && opts_secrets_are_empty(snapshot), "a reader's wipe clears its options buffer's API keys");
+    snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && strcmp(snapshot->rr_app_key, "rr-test-key") == 0,
+          "its next read in a running session copies the options again");
+    dsd_app_frontend_runtime_stop();
+    /* A reader that reads no more wipes its own buffer, with no next read. */
+    const dsd_opts* last_read = snapshot;
+    dsd_app_opts_snapshot_consumer_wipe_keys();
+    check(last_read && opts_secrets_are_empty(last_read), "a reader that read its last keeps no API key in its buffer");
+    snapshot = dsd_app_get_latest_opts_snapshot();
+    check(snapshot && opts_secrets_are_empty(snapshot), "a stopped session's options snapshot keeps no API key");
+    check(snapshot && strcmp(snapshot->rr_username, "listener") == 0,
+          "a stopped session's options snapshot keeps the rest");
+    DSD_SECURE_ZERO(opts.rdio_api_key, sizeof opts.rdio_api_key);
+    DSD_SECURE_ZERO(opts.rdio_api_url, sizeof opts.rdio_api_url);
+    DSD_SECURE_ZERO(opts.rr_app_key, sizeof opts.rr_app_key);
+    DSD_SECURE_ZERO(opts.api_token, sizeof opts.api_token);
+    freeState(&state);
 }
 
 /* Known stream bytes: RC4 with a nine-byte zero key after drop 256;
@@ -628,9 +823,227 @@ test_retained_decryption_request(void) {
     freeState(&state);
 }
 
+/* ---- The talkgroup key autoload against every other writer of the working key (issue #834) ---- */
+
+#define AUTOLOAD_TG          123U
+#define AUTOLOAD_TG_KEY      0x33ULL /* also Basic Privacy key 51 */
+#define AUTOLOAD_UNKEYED_TG  456U
+#define AUTOLOAD_OPERATOR_BP 70ULL
+
+/* The talkgroup key autoload holds the working key: the operator's own Basic Privacy key @p operator_k (no Hytera key)
+   was replaced by talkgroup 123's imported key 0x33 on slot 0, as a frame of that talkgroup's call leaves it. */
+static void
+autoload_seed(dsd_opts* opts, dsd_state* state, unsigned long long operator_k) {
+    seed(opts, state);
+    state->K = operator_k;
+    state->basic_key_present = 1U;
+    state->H = state->K1 = state->K2 = state->K3 = state->K4 = 0ULL;
+    state->hytera_key_segments = 0U;
+    const uint32_t cell = keyring_dmr_tg_key_cell(AUTOLOAD_TG);
+    state->rkey_array[cell] = AUTOLOAD_TG_KEY;
+    state->rkey_array_loaded[cell] = 1U;
+    uint32_t from = 0U;
+    check(keyring_dmr_tg_autoload_apply(state, 0U, AUTOLOAD_TG, &from) == 1 && dsd_dmr_tg_autoload_holds(state)
+              && state->H == AUTOLOAD_TG_KEY && state->K == AUTOLOAD_TG_KEY,
+          "the autoload keys talkgroup 123's call");
+}
+
+/* The Basic Privacy and Hytera working key a writer is to leave. */
+typedef struct {
+    unsigned long long k;
+    unsigned long long h;
+    unsigned long long k1;
+    uint8_t segments;
+} autoload_key;
+
+static int
+autoload_key_is(const dsd_state* state, const autoload_key* want) {
+    return state->K == want->k && state->basic_key_present == 1U && state->H == want->h && state->K1 == want->k1
+           && state->hytera_key_segments == want->segments;
+}
+
+/* After @p what wrote the working key, whatever its value, the autoload owns it no more: the key written is @p want, a
+   capture (a scan's saved keys, a profile save) takes it, and a call on a talkgroup with no key leaves it alone. */
+static void
+autoload_released(dsd_state* state, const char* what, const autoload_key* want) {
+    char label[224];
+    DSD_SNPRINTF(label, sizeof label, "%s: the key written is the one expected", what);
+    check(autoload_key_is(state, want), label);
+    DSD_SNPRINTF(label, sizeof label, "%s: the autoload holds the working key no more", what);
+    check(!dsd_dmr_tg_autoload_holds(state), label);
+    dsd_key_set saved = {0};
+    DSD_SNPRINTF(label, sizeof label, "%s: a capture takes the key written", what);
+    check(dsd_key_set_capture(&saved, state) == 0 && saved.scalars.K == want->k && saved.scalars.H == want->h
+              && saved.scalars.K1 == want->k1 && saved.scalars.hytera_key_segments == want->segments,
+          label);
+    dsd_key_set_free(&saved);
+    uint32_t from = 0U;
+    (void)keyring_dmr_tg_autoload_apply(state, 0U, AUTOLOAD_UNKEYED_TG, &from);
+    DSD_SNPRINTF(label, sizeof label, "%s: a call on a talkgroup with no key keeps the key written", what);
+    check(autoload_key_is(state, want), label);
+}
+
+/* The working key the autoload installed for talkgroup 123, as a key set's scalars. */
+static void
+autoload_tg_scalars(dsd_key_set* ks) {
+    DSD_MEMSET(ks, 0, sizeof(*ks));
+    ks->present = 1;
+    ks->scalars.K = AUTOLOAD_TG_KEY;
+    ks->scalars.basic_key_present = 1U;
+    ks->scalars.H = AUTOLOAD_TG_KEY;
+    ks->scalars.K1 = AUTOLOAD_TG_KEY;
+    ks->scalars.hytera_key_segments = 1U;
+}
+
+static void
+autoload_drain(dsd_opts* opts, dsd_state* state, int cmd, const void* payload, size_t size, const char* what) {
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: queued and applied", what);
+    check(dsd_app_command_submit(cmd, payload, size) == DSD_APP_COMMAND_SUBMIT_QUEUED
+              && dsd_app_drain_cmds(opts, state) == 1,
+          label);
+}
+
+/* App-control key commands (the terminal menu, the control API): a Basic Privacy, Hytera or AES key, a typed key. */
+static void
+test_autoload_key_commands(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+
+    autoload_seed(&opts, &state, AUTOLOAD_OPERATOR_BP);
+    const uint32_t basic = (uint32_t)AUTOLOAD_TG_KEY;
+    autoload_drain(&opts, &state, DSD_APP_CMD_KEY_BASIC_SET, &basic, sizeof basic, "Basic Privacy key command");
+    const autoload_key basic_want = {AUTOLOAD_TG_KEY, 0ULL, 0ULL, 0U};
+    autoload_released(&state, "a Basic Privacy key command of the autoload's value", &basic_want);
+    freeState(&state);
+
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+
+    const struct {
+        uint64_t H, K1, K2, K3, K4;
+    } hytera = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 0U, 0U, 0U};
+
+    autoload_drain(&opts, &state, DSD_APP_CMD_KEY_HYTERA_SET, &hytera, sizeof hytera, "Hytera key command");
+    const autoload_key hytera_want = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 1U};
+    autoload_released(&state, "a Hytera key command of the autoload's value", &hytera_want);
+    freeState(&state);
+
+    autoload_seed(&opts, &state, AUTOLOAD_OPERATOR_BP);
+
+    const struct {
+        uint64_t K1, K2, K3, K4;
+    } aes = {1U, 2U, 3U, 4U};
+
+    autoload_drain(&opts, &state, DSD_APP_CMD_KEY_AES_SET, &aes, sizeof aes, "AES key command");
+    const autoload_key aes_want = {AUTOLOAD_OPERATOR_BP, 0ULL, 0ULL, 0U};
+    autoload_released(&state, "an AES key command (the talkgroup's Basic Privacy key does not stay)", &aes_want);
+    freeState(&state);
+
+    /* Basic Privacy 51, talkgroup 123's 0x33 loaded, then HEX 0000000033 typed in overlay mode: every field equals
+       what the autoload installed. */
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+    dsd_app_key_direct_payload typed = {0};
+    typed.key_type = DSD_APP_KEY_TYPE_HEX;
+    DSD_SNPRINTF(typed.value, sizeof typed.value, "%s", "0000000033");
+    autoload_drain(&opts, &state, DSD_APP_CMD_KEY_DIRECT_SET, &typed, sizeof typed, "typed HEX key");
+    DSD_SECURE_ZERO(&typed, sizeof typed);
+    autoload_released(&state, "a typed HEX key of the autoload's value", &hytera_want);
+    freeState(&state);
+}
+
+/* A decryption request (the Qt and Android key profiles): a typed key over the keys, and a key replacing them. */
+static void
+test_autoload_decryption_requests(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    const autoload_key hytera_want = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 1U};
+    for (int replace = 0; replace < 2; replace++) {
+        autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+        dsd_app_decryption_payload p = {0};
+        p.request_id = 2001U + (uint64_t)replace;
+        p.session_generation = dsd_app_command_session_generation();
+        p.fields = DSD_APP_DECRYPTION_MATERIAL;
+        p.scope = DSD_APP_KEY_SCOPE_DEFAULTS;
+        p.source = replace ? DSD_APP_KEY_SOURCE_DIRECT : DSD_APP_KEY_SOURCE_DIRECT_OVERLAY;
+        p.key_type = replace ? DSD_APP_KEY_TYPE_BASIC : DSD_APP_KEY_TYPE_HEX;
+        DSD_SNPRINTF(p.value, sizeof p.value, "%s", replace ? "51" : "0000000033");
+        autoload_drain(&opts, &state, DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof p, "decryption request");
+        DSD_SECURE_ZERO(&p, sizeof p);
+        dsd_app_decryption_result result = {0};
+        check(dsd_app_decryption_result_get(&result) && result.status == DSD_APP_KEY_APPLIED,
+              "the decryption request is applied");
+        const autoload_key basic_want = {AUTOLOAD_TG_KEY, 0ULL, 0ULL, 0U};
+        autoload_released(&state,
+                          replace ? "a decryption request's key replacing the keys"
+                                  : "a decryption request's typed HEX key of the autoload's value",
+                          replace ? &basic_want : &hytera_want);
+        freeState(&state);
+    }
+}
+
+/* Key sets installed (a profile, a scoped key set) and a scan row's keys equal to what the autoload installed; the
+   scan's leave puts the operator's own key back. */
+static void
+test_autoload_key_sets(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    const autoload_key tg_want = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 1U};
+
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+    dsd_key_set ks;
+    autoload_tg_scalars(&ks);
+    dsd_key_set_install(&state, &ks);
+    autoload_released(&state, "a key set installed with the autoload's key", &tg_want);
+    freeState(&state);
+
+    autoload_seed(&opts, &state, AUTOLOAD_OPERATOR_BP);
+    check(dsd_scan_keys_enter(&state, &ks) == 1, "a scan row's keys go in");
+    autoload_released(&state, "a scan row's keys equal to the autoload's", &tg_want);
+    dsd_scan_keys_leave(&state);
+    const autoload_key operator_want = {AUTOLOAD_OPERATOR_BP, 0ULL, 0ULL, 0U};
+    check(autoload_key_is(&state, &operator_want), "the scan's leave puts the operator's own key back");
+    dsd_key_set_free(&ks);
+    freeState(&state);
+
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_HEX, "0000000033", DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
+          "a direct HEX key in overlay mode is applied");
+    autoload_released(&state, "a direct HEX key in overlay mode of the autoload's value", &tg_want);
+    freeState(&state);
+}
+
+/* The CLI's -H (a direct key, overlay mode) and -2 (the TYT Basic key, H alone) on a state the autoload keyed. */
+static void
+test_autoload_cli_keys(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    char name[] = "test";
+
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+    char hex_flag[] = "-H";
+    char hex_value[] = "0000000033";
+    char* hex_argv[] = {name, hex_flag, hex_value, NULL};
+    check(dsd_parse_args(3, hex_argv, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE, "-H parses");
+    const autoload_key hex_want = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 1U};
+    autoload_released(&state, "the CLI's -H of the autoload's value", &hex_want);
+    freeState(&state);
+
+    autoload_seed(&opts, &state, AUTOLOAD_TG_KEY);
+    char tyt_flag[] = "-2";
+    char tyt_value[] = "33";
+    char* tyt_argv[] = {name, tyt_flag, tyt_value, NULL};
+    check(dsd_parse_args(3, tyt_argv, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE, "-2 parses");
+    const autoload_key tyt_want = {AUTOLOAD_TG_KEY, AUTOLOAD_TG_KEY, 0ULL, 0U};
+    autoload_released(&state, "the CLI's -2 of the autoload's value (no talkgroup Hytera words stay)", &tyt_want);
+    freeState(&state);
+}
+
 int
 main(void) {
     bootstrap_snapshot_secrets();
+    stopped_session_snapshot_keeps_no_key();
+    snapshot_wipes_nxdn_key_register();
+    stopped_session_opts_snapshot_keeps_no_api_key();
     zero_key_voice();
     presence_follows_material();
     test_tetra_air_keys();
@@ -753,6 +1166,10 @@ main(void) {
         }
     }
     test_retained_decryption_request();
+    test_autoload_key_commands();
+    test_autoload_decryption_requests();
+    test_autoload_key_sets();
+    test_autoload_cli_keys();
     test_m17_key_widths();
     return failures ? 1 : 0;
 }

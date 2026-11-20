@@ -59,10 +59,38 @@
 
 enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_ENGINE_SCAN_LANDING_TARGET = 2 };
 
+/* A landing, or a stay's beginning, starts the -Y content window afresh (issue #834): checked content, an open verdict
+   or an unchecked frame noted before it, read at a frame boundary or not (with -Y off none reads them), is not the new
+   stay's, and neither counts for it nor delays its step. */
+static inline void
+dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
+    state->scan_y_content_seen = state->scan_y_content_seq;
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+    state->scan_y_content_m = -1.0;
+    state->scan_y_unchecked_m = -1.0;
+}
+
+/** A receiver's stay with no -Y row landing in force begins (issue #834): the run's start, a -Y scan's start, a
+ * landing forgotten. The call count now is the baseline its no-check status is judged against
+ * (dsd_state::scan_y_stay_call_seq): shown until a call is heard on the stay. Its frame evidence starts afresh too. */
+static inline void
+dsd_engine_scan_y_stay_begin(dsd_state* state) {
+    if (state) {
+        state->scan_y_stay_call_seq = state->scan_y_call_seq;
+        dsd_engine_scan_landing_forget_y_notes(state);
+    }
+}
+
 /** No landing is in force. A state with no scan owner has none to forget, and gets no owner made for it. The landing
- * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's. */
+ * epoch moves (issue #834): a quiet check of the landing forgotten is no longer the visit's, and no verdict a frame of
+ * it left pending is waited for. The stay that follows starts its own call baseline (dsd_engine_scan_y_stay_begin()).
+ */
 static inline void
 dsd_engine_scan_landing_forget(dsd_state* state) {
+    dsd_engine_scan_y_stay_begin(state);
     if (!state || !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN)) {
         return;
     }
@@ -70,23 +98,27 @@ dsd_engine_scan_landing_forget(dsd_state* state) {
     if (owner) {
         owner->landing = (dsd_engine_scan_landing){0};
         owner->landing_epoch++;
+        dsd_engine_scan_owner_pending_clear(owner);
     }
 }
 
 /** A scan row or target tune is about to be requested (issue #834): the RTL stream output generation now, before the
  * retune is issued, goes with the landing it notes (dsd_engine_scan_landing::generation_before_tune), and so do the
- * sync sequence and the decode time, the visit's activity baseline: a sync the new channel returns before its landing
- * is noted (an asynchronous tune lands between two passes) still counts. A sync from the old channel's tail counts
- * too, which only keeps the channel. The tune sequence moves, and goes with the landing too: skip-silent applies only
- * to a visit tuned after it was turned on. */
+ * activity sequence and the decode time, the visit's activity baseline: checked content the new channel carries before
+ * its landing is noted (an asynchronous tune lands between two passes) still counts. Content from the old channel's
+ * tail counts too, which only keeps the channel. A verdict the old channel's frame left pending is dropped: this is
+ * another visit. The tune sequence moves, and goes with the landing too: skip-silent applies only to a visit tuned
+ * after it was turned on. */
 static inline void
 dsd_engine_scan_landing_note_tune(dsd_state* state) {
     dsd_engine_scan_owner* owner = state ? dsd_engine_scan_owner_ensure(state) : NULL;
     if (owner) {
         owner->tune_seq++;
         owner->tune_generation_before = dsd_rtl_stream_metrics_hook_stream_generation();
-        owner->tune_sync_seq = owner->sync_seq;
+        owner->tune_activity_seq = owner->activity_seq;
         owner->tune_decode_m = dsd_decode_now_mono_s();
+        /* Another visit: a verdict the last channel's frame left pending is not this one's. */
+        dsd_engine_scan_owner_pending_clear(owner);
     }
 }
 
@@ -97,10 +129,22 @@ dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_la
     landing.epoch = ++owner->landing_epoch;
     landing.generation_before_tune = owner->tune_generation_before;
     landing.landed_realtime_ms = dsd_realtime_mono_ms();
-    landing.sync_seq = owner->tune_sync_seq;
+    landing.activity_seq = owner->tune_activity_seq;
     landing.tune_decode_m = owner->tune_decode_m;
     landing.tune_seq = owner->tune_seq;
     owner->landing = landing;
+}
+
+/* Until when the -Y row's frames hold it past its hangtime anchor (issue #834), on the decode-mono clock: -t
+   (@p hangtime_s) after its last checked content or its last frame of a protocol with no content check, or the end of
+   its latest open verdict's hold, whichever is later (engine.c's step reads the same: live_scanner_y_frames_hold_row()).
+   Before either is noted, a time long past. */
+static inline double
+dsd_engine_scan_y_frames_hold_until_m(const dsd_state* state, double hangtime_s) {
+    const double last_m =
+        state->scan_y_content_m > state->scan_y_unchecked_m ? state->scan_y_content_m : state->scan_y_unchecked_m;
+    const double until_m = last_m + hangtime_s;
+    return state->scan_y_partial_until_m > until_m ? state->scan_y_partial_until_m : until_m;
 }
 
 /** The -Y scan committed @p row, on @p freq_hz, after a tune that landed, from the trunk-tuning request @p request (0
@@ -111,6 +155,7 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
         dsd_engine_scan_landing_forget(state);
         return;
     }
+    dsd_engine_scan_landing_forget_y_notes(state);
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
     if (owner) {
         const dsd_engine_scan_landing landing = {.hz = (uint32_t)freq_hz,
@@ -119,7 +164,8 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
                                                  .map_seq = state->trunk_chan_map_seq,
                                                  .list_rev = state->lcn_list_rev,
                                                  .index = row,
-                                                 .tune_request = request};
+                                                 .tune_request = request,
+                                                 .y_call_seq = state->scan_y_call_seq};
         dsd_engine_scan_landing_install(owner, landing);
     }
 }

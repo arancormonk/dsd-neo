@@ -373,6 +373,9 @@ static DSD_THREAD_RETURN_TYPE
     rr_panel_shutdown();
     ui_overlays_shutdown();
     ui_close_curses_if_opened(curses_opened);
+    /* This thread reads the snapshots no more: the key copies of its buffers go now, not at a next read. */
+    dsd_app_snapshot_consumer_wipe_keys();
+    dsd_app_opts_snapshot_consumer_wipe_keys();
 
     DSD_THREAD_RETURN;
 }

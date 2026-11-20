@@ -34,6 +34,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
 
 #include <math.h>
@@ -44,6 +45,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "scan_quiet.h"
 
 static int g_failures = 0;
 
@@ -204,6 +206,17 @@ dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) 
     return (opts && state && state->analog_rx.gate_rejected_ended && dsd_analog_tone_detection_active(opts)) ? 1 : 0;
 }
 
+/* The clock the tap sets the publication's stale deadline on: the real one unless a case sets a test clock, as a test
+   build of the tap may install (0 = the real clock). */
+static uint64_t g_tap_clock_ms = 0U;
+
+/* As dsd_analog_rx_stale_now() reads it, on the tap's clock. */
+int
+dsd_analog_rx_stale_now(const dsd_state* state) {
+    const uint64_t now = g_tap_clock_ms != 0U ? g_tap_clock_ms : dsd_realtime_mono_ms();
+    return state && state->analog_rx.stale_after_ms != 0U && now > state->analog_rx.stale_after_ms;
+}
+
 int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {
     (void)state;
@@ -235,6 +248,29 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
 int
 dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
     return dsd_state_trunk_lcn_user_list_present(opts, state) && dsd_state_trunk_lcn_usable_count(state) >= 2;
+}
+
+/* From engine/channel_scan.c and engine/scan_quiet.c, which this fixture does not link: skip-silent stays off here, so
+   the -Y timing writer never asks for the quiet check's status (issue #834). */
+int
+dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
+    (void)state;
+    return -1;
+}
+
+int
+scan_quiet_stay_shows_status(uint8_t stay_reason) {
+    (void)stay_reason;
+    return 0;
+}
+
+void
+scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_visit_ref* ref,
+                       dsd_scan_timing_publication* report) {
+    (void)opts;
+    (void)state;
+    (void)ref;
+    (void)report;
 }
 
 typedef struct {
@@ -319,7 +355,7 @@ open_voice_epoch_slot(gate_fixture* fix, uint8_t slot, double t, double span, ds
         DSD_MEMSET(&update, 0, sizeof(update));
         update.classification = crypto;
         update.observed_m = t;
-        (void)dsd_call_state_update_crypto(fix->state, slot, &update);
+        (void)dsd_call_state_update_crypto(fix->state, slot, DSD_SYNC_P25P1_NEG, &update);
     }
     (void)dsd_call_state_update_media(fix->state, slot, 1, t);
     (void)dsd_call_state_update_media(fix->state, slot, 1, t + span);
@@ -517,7 +553,7 @@ test_non_media_updates_do_not_extend_hold(void) {
     DSD_MEMSET(&crypto, 0, sizeof(crypto));
     crypto.classification = DSD_CALL_CRYPTO_CLEAR;
     crypto.observed_m = 102.0;
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_P25P1_NEG, &crypto);
     (void)dsd_call_state_end_ex(fix.state, 0, 103.0, DSD_CALL_END_TERMINATOR);
     const dsd_scan_voice_probe_result media = probe_voice(&fix);
     CHECK("ended call is not active", media.active_media_m < 0.0);
@@ -1762,6 +1798,17 @@ test_analog_carrier_probe(void) {
     CHECK("stale publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
     fix.state->analog_rx.stale_after_ms = UINT64_MAX;
     CHECK("fresh publication", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    /* The deadline is read on the clock the tap set it on, which a test build may replace: a tap clock behind the real
+       one leaves a deadline the real clock has passed fresh, and one ahead of it makes a deadline still ahead of the
+       real clock stale. */
+    const uint64_t real_ms = dsd_realtime_mono_ms();
+    g_tap_clock_ms = 1000U;
+    fix.state->analog_rx.stale_after_ms = 2000U;
+    CHECK("fresh on the tap's clock behind the real one", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 1);
+    g_tap_clock_ms = real_ms + 7200000U;
+    fix.state->analog_rx.stale_after_ms = real_ms + 3600000U;
+    CHECK("stale on the tap's clock ahead of the real one", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
+    g_tap_clock_ms = 0U;
     fix.state->analog_rx.stale_after_ms = 0U;
     fix.opts->analog_only = 0;
     CHECK("digital row", dsd_scan_analog_carrier_open(fix.opts, fix.state) == 0);
@@ -1923,7 +1970,7 @@ test_receive_admission_bounds_acquisition(void) {
     };
     (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 101.0);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 101.25);
     fix.state->currentslot = 1;
@@ -1970,7 +2017,7 @@ test_receive_admission_bounds_acquisition(void) {
     dsd_call_observation voice2 = obs;
     voice2.observed_m = 120.0;
     (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_crypto(fix.state, 0, &crypto);
+    (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
     (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
     fix.state->dmr_color_code = 16;

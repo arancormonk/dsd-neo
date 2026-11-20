@@ -92,6 +92,30 @@ typedef struct dsd_rdio_upload_job {
     struct dsd_rdio_upload_job* next;
 } dsd_rdio_upload_job;
 
+/* Seen by every upload job release (dsd_rdio_upload_job_free()), after the job's API key and URL copies are wiped and
+ * before it is freed; NULL but in tests (rdio_export_internal.h). */
+static dsd_rdio_upload_release_observer g_rdio_upload_release_observer = NULL;
+
+void
+dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer) {
+    g_rdio_upload_release_observer = observer;
+}
+
+/* An upload job's end, sent, dropped or abandoned at the stop: its copies of the API key and URL (a URL can carry
+ * credentials) are wiped before the memory goes back. */
+static void
+dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
+    if (!job) {
+        return;
+    }
+    DSD_SECURE_ZERO(&job->api, sizeof job->api);
+    if (g_rdio_upload_release_observer) {
+        g_rdio_upload_release_observer(job->api.api_key, sizeof job->api.api_key, job->api.api_url,
+                                       sizeof job->api.api_url);
+    }
+    free(job);
+}
+
 /* The queue's mutex lives for the whole process, unlike the worker and its condition variable: the recording store
  * asks dsd_rdio_upload_holds() from its own thread at any time, a shutdown included. 0 = not initialized,
  * 1 = initializing, 2 = ready, 3 = its init failed, for good: no worker starts and nothing is held. */
@@ -196,7 +220,7 @@ static DSD_THREAD_RETURN_TYPE
         dsd_mutex_lock(&g_rdio_upload_mutex);
         g_rdio_upload_in_flight = NULL;
         dsd_mutex_unlock(&g_rdio_upload_mutex);
-        free(job);
+        dsd_rdio_upload_job_free(job);
     }
 
     DSD_THREAD_RETURN;
@@ -253,11 +277,20 @@ dsd_rdio_upload_worker_init(void) {
     }
 }
 
+/* The jobs still queued keep their place, but no copy of the API key or URL: for a worker that may still run after a
+ * failed join, which pops a job only under the queue's mutex (held here) and then finds nothing to upload with. */
+static void
+dsd_rdio_wipe_queued_secrets_locked(void) {
+    for (dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL; job = job->next) {
+        DSD_SECURE_ZERO(&job->api, sizeof job->api);
+    }
+}
+
 static void
 dsd_rdio_clear_upload_queue_locked(void) {
     while (g_rdio_upload_head != NULL) {
         dsd_rdio_upload_job* next = g_rdio_upload_head->next;
-        free(g_rdio_upload_head);
+        dsd_rdio_upload_job_free(g_rdio_upload_head);
         g_rdio_upload_head = next;
     }
     g_rdio_upload_tail = NULL;
@@ -300,7 +333,15 @@ dsd_rdio_upload_shutdown(void) {
     dsd_mutex_unlock(&g_rdio_upload_mutex);
 
     if (dsd_thread_join(g_rdio_upload_worker) != 0) {
+        /* Not expected: the handle comes from the create that set the state to 2, only the shutdown that moved it to 4
+           joins, and the worker never joins itself. If it happens the worker may still be running, so nothing it can
+           reach unlocked is touched: the job in flight and the worker's own stack copy of the endpoint keep the key and
+           URL until it ends them, and the queued jobs are not freed. Only their API copies are wiped, under the mutex
+           the worker pops them under. */
         LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
+        dsd_mutex_lock(&g_rdio_upload_mutex);
+        dsd_rdio_wipe_queued_secrets_locked();
+        dsd_mutex_unlock(&g_rdio_upload_mutex);
         atomic_store(&g_rdio_upload_state, 3);
         atomic_store(&g_rdio_upload_cancel, 0);
         return;
@@ -413,7 +454,7 @@ dsd_rdio_build_upload_job(const dsd_rdio_api_config* api, const char* wav_path, 
     job->remove_meta_on_success = remove_meta_on_success ? 1 : 0;
     job->remove_wav_on_success = remove_wav_on_success ? 1 : 0;
     if (dsd_rdio_copy_upload_paths(job, wav_path, meta_path) != 0) {
-        free(job);
+        dsd_rdio_upload_job_free(job);
         return -1;
     }
     *out_job = job;
@@ -450,6 +491,25 @@ dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     return 0;
 }
 
+/* Queue an upload of @p wav_path with the checked @p api: 0 when it was queued. */
+static int
+dsd_rdio_enqueue_api_job(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path,
+                         int remove_meta_on_success, int remove_wav_on_success) {
+    if (dsd_rdio_upload_worker_init() != 0) {
+        LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
+        return -1;
+    }
+    dsd_rdio_upload_job* job = NULL;
+    if (dsd_rdio_build_upload_job(api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success, &job) != 0) {
+        return -1;
+    }
+    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
+        dsd_rdio_upload_job_free(job);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                             int remove_meta_on_success, int remove_wav_on_success) {
@@ -459,25 +519,13 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav
 
     dsd_rdio_api_config api;
     dsd_rdio_copy_api_config(&api, opts, system_id);
-    if (dsd_rdio_validate_api_config(&api) != 0) {
-        return -1;
+    int rc = -1;
+    if (dsd_rdio_validate_api_config(&api) == 0) {
+        rc = dsd_rdio_enqueue_api_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success);
     }
-
-    if (dsd_rdio_upload_worker_init() != 0) {
-        LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
-        return -1;
-    }
-
-    dsd_rdio_upload_job* job = NULL;
-    if (dsd_rdio_build_upload_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success, &job)
-        != 0) {
-        return -1;
-    }
-    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-        free(job);
-        return -1;
-    }
-    return 0;
+    /* The job holds its own copy now: this one goes. */
+    DSD_SECURE_ZERO(&api, sizeof api);
+    return rc;
 }
 #else
 void
@@ -494,6 +542,11 @@ dsd_rdio_upload_cancel(void) {}
 
 void
 dsd_rdio_upload_cancel_reset(void) {}
+
+void
+dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer) {
+    (void)observer;
+}
 #endif
 
 static int
@@ -1094,22 +1147,10 @@ dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
     return 1;
 }
 
+/* The upload's attempts to @p endpoint (built from the API URL), as dsd_rdio_upload_trunk_recorder() returns them. */
 static int
-dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
-    if (!api || !wav_path || !meta_path) {
-        return -1;
-    }
-
-    if (dsd_rdio_validate_api_config(api) != 0) {
-        return -1;
-    }
-
-    char endpoint[1024];
-    if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
-        LOG_ERROR("Rdio API upload: endpoint too long\n");
-        return -1;
-    }
-
+dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
+                         const char* meta_path) {
     int timeout_ms = 0;
     int attempts = 0;
     if (dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts) != 0) {
@@ -1147,6 +1188,28 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
     }
 
     return -1;
+}
+
+static int
+dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
+    if (!api || !wav_path || !meta_path) {
+        return -1;
+    }
+
+    if (dsd_rdio_validate_api_config(api) != 0) {
+        return -1;
+    }
+
+    /* Built from the API URL, which can carry credentials: wiped on every exit. */
+    char endpoint[1024];
+    int rc = -1;
+    if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
+        LOG_ERROR("Rdio API upload: endpoint too long\n");
+    } else {
+        rc = dsd_rdio_upload_attempts(api, endpoint, wav_path, meta_path);
+    }
+    DSD_SECURE_ZERO(endpoint, sizeof endpoint);
+    return rc;
 }
 #endif
 

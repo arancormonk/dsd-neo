@@ -10,8 +10,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
-#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/key_presence.h"
@@ -92,8 +93,8 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
 // The data path's own ALG numbering, translated locally rather than normalized into the voice
 // space: data-2 (DES) and voice-0x02 (Hytera Enhanced) already collide there. Derived from what
 // dmr_block_crypto_decrypt_payload() actually consumes -- algs 1 and 2 require ctx->rkey, alg 4
-// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads state->K and the BPK table
-// instead of the keyring, and alg 7 (VTX STD) has no decrypt branch at all.
+// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads ctx->bp_key (dmr_block_bp_key()) and
+// the BPK table, and alg 7 (VTX STD) has no decrypt branch at all.
 static dsd_key_material_need
 dmr_block_alg_key_need(int alg) {
     switch (alg) {
@@ -103,6 +104,20 @@ dmr_block_alg_key_need(int alg) {
         case 5: /* AES-256 */ return DSD_KEY_NEED_AES_4;
         default: return DSD_KEY_NEED_NONE;
     }
+}
+
+/* The Basic Privacy key a packet of lane @p slot decrypts with. Where the talkgroup key autoload keys the voice (no
+   forced key), it is the key the packet's own destination leaves (keyring_dmr_tg_autoload_basic_key(): that
+   destination's key, else the key the autoload replaced, the operator's), as for a call's LC (dmr_flco.c), never the
+   shared working key, which the last voice frame of either slot keyed: the other slot's call on a talkgroup with no
+   key gives the operator's key back there. A forced key keys every packet, as it keys every frame. Only the index is
+   read: no other key word is copied. */
+static unsigned long long
+dmr_block_bp_key(const dsd_state* state, uint8_t slot) {
+    if (state->M != 0) {
+        return state->K;
+    }
+    return keyring_dmr_tg_autoload_basic_key(state, slot, (uint32_t)state->dmr_lrrp_target[slot & 1U]);
 }
 
 void
@@ -143,6 +158,7 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, uint16_t receive
                                          dmr_block_alg_key_need(ctx->alg), ctx->signaled_kid, &ctx->mapped);
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
     ctx->rkey_present = keyring_kid_scalar_present(state, ctx->kid);
+    ctx->bp_key = ctx->alg == 0 ? dmr_block_bp_key(state, id_slot) : 0ULL; // ALG 0: Moto BP alone reads it
 
     ctx->aes_key_loaded =
         dmr_block_load_aes_key(state, ctx->kid, dsd_key_need_aes_width(dmr_block_alg_key_need(ctx->alg)), ctx->aes_key);
@@ -224,14 +240,20 @@ dmr_block_crypto_apply_stream(dsd_state* state, uint8_t slot, const dmr_block_cr
     }
 }
 
+/* The packet's AES IV, expanded from its header's MI (@p ctx) into @p maes alone, and printed as a PI header's is: the
+   slot's voice IV, MI and frame counter (aes_iv, payload_mi, DMRvcL) are its voice's, which a packet heard between
+   superframes of the slot's AES call must not change. */
 static void
-dmr_block_crypto_prepare_aes_iv(dsd_state* state, uint8_t maes[16]) {
-    LFSR128d(state);
-    if (state->currentslot == 0) {
-        DSD_MEMCPY(maes, state->aes_iv, 16);
-    } else {
-        DSD_MEMCPY(maes, state->aes_ivR, 16);
+dmr_block_crypto_prepare_aes_iv(const dsd_state* state, const dmr_block_crypto_ctx* ctx, uint8_t maes[16]) {
+    (void)dmr_aes_expand_iv((uint32_t)ctx->mi, maes);
+    const int slot = state->currentslot == 1 ? 1 : 0;
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const int keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    DSD_FPRINTF(stderr, "%s Slot %d DMR PI C- ALG ID: %02X; KEY ID: %02X; MI(128): ", KYEL, slot + 1, algid, keyid);
+    for (int x = 0; x < 16; x++) {
+        DSD_FPRINTF(stderr, "%02X", maes[x]);
     }
+    DSD_FPRINTF(stderr, "%s;%s", KNRM, algid == 0x24 ? " AES-128;" : " AES-256;");
 }
 
 static void
@@ -253,7 +275,7 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
     DSD_MEMSET(stream, 0, sizeof(stream));
     DSD_MEMSET(maes, 0, sizeof(maes));
     DSD_FPRINTF(stderr, "\n");
-    dmr_block_crypto_prepare_aes_iv(state, maes);
+    dmr_block_crypto_prepare_aes_iv(state, ctx, maes);
     const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
     aes_ofb_keystream_output(maes, ctx->aes_key, stream, key_size, nblocks);
     dmr_block_crypto_apply_stream(state, slot, ctx, stream, DMR_AES_OFB_DISCARD_BYTES);
@@ -284,13 +306,13 @@ dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, ui
 
 static uint8_t
 dmr_block_crypto_apply_bp(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx, int show_keys) {
-    if (ctx->alg != 0 || state->K == 0 || state->K > 0xFFULL) {
+    if (ctx->alg != 0 || ctx->bp_key == 0 || ctx->bp_key > 0xFFULL) {
         return 0;
     }
 
-    const uint16_t bp_key = BPK[state->K];
+    const uint16_t bp_key = BPK[ctx->bp_key];
     char key_text[16];
-    DSD_FPRINTF(stderr, " Key: %s;", dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->K, 0U));
+    DSD_FPRINTF(stderr, " Key: %s;", dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, ctx->bp_key, 0U));
     if (bp_key == 0U) {
         return 0;
     }

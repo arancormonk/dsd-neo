@@ -52,10 +52,11 @@ int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_
  * receive-profile change, a stream pause -- and while a retune is unresolved, so a block that straddles a
  * retune never counts for the new channel (dsd_analog_rx_carrier_open_now()). So it holds only
  * while the analog monitor runs, FM or AM (dsd_analog_monitor_tap_active(), issue #524), never on a
- * publication past its stale_after_ms, never while a digital carrier is flagged (dsd_state::carrier) and
- * never while a trunking state machine owns the channel. Whether audio is played has no part in it: -o null
- * or a muted UI still holds the row. Under the CTCSS/DCS receive policy (issue #527) it is only the traffic the policy
- * passes (dsd_analog_tone_gate_passes(): no policy in force, or ALLOWED), the one rule the monitor's -Y hangtime stamp
+ * publication past its stale_after_ms (dsd_analog_rx_stale_now(), on the clock the tap set it on), never while a
+ * digital carrier is flagged (dsd_state::carrier) and never while a trunking state machine owns the channel. Whether
+ * audio is played has no part in it: -o null or a muted UI still holds the row. Under the CTCSS/DCS receive policy
+ * (issue #527) it is only the traffic the policy passes (dsd_analog_tone_gate_passes(): no policy in force, or
+ * ALLOWED), the one rule the monitor's -Y hangtime stamp
  * follows too: traffic it rejected holds nothing, and traffic it is still checking is no activity either -- it holds
  * the row while it lasts through its verdict (dsd_scan_analog_tone_gate()), but restarts no hold and leaves no tail.
  * Read-only and null-safe.
