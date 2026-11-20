@@ -3767,7 +3767,7 @@ typedef enum {
     TETRA_FIRST_DMO, /* direct-mode speech heard before the DM-SETUP that names its call */
 } tetra_first_kind;
 
-#define TETRA_FIRST_BURST_FRAMES 480 /* one full slot: two 240-sample speech frames at 8 kHz */
+#define TETRA_FIRST_BURST_FRAMES 480LL /* one full slot: two 240-sample speech frames at 8 kHz */
 
 /* Not trunking, the TDMA clock on timeslot 1, clear speech: what the speech path plays it also records. */
 static void

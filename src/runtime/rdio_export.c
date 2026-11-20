@@ -854,7 +854,7 @@ dsd_rdio_leftover_min_age_s(const dsd_rdio_api_config* api) {
     (void)dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts);
     const uint64_t job_ms = (uint64_t)attempts * ((uint64_t)timeout_ms + DSD_RDIO_RETRY_BACKOFF_MS);
     const uint64_t lifetime_s = (job_ms * (DSD_RDIO_UPLOAD_QUEUE_MAX + 1U) + 999U) / 1000U;
-    const uint64_t day_s = 24U * 60U * 60U;
+    const uint64_t day_s = UINT64_C(24) * 60U * 60U;
     return (int64_t)(lifetime_s > day_s ? lifetime_s : day_s);
 }
 

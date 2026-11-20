@@ -2223,41 +2223,41 @@ static int
 test_call_talkgroup_number(void) {
     static const struct {
         const char* label;
-        int systype;
-        uint8_t category;
-        uint32_t target;
         int64_t freq_hz;
+        int systype;
+        uint32_t target;
         int allow;
         int option;
         uint32_t want;
+        uint8_t category;
     } cases[] = {
-        {"decoded target", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 452312500, 1, 9000, 77U},
-        {"decoded target, fallback off", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_DATA, 77U, 0, 0, 0, 77U},
-        {"target above the signed range", DSD_SYNC_M17_STR_POS, DSD_EVENT_CATEGORY_VOICE, 0xFFFFFFF0U, 0, 1, 0,
-         0xFFFFFFF0U},
-        {"kHz", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 0, 452312U},
-        {"kHz over the option", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312999, 1, 9000, 452312U},
-        {"no frequency: the option", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 9000U},
-        {"no frequency, no option", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 0, 0U},
-        {"999 Hz: the option", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 999, 1, 9000, 9000U},
-        {"999 Hz, no option", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 999, 1, 0, 0U},
-        {"1000 Hz", DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1000, 1, 9000, 1U},
-        {"kHz at the signed limit", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(2147483647999), 1, 0,
-         2147483647U},
-        {"kHz over the signed limit", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(2147483648000), 1,
-         9000, 9000U},
-        {"negative frequency", DSD_SYNC_DPMR_FS1_POS, DSD_EVENT_CATEGORY_VOICE, 0U, -452312500, 1, 0, 0U},
-        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 0, 9000, 0U},
-        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 452312500, 1, 9000, 0U},
-        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 452312500, 1, 9000, 0U},
-        {"no protocol word: no kHz", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 9000, 0U},
-        {"no sync: no option", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 0U},
-        {"unknown sync type", 45, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 9000, 0U},
-        {"no protocol word, numbered", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 77U, 452312500, 1, 9000, 77U},
-        {"analog kHz", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 154437500, 0, 9000, 154437U},
-        {"analog kHz past the signed range", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(3000000000000), 1,
-         9000, 3000000000U},
-        {"analog never takes the digital option", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 0U},
+        {"decoded target", 452312500, DSD_SYNC_DMR_BS_VOICE_POS, 77U, 1, 9000, 77U, DSD_EVENT_CATEGORY_VOICE},
+        {"decoded target, fallback off", 0, DSD_SYNC_DMR_BS_VOICE_POS, 77U, 0, 0, 77U, DSD_EVENT_CATEGORY_DATA},
+        {"target above the signed range", 0, DSD_SYNC_M17_STR_POS, 0xFFFFFFF0U, 1, 0, 0xFFFFFFF0U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"kHz", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 0, 452312U, DSD_EVENT_CATEGORY_VOICE},
+        {"kHz over the option", 452312999, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 452312U, DSD_EVENT_CATEGORY_VOICE},
+        {"no frequency: the option", 0, DSD_SYNC_YSF_POS, 0U, 1, 9000, 9000U, DSD_EVENT_CATEGORY_VOICE},
+        {"no frequency, no option", 0, DSD_SYNC_YSF_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"999 Hz: the option", 999, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 9000, 9000U, DSD_EVENT_CATEGORY_VOICE},
+        {"999 Hz, no option", 999, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"1000 Hz", 1000, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 9000, 1U, DSD_EVENT_CATEGORY_VOICE},
+        {"kHz at the signed limit", INT64_C(2147483647999), DSD_SYNC_DPMR_FS1_POS, 0U, 1, 0, 2147483647U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"kHz over the signed limit", INT64_C(2147483648000), DSD_SYNC_DPMR_FS1_POS, 0U, 1, 9000, 9000U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"negative frequency", -452312500, DSD_SYNC_DPMR_FS1_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"fallback off", 452312500, DSD_SYNC_NXDN_POS, 0U, 0, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"data row", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_DATA},
+        {"cleared row", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_UNKNOWN},
+        {"no protocol word: no kHz", 452312500, DSD_SYNC_DIGITAL, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"no sync: no option", 0, DSD_SYNC_NONE, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"unknown sync type", 452312500, 45, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"no protocol word, numbered", 452312500, DSD_SYNC_DIGITAL, 77U, 1, 9000, 77U, DSD_EVENT_CATEGORY_VOICE},
+        {"analog kHz", 154437500, DSD_SYNC_ANALOG, 0U, 0, 9000, 154437U, DSD_EVENT_CATEGORY_VOICE},
+        {"analog kHz past the signed range", INT64_C(3000000000000), DSD_SYNC_ANALOG, 0U, 1, 9000, 3000000000U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"analog never takes the digital option", 0, DSD_SYNC_ANALOG, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
     };
 
     static Event_History_I hist;
@@ -4282,7 +4282,7 @@ test_both_mode_refused_upload_leaves_no_private_inputs(void) {
 }
 
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
-#define RDIO_TEST_HOUR_S (60 * 60)
+#define RDIO_TEST_HOUR_S (60L * 60L)
 
 // A one-byte file @p leaf in @p dir, last modified @p age_s seconds ago by the wall clock.
 static int
