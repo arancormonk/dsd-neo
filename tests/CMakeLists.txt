@@ -24061,9 +24061,9 @@ if(DSD_HAS_RADIO)
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_synth.iq.json"
             "-DEXPECTED=FN: [1-8]/8 "
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG"
-            "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=YSF 851.3750 MHz,freq=851375000,system=7,short_name=YSF,srcList=[],emergency=false,encrypted=false"
+            "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=YSF 851.3750 MHz,freq=851375000,system=48,short_name=YSF,srcList=[],emergency=false,encrypted=false"
             "-DAUDIO_TALKGROUP=4242"
-            "-DAUDIO_SIDECAR=talkgroup_tag=YSF,freq=0,system=7,short_name=YSF,srcList=[]"
+            "-DAUDIO_SIDECAR=talkgroup_tag=YSF,freq=0,system=48,short_name=YSF,srcList=[]"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
     )
     set_tests_properties(

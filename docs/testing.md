@@ -2257,15 +2257,15 @@ P25 Phase 1 decoders reach the capture writer.
 
 `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (CTest label `iq-decode`, radio builds) runs the real binary three times
 through `tests/rdio_dirwatch_check.cmake`, each with `-P -7 <dir>/calls --wav-journal <dir>/journal.jsonl --rdio-mode
-dirwatch --rdio-system-id 7`, on the synthetic YSF call `ysf_synth` (851.375 MHz), which names no target or source.
+dirwatch --rdio-system-id 48`, on the synthetic YSF call `ysf_synth` (851.375 MHz), which names no target or source.
 Every leg must exit 0, print the decode regex, report no sanitizer error, and leave at least one recording, no
 `TEMP_` file, and one journal `publish` line a recording, not failed, naming a file in the folder, with an empty
 `target`: the number is the export's alone. Then it reads the finalized WAV/JSON pairs:
 
 | Leg | Input | What each recording's sidecar must hold |
 | --- | --- | --- |
-| `rf` | `--iq-replay ysf_synth.iq.json -6 raw.wav` (the replay's discriminator audio is saved for the next legs) | talkgroup `851375` (the frequency in kHz), tag `YSF 851.3750 MHz`, `freq` 851375000 and a `freqList` naming it, system 7, `short_name` `YSF`, an empty `srcList`, not emergency, not encrypted |
-| `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `YSF` (the protocol alone), `freq` 0 and no `freqList`, system 7, `short_name` `YSF`, an empty `srcList` |
+| `rf` | `--iq-replay ysf_synth.iq.json -6 raw.wav` (the replay's discriminator audio is saved for the next legs) | talkgroup `851375` (the frequency in kHz), tag `YSF 851.3750 MHz`, `freq` 851375000 and a `freqList` naming it, system 48, `short_name` `YSF`, an empty `srcList`, not emergency, not encrypted |
+| `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `YSF` (the protocol alone), `freq` 0 and no `freqList`, system 48, `short_name` `YSF`, an empty `srcList` |
 | `audio_off` | `-i raw.wav` with no `--rdio-unknown-talkgroup` | no sidecar at all; the "not exported" line logged exactly once, and no "skipped" or "export failed" line |
 
 The canonical paths are pinned in unit tests through the real observation, render and close: `CORE_CALL_ALERT_HISTORY`

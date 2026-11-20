@@ -2,7 +2,7 @@
 #
 # Runs one DECODE_*_RDIO_DIRWATCH_UNKNOWN_TG case (issue #888): a digital call whose voice rows carry no talkgroup
 # number, exported to an rdio-scanner DirWatch folder. Three legs of dsd-neo, each with -P -7 <calls> --wav-journal
-# <journal> --rdio-mode dirwatch --rdio-system-id 7:
+# <journal> --rdio-mode dirwatch --rdio-system-id 48:
 #
 #   rf        replays the I/Q fixture, which knows its frequency, and saves its discriminator audio (-6 raw.wav). Every
 #             recording has a sidecar holding RF_SIDECAR, and a freqList that names the sidecar's freq.
@@ -57,7 +57,7 @@ function(_rdio_leg leg out_wavs out_log)
         COMMAND
             "${DSD_BIN}" --frontend none ${_mode_args} ${ARGN} -o null -P -7
             "${_calls}" --wav-journal "${_journal}" --rdio-mode dirwatch
-            --rdio-system-id 7
+            --rdio-system-id 48
         WORKING_DIRECTORY "${_dir}"
         RESULT_VARIABLE _rc
         OUTPUT_VARIABLE _out
