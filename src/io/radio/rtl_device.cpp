@@ -1644,6 +1644,30 @@ soapy_handle_no_space(struct input_ring_state* ring, size_t need, int apply_rot,
     }
 }
 
+/* soapy_handle_no_space() for a read taken as of @p generation that the ring has no room for: a purge since dropped the
+ * read anyway, so it is counted and stepped over without a gap mark, as soapy_finalize_generation() does for one the
+ * ring took. The check holds generation_m, as a purge request does. */
+static inline void
+soapy_handle_no_space_as_of(struct input_ring_state* ring, size_t need, int apply_rot, int* phase,
+                            uint64_t generation) {
+    if (!ring) {
+        return;
+    }
+    int current = 0;
+    {
+        std::lock_guard<std::mutex> lock(ring->generation_m);
+        current = input_ring_discard_generation_matches(ring, generation);
+    }
+    if (current) {
+        soapy_handle_no_space(ring, need, apply_rot, phase);
+        return;
+    }
+    rtl_accumulate_ring_drops(ring, need);
+    if (apply_rot && phase) {
+        *phase = rtl_capture_phase_advance_pairs(*phase, need / 2U);
+    }
+}
+
 /* Commit @p produced reserved floats of a read of @p need floats as of @p discard_generation, indivisibly from a purge
  * request (input_ring_commit_if_generation()). A purge since drops the whole read, the reservation and what was not yet
  * reserved: all of it is counted, and the Fs/4 rotation steps over the part not yet copied, but no gap is marked, as
@@ -1752,7 +1776,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
         size_t w2 = 0U;
         size_t produced = soapy_reserve_even_ring_segments(s->input_ring, need, &p1, &w1, &p2, &w2);
         if (produced == 0U) {
-            soapy_handle_no_space(s->input_ring, need, apply_rot, &phase);
+            soapy_handle_no_space_as_of(s->input_ring, need, apply_rot, &phase, discard_generation);
             break;
         }
         size_t src_idx = done / 2U;
@@ -1798,7 +1822,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         size_t w2 = 0U;
         size_t produced = soapy_reserve_even_ring_segments(s->input_ring, need, &p1, &w1, &p2, &w2);
         if (produced == 0U) {
-            soapy_handle_no_space(s->input_ring, need, apply_rot, &phase);
+            soapy_handle_no_space_as_of(s->input_ring, need, apply_rot, &phase, discard_generation);
             break;
         }
         size_t src_idx = done / 2U;

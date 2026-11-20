@@ -3361,6 +3361,24 @@ test_soapy_read_across_a_retune_purge_never_commits(void) {
         rc |= expect_int_eq("and every float of it is counted dropped", (int)drops, (int)thirty.size());
         rc |= expect_int_eq("and no gap is marked", (int)gap_marks, 0);
     }
+    /* A ring with no room for a pair: a purged read is counted and stepped over without a gap mark too, and a current
+       one keeps its gap mark (the read is lost before the ring). */
+    for (int purge = 0; purge <= 1; purge++) {
+        uint64_t drops = UINT64_MAX;
+        size_t gap_marks = SIZE_MAX;
+        rtl_device_test_soapy_cf32_request request{thirty.data(), 30U, 2U, 0U, 1, 1, purge, NULL, &drops, &gap_marks};
+        std::vector<float> output(thirty.size() + 8U);
+        size_t count = output.size();
+        int phase = -1;
+        if (rtl_device_test_soapy_cf32_ingest(&request, output.data(), &count, &phase) != 0) {
+            return 1;
+        }
+        rc |= expect_int_eq("a read the ring has no room for commits nothing", (int)count, 0);
+        rc |= expect_int_eq("and is counted dropped", (int)drops, (int)thirty.size());
+        rc |= expect_int_eq("and stepped over", phase, (1 + 30) & 3);
+        rc |= expect_int_eq(purge ? "a purged one marks no gap" : "a current one marks its gap", (int)gap_marks,
+                            purge ? 0 : 1);
+    }
     rc |= test_soapy_read_across_a_retune_purge_keeps_its_duration();
     return rc;
 }
