@@ -784,9 +784,13 @@ test_end_pattern_ends_the_call_at_an_ordinary_position(void) {
         assert(mbe_frame_calls == played[c]);
         /* The superframe was cut: its slow data is dropped, as on a sync loss. */
         assert(slow_data_calls == 0);
+        /* The verdict above was the transmission's; its confirmation ends with it. */
+        assert(state.dstar_confirmed == 0);
+        assert(state.dstar_confirm_weak_streak == 0);
     }
 
-    /* Unconfirmed: the end proves nothing, so the superframe's own resynchronization word is all it has. */
+    /* Unconfirmed: the end proves nothing, and the weak streak of the superframe's own resynchronization word ends with
+       the transmission. */
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -795,7 +799,7 @@ test_end_pattern_ends_the_call_at_an_ordinary_position(void) {
     script_end_pattern(starts[0], -1);
     assert(processDSTAR(&opts, &state) == 0);
     assert(state.dstar_confirmed == 0);
-    assert(state.dstar_confirm_weak_streak == 1);
+    assert(state.dstar_confirm_weak_streak == 0);
     assert(mbe_frame_calls == 0);
     assert(call_end_calls == 1);
 
@@ -988,6 +992,83 @@ test_end_pattern_near_miss_behind_a_header_reads_on(void) {
     }
 }
 
+/* Issue #890 (gate): the end pattern ends the transmission's confirmation with it. After a confirmed call's end, one
+ * resynchronization word matched before the carrier drops (a stray match, or the next transmission joined late) plays
+ * none of its 21 voice frames and reports unconfirmed: the next transmission earns its own confirmation. Behind an RF
+ * header the header's own CRC confirms it again. */
+static void
+test_end_pattern_clears_the_transmission_confirmation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+    state.dstar_confirmed = 1;
+    script_end_pattern((4 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME, -1);
+    assert(processDSTAR(&opts, &state) == 1);
+    assert(call_end_calls == 1);
+
+    reset_counters();
+    assert(processDSTAR(&opts, &state) == 0);
+    assert(mbe_frame_calls == 0);
+    assert(voice_play_calls == 0);
+    assert(state.dstar_confirm_weak_streak == 1);
+
+    /* An end right behind a header (voice frame 0, then the pattern on the word's frame) clears it as well. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_counters();
+    header_decode_soft_result = 1;
+    script_end_pattern(DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME, -1);
+    assert(processDSTAR_HD(&opts, &state) == 1);
+    assert(mbe_frame_calls == 1);
+    assert(state.dstar_confirmed == 0);
+    reset_counters();
+    assert(processDSTAR(&opts, &state) == 0);
+    assert(mbe_frame_calls == 0);
+}
+
+/* Issue #890 (gate): an end that begins in the next superframe's voice frame 0, after all 20 data frames (MMDVM's
+ * placement, and 24 symbols into that frame), leaves the slow data whole and read on this carrier: it decodes before the
+ * call ends, so a header, message or position in it is not lost. An end that holds the 20th data frame (JARL's
+ * placement there) leaves it partial: dropped. */
+static void
+test_end_after_the_last_data_frame_decodes_the_slow_data(void) {
+    const int voice_zero = 20 * DSTAR_FRAME_DIBITS;
+    static const int starts[3] = {
+        (20 * DSTAR_FRAME_DIBITS),                                /* on voice frame 0 */
+        (20 * DSTAR_FRAME_DIBITS) + 24,                           /* 24 symbols into it */
+        (19 * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME, /* on the 20th data frame */
+    };
+    static const int decoded[3] = {1, 1, 0};
+    for (int c = 0; c < 3; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        state.dstar_confirmed = 1;
+        script_end_pattern(starts[c], -1);
+
+        assert(processDSTAR(&opts, &state) == 1);
+
+        assert(stream_pos == starts[c] + 48);
+        assert(stream_pos <= voice_zero + DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(slow_data_calls == decoded[c]);
+        if (decoded[c]) {
+            assert_slow_data_follows_each_voice_frame(0);
+        }
+        /* Voice frame 0 held the pattern: it never plays. */
+        assert(mbe_frame_calls == DSTAR_VOICE_FRAMES - 1);
+        assert(call_end_calls == 1);
+        /* The slow data decoded while the transmission was still its own: before the end cleared it. */
+        assert(state.dstar_confirmed == 0);
+    }
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -1009,6 +1090,8 @@ main(void) {
     test_end_pattern_at_the_hand_back_position();
     test_header_led_read_split_by_a_carrier_boundary_drops_what_follows();
     test_end_pattern_near_miss_behind_a_header_reads_on();
+    test_end_pattern_clears_the_transmission_confirmation();
+    test_end_after_the_last_data_frame_decodes_the_slow_data();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

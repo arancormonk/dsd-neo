@@ -13963,8 +13963,10 @@ Private per-protocol modules worth knowing about:
   any step of the frames' 24-symbol grid (JARL, and the capture behind `DECODE_IQ_DSTAR`, start it on a data frame,
   MMDVM on a voice frame, MMDVMHost's end frame ends it with a data frame), from voice frame 0 behind a header on: it
   ends the D-STAR call
-  (`DSD_CALL_END_TERMINATOR`), closes the capture, begins a new transmission (`dstar_tx_begin()`) and reads nothing
-  after it; no CRC covers it, so it is no evidence. A limit: in MMDVMHost's placement the voice frame holding the
+  (`DSD_CALL_END_TERMINATOR`), closes the capture, clears the transmission's confirmation (`dstar_confirm_reset()`,
+  which begins a new transmission; the ending superframe's verdict is reported first) and reads nothing
+  after it; no CRC covers it, so it is no evidence. An end that begins in the next superframe's voice frame 0, after all
+  20 data frames (MMDVM's placement), decodes the whole slow data first; one that holds a data frame drops it. A limit: in MMDVMHost's placement the voice frame holding the
   pattern's first half plays before the data frame after it completes the match (20 ms of bit sync decoded as voice).
   The whole read behind a header runs on the header's carrier count (issue #575): a carrier boundary or an input
   interruption in voice frame 0, the word's data frame or the superframe drops what follows. The data frame after a

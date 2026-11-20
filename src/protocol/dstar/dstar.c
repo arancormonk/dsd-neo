@@ -95,8 +95,9 @@ typedef enum {
 
 /* One voice frame, 24 symbols at a time: its 72 symbols land on the interleave schedule, each cell with its symbol's
  * bit and the confidence in it (issue #599); the 24 cells the schedule never reaches stay bit 0 at reliability 0,
- * which the decoder never reads. Returns 1 as soon as the 48 bits ending on a step are the end pattern: the rest of
- * the frame is not read, it is no part of this transmission. */
+ * which the decoder never reads. Returns the step (1-3, each 24 symbols) at whose end the 48 bits read are the end
+ * pattern, as soon as they are, or 0: the rest of the frame is not read, it is no part of this transmission. A match on
+ * step 1 holds the data frame before the voice frame; one on step 2 or 3 holds none. */
 static int
 dstar_read_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_fr[4][24], dstar_end_window* w) {
     DSD_MEMSET(ambe_fr, 0, sizeof(dsd_vocoder_soft_bit) * 4U * 24U);
@@ -108,7 +109,7 @@ dstar_read_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit am
         cell->reliability = dsd_two_level_symbol_reliability(opts, state, symbol);
         dstar_end_window_push(w, dibit);
         if ((i % DSTAR_DATA_SYMBOLS) == DSTAR_DATA_SYMBOLS - 1 && dstar_end_window_is_end(w)) {
-            return 1;
+            return (i / DSTAR_DATA_SYMBOLS) + 1;
         }
     }
     return 0;
@@ -199,6 +200,12 @@ dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int
             return DSTAR_READ_LOST;
         }
         if (end) {
+            /* The end began in voice frame 0 of the next superframe, after the last data frame (MMDVM's placement):
+               the slow data is whole, read on this carrier, and decodes (a header, message or position in it is the
+               transmission's last). An end that holds a data frame leaves it partial, and it is dropped. */
+            if (j == DSTAR_SUPERFRAME_FRAMES - 1 && end >= 2) {
+                processDSTAR_SD(opts, state, sd);
+            }
             return DSTAR_READ_END;
         }
         if (plays_voice) {
@@ -219,9 +226,11 @@ dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int
 }
 
 /* The end pattern closed the transmission (JARL STD 6.0 section 4.1.2 (g)-(h)): its D-STAR call ends on it, as on a
- * terminator, its capture ends (issue #661), and what slow data it left unfinished goes with it (dstar_tx_begin()). No
- * CRC covers the pattern, so it is no evidence the transmission was real, and its confirmation is left to the carrier,
- * as after a header. Nothing after it was read: the next transmission's preamble and header are the hunt's. */
+ * terminator, its capture ends (issue #661), and what slow data it left unfinished goes with it. No CRC covers the
+ * pattern, so it is no evidence the transmission was real; the confirmation the transmission earned ends with it
+ * (dstar_confirm_reset(), which begins a new transmission): the next must earn its own, so a lone resynchronization word
+ * before the carrier drops plays nothing and opens no call. Nothing after it was read: the next transmission's preamble
+ * and header are the hunt's. */
 static void
 dstar_transmission_ended(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, " END");
@@ -231,7 +240,7 @@ dstar_transmission_ended(dsd_opts* opts, dsd_state* state) {
         && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
-    dstar_tx_begin(state);
+    dstar_confirm_reset(state);
 }
 
 /* A superframe and its accounting (dstar_confirm.h). @p behind_resync: the frames follow an exact resynchronization
@@ -255,10 +264,12 @@ dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, in
     DSD_FPRINTF(stderr, "\n");
 
     dstar_confirm_end_frame(opts, state);
+    /* The superframe's verdict is the transmission's as it was read, whatever its end clears after. */
+    const int confirmed = dstar_confirm_is_confirmed(state);
     if (outcome == DSTAR_READ_END) {
         dstar_transmission_ended(opts, state);
     }
-    return dstar_confirm_is_confirmed(state);
+    return confirmed;
 }
 
 //simplified DSTAR
