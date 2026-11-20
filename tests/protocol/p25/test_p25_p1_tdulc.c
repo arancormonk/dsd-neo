@@ -804,6 +804,17 @@ test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     rc |= expect_true("sync loss ends the call", dsd_call_state_end_ex(&state, 0U, 2.0, DSD_CALL_END_SYNC_LOSS) > 0);
     rc |= expect_eq_int("a TDULC after a call a sync loss ended", run_tdulc_at(&opts, &state, start), 0);
 
+    // A carrier boundary inside the TDU that ended the call (a replay retune adopted while its tail was read): the
+    // TDU stood on the carrier left, so a TDULC on the next carrier where its repeat would stand is no repeat of it.
+    rc |= expect_true("fixture call 6", reset_followed_call_fixture(&opts, &state));
+    state.symbol_clock = start;
+    g_boundary_in_tail = 1;
+    processTDU(&opts, &state);
+    g_boundary_in_tail = 0;
+    rc |= expect_true("the split TDU moved the carrier count", state.carrier_seq == 1U);
+    rc |= expect_eq_int("a TDULC on the carrier after the split TDU",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), 0);
+
     // A new carrier between the TDULC that ended the call and the next one: that one is no repeat of it.
     rc |= expect_true("fixture call 4", reset_followed_call_fixture(&opts, &state));
     rc |= expect_eq_int("ending TDULC 4", run_tdulc_at(&opts, &state, start), tg);

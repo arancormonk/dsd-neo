@@ -296,12 +296,13 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
        control it carries belongs to the call it ended: capture that call first (issue #800, spec N2). */
     dsd_event_closing_call closing;
     (void)dsd_event_capture_closing_call(state, 0U, &closing);
-    /* Where this TDULC's link control is read, its sync and NID behind it, and the call open before its end. */
-    const uint64_t lc_clock = state->symbol_clock;
+    /* Where this TDULC's link control is read, its sync and NID behind it, on the stream they were read on, and the
+       call open before its end. */
+    const p25p1_terminator_place place = p25p1_terminator_place_now(state);
     dsd_call_snapshot open_call;
     const uint64_t open_epoch = p25p1_current_call(state, &open_call) ? open_call.epoch : 0U;
     p25_sm_emit_tdu(opts, state);
-    const uint64_t ended_epoch = p25p1_terminator_note_end(state, open_epoch, lc_clock, P25P1_TDULC_DIBITS);
+    const uint64_t ended_epoch = p25p1_terminator_note_end_at(state, open_epoch, &place, P25P1_TDULC_DIBITS);
 
     state->dmr_so = 0;
 

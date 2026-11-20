@@ -2191,7 +2191,9 @@ suite runs under this compiler.
   observation is outside this check, so those readers keep their own protocol checks (`p25p1_current_call()`,
   `nxdn_scch_enrich_identity()`, `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its
   end has run, takes an ended call only when that end closed it: the TDULC ended it, or it follows back to back the TDU
-  or TDULC that did (`p25p1_terminator_note_end()`, `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s
+  or TDULC that did on the same stream (`p25p1_terminator_note_end_at()`, whose place, `p25p1_terminator_place`, is
+  captured with the sync and NID before the tail is read, so a TDU a replay retune split leaves no end the next
+  carrier's TDULC repeats; `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s
   `ended_epoch`, which the Motorola talker end reads), never an older call the slot still holds. A GPS link control in
   a TDULC binds only to the call that TDULC itself ended (`p25_lcw_from_tdulc()`'s `closing`, captured before the end,
   and only when its epoch is the nonzero `ended_epoch`, issue #800): a TDULC whose end the trunk state machine declined
