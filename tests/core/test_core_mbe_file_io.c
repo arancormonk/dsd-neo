@@ -825,9 +825,10 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     return rc;
 }
 
-/* The stamp is the call's, not the file's: when a file's second record is another call, that call's row is stamped
-   from its own first valid frame, not left with the first call's stamp (nor, once the event layer has cleared the row,
-   with none and so the decode clock). A run's state, as the engine sets it up. */
+/* The stamp is the call's, not the file's: when a file's second record is another call, the first call's row commits
+   with its own stamp, and the second call's row is stamped from its own first valid frame, not left with the first
+   call's stamp (nor, once the event layer has cleared the row, with none and so the decode clock). A run's state, as
+   the engine sets it up. */
 static int
 test_sdrtrunk_json_time_is_each_calls_own(void) {
     static const char json[] =
@@ -858,6 +859,16 @@ test_sdrtrunk_json_time_is_each_calls_own(void) {
     state->audio_out_buf = own_buf;
     state->audio_out_buf_p = own_buf_p;
     const Event_History_I* history = state->event_history_s;
+    int first_seen = 0;
+    for (int i = 1; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &history[0].Event_History_Items[i];
+        if (row->target_id == 1234U) {
+            first_seen = 1;
+            rc |= expect_u64("sdrtrunk two calls: the first call's start", (uint64_t)row->event_time, 1700000100ULL);
+            break;
+        }
+    }
+    rc |= expect_true("sdrtrunk two calls: the first call's row was committed when the second began", first_seen);
     rc |= expect_u64("sdrtrunk two calls: the second call's row is current",
                      history[0].Event_History_Items[0].target_id, 4321U);
     rc |= expect_u64("sdrtrunk two calls: the second call's start is its own first valid frame",

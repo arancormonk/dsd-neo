@@ -2315,6 +2315,9 @@ typedef struct {
     // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
     // Cleared when a record begins another call, and not trusted once the event layer has cleared the row.
     uint8_t time_stamped;
+    // A record began another call whose voice frames have not begun: the event layer is synced where they do, so the
+    // call before it commits its own row and recording first (issue #888).
+    uint8_t call_sync_pending;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2358,6 +2361,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->is_dmra = 1;
     ctx->dmra_le = 0;
     ctx->time_stamped = 0;
+    ctx->call_sync_pending = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -3118,7 +3122,9 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
         .ota_source_id = ctx->source_id,
     };
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
-        ctx->time_stamped = 0U; /* another call: its row takes its own first frame's stamp */
+        /* Another call: its row takes its own first frame's stamp, and the event layer is synced before its audio. */
+        ctx->time_stamped = 0U;
+        ctx->call_sync_pending = 1U;
     }
     const dsd_call_crypto_update crypto = {
         .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
@@ -3132,9 +3138,23 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
     (void)dsd_call_state_update_crypto(state, 0U, state->synctype, &crypto);
 }
 
+/* Once a call, where its voice frames begin -- the "frames" key, or a frame's own "time" or "hex" in a flat record --
+   after its header has named it: the event layer renders the call, and commits the one before it, whose recording then
+   rotates out under its own row before this call's stamp or audio reaches the slot (issue #888). */
+static void
+sdrtrunk_json_sync_new_call(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token) {
+    if (ctx->call_sync_pending == 0U
+        || (strncmp("frames", token, 6) != 0 && strncmp("time", token, 4) != 0 && strncmp("hex", token, 3) != 0)) {
+        return;
+    }
+    ctx->call_sync_pending = 0U;
+    dsd_event_sync_slot(opts, state, 0);
+}
+
 static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             char** str_saveptr) {
+    sdrtrunk_json_sync_new_call(opts, state, ctx, token);
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);

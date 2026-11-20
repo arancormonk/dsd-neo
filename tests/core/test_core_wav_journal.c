@@ -4106,11 +4106,10 @@ stamped_write_export(const char* path) {
     return rc;
 }
 
-/* The sidecar of the journal's first published recording, read into @p body (empty when there is none). */
+/* The sidecar of the journal's publish record @p pub, read into @p body (empty when there is none). */
 static void
-stamped_read_sidecar(const rig* r, char* body, size_t cap) {
+read_sidecar_of(const rig* r, const char* pub, char* body, size_t cap) {
     body[0] = '\0';
-    const char* pub = record(&g_j, "publish", 0);
     char sidecar[DSD_TEST_PATH_MAX * 2];
     if (pub == NULL || dsd_test_path_join(sidecar, sizeof sidecar, r->dir, field_s(pub, "file")) != 0
         || strlen(sidecar) <= 4) {
@@ -4124,6 +4123,12 @@ stamped_read_sidecar(const rig* r, char* body, size_t cap) {
         body[got] = '\0';
         (void)fclose(f);
     }
+}
+
+/* The sidecar of the journal's first published recording. */
+static void
+stamped_read_sidecar(const rig* r, char* body, size_t cap) {
+    read_sidecar_of(r, record(&g_j, "publish", 0), body, cap);
 }
 
 /* -P -r named.mbe, an export whose frames span two seconds of its own clock: the recording is filed at its first
@@ -4170,6 +4175,129 @@ test_playback_export_starts_at_its_first_frame(void) {
         DSD_FPRINTF(stderr, "  sidecar: none\n");
     } else if (rc != 0) {
         DSD_FPRINTF(stderr, "  sidecar: %s\n", body);
+    }
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(&r);
+    return rc;
+}
+
+/* Two calls in one file: a DMR group call to 1234 from 5678 of 3 frames, then one to 4321 from 777 of 5, each frame
+   stamped on the recording's clock. */
+static const struct {
+    uint32_t tg;
+    uint32_t src;
+    int frames;
+    uint64_t first_ms;
+} k_two_calls[2] = {
+    {1234U, 5678U, 3, 1600000100250ULL},
+    {4321U, 777U, 5, 1600000200750ULL},
+};
+
+static int
+two_calls_write(const char* path) {
+    static char json[2048];
+    size_t len = 0;
+    for (int c = 0; c < 2; c++) {
+        int n =
+            DSD_SNPRINTF(json + len, sizeof json - len,
+                         "%s{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"%u\",\"to\":\"%u\","
+                         "\"encrypted\":false,\"frames\":[",
+                         c > 0 ? "\n" : "", k_two_calls[c].src, k_two_calls[c].tg);
+        if (n <= 0 || (size_t)n >= sizeof json - len) {
+            return 1;
+        }
+        len += (size_t)n;
+        for (int i = 0; i < k_two_calls[c].frames; i++) {
+            n = DSD_SNPRINTF(json + len, sizeof json - len, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
+                             (unsigned long long)(k_two_calls[c].first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex);
+            if (n <= 0 || (size_t)n >= sizeof json - len) {
+                return 1;
+            }
+            len += (size_t)n;
+        }
+        n = DSD_SNPRINTF(json + len, sizeof json - len, "]}");
+        if (n <= 0 || (size_t)n >= sizeof json - len) {
+            return 1;
+        }
+        len += (size_t)n;
+    }
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (f == NULL) {
+        return 1;
+    }
+    int rc = fwrite(json, 1, len, f) != len ? 1 : 0;
+    rc |= fclose(f) != 0 ? 1 : 0;
+    return rc;
+}
+
+/* The history row of call @p c, or NULL. */
+static const Event_History*
+two_calls_row(const rig* r, int c) {
+    const Event_History_I* ring = &r->state->event_history_s[0];
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &ring->Event_History_Items[i];
+        if (row->target_id == k_two_calls[c].tg && row->source_id == k_two_calls[c].src) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+/* -P -r two.mbe, a file whose second record is another call: the reader commits the first call's row when the second
+   call begins, before its audio, so each call has a history row with its own first frame's stamp and a recording of
+   its own audio alone, published and exported under that row. Before, the first call was never rendered: one row, the
+   second call's, and one recording of both calls' audio. */
+static int
+test_playback_two_calls_in_one_file(void) {
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_playback_two_calls");
+    r.opts->audio_out = 0;
+    r.opts->playfiles = 1;
+    r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    r.opts->rdio_system_id = 48;
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char path[DSD_TEST_PATH_MAX * 2];
+    rc |= expect_int("two calls: input written",
+                     dsd_test_path_join(path, sizeof path, r.dir, "two.mbe") == 0 ? two_calls_write(path) : 1, 0);
+    char* argv[2] = {"dsd-neo", path};
+    r.state->optind = 1;
+    playMbeFiles(r.opts, r.state, 2, argv);
+    playback_end_run(&r);
+
+    reload(&r);
+    rc |= expect_int("two calls: two recordings published", count_records(&g_j, "publish"), 2);
+    rc |= expect_int("two calls: two history rows, none for the header between them",
+                     (long long)r.state->event_history_s[0].push_seq, 2);
+    for (int c = 0; c < 2; c++) {
+        char tag[160];
+        const long long start = (long long)(k_two_calls[c].first_ms / 1000ULL);
+        const Event_History* row = two_calls_row(&r, c);
+        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d has a history row", c + 1);
+        rc |= expect_true(tag, row != NULL);
+        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's row is stamped from its first frame", c + 1);
+        rc |= expect_int(tag, row ? (long long)row->event_time : -1, start);
+        int found = 0;
+        const char* pub = NULL;
+        for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+            if (field_ll(pub, "start") != start) {
+                continue;
+            }
+            found++;
+            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording holds its own audio alone", c + 1);
+            rc |= expect_int(tag, field_ll(pub, "duration_ms"), (long long)k_two_calls[c].frames * 20);
+            static char body[4096];
+            read_sidecar_of(&r, pub, body, sizeof body);
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", start);
+            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is exported at its start", c + 1);
+            rc |= expect_true(tag, strstr(body, want) != NULL);
+            DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", k_two_calls[c].tg);
+            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is exported under its talkgroup", c + 1);
+            rc |= expect_true(tag, strstr(body, want) != NULL);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is published once at its start", c + 1);
+        rc |= expect_int(tag, found, 1);
     }
     r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
     rig_close(&r);
@@ -4245,6 +4373,7 @@ main(void) {
     rc |= test_tetra_first_call_leaves_unowned_audio();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
+    rc |= test_playback_two_calls_in_one_file();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

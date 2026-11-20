@@ -2046,7 +2046,10 @@ suite runs under this compiler.
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
   row's `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21,
-  below).
+  below). Each call the reader's own observation opens (a file's, or a later record's that names another call) syncs
+  the event layer once, where its voice frames begin (`sdrtrunk_json_sync_new_call()`), so a file holding two calls
+  commits the first call's row, and rotates its recording out under that row, before the second call's stamp or audio
+  reaches the slot (`CORE_WAV_JOURNAL`, `CORE_MBE_FILE_IO`).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
