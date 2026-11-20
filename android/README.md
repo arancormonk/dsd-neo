@@ -933,6 +933,9 @@ notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 to `android/package/` as usual — never to the staged copy, which is overwritten.
 Keep them real files: a symbolic link in `android/package/assets/doc/dsd-neo/`,
 or on the way to it, fails the staging, which writes nothing through a link.
+A file there at the path of a staged notice, or under it, is left out: the
+notices always come from the repository, the build and mbelib, whatever the
+file's timestamp.
 The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
 file in that folder; the app's "Open source licenses" screen lists the files it
 names, after the location of the Qt source code, and opens one at a time. The

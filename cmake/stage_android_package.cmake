@@ -18,12 +18,13 @@
 # APK without re-running CMake. file(COPY) and configure_file(COPYONLY) both skip files
 # that are already current, so a no-op build does not make Gradle repackage.
 #
-# The documentation folder is staged afresh, from android/package/'s own documentation and
-# the notices, in a new folder this run makes beside the package and removes again, and the
-# package's folder is then brought in line with it: a notice no longer staged leaves the
-# package and its index, as a clean build would leave it out, and a file whose content is
-# unchanged is not rewritten. Those steps run as a child of this script (the same script,
-# given -D_DSD_FRESH_DIR=<folder>), so the new folder is removed whichever of them fails.
+# The documentation folder is staged afresh, from the notices and then the files of
+# android/package/'s own documentation whose paths no notice takes, in a new folder this
+# run makes beside the package and removes again, and the package's folder is then brought
+# in line with it: a notice no longer staged leaves the package and its index, as a clean
+# build would leave it out, and a file whose content is unchanged is not rewritten. Those
+# steps run as a child of this script (the same script, given -D_DSD_FRESH_DIR=<folder>),
+# so the new folder is removed whichever of them fails.
 
 # Script mode leaves policies unset, and CMake 3.x then refuses if(IN_LIST): ask for the
 # project's minimum, as its CMakeLists.txt does.
@@ -55,13 +56,8 @@ if(DEFINED _DSD_FRESH_DIR)
     # The child: stage the documentation folder in the parent's new folder and bring the
     # package's folder in line with it.
     set(_fresh_dir "${_DSD_FRESH_DIR}")
-    # android/package/'s own documentation first, so a generated notice of the same name wins.
-    if(IS_DIRECTORY "${SOURCE_DIR}/assets/doc/dsd-neo")
-        file(
-            COPY "${SOURCE_DIR}/assets/doc/dsd-neo/"
-            DESTINATION "${_fresh_dir}"
-        )
-    endif()
+    # The notices first, into the empty folder, and android/package/'s own documentation
+    # after them, below.
     file(COPY "${REPO_DIR}/legal" DESTINATION "${_fresh_dir}")
     file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_fresh_dir}/licenses")
     file(
@@ -102,6 +98,39 @@ if(DEFINED _DSD_FRESH_DIR)
             "Staging the notices legal/components.json names for the APK failed"
         )
     endif()
+
+    # Then each file of android/package/'s documentation whose path no notice takes: none
+    # at a notice's path or under it, whatever its timestamp (file(COPY) would keep a
+    # destination of the same time), and none where a notice folder is.
+    set(_package_doc "${SOURCE_DIR}/assets/doc/dsd-neo")
+    set(_package_files "")
+    if(IS_DIRECTORY "${_package_doc}")
+        file(
+            GLOB_RECURSE _package_files
+            LIST_DIRECTORIES false
+            RELATIVE "${_package_doc}"
+            "${_package_doc}/*"
+        )
+    endif()
+    foreach(_name IN LISTS _package_files)
+        set(_path "${_fresh_dir}")
+        set(_taken FALSE)
+        string(REPLACE "/" ";" _parts "${_name}")
+        foreach(_part IN LISTS _parts)
+            string(APPEND _path "/${_part}")
+            if(EXISTS "${_path}" AND NOT IS_DIRECTORY "${_path}")
+                set(_taken TRUE)
+                break()
+            endif()
+        endforeach()
+        if(NOT _taken AND NOT IS_DIRECTORY "${_path}")
+            configure_file(
+                "${_package_doc}/${_name}"
+                "${_fresh_dir}/${_name}"
+                COPYONLY
+            )
+        endif()
+    endforeach()
 
     set(_index_name "notice-index.txt")
     file(

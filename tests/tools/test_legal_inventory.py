@@ -892,6 +892,51 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual({path: path.stat().st_mtime_ns for path in docs.rglob("*") if path.is_file()}, before)
 
+    def test_android_staging_prefers_the_notices_to_package_documents_at_their_paths(self):
+        # A package document at a notice's path is left out whatever its timestamp, and one under a notice's path is
+        # left out before anything is written, so the notice is staged in its place; other package documents stay,
+        # also in the notices' folders.
+        build, share, docs, args = self.android_fixture()
+        source = self.work / "package/assets/doc/dsd-neo"
+        canonical = ("COPYRIGHT", "THIRD_PARTY.md", "legal/components.json")
+        for name in canonical:
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("a stale copy\n", encoding="utf-8")
+            times = (ROOT / name).stat()
+            os.utime(path, ns=(times.st_atime_ns, times.st_mtime_ns))
+        (source / "licenses/Qt-SOURCE.txt").mkdir(parents=True)
+        (source / "licenses/Qt-SOURCE.txt/note.txt").write_text("a folder where a notice goes\n", encoding="utf-8")
+        (source / "licenses/extra.txt").write_text("from the package source\n", encoding="utf-8")
+
+        def staged_files():
+            return sorted(path.relative_to(docs).as_posix() for path in docs.rglob("*")
+                          if path.is_file() and path.name != "notice-index.txt")
+
+        for _ in range(2):
+            result = self.run_cmake(*args)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name in canonical:
+                self.assertEqual((docs / name).read_bytes(), (ROOT / name).read_bytes(), name)
+            self.assertTrue((docs / "licenses/Qt-SOURCE.txt").is_file())
+            self.assertEqual((docs / "licenses/Qt-SOURCE.txt").read_bytes(),
+                             (build / "qt-source/qt-source.txt").read_bytes())
+            self.assertEqual((docs / "licenses/extra.txt").read_text(encoding="utf-8"), "from the package source\n")
+            index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(sorted(index), staged_files())
+            self.assertIn("licenses/extra.txt", index)
+
+        # A package file where the licence texts' folder goes is left out as well.
+        shutil.rmtree(source)
+        source.mkdir()
+        (source / "licenses").write_text("a file where a folder goes\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((docs / "licenses/ISC.txt").read_bytes(), (ROOT / "LICENSES/ISC.txt").read_bytes())
+        index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(sorted(index), staged_files())
+        self.assertEqual(self.scratch_folders(), [])
+
     def test_android_staging_replaces_a_notice_folder_with_a_notice_file(self):
         # A notice that was a folder's file and becomes a file of the folder's name, and back again.
         build, share, docs, args = self.android_fixture()
