@@ -925,6 +925,69 @@ test_end_pattern_at_the_hand_back_position(void) {
     }
 }
 
+/* Issue #575 behind a header: one carrier count for the whole read the header leads. A carrier boundary inside voice
+ * frame 0 drops it; one inside the word's data frame (its first, middle and last symbol) drops everything after voice
+ * frame 0, which was read whole on the header's carrier and plays: none of the superframe is read, played or
+ * published, and nothing goes back to the hunt. */
+static void
+test_header_led_read_split_by_a_carrier_boundary_drops_what_follows(void) {
+    static const int boundaries[4] = {
+        DSTAR_HEADER_DIBITS + 30,
+        DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME,
+        DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME + 10,
+        DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME + 23,
+    };
+    static const int played[4] = {0, 1, 1, 1};
+    for (int b = 0; b < 4; b++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = 1;
+        script_bits(DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME, RESYNC_WORD, 24);
+        boundary_at = boundaries[b];
+
+        assert(processDSTAR_HD(&opts, &state) == 1);
+
+        assert(state.carrier_seq == 1U);
+        assert(mbe_frame_calls == played[b]);
+        assert(voice_play_calls == played[b]);
+        assert(soft_symbol_calls == DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(slow_data_calls == 0);
+        assert(hand_back_calls == 0);
+        assert(call_end_calls == 0);
+        /* No superframe was accounted: no weak evidence from a word read across the boundary. */
+        assert(state.dstar_confirm_weak_streak == 0);
+    }
+}
+
+/* A near miss at the first data position behind a header is no end either: the read goes on whole, and the 24 symbols
+ * after the pattern's first half decode as voice frame 1's first 24. */
+static void
+test_end_pattern_near_miss_behind_a_header_reads_on(void) {
+    static const int flips[3] = {0, 30, 47};
+    for (int f = 0; f < 3; f++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = 1;
+        script_end_pattern(DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME, flips[f]);
+
+        assert(processDSTAR_HD(&opts, &state) == 1);
+
+        assert_voice_loop_counts(1, 0, DSTAR_HEADER_VOICE_FRAMES);
+        assert_ambe_frames_follow_interleave(DSTAR_HEADER_DIBITS, DSTAR_HEADER_VOICE_FRAMES);
+        assert_slow_data_follows_each_voice_frame(DSTAR_HEADER_DIBITS + DSTAR_FRAME_DIBITS);
+    }
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -944,6 +1007,8 @@ main(void) {
     test_end_pattern_near_miss_reads_on();
     test_end_pattern_ends_the_call_behind_a_header();
     test_end_pattern_at_the_hand_back_position();
+    test_header_led_read_split_by_a_carrier_boundary_drops_what_follows();
+    test_end_pattern_near_miss_behind_a_header_reads_on();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

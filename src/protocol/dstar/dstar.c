@@ -53,6 +53,10 @@ enum {
  * data frame, where a voice frame would start (DStarTX.cpp); MMDVMHost's end frame ends it with a data frame
  * (DSTAR_END_PATTERN_BYTES). MMDVM's receiver (DStarRX.cpp) and DSDcc (dstar.cpp) look for it at any symbol. Matching
  * it only on the grid, and only whole, keeps a 2^-48 chance per step of reading voice or slow data as an end.
+ *
+ * A limit: in MMDVMHost's placement the pattern's first half is the last 24 symbols of a voice frame, which is read
+ * whole and played before the data frame after it completes the match, so that frame (20 ms of bit synchronization
+ * decoded as voice) reaches the vocoder. Every other placement is matched before its voice frame plays.
  */
 typedef struct {
     uint64_t bits;
@@ -176,9 +180,10 @@ dstar_read_resync_slot(dsd_opts* opts, dsd_state* state, dstar_end_window* w, ui
 }
 
 /* The superframe behind its resynchronization word: voice frames 1-20, each followed by its data frame, then voice frame
- * 0 of the next superframe and its data frame, the next word. */
+ * 0 of the next superframe and its data frame, the next word. @p carrier_seq: the carrier count when the read began,
+ * the header's behind an RF header (one count for the whole read the header leads). */
 static dstar_read_outcome
-dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int plays_voice) {
+dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int plays_voice, uint32_t carrier_seq) {
     uint8_t sd[480];
     DSD_MEMSET(sd, 0, sizeof(sd));
     dsd_vocoder_soft_bit ambe_fr[4][24];
@@ -188,7 +193,6 @@ dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int
        voice frame read across or after the move, the superframe is dropped, slow data and all, as on a sync loss. So it
        is from the voice frame an input interruption cut (a Signal search leaving the superframe): the rest is erasures
        getSymbol() stood in, which the vocoder must not play. */
-    const uint32_t carrier_seq = state->carrier_seq;
     for (int j = 0; j < DSTAR_SUPERFRAME_FRAMES; j++) {
         const int end = dstar_read_voice_frame(opts, state, ambe_fr, w);
         if (dsd_state_frame_read_lost(state, carrier_seq)) {
@@ -231,9 +235,9 @@ dstar_transmission_ended(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A superframe and its accounting (dstar_confirm.h). @p behind_resync: the frames follow an exact resynchronization
- * word, the only thing about them that can be checked from here. */
+ * word, the only thing about them that can be checked from here. @p carrier_seq: as dstar_read_superframe(). */
 static int
-dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int behind_resync) {
+dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int behind_resync, uint32_t carrier_seq) {
     /* A CRC-16 in the slow data below may yet prove the transmission outright. The word on its own is weak, so it has
      * to repeat -- see dstar_confirm.h. */
     dstar_confirm_begin_frame(state);
@@ -246,7 +250,7 @@ dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, in
        noise as a call with no callsigns. A late-entry call loses its first superframe (420 ms), as the hunt's credit
        already did. */
     const int plays_voice = dstar_confirm_is_confirmed(state);
-    const dstar_read_outcome outcome = dstar_read_superframe(opts, state, w, plays_voice);
+    const dstar_read_outcome outcome = dstar_read_superframe(opts, state, w, plays_voice, carrier_seq);
 
     DSD_FPRINTF(stderr, "\n");
 
@@ -263,14 +267,14 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     dstar_end_window w;
     DSD_MEMSET(&w, 0, sizeof(w));
     /* The hunt matched the resynchronization word exactly (strcmp, no error budget). */
-    return dstar_voice_superframe(opts, state, &w, 1);
+    return dstar_voice_superframe(opts, state, &w, 1, state->carrier_seq);
 }
 
 /* Voice frame 0 behind an RF header and its data frame, which is the resynchronization word (JARL STD 6.0 section 4.1.2
- * (c)), then the superframe behind it. Returns DSTAR_READ_ON once the word's frame is read. */
+ * (c)), then the superframe behind it. Returns DSTAR_READ_ON once the word's frame is read whole on the header's carrier
+ * (@p carrier_seq, the count when the header's read began). */
 static dstar_read_outcome
-dstar_read_frame_zero(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int* behind_resync) {
-    const uint32_t carrier_seq = state->carrier_seq;
+dstar_read_frame_zero(dsd_opts* opts, dsd_state* state, dstar_end_window* w, uint32_t carrier_seq, int* behind_resync) {
     dsd_vocoder_soft_bit ambe_fr[4][24];
     const int end = dstar_read_voice_frame(opts, state, ambe_fr, w);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
@@ -287,6 +291,11 @@ dstar_read_frame_zero(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int
     uint8_t resync[DSTAR_DATA_SYMBOLS];
     if (dstar_read_data_frame(opts, state, resync, w)) {
         return dstar_end_or_lost(state, carrier_seq);
+    }
+    /* A carrier boundary or an input interruption inside the word's frame: what follows is not the header's
+       transmission, and its confirmation must not play or publish it. */
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        return DSTAR_READ_LOST;
     }
     dstar_frame_done(opts, state);
     /* The superframe behind it counts the word only when it was there: the header's own sync proves the header was
@@ -331,9 +340,9 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     dstar_end_window w;
     DSD_MEMSET(&w, 0, sizeof(w));
     int behind_resync = 0;
-    const dstar_read_outcome outcome = dstar_read_frame_zero(opts, state, &w, &behind_resync);
+    const dstar_read_outcome outcome = dstar_read_frame_zero(opts, state, &w, carrier_seq, &behind_resync);
     if (outcome == DSTAR_READ_ON) {
-        (void)dstar_voice_superframe(opts, state, &w, behind_resync);
+        (void)dstar_voice_superframe(opts, state, &w, behind_resync, carrier_seq);
         return header_ok;
     }
     DSD_FPRINTF(stderr, "\n");

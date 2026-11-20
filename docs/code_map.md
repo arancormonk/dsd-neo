@@ -13856,7 +13856,10 @@ Private per-protocol modules worth knowing about:
   MMDVM on a voice frame, MMDVMHost's end frame ends it with a data frame), from voice frame 0 behind a header on: it
   ends the D-STAR call
   (`DSD_CALL_END_TERMINATOR`), closes the capture, begins a new transmission (`dstar_tx_begin()`) and reads nothing
-  after it; no CRC covers it, so it is no evidence. The data frame after a superframe's last voice frame, which the hunt
+  after it; no CRC covers it, so it is no evidence. A limit: in MMDVMHost's placement the voice frame holding the
+  pattern's first half plays before the data frame after it completes the match (20 ms of bit sync decoded as voice).
+  The whole read behind a header runs on the header's carrier count (issue #575): a carrier boundary or an input
+  interruption in voice frame 0, the word's data frame or the superframe drops what follows. The data frame after a superframe's last voice frame, which the hunt
   matches the next word in, is read one symbol at a time while an end can still be there (it or the 24 symbols after
   it) and the symbols read go back to the hunt (`dsd_frame_sync_hand_back_symbols()`): a word after its 12th symbol, so
   the hunt matches it where it ends, as before (`DSTAR_PROCESS`, `FRAME_SYNC_HISTORY_CARRY`). The header's soft costs
