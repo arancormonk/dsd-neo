@@ -2658,9 +2658,11 @@ suite runs under this compiler.
   `--rdio-unknown-talkgroup`) for a VOICE row only when the close allows it. The export mode is none on the event
   layer's drop path and orphan flush, committed on a kept row's rotation (`watchdog_event_retire_staged_row()`), and
   early for `close_and_publish_call_wav_ex()`, which allows the fallback only for a row that names a call (a target or
-  source, number or text): an identity-less row's keep verdict (media plus a positive end) is not known before its
-  commit, so a WAV stop mid-call, a held fade, a cleared history or a trunk-scan target's empty row never exports under
-  a fallback number. A digital row with no number is skipped with no failure line; the one LOG_WARN per run
+  source, number or text; the twin of `watchdog_event_row_names_call()`) or whose protocol's voice is anonymous
+  (`dsd_call_state_protocol_voice_is_anonymous()`: X2-TDMA, standalone ProVoice, whose rows are always kept): any other
+  identity-less row's keep verdict (media plus a positive end) is not known before its commit, so a WAV stop mid-call, a
+  held fade, a cleared history or a trunk-scan target's empty row never exports under a fallback number. A digital row
+  with no number is skipped with no failure line; the one LOG_WARN per run
   (`wav_recording_digital_rdio_skip_first_this_run()`, reset with the analog latch) is spent only by a row the fallback
   would number had it a frequency or the option (`dsd_rdio_call_fallback_eligible()`). An analog export keeps the #708
   contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file, and

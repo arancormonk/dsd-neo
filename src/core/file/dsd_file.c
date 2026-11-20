@@ -1411,15 +1411,21 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
 }
 
 /* Whether a close in @p export_mode may give @p row the fallback talkgroup (issue #888 D7): a commit rotation's row,
-   which the event layer has kept; an early close's only when it names a call, as a number or text. An identity-less
-   row vouches for itself only by media and a positive end, a verdict not known before its commit. */
+   which the event layer has kept; an early close's only when the event layer is known to keep it: the row names a
+   call, as a number or text, or its protocol's voice never carries identity (X2-TDMA, standalone ProVoice), whose
+   identity-less rows are always kept. Any other identity-less row vouches for itself only by media and a positive
+   end, a verdict not known before its commit. The naming test is the twin of watchdog_event_row_names_call()
+   (dsd_events.c), the event layer's keep rescue: the two must agree on what names a call. */
 static int
 wav_close_allows_fallback(int export_mode, const Event_History* row) {
     if (export_mode == DSD_WAV_EXPORT_COMMITTED) {
         return 1;
     }
-    return export_mode == DSD_WAV_EXPORT_EARLY && row != NULL && row->category == DSD_EVENT_CATEGORY_VOICE
-           && (row->target_id != 0U || row->source_id != 0U || row->src_str[0] != '\0' || row->tgt_str[0] != '\0');
+    if (export_mode != DSD_WAV_EXPORT_EARLY || row == NULL || row->category != DSD_EVENT_CATEGORY_VOICE) {
+        return 0;
+    }
+    return row->target_id != 0U || row->source_id != 0U || row->src_str[0] != '\0' || row->tgt_str[0] != '\0'
+           || dsd_call_state_protocol_voice_is_anonymous(row->systype);
 }
 
 /* A row with no talkgroup, not exported: said once a run per class while rdio export is on, with no failure line. An

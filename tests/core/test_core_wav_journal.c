@@ -3112,8 +3112,9 @@ expect_export(const char* what, const rig* r, const char* id, unsigned talkgroup
 }
 
 /* A WAV stop mid-call: a call that names its source (an NXDN unaddressed group call) is exported under its frequency
-   in kHz, or the option's number with none; a call heard with no identity at all is not (its keep verdict is not known
-   at the stop). */
+   in kHz, or the option's number with none, as is a call of a protocol whose voice never carries identity (X2-TDMA,
+   standalone ProVoice: the event layer always keeps its row); a call heard with no identity at all on any other
+   protocol is not (its keep verdict is not known at the stop). */
 static int
 test_d7_wav_stop_mid_call(void) {
     static const struct {
@@ -3125,6 +3126,9 @@ test_d7_wav_stop_mid_call(void) {
     } cases[] = {
         {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 452312U},
         {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U},
+        /* Anonymous-voice protocols, whose identity-less rows the event layer always keeps. */
+        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 452312U},
+        {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 452312U},
         {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U},
         {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U},
     };

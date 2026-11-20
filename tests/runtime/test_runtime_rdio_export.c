@@ -2292,6 +2292,49 @@ test_call_talkgroup_number(void) {
     return rc;
 }
 
+// Issue #888 B3: dsd_rdio_call_fallback_eligible() says whether the fallback numbers a row, or would with a frequency or
+// --rdio-unknown-talkgroup: a digital VOICE row with no target whose sync type names a protocol, with the fallback on.
+// The WAV close spends its once-a-run "no number" line only on such a row.
+static int
+test_call_fallback_eligible(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        uint8_t category;
+        uint32_t target;
+        int allow;
+        int want;
+    } cases[] = {
+        {"NXDN voice, no target", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1},
+        {"X2-TDMA voice, no target", DSD_SYNC_X2TDMA_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1},
+        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 0},
+        {"numbered: no fallback needed", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 1, 0},
+        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 1, 0},
+        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 1, 0},
+        {"no protocol word", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
+        {"no sync", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
+        {"analog: its own rule", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
+    };
+
+    static Event_History_I hist;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(&hist, cases[i].systype, 0, DSD_ACCESS_CODE_NONE, 0);
+        hist.Event_History_Items[0].category = cases[i].category;
+        hist.Event_History_Items[0].target_id = cases[i].target;
+        const int got = dsd_rdio_call_fallback_eligible(&hist.Event_History_Items[0], cases[i].allow);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: eligible %d, want %d\n", cases[i].label, got, cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_call_fallback_eligible(NULL, 1) != 0) {
+        DSD_FPRINTF(stderr, "no row is not eligible\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 // Issue #888 D3: a call exported under the fallback number is labelled by its service name, else its channel label,
 // else "<protocol> <access code> <MHz> MHz" with the unknown parts left out; never by per-call identity text (talkgroup
 // name, target or source text) nor PRIVATE/GROUP. "-" is no label at any step (B10). Access codes are spelled and
@@ -4333,6 +4376,7 @@ main(void) {
     rc |= test_sidecar_strings_are_valid_utf8();
     rc |= test_unnumbered_digital_call_without_fallback_writes_nothing();
     rc |= test_call_talkgroup_number();
+    rc |= test_call_fallback_eligible();
     rc |= test_fallback_call_label();
     rc |= test_fallback_call_sidecar();
     rc |= test_api_shutdown_drains_queue();
