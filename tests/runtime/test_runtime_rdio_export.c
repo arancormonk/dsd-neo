@@ -2140,7 +2140,9 @@ test_unnumbered_digital_call_without_fallback_writes_nothing(void) {
 
 // Issue #888 D2: the number dsd_rdio_call_talkgroup() exports a call under. A decoded target always; for a digital
 // voice row without one, with the fallback on, the frequency in whole kHz (rounded down, 1..2147483647), else
-// --rdio-unknown-talkgroup, else none. Analog rows keep their own rule (#668), whose kHz range runs to UINT32_MAX.
+// --rdio-unknown-talkgroup, else none. A row of no known protocol gets no fallback number (its label would be a bare
+// frequency, and an rdio-scanner v8 DirWatch could pick no system for it). Analog rows keep their own rule (#668), whose
+// kHz range runs to UINT32_MAX.
 static int
 test_call_talkgroup_number(void) {
     static const struct {
@@ -2172,6 +2174,10 @@ test_call_talkgroup_number(void) {
         {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 0, 9000, 0U},
         {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 452312500, 1, 9000, 0U},
         {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 452312500, 1, 9000, 0U},
+        {"no protocol word: no kHz", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 9000, 0U},
+        {"no sync: no option", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 1, 9000, 0U},
+        {"unknown sync type", 45, DSD_EVENT_CATEGORY_VOICE, 0U, 452312500, 1, 9000, 0U},
+        {"no protocol word, numbered", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 77U, 452312500, 1, 9000, 77U},
         {"analog kHz", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 154437500, 0, 9000, 154437U},
         {"analog kHz past the signed range", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, INT64_C(3000000000000), 1,
          9000, 3000000000U},

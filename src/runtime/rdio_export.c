@@ -886,7 +886,10 @@ dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int al
     if (event->target_id > 0U) {
         return event->target_id;
     }
-    if (!allow_fallback || event->category != DSD_EVENT_CATEGORY_VOICE) {
+    // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
+    // the system from short_name, could pick none.
+    if (!allow_fallback || event->category != DSD_EVENT_CATEGORY_VOICE
+        || dsd_rdio_protocol_word(event->systype)[0] == '\0') {
         return 0U;
     }
     const uint32_t khz = dsd_rdio_digital_khz(event->freq_hz);
