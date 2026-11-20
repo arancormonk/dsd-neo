@@ -2312,8 +2312,8 @@ typedef struct {
     uint8_t ks_available;
     uint8_t is_dmra;
     uint8_t dmra_le;
-    // Whether the row carries this file's recording start yet, the first frame "time" that parsed (issue #888 B21),
-    // printed once.
+    // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
+    // Cleared when a record begins another call, and not trusted once the event layer has cleared the row.
     uint8_t time_stamped;
     uint8_t alg_id;
     uint8_t alg_seen;
@@ -3070,9 +3070,10 @@ sdrtrunk_json_parse_time(const char* value, time_t* out) {
     return 0;
 }
 
-/* The row of a played recording is stamped once, from its first frame's "time" that parses: the recording's start, on
-   the recording's own clock. Later frames leave it, so the recording is not filed at its last frame (issue #888 B21);
-   the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). */
+/* The row of a played call is stamped once, from its first frame's "time" that parses: the recording's start, on the
+   recording's own clock. Later frames of the call leave it, so the recording is not filed at its last frame (issue #888
+   B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file, or
+   a row the event layer has cleared since, is stamped afresh from its own first valid frame. */
 static int
 sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (strncmp("time", token, 4) != 0) {
@@ -3080,7 +3081,7 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value || ctx->time_stamped != 0U) {
+    if (!value || (ctx->time_stamped != 0U && state->event_history_s[0].Event_History_Items[0].event_time != 0)) {
         return 1;
     }
     // Until one parses, a value that does not clears the stamp, as it always has: the row keeps no earlier file's.
@@ -3104,7 +3105,7 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
 }
 
 static void
-sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
+sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
     if (!state || !ctx || state->synctype == DSD_SYNC_NONE) {
         return;
     }
@@ -3116,7 +3117,9 @@ sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
         .policy_target_id = ctx->target_id,
         .ota_source_id = ctx->source_id,
     };
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        ctx->time_stamped = 0U; /* another call: its row takes its own first frame's stamp */
+    }
     const dsd_call_crypto_update crypto = {
         .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
                           : ctx->ks_available != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/receive_types.h>
@@ -821,6 +822,50 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     rc |= expect_u64("sdrtrunk stamps that all fail leave no start",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 0ULL);
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The stamp is the call's, not the file's: when a file's second record is another call, that call's row is stamped
+   from its own first valid frame, not left with the first call's stamp (nor, once the event layer has cleared the row,
+   with none and so the decode clock). A run's state, as the engine sets it up. */
+static int
+test_sdrtrunk_json_time_is_each_calls_own(void) {
+    static const char json[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+        "\"encrypted\":false,\"frames\":[{\"time\":1700000100250,\"hex\":\"3ABF032D9ADEE4CB50\"},"
+        "{\"time\":1700000101250,\"hex\":\"3ABF032D9ADEE4CB50\"}]}\n"
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"777\",\"to\":\"4321\","
+        "\"encrypted\":false,\"frames\":[{\"time\":12x,\"hex\":\"3ABF032D9ADEE4CB50\"},"
+        "{\"time\":1700000200750,\"hex\":\"3ABF032D9ADEE4CB50\"},"
+        "{\"time\":1700000203750,\"hex\":\"3ABF032D9ADEE4CB50\"}]}";
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return expect_true("sdrtrunk two calls: allocated", 0);
+    }
+    dsd_decode_clock_use_test(1800000000ULL * 1000000000ULL);
+    initOpts(opts);
+    initState(state);
+    opts->playfiles = 1;
+    opts->audio_out = 0;
+    /* run_sdrtrunk_json() points the output buffers at its own; the state's go back before it is freed. */
+    short* const own_buf = state->audio_out_buf;
+    short* const own_buf_p = state->audio_out_buf_p;
+    rc |= run_sdrtrunk_json(json, opts, state);
+    state->audio_out_buf = own_buf;
+    state->audio_out_buf_p = own_buf_p;
+    const Event_History_I* history = state->event_history_s;
+    rc |= expect_u64("sdrtrunk two calls: the second call's row is current",
+                     history[0].Event_History_Items[0].target_id, 4321U);
+    rc |= expect_u64("sdrtrunk two calls: the second call's start is its own first valid frame",
+                     (uint64_t)history[0].Event_History_Items[0].event_time, 1700000200ULL);
+    freeState(state);
+    free(state);
+    free(opts);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -4493,6 +4538,7 @@ main(void) {
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_time_is_the_first_valid_frame();
+    rc |= test_sdrtrunk_json_time_is_each_calls_own();
     rc |= test_sdrtrunk_json_protocol_token_alone_creates_no_capture();
     rc |= test_sdrtrunk_json_second_protocol_gets_its_own_capture();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
