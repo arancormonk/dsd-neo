@@ -17017,6 +17017,53 @@ test_y_quiet_suspended_row_republished(int typed) {
     return rc;
 }
 
+/* The operator's `Y`, as app-control applies it: every hold change on the -Y scan notes a quiet-check change first
+   (dsd_engine_channel_scan_entry_cancel()). */
+static void
+yq_operator_hold(dsd_state* state, int on) {
+    dsd_engine_channel_scan_entry_cancel(state);
+    state->lcn_scan_hold = on ? 1U : 0U;
+}
+
+/* Issue #834: a -Y row published under an operator hold is SUSPENDED with no reason to show (a hold is the visit's own
+   condition). Releasing the hold moves only the quiet-check change number, and under syncs that keep the frame loop
+   running no noCarrier() publishes the row: the frame boundary owes it one republication, so the same visit is
+   measured and skipped, not left unchecked for the rest of its hangtime. */
+static int
+test_y_quiet_released_hold_republished(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* A frequency unique to this case: engine.c caches its last tune in file statics. */
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, 0, 1, 1351012500L) == 0);
+    rc |= expect_true("measured as it lands", g_yq.requests == 1);
+    yq_operator_hold(state, 1);
+    run_synced_frames(opts, state, 2, -1);
+    rc |= expect_true("held: suspended at the boundary, republished under the hold, no check, no step",
+                      scan_quiet_phase_get(state) == SCAN_QUIET_SUSPENDED && g_yq.requests == 1 && g_frame_count == 3
+                          && g_rtl_tune_calls == 0);
+    rc |= expect_true("held: nothing more owed while the hold stands",
+                      dsd_engine_scan_quiet_take_republish(opts, state, SCAN_QUIET_OWNER_Y) == 0);
+    yq_operator_hold(state, 0);
+    run_synced_frames(opts, state, 5, -1);
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "released: published again at the first boundary, measured, and the loop yields at the next "
+                 "(requests %d, frames %d, tunes %d)",
+                 g_yq.requests, g_frame_count, g_rtl_tune_calls);
+    rc |= expect_true(label, g_yq.requests == 2 && g_frame_count == 2 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("released: the row steps on its quiet result", g_rtl_tune_calls == 1 && g_yq.notices == 1);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y released hold republished\n");
+    }
+    return rc;
+}
+
 /* Issue #834 item 3: frames that keep coming never let noCarrier(), where the -Y step is decided, run. A row whose frames
    carry no content a protocol's CRC/FEC gate passed (NXDN48 noise) leaves at a frame boundary once -t has run out, with
    skip-silent on or off and no visit cap; a real call, whose checks pass, keeps the row; the protocols whose hunt stamps
@@ -17338,6 +17385,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_trunk_quiet_suspended_target_republished();
     rc |= test_y_quiet_suspended_row_republished(0);
     rc |= test_y_quiet_suspended_row_republished(1);
+    rc |= test_y_quiet_released_hold_republished();
     rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);

@@ -559,10 +559,12 @@ Generated (do not edit/commit):
       a visit at this visit's DSP rate, so at its capture rate) is refused at once (`quiet_width_refused_ahead()`), so a
       width-refused target says so from the first moment of every visit; at another DSP rate the visit reads its own
       capture, whose rate outranks its width. A
-      visit SUSPENDED with a reason whose revisions moved since its publication (a width or row edit) owes the frame
-      boundary one republication per change (`dsd_engine_scan_quiet_take_republish()`,
-      `scan_quiet_check::republish_seen`, which a publication, and a return to the revisions published, set back), so
-      it starts again on the same visit under syncs that keep the frame loop running. A request the tap refuses (a
+      visit SUSPENDED whose revisions moved since its publication owes the frame boundary one republication per change
+      (`dsd_engine_scan_quiet_take_republish()`, `quiet_suspended_facts_moved()`, `scan_quiet_check::republish_seen`,
+      which a publication, and a return to the revisions published, set back), so it starts again on the same visit
+      under syncs that keep the frame loop running: one suspended with a reason and a width or row edit, and equally one
+      suspended with no reason to show, for its own conditions, such as a -Y row published under an operator hold,
+      whose release moves only `quiet_inv_seq` (`test_y_quiet_released_hold_republished()`). A request the tap refuses (a
       Signal search holds it) is DONE.
     - Frame-boundary service (issue #834 R1, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
@@ -583,7 +585,8 @@ Generated (do not edit/commit):
       symbol-profile requests did before they stopped moving the change number when they repeat the profile the
       stream runs, or a note of change; #834 R5) owes one republication (`scan_quiet_check::republish_owed`, set by
       the reconcile or `dsd_engine_scan_quiet_invalidate()`, cleared by any publication or start): the next frame
-      boundary takes it once (`dsd_engine_scan_quiet_take_republish()`), since under syncs that keep the loop running no
+      boundary takes it once (`dsd_engine_scan_quiet_take_republish()`, which notes the revisions it covered in
+      `scan_quiet_check::republish_seen`, so the moved revisions owe no second one), since under syncs that keep the loop running no
       outer pass or `noCarrier()` comes to publish it. The trunk scan's then owes the per-frame tick a pass
       (`live_scanner_trunk_quiet_frame_service()`), -Y publishes the row (`live_scanner_y_quiet_frame_yield()` ->
       `dsd_engine_scan_quiet_publish_row()`). Once per suspension, never per frame; nothing with the setting off.

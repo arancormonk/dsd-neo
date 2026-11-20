@@ -1329,14 +1329,13 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_HAND_BACK;
 }
 
-/* A visit SUSPENDED with a reason it cannot be checked (a refusal, or facts with no check) whose revisions moved since
-   it was published, such as a width or row edit: once per change, so it is republished and starts again on the same
-   visit under syncs that keep the frame loop running (as a suspension of a check under way owes one, R5). */
+/* A visit SUSPENDED whose revisions moved since it was published: once per change, so it is republished and starts
+   again on the same visit under syncs that keep the frame loop running (as a suspension of a check under way owes one,
+   R5). That is a visit with a reason it cannot be checked (a refusal, or facts with no check) and a width or row edit,
+   and equally one suspended with no reason to show, for its own conditions (an operator hold, a stay, no alternate, a
+   tune pending): releasing a hold moves only quiet_inv_seq, and its eligibility is checked again here. */
 static int
-quiet_no_check_facts_moved(const dsd_opts* opts, const dsd_state* state, scan_quiet_check* c) {
-    if (c->reason == (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
-        return 0;
-    }
+quiet_suspended_facts_moved(const dsd_opts* opts, const dsd_state* state, scan_quiet_check* c) {
     scan_quiet_revisions now_rev;
     scan_quiet_revisions_read(opts, state, &now_rev);
     if (quiet_revisions_equal(&now_rev, &c->revisions)) {
@@ -1361,6 +1360,8 @@ dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int
     }
     if (c->republish_owed) {
         c->republish_owed = 0;
+        /* It covers the revisions in force now: they owe no second republication for the same suspension. */
+        scan_quiet_revisions_read(opts, state, &c->republish_seen);
         return 1;
     }
     if (c->refused) {
@@ -1372,7 +1373,7 @@ dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int
             return 1;
         }
     }
-    return quiet_no_check_facts_moved(opts, state, c);
+    return quiet_suspended_facts_moved(opts, state, c);
 }
 
 int
