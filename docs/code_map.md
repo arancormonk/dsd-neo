@@ -2171,9 +2171,11 @@ suite runs under this compiler.
   radio), and then only under the typed-source and reception rules. Three writers put one on a call row:
   `dsd_event_enrich_position()` (the slot's ACTIVE call of the report's epoch), `dsd_event_enrich_position_closing()`
   (the call a P25 Phase 1 TDULC itself ended) and `dsd_event_set_open_call_position()` (D-STAR slow data, the call its
-  header named). A report a data packet carries (DMR LRRP, LIP over a UDT or over UDP packet data from DMR or P25,
-  UDT and ASCII NMEA, USBD LIP, TETRA LIP) never touches a call row: `dsd_event_stage_position()` stages it for the
-  next data notice its carrier emits, a notice of the carrier's protocol. So a P25 Motorola,
+  header named). A report a data packet carries never touches a call row: DMR LRRP, LIP over a UDT or over UDP packet
+  data from DMR or P25, UDT and ASCII NMEA, USBD LIP and TETRA LIP are staged (`dsd_event_stage_position()`) for the
+  next data notice their carrier emits, a notice of the carrier's protocol, while a checked NXDN GPS data packet emits
+  its own notice at once with the fix (`nxdn_gps_publish()`, `dsd_event_emit_data_notice_with_position()`), nothing
+  staged. So a P25 Motorola,
   Harris or Tait alias, a DMR talker alias, a position report, D-STAR slow data or an NXDN alias decoded before its own
   call opened leaves another protocol's open call alone; the P25 aliases that take their
   talker from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
