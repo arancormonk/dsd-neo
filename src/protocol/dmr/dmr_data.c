@@ -59,8 +59,9 @@ typedef struct dmr_data_sync_ctx_s {
     int confidence_reject;
     /* The carrier count (state->carrier_seq) the burst began on (issue #575). */
     uint32_t carrier_seq;
-    /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst on the single-slot decoder, folded
-       onto lane 0 or not (dmr_mono_folds_standalone_burst()); DSD_DMR_MONO_RX_NONE otherwise (issue #637). */
+    /* The slot (DSD_DMR_MONO_RX_TS1/TS2) a checked TACT names for a standalone burst the single-slot decoder folds onto
+       lane 0 (dmr_mono_folds_standalone_burst()); DSD_DMR_MONO_RX_NONE otherwise, a trunked one included (issue #637).
+     */
     uint8_t folded_slot;
     /* Who sent the burst, by its own sync word (dmr_data_collect_sync()), for a service with a direction
        (spec 2.13). */
@@ -175,13 +176,14 @@ dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
     } else if (ctx->opts->dmr_mono == 1 && ctx->state->dmr_stereo == 0) {
         /* A standalone burst on the single-slot decoder is judged by its own CACH slot for its dispatch:
            dmr_data_sync() set the voice lane's proof aside and restores it after. Folded onto lane 0 (without
-           trunking, dmr_mono_folds_standalone_burst()), the lane names that slot. Under trunking the burst stays on
-           its slot and is decoded as the two-slot decoder decodes it, with no lane proof, as dmrBSBootstrap() decodes
-           the voice that follows: the burst then carries the one slot identity its call's voice carries (the lane's
-           receive slot, dsd_position_dmr_air(), issue #800), so a checked header's source names an embedded GPS LC of
-           that voice. */
-        ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
+           trunking, dmr_mono_folds_standalone_burst()), the lane names that slot, and a header the lane's call took
+           proves it after (dmr_data_restore_voice_lane()). Under trunking the burst stays on its slot and is decoded
+           as the two-slot decoder decodes it, with no lane proof before or after it, as dmrBSBootstrap() decodes the
+           voice that follows: the burst carries the one slot identity its call's voice carries (the lane's receive
+           slot, dsd_position_dmr_air(), issue #800), and a header for one slot leaves the receive identity of the
+           other slot's call alone. */
         if (dmr_mono_folds_standalone_burst(ctx->opts, ctx->state)) {
+            ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
             ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
         }
     }
@@ -451,10 +453,10 @@ dmr_data_note_polarity_evidence(dsd_opts* opts, dsd_state* state, const dmr_data
                 opts->inverted_dmr ? "inverted" : "normal", KNRM);
 }
 
-/* A voice LC header the single-slot decoder is about to dispatch on its own (issue #637): the lane it lands on (lane 0
-   where it is folded, its own slot under trunking: dmr_mono_folds_standalone_burst()) and that lane's call epoch and
-   revision, which dmr_data_header_opened_lane_call() compares after the dispatch. Any other burst marks nothing and reads
-   no call, so a data burst, a PI header or an idle burst costs nothing here. */
+/* A voice LC header the single-slot decoder is about to fold onto lane 0 (issue #637, dmr_mono_folds_standalone_burst():
+   never under trunking, which sets no lane proof): that lane's call epoch and revision, which
+   dmr_data_header_opened_lane_call() compares after the dispatch. Any other burst marks nothing and reads no call, so a
+   data burst, a PI header or an idle burst costs nothing here. */
 static void
 dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
     const dsd_state* state = ctx->state;
@@ -462,9 +464,7 @@ dmr_data_mark_header_lane(dmr_data_sync_ctx* ctx) {
         || state->dmr_stereo != 0) {
         return;
     }
-    ctx->header_lane = dmr_mono_folds_standalone_burst(ctx->opts, state)
-                           ? 0U
-                           : (uint8_t)((ctx->folded_slot - DSD_DMR_MONO_RX_TS1) & 1U);
+    ctx->header_lane = 0U;
     (void)dsd_call_state_get_revision(state, ctx->header_lane, &ctx->header_lane_epoch, &ctx->header_lane_revision);
     ctx->header_marked = 1U;
 }

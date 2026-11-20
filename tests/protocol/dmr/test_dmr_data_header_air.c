@@ -16,6 +16,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -318,10 +319,11 @@ send_lane0_packet(dsd_opts* opts, dsd_state* state, uint8_t header_slot, uint8_t
     return dsd_position_feed_copy_since(state, 0U, kept, 4U, &meta);
 }
 
-/* The voice LC header of radio 1001's group call to 2002 (FLCO 0), its RS(12,9) parity under the voice LC header mask. */
+/* The voice LC header of radio @p source's group call to 2002 (FLCO 0), its RS(12,9) parity under the voice LC header
+   mask. */
 static void
-voice_lc_header(uint8_t out[12]) {
-    static const uint8_t lc[9] = {0, 0, 0, 0, 0x07, 0xD2, 0, 0x03, 0xE9};
+voice_lc_header(uint8_t out[12], uint32_t source) {
+    const uint8_t lc[9] = {0, 0, 0, 0, 0x07, 0xD2, (uint8_t)(source >> 16), (uint8_t)(source >> 8), (uint8_t)source};
     DSD_MEMCPY(out, lc, sizeof lc);
     dmr_test_encode_rs_12_9(lc, out + 9);
     for (size_t i = 9; i < 12U; ++i) {
@@ -355,33 +357,31 @@ put_cach(int dibits[144], unsigned slot) {
     return 0;
 }
 
-/* Issue #800 with -fr -T: under trunking the single-slot decoder decodes a repeater's standalone bursts and its voice
-   on both slots, as the two-slot decoder does (dmr_mono_folds_standalone_burst(), dmr_bootstrap_mono()). A checked
-   standalone voice LC header on TS2 (the real dmr_data_sync() the engine dispatches it to), then the embedded GPS LC of
-   that call's voice on TS2, decoded in the state dmrBSBootstrap() leaves (dmr_mono_slot_forget(), two-slot): the
-   header's checked source names the fix. 1 when the feed holds the report as radio 1001's, 0 when it holds it
-   anonymous, -1 for anything else. */
-static int
-send_trunked_mono_header_then_gps(dsd_opts* opts, dsd_state* state) {
+/* -fr -T on a voice channel the grant tuned: the single-slot decoder, trunking, the carrier's colour code already
+   locked (slot types of colour code 1). */
+static void
+trunked_mono_fixture(dsd_opts* opts, dsd_state* state) {
     reset_state(state);
-    if (dsd_position_feed_start(state) != 0) {
-        return -1;
-    }
     opts->dmr_mono = 1;
     opts->trunk_enable = 1;
     state->dmr_stereo = 0;
-    /* The carrier's colour code already locked (slot types of colour code 1), as on a voice channel the grant tuned. */
     state->dmr_confidence_locked = 1U;
     state->dmr_confidence_color_code = 1U;
     state->dmr_color_code = 1;
+}
+
+/* A checked voice LC header of radio @p source's call on slot @p slot (0: TS1, 1: TS2) through the real dmr_data_sync()
+   the engine dispatches a standalone repeater burst to. 0 when the burst could not be built. */
+static int
+send_trunked_header(dsd_state* state, dsd_opts* opts, unsigned slot, uint32_t source) {
     uint8_t hdr[12];
-    voice_lc_header(hdr);
+    voice_lc_header(hdr, source);
     /* The burst's first 90 dibits as frame sync buffered them, then room for the dibits its tail is read past into. */
     static int payload[256];
     static int dibit_buf[256];
     int dibits[144];
-    if (!build_burst(DMR_BS_DATA_SYNC, 0x01U, hdr, dibits, 0) || !put_cach(dibits, 1U)) {
-        return -1;
+    if (!build_burst(DMR_BS_DATA_SYNC, 0x01U, hdr, dibits, 0) || !put_cach(dibits, slot)) {
+        return 0;
     }
     for (size_t i = 0; i < 90U; i++) {
         payload[i] = dibits[i];
@@ -398,6 +398,62 @@ send_trunked_mono_header_then_gps(dsd_opts* opts, dsd_state* state) {
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     dsd_rxid_note_sync(state, state->synctype);
     dmr_data_sync(opts, state);
+    return 1;
+}
+
+/* Issue #637 with -fr -T: a header for one slot sets no lane proof, so it leaves the other slot's call alone. A TS1
+   call is open; two checked TS2 headers of another call come before its voice bootstrap. The TS1 call keeps its
+   receive slot when frame sync refreshes it (dsd_call_state_refresh_receive()), with no receive filter at all. 1 when
+   the TS1 call is still open on TS1, 0 when it ended or moved, -1 for anything else. */
+static int
+send_trunked_headers_beside_a_call(dsd_opts* opts, dsd_state* state) {
+    trunked_mono_fixture(opts, state);
+    if (!send_trunked_header(state, opts, 0U, 3003U)) {
+        return -1;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id != 3003U
+        || call.receive_identity.slot != 1U) {
+        DSD_FPRINTF(stderr, "\n-fr -T: the TS1 header opened no TS1 call\n");
+        return -1;
+    }
+    const uint64_t epoch = call.epoch;
+    for (int i = 0; i < 2; i++) {
+        if (!send_trunked_header(state, opts, 1U, 1001U)) {
+            return -1;
+        }
+    }
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_call_state_refresh_receive(opts, state, 0U);
+    const int kept = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                     && call.epoch == epoch && call.receive_identity.slot == 1U;
+    if (!kept) {
+        DSD_FPRINTF(stderr, "\n-fr -T: TS1 call phase %d epoch %llu slot %u; lane proof %u\n", (int)call.phase,
+                    (unsigned long long)call.epoch, (unsigned)call.receive_identity.slot,
+                    (unsigned)state->dmr_mono_rx_slot);
+    }
+    opts->dmr_mono = 0;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+    return kept && state->dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE ? 1 : 0;
+}
+
+/* Issue #800 with -fr -T: under trunking the single-slot decoder decodes a repeater's standalone bursts and its voice
+   on both slots, as the two-slot decoder does (dmr_mono_folds_standalone_burst(), dmr_bootstrap_mono()). A checked
+   standalone voice LC header on TS2 (the real dmr_data_sync() the engine dispatches it to), then the embedded GPS LC of
+   that call's voice on TS2, decoded in the state dmrBSBootstrap() leaves (dmr_mono_slot_forget(), two-slot): the
+   header's checked source names the fix. 1 when the feed holds the report as radio 1001's, 0 when it holds it
+   anonymous, -1 for anything else. */
+static int
+send_trunked_mono_header_then_gps(dsd_opts* opts, dsd_state* state) {
+    trunked_mono_fixture(opts, state);
+    if (dsd_position_feed_start(state) != 0) {
+        return -1;
+    }
+    if (!send_trunked_header(state, opts, 1U, 1001U)) {
+        return -1;
+    }
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || call.ota_source_id != 1001U) {
@@ -504,6 +560,11 @@ main(void) {
     const int trunked = send_trunked_mono_header_then_gps(&opts, &state);
     if (trunked != 1) {
         DSD_FPRINTF(stderr, "\n-fr -T, TS2 voice LC header then its embedded GPS on TS2: got %d, want 1\n", trunked);
+        failed = 1;
+    }
+    const int beside = send_trunked_headers_beside_a_call(&opts, &state);
+    if (beside != 1) {
+        DSD_FPRINTF(stderr, "\n-fr -T, a TS1 call, then two TS2 voice LC headers: got %d, want 1\n", beside);
         failed = 1;
     }
     dsd_state_ext_free_all(&state);
