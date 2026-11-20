@@ -316,7 +316,7 @@ typedef struct {
     uint64_t checked_clock; /* dsd_state::symbol_clock when the checked frame was accepted */
     uint32_t checked_epoch;
     uint8_t checked_kind;   /* DSD_DPMR_SYNC_FRAME_*: what checked_bits hold */
-    uint8_t checked_copies; /* DSD_DPMR_SYNC_CHECKED_HEADER_COPY_* (END copies alike): the copies that passed */
+    uint8_t checked_copies; /* DSD_DPMR_SYNC_COPY_*: the copies (MI0/MI1, END0/END1) that passed */
     /* A header's MT and PARMS (DSD_DPMR_HEADER_MI_BITS), or an END's information bits (DSD_DPMR_END_INFO_BITS). */
     uint8_t checked_bits[DSD_DPMR_HEADER_MI_BITS];
     uint8_t checked_cc[DSD_DPMR_HEADER_CC_BITS]; /* a header's channel code bits, as received */

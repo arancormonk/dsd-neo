@@ -26,8 +26,10 @@
  *    interleave, scrambled; "for each scrambler block the scrambler is re-initialized therefore the two scrambled END
  *    DATA blocks are bit exact copies", so each 36-bit copy is descrambled from a fresh scrambler too.
  * A copy passes when all its Hamming words are correctable and its CRC matches. One copy passing is enough; two that
- * pass with different contents are no frame. The CRCs are MSB first from a zero register, as the CCH CRC-7 the CCH
- * reference vectors verify (tests/protocol/dpmr/fixtures).
+ * pass with different contents are no frame. The specification gives the CRC polynomials but not the register's
+ * preset or bit order. Both CRCs here run MSB first from a zero register, the convention of the CCH CRC-7 that the
+ * DSDcc-derived CCH reference vectors verify (tests/protocol/dpmr/fixtures); that the MI CRC-8 and the END CRC-7 use
+ * it too is assumed, not verified: no off-air header or end frame has been checked against it.
  */
 
 #include <dsd-neo/core/opts.h>

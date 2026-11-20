@@ -1190,6 +1190,41 @@ test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
     return rc;
 }
 
+/* Issue #890: a checked end frame forgets the transmission's confirmation (dsd_dispatch_handle_dpmr() calls
+   dpmr_confirm_reset()). A false FS2 on the carrier's tail with one CRC-valid half then opens no row and plays nothing;
+   only a running second frame confirms again. */
+static int
+test_frame_after_a_checked_end_must_reconfirm(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state.dpmr_confirmed = 1; /* the transmission the end frame closed */
+    dpmr_confirm_reset(&state);
+
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 20000U;
+    rc |= expect_int("tail-frame-verdict", processdPMRvoice(&opts, &state), 1);
+    rc |= expect_int("tail-frame-unconfirmed", state.dpmr_confirmed, 0);
+    rc |= expect_int("tail-frame-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("tail-frame-plays-nothing", (int)g_mbe_calls, 0);
+
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 20000U + 384U;
+    (void)processdPMRvoice(&opts, &state);
+    rc |= expect_int("running-frame-confirms", state.dpmr_confirmed, 1);
+    rc |= expect_int("running-frame-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1201,6 +1236,7 @@ main(void) {
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
+    rc |= test_frame_after_a_checked_end_must_reconfirm();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_service_and_kind_come_from_the_checked_half();
     rc |= test_scrambler_reloads_only_at_a_checked_frame_zero();

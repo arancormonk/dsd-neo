@@ -341,11 +341,21 @@ test_dispatch_unchecked_end_keeps_the_call(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
     assert(state.dpmr_scrambled == 2U);
 
+    state.dpmr_confirmed = 1;
+    state.dpmr_confirm_weak_streak = 1;
     plant_checked_end(&state);
     (void)dsd_dispatch_handle_dpmr(&opts, &state);
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
     assert(state.dpmr_scrambled == 0U);
+    /* A checked end frame is a proven end of the transmission: its confirmation ends with it (DPMR_VOICE_BRIDGE shows a
+       weak FS2 frame after it opens nothing until the next transmission proves itself). */
+    assert(state.dpmr_confirmed == 0 && state.dpmr_confirm_weak_streak == 0);
+    /* An unchecked FS3 leaves the confirmation standing. */
+    state.dpmr_confirmed = 1;
+    state.synctype = DSD_SYNC_DPMR_FS3_NEG;
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.dpmr_confirmed == 1);
 }
 
 // A passing CCH CRC-7 is the only thing dPMR can offer the SPS hunt as proof its profile is

@@ -214,7 +214,9 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header)
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
     } else {
-        /* Checked content of a message that opens no call: the channel is in use, but there is no call to report. */
+        /* Checked content of a message that opens no call: the channel is in use, but there is no call to report. The
+           STRONG note above set the sticky confirmation without dpmr_confirm_end_frame(), which only adds the search's
+           call report and the quiet check's PROVEN note, both made here without a call. */
         dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }

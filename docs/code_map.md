@@ -14022,7 +14022,8 @@ Private per-protocol modules worth knowing about:
   its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
   010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
   status messages) confirms the transmission and reports PROVEN content without a call. A checked end frame reports
-  PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the scrambling and closes the capture; nothing
+  PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
+  (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing
   else ends a call as a terminator. Both return `DSD_FRAME_VERDICT_PROFILE_PROVEN`. On FS2 frames the dispatcher
   publishes nothing before the CCH is read; `dpmr_publish_call()` publishes the frame once, from its first
   CRC-valid half: that half's service and call kind (a data CCH is a data call), with the identity

@@ -133,7 +133,9 @@ dpmr_handle_header_frame(dsd_opts* opts, dsd_state* state) {
 }
 
 /* FS3: an end frame (5.3). Only one whose END passed its CRC-7 ends the call, as a terminator; an unchecked FS3 leaves
- * the call as it is. */
+ * the call as it is. A checked end frame is a proven end of the transmission, so its confirmation goes with it
+ * (dpmr_confirm_reset(), which forgets the scrambling too): a false FS2 on the carrier's tail must prove itself again
+ * before it can open a row. */
 static dsd_frame_verdict
 dpmr_handle_end_frame(dsd_opts* opts, dsd_state* state) {
     dpmr_end_frame end;
@@ -144,7 +146,7 @@ dpmr_handle_end_frame(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " END          ");
     dpmr_process_end(opts, state, &end);
     dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
-    dpmr_scrambling_reset(state);
+    dpmr_confirm_reset(state);
     dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     return dpmr_checked_frame_verdict(state);
 }
