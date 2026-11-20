@@ -19,8 +19,8 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 if importlib.util.find_spec("numpy") is None:
     # The tool needs numpy; without it this is a skip CTest reports (SKIP_RETURN_CODE 77), not a pass.
@@ -36,7 +36,7 @@ bench = importlib.import_module("bench_scan_skip_silent")
 def parse(*argv):
     """parse_args() on @p argv: the args, or the exit code and the message it refused them with."""
     err = io.StringIO()
-    with mock.patch.object(sys, "argv", ["bench_scan_skip_silent.py", *argv]), contextlib.redirect_stderr(err):
+    with unittest.mock.patch.object(sys, "argv", ["bench_scan_skip_silent.py", *argv]), contextlib.redirect_stderr(err):
         try:
             return bench.parse_args(), None
         except SystemExit as stop:
@@ -85,7 +85,7 @@ class SilentModes(unittest.TestCase):
         # A saved run is scored with its own map: the check of today's rotation is for a run about to start.
         for extra in (("--rescore",), ("--analyze", "logcat.txt")):
             with self.subTest(extra=extra):
-                args, message = parse(
+                _args, message = parse(
                     *BASE_ARGS, "--scan", "trunk", "--silent", "1", "--silent-modes", "dpmr,nxdn48", *extra
                 )
                 self.assertIsNone(message)
@@ -202,7 +202,7 @@ class StampedLines(unittest.TestCase):
 
     def stamp(self, data):
         log = io.StringIO()
-        with mock.patch.object(bench.time, "monotonic", return_value=12.5):
+        with unittest.mock.patch.object(bench.time, "monotonic", return_value=12.5):
             bench.stamp_lines(io.BytesIO(data), log)
         return log.getvalue()
 
