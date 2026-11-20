@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -176,6 +177,33 @@ class CollectorChoice(unittest.TestCase):
         self.assertLess(argv.index(temp), argv.index("-cp"))
         self.assertFalse(any(word.startswith("-Djava.io.tmpdir") for word in
                              runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {})))
+
+    def test_the_test_jvm_writes_no_shared_performance_data(self):
+        # HotSpot's hsperfdata_<user> folder would stay in the system or native temp folder after every JVM.
+        self.assertIn("-XX:-UsePerfData", runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {}))
+        self.assertIn("-XX:-UsePerfData", self.cached_argv({}))
+        self.assertIn("-XX:-UsePerfData", self.kotlinc_options({}))
+
+    def test_the_native_temp_folder_follows_the_test(self):
+        env = runner.temp_environment({"PATH": "/bin", "TMP": "/elsewhere"}, Path("scratch"))
+        self.assertEqual((env["TMPDIR"], env["TEMP"], env["TMP"]), (str(Path("scratch")),) * 3)
+        self.assertEqual(env["PATH"], "/bin")
+
+    def test_an_inherited_temp_folder_is_refused(self):
+        # _JAVA_OPTIONS comes after the command line, so its java.io.tmpdir would win over the test's own.
+        for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
+            with self.subTest(name=name):
+                self.assertEqual(runner.inherited_tmpdir_option({name: "-Xss1M -Djava.io.tmpdir=/tmp"}), name)
+                self.assertEqual(runner.inherited_tmpdir_option({name: '"-Djava.io.tmpdir=/a b"'}), name)
+        self.assertIsNone(runner.inherited_tmpdir_option({"_JAVA_OPTIONS": "-Dother=-Djava.io.tmpdir=/tmp -Xss1M"}))
+        self.assertIsNone(runner.inherited_tmpdir_option({}))
+
+    def test_leftovers_are_named(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(runner.leftovers(folder), [])
+            (Path(folder) / "b").mkdir()
+            (Path(folder) / ".a").write_text("")
+            self.assertEqual(runner.leftovers(folder), [".a", "b"])
 
     def test_a_deselected_collector_selects_none(self):
         self.assertIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "-XX:-UseG1GC"}))

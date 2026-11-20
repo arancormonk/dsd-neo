@@ -819,7 +819,7 @@ private const val STORAGE = "dsdneo.test.storage"
 // #782: a new process meets the stored obligations. A, still attached, is reset on its first open; B, detached while
 // no process ran, is dropped from storage; B plugged in again later opens without a reset.
 private fun aNewProcessHonoursWhatIsStillAttached() {
-    val storage = java.nio.file.Files.createTempDirectory("dsd-usb-process").toFile()
+    val storage = android.content.usbTestDir("dsd-usb-process")
     System.setProperty(STORAGE, storage.path)
     inNewProcess("process_first")
     inNewProcess("process_second")
@@ -863,7 +863,7 @@ private fun secondProcessHonoursA() {
 // #782: the stored obligations are read and written on a storage thread, never the main thread, in order; the first
 // open still sees what was stored, waiting for the read when it has not finished.
 private fun storageRunsOffTheMainThread() {
-    val dir = java.nio.file.Files.createTempDirectory("dsd-usb-storage").toFile()
+    val dir = android.content.usbTestDir("dsd-usb-storage")
     File(dir, "usb-reset-owed").writeText("$RTL_A\t${0x0bda}\t${0x2838}\t00000001\n")
     val main = Thread.currentThread()
     val onMain = java.util.concurrent.atomic.AtomicInteger()
@@ -939,7 +939,7 @@ private class SlowStore {
 private const val HELD_READ_WAIT_MS = 50L
 
 private fun storageWith(text: String): File =
-    java.nio.file.Files.createTempDirectory("dsd-usb-late").toFile().also { File(it, "usb-reset-owed").writeText(text) }
+    android.content.usbTestDir("dsd-usb-late").also { File(it, "usb-reset-owed").writeText(text) }
 
 // #782 gate r1 G1: the stored read outlasts the open's wait, so the descriptor goes to the engine without A's stored
 // obligation, which loads afterwards. The engine was never handed it, so its "owes nothing" for that descriptor must not
@@ -1097,16 +1097,23 @@ fun runCase(name: String) {
 
 fun main() {
     val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).toURI().toURL() }
-    for (name in CASES.keys) {
-        // Parent is the platform loader, so every class here, the manager's objects included, loads afresh.
-        URLClassLoader(classpath.toTypedArray(), ClassLoader.getPlatformClassLoader()).use { loader ->
-            val case = loader.loadClass("io.github.arancormonk.dsdneo.UsbSourceManagerTestKt").getMethod("runCase", String::class.java)
-            try {
-                case.invoke(null, name)
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                throw IllegalStateException("UsbSourceManagerTest $name: ${e.targetException.message}", e.targetException)
+    // Every case's storage folders go in one scratch folder, removed when the run ends, passed or not.
+    val scratch = java.nio.file.Files.createTempDirectory("dsd-usb-tests").toFile()
+    System.setProperty(android.content.USB_TEST_SCRATCH, scratch.path)
+    try {
+        for (name in CASES.keys) {
+            // Parent is the platform loader, so every class here, the manager's objects included, loads afresh.
+            URLClassLoader(classpath.toTypedArray(), ClassLoader.getPlatformClassLoader()).use { loader ->
+                val case = loader.loadClass("io.github.arancormonk.dsdneo.UsbSourceManagerTestKt").getMethod("runCase", String::class.java)
+                try {
+                    case.invoke(null, name)
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throw IllegalStateException("UsbSourceManagerTest $name: ${e.targetException.message}", e.targetException)
+                }
             }
+            println("UsbSourceManagerTest: $name OK")
         }
-        println("UsbSourceManagerTest: $name OK")
+    } finally {
+        scratch.deleteRecursively()
     }
 }

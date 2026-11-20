@@ -4121,18 +4121,6 @@ does not read its capture removes `cap.path` itself after
 test prints uses `dsd_test_quiet_stderr_begin()` and `_end()` instead, which
 send stderr to the null device and write no file.
 
-`dsd_test_mkstemp()` and `dsd_test_mkdtemp()` also record each path they create
-(`tests/test_support/temp_paths.c`, through `dsd_test_temp_track()`). When the
-test process ends normally, each recorded path that still exists is removed, a
-directory with everything in it, a `test temp cleanup: removed ...` line on
-stderr names it, and the test exits with a failure, whatever `main()` returned:
-this is a safety net, not a replacement for the test's own cleanup. When a failed
-`assert()` aborts the test, its `SIGABRT` handler removes the recorded files and
-the recorded directories that are empty by then. A signal handler may not list a
-directory, so one the code under test filled stays, and a
-`test temp cleanup: left ...` line names it. Nothing runs when a test crashes or
-CTest kills it at its timeout.
-
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
 failed, remove the file or directory, then return the failure. A write that
@@ -4153,23 +4141,35 @@ Production writes CSV, INI and group files in text mode, so on Windows their
 lines end in CRLF. Compare such a file's contents after reading it in text mode
 (`"r"`), and binary output, such as an MBE recording, byte for byte (`"rb"`).
 
-CTest gives every test in `tests/CMakeLists.txt` a temp directory of its own,
-`build/<preset>/tests/tmp/<TEST_NAME>`, through `TMPDIR`, `TEMP` and `TMP`, which
-the C helpers, Python's `tempfile`, Qt and pwsh read. `TEST_TMPDIR_SETUP` empties
-and makes them before the first test, and `TEST_TMPDIR_EMPTY`, which CTest runs
-after all the others (they require its fixture, so it runs with any `-R` or `-L`
-selection too), fails naming each test that left anything in its directory, and
-the files it left, which stay there until the next run. The JVM ignores
-`TMPDIR`, so `tests/android/run_jvm_tests.py` points each Kotlin test's
-`java.io.tmpdir` at a directory of its own that it removes when the test ends.
-A test registered after that block at the end of `tests/CMakeLists.txt` gets
-neither, so register new tests above it.
+CTest gives every test a temp directory of its own,
+`build/<preset>/test-tmp/<TEST_NAME>`, through `TMPDIR`, `TEMP`, `TMP` and
+`DSD_NEO_TEST_TMPDIR`, which the C helpers, Python's `tempfile`, Qt and pwsh read
+(`cmake/TestTmpdir.cmake`). Two helper tests come with each one:
+`TMPDIR_SETUP__<TEST_NAME>` empties or makes the directory before it, and
+`TMPDIR_CHECK__<TEST_NAME>` runs after it, fails naming each entry the test left
+there (a link is named, never followed), and removes the directory. Fixtures tie
+them to the test, so `ctest -R`, `-L` and `--rerun-failed` bring them along, and
+a rerun of a failed check runs its test again. A test that fails leaves its check
+`Not Run`; its next setup empties the directory. Each test has its own
+directory, so two ctest runs in one build tree that run different tests leave
+each other alone. `TEST_TMPDIR_GUARD` tests the setup and check themselves.
+`dsd_neo_add_test_tmpdirs()` is called last in each directory that registers
+tests (`tests/`, `tests/fuzz/`, `apps/dsd-cli/`); a test registered after that
+call gets neither.
+
+The JVM ignores `TMPDIR`, so `tests/android/run_jvm_tests.py` runs each Kotlin
+test in a directory of its own, as its `java.io.tmpdir`, native temp directory
+and working directory, and fails naming anything the test left there. It turns
+off HotSpot's shared performance data (`-XX:-UsePerfData`), whose
+`hsperfdata_<user>` directory would stay in the system temp directory, and
+refuses to run when `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS`
+sets `java.io.tmpdir`, which would override the test's own.
 
 That does not catch a file a test creates by a relative path, which lands in its
 working directory: `build/dev-debug/tests` for most tests, the source tree for
-the `TOOLS_*` scripts, or one a test creates at a fixed path or under a
-temp directory it chose itself. So after a change to how tests make files,
-compare those before and after a run too:
+the `TOOLS_*` scripts, or one a test creates at a fixed path, such as under
+`/tmp`, or under a temp directory it chose itself. So after a change to how
+tests make files, compare those before and after a run too:
 
 ```sh
 T=$(mktemp -d)

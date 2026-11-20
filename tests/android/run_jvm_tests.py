@@ -19,7 +19,9 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 # The compiler and the tests run in short-lived JVMs. C1 alone and the serial collector do their work in about a third of
 # the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
 # the usb suite outlasted CTest's 90 s beside a full parallel build.
-JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+# No shared performance data either: HotSpot would make an hsperfdata_<user> folder in the system temp folder (on
+# Windows the native temp folder, TMP) and leave it behind after every JVM.
+JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC", "-XX:-UsePerfData")
 # The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
 # so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
 # and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone, as is one an argument file
@@ -1881,6 +1883,41 @@ def test_command(java, runtime, test, environ, tmpdir=None):
     return [java, *jvm_options(environ), *temp, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
 
 
+def temp_environment(environ, tmpdir):
+    """@p environ with the native temp folder (TMPDIR, TEMP, TMP) at @p tmpdir, for what a JVM writes outside
+    java.io.tmpdir."""
+    return {**environ, "TMPDIR": str(tmpdir), "TEMP": str(tmpdir), "TMP": str(tmpdir)}
+
+
+def inherited_tmpdir_option(environ):
+    """The JVM-wide option variable in @p environ that sets java.io.tmpdir, or None. _JAVA_OPTIONS is applied after the
+    command line, so it would win over the test's own temp folder and send its files where nothing checks them."""
+    for name in JVM_WIDE_OPTIONS:
+        if any(word.startswith("-Djava.io.tmpdir=") for word in jvm_option_words(environ.get(name, ""))):
+            return name
+    return None
+
+
+def leftovers(folder):
+    """What is left in @p folder, by name, sorted."""
+    return sorted(entry.name for entry in Path(folder).iterdir())
+
+
+def run_test(java, runtime, test, directory):
+    """Run the compiled @p test in a temp folder of its own inside @p directory, which is its java.io.tmpdir, its native
+    temp folder and its working directory (so a Unix socket can be bound by a short relative name). Each test must
+    remove what it creates there: what is left fails the run, naming it, and is removed."""
+    jvm_tmp = Path(tempfile.mkdtemp(prefix="t", dir=directory))
+    try:
+        subprocess.run(test_command(java, runtime, test, os.environ, jvm_tmp), env=temp_environment(os.environ, jvm_tmp),
+                       cwd=jvm_tmp, check=True, timeout=30)
+        left = leftovers(jvm_tmp)
+    finally:
+        shutil.rmtree(jvm_tmp, ignore_errors=True)
+    if left:
+        raise RuntimeError(f"{test} left {len(left)} entries in its temp folder: {', '.join(left[:20])}")
+
+
 def run_build(name, build, java, kotlinc, cached):
     app = REPO / APP_SOURCES
     files = [
@@ -1888,16 +1925,13 @@ def run_build(name, build, java, kotlinc, cached):
         *(HERE / test for test in build.tests),
         *(HERE / "stubs" / stub for stub in build.stubs),
     ]
-    # The tests' own temp files and folders go in this folder too, which goes when the build's tests are done, passed
-    # or not: several suites create temp folders they never remove.
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
-        jvm_tmp = Path(directory) / "tmp"
-        jvm_tmp.mkdir()
-        argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
+        argv, env, runtime = compile_command(java, kotlinc, cached, files, output,
+                                             temp_environment(os.environ, directory))
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            subprocess.run(test_command(java, runtime, test, os.environ, jvm_tmp), check=True, timeout=30)
+            run_test(java, runtime, test, directory)
 
 
 def run_suite(name, suite, java, kotlinc, cached):
@@ -1917,6 +1951,11 @@ def main():
     )
     args = parser.parse_args()
     selected = list(dict.fromkeys(args.suites or SUITES))
+    inherited = inherited_tmpdir_option(os.environ)
+    if inherited:
+        print(f"{inherited} sets java.io.tmpdir, which would send the tests' temp files where nothing checks them; "
+              "unset it for this run", file=sys.stderr)
+        return 1
     # Before the tool lookup, so a failed source check fails the run even where the compiler is missing.
     for name in selected:
         for check in SUITES[name].checks:
