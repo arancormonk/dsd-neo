@@ -2,7 +2,7 @@ add_library(dsd-neo_proto_dpmr)
 
 target_sources(
     dsd-neo_proto_dpmr
-    PRIVATE dpmr_confirm.c dpmr_data.c dpmr_voice.c
+    PRIVATE dpmr_confirm.c dpmr_data.c dpmr_header.c dpmr_voice.c
 )
 
 target_include_directories(

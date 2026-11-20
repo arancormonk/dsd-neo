@@ -19,6 +19,7 @@
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dpmr_internal.h"
 
 typedef struct {
     uint32_t code;
@@ -112,6 +113,29 @@ dpmr_scrambled_pmr_bits(uint32_t* lfsr_value, const uint8_t* input, uint8_t* out
     }
 
     *lfsr_value = value;
+}
+
+/* Convert an air interface identifier (AI ID) into
+ * a 7 ASCII digit string.
+ *
+ * See dPMR standard chapter A.1.2.1.1.6
+ * "Mapping of dialled strings to the AI address space" */
+void
+dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
+    /* Place values from the standard's mapping table: the leading digits are
+     * decimal-spaced and the trailing ones base-11, which is what lets a dialled
+     * '*' ride in the same address space as the digits. */
+    static const uint32_t k_place_value[7] = {1464100U, 146410U, 14641U, 1331U, 121U, 11U, 1U};
+    uint32_t remaining = ai_id;
+
+    for (size_t i = 0U; i < 7U; i++) {
+        const uint32_t digit = remaining / k_place_value[i];
+        remaining = remaining % k_place_value[i];
+        id[i] = (digit == 10U) ? '*' : (char)(digit + '0');
+    }
+
+    /* Add the "end of string" */
+    id[7] = '\0';
 }
 
 /* End of file */

@@ -61,6 +61,9 @@ static int g_interrupt_at = -1;
    does not cover; -1 for none. The decoder runs six blocks per half, half 0's first. */
 static int g_fail_half = -1;
 static int g_hamming_calls;
+/* Nonzero: the second CCH half decodes frame number 1 with its CRC-7 passing, so the frame's halves are the bound 0/1
+   pair a called identity needs (TS 102 658 Tables 5.5, 5.6); the all-zero stream's halves are both numbered 0. */
+static int g_second_half_frame_one;
 
 static void
 reset_capture(void) {
@@ -77,6 +80,7 @@ reset_capture(void) {
     g_fail_half = -1;
     g_hamming_calls = 0;
     g_cch_noise = 0;
+    g_second_half_frame_one = 0;
 }
 
 int
@@ -104,6 +108,19 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
         DSD_MEMSET(decodedBits, g_cch_noise ? 1 : 0, (size_t)nbCodewords * 8U);
         if (g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6) {
             decodedBits[0] = 1;
+        }
+        if (g_second_half_frame_one && !g_cch_noise && nbCodewords == 1) {
+            /* Half 1 is blocks 6 to 11: frame number bit 1 in its first block, its CRC-7 in the last seven bits. */
+            uint8_t payload[41] = {0};
+            payload[1] = 1U;
+            const uint8_t crc = dpmr_crc7(payload, 41U);
+            if (g_hamming_calls % 12 == 6) {
+                decodedBits[1] = 1U;
+            } else if (g_hamming_calls % 12 == 11) {
+                for (int b = 0; b < 7; b++) {
+                    decodedBits[1 + b] = (unsigned char)((crc >> (6 - b)) & 1U);
+                }
+            }
         }
     }
     g_hamming_calls++;
@@ -395,7 +412,8 @@ test_enc_indication_is_the_frames_own(void) {
         expect_int("verified scrambled call", dsd_call_state_get(&state, 0U, &call) > 0 && call.enc_received == 1U, 1);
     const uint64_t first = call.epoch;
 
-    // The call ends; the next one's first frame verifies neither half, so the learned scrambling still plays it.
+    // The call ends; the next one's first frame verifies neither half, so the learned scrambling would play it, but a
+    // frame with no checked half opens no call (issue #890) and says nothing of encryption.
     (void)dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
     state.dPMRVoiceFS2Frame.Version[0] = 0U;
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
@@ -403,15 +421,19 @@ test_enc_indication_is_the_frames_own(void) {
     dpmr_resolve_half_scrambling(&state);
     rc |= expect_int("learned scrambling plays it", (int)state.dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_SCRAMBLED);
     dpmr_publish_call(&opts, &state);
-    rc |= expect_int("next call opens", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != first, 1);
-    rc |= expect_int("nothing of its own says encrypted", call.enc_received, 0);
+    rc |= expect_int("unchecked frame opens no call", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == first,
+                     1);
 
-    // A verified clear half: clear.
+    // Its next frame's second half verifies clear: the call opens, its first half still played by the learned
+    // scrambling, and the call's own indication is the checked half's: clear.
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
     state.dPMRVoiceFS2Frame.Version[1] = 0U;
     dpmr_resolve_half_scrambling(&state);
+    rc |= expect_int("learned scrambling still plays half 0", (int)state.dPMRVoiceFS2Frame.Scrambled[0],
+                     DPMR_HALF_SCRAMBLED);
     dpmr_publish_call(&opts, &state);
-    rc |= expect_int("verified clear", dsd_call_state_get(&state, 0U, &call) > 0 && call.enc_received == 0U, 1);
+    rc |= expect_int("next call opens", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != first, 1);
+    rc |= expect_int("verified clear", call.enc_received, 0);
     return rc;
 }
 
@@ -462,79 +484,115 @@ test_crc7_and_air_interface_id_helpers(void) {
     return rc;
 }
 
+/* One confirmed frame's publication: its halves' CRC-7 verdicts, frame numbers and modes, the identity the part
+   carries, then dpmr_update_superframe_part() and dpmr_publish_call() as processdPMRvoice() runs them. */
+static void
+publish_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part, unsigned mode0, unsigned mode1) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    f->ColorCode[0] = (unsigned int)(-1);
+    for (int o = 0; o < 2; o++) {
+        f->CCHDataCrcOk[o] = part->crc_ok[o] ? 1U : 0U;
+        f->FrameNumbering[o] = part->frame_number[o];
+        f->Version[o] = 0U;
+        f->CommsFormat[o] = 1U;
+        f->EmergencyPriority[o] = 0U;
+    }
+    f->CommunicationMode[0] = mode0;
+    f->CommunicationMode[1] = mode1;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_update_superframe_part(opts, state, part);
+    dpmr_publish_call(opts, state);
+}
+
+/* Issue #890 (B9b): a frame names the called station only from halves 0/1 and the calling station only from halves
+   2/3, both halves CRC-valid, and publishes that identity with its checked service in one observation. A half whose
+   Hamming words merely correct, or a pair numbered otherwise, names nobody. */
 static int
 test_superframe_part_updates_called_and_calling_ids(void) {
     static dsd_opts opts;
     static dsd_state state;
     dpmr_superframe_part part;
+    dsd_call_snapshot call;
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    /* Routing, not the gate: this case is about which identity each frame-number pair
-       carries, so give it a transmission that has already proved itself. The gate is
-       covered by test_unconfirmed_superframe_part_publishes_nothing below. */
-    state.dpmr_confirmed = 1;
-    const dsd_call_observation begin = {
-        .protocol = DSD_SYNC_DPMR_FS2_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_VOICE,
-    };
-    (void)dsd_call_state_observe(&state, &begin, DSD_CALL_BOUNDARY_BEGIN);
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
-    dsd_call_snapshot call;
+    publish_part(&opts, &state, &part, 0U, 0U);
     (void)dsd_call_state_get(&state, 0U, &call);
     rc |= expect_int("called-id", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("called-with-service", call.has_service_metadata, 1);
+    rc |= expect_int("called-service", call.service_options, 0x0001);
     rc |= expect_int("called-next-part", opts.dPMR_next_part_of_superframe, 2);
     rc |= expect_int("calling-id-preserved-empty", strcmp(call.source_text, ""), 0);
 
+    /* Calling halves whose CRC-7 failed and whose Hamming words all corrected: no calling identity. */
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 1464110U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
+    publish_part(&opts, &state, &part, 0U, 0U);
     (void)dsd_call_state_get(&state, 0U, &call);
-    rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
+    rc |= expect_int("hamming-only-calling-id-not-published", strcmp(call.source_text, ""), 0);
     rc |= expect_int("calling-next-part", opts.dPMR_next_part_of_superframe, 1);
     rc |= expect_int("called-id-preserved", strcmp(call.target_text, "1000000"), 0);
+
+    /* One calling half CRC-valid, the other not: no calling identity either. */
+    part = (dpmr_superframe_part){.frame_number = {2U, 3U},
+                                  .id_value = 1464110U,
+                                  .crc_ok = {true, false},
+                                  .hamming_ok = {{true, true}, {true, true}}};
+    publish_part(&opts, &state, &part, 0U, 0U);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("half-failed-calling-id-not-published", strcmp(call.source_text, ""), 0);
+
+    part = (dpmr_superframe_part){.frame_number = {2U, 3U},
+                                  .id_value = 1464110U,
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
+    publish_part(&opts, &state, &part, 0U, 0U);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
+    rc |= expect_int("calling-preserves-called-id", strcmp(call.target_text, "1000000"), 0);
     const uint64_t first_caller_epoch = call.epoch;
 
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 2928210U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
+    publish_part(&opts, &state, &part, 0U, 0U);
     (void)dsd_call_state_get(&state, 0U, &call);
     rc |= expect_int("changed-calling-id", strcmp(call.source_text, "200000*"), 0);
-    rc |= expect_int("changed-calling-preserves-called-id", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("changed-calling-starts-epoch", call.epoch != first_caller_epoch, 1);
+    const uint64_t second_caller_epoch = call.epoch;
 
-    part = (dpmr_superframe_part){.frame_number = {0U, 1U},
+    /* Halves 0 and 3, both CRC-valid: the high half of one identity and the low half of another, no identity. */
+    part = (dpmr_superframe_part){.frame_number = {0U, 3U},
                                   .id_value = 10U,
-                                  .crc_ok = {false, false},
-                                  .hamming_ok = {{true, true}, {false, false}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
+    publish_part(&opts, &state, &part, 0U, 0U);
     (void)dsd_call_state_get(&state, 0U, &call);
-    rc |= expect_int("weak-called-id-does-not-overwrite", strcmp(call.target_text, "1000000"), 0);
-    rc |= expect_int("weak-called-next-part", opts.dPMR_next_part_of_superframe, 2);
+    rc |= expect_int("mismatched-pair-names-nobody", strcmp(call.target_text, "000000*") != 0, 1);
+    rc |= expect_int("mismatched-pair-keeps-the-call", call.epoch == second_caller_epoch, 1);
 
     part = (dpmr_superframe_part){.frame_number = {1U, 2U},
                                   .id_value = 0U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
+    publish_part(&opts, &state, &part, 0U, 0U);
     (void)dsd_call_state_get(&state, 0U, &call);
-    rc |= expect_int("unknown-preserves-called", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("unknown-preserves-calling", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("unknown-toggles-next-part", opts.dPMR_next_part_of_superframe, 1);
 
-    opts.dPMR_next_part_of_superframe = 1;
+    opts.dPMR_next_part_of_superframe = 2;
     dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("unknown-toggles-next-part-back", opts.dPMR_next_part_of_superframe, 2);
+    rc |= expect_int("unknown-toggles-next-part-back", opts.dPMR_next_part_of_superframe, 1);
 
     opts.dPMR_next_part_of_superframe = 0;
     dpmr_update_superframe_part(&opts, &state, &part);
@@ -542,8 +600,89 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     return rc;
 }
 
-/* Before #407 this published a talkgroup and a source: dpmr_ids_are_strong() accepts a
-   CCH whose two leading Hamming blocks merely report correctable, which 44% of noise
+/* Issue #890 (B9b, F13): the service a frame publishes is its CRC-valid half's, whatever its failed half read, and a
+   checked data CCH is a data call: never voice, and never voice first and data after. */
+static int
+test_service_and_kind_come_from_the_checked_half(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dpmr_superframe_part part;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    /* Half 0 failed, reading voice and emergency; half 1 passed: Type 2 data, no emergency. */
+    part = (dpmr_superframe_part){.frame_number = {0U, 1U},
+                                  .id_value = 1464100U,
+                                  .crc_ok = {false, true},
+                                  .hamming_ok = {{true, true}, {true, true}}};
+    state.dPMRVoiceFS2Frame.EmergencyPriority[0] = 1U;
+    publish_part(&opts, &state, &part, 0U, 3U);
+    state.dPMRVoiceFS2Frame.EmergencyPriority[0] = 0U;
+    rc |= expect_int("checked-half-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("checked-half-kind-data", call.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_int("checked-half-service", call.service_options, 0x0031);
+    rc |= expect_int("checked-half-no-emergency", call.emergency, 0);
+    rc |= expect_int("failed-half-names-nobody", call.target_text[0] == '\0', 1);
+
+    /* Both halves checked data: a data call. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    part = (dpmr_superframe_part){.frame_number = {0U, 1U},
+                                  .id_value = 1464100U,
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{true, true}, {true, true}}};
+    publish_part(&opts, &state, &part, 2U, 2U);
+    rc |= expect_int("data-cch-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("data-cch-not-voice", call.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_int("data-cch-identity-with-it", strcmp(call.target_text, "1000000"), 0);
+
+    /* A confirmed frame with no checked half opens nothing. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    part = (dpmr_superframe_part){.frame_number = {0U, 1U},
+                                  .id_value = 1464100U,
+                                  .crc_ok = {false, false},
+                                  .hamming_ok = {{true, true}, {true, true}}};
+    publish_part(&opts, &state, &part, 0U, 0U);
+    rc |= expect_int("unchecked-frame-opens-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    return rc;
+}
+
+/* Issue #890 (B19): the scrambler reloads only at a checked frame 0. A failed half that reads 0 is not frame 0 when the
+   frame's checked half is numbered 3, so the register goes on; a failed first half is frame 0 when the checked second
+   half is numbered 1. */
+static int
+test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+    int rc = 0;
+
+    for (int second = 1; second <= 3; second += 2) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+        reset_capture();
+        state.synctype = DSD_SYNC_DPMR_FS2_POS;
+        state.dpmr_scrambled = 2U; /* a scrambled transmission, learned from an earlier verified half */
+        state.nxdn_payload_mi = 0x7777ULL;
+        state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0U; /* failed: reads 0 */
+        state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
+        state.dPMRVoiceFS2Frame.FrameNumbering[1] = (unsigned)second;
+        state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
+        state.dPMRVoiceFS2Frame.Version[1] = 3U;
+        dpmr_resolve_half_scrambling(&state);
+        dpmr_play_voice_frames(&opts, &state, ambe_fr);
+        rc |= expect_int("bad-frame0-plays", (int)g_mbe_calls, 8);
+        const unsigned long long want = second == 1 ? 0ULL : 0x7777ULL;
+        rc |= expect_u64(second == 1 ? "checked-pair-frame0-reloads" : "bad-frame0-keeps-the-register", g_mbe_mi[0],
+                         want);
+    }
+    return rc;
+}
+
+/* Before #407 this published a talkgroup and a source: dpmr_ids_are_strong() then accepted a
+   CCH whose two leading Hamming blocks merely reported correctable, which 44% of noise
    superframes do. Without a passing CRC-7 there is nothing here to publish. */
 static int
 test_unconfirmed_superframe_part_publishes_nothing(void) {
@@ -664,6 +803,7 @@ test_dpmr_channel_not_colour_code(void) {
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
     state.dpmr_confirmed = 1;
     state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U; /* a frame publishes a call from a checked half (issue #890) */
     dpmr_publish_call(&opts, &state);
 
     dsd_call_snapshot call;
@@ -861,9 +1001,12 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
         rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.Version[i], 0);
     }
 
+    /* Both halves read frame number 0: no 0/1 pair, so no identity (issue #890), though the frame confirms, plays and
+       publishes its checked service. */
     dsd_call_snapshot call;
-    (void)dsd_call_state_get(&state, 0U, &call);
-    rc |= expect_int("process-called-id", strcmp(call.target_text, "0000000"), 0);
+    rc |= expect_int("process-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("process-unpaired-halves-name-nobody", call.target_text[0] == '\0', 1);
+    rc |= expect_int("process-service", call.has_service_metadata, 1);
     rc |= expect_int("process-next-part", opts.dPMR_next_part_of_superframe, 2);
     rc |= expect_int("process-invalid-color-code", (int)state.dPMRVoiceFS2Frame.ColorCode[0], -1);
     rc |= expect_int("process-no-color-side-effect", state.dpmr_color_code, 0);
@@ -958,7 +1101,8 @@ test_process_dpmr_voice_search_evidence_follows_the_published_call(void) {
     rc |= expect_int("search-split-reports-nothing", g_search_evidence.calls, 0);
 
     reset_capture();
-    g_channel_code = 0x55FF7FU; /* channel code 7 */
+    g_channel_code = 0x55FF7FU;  /* channel code 7 */
+    g_second_half_frame_one = 1; /* halves 0/1: the called identity */
     (void)processdPMRvoice(&opts, &state);
     dsd_signal_search_evidence_set(NULL);
 
@@ -1058,6 +1202,8 @@ main(void) {
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_superframe_part_updates_called_and_calling_ids();
+    rc |= test_service_and_kind_come_from_the_checked_half();
+    rc |= test_scrambler_reloads_only_at_a_checked_frame_zero();
     rc |= test_unconfirmed_superframe_part_publishes_nothing();
     rc |= test_id_print_does_not_publish_the_color_code();
     rc |= test_confirmed_target_only_call_publishes_the_color_code();

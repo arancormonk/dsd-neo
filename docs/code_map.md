@@ -886,8 +886,9 @@ Generated (do not edit/commit):
       dPMR's one CCH half (320 ms), M17's lone clean LICH (80 ms), D-STAR's superframe ending on its sync alone
       (`dstar_confirm_end_frame()`, 840 ms) and DMR's gate left PENDING on an unlocked candidate (120 ms); and frames
       whose sync the decoder accepts but that carry no check of their own, so a key-up just after a quiet reading
-      waits for its first verdict: dPMR FS1, FS3 and FS4 (`dpmr_confirm_note_unchecked_frame()` from
-      `dsd_dispatch_handle_dpmr()`, 320 ms) and an M17 packet frame before the end-of-transmission frame whose CRC
+      waits for its first verdict: dPMR FS4, and an FS1 or FS3 synctype no checked frame stands behind, which the hunt
+      never produces (`dpmr_confirm_note_unchecked_frame()` from `dsd_dispatch_handle_dpmr()`, 320 ms; a checked dPMR
+      header or end frame is PROVEN, issue #890) and an M17 packet frame before the end-of-transmission frame whose CRC
       covers the packet (`m17_confirm_note_unchecked_frame()`, 80 ms). Whatever the setting, the runtime wrapper
       first stores the note for the -Y frame-boundary step (up to three plain stores: `scan_y_content_seq` for PROVEN,
       `scan_y_partial_seq` and `scan_y_partial_hold_ms` for PARTIAL); with the setting off it then returns on one load,
@@ -9120,6 +9121,27 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   used: the closed-eye off-air `dpmr` fixture reads 5-8 bit errors on its FS2s, the same as noise (5-7), so no threshold
   keeps its syncs (`DECODE_IQ_DPMR_MARGINAL`) and drops noise, and on the scan captures the shorter 2400/4 dwells it
   leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does.
+- dPMR FS1 and FS3 (`frame_sync_try_dpmr()`, `src/dsp/frame_sync_dpmr.c`, issue #890). FS1 (24 symbols, its own
+  window, readiness and settling check) marks a header candidate (`dsd_dpmr_frame_sync::pending`) under the
+  configured polarity alone: FS4 is FS1's symbol-wise complement (TS 102 658 6.1.4 NOTE), so the other polarity's FS1
+  is an FS4, which is not read. FS3 (12 symbols) marks an end frame candidate only where an end frame can be
+  (`fs3_at`, within a symbol): one FS2 frame (384 symbols) after an accepted FS2, and twelve symbols after a checked
+  header whose message type an END frame follows (Table 5.3 and note 2: Communications_Start for an unsolicited
+  status, Connection_Request, Disconnect_Request, System_Request, Status Polling Response). Nothing is accepted at the
+  word: the hunt goes on over the candidate's frame (132 dibits for a header, 36 for an end frame), every matcher with
+  it, so a rejected candidate costs no protocol a frame (an NXDN48 frame sync inside it is matched where it is), and
+  a newer FS1 replaces the candidate. Only FS2 and FS3 stand down inside it. Once the frame's last symbol is in, it is
+  read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
+  specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
+  10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy descrambled from a fresh
+  scrambler (11.6: "for each scrambler block the scrambler is re-initialized"), three Hamming(12,8) words and the
+  CRC-7. A copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with
+  different contents are no frame. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
+  (lock and `lastsynctype`, no warm start), with its bits in `checked_*`; the stream must be the one the word was read
+  on (clock epoch, input, carrier count, SPS profile, polarity) and an input interruption forgets the candidate
+  (`frame_sync_dpmr_forget()`). On non-dPMR input the matcher's added cost is one 24-symbol compare per window while
+  dPMR runs on 2400/4; no symbol is taken from the hunt that was not before. A decided limit: a real FS2 inside a
+  false FS1's 132 symbols (an exact 24-symbol word, one window in 2^24) is not taken. Test: `FRAME_SYNC_DPMR`.
 - M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
   words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
   `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
@@ -13985,10 +14007,30 @@ Private per-protocol modules worth knowing about:
   `dsd_state::dpmr_scrambled`, and gives a failed half that value (or, with none yet, this frame's verified half);
   `dPMRVoiceFS2Frame.Scrambled[]` holds the result, which the bridge (per half: NXDN scrambler and `nxdn_cipher_type`
   1, or clear), the call's crypto classification and the terminal read; `Version[]` stays the raw field.
-  `dpmr_confirm_reset()`, initState() and the FS1/FS3/FS4 boundaries (`dpmr_scrambling_reset()`) forget it. A boundary
+  `dpmr_confirm_reset()`, initState() and the transmission boundaries (`dpmr_scrambling_reset()`: a checked header that
+  opens a call, which then sets its own from its Version, and a checked end frame) forget it. A boundary
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
+- dPMR headers, end frames and publication (issue #890; `src/protocol/dpmr/dpmr_header.c`,
+  `src/engine/dispatch/dispatch_dpmr.c`). The frame sync accepts FS1 and FS3 only behind a header or end frame that
+  passed its check, with what it decoded in `dsd_state::dpmr_sync` (`src/dsp/frame_sync_dpmr.c`, DSP section), and
+  the dispatcher takes it for that sync once (`dpmr_take_checked_header()`, `dpmr_take_checked_end()`; an FS1 or FS3
+  synctype with none behind it, and FS4, change nothing). The CRC and the message type come before every side effect:
+  only a Communications_Start header (MT 0000) whose Communications Mode is voice or data (Table 5.55, 000 to 101)
+  ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
+  its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
+  010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
+  status messages) confirms the transmission and reports PROVEN content without a call. A checked end frame reports
+  PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the scrambling and closes the capture; nothing
+  else ends a call as a terminator. Both return `DSD_FRAME_VERDICT_PROFILE_PROVEN`. On FS2 frames the dispatcher
+  publishes nothing before the CCH is read; `dpmr_publish_call()` publishes the frame once, from its first
+  CRC-valid half: that half's service and call kind (a data CCH is a data call), with the identity
+  `dpmr_update_superframe_part()` bound (`dPMRVoiceFS2Frame_t::BoundIdKind`: both halves CRC-valid and numbered 0/1,
+  the called ID, or 2/3, the calling ID). A frame with no CRC-valid half only keeps an open dPMR call going and opens
+  none. The shared scrambler reloads only at a checked frame 0: a half that passed numbered 0, or a failed first half
+  whose second half passed numbered 1 (`dpmr_play_voice_frames()`). Tests: `DPMR_SYNC_DISPATCH`,
+  `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
   passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
   no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,

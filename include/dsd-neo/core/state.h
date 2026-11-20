@@ -273,6 +273,55 @@ typedef struct {
     uint8_t valid;
 } dsd_frame_sync_history_carry;
 
+/* The dPMR frames the frame sync reads inside the hunt before it accepts them (src/dsp/frame_sync_dpmr.c, ETSI TS 102
+ * 658 V2.6.1 4.2.2, 6.1): a header behind FS1 (MI0, the channel code and MI1, 132 dibits) and an end frame behind FS3
+ * (two END copies, 36 dibits). */
+enum {
+    DSD_DPMR_SYNC_FRAME_NONE = 0,
+    DSD_DPMR_SYNC_FRAME_HEADER = 1, /* FS1: a Message_Frame (TS 102 658 Table 5.2) */
+    DSD_DPMR_SYNC_FRAME_END = 2,    /* FS3: an End_Frame (Table 5.44) */
+};
+
+#define DSD_DPMR_HEADER_MI_BITS 72 /* MT, PARMS: one MI copy's information bits before its CRC-8 (11.5) */
+#define DSD_DPMR_HEADER_CC_BITS 24 /* the channel code between MI0 and MI1 */
+#define DSD_DPMR_END_INFO_BITS  17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
+#define DSD_DPMR_HEADER_DIBITS  132
+#define DSD_DPMR_END_DIBITS     36
+#define DSD_DPMR_SYNC_COPY_0    0x1U
+#define DSD_DPMR_SYNC_COPY_1    0x2U
+
+/* Where a dPMR sync word ended on the stream (dsd_state::symbol_clock at its last symbol), and the stream it was read
+ * on; or, for dsd_dpmr_frame_sync::fs3_at, where an FS3 word may end. kind is a DSD_DPMR_SYNC_FRAME_* value, NONE when
+ * the mark is not set. */
+typedef struct {
+    uint64_t clock;
+    uint32_t epoch;       /* dsd_state::symbol_clock_epoch */
+    uint32_t input;       /* dsd_state::symbol_clock_input */
+    uint32_t carrier_seq; /* dsd_state::carrier_seq */
+    int sps_hunt_idx;
+    uint8_t kind;
+    uint8_t inverted; /* read under -xd (dsd_opts::inverted_dpmr) */
+} dsd_dpmr_sync_mark;
+
+/* The frame sync's dPMR header and end frames (src/dsp/frame_sync_dpmr.c). A sync word whose frame is still being
+ * read is pending: the hunt goes on over the frame's symbols (every matcher sees them, so a rejected candidate costs no
+ * other protocol a frame) and, once its last symbol is in, the frame is read back from the soft symbol history and
+ * checked. Only a frame that passed its CRC and FEC is accepted, as DSD_SYNC_DPMR_FS1_* or DSD_SYNC_DPMR_FS3_*, with
+ * what it decoded in checked_* for the dispatcher (dpmr_take_checked_frame()). fs3_at is where an FS3 may end: one
+ * FS2 frame after an accepted FS2, or straight after a checked header whose message type an END frame follows. Written
+ * by the frame sync, read by the dPMR decoder; decoder-thread private. */
+typedef struct {
+    dsd_dpmr_sync_mark pending;
+    dsd_dpmr_sync_mark fs3_at;
+    uint64_t checked_clock; /* dsd_state::symbol_clock when the checked frame was accepted */
+    uint32_t checked_epoch;
+    uint8_t checked_kind;   /* DSD_DPMR_SYNC_FRAME_*: what checked_bits hold */
+    uint8_t checked_copies; /* DSD_DPMR_SYNC_CHECKED_HEADER_COPY_* (END copies alike): the copies that passed */
+    /* A header's MT and PARMS (DSD_DPMR_HEADER_MI_BITS), or an END's information bits (DSD_DPMR_END_INFO_BITS). */
+    uint8_t checked_bits[DSD_DPMR_HEADER_MI_BITS];
+    uint8_t checked_cc[DSD_DPMR_HEADER_CC_BITS]; /* a header's channel code bits, as received */
+} dsd_dpmr_frame_sync;
+
 /* The NAC the P25 Phase 1 NIDs on the carrier being received established, and a NAC change held for corroboration
  * (p25p1_nid_verdict_classify(), src/protocol/p25/phase1/p25p1_nid_verdict.c). Established by an unborrowed NID naming
  * a usable NAC (not 0x000 or 0xFFF), it holds only on the stream it was named on: the carrier count, the accepted trunk
@@ -1033,6 +1082,11 @@ typedef struct {
     unsigned int Reserved[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int SlowData[NB_OF_DPMR_VOICE_FRAME_TO_DECODE]; /* 18-bit slow data field */
     unsigned int ColorCode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE / 2];
+    /* The identity the frame's two halves carry together (dpmr_update_superframe_part()): DPMR_FRAME_ID_CALLED or
+       DPMR_FRAME_ID_CALLING only when both halves passed their CRC-7 and are numbered 0/1 or 2/3 (TS 102 658 Tables
+       5.5 to 5.8), else DPMR_FRAME_ID_NONE; BoundIdValue is the 24-bit air interface ID. */
+    unsigned int BoundIdKind;
+    unsigned int BoundIdValue;
 } dPMRVoiceFS2Frame_t;
 
 /**
@@ -1876,6 +1930,8 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
+    /* dPMR headers and end frames read inside the hunt (dsd_dpmr_frame_sync). */
+    dsd_dpmr_frame_sync dpmr_sync;
     /* NXDN96 frame synchronization: the frame sync word hits lately seen (where in dsd_state::symbolcnt, and the
      * polarity, as the sync type) and the lock a transmission's accepted FSWs keep (src/dsp/dsd_frame_sync.c), moved
      * by the LICHs their frames read (dsd_nxdn96_sync_note_lich()). Cleared with the M17 join history (no carrier, an

@@ -2238,6 +2238,11 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
@@ -2259,6 +2264,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -2289,6 +2295,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
@@ -18281,6 +18288,34 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_history_carry
 )
 set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
+# dPMR headers and end frames read inside the hunt (issue #890): checked before they are accepted, in both polarities,
+# with no frame of another protocol lost to a rejected candidate.
+add_executable(
+    dsd-neo_test_frame_sync_dpmr
+    dsp/test_frame_sync_dpmr.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(dsd-neo_test_frame_sync_dpmr PRIVATE USE_RADIO)
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME FRAME_SYNC_DPMR COMMAND dsd-neo_test_frame_sync_dpmr)
 
 # The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
 # on the stream that frame was read on.

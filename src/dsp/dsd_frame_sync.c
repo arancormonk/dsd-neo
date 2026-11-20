@@ -1280,17 +1280,61 @@ frame_sync_note_dpmr_fs2_frame(dsd_state* state) {
     state->dpmr_fs2_frame_valid = 1;
 }
 
+/* A dPMR header or end frame that passed its check (frame_sync_dpmr_candidate_complete()), accepted on its last
+ * symbol: the hunt read the whole frame, so its handler reads nothing, and no warm start follows (the window is the
+ * frame's payload, not its word; the frame was sliced on its word's levels). */
+static int
+frame_sync_accept_dpmr_checked(frame_sync_match_ctx* ctx, int synctype) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, opts->inverted_dpmr == 1 ? "-dPMR " : "+dPMR ", ctx->synctest_pos + 1,
+                       ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    return synctype;
+}
+
+/* dPMR (ETSI TS 102 658 6.1): FS2 opens a voice frame and is accepted on its word; FS1 (a header) and FS3 (an end
+ * frame, only where one can be) mark a candidate whose frame the hunt reads on, every matcher with it, and are accepted
+ * once their frame passed its check (src/dsp/frame_sync_dpmr.c). The configured polarity alone, as for FS2: the other
+ * polarity's FS1 is FS4 (6.1.4 NOTE). */
 static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (!frame_sync_dpmr_enabled(ctx) || !frame_sync_match_window_ready(ctx, 12)) {
+    if (!frame_sync_dpmr_enabled(ctx)) {
+        return DSD_SYNC_NONE;
+    }
+    /* A candidate's frame is read back from the soft history, not from the windows: it completes on its last symbol
+       even when this call's windows are not filled yet (another protocol's frame read some of it). */
+    const int checked = frame_sync_dpmr_candidate_complete(opts, state);
+    if (checked != DSD_SYNC_NONE) {
+        return frame_sync_accept_dpmr_checked(ctx, checked);
+    }
+    if (!frame_sync_match_window_ready(ctx, 12)) {
+        return DSD_SYNC_NONE;
+    }
+    /* FS1's own 24-symbol window, all of it the carrier's. A newer FS1 replaces a candidate being read: a real frame
+       holds an exact FS1 only by chance (one window in 2^24), so it is the older candidate that was no frame. */
+    if (frame_sync_match_window_ready(ctx, 24) && !frame_sync_burst_settling(ctx, 24)
+        && frame_sync_dpmr_arm_header(opts, state, ctx->synctest)) {
+        return DSD_SYNC_NONE;
+    }
+    /* No FS2 or FS3 inside a header or end frame being read: a sync word there is its payload's. */
+    if (frame_sync_dpmr_candidate_reading(state)) {
+        return DSD_SYNC_NONE;
+    }
+    if (frame_sync_dpmr_arm_end(opts, state, ctx->synctest12)) {
         return DSD_SYNC_NONE;
     }
 
     if (opts->inverted_dpmr == 0 && strcmp(ctx->synctest12, DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
         frame_sync_note_dpmr_fs2_frame(state);
+        frame_sync_dpmr_note_fs2(opts, state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -1303,6 +1347,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dpmr == 1 && strcmp(ctx->synctest12, INV_DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
         frame_sync_note_dpmr_fs2_frame(state);
+        frame_sync_dpmr_note_fs2(opts, state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -2832,6 +2877,10 @@ static const char* const k_frame_sync_p25p2_words[] = {
 static const char* const k_frame_sync_dpmr_words[] = {
     DPMR_FRAME_SYNC_2,
     INV_DPMR_FRAME_SYNC_2,
+    DPMR_FRAME_SYNC_1,
+    INV_DPMR_FRAME_SYNC_1,
+    DPMR_FRAME_SYNC_3,
+    INV_DPMR_FRAME_SYNC_3,
     NULL,
 };
 static const char* const k_frame_sync_tetra_words[] = {
@@ -6034,6 +6083,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
                 frame_sync_history_drop(state);
+                frame_sync_dpmr_forget(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;
             }
@@ -6060,6 +6110,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
             frame_sync_history_drop(state);
+            /* A dPMR frame being read lost its symbols too. */
+            frame_sync_dpmr_forget(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }

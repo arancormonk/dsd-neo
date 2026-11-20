@@ -72,6 +72,58 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     return g_voice_crc_halves;
 }
 
+/* Put @p count bits of @p value, most significant first, at @p at of @p bits. */
+static void
+put_bits(uint8_t* bits, int at, int count, uint32_t value) {
+    for (int i = 0; i < count; i++) {
+        bits[at + i] = (uint8_t)((value >> (count - 1 - i)) & 1U);
+    }
+}
+
+/* What the frame sync leaves behind when it accepts an FS1 on a header that passed its check (dsd_dpmr_frame_sync):
+   a header of message type @p mt, Communications Mode @p mode and Version @p version, called ID 1464100 ("1000000"),
+   calling ID 2928210 ("200000*"), behind the channel code of colour code 12. */
+static void
+plant_checked_header(dsd_state* state, uint32_t mt, uint32_t mode, uint32_t version) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    DSD_MEMSET(sync->checked_bits, 0, sizeof(sync->checked_bits));
+    put_bits(sync->checked_bits, 0, 4, mt);
+    put_bits(sync->checked_bits, 4, 24, 1464100U);
+    put_bits(sync->checked_bits, 28, 24, 2928210U);
+    put_bits(sync->checked_bits, 52, 3, mode);
+    put_bits(sync->checked_bits, 55, 2, version);
+    put_bits(sync->checked_bits, 57, 2, 1U);
+    put_bits(sync->checked_cc, 0, 24, 0x5D5D55U);
+    sync->checked_kind = DSD_DPMR_SYNC_FRAME_HEADER;
+    sync->checked_copies = DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1;
+    sync->checked_clock = state->symbol_clock;
+    sync->checked_epoch = state->symbol_clock_epoch;
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+}
+
+/* The same for an FS3 on an end frame that passed its check: a normal end frame. */
+static void
+plant_checked_end(dsd_state* state) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    DSD_MEMSET(sync->checked_bits, 0, sizeof(sync->checked_bits));
+    sync->checked_kind = DSD_DPMR_SYNC_FRAME_END;
+    sync->checked_copies = DSD_DPMR_SYNC_COPY_1;
+    sync->checked_clock = state->symbol_clock;
+    sync->checked_epoch = state->symbol_clock_epoch;
+    state->synctype = DSD_SYNC_DPMR_FS3_POS;
+}
+
+/* An open dPMR voice call, as an earlier confirmed frame published it. */
+static void
+open_voice_call(dsd_state* state) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DPMR_FS2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
 static void
 test_sync_pattern_lengths(void) {
     _Static_assert(sizeof(DPMR_FRAME_SYNC_1) == 25U, "DPMR_FRAME_SYNC_1 length");
@@ -105,12 +157,16 @@ test_synctype_helpers(void) {
     assert(!dsd_dispatch_matches_dpmr(DSD_SYNC_NXDN_POS));
 }
 
+/* Issue #890 (A6): only a header that opens a call (checked, Communications_Start, voice or data) and a checked end
+   frame close dPMR's capture; an FS1 or FS3 no checked frame stands behind, a header of another message type and an
+   FS4 close nothing. */
 static void
 test_dispatch_close_only_syncs(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    g_close_calls = 0;
 
     opts.mbe_out_f = stdout;
     state.synctype = DSD_SYNC_DPMR_FS1_POS;
@@ -118,19 +174,33 @@ test_dispatch_close_only_syncs(void) {
     state.currentslot = 1;
     dsd_dispatch_handle_dpmr(&opts, &state);
     assert(state.currentslot == 0);
+    assert(g_close_calls == 0);
+
+    plant_checked_header(&state, 0x2U /* Disconnect_Request */, 0U, 0U);
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 0);
+
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    dsd_dispatch_handle_dpmr(&opts, &state);
     assert(g_close_calls == 1);
     assert(DSD_SYNC_IS_DPMR(g_close_protocol_synctype));
     assert(g_voice_calls == 0);
 
     state.synctype = DSD_SYNC_DPMR_FS3_NEG;
     dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 1);
+    plant_checked_end(&state);
+    dsd_dispatch_handle_dpmr(&opts, &state);
     assert(g_close_calls == 2);
 
     state.synctype = DSD_SYNC_DPMR_FS4_POS;
     dsd_dispatch_handle_dpmr(&opts, &state);
-    assert(g_close_calls == 3);
+    assert(g_close_calls == 2);
 }
 
+/* Issue #890 (B19): the dispatcher publishes nothing before the frame's CCH is read; the frame publishes what its
+   checked half says (DPMR_VOICE_BRIDGE). With the decoder stubbed here, a confirmed transmission's FS2 sync leaves no
+   call row of its own. */
 static void
 test_dispatch_voice_sync_continues_a_confirmed_call_and_processes_voice(void) {
     static dsd_opts opts;
@@ -141,23 +211,74 @@ test_dispatch_voice_sync_continues_a_confirmed_call_and_processes_voice(void) {
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
     state.nac = 123;
-    /* A transmission that has already proved itself; an unconfirmed one opens no row,
-       which test_dispatch_voice_sync_alone_opens_no_call covers. */
     state.dpmr_confirmed = 1;
+    const int voice_before = g_voice_calls;
 
     dsd_dispatch_handle_dpmr(&opts, &state);
 
     /* The voice decoder creates the capture with the first frame it records; the sync opens nothing (issue #661). */
     assert(g_open_calls == 0);
-    assert(g_voice_calls == 1);
+    assert(g_voice_calls == voice_before + 1);
     assert(state.nac == 0);
     dsd_call_snapshot call;
-    assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
-    assert(call.kind == DSD_CALL_KIND_VOICE);
-    assert(call.ota_source_id == 0U);
-    assert(call.ota_target_id == 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0);
     assert(strcmp(state.fsubtype, " VOICE        ") == 0);
+}
+
+/* Issue #890 (A6): a checked Communications_Start header opens its call with the identity and service it carries, its
+   channel code and its scrambling, ending the call before it; a checked header of another message type ends nothing
+   and opens nothing; Communications Mode 110 opens nothing either. */
+static void
+test_dispatch_checked_header_opens_its_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_color_code = -1;
+
+    open_voice_call(&state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t before = call.epoch;
+
+    plant_checked_header(&state, 0x3U /* T_ACK */, 0U, 0U);
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == before && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(state.dpmr_confirmed == 1); /* checked content all the same */
+
+    plant_checked_header(&state, 0x0U, 6U /* service by MI_TYPE */, 0U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == before && call.phase == DSD_CALL_PHASE_ACTIVE);
+
+    state.dpmr_scrambled = 0U;
+    plant_checked_header(&state, 0x0U, 2U /* Type 1 data */, 3U);
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != before && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_DATA);
+    assert(strcmp(call.target_text, "1000000") == 0);
+    assert(strcmp(call.source_text, "200000*") == 0);
+    assert(call.has_service_metadata == 1U);
+    assert(call.service_options == ((3U << 8U) | (2U << 4U) | 1U));
+    assert(state.dpmr_color_code == 12);
+    assert(state.dpmr_scrambled == 2U);
+    assert(strcmp(state.fsubtype, " HEADER       ") == 0);
+    /* Taken once: the same sync dispatched again has no header behind it. */
+    const uint64_t opened = call.epoch;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == opened);
+
+    /* A voice header opens a voice call. */
+    state.symbol_clock += 500U;
+    plant_checked_header(&state, 0x0U, 1U, 0U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != opened && call.kind == DSD_CALL_KIND_VOICE);
+    assert(state.dpmr_scrambled == 1U);
+
+    /* A header taken at another symbol than the sync's is not this sync's. */
+    plant_checked_header(&state, 0x0U, 1U, 0U);
+    state.symbol_clock++;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 }
 
 /* Issue #661: an FS2 sync on noise, before any CCH has passed its CRC, leaves no capture file behind. */
@@ -191,19 +312,40 @@ test_dispatch_end_sync_tightens_sync_loss_end(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
-    dsd_dispatch_handle_dpmr(&opts, &state);
-
+    open_voice_call(&state);
     assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
 
-    state.synctype = DSD_SYNC_DPMR_FS3_POS;
-    dsd_dispatch_handle_dpmr(&opts, &state);
+    plant_checked_end(&state);
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
 
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.phase == DSD_CALL_PHASE_ENDED);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+}
+
+/* Issue #890 (A6, B9): only an end frame that passed its CRC-7 ends the call; an FS3 no checked END stands behind leaves
+   the call, its scrambling and its capture alone. */
+static void
+test_dispatch_unchecked_end_keeps_the_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    open_voice_call(&state);
+    state.dpmr_scrambled = 2U;
+
+    state.synctype = DSD_SYNC_DPMR_FS3_POS;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(state.dpmr_scrambled == 2U);
+
+    plant_checked_end(&state);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(state.dpmr_scrambled == 0U);
 }
 
 // A passing CCH CRC-7 is the only thing dPMR can offer the SPS hunt as proof its profile is
@@ -248,8 +390,8 @@ test_dispatch_voice_verdicts_follow_the_cch_crc(void) {
     g_voice_crc_halves = 0;
     assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
 
-    // FS1/FS3/FS4 run no check, so they report the default rather than a failure they
-    // never measured (protocol_dispatch.h).
+    // FS1/FS3 with no checked frame behind them, and FS4, run no check, so they report the default rather than a
+    // failure they never measured (protocol_dispatch.h).
     state.synctype = DSD_SYNC_DPMR_FS1_POS;
     assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
     state.synctype = DSD_SYNC_DPMR_FS3_POS;
@@ -276,31 +418,42 @@ test_dispatch_voice_sync_alone_opens_no_call(void) {
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&state, 0U, &call) <= 0);
 
-    // Once the transmission has proved itself, the next sync is a call again.
+    // Nor once the transmission has proved itself: the frame publishes, from its checked half (issue #890).
     state.dpmr_confirmed = 1;
     dsd_dispatch_handle_dpmr(&opts, &state);
-    assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0);
 
     g_voice_crc_halves = 2;
 }
 
 /* Issue #655: a CRC-failed half is played by the scrambling the transmission's last verified half signalled, so every
-   transmission boundary the dispatcher sees (FS1 header, FS3 end, FS4) forgets it before the next call. */
+   transmission boundary the dispatcher sees forgets it before the next call: a header that opens a call (which then
+   sets its own) and a checked end frame (issue #890). A frame that checked nothing is no boundary. */
 static void
 test_dispatch_boundaries_forget_the_scrambling(void) {
     static dsd_opts opts;
     static dsd_state state;
-    static const int boundaries[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS1_NEG, DSD_SYNC_DPMR_FS3_POS,
-                                     DSD_SYNC_DPMR_FS3_NEG, DSD_SYNC_DPMR_FS4_POS, DSD_SYNC_DPMR_FS4_NEG};
-    for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++) {
+    static const int unchecked[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS1_NEG, DSD_SYNC_DPMR_FS3_POS,
+                                    DSD_SYNC_DPMR_FS3_NEG, DSD_SYNC_DPMR_FS4_POS, DSD_SYNC_DPMR_FS4_NEG};
+    for (size_t i = 0; i < sizeof(unchecked) / sizeof(unchecked[0]); i++) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         state.dpmr_scrambled = 2U;
-        state.synctype = boundaries[i];
+        state.synctype = unchecked[i];
         (void)dsd_dispatch_handle_dpmr(&opts, &state);
-        assert(state.dpmr_scrambled == 0U);
+        assert(state.dpmr_scrambled == 2U);
     }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_scrambled = 2U;
+    plant_checked_end(&state);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.dpmr_scrambled == 0U);
+    /* A clear voice header: the old verdict goes, the header's own (clear) comes. */
+    state.dpmr_scrambled = 2U;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.dpmr_scrambled == 1U);
     // A voice frame keeps the transmission's verdict.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -337,8 +490,9 @@ quiet_notes_install(int on) {
     g_quiet_hold_ms = 0U;
 }
 
-/* Issue #834: FS1, FS3 and FS4 carry no check of their own, so to a scan quiet check each is a frame waiting for its
-   first CCH verdict: PARTIAL for two FS2 spans (320 ms), once a frame, nothing PROVEN; nothing with the setting off. */
+/* Issue #834: an FS1 or FS3 with no checked frame behind it, and FS4, carry no check of their own, so to a scan quiet
+   check each is a frame waiting for its first CCH verdict: PARTIAL for two FS2 spans (320 ms), once a frame, nothing
+   PROVEN; nothing with the setting off. A checked header or end frame is PROVEN (issue #890). */
 static void
 test_dispatch_unchecked_frames_are_partial(void) {
     static dsd_opts opts;
@@ -358,6 +512,19 @@ test_dispatch_unchecked_frames_are_partial(void) {
             assert(!on || g_quiet_hold_ms == 320U);
             quiet_notes_install(0);
         }
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.scan_skip_silent = on;
+        quiet_notes_install(1);
+        plant_checked_header(&state, 0x3U, 0U, 0U);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        plant_checked_header(&state, 0x0U, 0U, 0U);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        plant_checked_end(&state);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        assert(g_quiet_proven == (on ? 3 : 0));
+        assert(g_quiet_partial == 0);
+        quiet_notes_install(0);
     }
 }
 
@@ -370,6 +537,8 @@ main(void) {
     test_dispatch_voice_sync_continues_a_confirmed_call_and_processes_voice();
     test_dispatch_unconfirmed_voice_sync_opens_no_capture();
     test_dispatch_end_sync_tightens_sync_loss_end();
+    test_dispatch_unchecked_end_keeps_the_call();
+    test_dispatch_checked_header_opens_its_call();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();

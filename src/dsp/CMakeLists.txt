@@ -36,6 +36,7 @@ target_sources(
         frame_sync_unflushed.c
         unflushed_retune.c
         frame_sync_policy.c
+        frame_sync_dpmr.c
         sync_hamming.c
         dmr_sync.c
         sync_calibration.c

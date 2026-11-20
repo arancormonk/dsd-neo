@@ -1106,11 +1106,11 @@ turned it on).
   runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone or code, even one that ends before its
   tone check finishes. A sync alone does not count: noise that only looks like the start of a frame (NXDN48 and dPMR
   noise often does) no longer keeps a silent channel. A frame whose verdict is still open (one that passed part of its
-  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR frame type that carries
-  no check of its own) holds the skip back while it waits; if the check's answer is more than a quarter of a second old
-  by then, the visit keeps its normal timing. A D-STAR transmission proved only by its sync words (two exact resync
-  words in a row, with no header or D-PRS CRC) plays, but it is no checked content: its superframes hold the skip back
-  while they keep coming, and the check can still skip the channel once they stop.
+  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR voice frame with one of
+  its two control halves checked) holds the skip back while it waits; if the check's answer is more than a quarter of a
+  second old by then, the visit keeps its normal timing. A D-STAR transmission proved only by its sync words (two exact
+  resync words in a row, with no header or D-PRS CRC) plays, but it is no checked content: its superframes hold the skip
+  back while they keep coming, and the check can still skip the channel once they stop.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
