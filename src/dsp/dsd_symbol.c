@@ -3188,12 +3188,13 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
 /* A sound card's sample within @p timeout_ms (0: only one it holds now), polled in short sleeps against a real-time
    deadline: dsd_audio_read_held() never waits, so a source that stops delivering (a suspended device, AAudio's capture
    timeout) holds the read no longer than the wait. 1 with the sample, -1 with none yet. A failed read is a silent
-   sample, as dsd_audio_read()'s always was. */
+   sample, as dsd_audio_read()'s always was. The deadline is taken at the first miss of a read that waits, so a sample
+   the card holds costs no clock read. */
 enum { SYMBOL_AUDIO_POLL_MS = 2 };
 
 static int
 symbol_audio_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
-    const uint64_t deadline_ms = dsd_realtime_mono_ms() + timeout_ms;
+    uint64_t deadline_ms = 0U; /* none yet; never 0 once taken, as timeout_ms is not */
     for (;;) {
         const int got = dsd_audio_read_held(opts->audio_in_stream, out, 1U);
         if (got != 0) {
@@ -3202,7 +3203,13 @@ symbol_audio_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
             }
             return 1;
         }
-        if (dsd_realtime_mono_ms() >= deadline_ms) {
+        if (timeout_ms == 0U) {
+            return -1;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (deadline_ms == 0U) {
+            deadline_ms = now_ms + timeout_ms;
+        } else if (now_ms >= deadline_ms) {
             return -1;
         }
         dsd_sleep_ms(SYMBOL_AUDIO_POLL_MS);

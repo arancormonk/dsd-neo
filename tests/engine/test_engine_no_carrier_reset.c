@@ -1243,9 +1243,20 @@ uint64_t __wrap_dsd_realtime_mono_ms(void);
 void __real_dsd_sleep_ms(unsigned int ms);
 void __wrap_dsd_sleep_ms(unsigned int ms);
 
+#ifdef USE_RADIO
+/* Counts a fake clock read for the stalled-card case (wd8_note_clock_read()). */
+static void wd8_note_clock_read(void);
+#endif
+
 uint64_t
 __wrap_dsd_realtime_mono_ms(void) {
-    return g_live_fake_realtime ? g_live_realtime_ms : __real_dsd_realtime_mono_ms();
+    if (g_live_fake_realtime) {
+#ifdef USE_RADIO
+        wd8_note_clock_read();
+#endif
+        return g_live_realtime_ms;
+    }
+    return __real_dsd_realtime_mono_ms();
 }
 
 void
@@ -15192,7 +15203,17 @@ enum { WD_RIGCTL = 0, WD_PENDING = 1, WD_PENDING_BEAT_IN_FRAME = 2, WD_PENDING_R
 static struct {
     int active;
     uint64_t stall_until_ms;
+    unsigned long held_samples;      /* samples a held read found ready */
+    unsigned long ready_clock_reads; /* clock reads while the card was not stalled */
 } g_wd8;
+
+/* A hunt read on a card that holds its samples reads none of the clock for them: a deadline is for a wait. */
+static void
+wd8_note_clock_read(void) {
+    if (g_wd8.active && g_live_realtime_ms >= g_wd8.stall_until_ms) {
+        g_wd8.ready_clock_reads++;
+    }
+}
 
 static int
 wd8_device_next(int16_t* out, int blocking) {
@@ -15302,6 +15323,13 @@ run_live_p25_beat_in_a_read(int mode) {
     static const char* const k_mode[] = {"rigctl return", "pending return", "pending return from a beat in a frame",
                                          "pending return replacing a failed one", "return on a stalled sound card"};
     const int in_read = mode == WD_RIGCTL || mode == WD_PENDING || mode == WD_DEVICE_STALL;
+    if (mode == WD_DEVICE_STALL && (g_wd8.held_samples == 0UL || g_wd8.ready_clock_reads * 10UL > g_wd8.held_samples)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the hunt read the clock %lu times for %lu samples a sound card held ready (a deadline is "
+                    "for a wait)\n",
+                    g_wd8.ready_clock_reads, g_wd8.held_samples);
+        rc = 1;
+    }
     if (mode == WD_DEVICE_STALL && (!g_wd6.returned || g_wd6.return_realtime_ms >= g_wd8.stall_until_ms)) {
         DSD_FPRINTF(stderr,
                     "FAIL: a stalled sound card held the beat's return until it resumed (returned %d at %llu ms, "
@@ -15368,7 +15396,7 @@ test_live_p25_replaced_pending_return_lands_before_the_next_hunt(void) {
 
 /* A sound card that stops delivering while the hunt reads it: the hunt read waits in bounded slices on what the device
    holds (dsd_audio_read_held()), so the beat's tick still runs, and returns the receiver to the control channel during
-   the stall, not once the card resumes. */
+   the stall, not once the card resumes. A sample the card holds ready costs no clock read. */
 static int
 test_live_p25_beat_on_a_stalled_sound_card(void) {
     return run_live_p25_beat_in_a_read(WD_DEVICE_STALL);
@@ -17901,6 +17929,7 @@ wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
             if (!wd8_device_next(buffer + i, 0)) {
                 return (int)i;
             }
+            g_wd8.held_samples++;
         }
         return (int)frames;
     }
