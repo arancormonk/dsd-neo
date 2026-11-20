@@ -16,11 +16,11 @@
  *
  * So the frame body has to say something checkable before the decoder opens a call, synthesizes
  * voice, or tells the SPS hunt that this profile is carrying traffic (issue #399). The CRC-16s
- * on the LSF and on a packet's end are proof by themselves, as is a PRBS9 lock. A LICH whose
- * six Golay(24,12) blocks all clear is not: extended Golay corrects three errors and detects
- * four, so it accepts a meaningful share of random words, and the run of them a whole LICH needs
- * still turns up on noise. That has to repeat -- two frames running, which a real stream does
- * continuously and noise does not.
+ * on the LSF (the LSF frame's, or one rebuilt whole from six LICH chunks) and on a packet's end
+ * are proof by themselves, as is a PRBS9 lock. A LICH whose four Golay(24,12) blocks all clear is
+ * not: extended Golay corrects three errors and detects four, so it accepts a meaningful share of
+ * random words, and the run of them a whole LICH needs still turns up on noise. That has to
+ * repeat -- two frames running, which a real stream does continuously and noise does not.
  *
  * Sibling of src/protocol/nxdn/nxdn_confirm.{c,h} and src/protocol/dmr/dmr_confidence.{c,h},
  * which do the same job for those protocols.
@@ -38,8 +38,9 @@ extern "C" {
 
 /** @brief How much a passing check is worth. */
 typedef enum {
-    M17_EVIDENCE_WEAK = 1,  /**< A LICH whose six Golay(24,12) blocks cleared. */
-    M17_EVIDENCE_STRONG = 2 /**< A CRC-16: LSF or packet. Also a PRBS9 BERT lock. */
+    M17_EVIDENCE_WEAK = 1,  /**< A LICH whose four Golay(24,12) blocks cleared. */
+    M17_EVIDENCE_STRONG = 2 /**< A CRC-16: an LSF (its frame's, or rebuilt whole from the LICH) or a packet. Also a
+                                 PRBS9 BERT lock. */
 } m17_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
@@ -49,8 +50,25 @@ typedef enum {
  * stream frames. */
 #define M17_CONFIRM_PARTIAL_HOLD_MS 80U
 
-/** @brief Forget everything learned about the current transmission. */
+/** @brief Forget everything learned about the current transmission: its confirmation, and its checked link setup and
+ * signature (m17_confirm_reset_link()). */
 void m17_confirm_reset(dsd_state* state);
+
+/**
+ * @brief Forget the transmission's stream signature: the digest, the signature chunks collected, whether it is
+ * advertised and verified, and the network frame numbers counted into the digest.
+ *
+ * The transmitter signs the digest of every stream frame since the stream began (M17 spec 2.0.11, Digital
+ * Signatures), so this runs only where a transmission begins or ends, never at an LSF applied mid-stream (a LICH
+ * rebuild, an IP frame's LSF).
+ */
+void m17_confirm_reset_signature(dsd_state* state);
+
+/**
+ * @brief Forget the transmission's checked link setup (dsd_state::m17_lsf_checked), its network stream and its
+ * signature (m17_confirm_reset_signature()): a transmission boundary.
+ */
+void m17_confirm_reset_link(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void m17_confirm_begin_frame(dsd_state* state);

@@ -28,7 +28,8 @@ int processM17LSF(dsd_opts* opts, dsd_state* state);
 int processM17BRT(dsd_opts* opts, dsd_state* state);
 int processM17IPF(dsd_opts* opts, dsd_state* state);
 
-/** @brief Forget what the current M17 transmission proved; the next one proves itself again. */
+/** @brief Forget what the current M17 transmission proved, and its checked link setup and stream signature; the next
+ * one proves itself again. */
 void m17_confirm_reset(dsd_state* state);
 
 /** @brief Whether the current M17 transmission has produced CRC-verified content. */

@@ -6,13 +6,16 @@ DSD-neo transport for M17 frames; it is separate from RF air-interface channel-a
 
 Implemented decode coverage:
 
-- LSF, stream, packet, BERT, and EOT sync handling.
+- LSF, stream, packet, BERT, and EOT sync handling. The end-of-transmission marker ends a call only once three of its
+  words have been heard in a row, so a fade that leaves a flat run of symbols does not end the call; the rest of the
+  marker is skipped up to the first symbols that are not part of it, so the next transmission is not cut.
 - Current LSF TYPE field semantics, including stream/packet mode, data type, encryption type/subtype, CAN, and signed
   stream advertisement.
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD,
   or an IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an
-  LSF that failed its CRC still sets up the stream, but its META is not read. A stream's LSD counts only when all six
+  LSF that failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has
+  set up the transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. A stream's LSD counts only when all six
   of its LICH pieces were heard in one transmission, on one tuning, and on the same side of the moment the stream was
   confirmed; one put together across a retune or another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
@@ -22,7 +25,11 @@ Implemented decode coverage:
   m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a
   position: M17 defines no GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
-- Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided.
+- Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided
+  (M17 2.0.11 signatures). The digest runs over the whole stream from its first frame: the LSF repeated in the LICH
+  or in each network frame does not restart it, a network frame received twice counts once, and a network frame whose
+  CRC failed never counts. The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are not
+  implemented.
 - Packet assembly with the current 823-byte application-payload ceiling and packet CRC validation.
 - BERT PRBS9 payload checking without requiring a preceding LSF.
 

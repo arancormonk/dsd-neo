@@ -8,11 +8,39 @@
 #include <stddef.h>
 #include "m17_confirm.h"
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+void
+m17_confirm_reset_signature(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->m17_signature_advertised = 0U;
+    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
+    state->m17_signature_received_mask = 0U;
+    state->m17_signature_complete = 0U;
+    state->m17_signature_bad_sequence = 0U;
+    state->m17_signature_verification_status = 0U;
+    state->m17_signature_fn_seen = 0U;
+    state->m17_signature_last_fn = 0U;
+}
+
+void
+m17_confirm_reset_link(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->m17_lsf_checked = 0U;
+    state->m17_ip_stream_open = 0U;
+    state->m17_ip_stream_sid = 0U;
+    m17_confirm_reset_signature(state);
+}
 
 void
 m17_confirm_reset(dsd_state* state) {
@@ -22,6 +50,7 @@ m17_confirm_reset(dsd_state* state) {
     state->m17_confirmed = 0;
     state->m17_confirm_weak_streak = 0;
     state->m17_confirm_frame_evidence = 0;
+    m17_confirm_reset_link(state);
 }
 
 void

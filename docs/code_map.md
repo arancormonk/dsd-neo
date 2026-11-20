@@ -13793,10 +13793,39 @@ Private per-protocol modules worth knowing about:
   control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
-  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. The EOT also puts the
+  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. Strong evidence is a
+  CRC-16 that passed: the LSF frame's, an LSF rebuilt from LICH chunks when all six were heard under one binding
+  (`M17finalizeLICH()`, issue #890), a packet's, and a PRBS9 BERT lock; a LICH whose four Golay(24,12) words cleared is
+  weak and confirms on the second frame running; an LSF `-F` decodes despite a failed CRC is no evidence.
+  `m17_confirm_reset()` also forgets the transmission's checked link setup and stream signature
+  (`m17_confirm_reset_link()`, `m17_confirm_reset_signature()`; issue #890): `dsd_state::m17_lsf_checked` marks that an
+  LSF whose CRC passed set the live CAN (0 included), encryption, stream type and IV for this transmission, and while it
+  stands a relaxed (`-F`) LSF is shown and replaces none of them. The digest and the signature chunks are the
+  transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten
+  only at a boundary: an LSF frame (a checked one also replaces the link setup), an EOT, `noCarrier()`, a carrier
+  boundary, or another IP stream (a new stream ID, or any after the last one's EOT, EOTX or DISC). Every RF stream
+  frame before the signature frames enters the digest, advertised or not yet (a rebuild can advertise it late); an IP
+  frame enters it only when its CRC passed and its frame number is past the last one counted, and an IP frame whose
+  CRC failed is never a signature chunk (`M17updateSignatureDigest()`; `M17_STATE_DISPATCH`
+  `test_signed_rf_stream_verifies_across_lich_rebuilds`, `test_signed_ip_stream_verifies_with_duplicates`). A stream
+  frame's EOS bit, an IP EOT, EOTX or DISC and the EOT marker end the slot's call only when it is an M17 one
+  (`m17_end_active_call()`, `m17_end_call_on_eot()`). The EOT also puts the
   slicer levels back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker
   is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
   preamble against the skewed centre it left (issue #834).
+- M17 end-of-transmission marker (M17 spec 2.0.11: 192 symbols of 0x555D, +3 six times, -3, +3). The hunt takes it
+  (`frame_sync_try_m17_eot()`) only behind an M17 frame of a transmission with evidence and only on
+  `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within
+  one symbol of the marker with its one other-sign symbol right (`dsd_frame_sync_m17_eot_word()`,
+  `frame_sync_m17_eot.c`, both polarities): every flat run is within one symbol of a single word, and a fade after
+  real traffic used to end the call there. The words after the first are read with the hunt still running
+  (`dsd_state::m17_eot_pending`): any sync taken meanwhile drops them (`frame_sync_try_protocol_matches()`), and a
+  window that is not the next word drops them and may start one afresh. `dsd_dispatch_handle_m17()` then drains the
+  rest of the marker a word at a time (at most the 21 words left) up to the first word that is not the marker and hands
+  that word back to the hunt as its window's history (`dsd_frame_sync_resume_hunt_from_last_symbols()`, the carry a
+  no-sync exit keeps), so a sync word that began in it is still found; the blind 184-symbol skip it replaces ran into
+  the next frame when the marker's first words were lost. Outside M17 the hunt pays one state check a window while M17
+  is enabled, and nothing when it is not (`M17_FRAME_SYNC`, `M17_SYNC_DISPATCH`).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
   answering the SPS hunt (issue #421); D-STAR's also gates voice: a superframe's AMBE frames reach the vocoder, the
   speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its

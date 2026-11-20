@@ -7,12 +7,14 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <stdio.h>
@@ -55,6 +57,55 @@ int
 m17_confirm_is_confirmed(const dsd_state* state) {
     (void)state;
     return g_confirmed;
+}
+
+/* What an EOT dispatch reads after the marker words the hunt took: the signs of the symbols on air, oldest first, as
+   the hunt slices them; past the end of the script the air is negative ('3'). */
+static const char* g_air = "";
+static size_t g_air_pos;
+static int g_air_reads;
+static int g_resume_calls;
+static int g_resume_symbols;
+/* An input interruption the read at this symbol (1-based) meets: 0 none. */
+static int g_air_interrupt_at;
+
+static void
+set_air(const char* signs) {
+    g_air = signs;
+    g_air_pos = 0U;
+    g_air_reads = 0;
+    g_resume_calls = 0;
+    g_resume_symbols = 0;
+    g_air_interrupt_at = 0;
+}
+
+int
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
+    (void)opts;
+    (void)out_analog_signal;
+    g_air_reads++;
+    g_air_pos++;
+    if (g_air_interrupt_at != 0 && g_air_reads >= g_air_interrupt_at) {
+        state->input_interrupted = 1;
+    }
+    return 1;
+}
+
+char
+dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
+    (void)state;
+    const long index = (long)g_air_pos - 1L - (long)back;
+    if (index < 0 || (size_t)index >= strlen(g_air)) {
+        return '3';
+    }
+    return g_air[index];
+}
+
+void
+dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols) {
+    (void)state;
+    g_resume_calls++;
+    g_resume_symbols = symbols;
 }
 
 void
@@ -230,14 +281,25 @@ test_payload_dispatch(void) {
     assert(str_calls == 1);
 }
 
+/* Five words of the marker, in phase. */
+#define EOT5     M17_EOT M17_EOT M17_EOT M17_EOT M17_EOT
+#define EOT5_INV M17_EOT_INV M17_EOT_INV M17_EOT_INV M17_EOT_INV M17_EOT_INV
+
 static void
 test_eot_dispatch(void) {
+    /* The hunt took the end on three marker words; the rest of the marker (here five words) is drained word by word
+     * up to the first word that is not the marker, and that word, the next transmission's sync word here, is handed
+     * back to the hunt, not skipped: the old blind 184-symbol skip consumed the next frame when the marker's first
+     * words were lost to a fade. */
+    set_air(EOT5 M17_LSF "1313");
     int lastsynctype = dispatch_one(DSD_SYNC_M17_EOT_POS);
     /* #391: the EOT marker is positive evidence, and this branch acts on it -- the same
      * DSD_CALL_END_TERMINATOR the call state is given. The SPS hunt is told the same. */
     assert(last_verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
-    assert(skip_calls == 1);
-    assert(skipped_dibits == 184);
+    assert(skip_calls == 0);
+    assert(g_air_reads == 48);
+    assert(g_resume_calls == 1);
+    assert(g_resume_symbols == 8);
     assert(lsf_calls == 0);
     assert(pkt_calls == 0);
     assert(str_calls == 0);
@@ -245,14 +307,82 @@ test_eot_dispatch(void) {
     /* ...and then forgets the transmission's proof, so the next carrier has to earn its own (#399). */
     assert(confirm_reset_calls == 1);
 
+    set_air(EOT5_INV M17_STR);
     lastsynctype = dispatch_one(DSD_SYNC_M17_EOT_NEG);
-    assert(skip_calls == 1);
-    assert(skipped_dibits == 184);
-    assert(lsf_calls == 0);
-    assert(pkt_calls == 0);
-    assert(str_calls == 0);
+    assert(skip_calls == 0);
+    assert(g_air_reads == 48);
+    assert(g_resume_calls == 1);
+    assert(g_resume_symbols == 8);
     assert(lastsynctype == DSD_SYNC_NONE);
     assert(confirm_reset_calls == 1);
+
+    /* A marker word read with one symbol off is still the marker, at either polarity. */
+    set_air(M17_EOT "11311131" M17_EOT "33333333");
+    (void)dispatch_one(DSD_SYNC_M17_EOT_POS);
+    assert(g_air_reads == 32);
+    assert(g_resume_symbols == 8);
+    set_air(M17_EOT_INV "33333311"
+                        "11111111");
+    (void)dispatch_one(DSD_SYNC_M17_EOT_NEG);
+    assert(g_air_reads == 24);
+    assert(g_resume_symbols == 8);
+
+    /* The rest of a whole marker is at most the 21 words the hunt did not take: an endless marker is not read past it,
+     * and the symbol after it is the hunt's own. */
+    set_air(EOT5 EOT5 EOT5 EOT5 EOT5);
+    (void)dispatch_one(DSD_SYNC_M17_EOT_POS);
+    assert(g_air_reads == 168);
+    assert(g_resume_calls == 0);
+
+    /* An input interruption ends the drain with nothing handed back: the next hunt starts afresh. */
+    set_air(EOT5);
+    g_air_interrupt_at = 12;
+    (void)dispatch_one(DSD_SYNC_M17_EOT_POS);
+    assert(g_air_reads == 16);
+    assert(g_resume_calls == 0);
+}
+
+/* An end of transmission ends the slot's M17 call, never another protocol's call open on the slot. */
+static void
+test_eot_ends_only_m17_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    const struct {
+        int protocol;
+        int ends;
+    } cases[] = {
+        {DSD_SYNC_M17_STR_POS, 1},
+        {DSD_SYNC_M17_LSF_NEG, 1},
+        {DSD_SYNC_DMR_BS_VOICE_POS, 0},
+        {DSD_SYNC_YSF_POS, 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_calls();
+        const dsd_call_observation observation = {
+            .protocol = cases[i].protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+            .ota_target_id = 1U,
+            .ota_source_id = 2U,
+        };
+        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        set_air("");
+        state.synctype = DSD_SYNC_M17_EOT_POS;
+        (void)dsd_dispatch_handle_m17(&opts, &state);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 0U, &call) > 0);
+        if (cases[i].ends) {
+            assert(call.phase != DSD_CALL_PHASE_ACTIVE);
+            assert(call.end_reason == DSD_CALL_END_TERMINATOR);
+        } else {
+            assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+            assert(call.protocol == cases[i].protocol);
+        }
+    }
 }
 
 static void
@@ -280,6 +410,7 @@ main(void) {
     test_preamble_dispatch();
     test_payload_dispatch();
     test_eot_dispatch();
+    test_eot_ends_only_m17_call();
     test_bert_dispatch();
     printf("M17_SYNC_DISPATCH: OK\n");
     return 0;

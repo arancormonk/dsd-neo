@@ -3136,6 +3136,14 @@ struct dsd_state {
      * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared
      * when a join is taken, and with the NXDN96 sync above. */
     dsd_sync_hit_history m17_join_hits;
+    /* M17 end-of-transmission marker in the reading (src/dsp/dsd_frame_sync.c): the marker is 0x555D repeated for 192
+     * symbols, and a single eight-symbol word of it is no end (a flat run is within one symbol of it), so the hunt
+     * takes the end only on DSD_FRAME_SYNC_M17_EOT_WORDS words in a row, each in phase. m17_eot_pending: 0 none, 1 a
+     * word heard at normal polarity, 2 inverted; m17_eot_words: words heard so far; m17_eot_symbolcnt: the
+     * dsd_state::symbolcnt the first word ended on. The hunt goes on meanwhile, and any sync it takes drops this. */
+    uint8_t m17_eot_pending;
+    uint8_t m17_eot_words;
+    uint32_t m17_eot_symbolcnt;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself
@@ -3170,6 +3178,20 @@ struct dsd_state {
     uint8_t m17_signature_public_key[64];
     uint8_t m17_signature_public_key_loaded;
     uint8_t m17_signature_verification_status;
+    /* The transmission's checked link setup and its stream signature (src/protocol/m17/m17_confirm.c,
+     * m17_confirm_reset_link()): kept from frame to frame and forgotten only at a transmission boundary (an LSF frame,
+     * an end of transmission, a lost carrier, a carrier boundary, another network stream).
+     * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
+     *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
+     *   despite a failed CRC is then shown and never replaces them.
+     * m17_signature_fn_seen / m17_signature_last_fn: a network stream frame entered the digest, and the last one's frame
+     *   number: each valid IP frame enters it once, in order (a copy that arrives again is not counted twice).
+     * m17_ip_stream_open / m17_ip_stream_sid: the network stream the signature state is the transmission of. */
+    uint8_t m17_lsf_checked;
+    uint8_t m17_signature_fn_seen;
+    uint16_t m17_signature_last_fn;
+    uint8_t m17_ip_stream_open;
+    uint16_t m17_ip_stream_sid;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame
 

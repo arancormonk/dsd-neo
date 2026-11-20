@@ -27,6 +27,7 @@ target_sources(
         dsd_symbol.c
         frame_sync_level.c
         dsd_frame_sync.c
+        frame_sync_m17_eot.c
         frame_sync_profile.c
         frame_sync_p25_sync_context.c
         frame_sync_p25p1_anchor.c

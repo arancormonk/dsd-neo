@@ -103,8 +103,9 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
     return hash;
 }
 
-static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
+static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
+static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
 static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
@@ -339,8 +340,15 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint16_t crc_ext = (uint16_t)convert_bits_into_output(&state->m17_lsf[M17_LSF_LSD_BITS], M17_LSF_CRC_BITS);
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
+    int checked = 0;
     if (crc_err == 0U || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0U && whole, &k_m17_rf_carrier);
+        checked = M17decodeLSF(opts, state, crc_err == 0U && whole, &k_m17_rf_carrier);
+    }
+    if (checked) {
+        /* A rebuilt LSF whose CRC passed, all six chunks heard under one binding, is checked content as the LSF frame's
+           own CRC is: it proves the transmission (issue #890). Noted once its call is published, as there. One -F
+           decoded despite a failed CRC proves nothing. */
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {
@@ -403,6 +411,17 @@ m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
     if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
         && call.kind == DSD_CALL_KIND_DATA && DSD_SYNC_IS_M17(call.protocol)
         && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+}
+
+/* End the slot's call for an M17 end (a stream frame's EOS bit, an IP stream's EOT, EOTX or DISC) when it is an M17 one:
+   another protocol's call still open on the slot is no transmission this end belongs to. */
+static void
+m17_end_active_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }
@@ -482,33 +501,48 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
    identity received on the carrier. Decoder thread only. */
 static int s_m17_monitoring_local_tx;
 
-static void
+/* Decode the LSF in state->m17_lsf. @p publish_canonical: its CRC passed (and, rebuilt from LICH chunks, it is whole),
+   so it is checked: its values bind to the transmission (dsd_state::m17_lsf_checked) and it names the call. One that
+   failed (decoded under -F) applies only while no checked LSF bound the transmission; after that it is shown and
+   nothing more (issue #890). Returns 1 when a checked LSF was applied. */
+static int
 M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier) {
     struct m17_lsf_result res;
     if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
         LOG_WARN("M17: failed to parse LSF\n");
-        return;
+        return 0;
     }
 
-    if (m17_apply_lsf_result(state, &res) == 1) {
-        if (publish_canonical != 0) {
-            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
-               is noted before the call is published, so a CAN that moves the received identity to another epoch
-               opens the call on that reception, the one the same LSF's META position is admitted against. */
-            if (!s_m17_monitoring_local_tx) {
-                dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
-            }
-            m17_lsf_carrier bound = *carrier;
-            bound.call_observed = (uint8_t)m17_publish_lsf(opts, state, &res);
-            /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
-               2.2): a META position is the received station's, and the call it describes is the one just published,
-               when this LSF published one. */
-            if (!s_m17_monitoring_local_tx) {
-                M17decodeLSFMeta(opts, state, &res, &bound);
-            }
+    if (publish_canonical == 0 && state->m17_lsf_checked != 0U) {
+        if (m17_lsf_result_usable(&res)) {
+            M17logLSFSummary(&res);
+            M17logLSFTrailer(state, &res);
         }
-        M17logLSFTrailer(state, &res);
+        return 0;
     }
+
+    if (m17_apply_lsf_result(state, &res) != 1) {
+        return 0;
+    }
+    if (publish_canonical != 0) {
+        state->m17_lsf_checked = 1U;
+        /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
+           is noted before the call is published, so a CAN that moves the received identity to another epoch
+           opens the call on that reception, the one the same LSF's META position is admitted against. */
+        if (!s_m17_monitoring_local_tx) {
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+        }
+        m17_lsf_carrier bound = *carrier;
+        bound.call_observed = (uint8_t)m17_publish_lsf(opts, state, &res);
+        /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
+           2.2): a META position is the received station's, and the call it describes is the one just published,
+           when this LSF published one. */
+        if (!s_m17_monitoring_local_tx) {
+            M17decodeLSFMeta(opts, state, &res, &bound);
+        }
+    }
+    M17logLSFTrailer(state, &res);
+    return publish_canonical != 0;
 }
 
 static void
@@ -519,13 +553,9 @@ M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res) {
     state->m17_enc = res->et;
     state->m17_enc_st = res->es;
     state->m17_payload_decrypted = 0U;
+    /* The digest and the signature collected so far are the transmission's, not this LSF's: an LSF applied mid-stream
+       (rebuilt from the LICH, or an IP frame's) leaves them (m17_confirm_reset_signature() runs at a boundary). */
     state->m17_signature_advertised = res->signature;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0U;
-    state->m17_signature_complete = 0U;
-    state->m17_signature_bad_sequence = 0U;
-    state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
 }
 
 static void
@@ -1237,11 +1267,32 @@ M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const
     return 1;
 }
 
+/* Where a stream frame's payload came from, for the stream signature (M17 spec 2.0.11, Digital Signatures). */
+typedef enum {
+    M17_STREAM_FROM_RF = 0,            /* an RF stream frame: read once, in order */
+    M17_STREAM_FROM_NET_CHECKED = 1,   /* an IP stream frame whose CRC passed: a network may deliver it twice */
+    M17_STREAM_FROM_NET_UNCHECKED = 2, /* an IP stream frame whose CRC failed: nothing in it is the stream's */
+} m17_stream_source;
+
+/* Whether a stream frame's payload enters the digest: every RF frame before the signature frames; an IP frame only when
+   its CRC passed and its frame number is past the last one counted, so each valid frame enters once (a copy that
+   arrives again, or late, is not counted twice). The digest is kept whether or not the signature is advertised yet: a
+   transmission whose LSF frame was lost learns it from a LICH rebuild later, and the digest covers the stream from
+   its start. */
 static void
-M17updateSignatureDigestIfNeeded(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number) {
-    if (state->m17_signature_advertised != 0U && payload_frame_number < M17_STREAM_SIGNATURE_FN0) {
-        m17_signature_digest_update(state->m17_signature_digest, payload_bytes);
+M17updateSignatureDigest(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number,
+                         m17_stream_source source) {
+    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0 || source == M17_STREAM_FROM_NET_UNCHECKED) {
+        return;
     }
+    if (source == M17_STREAM_FROM_NET_CHECKED) {
+        if (state->m17_signature_fn_seen != 0U && payload_frame_number <= state->m17_signature_last_fn) {
+            return;
+        }
+        state->m17_signature_fn_seen = 1U;
+        state->m17_signature_last_fn = payload_frame_number;
+    }
+    m17_signature_digest_update(state->m17_signature_digest, payload_bytes);
 }
 
 static void
@@ -1300,7 +1351,8 @@ m17_stream_payload_may_play(const dsd_state* state, int update_media) {
 
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
-                                     uint16_t frame_number, uint8_t* processed_payload, int update_media) {
+                                     uint16_t frame_number, uint8_t* processed_payload, int update_media,
+                                     m17_stream_source source) {
     if (opts == NULL || state == NULL || payload == NULL || processed_payload == NULL) {
         return M17_STREAM_INVALID;
     }
@@ -1315,12 +1367,14 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
                            sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
-    if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+    /* A signature chunk from an IP frame whose CRC failed would replace a good one: such a frame is no chunk. */
+    if (source != M17_STREAM_FROM_NET_UNCHECKED
+        && M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
         return M17_STREAM_SIGNATURE_CONSUMED;
     }
 
     const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
-    M17updateSignatureDigestIfNeeded(state, payload_bytes, payload_frame_number);
+    M17updateSignatureDigest(state, payload_bytes, payload_frame_number, source);
 
     if (!m17_can_matches_state(state)) {
         DSD_FPRINTF(stderr, " CAN Filtered;");
@@ -1353,14 +1407,13 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
 int
 m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                             uint8_t* processed_payload) {
-    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 1);
+    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 1,
+                                                M17_STREAM_FROM_RF);
 }
 
-int
-m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
-    if (state == NULL || res == NULL) {
-        return -1;
-    }
+/* Whether a parsed LSF's fields can be used at all (the reasons it cannot are logged). */
+static int
+m17_lsf_result_usable(const struct m17_lsf_result* res) {
     if (res->rs != 0U) {
         LOG_INFO(" Unknown LSF TYPE;");
         return 0;
@@ -1375,6 +1428,17 @@ m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
     }
     if (res->src_is_valid == 0U) {
         LOG_INFO(" Invalid SRC address for transmitting station;");
+        return 0;
+    }
+    return 1;
+}
+
+int
+m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
+    if (state == NULL || res == NULL) {
+        return -1;
+    }
+    if (!m17_lsf_result_usable(res)) {
         return 0;
     }
 
@@ -1462,8 +1526,8 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
     (void)m17_dispatch_stream_payload((const dsd_opts*)opts, state, payload, stream_frame_number, processed_payload);
     // The stream frame's end-of-stream flag is an over-the-air terminator: it lets the event
     // layer keep an audible epoch whose LSF never decoded, where EXPLICIT would read as a retune.
-    if (end != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    if (end != 0U) {
+        m17_end_active_call(opts, state, DSD_CALL_END_TERMINATOR);
     }
 }
 
@@ -1529,7 +1593,7 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     lich_err = m17_process_lich(state, opts, lich_bits);
 
     if (lich_err == 0) {
-        /* Six Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
+        /* Four Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
          * Golay accepts enough random words that a clean LICH still turns up on noise, so it
          * has to repeat before the decoder acts on the stream (#399). */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_WEAK);
@@ -1731,11 +1795,20 @@ int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
+    /* A link setup frame opens a transmission: no stream frame of it has been sent yet, so its digest starts empty
+       (M17 spec 2.0.11, Digital Signatures), whatever its CRC says (a repeated LSF comes before any stream frame too).
+       One whose CRC passed also replaces the checked link setup the last transmission bound; one that failed is no
+       evidence of a new transmission, and under -F is only shown while that binding stands (issue #890). */
+    if (crc_err == 0) {
+        m17_confirm_reset_link(state);
+    } else {
+        m17_confirm_reset_signature(state);
+    }
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
     state->m17_lsf_stream_mode = (uint8_t)((crc_err == 0) ? (lsf_packed[13] & 1U) : 0U);
 
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0, &k_m17_rf_carrier);
+        (void)M17decodeLSF(opts, state, crc_err == 0, &k_m17_rf_carrier);
     }
 
     if (crc_err == 0) {
@@ -4029,18 +4102,25 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     const int crc_valid = crc_ext == crc_cmp;
     if (crc_valid) {
+        /* Every frame of a network stream carries its LSF, and none of them begins the transmission: only another
+           stream (a new stream ID, or any after the last one's end) does, and with it a new link setup and digest. */
+        if (state->m17_ip_stream_open == 0U || state->m17_ip_stream_sid != sid) {
+            m17_confirm_reset_link(state);
+            state->m17_ip_stream_open = 1U;
+            state->m17_ip_stream_sid = sid;
+        }
         const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
-        M17decodeLSF(opts, state, 1, &carrier);
+        (void)M17decodeLSF(opts, state, 1, &carrier);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
-    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid);
+    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid,
+                                               crc_valid ? M17_STREAM_FROM_NET_CHECKED : M17_STREAM_FROM_NET_UNCHECKED);
     // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
-    if (crc_valid && eot != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    }
     if (crc_valid && eot != 0U) {
-        /* The stream ended: a later stream that reuses its ID is another transmission. */
+        m17_end_active_call(opts, state, DSD_CALL_END_TERMINATOR);
+        /* The stream ended: a later stream that reuses its ID is another transmission. Its verdict stays until then. */
         m17_gnss_tx_end(state);
+        state->m17_ip_stream_open = 0U;
     }
 
     if (opts->payload == 1) {
@@ -4074,11 +4154,10 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
         m17_ip_dump_bytes_spaced(ip_frame, desc->dump_len, desc->dump_len, "");
     }
     if (desc->drop_carrier) {
-        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-        }
+        m17_end_active_call(opts, state, DSD_CALL_END_EXPLICIT);
         /* The transmission ended (EOTX, DISC): a later stream that reuses its ID is another one, call or not. */
         m17_gnss_tx_end(state);
+        state->m17_ip_stream_open = 0U;
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
     }
@@ -4106,7 +4185,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (crc_ext == crc_cmp) {
         const m17_lsf_carrier carrier = {
             1U, sid, 0U, 0U, 0U, (uint32_t)err, m17_datagram_digest(ip_frame, (size_t)err)};
-        M17decodeLSF(opts, state, 1, &carrier);
+        (void)M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");

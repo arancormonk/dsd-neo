@@ -647,7 +647,9 @@ test_rf_lsf_crc_policy_preserves_relaxed_decode(void) {
     err |= expect_u8("checked RF LSF identity kind", state->rx_id.access_kind, DSD_ACCESS_CODE_CAN);
     DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
     (void)m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U);
-    err |= expect_u8("relaxed RF LSF decodes its CAN", state->m17_can, 5U);
+    /* Nor the live fields the checked LSF bound to the transmission: -F shows it, nothing more (issue #890). */
+    err |= expect_u8("relaxed RF LSF keeps the checked live CAN", state->m17_can, 3U);
+    err |= expect_u8("relaxed RF LSF keeps the checked encryption", state->m17_enc, 0U);
     err |= expect_u8("relaxed RF LSF keeps the checked CAN", (uint8_t)state->rx_id.access, 3U);
     dsd_state_ext_free_all(state);
     return err;
@@ -709,16 +711,15 @@ test_lsf_crypto_availability_matches_payload_validation(void) {
 }
 
 static int
-test_lsf_application_resets_and_stores_state(void) {
+test_lsf_application_stores_state_and_keeps_signature(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can = 3U;
     state->m17_enc = 1U;
     state->m17_payload_decrypted = 1U;
-    state->m17_signature_received_mask = 0x0FU;
-    state->m17_signature_complete = 1U;
+    state->m17_signature_received_mask = 0x03U;
+    state->m17_signature_complete = 0U;
     state->m17_signature_bad_sequence = 1U;
-    state->m17_signature_verification_status = 99U;
     DSD_MEMSET(state->m17_signature_digest, 0xA5, sizeof(state->m17_signature_digest));
     DSD_MEMSET(state->m17_signature, 0x5A, sizeof(state->m17_signature));
 
@@ -731,16 +732,27 @@ test_lsf_application_resets_and_stores_state(void) {
     err |= expect_u8("LSF enc subtype", state->m17_enc_st, res.es);
     err |= expect_u8("LSF payload decrypted reset", state->m17_payload_decrypted, 0U);
     err |= expect_u8("LSF signature advertised", state->m17_signature_advertised, 1U);
-    err |= expect_u8("LSF signature mask reset", state->m17_signature_received_mask, 0U);
-    err |= expect_u8("LSF signature complete reset", state->m17_signature_complete, 0U);
-    err |= expect_u8("LSF signature sequence reset", state->m17_signature_bad_sequence, 0U);
-    err |= expect_u8("LSF signature status reset", state->m17_signature_verification_status, 0U);
     err |= expect_bytes("LSF meta nonce", state->m17_meta, M17_REF_AES_NONCE, sizeof(M17_REF_AES_NONCE));
+    /* An LSF applied mid-stream (a LICH rebuild every six frames, an IP stream's every frame) is no transmission
+       boundary: the transmitter signs the digest of every frame since the stream began (M17 spec 2.0.11, Digital
+       Signatures), so the digest and the signature collected so far stay (issue #890). */
+    err |= expect_u8("LSF keeps the signature mask", state->m17_signature_received_mask, 0x03U);
+    err |= expect_u8("LSF keeps the signature sequence", state->m17_signature_bad_sequence, 1U);
     for (size_t i = 0U; i < sizeof(state->m17_signature_digest); i++) {
-        err |= expect_u8("LSF digest reset", state->m17_signature_digest[i], 0U);
+        err |= expect_u8("LSF keeps the digest", state->m17_signature_digest[i], 0xA5U);
     }
     for (size_t i = 0U; i < sizeof(state->m17_signature); i++) {
-        err |= expect_u8("LSF signature buffer reset", state->m17_signature[i], 0U);
+        err |= expect_u8("LSF keeps the signature buffer", state->m17_signature[i], 0x5AU);
+    }
+
+    /* A transmission boundary forgets them. */
+    m17_confirm_reset(state);
+    err |= expect_u8("boundary signature advertised reset", state->m17_signature_advertised, 0U);
+    err |= expect_u8("boundary signature mask reset", state->m17_signature_received_mask, 0U);
+    err |= expect_u8("boundary signature sequence reset", state->m17_signature_bad_sequence, 0U);
+    err |= expect_u8("boundary signature status reset", state->m17_signature_verification_status, 0U);
+    for (size_t i = 0U; i < sizeof(state->m17_signature_digest); i++) {
+        err |= expect_u8("boundary digest reset", state->m17_signature_digest[i], 0U);
     }
     return err;
 }
@@ -4815,6 +4827,330 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
 }
 #endif
 
+/* ---- Issue #890: LSF evidence, checked fields and the stream signature ---- */
+
+/* The LSF bits (CRC attached) of a stream from M17_REF_LSF_SRC_CSD to M17_REF_LSF_DST_CSD with @p type_word. */
+static void
+build_checked_lsf(uint8_t lsf_bits[TEST_M17_LSF_BITS], uint8_t lsf_packed[M17_LSF_BYTES], uint16_t type_word,
+                  uint16_t* crc) {
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t c = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    if (crc != NULL) {
+        *crc = c;
+    }
+}
+
+/* One stream frame's LICH chunk (@p counter of @p lsf_bits) through the frame's evidence accounting. */
+static int
+feed_lich_frame(dsd_opts* opts, dsd_state* state, const uint8_t lsf_bits[TEST_M17_LSF_BITS], uint8_t counter) {
+    uint8_t encoded[M17_LICH_BITS];
+    build_encoded_lich_chunk(lsf_bits, counter, encoded);
+    m17_confirm_begin_frame(state);
+    const int rc = m17_process_lich(state, opts, encoded);
+    m17_confirm_end_frame(state);
+    return rc;
+}
+
+/* An LSF rebuilt from six LICH chunks under one binding with its CRC passing is checked content, as the LSF frame's own
+   CRC is: it proves the transmission and tells a scan quiet check so (PROVEN). One -F decodes despite a failed CRC
+   proves nothing. */
+static int
+test_rebuilt_lsf_is_strong_evidence(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    int err = 0;
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 1;
+    build_checked_lsf(lsf_bits, lsf_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 6U, 0U, 0U), NULL);
+    const uint32_t seq0 = state->scan_y_content_seq;
+    for (uint8_t chunk = 0U; chunk < (M17_LICH_CHUNKS - 1U); chunk++) {
+        err |= expect_int("rebuild chunk", feed_lich_frame(opts, state, lsf_bits, chunk), 0);
+    }
+    err |= expect_int("partial rebuild proves nothing", (int)(state->scan_y_content_seq - seq0), 0);
+    err |= expect_int("partial rebuild confirms nothing", m17_confirm_is_confirmed(state), 0);
+    err |= expect_int("final rebuild chunk", feed_lich_frame(opts, state, lsf_bits, M17_LICH_CHUNKS - 1U), 0);
+    err |= expect_int("checked rebuild is PROVEN content", (int)(state->scan_y_content_seq - seq0), 1);
+    err |= expect_int("checked rebuild confirms the transmission", m17_confirm_is_confirmed(state), 1);
+    dsd_call_snapshot call;
+    err |= expect_int("checked rebuild publishes its call", get_m17_call(state, &call), 1);
+
+    /* -F: the same LSF with its CRC broken decodes, and proves nothing. */
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 0;
+    lsf_bits[M17_LSF_LSD_BITS + 5U] ^= 1U;
+    const uint32_t seq1 = state->scan_y_content_seq;
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        err |= expect_int("relaxed rebuild chunk", feed_lich_frame(opts, state, lsf_bits, chunk), 0);
+    }
+    err |= expect_int("relaxed rebuild is no content proof", (int)(state->scan_y_content_seq - seq1), 0);
+    err |= expect_int("relaxed rebuild confirms nothing", m17_confirm_is_confirmed(state), 0);
+    err |= expect_u8("relaxed rebuild still decodes for -F", state->m17_can, 6U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* -F decodes an LSF whose CRC failed, and while no checked LSF bound the transmission its values are all there is. Once
+   one did, a relaxed one is shown and nothing more: the checked CAN (0 included), encryption, stream type and IV stay
+   the transmission's. */
+static int
+test_relaxed_lsf_keeps_checked_fields(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t checked_bits[TEST_M17_LSF_BITS];
+    uint8_t checked_packed[M17_LSF_BYTES];
+    uint8_t relaxed_bits[TEST_M17_LSF_BITS];
+    uint8_t relaxed_packed[M17_LSF_BYTES];
+    uint16_t checked_crc = 0U;
+    int err = 0;
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 0;
+    build_checked_lsf(checked_bits, checked_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 0U, 0U, 0U), &checked_crc);
+    /* The relaxed one: AES, 1600 voice, CAN 9, with an IV, its CRC broken. */
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(relaxed_bits, dst, src, m17_compose_frame_info(1U, 3U, 2U, 0U, 9U, 0U, 0U), M17_REF_AES_NONCE);
+    (void)m17_attach_lsf_crc(relaxed_bits, relaxed_packed);
+    relaxed_bits[M17_LSF_LSD_BITS + 2U] ^= 1U;
+
+    DSD_MEMCPY(state->m17_lsf, checked_bits, sizeof(checked_bits));
+    err |= expect_int("checked LSF frame passes", m17_finalize_lsf_crc(opts, state, checked_packed, checked_crc), 0);
+    err |= expect_u8("checked CAN 0", state->m17_can, 0U);
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        (void)feed_lich_frame(opts, state, relaxed_bits, chunk);
+    }
+    err |= expect_u8("relaxed rebuild keeps the checked CAN 0", state->m17_can, 0U);
+    err |= expect_u8("relaxed rebuild keeps the checked encryption", state->m17_enc, 0U);
+    err |= expect_u8("relaxed rebuild keeps the checked stream type", state->m17_str_dt, 2U);
+    uint8_t zero_meta[sizeof(state->m17_meta)];
+    DSD_MEMSET(zero_meta, 0, sizeof(zero_meta));
+    err |= expect_bytes("relaxed rebuild keeps the checked IV", state->m17_meta, zero_meta, sizeof(zero_meta));
+
+    /* A checked rebuild is checked: it binds its values. */
+    uint8_t rebound_bits[TEST_M17_LSF_BITS];
+    uint8_t rebound_packed[M17_LSF_BYTES];
+    build_checked_lsf(rebound_bits, rebound_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 4U, 0U, 0U), NULL);
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        (void)feed_lich_frame(opts, state, rebound_bits, chunk);
+    }
+    err |= expect_u8("checked rebuild binds its CAN", state->m17_can, 4U);
+
+    /* At a transmission boundary the binding goes, and -F has the relaxed values again. */
+    m17_confirm_reset(state);
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        (void)feed_lich_frame(opts, state, relaxed_bits, chunk);
+    }
+    err |= expect_u8("relaxed rebuild after a boundary decodes its CAN", state->m17_can, 9U);
+    err |= expect_u8("relaxed rebuild after a boundary decodes its encryption", state->m17_enc, 2U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* The payloads of a signed stream of @p frames voice frames whose digest (M17 spec 2.0.11, Message Digest Algorithm for
+   Voice Streams) comes to M17_REF_SIGNATURE_DIGEST, which M17_REF_SIGNATURE_BYTES signs: the last frame's payload is
+   solved for it. */
+static void
+build_signed_payloads(uint8_t payloads[][M17_SIGNATURE_DIGEST_BYTES], size_t frames) {
+    uint8_t digest[M17_SIGNATURE_DIGEST_BYTES];
+    DSD_MEMSET(digest, 0, sizeof(digest));
+    for (size_t f = 0U; f + 1U < frames; f++) {
+        for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
+            payloads[f][i] = (uint8_t)((f * 37U) + (i * 11U) + 5U);
+        }
+        m17_signature_digest_update(digest, payloads[f]);
+    }
+    /* rol(digest ^ p, 8) = target: p = ror(target, 8) ^ digest. */
+    for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
+        const size_t from = (i + M17_SIGNATURE_DIGEST_BYTES - 1U) % M17_SIGNATURE_DIGEST_BYTES;
+        payloads[frames - 1U][i] = (uint8_t)(M17_REF_SIGNATURE_DIGEST[from] ^ digest[i]);
+    }
+}
+
+enum { TEST_SIGNED_VOICE_FRAMES = 16 };
+
+static const uint16_t k_test_signature_fns[4] = {M17_STREAM_SIGNATURE_FN0, M17_STREAM_SIGNATURE_FN1,
+                                                 M17_STREAM_SIGNATURE_FN2, M17_STREAM_SIGNATURE_FN3};
+
+/* A signed RF stream: its LSF frame, 16 voice frames and the four signature frames, each stream frame with its LICH
+   chunk. The LSF is rebuilt from the LICH three times on the way, the last between the second and third signature
+   frames; none of those rebuilds is a transmission boundary, so the digest and the signature collected so far survive
+   them and the signature verifies against the station's public key. */
+static int
+test_signed_rf_stream_verifies_across_lich_rebuilds(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t payloads[TEST_SIGNED_VOICE_FRAMES][M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    uint16_t crc = 0U;
+    int err = 0;
+
+    reset_audio_fakes();
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 1;
+    state->m17_can_en = -1;
+    DSD_MEMCPY(state->m17_signature_public_key, M17_REF_SIGNATURE_PUBLIC_KEY, sizeof(M17_REF_SIGNATURE_PUBLIC_KEY));
+    state->m17_signature_public_key_loaded = 1U;
+    build_checked_lsf(lsf_bits, lsf_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 1U, 0U), &crc);
+    build_signed_payloads(payloads, TEST_SIGNED_VOICE_FRAMES);
+
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("signed LSF frame passes", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    err |= expect_u8("signed LSF advertises the signature", state->m17_signature_advertised, 1U);
+
+    int frame = 0;
+    for (int f = 0; f < TEST_SIGNED_VOICE_FRAMES; f++, frame++) {
+        (void)feed_lich_frame(opts, state, lsf_bits, (uint8_t)(frame % (int)M17_LICH_CHUNKS));
+        bytes_to_bits(payloads[f], payload_bits, M17_SIGNATURE_DIGEST_BYTES);
+        (void)m17_dispatch_stream_payload(opts, state, payload_bits, (uint16_t)f, processed_bits);
+    }
+    err |= expect_bytes("digest of the voice frames", state->m17_signature_digest, M17_REF_SIGNATURE_DIGEST,
+                        sizeof(M17_REF_SIGNATURE_DIGEST));
+    for (size_t i = 0U; i < 4U; i++, frame++) {
+        (void)feed_lich_frame(opts, state, lsf_bits, (uint8_t)(frame % (int)M17_LICH_CHUNKS));
+        expect_signature_slice(payload_bits, i * 16U);
+        err |=
+            expect_int("signature frame consumed",
+                       m17_dispatch_stream_payload(opts, state, payload_bits, k_test_signature_fns[i], processed_bits),
+                       M17_STREAM_SIGNATURE_CONSUMED);
+    }
+    err |= expect_u8("signature complete", state->m17_signature_complete, 1U);
+    err |= expect_u8("signature in sequence", state->m17_signature_bad_sequence, 0U);
+    err |= expect_u8("signed RF stream verifies", state->m17_signature_verification_status, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static void
+send_ip_stream_frame(dsd_opts* opts, dsd_state* state, const uint8_t lsf_bits[TEST_M17_LSF_BITS], uint16_t sid,
+                     uint16_t fn, uint8_t eot, const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES], int corrupt) {
+    uint8_t ip_frame[54];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    bytes_to_bits(payload, payload_bits, M17_SIGNATURE_DIGEST_BYTES);
+    build_ip_stream_frame(ip_frame, lsf_bits, sid, fn, eot, payload_bits);
+    if (corrupt) {
+        ip_frame[40] ^= 0x5AU; /* inside the payload; the CRC no longer covers it */
+    }
+    m17_ip_dispatch_frame(opts, state, ip_frame, (int)sizeof(ip_frame));
+}
+
+/* A signed network stream: every IP stream frame carries the checked LSF, and none of them is a transmission boundary.
+   Each valid frame enters the digest once: a copy that arrives again (two network paths) is not counted twice, and a
+   copy whose CRC failed is never counted, nor taken for a signature chunk; the signature verifies. */
+static int
+test_signed_ip_stream_verifies_with_duplicates(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t payloads[TEST_SIGNED_VOICE_FRAMES][M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+
+    reset_audio_fakes();
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 1;
+    state->m17_can_en = -1;
+    DSD_MEMCPY(state->m17_signature_public_key, M17_REF_SIGNATURE_PUBLIC_KEY, sizeof(M17_REF_SIGNATURE_PUBLIC_KEY));
+    state->m17_signature_public_key_loaded = 1U;
+    build_checked_lsf(lsf_bits, lsf_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 1U, 0U), NULL);
+    build_signed_payloads(payloads, TEST_SIGNED_VOICE_FRAMES);
+
+    const uint16_t sid = 0x1234U;
+    for (int f = 0; f < TEST_SIGNED_VOICE_FRAMES; f++) {
+        send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)f, 0U, payloads[f], 0);
+        if (f == 7) {
+            send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)f, 0U, payloads[f], 1);
+        }
+        if (f == 8) {
+            send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)f, 0U, payloads[f], 0);
+        }
+    }
+    err |= expect_bytes("network digest counts each frame once", state->m17_signature_digest, M17_REF_SIGNATURE_DIGEST,
+                        sizeof(M17_REF_SIGNATURE_DIGEST));
+    for (size_t i = 0U; i < 4U; i++) {
+        const uint16_t fn = k_test_signature_fns[i];
+        send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX),
+                             (uint8_t)((fn & M17_STREAM_FRAME_END_MASK) != 0U), M17_REF_SIGNATURE_BYTES + (i * 16U), 0);
+        if (i == 1U) {
+            send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX), 0U,
+                                 M17_REF_SIGNATURE_BYTES + (i * 16U), 1);
+        }
+    }
+    err |= expect_u8("network signature complete", state->m17_signature_complete, 1U);
+    err |= expect_u8("signed network stream verifies", state->m17_signature_verification_status, 1U);
+
+    /* The next stream (another stream ID) starts a digest of its own. */
+    send_ip_stream_frame(opts, state, lsf_bits, (uint16_t)(sid + 1U), 0U, 0U, payloads[0], 0);
+    uint8_t first[M17_SIGNATURE_DIGEST_BYTES];
+    DSD_MEMSET(first, 0, sizeof(first));
+    m17_signature_digest_update(first, payloads[0]);
+    err |= expect_bytes("a new stream starts its own digest", state->m17_signature_digest, first, sizeof(first));
+    err |= expect_u8("a new stream starts its own verification", state->m17_signature_verification_status, 0U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* An M17 end (an IP stream's EOT, EOTX) ends the slot's call only when it is an M17 one: another protocol's call still
+   open on the slot is no transmission of it (issue #890). */
+static int
+test_m17_end_ends_only_an_m17_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    int err = 0;
+    static const int protocols[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_M17_STR_POS};
+    for (size_t p = 0U; p < sizeof protocols / sizeof protocols[0]; p++) {
+        const int is_m17 = DSD_SYNC_IS_M17(protocols[p]);
+        for (int end_kind = 0; end_kind < 2; end_kind++) {
+            dsd_state_ext_free_all(state);
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            DSD_MEMSET(state, 0, sizeof(*state));
+            opts->aggressive_framesync = 1;
+            const dsd_call_observation open = {
+                .protocol = protocols[p],
+                .slot = 0U,
+                .kind = DSD_CALL_KIND_VOICE,
+                .ota_target_id = 1201U,
+                .ota_source_id = 4201U,
+            };
+            err |= expect_int("call opens", dsd_call_state_observe(state, &open, DSD_CALL_BOUNDARY_BEGIN), 1);
+            if (end_kind == 0) {
+                uint8_t eotx[10] = {'E', 'O', 'T', 'X', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
+                m17_ip_dispatch_frame(opts, state, eotx, sizeof(eotx));
+            } else {
+                /* A stream of data type 0 observes no call, so only its EOT can touch the open one. */
+                uint8_t lsf_bits[TEST_M17_LSF_BITS];
+                uint8_t lsf_packed[M17_LSF_BYTES];
+                uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+                DSD_MEMSET(payload, 0, sizeof(payload));
+                build_checked_lsf(lsf_bits, lsf_packed, m17_compose_frame_info(1U, 0U, 0U, 0U, 1U, 0U, 0U), NULL);
+                send_ip_stream_frame(opts, state, lsf_bits, 0x0042U, 3U, 1U, payload, 0);
+            }
+            dsd_call_snapshot call;
+            err |= expect_int("call still known", get_m17_call(state, &call), 1);
+            err |= expect_int(is_m17 ? "an M17 end ends the M17 call" : "an M17 end leaves another protocol's call",
+                              call.phase == DSD_CALL_PHASE_ACTIVE, is_m17 ? 0 : 1);
+        }
+    }
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -4832,7 +5168,12 @@ main(void) {
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();
     err |= test_rf_lsf_crc_policy_preserves_relaxed_decode();
     err |= test_lsf_crypto_availability_matches_payload_validation();
-    err |= test_lsf_application_resets_and_stores_state();
+    err |= test_lsf_application_stores_state_and_keeps_signature();
+    err |= test_rebuilt_lsf_is_strong_evidence();
+    err |= test_relaxed_lsf_keeps_checked_fields();
+    err |= test_signed_rf_stream_verifies_across_lich_rebuilds();
+    err |= test_signed_ip_stream_verifies_with_duplicates();
+    err |= test_m17_end_ends_only_an_m17_call();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();

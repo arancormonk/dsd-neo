@@ -73,6 +73,23 @@ typedef enum {
 /** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
 #define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS       192U
 
+/** @brief Symbols in one word of the M17 end-of-transmission marker, 0x555D: +3 six times, -3, +3 (M17 spec 2.0.11,
+ * End of Transmission Marker). */
+#define DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS    8U
+
+/** @brief Words of the end-of-transmission marker a whole marker holds: 192 symbols, 40 ms. */
+#define DSD_FRAME_SYNC_M17_EOT_MARKER_WORDS    24U
+
+/**
+ * @brief Marker words in a row, each in phase, that the hunt takes as an M17 end of transmission.
+ *
+ * One word is no end: every flat eight-symbol run is within one symbol of it, and a fade after real traffic supplies
+ * flat runs. A word here also has to hold its one symbol of the other sign (dsd_frame_sync_m17_eot_word()), which a flat
+ * run never does, and three of them, eight symbols apart, are 24 of the marker's 192 symbols: a marker that lost its
+ * first words to a fade still offers them.
+ */
+#define DSD_FRAME_SYNC_M17_EOT_WORDS           3U
+
 /**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.
  *
@@ -354,6 +371,30 @@ int getFrameSync(dsd_opts* opts, dsd_state* state);
  * to tell it from the end pattern (src/protocol/dstar/dstar.c). Decoder thread.
  */
 void dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols);
+
+/**
+ * @brief Whether eight hunt symbols are one word of the M17 end-of-transmission marker.
+ *
+ * @p window holds DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS signs, oldest first, as the hunt slices them ('1' positive, '3'
+ * negative). A word is the marker's (+3 six times, -3, +3; @p inverted, its inversion) to within one symbol, and the
+ * symbol of the other sign, the seventh, is one of the symbols it has right: a flat run is never a word.
+ */
+int dsd_frame_sync_m17_eot_word(const char* window, int inverted);
+
+/**
+ * @brief The sign the hunt reads for the symbol @p back symbols before the latest one read ('1' positive, '3'
+ * negative), from the symbol history (dsd_symbol_history_get_back()).
+ */
+char dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back);
+
+/**
+ * @brief Start the next getFrameSync() call from the last @p symbols symbols read, as the hunt slices them.
+ *
+ * For a frame handler that read symbols the frame did not need (the word after an M17 end-of-transmission marker): the
+ * hunt takes them up as the history of its window, so a sync word that began in them and ends after them is still
+ * found. Taken up only when nothing comes between this and the next call (no symbol read, tune, or input break).
+ */
+void dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols);
 
 /**
  * @brief Emit diagnostic information about detected frame sync.

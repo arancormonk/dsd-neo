@@ -1631,17 +1631,12 @@ frame_sync_m17_eot_allowed_after(int lastsynctype) {
            || lastsynctype == DSD_SYNC_M17_BRT_POS || lastsynctype == DSD_SYNC_M17_BRT_NEG;
 }
 
+/* Take the end of transmission: the marker's DSD_FRAME_SYNC_M17_EOT_WORDS words were heard in a row. */
 static int
-frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, int is_inverted) {
+frame_sync_accept_m17_eot(frame_sync_match_ctx* ctx, int inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    const int ham = is_inverted ? ham_eot_inv : ham_eot;
-    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)
-        || !frame_sync_m17_chain_has_evidence(state)) {
-        return DSD_SYNC_NONE;
-    }
-
-    if (is_inverted) {
+    if (inverted) {
         printFrameSync(opts, state, "-M17 EOT", ctx->synctest_pos + 1, ctx->modulation);
         state->lastsynctype = DSD_SYNC_M17_EOT_NEG;
     } else {
@@ -1652,6 +1647,49 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     state->m17_polarity = 0;
     DSD_FPRINTF(stderr, "\n");
     return state->lastsynctype;
+}
+
+/*
+ * The M17 end-of-transmission marker: 0x555D repeated for 192 symbols, +3 six times, -3, +3 (M17 spec 2.0.11, End of
+ * Transmission Marker). Taken only behind a frame of a transmission that has shown evidence, and only on
+ * DSD_FRAME_SYNC_M17_EOT_WORDS words in a row (dsd_frame_sync_m17_eot_word()), the later ones exactly a word after the
+ * one before: a single window within one symbol of a word is any flat run, which a fade after real traffic supplies,
+ * and it used to end the call there and skip the frame behind it. While the later words are read the hunt goes on: any
+ * sync it takes meanwhile drops the marker in the reading (frame_sync_try_protocol_matches()), and a window that is not
+ * the next word drops it and may start one afresh. A window the hunt did not evaluate at a word's end (a gate skipped
+ * it) is a word not heard.
+ */
+static int
+frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int is_inverted) {
+    dsd_state* state = ctx->state;
+    if (!frame_sync_m17_eot_allowed_after(state->lastsynctype) || !frame_sync_m17_chain_has_evidence(state)) {
+        state->m17_eot_pending = 0U;
+        return DSD_SYNC_NONE;
+    }
+    const uint32_t now = (uint32_t)state->symbolcnt;
+    if (state->m17_eot_pending != 0U) {
+        const uint32_t since = now - state->m17_eot_symbolcnt;
+        const uint32_t next_end = DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS * (uint32_t)state->m17_eot_words;
+        if (since < next_end) {
+            return DSD_SYNC_NONE; /* inside the next word */
+        }
+        const int inverted = state->m17_eot_pending == 2U;
+        if (since == next_end && dsd_frame_sync_m17_eot_word(ctx->synctest8, inverted)) {
+            state->m17_eot_words++;
+            if (state->m17_eot_words < DSD_FRAME_SYNC_M17_EOT_WORDS) {
+                return DSD_SYNC_NONE;
+            }
+            state->m17_eot_pending = 0U;
+            return frame_sync_accept_m17_eot(ctx, inverted);
+        }
+        state->m17_eot_pending = 0U;
+    }
+    if (dsd_frame_sync_m17_eot_word(ctx->synctest8, is_inverted)) {
+        state->m17_eot_pending = (uint8_t)(is_inverted ? 2U : 1U);
+        state->m17_eot_words = 1U;
+        state->m17_eot_symbolcnt = now;
+    }
+    return DSD_SYNC_NONE;
 }
 
 /*
@@ -1993,8 +2031,6 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     int ham_str = dsd_sync_hamming_distance(ctx->synctest8, M17_STR, 8);
     int ham_pkt = dsd_sync_hamming_distance(ctx->synctest8, M17_PKT, 8);
     int ham_brt = dsd_sync_hamming_distance(ctx->synctest8, M17_BRT, 8);
-    int ham_eot = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT, 8);
-    int ham_eot_inv = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT_INV, 8);
     int is_inverted = opts->inverted_m17;
     if (!opts->inverted_m17) {
         /* Before any frame has been accepted the polarity of the run in hand is all there is to
@@ -2008,7 +2044,7 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     frame_sync_age_m17_pre_candidate(state);
     frame_sync_note_m17_pre_candidate(ctx, ham_pre, ham_piv);
 
-    int sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
+    int sync_type = frame_sync_try_m17_eot(ctx, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
@@ -2998,7 +3034,7 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
  *
  * In-frame resyncs a protocol handler does privately do not come through here. */
 static int
-frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+frame_sync_try_protocol_matches_any(frame_sync_match_ctx* ctx) {
     const int sync_type = frame_sync_try_protocol_matches_inner(ctx);
     if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
@@ -3023,6 +3059,16 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
             frame_sync_p25p2_anchor_note_accept(ctx->state, tolerant);
         }
         return tolerant;
+    }
+    return sync_type;
+}
+
+static int
+frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+    const int sync_type = frame_sync_try_protocol_matches_any(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        /* Whatever was taken, the M17 marker words in the reading are not a marker the hunt goes on reading. */
+        ctx->state->m17_eot_pending = 0U;
     }
     return sync_type;
 }
@@ -3861,6 +3907,20 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     /* The no-carrier reset after the exit clears the rolling dibit buffers: none of the history is in them. */
     carry->own_symbols = 0;
     carry->valid = 1;
+}
+
+char
+dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
+    /* The C4FM hunt's slicing (frame_sync_symbol_to_dibit()), as frame_sync_history_carry_symbols() reads it back. */
+    return dsd_symbol_history_get_back(state, back) > 0.0f ? '1' : '3';
+}
+
+void
+dsd_frame_sync_resume_hunt_from_last_symbols(dsd_state* state, int symbols) {
+    if (state == NULL || symbols <= 0) {
+        return;
+    }
+    frame_sync_history_carry_symbols(state, symbols, 0);
 }
 
 void

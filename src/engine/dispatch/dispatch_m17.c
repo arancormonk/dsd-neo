@@ -9,14 +9,17 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/m17/m17.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
 
-enum { M17_EOT_REMAINING_DIBITS = 184 };
+/* The marker words the hunt did not take: a whole marker less the words it takes the end on. */
+enum { M17_EOT_DRAIN_MAX_WORDS = (int)(DSD_FRAME_SYNC_M17_EOT_MARKER_WORDS - DSD_FRAME_SYNC_M17_EOT_WORDS) };
 
 /** @brief Map a frame decoder's "did this validate anything" answer onto the hunt's verdict. */
 static dsd_frame_verdict
@@ -27,6 +30,48 @@ m17_verdict(int validated) {
 int
 dsd_dispatch_matches_m17(int synctype) {
     return DSD_SYNC_IS_M17(synctype);
+}
+
+/*
+ * The rest of an end-of-transmission marker the hunt took the end on (M17 spec 2.0.11, End of Transmission Marker: 192
+ * symbols of 0x555D), read a word at a time up to the first word that is not the marker: that word may be the start of
+ * what follows (another transmission's preamble or sync word), so the hunt takes it up as the history of its window
+ * (dsd_frame_sync_resume_hunt_from_last_symbols()) instead of losing it. A marker whose first words a fade took leaves
+ * fewer words than the 184 symbols a fixed skip used to read, and that skip ran into the next frame. A word is judged
+ * as the hunt judges one (dsd_frame_sync_m17_eot_word()), on the signs the hunt reads. An input interruption ends the
+ * drain with nothing handed back: the next hunt starts afresh.
+ */
+static void
+m17_drain_eot_marker(dsd_opts* opts, dsd_state* state, int inverted) {
+    const uint32_t carrier_seq = state->carrier_seq;
+    for (int word = 0; word < M17_EOT_DRAIN_MAX_WORDS; word++) {
+        char window[DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS + 1U];
+        for (int i = 0; i < (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS; i++) {
+            (void)get_dibit_and_analog_signal(opts, state, NULL);
+        }
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
+            return;
+        }
+        for (int i = 0; i < (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS; i++) {
+            window[i] = dsd_frame_sync_symbol_sign_back(state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS - 1 - i);
+        }
+        window[DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS] = '\0';
+        if (!dsd_frame_sync_m17_eot_word(window, inverted)) {
+            dsd_frame_sync_resume_hunt_from_last_symbols(state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+            return;
+        }
+    }
+}
+
+/* End the slot's call when it is an M17 one: the marker ends the transmission whose frames led the hunt to it, never a
+ * call of another protocol still open on the slot. */
+static void
+m17_end_call_on_eot(dsd_opts* opts, dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
 }
 
 dsd_frame_verdict
@@ -42,13 +87,11 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
     }
 
     if (state->synctype == DSD_SYNC_M17_EOT_POS || state->synctype == DSD_SYNC_M17_EOT_NEG) {
-        skipDibit(opts, state, M17_EOT_REMAINING_DIBITS);
+        m17_drain_eot_marker(opts, state, state->synctype == DSD_SYNC_M17_EOT_NEG);
         // An EOT marker decoded over the air is positive evidence the transmission ended, so the
         // event layer can keep an audible epoch whose LSF never reassembled; a plain EXPLICIT end
         // is indistinguishable from an engine retune and would drop that row.
-        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-            dsd_event_sync_slot(opts, state, 0U);
-        }
+        m17_end_call_on_eot(opts, state);
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
         DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
         state->m17_pbc_ct = 0;
@@ -67,11 +110,11 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_bert_errors = 0;
         state->m17_bert_resyncs = 0;
         state->lastsynctype = DSD_SYNC_NONE;
-        /* The marker is seven outer symbols of one sign to one of the other, and the levels its sync window and its
-         * 184 marker symbols leave behind are skewed with it: the centre sat near half the outer level. The hunt for
-         * the next transmission slices and times its preamble against that centre, and with it the timing loop's
-         * crossings fell off the zero crossings, the preamble read at the wrong phase and the next LSF was missed or
-         * failed its CRC on clean signal. The transmission has ended: put the centre and the extremes back where a lost
+        /* The marker is seven outer symbols of one sign to one of the other, and the levels its words leave behind
+         * are skewed with it: the centre sat near half the outer level. The hunt for the next transmission slices and
+         * times its preamble against that centre, and with it the timing loop's crossings fell off the zero
+         * crossings, the preamble read at the wrong phase and the next LSF was missed or failed its CRC on clean
+         * signal. The transmission has ended: put the centre and the extremes back where a lost
          * carrier leaves them (the values noCarrier() sets; nothing else of its reset is done here), and the next
          * preamble sets its own (issue #834). */
         state->max = 15000.0f;
