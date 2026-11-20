@@ -156,6 +156,7 @@ class DsdNeoActivity : QtActivity() {
         ScreenSupport.onStart(this)
         RecordingPlayback.setForeground(true)
         LocationStream.onActivityStart()
+        LocationSupport.onActivityStart()
     }
 
     override fun onPause() {
@@ -167,12 +168,13 @@ class DsdNeoActivity : QtActivity() {
 
     // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.3 the process restarts right
     // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10). Every stop, that one
-    // included, advances the location feed's foreground epoch and stops the feed (#786).
+    // included, advances the location feed's foreground epoch and stops the feed (#786), and ends the map's opening fix.
     override fun onStop() {
         super.onStop()
         trace.phase(this, "stopped")
         AccessibilityBridge.onStop(this)
         LocationStream.onActivityStop()
+        LocationSupport.onActivityStop()
         if (!isChangingConfigurations) {
             ScreenSupport.onStop(this)
             RecordingPlayback.setForeground(false)

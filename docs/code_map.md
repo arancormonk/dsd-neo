@@ -18042,14 +18042,17 @@ Qt Quick frontend (`src/ui/qt`):
   `QUALITY_HIGH_ACCURACY` (API 31+); with GPS asked, only GPS's own cache counts, and another provider's answer within
   100 m settles only once `GPS_GRACE_MS` (10 s from the request's start) has passed: Google's fused provider answers a
   new request at once with the position it already holds, stamped as new, so taking it at once made every Locate me
-  after the first come back where the first one was. A GPS fix within 100 m settles at once, on itself or on a more
-  accurate network answer still fresh (never a fused one). Each provider's newest usable answer is kept (one unusable
+  after the first come back where the first one was. A fresh GPS fix within 100 m settles at once, on itself or on a
+  more accurate network answer still fresh (never a fused one). Each provider's newest usable answer is kept (one unusable
   on arrival, a future-dated one included, never is), and the one used is the most accurate still fresh when the request settles (every provider answered,
   the grace, or the deadline). `requestPreciseLocation` (the map's Locate me) is a site request that first asks for
   precise and approximate together when only approximate is allowed (Android's upgrade prompt; after two refusals
   Android 11 and later answer at once and the request goes on with approximate); `requestQuietLocation` (the map's
-  opening fix) never prompts and ends at once without permission. With no provider to ask, the answer is
-  `LOCATION_OFF_ERROR` when the device's location switch is off and `PROVIDER_ERROR` otherwise (approximate access on
+  opening fix) never prompts and ends at once without permission; it runs only while the Activity is started
+  (`LocationSupport.onActivityStart()`/`onActivityStop()`, called from `DsdNeoActivity` and checked by
+  `location_wiring`), and a stop ends one in flight as cancelled. With no provider to ask, the answer is
+  `LOCATION_OFF_ERROR` when the device's location switch is off (also for a request that ends with no fix after the
+  switch went off) and `PROVIDER_ERROR` otherwise (approximate access on
   Android 10-11 with the network provider off); the map sends the first to the location settings and the second to
   App info. A prompt's answer resumes only the request that
   asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
@@ -19270,7 +19273,8 @@ Qt Quick frontend (`src/ui/qt`):
     the foreground, and its answer moves only a view nobody moved, at the fix's own zoom (`centerOnDevice(true)`).
     Locate me keeps a closer zoom only when the user chose it (`MapScreen.zoomChosen`: the zoom buttons, a pinch, the
     wheel or a restored saved view). An answer older than the saved fix (another screen saved a newer one since)
-    leaves it. The second press after an explicit Locate me, with
+    leaves it, and then places the camera only with precise access. `AppPrefs::setLocationFix()` stores a stamp ahead
+    of the wall clock as now, so a fix is never expired (and the one it replaced lost) as it is written. The second press after an explicit Locate me, with
     the view still on the found dot and precise location allowed, is Follow my position; with approximate location the button stays Locate me (each
     press finds the user again) and an explicit answer says "Your location is approximate. Allow precise location for a
     closer fix." with a Settings action; a failed Locate me offers App info without access and the location settings
@@ -19281,8 +19285,10 @@ Qt Quick frontend (`src/ui/qt`):
     stays on it as the last known position and following says "Finding your position…". Leaving the map (or switching
     to the List) clears the Follow step and keeps the view as it was left: the canvas stops a running camera move
     where it is when it hides, no follow step moves it while hidden (`followNow()`), and a size the layout passes
-    through while hidden clamps nothing, so the dot going back from a live fix to the saved one cannot carry it; on
-    return the view is fitted to the canvas and a follow still on catches up at the user's zoom. A History pin opening
+    through (a band above the canvas hiding as the screen closes, shown or not) clamps nothing for good: a size change
+    clamps from the view last asked for (`m_asked`), not the clamped one, so the dot going back from a live fix to the saved one cannot carry it; on
+    return the view is fitted to the canvas and a follow still on catches up at the user's zoom, a move to it cut
+    short by the hiding included (`m_followCatchUp`). A History pin opening
     the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device

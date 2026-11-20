@@ -412,7 +412,9 @@ MapViewItem::rebuildScene() {
 
 mm::Viewport
 MapViewItem::viewportForSize() const {
-    mm::Viewport vp = m_vp;
+    /* From the view last asked for, not the one a passing size clamped: a canvas briefly taller (a band above it
+     * hiding as the screen closes) must not move the view kept for the next visit. */
+    mm::Viewport vp = m_asked;
     vp.width = width();
     vp.height = height();
     return mm::clamp_viewport(vp);
@@ -420,6 +422,7 @@ MapViewItem::viewportForSize() const {
 
 void
 MapViewItem::setViewport(const mm::Viewport& next) {
+    m_asked = next;
     mm::Viewport vp = next;
     vp.width = width();
     vp.height = height();
@@ -499,15 +502,10 @@ void
 MapViewItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
     QQuickItem::geometryChange(new_geometry, old_geometry);
     if (new_geometry.size() != old_geometry.size()) {
-        if (!isVisible()) {
-            /* Hidden (the map closed with its screen kept): the layout around it may change for a while, as the
-             * screen's bands hide; the view kept is the one last shown, so nothing is clamped to that passing size.
-             * Showing it again fits it to the size it then has (itemChange()). */
-            return;
-        }
-        /* The centre stays where it was; the zoom floor may rise with the width. A followed mark is centred again: where
-         * centring puts it depends on the canvas's size. */
-        setViewport(m_vp);
+        /* The centre stays where it was asked to be (a size that clamps it only for a while, as a band hides while the
+         * screen closes, moves nothing for good); the zoom floor may rise with the width. A followed mark is centred
+         * again: where centring puts it depends on the canvas's size. */
+        setViewport(m_asked);
         rearmFollow();
         polish();
         update();
@@ -525,13 +523,16 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         releaseTiles();
         /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no
          * follow step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as
-         * the map closes cannot carry the camera with it. */
+         * the map closes cannot carry the camera with it. A follow's move cut short is finished on return. */
+        if (m_camera->state() == QAbstractAnimation::Running && following()) {
+            m_followCatchUp = true;
+        }
         stopCamera();
     }
     if (change == ItemVisibleHasChanged && value.boolValue) {
         /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a
-         * mark that moved meanwhile, at the zoom the user left it at (not a first centring). */
-        setViewport(m_vp);
+         * mark that moved meanwhile (or a move cut short), at the zoom the user left it at (not a first centring). */
+        setViewport(m_asked);
         followNow();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
@@ -905,11 +906,12 @@ MapViewItem::followNow() {
     if (!isVisible() || !followTarget(&at)) {
         return; /* hidden: the kept view stays put (itemChange() re-arms it on return) */
     }
-    if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
+    if (m_followedSet && !m_followCatchUp && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
         return;
     }
     /* A follow's first centring may raise a zoom too low to centre the mark; its later steps keep the zoom the user
      * chose (a pinch out to see where the radio is stays out). */
+    m_followCatchUp = false;
     const bool first = !m_followedSet;
     m_followedSet = true;
     m_followedAt = at;

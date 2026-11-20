@@ -1010,6 +1010,27 @@ test_hidden_canvas_keeps_its_view() {
     f.map->setSize(QSizeF(400.0, 300.0));
     f.map->setVisible(true);
     assert(std::fabs(f.map->centerLatitude() - north) < 1.0e-9);
+    /* The same while still shown: a band above the canvas hides as the screen closes, before the canvas itself. */
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    assert(std::fabs(f.map->centerLatitude() - north) < 1.0e-9);
+
+    /* A follow's camera move cut short by hiding is finished on return, though the radio has not moved. */
+    push(4012U, -30.0, 100.0);
+    f.model.poll();
+    f.map->centerOn(-30.0, 100.0, 6.0);
+    const qulonglong radio = f.map->trackAt(200.0, 150.0);
+    assert(radio != 0U);
+    f.map->centerOn(10.0, 60.0, 6.0); /* the radio well off the view */
+    f.map->setCameraDurationMs(250);
+    f.map->setFollowTrackId(radio); /* the move starts... */
+    f.map->setVisible(false);       /* ...and the screen closes part way */
+    const double stopped = f.map->centerLongitude();
+    assert(std::fabs(stopped - 100.0) > 1.0);
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->centerLongitude() - 100.0) < 1.0e-6 && std::fabs(f.map->zoom() - 6.0) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
 }
 
 /* Independent review M2/M3: a new canvas size, or a view restored through the camera properties, re-centres a running

@@ -550,6 +550,54 @@ private fun locationOffIsNotAMissingProvider() {
     check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.PROVIDER_ERROR)
 }
 
+// The map's opening fix is for a map on screen: one that reaches the main looper after onStop asks nothing, and onStop
+// ends one already running; both end as cancelled, with nothing to report. Locate me is not touched by a stop.
+private fun theOpeningFixEndsWithTheForeground() {
+    val late = Activity()
+    LocationSupport.onActivityStop()
+    LocationSupport.requestQuietLocation(late, 240)
+    Handler.drain()
+    val dropped = JSONObject(LocationSupport.pollResult())
+    check(dropped.optLong("id") == 240L && dropped.optBoolean("cancelled") && late.manager.callbacks.isEmpty()
+        && late.manager.cacheReads.isEmpty()) { "nothing asked once the app has left" }
+    LocationSupport.onActivityStart()
+
+    val running = Activity()
+    LocationSupport.requestQuietLocation(running, 241)
+    Handler.drain()
+    check(running.manager.callback != null)
+    LocationSupport.onActivityStop()
+    check(JSONObject(LocationSupport.pollResult()).optBoolean("cancelled") && running.manager.signals.values.all { it.cancelled })
+    LocationSupport.onActivityStart()
+
+    val explicit = Activity()
+    LocationSupport.requestSiteLocation(explicit, 242)
+    Handler.drain()
+    LocationSupport.onActivityStop()
+    check(LocationSupport.pollResult().isEmpty() && explicit.manager.signals.values.none { it.cancelled })
+    LocationSupport.onActivityStart()
+    LocationSupport.cancelLocationRequest(242)
+    Handler.drain()
+}
+
+// Location switched off while a request waits: the request that ends with no fix says so, as one that found no
+// provider does.
+private fun locationSwitchedOffWhileWaiting() {
+    val activity = Activity()
+    LocationSupport.requestSiteLocation(activity, 250)
+    Handler.drain()
+    activity.manager.isLocationEnabled = false
+    activity.manager.callback!!.accept(null)
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.LOCATION_OFF_ERROR)
+
+    val timedOut = Activity()
+    LocationSupport.requestSiteLocation(timedOut, 251)
+    Handler.drain()
+    timedOut.manager.isLocationEnabled = false
+    Handler.advanceBy(20_000)
+    check(JSONObject(LocationSupport.pollResult()).optString("error") == LocationSupport.LOCATION_OFF_ERROR)
+}
+
 private fun timeoutWithFixAndLateReplacement() {
     val activity = Activity()
     val started = CountDownLatch(1)
@@ -612,6 +660,7 @@ private fun pollSharesTheWritersLock() {
 }
 
 fun main() {
+    LocationSupport.onActivityStart()
     try {
         permissionAndTeardown()
         interruptedPermissionPromptIsCancelled()
@@ -633,6 +682,8 @@ fun main() {
         aFutureDatedAnswerIsNeverKept()
         gpsEndsTheWaitWithTheBestMeasurement()
         locationOffIsNotAMissingProvider()
+        theOpeningFixEndsWithTheForeground()
+        locationSwitchedOffWhileWaiting()
         timeoutWithFixAndLateReplacement()
         pollSharesTheWritersLock()
         println("PASS: location permission, cache freshness, provider fallback, legacy callbacks, deadlines and cancellation")

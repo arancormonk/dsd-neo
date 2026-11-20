@@ -80,6 +80,8 @@ object LocationSupport {
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
     private var result: String? = null
+    // The Activity's own, on the main looper: the map's opening fix runs only while the app is on screen.
+    private var visible = false
 
     /** How a request may ask for permission. */
     private enum class Prompt {
@@ -129,6 +131,8 @@ object LocationSupport {
             val coarse = activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
             val fine = activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
             when {
+                // The app left the foreground before this ran (Qt's call can come just after onStop): nothing to report.
+                prompt == Prompt.NEVER && !visible -> finish(request, false, "", "", "", cancelled = true)
                 coarse && (fine || prompt != Prompt.PRECISE) -> locate(request)
                 prompt == Prompt.NEVER -> finish(request, false, "", "", "Location permission not granted.")
                 else -> {
@@ -145,6 +149,17 @@ object LocationSupport {
                 }
             }
         }
+    }
+
+    /** Activity `onStart`, on the main looper. */
+    @JvmStatic fun onActivityStart() {
+        visible = true
+    }
+
+    /** Activity `onStop`, on the main looper: the map's opening fix ends; it is for a map on screen. */
+    @JvmStatic fun onActivityStop() {
+        visible = false
+        active?.takeIf { it.prompt == Prompt.NEVER }?.let { finish(it, false, "", "", "", cancelled = true) }
     }
 
     /** Hands a permission answer to [LocationPermission], which owns the prompt; true when the code is its own. */
@@ -244,6 +259,9 @@ object LocationSupport {
         }
     }
 
+    /** A request ending without a fix: [error], unless the device's location was switched off meanwhile. */
+    private fun noFix(request: Request, error: String) = if (locationOff(request.manager)) LOCATION_OFF_ERROR else error
+
     /** Whether the device's location switch is off (Android 9 and later say so directly). */
     private fun locationOff(manager: LocationManager): Boolean =
         try { !manager.isLocationEnabled } catch (_: Exception) { false }
@@ -269,14 +287,16 @@ object LocationSupport {
                 // (see GPS_GRACE_MS), but not a more accurate network measurement still fresh.
                 val measured = request.answers.filterKeys { it != LocationManager.FUSED_PROVIDER }.values
                     .filter { usableFix(it, true) }.minWithOrNull(BETTER_FIX)
-                gotFix(request, measured ?: location)
-                return
+                if (measured != null) {
+                    gotFix(request, measured)
+                    return
+                }
             }
             settleSite(request)
             return
         }
         if (usableFix(location)) gotFix(request, location!!)
-        else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", "No location fix available; use Browse.")
+        else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", noFix(request, "No location fix available; use Browse."))
     }
 
     /** The more accurate fix first, then the newer. */
@@ -298,7 +318,7 @@ object LocationSupport {
             best != null && (request.pendingProviders.isEmpty() || (best.accuracy <= SITE_TARGET_ACCURACY_M && !gpsOwed)) ->
                 gotFix(request, best)
             request.pendingProviders.isEmpty() ->
-                finish(request, false, "", "", "No current location fix available. Try again or choose a site manually.")
+                finish(request, false, "", "", noFix(request, "No current location fix available. Try again or choose a site manually."))
         }
     }
 
@@ -306,7 +326,7 @@ object LocationSupport {
         request.timeout?.let { main.removeCallbacks(it) }
         request.timeout = Runnable {
             val best = if (request.forSites && request.fix == null) bestSiteFix(request) else null
-            if (best != null) gotFix(request, best) else finish(request, false, "", "", error)
+            if (best != null) gotFix(request, best) else finish(request, false, "", "", if (request.fix == null) noFix(request, error) else error)
         }
             .also { main.postDelayed(it, TIMEOUT_MS) }
     }

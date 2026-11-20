@@ -578,6 +578,10 @@ class MapViewItem : public QQuickItem {
     bool m_active = true;
     bool m_appActive = true;
     map_math::Viewport m_vp;
+    /* The view last asked for (setViewport()), before clamping to the canvas: a size change clamps from it again. */
+    map_math::Viewport m_asked;
+    /* A follow's camera move was cut short by the canvas hiding: its next step moves even to the same mark. */
+    bool m_followCatchUp = false;
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;

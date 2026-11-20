@@ -894,7 +894,9 @@ Item {
                 screen.endFollows();
                 screen.mapShown = true;
                 screen.userMovedCamera();
-                map.centerOnDevice(!screen.zoomChosen);
+                var keep = screen.zoomChosen && map.zoom >= map.deviceZoom();
+                map.centerOnDevice(!keep);
+                screen.zoomChosen = keep;
             }
         }
 
@@ -1078,8 +1080,11 @@ Item {
             // Locate me, so every press finds the user again.
             locator.readyToFollow = canFollow;
             // The fix's own zoom, unless the user chose a closer one (not for
-            // the opening fix, which nobody asked for).
-            map.centerOnDevice(opening || !screen.zoomChosen);
+            // the opening fix, which nobody asked for). A zoom the map sets
+            // itself is not the user's.
+            var keep = !opening && screen.zoomChosen && map.zoom >= map.deviceZoom();
+            map.centerOnDevice(!keep);
+            screen.zoomChosen = keep;
         }
         onFollowMeChanged: map.followDevice = followMe
     }

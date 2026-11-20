@@ -392,9 +392,35 @@ Item {
             item("mapZoomIn").activate();
             var chosen = canvas().zoom;
             button.activate();
-            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude, 2000, savedSystems.realtimeNowMs() + 1, false, "", "", "");
-            tryVerify(function () { return sameAsDevice(canvasView()); }, 2000);
+            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude + 0.05, 2000, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return near(canvas().centerLongitude, devicePlace.longitude + 0.05, 1e-5); }, 2000, "the camera reached the new fix");
             verify(near(canvas().zoom, chosen, 1e-6), "the user's closer zoom stays: " + canvas().zoom + " vs " + chosen);
+        }
+
+        // A zoom the map set itself is not the user's: after a restored view (chosen) the opening fix sets street level,
+        // and a wide Locate me then shows its whole circle.
+        function test_04l_an_automatic_zoom_is_not_kept() {
+            prefs.mapViewport = {latitude: savedPlace.latitude, longitude: savedPlace.longitude, zoom: 5};
+            restart();
+            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude, 5, savedSystems.realtimeNowMs() - 1000, false, "", "", "");
+            tryVerify(function () { return near(canvas().zoom, 15, 1e-6); }, 2000, "the opening fix at street level: " + canvas().zoom);
+            item("mapLocate").activate();
+            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude + 0.05, 3000, savedSystems.realtimeNowMs(), false, "", "", "");
+            tryVerify(function () { return near(canvas().centerLongitude, devicePlace.longitude + 0.05, 1e-5); }, 2000);
+            verify(canvas().zoom < 14, "the wide fix's zoom, not 15: " + canvas().zoom);
+        }
+
+        // Under approximate access an answer older than the saved fix moves nothing: the saved one may be precise.
+        function test_04m_an_older_coarse_answer_does_not_place_a_saved_dot() {
+            testContext.setLocationAccess("approximate");
+            var now = savedSystems.realtimeNowMs();
+            prefs.setLocationFix(devicePlace.latitude, devicePlace.longitude, now, 5);
+            prefs.mapViewport = {latitude: savedPlace.latitude, longitude: savedPlace.longitude, zoom: savedPlace.zoom};
+            restart();
+            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude + 0.02, devicePlace.longitude + 0.02, 2000, now - 5000, false, "", "", "");
+            wait(50);
+            verify(sameView(canvasView(), savedPlace.latitude, savedPlace.longitude, savedPlace.zoom), "the saved view stays: " + JSON.stringify(canvasView()));
+            verify(near(prefs.lastLat, devicePlace.latitude), "the newer fix stays saved");
         }
 
         // An answer older than a fix another screen saved since leaves the newer one.

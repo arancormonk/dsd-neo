@@ -250,7 +250,8 @@ Item {
             if (result.fixOk) {
                 // A cached answer can be older than a fix another screen saved
                 // since: the newer one stays, and the dot shows it.
-                if (!(prefs.lastFixAt > result.fixAtMs))
+                var saved = !(prefs.lastFixAt > result.fixAtMs);
+                if (saved)
                     prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
                 var precise = locator.access() === "precise";
                 if (!quiet) {
@@ -259,7 +260,10 @@ Item {
                     locator.notice = precise ? "" : qsTr("Your location is approximate. Allow precise location for a closer fix.");
                     locator.noticeAction = precise ? "" : "appSettings";
                 }
-                if (locator.moveOnAnswer)
+                // A newer fix kept over this answer places the camera only with
+                // precise access: under approximate access it may be a precise
+                // fix from before access was lowered.
+                if (locator.moveOnAnswer && (saved || precise))
                     locator.located(precise && !quiet, quiet);
                 locator.moveOnAnswer = false;
             } else if (!quiet) {
