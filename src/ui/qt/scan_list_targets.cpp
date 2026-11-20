@@ -250,6 +250,16 @@ carriesKeys(const QVariantMap& sys) {
            || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force != 0);
 }
 
+/* Whether @p sys forces an algorithm, which only a DMR row takes: the direct key's force choice 2 (-0), or its
+   profile's algorithm fallback (decryptionForce above 1, --dmr-force-algid). A value past int's range adds no option
+   (appendProfileOptions()), so it forces nothing here either. */
+bool
+forcesAlgorithm(const QVariantMap& sys) {
+    int force = 0;
+    return (stored_int(sys.value("encForceKey", 0), &force) && force == 2)
+           || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force > 1);
+}
+
 /* Issue #890: why @p protocol's row cannot take the keys @p sys carries (its key matrix, ScanProtocolKeys), or empty.
    dPMR takes only its scoped -R scrambler key, of the direct or a profile's key, so a legacy system saved with the
    NXDN / dPMR scrambler keeps working; never a key or key-map file. M17 takes none of its own: the session's keys
@@ -273,6 +283,12 @@ keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
             return QStringLiteral("%1 entries take only a scrambler key, not a key file.")
                 .arg(QLatin1String(protocol.label));
         }
+    }
+    /* The row takes privacy forcing (-4) and no forcing (--no-force-key), never a DMR algorithm fallback. */
+    if (forcesAlgorithm(sys)) {
+        return QStringLiteral("%1 entries take privacy forcing only, not an algorithm fallback. Change the Force key "
+                              "setting of this saved system or its decryption profile.")
+            .arg(QLatin1String(protocol.label));
     }
     return {};
 }

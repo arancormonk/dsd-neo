@@ -1613,7 +1613,8 @@ marked trunked is refused, since these targets are conventional only. Their clas
 its own modulation, so the editor hides the choice and none is written: a modulation
 saved in such a system's Radio settings is refused, with the fix named. Keys follow what
 each protocol can decrypt: dPMR takes its scrambler key (`-R`, direct or from a profile)
-and refuses any other key or a key file; M17 uses the session's keys (set in the app's
+and refuses any other key, a key file or an algorithm fallback in its Force key setting
+(privacy forcing passes); M17 uses the session's keys (set in the app's
 decoder options) and refuses a saved system that sets its own; YSF, D-STAR and TETRA DMO
 decrypt nothing, so the editor hides the decryption choice and their rows carry no keys.
 Auto, `-Y`, ProVoice and EDACS are refused. Systems with extra options are

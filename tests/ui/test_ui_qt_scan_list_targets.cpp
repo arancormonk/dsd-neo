@@ -218,6 +218,41 @@ test_simplex_digital_targets() {
               && build().error == QStringLiteral("Simplex: dPMR entries take only a scrambler key, not a key file."));
         sys.remove(field);
     }
+    // Forcing: privacy forcing (-4, direct choice 1 or a profile's 1) and no forcing pass; an algorithm fallback (the
+    // direct choice 2, -0, or a profile's algorithm, --dmr-force-algid), which only a DMR row takes, is refused.
+    const QString algorithmRefusal = QStringLiteral("Simplex: dPMR entries take privacy forcing only, not an algorithm "
+                                                    "fallback. Change the Force key setting of this saved system or "
+                                                    "its decryption profile.");
+    sys["encKeyType"] = "scrambler";
+    sys["encKeyValue"] = "17";
+    sys["encForceKey"] = 2;
+    check(!build().ok && build().error == algorithmRefusal);
+    sys["encForceKey"] = 0;
+    for (const int force : {2, 0x21, 255}) {
+        sys["decryptionForce"] = force;
+        check(!build().ok && build().error == algorithmRefusal);
+    }
+    sys["decryptionForce"] = 1;
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-R 17 -4\n"));
+    sys["decryptionForce"] = 0;
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-R 17 --no-force-key\n"));
+    // A profile force past int's range adds no option, so it forces nothing.
+    sys["decryptionForce"] = (qlonglong(1) << 32) + 2;
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-R 17\n"));
+    sys.remove("decryptionForce");
+    sys.remove("encForceKey");
+    sys.remove("encKeyType");
+    sys.remove("encKeyValue");
+    // The same choices still reach a DMR row, the one that takes them.
+    sys["decodeFlag"] = "-fs";
+    sys["encForceKey"] = 2;
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-0\n"));
+    sys["encForceKey"] = 0;
+    sys["decryptionForce"] = 0x21;
+    check(build().ok && build().csv.contains("--dmr-force-algid 21"));
+    sys.remove("decryptionForce");
+    sys.remove("encForceKey");
+    sys["decodeFlag"] = "-fm";
     // A no-keys profile on dPMR clears the session's keys for the row, as on any keyed protocol.
     sys["decryptionClearKeys"] = true;
     sys["decryptionProfileRef"] = "none-ref";

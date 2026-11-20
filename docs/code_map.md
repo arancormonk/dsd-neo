@@ -22608,11 +22608,13 @@ Qt. dPMR, D-STAR, YSF, M17 and TETRA DMO are conventional only: a saved system o
 hides the choice, an entry's hidden one is not written, a modulation saved in the system's Radio settings is refused).
 The key matrix (`ScanProtocolKeys`, `keyMatrixError()`, `scan_list_entry_takes_keys()`): P25, DMR and NXDN take every
 key setting as before; dPMR only its scoped `-R` scrambler (a direct or profile key, so a legacy NXDN / dPMR scrambler
-system keeps working; any other key type or a key or key-map file is refused); M17 none of its own (a saved system with
-any key setting is refused, naming the session's keys); YSF, D-STAR and TETRA DMO, like NFM and AM, decrypt nothing, so
-the editor hides the decryption choice, the starter resolves none of their profiles (an entry's hidden profile is no
-use, `DecryptionProfilesModel::useCount()`), and their rows pass only the talkgroup file. The editor shows M17 a note
-that the session's keys apply. The wizard has a dPMR chip (`-fm`, `qml/Util.js`).
+system keeps working; any other key type or a key or key-map file is refused, and so is an algorithm fallback, `-0` or
+`--dmr-force-algid`, which only a DMR row takes; privacy forcing `-4` and `--no-force-key` pass, as the engine takes
+them); M17 none of its own (a saved system with any key setting is refused, naming the session's keys); YSF, D-STAR and
+TETRA DMO, like NFM and AM, decrypt nothing, so the editor hides the decryption choice, the starter resolves none of
+their profiles (an entry's hidden profile is no use, `DecryptionProfilesModel::useCount()`), and their rows pass only
+the talkgroup file. The editor shows M17 a note that the session's keys apply. The wizard has a dPMR chip (`-fm`,
+`qml/Util.js`).
 
 TETRA list rate (issue #890, D3): `ScanListStarter::hasTetraTargets()` reads whether a list has a target the engine can
 visit that is TETRA DMO: an enabled entry (a switched-off one is left out of the CSV) of the protocol, a frequency
