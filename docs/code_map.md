@@ -1327,10 +1327,11 @@ connecting): it runs to its connect, and the read hands back before the new conn
 connection's staged samples and resampler history go whatever the reconnect's outcome
 (`dsd_opts_reset_pcm_input_state()`). The control channel's sync stamps a sync accept writes
 (`frame_sync_note_cc_sync()`) each follow their own clock: the monotonic one only moves forward, and the wall one takes
-the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against the stamp it
-found before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`); a grace after a tune stamps
-the wall clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a release,
-a control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`,
+the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against both stamps as
+it found them before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`; a grace writes both,
+so one whose wall second repeats the old one still shows in the monotonic stamp); a grace after a tune stamps the wall
+clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a release, a
+control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`,
 `sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates, the payload crypto fields and the sync stamps in
 the same decoder-thread call that retunes, before another sample is read. Beat-to-tick delay: one checkpoint (62.5 ms at
 4800 sym/s), one frame, or one input wait (at most a 100 ms slice). A frame read waits for its samples inside a dispatch

@@ -1710,6 +1710,33 @@ test_a_sync_follows_a_wall_clock_set_back(void) {
     watchdog_case_done(opts, state);
 }
 
+/* A grace this call's tick stamps with the wall second the stamp already held (the wall clock was set back to it during
+   the call) is still this call's: the tick moved the monotonic stamp too. The sync keeps the grace's wall stamp, not
+   the call's later start, so a hangtime check never reads a negative age. */
+static void
+test_a_grace_that_repeats_the_wall_second_keeps_it(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 340, 0);
+    const time_t entry_wall = (time_t)(k_watchdog_t0_ns / 1000000000ULL) - 5;
+    state->last_cc_sync_time = entry_wall;
+    state->last_cc_sync_time_m = (double)k_watchdog_t0_ns / 1e9 - 10.0;
+    g_watchdog_tick_wall_stamp = entry_wall;
+    g_watchdog_tick_mono_stamp = (double)k_watchdog_t0_ns / 1e9 + 1.0;
+    const int sync = getFrameSync(opts, state);
+    if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the word after the stamping tick was not found (sync %d, ticks %d)\n", sync,
+                    g_watchdog_ticks);
+        g_watchdog_failures++;
+    }
+    if (state->last_cc_sync_time != entry_wall) {
+        DSD_FPRINTF(stderr, "FAIL: the sync replaced a grace that repeated the wall second %lld with %lld\n",
+                    (long long)entry_wall, (long long)state->last_cc_sync_time);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
 /* The entry tick's grace (a tick that settled a tune and stamped the control channel's sync, moving nothing) is this
    call's: the sync that follows keeps its wall stamp. The baseline the sync compares against is taken before the
    entry tick. */
@@ -1803,6 +1830,7 @@ main(void) {
     test_a_sync_moves_neither_control_channel_stamp_back();
     test_a_sync_follows_a_wall_clock_set_back();
     test_an_entry_tick_grace_keeps_its_wall_stamp();
+    test_a_grace_that_repeats_the_wall_second_keeps_it();
     test_an_entry_tick_retune_hands_back();
     assert(g_watchdog_failures == 0);
     return 0;

@@ -332,13 +332,31 @@ enum {
 
 typedef struct frame_sync_runtime_ctx frame_sync_runtime_ctx;
 
+/* The control channel's sync stamps, wall and monotonic, as getFrameSync() found them before its entry tick: a tick's
+   grace during the call writes both, so either one differing at a sync accept was written during the call, even when
+   the wall second it wrote repeats the old one (frame_sync_note_cc_sync()). */
+typedef struct {
+    time_t wall;
+    double mono;
+} frame_sync_cc_stamps;
+
+static inline frame_sync_cc_stamps
+frame_sync_cc_stamps_take(const dsd_state* state) {
+    frame_sync_cc_stamps stamps = {0, 0.0};
+    if (state) {
+        stamps.wall = state->last_cc_sync_time;
+        stamps.mono = state->last_cc_sync_time_m;
+    }
+    return stamps;
+}
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
     time_t now;
     double nowm;
-    /* The control channel's wall sync stamp when the call began (frame_sync_note_cc_sync()). */
-    time_t cc_stamp_at_entry;
+    /* The control channel's sync stamps when the call began (frame_sync_note_cc_sync()). */
+    frame_sync_cc_stamps cc_stamp_at_entry;
     int synctest_pos;
     float lmax;
     float lmin;
@@ -517,15 +535,16 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
    monotonic stamp only moves forward: a tick inside the call (the grace after a tune) may already have stamped a later
    one. The wall stamp follows the wall clock, set back included, so a stale-carrier or hangtime check never reads a
    negative age; only one a tick wrote during this call (its grace, stamped as the tick saw the clock, while the hunt's
-   time is the call's start) is kept. */
+   time is the call's start) is kept. A grace writes both stamps, so either one moved since the call began marks it. */
 static inline void
 frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;
+    const int written_in_call = state->last_cc_sync_time != ctx->cc_stamp_at_entry.wall
+                                || fabs(state->last_cc_sync_time_m - ctx->cc_stamp_at_entry.mono) > 1e-9;
     if (ctx->nowm > state->last_cc_sync_time_m) {
         state->last_cc_sync_time_m = ctx->nowm;
     }
-    const int wall_written_in_call = state->last_cc_sync_time != ctx->cc_stamp_at_entry;
-    if (!wall_written_in_call) {
+    if (!written_in_call) {
         state->last_cc_sync_time = ctx->now;
     }
 }
@@ -3686,9 +3705,9 @@ typedef struct frame_sync_runtime_ctx {
        tune since then (a release's tune in the no-sync hooks, say) leaves a history that is not kept. */
     uint32_t history_drops;
     uint64_t history_tune_gen;
-    /* The control channel's wall sync stamp when the call began: one that differs at a sync accept was written during
-       the call (a tick's grace after a tune), and is kept (frame_sync_note_cc_sync()). */
-    time_t cc_stamp_at_entry;
+    /* The control channel's sync stamps when the call began: either one that differs at a sync accept was written
+       during the call (a tick's grace after a tune), and the wall stamp is kept (frame_sync_note_cc_sync()). */
+    frame_sync_cc_stamps cc_stamp_at_entry;
     /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
        read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
     int resumed;
@@ -3777,7 +3796,7 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->history_rf_mod = state->rf_mod;
     rt->history_drops = state->frame_sync_carry.drops;
     rt->history_tune_gen = dsd_trunk_tuning_generation();
-    rt->cc_stamp_at_entry = state->last_cc_sync_time;
+    rt->cc_stamp_at_entry = frame_sync_cc_stamps_take(state);
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -3796,7 +3815,7 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
    tick (frame_sync_note_cc_sync()). */
 static void
 frame_sync_runtime_restart(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
-    const time_t cc_stamp_at_entry = rt->cc_stamp_at_entry;
+    const frame_sync_cc_stamps cc_stamp_at_entry = rt->cc_stamp_at_entry;
     frame_sync_runtime_init(rt, opts, state);
     rt->cc_stamp_at_entry = cc_stamp_at_entry;
 }
@@ -4497,7 +4516,7 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .state = state,
         .now = 0,
         .nowm = 0.0,
-        .cc_stamp_at_entry = state->last_cc_sync_time,
+        .cc_stamp_at_entry = frame_sync_cc_stamps_take(state),
         .synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0,
         .lmax = state->max,
         .lmin = state->min,
@@ -6022,7 +6041,7 @@ int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
     const double nowm = dsd_decode_now_mono_s();
-    const time_t cc_stamp_at_entry = state ? state->last_cc_sync_time : 0; /* before the entry tick's grace */
+    const frame_sync_cc_stamps cc_stamp_at_entry = frame_sync_cc_stamps_take(state); /* before the entry tick's grace */
     int ended = DSD_SYNC_NONE;
     if (frame_sync_entry_ends_call(opts, state, now, &ended)) {
         return ended;
