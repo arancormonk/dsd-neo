@@ -1344,18 +1344,13 @@ tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
     }
     tetra_state_t* const ts = tetra_st_existing(state);
     if (ts) {
-        /* What this visit's bursts proved, then what the network told its MSs, the trunked calls kept for it and the
-           TM-SDUs and short data being rebuilt. */
+        /* What this visit's bursts proved, and the direct mode call with its canonical call. */
         tetra_confirm_reset(state);
-        ts->mm_status_valid = 0;
-        ts->mm_status_code = 0;
-        tetra_calls_forget_calls(opts, state);
         tetra_calls_dmo_forget(opts, state);
-        tetra_mac_forget_fragments(state);
-        tetra_mle_forget_reassembly(state);
-        /* The network: its cell (SYSINFO, main carrier, location area, security) and every record keyed by its
-           identities go while it is still known, then MCC, MNC, colour code and the scrambling seed, net_known last
-           (tetra_bsch_forget_network()). */
+        /* The network, each part once (tetra_bsch_forget_network()): what it told its MSs (the D-MM STATUS), the
+           trunked call records with their canonical calls and the short data being rebuilt, then its cell (SYSINFO,
+           main carrier, location area, security, the partial TM-SDUs), then MCC, MNC, colour code and the scrambling
+           seed, net_known last, so every cleanup that reads the network still finds it known. */
         tetra_bsch_forget_network(opts, state);
         /* The carrier: the TDMA clock, the speech in progress, direct mode with its DM colour code and protection,
            the timeslots' speech context and the air evidence. */

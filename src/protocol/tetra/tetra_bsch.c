@@ -260,9 +260,10 @@ tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state) {
         return;
     }
     /* What another network's BSCH forgets (bsch_identity_change()), with the identity still known, as that rule reads
-       it; then the identity and its scrambling seed, net_known last. */
-    bsch_forget_cell(opts, state, ts);
+       it: what is keyed by its identities (the D-MM STATUS, the call records, the short data being rebuilt), then its
+       cell; then the identity and its scrambling seed, net_known last (issue #890 F6). */
     bsch_forget_network_parties(opts, state, ts);
+    bsch_forget_cell(opts, state, ts);
     ts->mcc = 0;
     ts->mnc = 0;
     ts->colour = 0;

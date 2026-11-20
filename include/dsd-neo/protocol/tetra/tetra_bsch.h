@@ -58,8 +58,8 @@ int tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* st
 void tetra_bsch_forget_cell(dsd_opts* opts, dsd_state* state);
 
 /* Forget the network being received (issue #890, a scan's visit to a TETRA row): what a BSCH of another network
- * forgets, the cell (tetra_bsch_forget_cell()), the calls keyed by its identities, the concatenated short data being
- * reassembled and its D-MM STATUS, then the network identity itself (MCC, MNC, colour code) and its scrambling seed,
+ * forgets, the calls keyed by its identities, the concatenated short data being reassembled and its D-MM STATUS, the
+ * cell (tetra_bsch_forget_cell()), then the network identity itself (MCC, MNC, colour code) and its scrambling seed,
  * net_known last, so nothing keyed by the network outlives it. A --tetra-net preset seeds the identity again at the
  * next burst. Never creates TETRA state. */
 void tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state);
