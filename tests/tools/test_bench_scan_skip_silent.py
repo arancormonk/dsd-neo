@@ -5,7 +5,7 @@
 - --scan untyped runs every row under -ft (DMR and P25) from a map with no mode column: it refuses --silent-modes,
   which would name modes no row runs, and the typed scan takes them.
 - --by-mode groups an untyped run's silent visits under the one decoder set every row runs, and a typed run's under
-  each row's mode.
+  each row's mode, a frontend's (--serve, scored with --analyze) by the list it scanned.
 - --by-mode counts the visits that left an active channel mid-call, those at the call's onset included.
 
 These run in seconds and never start a decoder or serve a scene.
@@ -194,6 +194,31 @@ class SavedRunReport(unittest.TestCase):
         record = bench.frontend_record(args)
         self.assertEqual(record["silent_modes"], ["nxdn48", "dpmr"])
         self.assertTrue(record["by_mode"])
+
+    def test_an_untyped_frontend_run_is_one_decoder_set(self):
+        """A frontend scanning the untyped map (--serve --scan untyped) is scored as one ("scan": "frontend") and its
+        silent visits grouped as untyped, not by the modes typed.csv gives their frequencies (apply_saved_modes())."""
+        args, message = parse("--serve", "5000", "--dmr-synth-gen", "gen", "--out", "out", "--scan", "untyped")
+        self.assertIsNone(message)
+        record = bench.frontend_record(args)
+        self.assertEqual(record["scan"], "frontend")
+        self.assertEqual(record["scan_variant"], "untyped")
+        channels = [bench.Channel(i, "silent") for i in range(4)]
+        for c, mode in zip(channels, ("nfm", "dmr", "p25", "nxdn48")):
+            c.mode = mode  # what the saved typed.csv would give them
+        record.update(visits_record("frontend", record["silent_modes"], channels))
+        out = bench.silent_by_mode(record, channels, [], [])
+        self.assertEqual(set(out), {bench.UNTYPED_MODE}, f"every row ran -ft, the report has {sorted(out)}")
+        self.assertEqual(out[bench.UNTYPED_MODE]["visits"], 8)
+
+    def test_a_typed_frontend_run_is_each_rows_mode(self):
+        args, _message = parse("--serve", "5000", "--dmr-synth-gen", "gen", "--out", "out", "--scan", "typed")
+        record = bench.frontend_record(args)
+        self.assertEqual(record["scan_variant"], "typed")
+        channels = [bench.Channel(i, "silent") for i in range(4)]
+        record.update(visits_record("frontend", ("nxdn48", "dpmr"), channels))
+        out = bench.silent_by_mode(record, channels, [], [])
+        self.assertEqual(set(out), {"nxdn48", "dpmr"})
 
 
 class StampedLines(unittest.TestCase):

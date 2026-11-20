@@ -53,7 +53,8 @@ Usage, from the repository root:
     python3 tools/bench_scan_skip_silent.py --summary DIR... (one table over earlier runs' result.json files)
     python3 tools/bench_scan_skip_silent.py --rescore --dmr-synth-gen ... --out DIR (score a run again)
 
-A frontend (the Qt or Android app) is measured with --serve PORT --skip on|off --out DIR: the tool serves the scene
+A frontend (the Qt or Android app) is measured with --serve PORT --scan trunk|typed|untyped --skip on|off --out DIR
+(--scan names the list the app scans, for --by-mode): the tool serves the scene
 on that loopback port for --seconds, to one client after another, and writes the lists (trunk.csv is the scan list's
 target CSV) and the retunes to DIR. Then put the app's logcat (adb logcat -v epoch) in a file, its recording journal
 in DIR/calls.jsonl and its recordings in DIR/calls/, and score the run with --analyze LOGCAT --out DIR: its digital
@@ -640,9 +641,10 @@ def skips_on_air(skips, visit_list):
 def silent_by_mode(record, channels, lines, skips):
     """--by-mode: per mode the silent channels run, every scored visit to one of them: skipped or how it ended, and the
     skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line. An untyped map's
-    rows all run -ft, whatever mode the typed map would give them: their visits are one row, UNTYPED_MODE."""
+    rows all run -ft, whatever mode the typed map would give them: their visits are one row, UNTYPED_MODE. A frontend
+    run's record says which list it scanned in "scan_variant" ("scan" is "frontend" there, which picks its scoring)."""
     modes = tuple(record["silent_modes"])
-    untyped = record["scan"] == "untyped"
+    untyped = record.get("scan_variant", record["scan"]) == "untyped"
     started = record["scene_started"]
     tunes = record["tunes"]
     spans = []  # (channel, start mono s from the scene's start, end mono s), the visits() order and bounds
@@ -778,9 +780,11 @@ def summary_table(results):
 
 
 def frontend_record(args):
-    """A frontend run's record (--serve), the silent channels' mode list and the report option included, so --analyze
-    can report its visits by mode."""
+    """A frontend run's record (--serve), the silent channels' mode list, the list it scans (--scan, as
+    "scan_variant": "scan" is "frontend", which scores its calls by their recordings) and the report option included,
+    so --analyze can report its visits by mode."""
     record = {"scan": "frontend", "skip": args.skip, "level": args.level, "seed": args.seed, "silent": args.silent}
+    record["scan_variant"] = args.scan
     record.update({"jitter_s": args.jitter, "wall_offset_s": time.time() - time.monotonic()})
     record.update({"process_cpu_s": None, "load_average_end": None})
     record.update({"silent_modes": list(args.silent_modes), "by_mode": bool(args.by_mode)})
