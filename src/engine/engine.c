@@ -4496,11 +4496,12 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
 static int
 live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state, double now_m, uint64_t* out_epoch,
                                     int64_t* out_mark_ms) {
-    if (opts->scanner_mode != 1 || (dsd_decode_time() - state->last_cc_sync_time) <= opts->trunk_hangtime) {
+    /* The anchor's rule is noCarrier()'s own (no_carrier_hangtime_ran_out(): the whole-second -t since the anchor, and
+       -t since the input came back from a retune's mute), as the countdown publishes it: one deadline. A yield spent
+       before the input had listened for -t would be refused there and never owed again for this landing and anchor. */
+    if (opts->scanner_mode != 1 || !no_carrier_hangtime_ran_out(opts, state, dsd_decode_time())) {
         return 0;
     }
-    /* The anchor's rule is the whole-second one above, as noCarrier() applies it and the countdown publishes it: one
-       deadline. */
     if (live_scanner_y_frames_hold_row(opts, state, now_m) || !live_scanner_y_frame_step_may_decide(opts, state)) {
         return 0;
     }
