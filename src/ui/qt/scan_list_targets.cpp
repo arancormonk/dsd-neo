@@ -329,7 +329,7 @@ buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& 
     if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
         options << QStringLiteral("-^");
     }
-    const QString matrixError = keyMatrixError(sys, protocol);
+    QString matrixError = keyMatrixError(sys, protocol);
     if (!matrixError.isEmpty()) {
         return matrixError;
     }
@@ -373,7 +373,7 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
             return QStringLiteral("Dwell and hold must be 250..600000 ms, or 0 to inherit.");
         }
     }
-    const QString modulationError = resolveModulation(entry, sys, target);
+    QString modulationError = resolveModulation(entry, sys, target);
     if (!modulationError.isEmpty()) {
         return modulationError;
     }

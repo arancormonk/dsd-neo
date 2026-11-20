@@ -74,7 +74,7 @@ struct ScanProtocol {
    396-2 4.5 and 6.2); every other digital mode a 12.5 kHz one. */
 inline const std::array<ScanProtocol, 11>&
 scan_protocols() {
-    static const std::array<ScanProtocol, 11> catalog{{
+    static constexpr std::array<ScanProtocol, 11> catalog{{
         {"p25", "P25", "-ft", "p25", "p25", "p25", 12500, true, true, false, ScanProtocolKeys::Full},
         {"dmr", "DMR", "-fs", "dmr", "dmr", "dmr", 12500, true, true, false, ScanProtocolKeys::Full},
         {"nxdn", "NXDN96", "-fn", "nxdn", "nxdn96", "nxdn", 12500, true, true, false, ScanProtocolKeys::Full},
@@ -190,9 +190,10 @@ scan_protocol_variant(const ScanProtocol* p) {
 /** The catalog as QML reads it (ScanListsModel::protocols), in picker order: scan_protocol_variant() of each. */
 inline QVariantList
 scan_protocols_variant() {
+    const auto& catalog = scan_protocols();
     QVariantList out;
-    for (const ScanProtocol& p : scan_protocols()) {
-        out.append(scan_protocol_variant(&p));
+    for (std::size_t i = 0; i < catalog.size(); ++i) {
+        out.append(scan_protocol_variant(&catalog[i]));
     }
     return out;
 }
