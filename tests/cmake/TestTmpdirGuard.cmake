@@ -1,61 +1,53 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The per-test temp folders tests/CMakeLists.txt gives every test (TMPDIR, TEMP
-# and TMP): MODE=setup empties ROOT and makes a folder in it for each test that
-# NAMES (a file, one test name a line) lists; MODE=check, which CTest runs after
-# every other test that ran, fails naming each test whose folder is not empty,
-# and removes ROOT when all are. A failed check leaves the files there to look
-# at; the next run's setup removes them.
+# One test's temp folder (cmake/TestTmpdir.cmake): MODE=setup empties DIR, or
+# makes it; MODE=check, which CTest runs after the test, fails naming each entry
+# TEST_NAME left in DIR, and removes DIR either way, so a failed check leaves nothing
+# in the build tree and the next run of the test starts clean. The listing is one
+# level deep: one entry is enough to show a leak, and a leaked link is reported,
+# never followed.
 #
-# Expected -D inputs: MODE, ROOT; NAMES for setup.
+# Expected -D inputs: MODE, DIR; TEST_NAME for check.
 
-foreach(_var MODE ROOT)
-    if(NOT DEFINED ${_var})
+cmake_minimum_required(VERSION 3.20)
+
+foreach(_var MODE DIR)
+    if(NOT DEFINED ${_var} OR "${${_var}}" STREQUAL "")
         message(FATAL_ERROR "${_var} is required")
     endif()
 endforeach()
 
 if(MODE STREQUAL "setup")
-    if(NOT DEFINED NAMES)
-        message(FATAL_ERROR "NAMES is required")
-    endif()
-    file(REMOVE_RECURSE "${ROOT}")
-    file(STRINGS "${NAMES}" _names)
-    list(TRANSFORM _names PREPEND "${ROOT}/")
-    file(MAKE_DIRECTORY "${ROOT}" ${_names})
+    file(REMOVE_RECURSE "${DIR}")
+    file(MAKE_DIRECTORY "${DIR}")
     return()
 endif()
 
 if(NOT MODE STREQUAL "check")
     message(FATAL_ERROR "MODE must be setup or check, not '${MODE}'")
 endif()
+if(NOT DEFINED TEST_NAME OR TEST_NAME STREQUAL "")
+    message(FATAL_ERROR "TEST_NAME is required")
+endif()
 
-file(GLOB _dirs LIST_DIRECTORIES true RELATIVE "${ROOT}" "${ROOT}/*")
-list(SORT _dirs)
-set(_report "")
-foreach(_test IN LISTS _dirs)
-    file(
-        GLOB_RECURSE _left
-        LIST_DIRECTORIES true
-        RELATIVE "${ROOT}/${_test}"
-        "${ROOT}/${_test}/*"
-    )
-    if(_left)
-        list(SORT _left)
-        list(LENGTH _left _count)
-        list(SUBLIST _left 0 10 _shown)
-        string(REPLACE ";" "\n    " _shown "${_shown}")
-        string(APPEND _report "  ${_test} left ${_count}:\n    ${_shown}\n")
-    endif()
-endforeach()
-
-if(NOT _report STREQUAL "")
+if(IS_SYMLINK "${DIR}" OR NOT IS_DIRECTORY "${DIR}")
+    file(REMOVE_RECURSE "${DIR}")
     message(
         FATAL_ERROR
-        "Tests left files in their temp folders (under ${ROOT}).\n"
-        "Each test must remove every temp file and folder it creates; see docs/testing.md, \"Temporary files and directories\".\n"
-        "${_report}"
+        "${TEST_NAME}: its temp folder ${DIR} is gone or is no longer a folder"
     )
 endif()
-file(REMOVE_RECURSE "${ROOT}")
-message(STATUS "Every test's temp folder is empty")
+
+file(GLOB _left LIST_DIRECTORIES true RELATIVE "${DIR}" "${DIR}/*")
+list(LENGTH _left _count)
+file(REMOVE_RECURSE "${DIR}")
+if(_count GREATER 0)
+    list(SORT _left)
+    list(SUBLIST _left 0 20 _shown)
+    string(REPLACE ";" "\n  " _shown "${_shown}")
+    message(
+        FATAL_ERROR
+        "${TEST_NAME} left ${_count} entries in its temp folder (now removed):\n  ${_shown}\n"
+        "A test must remove every temp file and folder it creates; see docs/testing.md, \"Temporary files and directories\"."
+    )
+endif()

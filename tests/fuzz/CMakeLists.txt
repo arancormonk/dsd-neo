@@ -151,3 +151,7 @@ dsd_neo_add_fuzzer(
   protocol_dmr_block
   dsd-neo_proto_dmr
 )
+
+# Each fuzzer's temp folder, checked after it (cmake/TestTmpdir.cmake).
+include(TestTmpdir)
+dsd_neo_add_test_tmpdirs()

@@ -70,6 +70,10 @@ if(BUILD_TESTING)
             DSD_NEO_CLI_SMOKE_MODE=missing-argument -P
             ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
     )
+
+    # Each smoke test's temp folder, checked after it (cmake/TestTmpdir.cmake).
+    include(TestTmpdir)
+    dsd_neo_add_test_tmpdirs()
 endif()
 
 ## Fast-math now configured globally when enabled

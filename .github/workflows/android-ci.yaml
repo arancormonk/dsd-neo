@@ -323,7 +323,9 @@ jobs:
           # and fail it saying only that a grep matched nothing. Registration
           # going backwards, which is what this guards, still fails here.
           min=10
-          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
+          # The tests themselves, by name: ctest's total also counts the temp
+          # folder setup and check each one brings (cmake/TestTmpdir.cmake).
+          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | grep -cE '^ *Test +#[0-9]+: UI_QT_' || true)
           echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
           if [ "${registered:-0}" -lt "$min" ]; then
             echo "::error::expected at least $min UI_QT_* tests, found ${registered:-0}"

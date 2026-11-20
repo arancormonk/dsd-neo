@@ -14,7 +14,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include "temp_paths.h"
 #include "test_env.h"
 
 #include <errno.h>
@@ -145,11 +144,7 @@ dsd_test_mkstemp(char* out_path, size_t out_sz, const char* prefix) {
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return -1;
     }
-    const int fd = dsd_mkstemp(out_path);
-    if (fd >= 0) {
-        dsd_test_temp_track(out_path);
-    }
-    return fd;
+    return dsd_mkstemp(out_path);
 }
 
 static inline char*
@@ -162,11 +157,7 @@ dsd_test_mkdtemp(char* out_path, size_t out_sz, const char* prefix) {
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return NULL;
     }
-    char* dir = dsd_mkdtemp(out_path);
-    if (dir) {
-        dsd_test_temp_track(dir);
-    }
-    return dir;
+    return dsd_mkdtemp(out_path);
 }
 
 static inline char*
