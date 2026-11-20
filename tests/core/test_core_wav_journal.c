@@ -3129,14 +3129,17 @@ test_d7_wav_stop_mid_call(void) {
         uint32_t src;
         int64_t freq_hz;
         unsigned want;
+        const char* tag; /* the sidecar's label, when checked */
     } cases[] = {
-        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 452312U},
-        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U},
+        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 452312U, NULL},
+        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U, NULL},
         /* Anonymous-voice protocols, whose identity-less rows the event layer always keeps. */
-        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 452312U},
-        {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 452312U},
-        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U},
-        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U},
+        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 452312U, NULL},
+        /* The event layer's standalone ProVoice row names no EDACS site, so its label keeps "ProVoice". */
+        {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 452312U,
+         "\"talkgroup_tag\": \"ProVoice 452.3125 MHz\","},
+        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, NULL},
+        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U, NULL},
     };
 
     int rc = 0;
@@ -3152,6 +3155,11 @@ test_d7_wav_stop_mid_call(void) {
         submit(&r, DSD_APP_CMD_WAV_STOP);
         reload(&r);
         rc |= expect_export(cases[i].label, &r, id, cases[i].want);
+        if (cases[i].tag != NULL) {
+            char body[4096];
+            read_published_sidecar(&r, publish_of(id), body, sizeof body);
+            rc |= expect_true(cases[i].label, strstr(body, cases[i].tag) != NULL);
+        }
         rdio_fallback_off(&r);
         rig_close(&r);
     }

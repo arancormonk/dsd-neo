@@ -2411,7 +2411,11 @@ suite runs under this compiler.
   so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
   `dsd_rdio_fallback_tag()`) is labelled by its service name, else its channel label, else `<protocol> <access code>
   <MHz> MHz` built into `generated_tag` with the unknown parts left out (`NXDN RAN 9 452.3125 MHz`, `NXDN RAN 9`,
-  `X2-TDMA`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`, `CC` and `CAN` in
+  `X2-TDMA`); the protocol word is `dsd_rdio_row_protocol_word()`'s: `EDACS` for a ProVoice row whose `sysid_string`
+  names an EDACS site (`EDACS_SITE_` and a site other than `000`, which the event layer writes while no site has been
+  decoded and on every standalone ProVoice row), so an EDACS channel's digital and analog calls share one label as
+  they share one kHz talkgroup, else `dsd_rdio_protocol_word()`'s (the same rule names a row with no system string in
+  `short_name`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`, `CC` and `CAN` in
   decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot call it), and the
   MHz part appears only when the kHz rule gives a number. Never per-call identity text or `PRIVATE`/`GROUP`: every
   unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback number is the export

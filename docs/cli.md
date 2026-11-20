@@ -726,9 +726,11 @@ What the sidecar holds:
 - The talkgroup label (`talkgroup_tag`) is the service name (`--ran-name`, `--dcc-name`, `--slot-name`,
   `--nac-name`), else the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the protocol, its
   access code and the frequency: `NXDN RAN 9 452.3125 MHz`, `DMR CC 3 452.3125 MHz`, `P25 NAC 2A3 452.3125 MHz`,
-  `M17 CAN 3 433.4750 MHz`. Unknown parts are left out (`NXDN RAN 9`, `D-STAR 145.6700 MHz`, `X2-TDMA`). A name of
-  `-` counts as no name. The label never holds a callsign or a radio ID, and never `PRIVATE` or `GROUP`: every call on
-  one frequency shares its talkgroup, and rdio-scanner can rename a talkgroup after each call's label.
+  `M17 CAN 3 433.4750 MHz`. Unknown parts are left out (`NXDN RAN 9`, `D-STAR 145.6700 MHz`, `X2-TDMA`). A ProVoice
+  call on an EDACS site is labelled `EDACS`, like the analog calls on its channel (`EDACS 851.0125 MHz`), so the
+  talkgroup they share keeps one label; ProVoice on its own stays `ProVoice`. A name of `-` counts as no name. The label
+  never holds a callsign or a radio ID, and never `PRIVATE` or `GROUP`: every call on one frequency shares its
+  talkgroup, and rdio-scanner can rename a talkgroup after each call's label.
 - `srcList` names the radio when its ID decoded and fits 32 bits; `short_name` is the call's system (as in the file
   name, `NXDN_RAN_9`), else the protocol (`X2-TDMA`); `emergency` and `encrypted` are the call's.
 - `freq` and `freqList` follow the analog rule: the frequency in Hz from 1 MHz up to 2147.483647 MHz, else `freq` 0

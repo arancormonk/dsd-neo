@@ -1266,6 +1266,33 @@ dsd_rdio_protocol_word(int systype) {
     return "";
 }
 
+/* Whether @p sysid, a row's system string, names an EDACS site: "EDACS_SITE_" and a site number other than 000, which
+   the event layer writes while no site has been decoded, as on every standalone ProVoice row. */
+static int
+dsd_rdio_sysid_names_edacs_site(const char* sysid) {
+    static const char prefix[] = "EDACS_SITE_";
+    if (strncmp(sysid, prefix, sizeof prefix - 1U) != 0) {
+        return 0;
+    }
+    for (const char* p = sysid + sizeof prefix - 1U; *p >= '0' && *p <= '9'; p++) {
+        if (*p != '0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The protocol's word for @p event (dsd_rdio_protocol_word()), but "EDACS" for a ProVoice call heard on an EDACS site
+   (issue #888): its digital calls then share the analog calls' word, as they share their channel's kHz talkgroup.
+   Standalone ProVoice keeps "ProVoice". */
+static const char*
+dsd_rdio_row_protocol_word(const Event_History* event) {
+    if (DSD_SYNC_IS_PROVOICE(event->systype) && dsd_rdio_sysid_names_edacs_site(event->sysid_string)) {
+        return "EDACS";
+    }
+    return dsd_rdio_protocol_word(event->systype);
+}
+
 /* The row a recording is exported from: the slot's staged row, or none. */
 static const Event_History*
 dsd_rdio_staged_row(const Event_History_I* event_struct) {
@@ -1299,7 +1326,7 @@ dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallback) 
     // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
     // the system from short_name, could pick none.
     return allow_fallback && event != NULL && event->systype != DSD_SYNC_ANALOG && event->target_id == 0U
-           && event->category == DSD_EVENT_CATEGORY_VOICE && dsd_rdio_protocol_word(event->systype)[0] != '\0';
+           && event->category == DSD_EVENT_CATEGORY_VOICE && dsd_rdio_row_protocol_word(event)[0] != '\0';
 }
 
 uint32_t
@@ -1425,7 +1452,7 @@ dsd_rdio_fallback_tag(const Event_History* event, dsd_rdio_meta_fields* out) {
     char code[16];
     dsd_rdio_format_access_code(event->access_code_kind, event->access_code, code, sizeof code);
     out->generated_tag[0] = '\0';
-    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, dsd_rdio_protocol_word(event->systype));
+    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, dsd_rdio_row_protocol_word(event));
     dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, code);
     if (dsd_rdio_digital_khz(event->freq_hz) > 0U) {
         char mhz[32];
@@ -1524,7 +1551,7 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->freq_hz = dsd_rdio_usable_freq_hz(event->freq_hz);
     // A row with no system string (an X2-TDMA call) is named by its protocol, so a v8 DirWatch, which resolves the
     // system from short_name, still finds one.
-    out->short_name = event->sysid_string[0] != '\0' ? event->sysid_string : dsd_rdio_protocol_word(event->systype);
+    out->short_name = event->sysid_string[0] != '\0' ? event->sysid_string : dsd_rdio_row_protocol_word(event);
     out->emergency = event->emergency ? 1 : 0;
     if (event->systype == DSD_SYNC_ANALOG) {
         dsd_rdio_analog_meta_fields(opts, event, out);

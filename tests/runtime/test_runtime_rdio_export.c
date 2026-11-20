@@ -2422,6 +2422,58 @@ test_fallback_call_label(void) {
     return rc;
 }
 
+// Issue #888 D3: a ProVoice call on an EDACS site (its row's system string names one: EDACS_SITE_ and a site other than
+// 000) is labelled, and short-named when it has no system string, "EDACS", as the analog calls on its channel are, so
+// the kHz talkgroup they share keeps one label. A standalone ProVoice call keeps "ProVoice": its row's system string
+// is the event layer's "EDACS_SITE_000_..." (no EDACS site decoded), or none.
+static int
+test_fallback_edacs_provoice_label(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        int64_t freq_hz;
+        const char* sysid;
+        const char* want_tag;
+        const char* want_short_name;
+    } cases[] = {
+        {"EDACS ProVoice", DSD_SYNC_PROVOICE_POS, 851012500, "EDACS_SITE_012_Digital_Call", "EDACS 851.0125 MHz",
+         "EDACS_SITE_012_Digital_Call"},
+        {"EDACS ProVoice, inverted", DSD_SYNC_PROVOICE_NEG, 851012500, "EDACS_SITE_001_Digital_Emergency_Call",
+         "EDACS 851.0125 MHz", "EDACS_SITE_001_Digital_Emergency_Call"},
+        {"EDACS analog all-call", DSD_SYNC_EDACS_POS, 851012500, "EDACS_SITE_012_Analog_Call", "EDACS 851.0125 MHz",
+         "EDACS_SITE_012_Analog_Call"},
+        {"standalone ProVoice", DSD_SYNC_PROVOICE_POS, 851012500, "EDACS_SITE_000_Analog_Call", "ProVoice 851.0125 MHz",
+         "EDACS_SITE_000_Analog_Call"},
+        {"standalone ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 0, "", "ProVoice", "ProVoice"},
+        {"not an EDACS site", DSD_SYNC_PROVOICE_POS, 851012500, "SITE_012", "ProVoice 851.0125 MHz", "SITE_012"},
+    };
+
+    static Event_History_I hist;
+    static dsd_opts opts;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        Event_History* item = &hist.Event_History_Items[0];
+        item->source_id = 4321U;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts.rdio_unknown_talkgroup = 9000;
+        char body[4096];
+        if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want_tag);
+        rc |= expect_body_has(cases[i].label, body, want);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", cases[i].want_short_name);
+        rc |= expect_body_has(cases[i].label, body, want);
+    }
+    return rc;
+}
+
 // Issue #888 D2/D3/D5/D8: the whole sidecar of a fallback call. The kHz number, the generated label, the row's start,
 // its Hz in freq and freqList, the row's own system (never the analog override), a protocol short_name when the row has
 // no system string, and the rest as for a numbered call. With no frequency (audio input) --rdio-unknown-talkgroup is
@@ -4378,6 +4430,7 @@ main(void) {
     rc |= test_call_talkgroup_number();
     rc |= test_call_fallback_eligible();
     rc |= test_fallback_call_label();
+    rc |= test_fallback_edacs_provoice_label();
     rc |= test_fallback_call_sidecar();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
