@@ -3374,7 +3374,10 @@ suite runs under this compiler.
   Where both slots share one lane there is no hold, as on main, and their crypto and call state can mix: the single-slot
   decoder without trunking (`-fr`, `-nm`; the limit is stated with the lane below) and direct-mode traffic on any
   decoder (an MS sync, `DSD_SYNC_IS_DMR_MS()`, or the MS path's `dsd_state::dmr_ms_mode`), whose two slots run on lane 0,
-  burst A included.
+  burst A included. Such traffic's checked LCs and PI headers end no hold either (`dmr_flco_release_voice_hold()`,
+  `dmr_pi_note_verified_first()`, the Hytera Enhanced LC): a direct-mode LC is folded onto lane 0 whatever its slot, so
+  repeater voice heard after it on the same carrier waits for its own slot's word
+  (`test_dmr_direct_mode_lc_keeps_the_repeater_holds()`).
   Who judges each move, once:
   - A carrier boundary: every one but a stream gap. The release of a followed call inside it leaves the judgement to
     the boundary. With trunking off, a manual move's own carrier boundary judges it.
@@ -3469,9 +3472,8 @@ suite runs under this compiler.
     does.
 
   The bounds: a call whose voice LC header comes first loses nothing. One joined mid-call is held until the first
-  embedded LC its superframes complete: on the dual-slot BS path 9 to 12 frames (180 to 240 ms) on a call whose every
-  superframe carries its voice LC; on MS 12 frames, since the MS decoder assembles the embedded LC after burst F's
-  frames; and each superframe whose embedded LC fails its check or carries something else (a talker alias, a GPS
+  embedded LC its superframes complete: on repeater (BS) traffic 9 to 12 frames (180 to 240 ms) on a call whose every
+  superframe carries its voice LC (direct-mode traffic is not held); and each superframe whose embedded LC fails its check or carries something else (a talker alias, a GPS
   position) adds one superframe (18 frames, 360 ms). A protected LC never ends the hold. Tests:
   `ENGINE_NO_CARRIER_RESET` (`test_dmr_voice_held_until_the_call_says()`, `test_dmr_hold_edges()`,
   `test_run_first_landing_is_never_held()`, `test_scan_first_landing_is_never_held()`,

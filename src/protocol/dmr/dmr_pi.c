@@ -322,7 +322,8 @@ dmr_pi_note_verified_first(dsd_state* state, uint8_t mfid, int checksum_verified
        names no cipher the decoder knows for its vendor (ALG ID 0, or one it has no keystream for, such as a Kirisun ALG
        ID 0x80 beside service options without the privacy bit, which would read as clear) still says the call is
        encrypted, with nothing to judge its frames by: they stay held, not played as clear. */
-    if (known) {
+    /* Direct-mode traffic has no hold, and its PI ends none: a repeater slot's hold stays for that slot's own word. */
+    if (known && dsd_dmr_voice_hold_applies(NULL, state)) {
         dmr_enc_class_release_hold(state, slot);
     }
     /* Under -F the burst decoder accepts a PI whose CRC failed against the standard mask as RAS: that is no check of its

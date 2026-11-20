@@ -636,7 +636,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
         // low six bits, so the ALG ID is never 0): the slot's voice is held no more, for a cipher the decoder knows
         // (Hytera Enhanced RC4, 0x02), as for that PI header.
         const int cipher_known = dmr_vcrypt_vendor_cipher_known(0x68U, alg);
-        if (cipher_known) {
+        if (cipher_known && dsd_dmr_voice_hold_applies(ctx->opts, ctx->state)) {
             dmr_enc_class_release_hold(ctx->state, ctx->slot);
         }
         dmr_le_vendor_set(ctx->state, ctx->slot, DMR_LE_VENDOR_HYTERA_ENH);
@@ -741,9 +741,12 @@ dmr_flco_ends_voice_hold(const dmr_flco_ctx* ctx) {
     return ctx->CRCCorrect == 1U && ctx->voice_slot_known && dmr_flco_lc_readable(ctx);
 }
 
+/* Where the hold does not apply (dsd_dmr_voice_hold_applies(): direct-mode traffic, -fr without trunking) an LC ends
+   none either: a direct-mode LC is folded onto lane 0 whatever its slot, so it would end a repeater slot's hold that
+   no word of that slot's spoke for. */
 static void
 dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
-    if (!dmr_flco_ends_voice_hold(ctx)) {
+    if (!dmr_flco_ends_voice_hold(ctx) || !dsd_dmr_voice_hold_applies(ctx->opts, ctx->state)) {
         return;
     }
     dmr_enc_class_release_hold(ctx->state, ctx->voice_slot);

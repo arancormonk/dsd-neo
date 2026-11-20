@@ -4799,6 +4799,40 @@ test_dmr_direct_mode_has_no_voice_hold(char frame[4][24]) {
     return rc;
 }
 
+/* Direct-mode traffic has no hold, so its checked LCs end none either: a direct-mode slot 2 header (folded onto lane 0)
+   leaves both slots' holds the carrier boundary armed, and repeater slot 1 voice heard after it on the same carrier is
+   still held until its own LC or PI. */
+static int
+test_dmr_direct_mode_lc_keeps_the_repeater_holds(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dmr_hold_no_key(opts, state);
+    dmr_enc_class_hold(state);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    dmr_hop_put_bits(bits, 24U, 101U, 24U);
+    dmr_hop_put_bits(bits, 48U, 3003U, 24U);
+    uint32_t errors = 0U;
+    state->synctype = DSD_SYNC_DMR_MS_VOICE;
+    state->lastsynctype = DSD_SYNC_DMR_MS_VOICE;
+    state->dmr_ms_mode = 1;
+    state->currentslot = 1;
+    dmr_flco(opts, state, bits, 1U, &errors, 1U);
+    int rc = expect_true("direct mode: a checked slot 2 header ends neither repeater hold",
+                         state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    /* Nor does a direct-mode PI header naming a cipher the decoder knows (RC4). */
+    uint8_t pi[10] = {0x21U, 0x10U, 0x05U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 1;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    rc |= expect_true("direct mode: a checked slot 2 PI header ends neither repeater hold",
+                      state->dmr_enc_class_held[0] == 1U && state->dmr_enc_class_held[1] == 1U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Without trunking the single-slot decoder (-fr) decodes both slots on one lane, where crypto and call state can mix
    across slots, as on main: the DMR voice hold does not apply there, so after a carrier boundary held both slots, lane
    0's frame plays as it came before any LC says. A slot 2 PI header stays on slot 2's fields (index 1), as on main: only
@@ -4893,6 +4927,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_hold_checked_clear_lc_drops_the_forced_fallback(frame);
     rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_pi_cipher(frame);
     rc |= test_dmr_direct_mode_has_no_voice_hold(frame);
+    rc |= test_dmr_direct_mode_lc_keeps_the_repeater_holds();
     rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(frame);
     rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
