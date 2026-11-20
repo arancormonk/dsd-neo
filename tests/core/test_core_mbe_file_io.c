@@ -825,10 +825,63 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     return rc;
 }
 
+/* A run's opts and state, as the engine sets them up, for --playfiles; NULL both on failure. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    short* own_buf;
+    short* own_buf_p;
+} sdrtrunk_run;
+
+static int
+sdrtrunk_run_open(sdrtrunk_run* run) {
+    run->opts = (dsd_opts*)calloc(1, sizeof(*run->opts));
+    run->state = (dsd_state*)calloc(1, sizeof(*run->state));
+    if (run->opts == NULL || run->state == NULL) {
+        free(run->opts);
+        free(run->state);
+        run->opts = NULL;
+        run->state = NULL;
+        return 1;
+    }
+    dsd_decode_clock_use_test(1800000000ULL * 1000000000ULL);
+    initOpts(run->opts);
+    initState(run->state);
+    run->opts->playfiles = 1;
+    run->opts->audio_out = 0;
+    /* run_sdrtrunk_json() points the output buffers at its own; the state's go back before it is freed. */
+    run->own_buf = run->state->audio_out_buf;
+    run->own_buf_p = run->state->audio_out_buf_p;
+    return 0;
+}
+
+static void
+sdrtrunk_run_close(sdrtrunk_run* run) {
+    if (run->state != NULL) {
+        run->state->audio_out_buf = run->own_buf;
+        run->state->audio_out_buf_p = run->own_buf_p;
+        freeState(run->state);
+    }
+    free(run->state);
+    free(run->opts);
+    dsd_decode_clock_use_system();
+}
+
+/* The committed history row whose target is @p tg, or NULL. */
+static const Event_History*
+sdrtrunk_committed_row(const dsd_state* state, uint32_t tg) {
+    for (int i = 1; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == tg) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
 /* The stamp is the call's, not the file's: when a file's second record is another call, the first call's row commits
    with its own stamp, and the second call's row is stamped from its own first valid frame, not left with the first
-   call's stamp (nor, once the event layer has cleared the row, with none and so the decode clock). A run's state, as
-   the engine sets it up. */
+   call's stamp. */
 static int
 test_sdrtrunk_json_time_is_each_calls_own(void) {
     static const char json[] =
@@ -839,44 +892,52 @@ test_sdrtrunk_json_time_is_each_calls_own(void) {
         "\"encrypted\":false,\"frames\":[{\"time\":12x,\"hex\":\"3ABF032D9ADEE4CB50\"},"
         "{\"time\":1700000200750,\"hex\":\"3ABF032D9ADEE4CB50\"},"
         "{\"time\":1700000203750,\"hex\":\"3ABF032D9ADEE4CB50\"}]}";
-    int rc = 0;
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (opts == NULL || state == NULL) {
-        free(opts);
-        free(state);
+    sdrtrunk_run run;
+    if (sdrtrunk_run_open(&run) != 0) {
         return expect_true("sdrtrunk two calls: allocated", 0);
     }
-    dsd_decode_clock_use_test(1800000000ULL * 1000000000ULL);
-    initOpts(opts);
-    initState(state);
-    opts->playfiles = 1;
-    opts->audio_out = 0;
-    /* run_sdrtrunk_json() points the output buffers at its own; the state's go back before it is freed. */
-    short* const own_buf = state->audio_out_buf;
-    short* const own_buf_p = state->audio_out_buf_p;
-    rc |= run_sdrtrunk_json(json, opts, state);
-    state->audio_out_buf = own_buf;
-    state->audio_out_buf_p = own_buf_p;
-    const Event_History_I* history = state->event_history_s;
-    int first_seen = 0;
-    for (int i = 1; i < DSD_EVENT_HISTORY_LEN; i++) {
-        const Event_History* row = &history[0].Event_History_Items[i];
-        if (row->target_id == 1234U) {
-            first_seen = 1;
-            rc |= expect_u64("sdrtrunk two calls: the first call's start", (uint64_t)row->event_time, 1700000100ULL);
-            break;
-        }
-    }
-    rc |= expect_true("sdrtrunk two calls: the first call's row was committed when the second began", first_seen);
-    rc |= expect_u64("sdrtrunk two calls: the second call's row is current",
-                     history[0].Event_History_Items[0].target_id, 4321U);
+    int rc = run_sdrtrunk_json(json, run.opts, run.state);
+    const Event_History* first = sdrtrunk_committed_row(run.state, 1234U);
+    rc |= expect_true("sdrtrunk two calls: the first call's row was committed when the second began", first != NULL);
+    rc |= expect_u64("sdrtrunk two calls: the first call's start", first ? (uint64_t)first->event_time : 0U,
+                     1700000100ULL);
+    const Event_History* staged = &run.state->event_history_s[0].Event_History_Items[0];
+    rc |= expect_u64("sdrtrunk two calls: the second call's row is current", staged->target_id, 4321U);
     rc |= expect_u64("sdrtrunk two calls: the second call's start is its own first valid frame",
-                     (uint64_t)history[0].Event_History_Items[0].event_time, 1700000200ULL);
-    freeState(state);
-    free(state);
-    free(opts);
-    dsd_decode_clock_use_system();
+                     (uint64_t)staged->event_time, 1700000200ULL);
+    sdrtrunk_run_close(&run);
+    return rc;
+}
+
+/* SDRTrunk carries a call's encryption on each voice frame. The first of two calls in a file commits with what its
+   frames carried -- its algorithm and key id, in its row and its event text -- not as its row was first drawn when
+   its frames began, before any of them was read. */
+static int
+test_sdrtrunk_json_first_call_keeps_its_frames_crypto(void) {
+    static const char json[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+        "\"encrypted\":true,\"frames\":[{\"encryption_algorithm\":36,\"encryption_key_id\":5,"
+        "\"encryption_mi\":\"0011223344556677\",\"time\":1700000100250,\"hex\":\"3ABF032D9ADEE4CB50\"},"
+        "{\"encryption_algorithm\":36,\"encryption_key_id\":5,\"encryption_mi\":\"0011223344556677\","
+        "\"time\":1700000100270,\"hex\":\"3ABF032D9ADEE4CB50\"}]}\n"
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"777\",\"to\":\"4321\","
+        "\"encrypted\":false,\"frames\":[{\"time\":1700000200750,\"hex\":\"3ABF032D9ADEE4CB50\"}]}";
+    sdrtrunk_run run;
+    if (sdrtrunk_run_open(&run) != 0) {
+        return expect_true("sdrtrunk frame crypto: allocated", 0);
+    }
+    int rc = run_sdrtrunk_json(json, run.opts, run.state);
+    const Event_History* first = sdrtrunk_committed_row(run.state, 1234U);
+    rc |= expect_true("sdrtrunk frame crypto: the first call's row was committed", first != NULL);
+    rc |= expect_true("sdrtrunk frame crypto: the first call is encrypted", first != NULL && first->enc != 0);
+    rc |= expect_u64("sdrtrunk frame crypto: the first call's algorithm", first ? first->enc_alg : 0U, 0x24U);
+    rc |= expect_u64("sdrtrunk frame crypto: the first call's key id", first ? first->enc_key : 0U, 5U);
+    rc |= expect_true("sdrtrunk frame crypto: the first call's event text names them",
+                      first != NULL && strstr(first->event_string, "ENC; ALG: 24; KID: 05;") != NULL);
+    if (first != NULL && rc != 0) {
+        DSD_FPRINTF(stderr, "  first call's event: %s\n", first->event_string);
+    }
+    sdrtrunk_run_close(&run);
     return rc;
 }
 
@@ -4550,6 +4611,7 @@ main(void) {
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_time_is_the_first_valid_frame();
     rc |= test_sdrtrunk_json_time_is_each_calls_own();
+    rc |= test_sdrtrunk_json_first_call_keeps_its_frames_crypto();
     rc |= test_sdrtrunk_json_protocol_token_alone_creates_no_capture();
     rc |= test_sdrtrunk_json_second_protocol_gets_its_own_capture();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();

@@ -2046,10 +2046,13 @@ suite runs under this compiler.
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
   row's `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21,
-  below). Each call the reader's own observation opens (a file's, or a later record's that names another call) syncs
-  the event layer once, where its voice frames begin (`sdrtrunk_json_sync_new_call()`), so a file holding two calls
-  commits the first call's row, and rotates its recording out under that row, before the second call's stamp or audio
-  reaches the slot (`CORE_WAV_JOURNAL`, `CORE_MBE_FILE_IO`).
+  below). The reader syncs the event layer twice a record, never per frame (`sdrtrunk_json_sync_call()`): where the
+  voice frames of a call its own observation opened begin (a file's, or a later record's that names another call), and
+  at the next record's first key (`protocol`), before that record is observed. The first renders the new call and
+  commits the one before it, whose recording rotates out under its own row before the new call's stamp or audio reaches
+  the slot; the second re-renders the open call with what its frames carried, since SDRTrunk sends a call's encryption
+  (algorithm, key id, MI) on each frame, so the row it then commits with is complete (`CORE_WAV_JOURNAL`,
+  `CORE_MBE_FILE_IO`).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2422,8 +2425,7 @@ suite runs under this compiler.
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
   shares (below). A played SDRTrunk export's row is stamped once per call, from its first voice frame whose `time`
   (Unix milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that
-  fails clears the row's until one parses. A record that begins another call in the same file, or a row the event layer
-  cleared, is stamped afresh (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the
+  fails clears the row's until one parses. A record that begins another call in the same file is stamped afresh (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the
   sidecar, `CORE_MBE_FILE_IO`). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
   `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
   on `event_time`. Its service, system, target and source components are made file-safe

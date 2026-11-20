@@ -2313,11 +2313,13 @@ typedef struct {
     uint8_t is_dmra;
     uint8_t dmra_le;
     // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
-    // Cleared when a record begins another call, and not trusted once the event layer has cleared the row.
+    // Cleared when a record begins another call.
     uint8_t time_stamped;
     // A record began another call whose voice frames have not begun: the event layer is synced where they do, so the
     // call before it commits its own row and recording first (issue #888).
     uint8_t call_sync_pending;
+    // The record's voice frames have begun: the next record's first key re-renders the call with what they carried.
+    uint8_t frames_begun;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2362,6 +2364,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->dmra_le = 0;
     ctx->time_stamped = 0;
     ctx->call_sync_pending = 0;
+    ctx->frames_begun = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -3076,8 +3079,8 @@ sdrtrunk_json_parse_time(const char* value, time_t* out) {
 
 /* The row of a played call is stamped once, from its first frame's "time" that parses: the recording's start, on the
    recording's own clock. Later frames of the call leave it, so the recording is not filed at its last frame (issue #888
-   B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file, or
-   a row the event layer has cleared since, is stamped afresh from its own first valid frame. */
+   B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file is
+   stamped afresh from its own first valid frame. */
 static int
 sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (strncmp("time", token, 4) != 0) {
@@ -3085,7 +3088,7 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value || (ctx->time_stamped != 0U && state->event_history_s[0].Event_History_Items[0].event_time != 0)) {
+    if (!value || ctx->time_stamped != 0U) {
         return 1;
     }
     // Until one parses, a value that does not clears the stamp, as it always has: the row keeps no earlier file's.
@@ -3138,23 +3141,40 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
     (void)dsd_call_state_update_crypto(state, 0U, state->synctype, &crypto);
 }
 
-/* Once a call, where its voice frames begin -- the "frames" key, or a frame's own "time" or "hex" in a flat record --
-   after its header has named it: the event layer renders the call, and commits the one before it, whose recording then
-   rotates out under its own row before this call's stamp or audio reaches the slot (issue #888). */
+static int
+sdrtrunk_json_token_starts_frames(const char* token) {
+    return strncmp("frames", token, 6) == 0 || strncmp("time", token, 4) == 0 || strncmp("hex", token, 3) == 0;
+}
+
+/* The event layer is synced twice a record, never per frame (issue #888). Once a call, where its voice frames begin --
+   the "frames" key, or a frame's own "time" or "hex" in a flat record -- after its header has named it: the sync
+   renders the call, and commits the one before it, whose recording then rotates out under its own row before this
+   call's stamp or audio reaches the slot. And at the next record's "protocol", its first key, before that record is
+   observed: the sync re-renders the call, still the open one, with what its frames carried (SDRTrunk sends a call's
+   encryption on each frame), so the row it commits with when the next call begins is complete. */
 static void
-sdrtrunk_json_sync_new_call(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token) {
-    if (ctx->call_sync_pending == 0U
-        || (strncmp("frames", token, 6) != 0 && strncmp("time", token, 4) != 0 && strncmp("hex", token, 3) != 0)) {
+sdrtrunk_json_sync_call(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token) {
+    if (ctx->frames_begun != 0U && strncmp("protocol", token, 8) == 0) {
+        ctx->frames_begun = 0U;
+        dsd_event_sync_slot(opts, state, 0);
         return;
     }
-    ctx->call_sync_pending = 0U;
-    dsd_event_sync_slot(opts, state, 0);
+    if (!sdrtrunk_json_token_starts_frames(token)) {
+        return;
+    }
+    ctx->frames_begun = 1U;
+    // A call begun among the frames (its identity or service changed) is synced at its next frame, as one begun by a
+    // record's header is at its first.
+    if (ctx->call_sync_pending != 0U) {
+        ctx->call_sync_pending = 0U;
+        dsd_event_sync_slot(opts, state, 0);
+    }
 }
 
 static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             char** str_saveptr) {
-    sdrtrunk_json_sync_new_call(opts, state, ctx, token);
+    sdrtrunk_json_sync_call(opts, state, ctx, token);
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
