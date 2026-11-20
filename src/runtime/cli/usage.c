@@ -67,6 +67,8 @@ dsd_cli_usage_rdio_options(void) {
     printf(
         "      --rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and no known "
         "frequency\n");
+    printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
+    printf("                 is exported under it in kHz.)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
     printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
     printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");

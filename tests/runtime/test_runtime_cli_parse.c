@@ -12423,7 +12423,9 @@ test_bootstrap_rdio_unknown_talkgroup_cli_over_ini(void) {
     static char help[65536];
     if (help_text(help, sizeof help) != 0
         || strstr(help, "--rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and "
-                        "no known frequency\n")
+                        "no known frequency\n"
+                        "                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a "
+                        "frequency\n")
                == NULL) {
         DSD_FPRINTF(stderr, "-h does not list --rdio-unknown-talkgroup\n");
         rc = 1;
