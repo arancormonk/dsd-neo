@@ -75,8 +75,8 @@ Item {
             verify(glyph(shown[0]).visible, "an encrypted call with a recording");
             verify(glyph(shown[1]).visible);
             verify(!glyph(shown[2]).visible, "a row without one is unchanged");
-            compare(shown[1].Accessible.name, shown[1].accessibleName + ", has a recording");
-            compare(shown[2].Accessible.name, shown[2].accessibleName);
+            compare(shown[1].node.Accessible.name, shown[1].accessibleName + ", has a recording");
+            compare(shown[2].node.Accessible.name, shown[2].accessibleName);
             // Before the time, or before the ENC tag.
             var mark = glyph(shown[1]).mapToItem(shown[1], 0, 0);
             var time = findChild(shown[1], "callRowTime").mapToItem(shown[1], 0, 0);
@@ -118,7 +118,7 @@ Item {
             compare(found.length, 2);
             verify(glyph(found[0]).visible, "the recorded call carries the glyph");
             verify(!glyph(found[1]).visible);
-            compare(found[0].Accessible.name, found[0].accessibleName + ", has a recording");
+            compare(found[0].node.Accessible.name, found[0].accessibleName + ", has a recording");
             // Its detail sheet follows the row, recordings and all.
             found[0].activate();
             var sheet = findChild(home.item, "homeRecentDetailSheet");

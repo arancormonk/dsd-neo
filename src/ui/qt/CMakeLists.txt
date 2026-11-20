@@ -37,6 +37,7 @@ target_sources(
         backup_stage.cpp
         call_history_filter.cpp
         call_history_model.cpp
+        call_history_payload.cpp
         call_history_tap.cpp
         frequency_query.cpp
         command_bridge.cpp
@@ -64,6 +65,8 @@ target_sources(
         site_groups.cpp # WP-D4
         site_roaming.cpp # Issue #786
         site_roaming_controller.cpp # Issue #786
+        location_feed.cpp # Issue #800
+        location_requests.cpp # Issue #800
         saved_system_cards.cpp
         saved_systems_model.cpp
         scan_avoid_list_model.cpp
@@ -83,6 +86,11 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
+        map_tile_cache.cpp # Issue #800
+        map_tile_http.cpp # Issue #800
+        map_tile_worker.cpp # Issue #800
+        map_view_item.cpp # Issue #800
+        map_view_paint.cpp # Issue #800
         spectrum_view_item.cpp
         spectrum_trace_geometry.cpp
         screen_reader_state.cpp # Issue #782
@@ -94,6 +102,8 @@ target_sources(
         talkgroup_list_model.cpp
         ui_controller.cpp
         unit_activity_model.cpp
+        position_model.cpp # Issue #800
+        position_tap.cpp # Issue #800
 )
 
 qt_add_resources(
@@ -224,6 +234,16 @@ qt_add_resources(
         qml/ToneFilterSheet.qml
         qml/ReceivePolicySheet.qml
         qml/TunerMarker.qml
+        # Issue #800: the map screen.
+        qml/MapScreen.qml
+        qml/MapList.qml
+        qml/MapPositionSheet.qml
+        qml/MapSettingsSheet.qml
+        qml/MapLocator.qml
+        qml/MapViewKeeper.qml
+        qml/MapControlButton.qml
+        qml/MapGlyph.qml
+        qml/MapText.js
         qml/UiPanel.qml
         qml/WholeWordLabel.qml
         qml/WizardScreen.qml
@@ -247,59 +267,6 @@ qt_add_resources(
 target_include_directories(
     dsd-neo_ui_qt
     PUBLIC ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${PROJECT_SOURCE_DIR}"
-    FILES
-        "${PROJECT_SOURCE_DIR}/LICENSE"
-        "${PROJECT_SOURCE_DIR}/COPYRIGHT"
-        "${PROJECT_SOURCE_DIR}/THIRD_PARTY.md"
-        "${PROJECT_SOURCE_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
-        "${PROJECT_SOURCE_DIR}/src/third_party/ezpwd/lesser.txt"
-)
-
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_pffft_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${DSD_PFFFT_LICENSE_DIR}"
-    FILES
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
-)
-
-file(
-    GLOB_RECURSE _dsd_legal_notices
-    CONFIGURE_DEPENDS
-    "${PROJECT_SOURCE_DIR}/LICENSES/*.txt"
-    "${PROJECT_SOURCE_DIR}/legal/*.md"
-    "${PROJECT_SOURCE_DIR}/legal/*.json"
-)
-qt_add_resources(dsd-neo_ui_qt "dsd_neo_legal_notices"
-    PREFIX "/dsdneo/notices" BASE "${PROJECT_SOURCE_DIR}" FILES ${_dsd_legal_notices}
-)
-file(
-    GLOB_RECURSE _mbe_legal_notices
-    CONFIGURE_DEPENDS
-    "${DSD_MBELIB_NOTICE_DIR}/*.txt"
-    "${DSD_MBELIB_NOTICE_DIR}/*.md"
-    "${DSD_MBELIB_NOTICE_DIR}/*.json"
-)
-qt_add_resources(dsd-neo_ui_qt "dsd_neo_mbelib_notices"
-    PREFIX "/dsdneo/notices/mbelib-neo" BASE "${DSD_MBELIB_NOTICE_DIR}"
-    FILES "${DSD_MBELIB_NOTICE_DIR}/LICENSE" ${_mbe_legal_notices}
-)
-
-qt_add_resources(
-    dsd-neo_ui_qt
-    "dsd_neo_tetra_crypto_notices"
-    PREFIX "/dsdneo/notices"
-    BASE "${DSD_TETRA_CRYPTO_LICENSE_DIR}"
-    FILES "${DSD_TETRA_CRYPTO_LICENSE_DIR}/tetra_crypto-LICENSE.txt"
 )
 
 # Qt's unprefixed `signals`/`slots`/`emit` macros collide with project C headers
@@ -345,4 +312,7 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_gain_editor.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_settings_tuner_gain.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_activity_screen.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_map_screen.qml" # #800
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_map.qml" # #800
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_map_prefs.qml" # #800
 )

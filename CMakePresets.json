@@ -216,6 +216,39 @@
       }
     },
     {
+      "name": "macos-arm64-release",
+      "inherits": "warnings-as-errors",
+      "displayName": "macOS arm64 Release (portable DMG)",
+      "description": "Apple silicon Release build of the portable DMG; needs VCPKG_ROOT. Every third-party library comes from vcpkg except librtlsdr and libairspy: build the patched ones (tools/usb_dependency_patches.sh fetch) into a prefix and put it on CMAKE_PREFIX_PATH and PKG_CONFIG_PATH, as the DMG job does with .deps",
+      "binaryDir": "${sourceDir}/build/macos-arm64-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx-dynamic-release",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "26.0",
+        "BUILD_TESTING": "OFF",
+        "DSD_ENABLE_LTO": "ON",
+        "DSD_ENABLE_FAST_MATH": "ON",
+        "DSD_ENABLE_NATIVE": "OFF",
+        "DSD_AUDIO_BACKEND": "portaudio",
+        "DSD_REQUIRE_CODEC2": "ON",
+        "DSD_REQUIRE_CURL": "ON",
+        "DSD_REQUIRE_EXPAT": "ON",
+        "DSD_REQUIRE_RTLSDR": "ON",
+        "DSD_REQUIRE_SOAPYSDR": "ON",
+        "DSD_REQUIRE_AIRSPY": "ON"
+      }
+    },
+    {
       "name": "android-arm64-release",
       "displayName": "Android arm64-v8a Release",
       "description": "Headless arm64-v8a cross build via vcpkg chainloading the NDK toolchain; needs ANDROID_NDK_HOME and VCPKG_ROOT",
@@ -369,6 +402,11 @@
     {
       "name": "win-msvc-release",
       "configurePreset": "win-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "macos-arm64-release",
+      "configurePreset": "macos-arm64-release",
       "configuration": "Release"
     },
     {

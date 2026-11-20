@@ -1463,7 +1463,7 @@ search on screen.
 
 ### History file
 
-Header: `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`
+Header: `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings,call_kind`
 
 One row per entry the History list shows, newest first. The search box and the filters apply, so the file holds what
 you see. An empty cell means there is no value.
@@ -1476,7 +1476,7 @@ you see. An empty cell means there is no value.
 | `duration_s` | The length in whole seconds. Empty when it is not known: a message, a span over an hour, or a call with no known end. |
 | `type` | `call` (a digital or analog voice call) or `message` (SMS, GPS, data and control notices; History's Messages). |
 | `name` | The row's title as History shows it, such as the talkgroup name or service. A notice keeps its `[CRC ERR] ` or `[RAS] ` marker. |
-| `talkgroup`, `radio_id` | The number in decimal. Empty when there is none. |
+| `talkgroup`, `radio_id` | The number in decimal. Empty when there is none. `talkgroup` is the call's target: for a private call it is the radio the call was to (see `call_kind`). |
 | `radio_name` | The name of the source radio, when DSD-neo has one. |
 | `system` | The saved system the session ran on (`Exploring` when you held the tuner on a frequency). |
 | `channel` | The name of the scan channel. |
@@ -1486,8 +1486,9 @@ you see. An empty cell means there is no value.
 | `site` | The site line, such as `DMR · Con+ · Net 3 · Site 5`. |
 | `analog_mode` | `NFM` or `AM` for an analog call, `analog` when the mode is not known (audio input), and empty for digital. |
 | `encrypted`, `emergency` | `1` or `0`. |
-| `message` | The text of an SMS or GPS notice, or other notice detail. Line breaks inside it are kept in the quoted field. |
+| `message` | The row's text message and GPS text, joined with ` · ` when it has both: an SMS or GPS notice's, other notice detail, or what a call carried during it. Line breaks inside it are kept in the quoted field. |
 | `recordings` | The row's call recordings, oldest first, each as the entry name that **Export as zip** gives it on Call recordings (`<folder name>/<file>`; when two recordings share a name the zip calls the second `… (2)`, and the CSV keeps the stored name), joined with ` | ` (space, pipe, space). Inside a name, each backslash is written as two backslashes and each pipe as a backslash and a pipe, so the list splits without a doubt: split on a pipe that has a space on both sides and is not preceded by a backslash, then undo the escapes. Empty when there is none. |
+| `call_kind` | Who the `talkgroup` column's target is: `talkgroup`, `radio` (a private call to that radio), or `unknown` when the decoder did not say. Empty when there is no target. Added last, so files and scripts that read the columns before it are unchanged. |
 
 Limits:
 

@@ -83,7 +83,19 @@ Run the smallest useful set before opening a PR, then broaden it when the change
   - `tools/check_install_runtime_destinations.sh` (install rules with library destinations also name a RUNTIME
     destination, for Windows DLLs).
 - Packaging checks: `tools/check_patched_usb_libs.sh` (libairspy and librtlsdr binaries carry DSD-neo's patches),
-  `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies) and
+  `tools/check_macos_portable_deps.sh` (the macOS portable bundle's library dependencies, that every staged file
+  is built for the triplet's deployment target, and that the bundled terminal database itself holds readable
+  `xterm-256color` and `tmux-256color` entries), `tools/check_release_notices.py` (a package's documentation folder
+  holds every notice its records' `<platform>_release` maps name, with the text of its source, and the general legal
+  files with the text of the repository's or of the mbelib-neo notices the build selected; the DMG job runs it on the
+  staged tree and the mounted DMG, android-ci on the finished APK with `--index notice-index.txt` (the licences
+  screen's index names every other file), and with `--binary-dir` it refuses a file in the mounted DMG's `bin/` or `lib/` that no record's
+  `binaries` list names),
+  `tools/check_android_runtime_lock.py` (the APK's Qt kit, NDK, Gradle release runtime classpath, the Java libraries
+  in the generated Gradle project's `libs/` and native libraries are the ones `legal/android-runtime-lock.json`
+  records for the reviewed Android records; each Qt library in the APK must have the SHA-256 its `library_sha256`
+  gives. That lock was taken from the reviewed kit, whose files were checked once against the SHA-1 digests in
+  The Qt Company's build SBOMs; the APK job compares SHA-256 only) and
   `tools/check_android_elf_alignment.sh` (Android ELF payloads are arm64 with 16 KB page alignment).
 - Licensing: `python3 tools/legal_inventory.py` (run by `tools/quality_preflight.sh`; see `legal/status.md`).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.

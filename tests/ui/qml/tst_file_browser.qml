@@ -270,14 +270,14 @@ Item {
             });
             for (var i = 1; i < paths.length; ++i)
                 verify(entryRow(paths[i - 1]).y < entryRow(paths[i]).y, "the rows keep the order given: " + paths[i]);
-            compare(entryRow(paths[0]).Accessible.name, "Lists, folder");
-            compare(entryRow(paths[2]).Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9");
+            compare(entryRow(paths[0]).node.Accessible.name, "Lists, folder");
+            compare(entryRow(paths[2]).node.Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9");
             compare(screen.entrySubtitle(screen.entries[2]), "4.2 MB · Nov 9");
             var year = new Date(lastYear).getFullYear();
             compare(screen.entrySubtitle(screen.entries[3]), "4.2 MB · Nov 9, " + year, "another year's stamp shows its year");
-            compare(entryRow(paths[3]).Accessible.name, "old.csv, file, 4.2 MB, Nov 9, " + year);
+            compare(entryRow(paths[3]).node.Accessible.name, "old.csv, file, 4.2 MB, Nov 9, " + year);
             compare(screen.entrySubtitle(screen.entries[4]), "4.2 MB", "a file with no time shows its size only");
-            compare(entryRow(paths[4]).Accessible.name, "fat.csv, file, 4.2 MB");
+            compare(entryRow(paths[4]).node.Accessible.name, "fat.csv, file, 4.2 MB");
             compare(screen.entrySubtitle(screen.entries[0]), "", "a folder has no subtitle");
         }
 
@@ -458,7 +458,7 @@ Item {
             }, 1000, "the folder's own reading line still shows");
             answerListing([entry(storagePath, "a.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(storagePath + "/a.csv");
+                return window().activeFocusItem === entryRow(storagePath + "/a.csv").node;
             }, 1000, "and its listing still gives its first row the focus");
 
             // An ok answer then: the folder stays, on the newer generation.
@@ -469,7 +469,7 @@ Item {
             compare(screen.view, "folder", "its place is still there");
             answerListing([entry(storagePath, "b.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(storagePath + "/b.csv");
+                return window().activeFocusItem === entryRow(storagePath + "/b.csv").node;
             }, 1000);
             entryRow(storagePath + "/b.csv").activate();
             compare(last("requestFileHandoff").generation, 9, "later requests carry the newer generation");
@@ -610,8 +610,11 @@ Item {
             compare(callsNamed("requestFolderListing").length, listings + 1, "Return opens it");
             answerListing([entry(screen.path, "a.csv", false, 1, 0)]);
             tryVerify(function () {
-                return window().activeFocusItem === entryRow(screen.path + "/a.csv");
+                return window().activeFocusItem === entryRow(screen.path + "/a.csv").node;
             }, 1000, "the first file takes the focus");
+            // Issue #800 (P10a): the keyboard stop is the entry's named node, which a screen reader reads and presses.
+            var stop = testContext.accessibleNode(window().activeFocusItem);
+            verify(stop.name.indexOf("a.csv") === 0 && (stop.actions || []).indexOf("Press") >= 0, JSON.stringify(stop));
             keyClick(Qt.Key_Return);
             compare(last("requestFileHandoff").reference, "file://" + screen.path + "/a.csv", "Return picks it");
             keyClick(Qt.Key_Escape);

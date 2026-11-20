@@ -5,10 +5,12 @@
 
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/notification_status.h>
+#include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -23,6 +25,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "position_ring.h"
 #include "snapshot_internal.h"
 
 static dsd_state g_pub;     // latest published by demod thread
@@ -42,6 +45,9 @@ static uint64_t g_consume_eh_seq[2] = {0};
 static uint64_t g_pub_eh_source_revision[2] = {0};
 static const Event_History_I* g_pub_eh_source = NULL;
 static int g_pub_eh_present = 0;
+/* The position feed as last published (issue #800): fixed storage, filled by the publish hop only, read by any number
+   of readers (dsd_app_position_copy_since()). The consumer hop does not copy it. */
+static dsd_app_position_ring g_pub_pos;
 /* A publication the P25 SM tick guard put off (dsd_app_telemetry_snapshot_pending()). */
 static atomic_int g_pub_pending = 0;
 
@@ -604,6 +610,7 @@ ui_snapshot_publish(const dsd_state* state) {
         g_pub_eh_present = 0;
         g_pub.event_history_s = NULL;
     }
+    dsd_app_position_ring_publish(&g_pub_pos, state);
     g_have = 1;
     g_pub_seq++;
     dsd_mutex_unlock(&g_mu);
@@ -738,6 +745,34 @@ dsd_app_snapshot_history_ring_copy(int slot, Event_History_I* out, dsd_app_histo
     dsd_mutex_unlock(&g_mu);
     return 1;
 }
+
+int
+dsd_app_snapshot_position_copy_since(uint64_t stream_id, uint64_t after_seq, dsd_position_fix* out, size_t cap,
+                                     dsd_app_position_cursor* next) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const int n = dsd_app_position_ring_read(&g_pub_pos, stream_id, after_seq, out, cap, next);
+    dsd_mutex_unlock(&g_mu);
+    return n;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_app_position_test_reset_copy_counts(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    dsd_app_position_ring_test_counts(NULL, 1);
+    dsd_mutex_unlock(&g_mu);
+}
+
+void
+dsd_app_position_test_get_copy_counts(dsd_app_position_copy_counts* counts) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    dsd_app_position_ring_test_counts(counts, 0);
+    dsd_mutex_unlock(&g_mu);
+}
+#endif
 
 void
 dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {

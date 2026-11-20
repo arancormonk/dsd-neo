@@ -44,6 +44,7 @@ class TalkgroupListModel;
 class CommandBridge;
 class RecordingStatus;
 class UnitActivityModel;
+class PositionModel;
 
 class UiController : public QObject {
     Q_OBJECT
@@ -89,6 +90,13 @@ class UiController : public QObject {
     void
     setUnitActivity(UnitActivityModel* model) {
         m_unitActivity = model;
+    }
+
+    // Issue #800: the map's tracks, read on every tick (before the no-redraw return) and once more at Stop. Never in
+    // clearLiveModels(): the tracks are kept for the app's life (D4).
+    void
+    setPositions(PositionModel* model) {
+        m_positions = model;
     }
 
     // Issue #708: what call recording is doing, read every tick (the view stays readable when no redraw comes).
@@ -161,6 +169,7 @@ class UiController : public QObject {
     DiagnosticsLogModel* m_diagnostics = nullptr;
     P25NetworkModel* m_network = nullptr; // WP-F2
     UnitActivityModel* m_unitActivity = nullptr;
+    PositionModel* m_positions = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;
     QTimer m_timer;
     QVariantMap m_talkgroupExportResult;

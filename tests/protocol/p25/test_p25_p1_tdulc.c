@@ -14,11 +14,14 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -101,27 +104,46 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)lc_bits;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
-    (void)opts;
-    (void)state;
-    (void)lc_bits;
+/* What the GPS decoders were handed (issue #800): the report's provenance, the link control's soft-decode mark while
+   it was dispatched, and the L3Harris body. */
+static int g_gps_calls = 0;
+static dsd_gps_report_ctx g_gps_ctx;
+static uint8_t g_gps_lcw_soft = 0;
+static uint8_t g_gps_body[DSD_HARRIS_GPS_BODY_OCTETS];
+/* The epoch of the valid closing call the context carried (it lives on processTDULC()'s stack); 0 for none. */
+static uint64_t g_gps_closing_epoch = 0;
+
+static void
+note_gps_call(const dsd_state* state, const dsd_gps_report_ctx* ctx) {
+    g_gps_calls++;
+    DSD_MEMSET(&g_gps_ctx, 0, sizeof(g_gps_ctx));
+    g_gps_closing_epoch = 0;
+    if (ctx) {
+        g_gps_ctx = *ctx;
+        if (ctx->closing != NULL && ctx->closing->valid) {
+            g_gps_closing_epoch = ctx->closing->epoch;
+        }
+        g_gps_ctx.closing = NULL;
+    }
+    g_gps_lcw_soft = state->p25_p1_lcw_soft;
 }
 
-/* The Harris GPS reports the link control filed, and the source each was filed under. */
-static int g_harris_reports = 0;
-static uint32_t g_harris_src = 0U;
-
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[], const dsd_gps_report_ctx* ctx) {
     (void)opts;
-    (void)state;
-    (void)input;
-    (void)slot;
-    g_harris_reports++;
-    g_harris_src = src;
+    (void)lc_bits;
+    note_gps_call(state, ctx);
+    return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
+    (void)opts;
+    note_gps_call(state, ctx);
+    DSD_MEMCPY(g_gps_body, body, sizeof(g_gps_body));
+    return 0;
 }
 
 void
@@ -314,6 +336,15 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 static int
+expect_eq_u64(const char* tag, uint64_t got, uint64_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", tag, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_true(const char* tag, int ok) {
     if (!ok) {
         DSD_FPRINTF(stderr, "%s: condition failed\n", tag);
@@ -411,20 +442,187 @@ test_voice_user_metadata_does_not_restart_call(void) {
     return rc;
 }
 
-/* A TDULC carrying a Harris GPS block 2, its block 1 already held: the link control files the position under the
-   source of the call this terminator speaks for. The TDULC's own clock reading is @p clock, as the symbol grid would
-   have it once the frame's sync and NID were read. Returns the source the report was filed under, or -1 for none. */
-static long
-run_harris_gps_tdulc(dsd_opts* opts, dsd_state* state, uint64_t clock) {
-    static const uint8_t block1_check[16] = {0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0}; /* 0x2AA4 */
-    DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
-    DSD_MEMCPY(state->dmr_pdu_sf[0], block1_check, sizeof(block1_check));
+/* A link control in LDU1 form: format, MFID, then octets 2-8. */
+static void
+lcw_from_octets(uint8_t lcw[72], uint8_t format, uint8_t mfid, const uint8_t octets[7]) {
+    uint8_t bytes[9] = {format, mfid, octets[0], octets[1], octets[2], octets[3], octets[4], octets[5], octets[6]};
+    for (int i = 0; i < 72; i++) {
+        lcw[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
+    }
+}
+
+/* A trunked voice channel whose call 0x010203 -> TG 0x1234 a hard-decoded Group Voice Channel User LC opened. */
+static uint64_t
+start_checked_call(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_hangtime = 2.0F;
+    state->p25_cc_freq = 851000000;
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[1].chan_type = 1;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].trust = 2;
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_chan_tdma_explicit[1] = 1;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
+    p25_sm_event(ctx, opts, state, &grant);
+    const uint8_t user[7] = {0x00, 0x00, 0x12, 0x34, 0x01, 0x02, 0x03};
+    uint8_t lcw[72];
+    lcw_from_octets(lcw, 0x00, 0x00, user);
+    p25_lcw(opts, state, lcw, 0);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id != 0x010203U) {
+        return 0U;
+    }
+    g_rs_hard_result = 0;
+    g_rs_soft_result = 1;
+    g_gps_calls = 0;
+    return call.epoch;
+}
+
+static int
+expect_gps_of_closing_call(const char* tag, uint64_t epoch) {
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof(label), "%s: one GPS dispatch", tag);
+    rc |= expect_eq_int(label, g_gps_calls, 1);
+    DSD_SNPRINTF(label, sizeof(label), "%s: the closing call", tag);
+    rc |= expect_true(label, g_gps_closing_epoch == epoch && g_gps_ctx.call_epoch == epoch && epoch != 0U);
+    DSD_SNPRINTF(label, sizeof(label), "%s: checked identity", tag);
+    rc |= expect_true(label, g_gps_ctx.source_verified == 1U && g_gps_ctx.source_id == 0x010203U
+                                 && g_gps_ctx.target_id == 0x1234U && g_gps_ctx.target_group == 1U);
+    DSD_SNPRINTF(label, sizeof(label), "%s: hard decode", tag);
+    rc |= expect_true(label, g_gps_ctx.pos_verified == 1U && g_gps_lcw_soft == 0U);
+    return rc;
+}
+
+/* Issue #800 (spec N2, 2.20): the TDULC ends the call before it dispatches its own link control, so a GPS link control
+   in it is attributed to the call it ended, captured just before; a soft-erasure RS recovery marks it unchecked as on
+   LDU1; any later GPS link control sees only ACTIVE calls. */
+static int
+test_terminator_gps(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t apx[7] = {0x00, 0x00, 0x2A, 0xAA, 0xAA, 0x15, 0x55};
+    int rc = 0;
+
+    uint64_t epoch = start_checked_call(&opts, &state);
+    rc |= expect_true("terminator APX: checked call", epoch != 0U);
+    build_lcw_words(0x06, 0x90, apx[0], (uint16_t)((apx[1] << 8) | apx[2]), (uint16_t)((apx[3] << 8) | apx[4]),
+                    (uint16_t)((apx[5] << 8) | apx[6]));
+    processTDULC(&opts, &state);
+    rc |= expect_gps_of_closing_call("terminator APX", epoch);
+    dsd_call_snapshot call;
+    rc |= expect_true("terminator APX: the call ended",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+
+    // A GPS link control after the call ended (no new voice user heard) names no call and no checked source.
+    g_gps_calls = 0;
+    build_lcw_words(0x06, 0x90, apx[0], (uint16_t)((apx[1] << 8) | apx[2]), (uint16_t)((apx[3] << 8) | apx[4]),
+                    (uint16_t)((apx[5] << 8) | apx[6]));
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("after the end: GPS dispatched", g_gps_calls, 1);
+    rc |= expect_true("after the end: no call, unverified", g_gps_ctx.call_epoch == 0U && g_gps_closing_epoch == 0U
+                                                                && g_gps_ctx.source_verified == 0U
+                                                                && g_gps_ctx.source_id == 0U);
+
+    // L3Harris Part A on the call's LDU1, Part B in its terminator.
+    epoch = start_checked_call(&opts, &state);
+    const uint8_t part_a[7] = {0x00, 0x00, 0x9E, 22, 0x00, 0x00, 0x80};
+    uint8_t lcw[72];
+    lcw_from_octets(lcw, 0x2A, 0xA4, part_a);
+    p25_lcw(&opts, &state, lcw, 0);
+    build_lcw_words(0x2B, 0xA4, 45, 0x1C20, 0x8400, 0x0315);
+    processTDULC(&opts, &state);
+    rc |= expect_gps_of_closing_call("terminator Harris Part B", epoch);
+    rc |= expect_true("terminator Harris: Part A then Part B octets",
+                      g_gps_body[3] == 22 && g_gps_body[6] == 0x80 && g_gps_body[7] == 45 && g_gps_body[13] == 0x15);
+    rc |= expect_true("terminator Harris: Part A's reception", g_gps_ctx.origin != NULL);
+
+    // A terminator whose link control passed only the soft-erasure retry is not checked (spec 2.20).
+    epoch = start_checked_call(&opts, &state);
+    build_lcw_words(0x06, 0x90, apx[0], (uint16_t)((apx[1] << 8) | apx[2]), (uint16_t)((apx[3] << 8) | apx[4]),
+                    (uint16_t)((apx[5] << 8) | apx[6]));
+    g_rs_hard_result = 1;
+    g_rs_soft_result = 0;
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("soft terminator: GPS dispatched", g_gps_calls, 1);
+    rc |= expect_true("soft terminator: marked soft while dispatched", g_gps_lcw_soft == 1U);
+    rc |= expect_true("soft terminator: position unchecked", g_gps_ctx.pos_verified == 0U);
+    rc |= expect_true("soft terminator: still the closing call", g_gps_closing_epoch == epoch);
+    rc |= expect_eq_int("soft terminator: mark cleared after", state.p25_p1_lcw_soft, 0);
+    g_rs_hard_result = 0;
+    g_rs_soft_result = 1;
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Issue #800: the next engine run on a reused state (the engine's cleanup frees the call state; the new one goes on
+   from the last run's epochs) is not attributed by the last run's hard-decoded voice-user identity: a GPS link control
+   of the new run's first call, opened by a soft-recovered link control of the same radio, names no one. */
+static int
+test_reused_state_forgets_checked_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t apx[7] = {0x00, 0x00, 0x2A, 0xAA, 0xAA, 0x15, 0x55};
+    const uint8_t user[7] = {0x00, 0x00, 0x12, 0x34, 0x01, 0x02, 0x03};
+    uint8_t lcw[72];
+    int rc = 0;
+
+    const uint64_t first = start_checked_call(&opts, &state);
+    rc |= expect_true("first run: checked identity of its call",
+                      first != 0U && state.p25_p1_lc_attribution.call_epoch == first
+                          && state.p25_p1_lc_attribution.source == 0x010203U);
+
+    dsd_state_ext_free_all(&state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &opts, &state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
+    p25_sm_event(ctx, &opts, &state, &grant);
+    lcw_from_octets(lcw, 0x00, 0x00, user);
+    state.p25_p1_lcw_soft = 1U;
+    p25_lcw(&opts, &state, lcw, 0);
+    state.p25_p1_lcw_soft = 0U;
+    dsd_call_snapshot call;
+    rc |= expect_true("next run: its first call is a new epoch of the same radio",
+                      dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch > first && call.ota_source_id == 0x010203U);
+
+    g_gps_calls = 0;
+    lcw_from_octets(lcw, 0x06, 0x90, apx);
+    p25_lcw(&opts, &state, lcw, 0);
+    rc |= expect_eq_int("next run: GPS dispatched", g_gps_calls, 1);
+    rc |=
+        expect_true("next run: the call, but no checked identity",
+                    g_gps_ctx.call_epoch == call.epoch && g_gps_ctx.source_verified == 0U && g_gps_ctx.target_id == 0U);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* A TDULC read at @p clock, as the symbol grid would have it once the frame's sync and NID were read: the epoch of the
+   call its link control speaks for (p25p1_terminator_note_end(), which p25_lcw_from_tdulc() is given), 0 for none. */
+static uint64_t
+run_tdulc_at(dsd_opts* opts, dsd_state* state, uint64_t clock) {
     state->symbol_clock = clock;
     build_lcw_words(0x2B, 0xA4, 0x00, 0x0000, 0x0000, 0x0000);
-    g_harris_reports = 0;
-    g_harris_src = 0U;
     processTDULC(opts, state);
-    return g_harris_reports == 1 ? (long)g_harris_src : -1L;
+    return state->p25_p1_terminator_end_epoch;
+}
+
+/* The epoch of the call slot 0 holds (0: none). */
+static uint64_t
+slot0_epoch(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
 }
 
 static void
@@ -441,77 +639,77 @@ reset_conventional_fixture(dsd_opts* opts, dsd_state* state) {
 /* A TDULC's link control speaks for the call that TDULC ended, and its repeats, which follow it back to back on the
    carrier (each data unit's sync starts where the last one ends, TIA-102.BAAA-A 8.2), for that call too. A TDULC that
    ended no call, its LDUs lost, is a later transmission's terminator: an older call the slot still holds ended is not
-   its call, so its link control names no source of that call. */
+   its call (p25p1_terminator_note_end(); the Motorola talker end takes its talkgroup from that call). */
 static int
 test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     static dsd_opts opts;
     static dsd_state state;
     const uint64_t start = 100000U;
+    uint64_t epoch = 0U;
     int rc = 0;
 
     reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("gps fixture call", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    rc |= expect_eq_int("the TDULC that ends the call files under its source",
-                        (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
+    rc |= expect_true("fixture call", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    epoch = slot0_epoch(&state);
+    rc |= expect_eq_u64("the TDULC that ends the call speaks for the call", run_tdulc_at(&opts, &state, start), epoch);
     dsd_call_snapshot call;
     rc |= expect_true("the TDULC ended the call",
                       dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_int("its repeat files under that source too",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS), 0x123456);
-    rc |= expect_eq_int("and so does the repeat after it",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), 0x123456);
+    rc |= expect_eq_u64("its repeat speaks for it too", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), epoch);
+    rc |= expect_eq_u64("and so does the repeat after it",
+                        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), epoch);
     // Much later, a voiceless transmission whose TDULC alone decoded: the ended call is not its call.
-    rc |= expect_eq_int("a later TDULC files under no source of the older call",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + 50000U), 0);
-    rc |= expect_eq_int("nor does its own repeat",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0);
+    rc |= expect_eq_u64("a later TDULC speaks for no older call", run_tdulc_at(&opts, &state, start + 50000U), 0U);
+    rc |=
+        expect_eq_u64("nor does its own repeat", run_tdulc_at(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0U);
 
     // A data unit the decoder never read between them (a TDU or LDU lost to a fade): no repeat of the TDULC that ended
     // the call.
     reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("gps fixture call 2", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    rc |= expect_eq_int("ending TDULC", (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
-    rc |= expect_eq_int("a TDULC after a unit the decoder never read",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0);
+    rc |= expect_true("fixture call 2", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    epoch = slot0_epoch(&state);
+    rc |= expect_eq_u64("ending TDULC", run_tdulc_at(&opts, &state, start), epoch);
+    rc |= expect_eq_u64("a TDULC after a unit the decoder never read",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0U);
 
     // A TDU that ended the call, then the same transmission's TDULCs back to back: the end is one, so its link
     // control is the call's. So is a TDULC after a TDU that followed the TDULC ending the call.
     reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("gps fixture call 5", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_true("fixture call 5", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    epoch = slot0_epoch(&state);
     state.symbol_clock = start;
     processTDU(&opts, &state);
     rc |= expect_true("the TDU ended the call",
                       dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_int("the TDULC after the TDU that ended the call files under its source",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDU_DIBITS), 0x123456);
-    rc |= expect_eq_int("and its repeat",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS),
-                        0x123456);
+    rc |= expect_eq_u64("the TDULC after the TDU that ended the call speaks for the call",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), epoch);
+    rc |= expect_eq_u64("and its repeat", run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS),
+                        epoch);
     state.symbol_clock = start + P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS;
     processTDU(&opts, &state);
-    rc |= expect_eq_int("a TDULC after a TDU between the call's TDULCs",
-                        (int)run_harris_gps_tdulc(
-                            &opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS),
-                        0x123456);
+    rc |= expect_eq_u64(
+        "a TDULC after a TDU between the call's TDULCs",
+        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS),
+        epoch);
     // A TDU much later, then a TDULC: a later transmission's end, which ended no call.
     state.symbol_clock = start + 90000U;
     processTDU(&opts, &state);
-    rc |= expect_eq_int("a TDULC after a later TDU that ended no call",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0);
+    rc |= expect_eq_u64("a TDULC after a later TDU that ended no call",
+                        run_tdulc_at(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0U);
 
     // A call another end closed (a sync loss) is not a TDULC's either, even straight after it.
     reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("gps fixture call 3", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_true("fixture call 3", seed_active_call(&state, 0x1234, 0x123456, 0x00));
     rc |= expect_true("sync loss ends the call", dsd_call_state_end_ex(&state, 0U, 2.0, DSD_CALL_END_SYNC_LOSS) > 0);
-    rc |= expect_eq_int("a TDULC after a call a sync loss ended", (int)run_harris_gps_tdulc(&opts, &state, start), 0);
+    rc |= expect_eq_u64("a TDULC after a call a sync loss ended", run_tdulc_at(&opts, &state, start), 0U);
 
     // A new carrier between the TDULC that ended the call and the next one: that one is no repeat of it.
     reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("gps fixture call 4", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    rc |= expect_eq_int("ending TDULC 4", (int)run_harris_gps_tdulc(&opts, &state, start), 0x123456);
+    rc |= expect_true("fixture call 4", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    epoch = slot0_epoch(&state);
+    rc |= expect_eq_u64("ending TDULC 4", run_tdulc_at(&opts, &state, start), epoch);
     state.carrier_seq++;
-    rc |= expect_eq_int("a TDULC on the next carrier",
-                        (int)run_harris_gps_tdulc(&opts, &state, start + P25P1_TDULC_DIBITS), 0);
+    rc |= expect_eq_u64("a TDULC on the next carrier", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), 0U);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -654,6 +852,10 @@ main(void) {
     rc |= expect_eq_int("cut tdulc moves no carrier count", (int)state.carrier_seq, 1);
     rc |= expect_eq_int("cut tdulc dispatches no grant", (int)ctx->grant_count, 0);
     state.input_interrupted = 0;
+
+    // Case 8 (issue #800): GPS link controls in the terminator.
+    rc |= test_terminator_gps();
+    rc |= test_reused_state_forgets_checked_identity();
 
     dsd_state_ext_free_all(&state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

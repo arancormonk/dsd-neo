@@ -14,6 +14,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -45,6 +47,10 @@ static int g_boundary_at = -1;
 /* The read a Signal search's yield (or a stalled live read) interrupts: getSymbol() records the interruption there and
    stands erasures in for every symbol after it; -1 for none. */
 static int g_interrupt_at = -1;
+/* The read before which a retune completes without a carrier boundary (the tuning generation advances); -1 for none. */
+static int g_retune_at = -1;
+/* Whether the packet's captured origin still matched the reception when its data was decoded (issue #800). */
+static int g_data_origin_matched = -1;
 static int g_status_add_calls;
 static int g_last_status_dibit;
 static int g_pdu_header_calls;
@@ -114,6 +120,9 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     if (g_get_dibit_soft_calls == g_interrupt_at && state != NULL) {
         state->input_interrupted = 1;
     }
+    if (g_get_dibit_soft_calls == g_retune_at) {
+        dsd_trunk_tuning_generation_advance();
+    }
     int call = g_get_dibit_soft_calls++;
     if (out_soft != NULL) {
         out_soft->llr[0] = (int16_t)(1000 + call);
@@ -146,6 +155,7 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)input;
     g_pdu_data_calls++;
     g_last_pdu_data_len = len;
+    g_data_origin_matched = dsd_position_origin_matches(state, &state->p25_mdpu_origin);
 }
 
 int
@@ -951,6 +961,40 @@ test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing(void) {
     return rc;
 }
 
+/* Issue #800 spec 2.3 step 3: the packet's origin is captured when its header block is read, so a position report in
+   its data is admitted against the reception the packet began on. A retune completed while the data block was read
+   leaves the captured origin no longer matching when the data is decoded (admission refuses it); without one it
+   matches. */
+static int
+test_process_mpdu_captures_origin_at_its_header(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint8_t header[P25_MPDU_R12_BYTES] = {0x17U, 0x20U, 0x10U, 0x11U, 0x12U, 0x13U,
+                                                       0x01U, 0x15U, 0x16U, 0x17U, 0x7AU, 0x1DU};
+    int rc = 0;
+    for (int retune = 0; retune <= 1; retune++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
+        DSD_MEMCPY(g_soft_candidates[0].bytes, header, sizeof(header));
+        g_soft_candidate_count = 1;
+        g_mbf34_candidate_count = 0;
+        g_get_dibit_soft_calls = 0;
+        reset_dispatch_counters();
+        g_data_origin_matched = -1;
+        g_retune_at = retune ? 150 : -1; /* inside the data block: the header was read whole before it */
+
+        processMPDU(&opts, &state);
+
+        rc |= expect_int("origin mpdu decodes its data", g_pdu_data_calls, 1);
+        rc |= expect_int("origin captured at the header", (int)state.p25_mdpu_origin.valid, 1);
+        rc |= expect_int("origin matches only without a retune", g_data_origin_matched, retune ? 0 : 1);
+    }
+    g_retune_at = -1;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static void
 seed_integrity_packet(P25MpduContext* ctx, int rate34, int bad_header, int bad_packet) {
     static const uint8_t payload[12] = {0x81U, 0x02U, 0x23U, 0x44U, 0x65U, 0x86U,
@@ -1083,6 +1127,7 @@ main(void) {
     rc |= test_process_mpdu_zero_block_header_orchestration();
     rc |= test_process_mpdu_length_from_its_header();
     rc |= test_process_mpdu_split_by_a_carrier_boundary_publishes_nothing();
+    rc |= test_process_mpdu_captures_origin_at_its_header();
     rc |= test_packet_integrity_scope();
     rc |= test_confirmed_crc9_failure_with_valid_packet_crc();
     return rc;

@@ -18,7 +18,48 @@ PLATFORMS = ("linux", "macos", "windows", "android")
 REQUIRED = {"project", "legacy-isc", "bch3", "rockliff-rs", "wallace-golay",
             "mixed-origins", "ezpwd", "tiny-aes", "pffft", "tetra-crypto",
             "mbelib", "android-libusb", "android-rtl", "desktop-rtl", "airspy", "ibm-plex", "recordings",
-            "gqrx-scanner"}
+            "gqrx-scanner", "soapysdr", "soapy-airspy", "soapy-hackrf", "libhackrf", "libusb",
+            "pthreads4w", "msvc-runtime", "vcpkg-ports", "soapysdr-util", "codec2", "portaudio", "pdcurses", "ncurses",
+            "openssl", "appimage-openssl", "curl", "expat", "zlib", "libsndfile", "libflac", "libogg", "libvorbis",
+            "opus", "mp3lame", "mpg123", "qt", "ndk-runtime", "androidx", "kotlin"}
+# The notices each package carries for a component, under its documentation folder, and where its staging takes
+# each one from: the record's <platform>_release map. A source is the repository or the configured build tree (each
+# a relative path under it), the copyright file a vcpkg port installs (share/<port>/copyright) or the package's
+# general legal files (legal-component: the legal CMake component on the desktop, the copies of LICENSES/, legal/
+# and mbelib's notices the APK staging makes).
+RELEASE_MAPS = {"windows": "windows_release", "android": "android_release", "macos": "macos_release"}
+# The packages whose staging reads their maps, so every component they carry has one. A platform joins once its
+# staging and its package check read the map (cmake/stage_release_notices.cmake, --release-notices).
+COMPLETE_RELEASE_MAPS = {"windows", "android", "macos"}
+NOTICE_PATH = re.compile(r"[\w.+/-]+")
+VCPKG_PORT = re.compile(r"[a-z0-9-]+")
+# A file name Windows can load, as tools/windows/release_tree_checks.psm1 (Test-ImportName) accepts an import: no
+# folder, none of the characters Windows refuses in a name, not ending in a dot or a space. Records list it in
+# lower case, the one spelling of a name Windows compares without regard to case.
+RELEASE_FILE = re.compile(r'[^<>:"/\\|?*\x00-\x1f]*[^<>:"/\\|?*\x00-\x1f. ]')
+RUNTIME_DLL = re.compile(r"(concrt|msvcp|vccorlib|vcruntime)140(_[a-z0-9_]+)?\.dll")
+# A file the DMG carries in bin/ or lib/, as its records list it: the executable's name, or a library's name without
+# its version and suffix (libssl for libssl.3.dylib), which tools/check_release_notices.py matches with any version.
+MACOS_RELEASE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+.-]*")
+# Components the packages carry with no notice of their own: code compiled into dsd-neo whose grant is unresolved.
+NO_RELEASE_NOTICE = {"wallace-golay"}
+
+
+def notice_source(source):
+    """Whether staging can take a notice from this source: repo: and build: name a path inside their root."""
+    if source == "legal-component":
+        return True
+    kind, _, rest = source.partition(":")
+    if kind == "vcpkg":
+        return bool(VCPKG_PORT.fullmatch(rest))
+    if kind not in ("repo", "build") or not NOTICE_PATH.fullmatch(rest):
+        return False
+    return all(part not in ("", ".", "..") for part in rest.split("/"))
+
+
+def notice_sha256(path):
+    """The SHA-256 of a retained notice over LF line endings, so a CRLF checkout holds the same text."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def read_inventory(root=ROOT):
@@ -58,8 +99,8 @@ def validate(inventory, root=ROOT):
             path = Path(notice)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("Notice must be a repository-relative path")
-            content = (root / path).read_bytes().replace(b"\r\n", b"\n")
-            if not content.strip() or hashlib.sha256(content).hexdigest() != component["notice_sha256"].get(notice):
+            if (not (root / path).read_bytes().strip()
+                    or notice_sha256(root / path) != component["notice_sha256"].get(notice)):
                 raise ValueError(f"Missing or altered notice: {notice}")
         if (component["copyright_permission"] == "unresolved"
                 and (component["license_concluded"] != "NOASSERTION"
@@ -70,9 +111,79 @@ def validate(inventory, root=ROOT):
                 raise ValueError(f"Custom license has no retained text: {custom}")
         if "pin" in component and not re.fullmatch(r"[0-9a-f]{40}", pins.get(component["pin"], "")):
             raise ValueError(f"Missing immutable source revision: {ident}")
+        validate_windows_release(component, root)
+        validate_macos_release(component)
+        for platform in RELEASE_MAPS:
+            validate_release_notices(component, platform)
     if ids != REQUIRED:
         raise ValueError("Reviewed component inventory changed; review required coverage")
     return pins
+
+
+def validate_windows_release(component, root=ROOT):
+    """Every component of the Windows ZIP lists the files it is in (its notices: validate_release_notices)."""
+    release = component.get("windows_release")
+    if release is None or not ships(component, "windows"):
+        return
+    ident = component["id"]
+    files = release.get("binaries")
+    if (not isinstance(files, list) or not files or len(set(files)) != len(files)
+            or not all(isinstance(name, str) and RELEASE_FILE.fullmatch(name) and name == name.lower()
+                       for name in files)):
+        raise ValueError(f"Release files must be distinct lower-case Windows file names: {ident}")
+    if ident == "msvc-runtime" and not all(RUNTIME_DLL.fullmatch(name) for name in files):
+        raise ValueError("The Visual C++ runtime record lists a file outside a toolset's runtime folder")
+    if release.get("notices") == {} and files != ["dsd-neo.exe"]:
+        raise ValueError(f"The ZIP carries no notice for a library it ships: {ident}")
+
+
+def validate_macos_release(component):
+    """Every component of the macOS DMG lists the files it is in (its notices: validate_release_notices)."""
+    release = component.get("macos_release")
+    if not isinstance(release, dict) or not ships(component, "macos"):
+        return
+    files = release.get("binaries")
+    if (not isinstance(files, list) or not files or len(set(files)) != len(files)
+            or not all(isinstance(name, str) and MACOS_RELEASE_FILE.fullmatch(name) and not name.endswith(".dylib")
+                       for name in files)):
+        raise ValueError(f"macOS release files must be distinct names without a folder or .dylib: {component['id']}")
+
+
+def ships(component, platform):
+    return platform in component["platforms"] and "binary" in component["distribution"]
+
+
+def validate_release_notices(component, platform):
+    """A component a package carries names the notices that package carries for it and where each comes from."""
+    ident, key = component["id"], RELEASE_MAPS[platform]
+    release = component.get(key)
+    if release is None:
+        if ships(component, platform) and platform in COMPLETE_RELEASE_MAPS:
+            raise ValueError(f"A {platform} binary component lists no release notices ({key}): {ident}")
+        return
+    if not ships(component, platform):
+        raise ValueError(f"Only a component the {platform} package carries has {key}: {ident}")
+    allowed = {"notices", "binaries"} if platform in ("windows", "macos") else {"notices"}
+    if not isinstance(release, dict) or not set(release) <= allowed or "notices" not in release:
+        raise ValueError(f"{key} must hold only its notices and, on the desktop, its binaries: {ident}")
+    notices = release.get("notices")
+    if not isinstance(notices, dict):
+        raise ValueError(f"Release notices must map a path to its source: {ident}")
+    if not notices and not (ident in NO_RELEASE_NOTICE and component["copyright_permission"] == "unresolved"):
+        raise ValueError(f"The {platform} package carries no notice for a component it ships: {ident}")
+    for notice, source in notices.items():
+        path = Path(notice)
+        if (path.is_absolute() or ".." in path.parts or "\\" in notice or not notice
+                or not isinstance(source, str) or not notice_source(source)):
+            raise ValueError(f"Invalid release notice {notice!r} from {source!r}: {ident}")
+        if source.startswith("repo:") and source[5:] not in component["notices"]:
+            raise ValueError(f"Release notice is not a retained notice of the record: {source} ({ident})")
+
+
+def release_notices(inventory, platform):
+    """The notices a platform's package carries, as paths under its documentation folder."""
+    return sorted({notice for component in inventory["components"]
+                   for notice in component.get(RELEASE_MAPS[platform], {}).get("notices", {})})
 
 
 def add_spdx(document, inventory, pins, platform):
@@ -138,11 +249,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spdx", type=Path, help="supplement an SPDX JSON before attestation")
     parser.add_argument("--platform", choices=PLATFORMS)
+    parser.add_argument("--release-notices", choices=sorted(RELEASE_MAPS), metavar="PLATFORM",
+                        help="print the notices the platform's package carries, one path per line")
     args = parser.parse_args()
     if bool(args.spdx) != bool(args.platform):
         parser.error("--spdx and --platform must be supplied together")
+    if args.release_notices and args.spdx:
+        parser.error("--release-notices stands alone")
     inventory = read_inventory()
     pins = validate(inventory)
+    if args.release_notices:
+        for notice in release_notices(inventory, args.release_notices):
+            print(notice)
+        return
     if args.spdx:
         document = add_spdx(json.loads(args.spdx.read_text(encoding="utf-8")), inventory, pins, args.platform)
         extracted_licenses(document, inventory)

@@ -87,6 +87,36 @@ Item {
             compare(first.text, "");
         }
 
+        // Review r2 (issue #800): who a call was to is said as the row knows it: a talkgroup only for a group call,
+        // a radio for a private one, the bare number when not known; Hold names what it holds.
+        function test_call_kind_words_data() {
+            return [{tag: "group", gi: 0, line: "Talkgroup 42", hold: "Hold TG 42", meta: "TG 42"},
+                    {tag: "private", gi: 1, line: "Sent to radio 42", hold: "Hold radio 42", meta: "TO RADIO 42"},
+                    {tag: "not known", gi: -1, line: "Sent to 42", hold: "Hold 42", meta: "TO 42"}]
+        }
+        function test_call_kind_words(data) {
+            loader.item.open({name: "Unit 7", tg: 42, gi: data.gi, systemUid: "test-system"})
+            var lines = loader.item.detailLines
+            verify(lines.indexOf(data.line) >= 0, JSON.stringify(lines))
+            if (data.gi !== 0)
+                verify(lines.indexOf("Talkgroup 42") < 0, "never a talkgroup: " + JSON.stringify(lines))
+            compare(findChild(loader.item, "historyHoldButton").text, data.hold)
+            loader.item.visible = false
+            // The History list's meta line.
+            callHistory.clearAll()
+            callHistory.pushWithIds(42, 7)
+            verify(callHistory.setRowGi(callHistory.newestUid(), data.gi))
+            firstHistory.visible = true
+            var list = findChild(firstHistory.item, "callLogList")
+            tryVerify(function () { return list.itemAtIndex(0) !== null })
+            var meta = list.itemAtIndex(0).metaText
+            verify(meta.indexOf(data.meta) === 0, meta)
+            if (data.gi !== 0)
+                verify(meta.indexOf("TG 42") < 0, meta)
+            firstHistory.visible = false
+            callHistory.clearAll()
+        }
+
         function test_hold_data() {
             return [
                 {tag: "same-system", running: true, uid: "test-system", held: 0, enabled: true, send: 1001},
@@ -147,7 +177,8 @@ Item {
             setScan(data.scanning === true, data.paused === true, data.operatorTuned === true)
             if (data.sessionUid !== undefined)
                 callHistory.sessionUid = data.sessionUid
-            var record = {name: "Dispatch", tg: data.tg === undefined ? 1001 : data.tg}
+            // A group call's row (gi 0): these cases hold a talkgroup.
+            var record = {name: "Dispatch", tg: data.tg === undefined ? 1001 : data.tg, gi: 0}
             if (data.uid !== undefined)
                 record.systemUid = data.uid
             loader.item.open(record)

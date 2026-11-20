@@ -253,8 +253,8 @@ Column {
     }
 
     // Nearest: the location fix is asked for only from its own button, under
-    // the site chooser's contract: one request id (radioReference's), a newer
-    // request anywhere supersedes it, leaving Systems cancels it. The cards
+    // the site chooser's contract: one request through locationRequests, a
+    // newer request anywhere supersedes it, leaving Systems cancels it. The cards
     // are told the next location change is the user's own, and told again
     // when the request ends without one.
     property double locationId: 0
@@ -265,49 +265,36 @@ Column {
         var previous = locationId;
         locationId = 0;
         if (previous)
-            decoderHost.cancelLocationRequest(previous);
-        locationId = radioReference.nextLocationRequestId();
+            locationRequests.cancel(previous);
         savedSystemCards.markLocationRequested();
-        decoderHost.requestSiteLocation(locationId);
+        locationId = locationRequests.requestSite("savedSystems");
     }
     function cancelNearestLocation() {
         if (!locationId)
             return;
-        decoderHost.cancelLocationRequest(locationId);
+        locationRequests.cancel(locationId);
         locationId = 0;
         savedSystemCards.clearLocationRequest();
     }
     Component.onDestruction: cancelNearestLocation()
     Connections {
-        target: radioReference
-        ignoreUnknownSignals: true
-        function onLocationRequestAllocated(requestId) {
-            if (controls.locationId && controls.locationId !== requestId) {
-                decoderHost.cancelLocationRequest(controls.locationId);
-                controls.locationId = 0;
-                savedSystemCards.clearLocationRequest();
-            }
-        }
-    }
-    Connections {
-        target: decoderHost
-        ignoreUnknownSignals: true
-        function onLocationResult(requestId, fixOk, lat, lon, accuracyM, fixAtMs, geocodeOk, postal, country, error) {
+        target: locationRequests
+        function onAnswered(requester, requestId, result) {
             if (!controls.locationId || requestId !== controls.locationId)
                 return;
             controls.locationId = 0;
             var store = controls.prefsStore;
-            if (fixOk && store && typeof store.setLocationFix === "function")
-                store.setLocationFix(lat, lon, fixAtMs, accuracyM);
+            if (result.fixOk && store && typeof store.setLocationFix === "function")
+                store.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
             // Spent by the change the fix made; a fix that changed nothing, or none, leaves no mark behind.
             savedSystemCards.clearLocationRequest();
-            var placed = fixOk && controls.hasFix;
+            var placed = result.fixOk && controls.hasFix;
             controls.locationNotice = placed ? "" : controls.hasFix ? qsTr("Location unavailable. Distances still use your saved location. Try again.") : qsTr("Location unavailable. Check location access in your device settings, then try again.");
             if (placed)
                 controls.revealRequested();
         }
-        // A permission prompt Android closed unanswered: nothing failed.
-        function onLocationCancelled(requestId) {
+        // A permission prompt Android closed unanswered, or a newer request elsewhere: nothing failed.
+        function onEnded(requester, requestId) {
             if (controls.locationId && requestId === controls.locationId) {
                 controls.locationId = 0;
                 savedSystemCards.clearLocationRequest();

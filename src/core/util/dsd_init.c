@@ -952,6 +952,8 @@ init_state_nxdn_defaults(dsd_state* state) {
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
     state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
 }
 
 /* DMR voice crypto continuity and polarity evidence (issue #729): nothing known, every frame unpositioned. */
@@ -1115,6 +1117,8 @@ init_state_protocol_defaults_b(dsd_state* state) {
     //cleared target would qualify whatever target is written next
     state->dmr_data_target_is_group[0] = 0;
     state->dmr_data_target_is_group[1] = 0;
+    state->dmr_data_checked_group[0] = 0;
+    state->dmr_data_checked_group[1] = 0;
 
     //initialize data header bits
     state->data_header_blocks[0] = 1; //initialize with 1, otherwise we may end up segfaulting when no/bad data header
@@ -1490,9 +1494,15 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->dstar_confirmed = 0;
     state->dstar_confirm_weak_streak = 0;
     state->dstar_confirm_frame_evidence = 0;
+    /* As dstar_tx_begin() does: the next transmission is another one. The slow-data assemblies (the D-STAR protocol's
+       state extension) are bound to the transmission, so nothing they assembled survives its next use. */
+    state->dstar_tx_seq++;
+    state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
 
     //M17 Storage
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;

@@ -6,13 +6,14 @@
 /*
  * Regression/parity: SDRTrunk selects the first Point2d-derived token after sorting LRRP tokens by TokenType.
  * That yields a deterministic precedence among position tokens:
- *   CIRCLE_2D (0x51) > CIRCLE_3D (0x55) > POINT_2D (0x66) > POINT_3D (0x69)
+ *   CIRCLE_2D (0x51) > CIRCLE_3D (0x55, integer variant 0x53) > POINT_2D (0x66) > POINT_3D (0x69, integer 0x67)
  *
  * Ensure we mirror that selection even when multiple position tokens are present.
  */
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -45,7 +46,8 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
     (void)src;
     (void)opts;
@@ -175,9 +177,9 @@ main(void) {
     DSD_MEMSET(pdu, 0, sizeof pdu);
     size_t i = 0;
     pdu[i++] = 0x07; // Immediate Location Response
-    pdu[i++] = 23;   // payload length: POINT_3D (12) + CIRCLE_2D (11)
+    pdu[i++] = 22;   // payload length: POINT_3D (11) + CIRCLE_2D (11)
 
-    // 0x69 POINT_3D (lat/lon + 24-bit altitude)
+    // 0x69 POINT_3D (lat/lon + sfloatvar altitude)
     pdu[i++] = 0x69;
     pdu[i++] = (lat_p3d >> 24) & 0xFF;
     pdu[i++] = (lat_p3d >> 16) & 0xFF;
@@ -187,11 +189,10 @@ main(void) {
     pdu[i++] = (lon_p3d >> 16) & 0xFF;
     pdu[i++] = (lon_p3d >> 8) & 0xFF;
     pdu[i++] = (lon_p3d >> 0) & 0xFF;
-    pdu[i++] = 0x00; // alt[23:16]
-    pdu[i++] = 0x01; // alt[15:8]
-    pdu[i++] = 0x02; // alt[7:0]
+    pdu[i++] = 0x05; // altitude: integer 5 (sign clear)
+    pdu[i++] = 0x00; // altitude: fraction 0/128
 
-    // 0x51 CIRCLE_2D (lat/lon + 16-bit radius)
+    // 0x51 CIRCLE_2D (lat/lon + ufloatvar radius)
     pdu[i++] = 0x51;
     pdu[i++] = (lat_c2d >> 24) & 0xFF;
     pdu[i++] = (lat_c2d >> 16) & 0xFF;
@@ -201,11 +202,64 @@ main(void) {
     pdu[i++] = (lon_c2d >> 16) & 0xFF;
     pdu[i++] = (lon_c2d >> 8) & 0xFF;
     pdu[i++] = (lon_c2d >> 0) & 0xFF;
-    pdu[i++] = 0x00; // radius[15:8]
-    pdu[i++] = 0x64; // radius[7:0] -> 1.00m (hundredths)
+    pdu[i++] = 0x01; // radius: integer 1
+    pdu[i++] = 0x00; // radius: fraction 0/128 -> 1.0 m
 
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
     rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "position precedence");
+
+    // The integer variants rank with their float ones: CIRCLE_3D integer (0x53) wins over POINT_3D integer (0x67).
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.currentslot = 0;
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    i = 0;
+    pdu[i++] = 0x07; // Immediate Location Response
+    pdu[i++] = 23;   // payload length: POINT_3D integer (10) + CIRCLE_3D integer (13)
+    pdu[i++] = 0x67;
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lat_p3d >> (8 * b));
+    }
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lon_p3d >> (8 * b));
+    }
+    pdu[i++] = 0x02; // altitude sintvar: +2
+    pdu[i++] = 0x53;
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lat_c2d >> (8 * b));
+    }
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lon_c2d >> (8 * b));
+    }
+    pdu[i++] = 0x02; // radius uintvar: 2
+    pdu[i++] = 0x80; // altitude sintvar: 0x80 0x44 = +68
+    pdu[i++] = 0x44;
+    pdu[i++] = 0x03; // altitude accuracy uintvar: 3
+
+    expected_from_raw(lat_c2d, lon_c2d, &exp_lat, &exp_lon);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
+    rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "integer variant precedence");
+
+    // A shape at exactly 0, 0 is no position: it does not outrank the document's other shape, whose position wins.
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.currentslot = 0;
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    i = 0;
+    pdu[i++] = 0x07; // Immediate Location Response
+    pdu[i++] = 20;   // payload length: CIRCLE_2D (11) + POINT_2D (9)
+    pdu[i++] = 0x51; // CIRCLE_2D at 0, 0
+    i += 8;
+    pdu[i++] = 0x01; // radius: integer 1
+    pdu[i++] = 0x00;
+    pdu[i++] = 0x66; // POINT_2D
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lat_p3d >> (8 * b));
+    }
+    for (int b = 3; b >= 0; b--) {
+        pdu[i++] = (uint8_t)(lon_p3d >> (8 * b));
+    }
+    expected_from_raw(lat_p3d, lon_p3d, &exp_lat, &exp_lon);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
+    rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "zero shape skipped");
 
     // Unknown LRRP message types still carry usable position payloads in the field.
     DSD_MEMSET(&st, 0, sizeof st);

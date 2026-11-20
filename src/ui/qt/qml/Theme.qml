@@ -102,6 +102,32 @@ QtObject {
     // The PRIVATE tag's outline: neutral, since a private call is a kind of call, not a warning.
     readonly property color privateBorder: Qt.alpha(textSecondary, dark ? 0.40 : 0.35)
 
+    // The map (issue #800). Tiles are toned from ink to paper so the radios
+    // carry the colour; the canvas under them is a step off the screen's bg.
+    // The device's own dot is a blue that is neither cyan (selected) nor the
+    // marker's neutral foreground.
+    readonly property color mapPaper: dark ? "#12161E" : "#F7F8FB"
+    readonly property color mapTileInk: dark ? "#6B7690" : "#5B6478"
+    readonly property color mapGrid: dark ? "#232B3A" : "#DCE1EA"
+    readonly property color mapDevice: dark ? "#6EA8FF" : "#2F5FD0"
+    // A map overlay's fill: the panel, nearly opaque, so a chip over a busy
+    // tile stays readable without a blur.
+    readonly property color mapOverlay: Qt.alpha(panel, dark ? 0.92 : 0.94)
+
+    // Whether the platform asks for no animation (Android's "Remove
+    // animations"): the map's camera jumps rather than glides. Writable, like
+    // fontScale, so a test can ask for it; resetReducedMotion() follows the
+    // platform again.
+    property bool reducedMotion: platformReducedMotion()
+    function platformReducedMotion() {
+        return typeof decoderHost !== "undefined" && !!decoderHost && decoderHost.reducedMotion === true;
+    }
+    function resetReducedMotion() {
+        reducedMotion = Qt.binding(function () {
+            return platformReducedMotion();
+        });
+    }
+
     // Radii
     readonly property int radiusPanel: 12
     readonly property int radiusButton: 8

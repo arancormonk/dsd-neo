@@ -31,7 +31,7 @@ namespace call_history_export {
  * @brief The file: a header, then one record per row in the order given.
  *
  * Columns: `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,`
- * `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`. The start is written in
+ * `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings,call_kind`. The start is written in
  * @p zone at that instant (`yyyy-MM-dd HH:mm:ss`), with that instant's offset (`UTC+05:30`), and in UTC (ISO 8601,
  * `Z`); all three are empty for a row with no start.
  */

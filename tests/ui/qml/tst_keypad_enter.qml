@@ -279,8 +279,10 @@ Item {
                     signalName: "clicked"
                 },
                 {
+                    // Issue #800 (P10a): the row's keyboard stop is its accessible node.
                     tag: "CallRow",
                     control: callRow,
+                    target: callRow.node,
                     signalName: "activated"
                 },
                 {
@@ -301,7 +303,7 @@ Item {
             ];
         }
         function test_shared_controls_take_keypad_enter(data) {
-            var target = data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control;
+            var target = data.target !== undefined ? data.target : data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control;
             verify(target !== null, data.tag + " has its choice");
             spy.signalName = data.signalName;
             spy.target = data.control;
@@ -383,7 +385,8 @@ Item {
                 },
                 {
                     tag: "CallRow",
-                    control: callRow
+                    control: callRow,
+                    target: callRow.node
                 },
                 {
                     tag: "DisclosureRow",
@@ -433,7 +436,7 @@ Item {
             verify(target.activeFocusOnTab, tag + " is a Tab stop again");
         }
         function test_a_covered_control_is_no_tab_stop_once_focus_leaves(data) {
-            holdsTabStopOnlyWhileFocused(data.tag, data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control);
+            holdsTabStopOnlyWhileFocused(data.tag, data.target !== undefined ? data.target : data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control);
         }
 
         // The same hold on the screens' own stops.

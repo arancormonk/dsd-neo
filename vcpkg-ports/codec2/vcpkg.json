@@ -3,7 +3,7 @@
   "version-string": "head",
   "description": "Next-Generation Digital Voice for Two-Way Radio (Codec2)",
   "homepage": "https://github.com/arancormonk/codec2",
-  "license": "LGPL-2.1-or-later",
+  "license": "LGPL-2.1-only AND LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause",
   "dependencies": [
     {
       "name": "vcpkg-cmake",

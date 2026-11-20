@@ -658,6 +658,9 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 		result = prepare_transfers(device, LIBUSB_ENDPOINT_IN | 1, (libusb_transfer_cb_fn)airspy_libusb_transfer_callback);
 		if (result != AIRSPY_SUCCESS)
 		{
+			/* the transfers already submitted are in flight: take them
+			 * back, so the failed start leaves the device idle */
+			reap_ended_stream(device);
 			return result;
 		}
 
@@ -671,6 +674,8 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 		result = pthread_create(&device->consumer_thread, &attr, consumer_threadproc, device);
 		if (result != 0)
 		{
+			pthread_attr_destroy(&attr);
+			reap_ended_stream(device);
 			return AIRSPY_ERROR_THREAD;
 		}
 		device->consumer_thread_running = true;
@@ -678,6 +683,8 @@ static int create_io_threads(airspy_device_t* device, airspy_sample_block_cb_fn 
 		result = pthread_create(&device->transfer_thread, &attr, transfer_threadproc, device);
 		if (result != 0)
 		{
+			pthread_attr_destroy(&attr);
+			reap_ended_stream(device);
 			return AIRSPY_ERROR_THREAD;
 		}
 		device->transfer_thread_running = true;
@@ -1319,6 +1326,14 @@ int airspy_list_devices(uint64_t *serials, int count)
 		{
 			device->ctx = ctx;
 			result = create_io_threads(device, callback);
+			if (result != AIRSPY_SUCCESS && result != AIRSPY_ERROR_BUSY)
+			{
+				/* The failed start took its transfers back; switch the
+				 * receiver off again too, as a stop would. Best effort:
+				 * the caller gets the start's own error. A busy device
+				 * is streaming already, so its receiver stays on. */
+				airspy_set_receiver_mode(device, RECEIVER_MODE_OFF);
+			}
 		}
 
 		return result;

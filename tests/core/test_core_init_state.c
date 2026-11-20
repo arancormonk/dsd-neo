@@ -469,6 +469,8 @@ main(void) {
     state->dmr_lrrp_target[1] = 5678U;
     state->dmr_data_target_is_group[0] = 1U;
     state->dmr_data_target_is_group[1] = 1U;
+    state->dmr_data_checked_group[0] = 1U;
+    state->dmr_data_checked_group[1] = 1U;
     state->p25_p1_soft_hamming_ok = 77U;
     state->p25_last_cc_msg_time = 1234567890;
     state->p25_last_cc_msg_time_m = 12345.5;
@@ -485,6 +487,8 @@ main(void) {
     state->payload_mi = 0x1111222233334444ULL;
     state->payload_miR = 0x5555666677778888ULL;
     state->payload_miN = 0x9999AAAABBBBCCCCULL;
+    state->nxdn_payload_mi = 0x1357ULL;
+    state->nxdn_iv_on_air = 1U;
     state->payload_miP = 0xDDDDEEEEFFFF0001ULL;
     state->payload_algid = 0x84;
     state->payload_algidR = 0x89;
@@ -557,11 +561,12 @@ main(void) {
         return 14;
     }
     if (state->payload_mi != 0ULL || state->payload_miR != 0ULL || state->payload_miN != 0ULL
-        || state->payload_miP != 0ULL || state->payload_algid != 0 || state->payload_algidR != 0
-        || state->payload_keyid != 0 || state->payload_keyidR != 0
-        || state->p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN || state->p25_crypto_state[1] != DSD_P25_CRYPTO_UNKNOWN
-        || state->p25_p1_hdu_crypto_fresh != 0 || state->p25_p1_crypto_conflict.active != 0U
-        || state->p25_p1_crypto_conflict.algid != 0U || state->p25_p1_crypto_conflict.keyid != 0U) {
+        || state->nxdn_payload_mi != 0ULL || state->nxdn_iv_on_air != 0U || state->payload_miP != 0ULL
+        || state->payload_algid != 0 || state->payload_algidR != 0 || state->payload_keyid != 0
+        || state->payload_keyidR != 0 || state->p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN
+        || state->p25_crypto_state[1] != DSD_P25_CRYPTO_UNKNOWN || state->p25_p1_hdu_crypto_fresh != 0
+        || state->p25_p1_crypto_conflict.active != 0U || state->p25_p1_crypto_conflict.algid != 0U
+        || state->p25_p1_crypto_conflict.keyid != 0U) {
         DSD_FPRINTF(stderr, "initState did not clear payload crypto metadata\n");
         freeState(state);
         free(state);
@@ -654,7 +659,8 @@ main(void) {
      * Both slots are seeded above so a slot-0-only reset still fails here.
      */
     if (state->dmr_lrrp_target[0] != 0U || state->dmr_lrrp_target[1] != 0U || state->dmr_data_target_is_group[0] != 0U
-        || state->dmr_data_target_is_group[1] != 0U) {
+        || state->dmr_data_target_is_group[1] != 0U || state->dmr_data_checked_group[0] != 0U
+        || state->dmr_data_checked_group[1] != 0U) {
         DSD_FPRINTF(stderr, "initState did not clear the DMR data target and its group flag\n");
         freeState(state);
         free(state);

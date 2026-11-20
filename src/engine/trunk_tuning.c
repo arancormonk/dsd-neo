@@ -377,6 +377,8 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     state->payload_miR = 0;
     state->payload_miP = 0;
     state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
     DSD_MEMSET(state->p25_conventional_grant_freq, 0, sizeof(state->p25_conventional_grant_freq));
@@ -1579,6 +1581,24 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
 #endif
     return 0;
+}
+
+double
+dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        uint64_t since_ns = 0U;
+        const int rc = rtl_stream_input_listening_since_ns(&since_ns);
+        if (rc < 0) {
+            return -1.0;
+        }
+        return rc > 0 ? (double)since_ns / 1e9 : 0.0;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+    return 0.0;
 }
 
 uint32_t

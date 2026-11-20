@@ -695,7 +695,7 @@ Item {
         function test_session_menu_routes_data() {
             var rows = [];
             for (var height of [900, 440]) {
-                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
             return rows;
@@ -717,7 +717,7 @@ Item {
             var menu = item("sessionMenu");
             monitor.openSessionMenu();
             tryCompare(menu, "visible", true);
-            compare(menu.actions.length, 9);
+            compare(menu.actions.length, 10);
             var button = visualChild(menu, function (entry) {
                 return entry.text === data.text && typeof entry.clicked === "function";
             });
@@ -748,6 +748,10 @@ Item {
                 verify(app.talkgroupsOpen);
             if (data.text === "Activity")
                 compare(app.sessionDestination, "activity");
+            if (data.text === "Map") {
+                verify(app.mapOpen);
+                app.closeMap(false);
+            }
             if (data.text === "History")
                 compare(app.sessionDestination, "history");
             if (data.text === "Settings")
@@ -762,7 +766,9 @@ Item {
             app.sessionRow = -1;
             testContext.setMetric("radioInput", false);
             menu.open();
-            compare(menu.actions.length, 5);
+            // Talkgroups, Activity, Map (issue #800), History, Settings and Diagnostics: none needs a radio or a
+            // saved system.
+            compare(menu.actions.length, 6);
             verify(Ui.Navigation.back(app));
             verify(!menu.visible);
         }

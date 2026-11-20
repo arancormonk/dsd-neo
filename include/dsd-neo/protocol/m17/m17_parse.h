@@ -90,19 +90,34 @@ struct m17_lsf_result {
     uint8_t meta[14];
 };
 
+/**
+ * GNSS Position Data META (LSF/LSD META field with encryption type 00 and subtype 01, M17 specification v2.0.11).
+ * The raw fields are what the transmitter sent; the display fields (degrees, metres, km/h) are filled only for the
+ * parts marked valid and in range, and read zero otherwise.
+ */
 struct m17_gnss_result {
     uint8_t data_source;
     uint8_t station_type;
-    uint8_t validity;
+    uint8_t validity; /**< M17_GNSS_VALID_* bits */
     uint8_t radius_exponent;
-    uint16_t bearing_deg;
+    uint16_t bearing_deg; /**< whole degrees; 0 when velocity is not valid or the bearing is out of range */
     double latitude_deg;
     double longitude_deg;
     float radius_m;
     float speed_kmh;
     float altitude_m;
     uint16_t reserved;
-    uint8_t invalid_zero_fields;
+    uint8_t invalid_zero_fields; /**< M17_GNSS_VALID_* bits not marked valid whose fields are not zero */
+    /**
+     * M17_GNSS_VALID_* bits marked valid whose value lies outside the specified range; the field is unknown:
+     * M17_GNSS_VALID_LATLON for a coordinate of -2^23 (which the specification never uses), M17_GNSS_VALID_VELOCITY
+     * for a bearing above 359 degrees (the bearing only; the speed stays).
+     */
+    uint8_t out_of_range_fields;
+    int32_t latitude_raw;  /**< 24-bit two's complement, sign-extended; +-8388607 is +-90 degrees */
+    int32_t longitude_raw; /**< 24-bit two's complement, sign-extended; +-8388607 is +-180 degrees */
+    uint16_t altitude_raw; /**< 0.5 m steps, offset by 500 m */
+    uint16_t speed_raw;    /**< 12 bits, 0.5 km/h steps */
 };
 
 struct m17_meta_text_block {
@@ -159,17 +174,25 @@ uint8_t m17_null_meta_protocol_for_subtype(uint8_t subtype);
 int m17_can_filter_allows(int configured_can, uint8_t received_can);
 
 /**
- * Parse an M17 GNSS metadata/PDU packet payload.
+ * Parse the 14-byte GNSS Position Data META field (M17 specification v2.0.11): META byte k is @p meta[k], with no
+ * packet protocol specifier in front. M17 defines no GNSS packet protocol; position data comes only from META.
  *
- * @param input  Full packet payload including protocol byte 0x81 or 0x91.
- * @param len    Number of bytes available; must be at least 15.
- * @param out    Result struct to fill on success.
+ * @param meta  The META bytes.
+ * @param len   Number of bytes available; must be at least M17_META_BYTES.
+ * @param out   Result struct to fill on success.
  *
- * @return 0 on success, negative on error.
+ * @return 0 on success; -1 for NULL arguments, -2 for a short field, -4 when the reserved bits are not zero.
  */
-int m17_parse_gnss_v2(const uint8_t* input, size_t len, struct m17_gnss_result* out);
+int m17_parse_gnss_meta(const uint8_t* meta, size_t len, struct m17_gnss_result* out);
 
-int m17_parse_extended_callsign_meta(const uint8_t* input, size_t len, struct m17_extended_callsign_result* out);
+/**
+ * Parse the 14-byte Extended Callsign Data META field: META byte k is @p meta[k], with no packet protocol specifier in
+ * front.
+ *
+ * @return 0 on success; -1 for NULL arguments, -2 for a short field, -4 when the reserved tail is not zero, -5 or -6
+ *         when a callsign field is no standard address.
+ */
+int m17_parse_extended_callsign_meta(const uint8_t* meta, size_t len, struct m17_extended_callsign_result* out);
 
 int m17_meta_text_parse_block(const uint8_t meta[M17_META_BYTES], struct m17_meta_text_block* out);
 int m17_meta_text_assembler_push(struct m17_meta_text_assembler* assembler, const struct m17_meta_text_block* block,

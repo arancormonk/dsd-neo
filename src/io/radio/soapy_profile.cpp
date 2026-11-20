@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/runtime/analog_channel.h>
 
 #include <algorithm>
 #include <cctype>
@@ -160,22 +161,41 @@ parse_finite_double(const std::string& value, double* out) {
 }
 
 const SoapyProfile k_profiles[] = {
-    {SoapyProfileId::Auto, "auto", "auto", 0.0, nullptr},
-    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0, nullptr},
-    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0, nullptr},
-    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0, nullptr},
-    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0, nullptr},
-    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0, nullptr},
-    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0, nullptr},
-    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0, nullptr},
-    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0, nullptr},
+    {SoapyProfileId::Auto, "auto", "auto", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0, nullptr, 0.0},
+    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0, nullptr, 0.0},
+    /* HackRF: its makers list 2 MS/s as the lowest rate and recommend 8 MS/s or more (the MAX2837's narrowest filter
+       barely attenuates at the edges of a 2 MS/s capture), so it runs 10 MS/s, a rate the half-band cascade and the
+       rate step already serve for a native Airspy. */
+    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0, nullptr, 10000000.0},
+    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0, nullptr, 0.0},
+    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0, nullptr, 0.0},
+    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0, nullptr, 0.0},
+    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0, nullptr, 0.0},
     /* SDDC (RX-888 family): no hardware bandwidth control, and the tuner path used by every
        digital voice band is reached through the "VHF" antenna rather than the HF default. */
-    {SoapyProfileId::Sddc, "sddc", "SDDC/RX-888", 0.0, "VHF"},
+    {SoapyProfileId::Sddc, "sddc", "SDDC/RX-888", 0.0, "VHF", 0.0},
 };
 
-SoapyProfileId
-detect_profile_from_text(const std::string& text) {
+/* A profile and the keywords that name it in a driver key, hardware key or device argument. */
+struct keyword_profile {
+    const char* const* keywords;
+    size_t count;
+    SoapyProfileId id;
+};
+
+template <size_t N>
+keyword_profile
+keywords_for(const char* const (&keywords)[N], SoapyProfileId id) {
+    return {keywords, N, id};
+}
+
+/* The profile @p text names in @p out_id, or false when it names none. An Airspy HF+ (SoapyAirspyHF's "AirspyHF") is
+ * named and runs the generic profile: its key holds "airspy", but it is not an Airspy. */
+bool
+detect_profile_from_text(const std::string& text, SoapyProfileId* out_id) {
+    static const char* const k_airspyhf_keywords[] = {"airspyhf", "airspy hf"};
     static const char* const k_airspy_keywords[] = {"airspy"};
     static const char* const k_sdrplay_keywords[] = {"sdrplay", "rsp1", "rsp2", "rspduo", "rspdx"};
     static const char* const k_hackrf_keywords[] = {"hackrf"};
@@ -186,32 +206,52 @@ detect_profile_from_text(const std::string& text) {
     static const char* const k_sddc_keywords[] = {"sddc",   "rx888", "rx-888", "rx999",
                                                   "rx-999", "rx666", "rx-666", "bbrf103"};
 
+    static const keyword_profile k_order[] = {
+        keywords_for(k_airspyhf_keywords, SoapyProfileId::Generic),
+        keywords_for(k_airspy_keywords, SoapyProfileId::Airspy),
+        keywords_for(k_sdrplay_keywords, SoapyProfileId::Sdrplay),
+        keywords_for(k_hackrf_keywords, SoapyProfileId::Hackrf),
+        keywords_for(k_lime_keywords, SoapyProfileId::Lime),
+        keywords_for(k_pluto_keywords, SoapyProfileId::Pluto),
+        keywords_for(k_rtlsdr_keywords, SoapyProfileId::Rtlsdr),
+        keywords_for(k_uhd_keywords, SoapyProfileId::Uhd),
+        keywords_for(k_sddc_keywords, SoapyProfileId::Sddc),
+    };
+
     const std::string lower_text = lower_copy(text);
-    if (contains_any_lower(lower_text, k_airspy_keywords, sizeof k_airspy_keywords / sizeof k_airspy_keywords[0])) {
-        return SoapyProfileId::Airspy;
+    const keyword_profile* named =
+        std::find_if(std::begin(k_order), std::end(k_order), [&lower_text](const keyword_profile& entry) {
+            return contains_any_lower(lower_text, entry.keywords, entry.count);
+        });
+    if (named == std::end(k_order)) {
+        return false;
     }
-    if (contains_any_lower(lower_text, k_sdrplay_keywords, sizeof k_sdrplay_keywords / sizeof k_sdrplay_keywords[0])) {
-        return SoapyProfileId::Sdrplay;
+    *out_id = named->id;
+    return true;
+}
+
+/* Rates and bandwidths within this of each other are the same: drivers report them as doubles from integer tables. */
+constexpr double kSoapyExactHz = 1.0;
+
+/* Floating-point error in a range's step arithmetic, far below any step a driver advertises. */
+constexpr double kSoapyRoundingHz = 1e-3;
+
+/* How far below the Fs/4 channel floor a filter may be and still keep the channel: the filter chosen for the floor
+ * (range_point_at_or_above()) and the warning (soapy_bandwidth_cuts_offset()) use the same margin. */
+constexpr double kSoapyFloorToleranceHz = 0.5;
+
+/* The last point of @p range: its maximum, or its last whole step at or below the maximum. A step that passes the
+ * maximum by no more than rounding error is the maximum. */
+double
+range_last_point(const SoapyRange& range) {
+    if (!(range.step > 0.0) || range.maximum < range.minimum) {
+        return range.maximum;
     }
-    if (contains_any_lower(lower_text, k_hackrf_keywords, sizeof k_hackrf_keywords / sizeof k_hackrf_keywords[0])) {
-        return SoapyProfileId::Hackrf;
+    double steps = std::floor((range.maximum - range.minimum) / range.step);
+    if (range.minimum + (steps + 1.0) * range.step - range.maximum <= kSoapyRoundingHz) {
+        steps += 1.0;
     }
-    if (contains_any_lower(lower_text, k_lime_keywords, sizeof k_lime_keywords / sizeof k_lime_keywords[0])) {
-        return SoapyProfileId::Lime;
-    }
-    if (contains_any_lower(lower_text, k_pluto_keywords, sizeof k_pluto_keywords / sizeof k_pluto_keywords[0])) {
-        return SoapyProfileId::Pluto;
-    }
-    if (contains_any_lower(lower_text, k_rtlsdr_keywords, sizeof k_rtlsdr_keywords / sizeof k_rtlsdr_keywords[0])) {
-        return SoapyProfileId::Rtlsdr;
-    }
-    if (contains_any_lower(lower_text, k_uhd_keywords, sizeof k_uhd_keywords / sizeof k_uhd_keywords[0])) {
-        return SoapyProfileId::Uhd;
-    }
-    if (contains_any_lower(lower_text, k_sddc_keywords, sizeof k_sddc_keywords / sizeof k_sddc_keywords[0])) {
-        return SoapyProfileId::Sddc;
-    }
-    return SoapyProfileId::Generic;
+    return std::min(range.minimum + std::max(0.0, steps) * range.step, range.maximum);
 }
 
 double
@@ -224,10 +264,8 @@ snap_to_step(double value, const SoapyRange& range) {
     if (snapped < range.minimum) {
         snapped = range.minimum;
     }
-    if (snapped > range.maximum) {
-        snapped = range.maximum;
-    }
-    return snapped;
+    /* The last whole step, not the maximum, which need not be one. */
+    return std::min(snapped, range_last_point(range));
 }
 
 double
@@ -280,16 +318,9 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
         return requested;
     }
 
-    SoapyProfileId id = detect_profile_from_text(selection.driver_key);
-    if (id != SoapyProfileId::Generic) {
-        return id;
-    }
-    id = detect_profile_from_text(selection.hardware_key);
-    if (id != SoapyProfileId::Generic) {
-        return id;
-    }
-    id = detect_profile_from_text(selection.args);
-    if (id != SoapyProfileId::Generic) {
+    SoapyProfileId id = SoapyProfileId::Generic;
+    if (detect_profile_from_text(selection.driver_key, &id) || detect_profile_from_text(selection.hardware_key, &id)
+        || detect_profile_from_text(selection.args, &id)) {
         return id;
     }
     return SoapyProfileId::Generic;
@@ -442,6 +473,89 @@ soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges,
     return best;
 }
 
+namespace {
+
+/* The points of @p range within kSoapyExactHz of @p value, passed to @p consider: for a range with a step, the steps on
+ * either side of @p value (both can be that close when the step is small), else the value held to the range's ends. */
+template <typename Consider>
+void
+range_points_near(double value, const SoapyRange& range, Consider consider) {
+    if (!std::isfinite(value) || range.maximum < range.minimum || value < range.minimum - kSoapyExactHz
+        || value > range.maximum + kSoapyExactHz) {
+        return;
+    }
+    if (!(range.step > 0.0)) {
+        consider(std::min(std::max(value, range.minimum), range.maximum));
+        return;
+    }
+    const double last = range_last_point(range);
+    const double below = std::floor((value - range.minimum) / range.step);
+    for (double steps : {below, below + 1.0}) {
+        const double point = std::min(std::max(range.minimum + steps * range.step, range.minimum), last);
+        if (std::fabs(point - value) <= kSoapyExactHz) {
+            consider(point);
+        }
+    }
+}
+
+/* The narrowest point of @p range at or above @p floor_hz in @p out_hz (one within kSoapyFloorToleranceHz below it
+ * counts), or false when it has none. */
+bool
+range_point_at_or_above(double floor_hz, const SoapyRange& range, double* out_hz) {
+    const double last = range_last_point(range);
+    if (range.maximum < range.minimum || last < floor_hz - kSoapyFloorToleranceHz) {
+        return false;
+    }
+    double point = std::min(std::max(range.minimum, floor_hz), last);
+    if (range.step > 0.0) {
+        const double steps = std::ceil((floor_hz - kSoapyFloorToleranceHz - range.minimum) / range.step);
+        point = std::min(range.minimum + std::max(0.0, steps) * range.step, last);
+    }
+    *out_hz = point;
+    return true;
+}
+
+/* The advertised rate closest to @p rate_hz, and within kSoapyExactHz of it, in @p out_hz: a listed rate or a range
+ * point, below @p below_hz. The closest wins whatever the order, so an exact point beats a near one listed first. */
+bool
+soapy_rate_supported_point(double rate_hz, const std::vector<double>& listed_rates,
+                           const std::vector<SoapyRange>& ranges, double* out_hz,
+                           double below_hz = std::numeric_limits<double>::max()) {
+    if (!(rate_hz > 0.0)) {
+        return false;
+    }
+    bool found = false;
+    double best = 0.0;
+    /* Of two points equally close, the one that rounds to the rate asked for: the rate is planned and written in whole
+       hertz, and the point that rounds to it reads back as it. */
+    const long long whole_hz = std::llround(rate_hz);
+    const auto better = [&](double point) {
+        const double gap = std::fabs(point - rate_hz) - std::fabs(best - rate_hz);
+        if (gap < -kSoapyRoundingHz || gap > kSoapyRoundingHz) {
+            return gap < 0.0;
+        }
+        return std::llround(point) == whole_hz && std::llround(best) != whole_hz;
+    };
+    const auto consider = [&](double point) {
+        if (point < below_hz && std::fabs(point - rate_hz) <= kSoapyExactHz && (!found || better(point))) {
+            best = point;
+            found = true;
+        }
+    };
+    for (double rate : listed_rates) {
+        consider(rate);
+    }
+    for (const SoapyRange& range : ranges) {
+        range_points_near(rate_hz, range, consider);
+    }
+    if (found) {
+        *out_hz = best;
+    }
+    return found;
+}
+
+} // namespace
+
 double
 soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
                           const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
@@ -450,6 +564,14 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
     }
     if (requested <= 0.0) {
         return requested;
+    }
+    /* A rate the list or a range holds is that rate; drivers that list a few rates may also advertise a range. */
+    double point = 0.0;
+    if (soapy_rate_supported_point(requested, listed_rates, ranges, &point)) {
+        if (out_adjusted) {
+            *out_adjusted = std::fabs(point - requested) > 0.5;
+        }
+        return point;
     }
     if (!listed_rates.empty()) {
         double best = listed_rates.front();
@@ -473,6 +595,165 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
         *out_adjusted = true;
     }
     return supported ? nearest : requested;
+}
+
+/* The point of @p range nearest @p requested among those that round (llround()) to @p max_rate or less, in
+ * @p out_point: a point the range holds, which a write of it keeps. A stepped range's points are its grid, whose last
+ * one within the limit is found by stepping down from the limit; a continuous range is cut at the limit's whole hertz,
+ * or at its own maximum when that rounds within it. False when the range has no such point. Values are compared with
+ * the cap's rounding boundary as doubles: a driver's range ends need not fit a 64-bit integer. */
+static bool
+range_point_within(const SoapyRange& range, double requested, double max_rate, double* out_point) {
+    const double cap_boundary = max_rate + 0.5;
+    if (!(range.maximum >= range.minimum) || !(range.minimum < cap_boundary)) {
+        return false;
+    }
+    if (!(range.step > 0.0)) {
+        const double top =
+            range.maximum < cap_boundary ? range.maximum : std::max(range.minimum, std::min(range.maximum, max_rate));
+        *out_point = std::min(std::max(requested, range.minimum), top);
+        return true;
+    }
+    /* The highest point within the cap: the range's last point as range_last_point() gives it (a step that passes the
+       maximum by rounding error is the maximum, which the setter keeps), else the grid point at or below the cap's
+       rounding boundary, stepped down while it rounds over the cap. Each grid point is the setter's own
+       minimum + index * step. A grid finer than a double resolves at that magnitude has no distinguishable point below
+       the boundary to step to; its largest representable value below the boundary stands for it. */
+    /* A step so fine that the range's step count overflows a double names no grid point the setter could keep. */
+    if (!std::isfinite((range.maximum - range.minimum) / range.step)) {
+        return false;
+    }
+    double top = range_last_point(range);
+    if (!(top < cap_boundary)) {
+        double index = std::floor((cap_boundary - range.minimum) / range.step);
+        top = range.minimum + index * range.step;
+        for (int i = 0; i < 2 && top > range.minimum && !(top < cap_boundary); i++) {
+            const double lower_index = index - 1.0;
+            const double lower = range.minimum + lower_index * range.step;
+            if (!(lower_index < index) || !(lower < top)) {
+                top = std::nextafter(cap_boundary, 0.0);
+                break;
+            }
+            index = lower_index;
+            top = std::max(lower, range.minimum);
+        }
+        if (!(top < cap_boundary)) {
+            top = std::max(range.minimum, std::nextafter(cap_boundary, 0.0));
+        }
+    }
+    const double nearest = range.minimum + std::floor((requested - range.minimum) / range.step + 0.5) * range.step;
+    *out_point = std::min(std::max(nearest, range.minimum), top);
+    return true;
+}
+
+double
+soapy_nearest_sample_rate_within(double requested, double max_rate, const std::vector<double>& listed_rates,
+                                 const std::vector<SoapyRange>& ranges, bool* out_found) {
+    *out_found = false;
+    if (listed_rates.empty() && ranges.empty()) {
+        *out_found = requested <= max_rate;
+        return *out_found ? requested : 0.0;
+    }
+    /* A rate is programmed and read back in whole hertz (llround()), so one that rounds to max_rate is within it. */
+    const double below = max_rate + 0.5;
+    double best = 0.0;
+    double best_error = 0.0;
+    const auto consider = [&](double rate) {
+        const double error = std::fabs(rate - requested);
+        if (std::isfinite(rate) && rate > 0.0 && rate < below && (!*out_found || error < best_error)) {
+            best = rate;
+            best_error = error;
+            *out_found = true;
+        }
+    };
+    std::for_each(listed_rates.begin(), listed_rates.end(), consider);
+    /* A range's nearest point within the limit competes with the listed rates, whether or not one of them is the
+       request itself. */
+    for (const SoapyRange& range : ranges) {
+        double point = 0.0;
+        if (range_point_within(range, requested, max_rate, &point)) {
+            consider(point);
+        }
+    }
+    return *out_found ? best : 0.0;
+}
+
+bool
+soapy_rate_supported_exactly(double rate_hz, const std::vector<double>& listed_rates,
+                             const std::vector<SoapyRange>& ranges) {
+    double point = 0.0;
+    return soapy_rate_supported_point(rate_hz, listed_rates, ranges, &point);
+}
+
+double
+soapy_profile_sample_rate(const SoapyProfile& profile, double requested, const std::vector<double>& listed_rates,
+                          const std::vector<SoapyRange>& ranges, bool* out_adjusted) {
+    double point = 0.0;
+    /* Only a point that rounds to the preference or below it: the preferred 10 MS/s is the capture ceiling too. */
+    if (requested > 0.0 && profile.preferred_sample_rate_hz > 0.0
+        && soapy_rate_supported_point(profile.preferred_sample_rate_hz, listed_rates, ranges, &point,
+                                      profile.preferred_sample_rate_hz + 0.5)) {
+        if (out_adjusted) {
+            *out_adjusted = std::fabs(point - requested) > 0.5;
+        }
+        return point;
+    }
+    return soapy_nearest_sample_rate(requested, listed_rates, ranges, out_adjusted);
+}
+
+bool
+soapy_driver_stream_queue(const std::string& driver_key, SoapyStreamQueue* out) {
+    /* SoapyHackRF's BUF_LEN (262,144 bytes of CS8) and libhackrf's TRANSFER_COUNT (4), each buffer a USB transfer;
+       SoapyHackRF's MTU is one buffer, so a reader holds at most one between its read and the mute. */
+    constexpr size_t kHackrfBufferSamples = 131072U;
+    constexpr size_t kHackrfTransfersInFlight = 4U;
+    constexpr size_t kHackrfQueueBuffers = 4U;
+    constexpr size_t kReaderBlocks = 1U;
+    static_assert(kHackrfQueueBuffers == 4U, "the queue depth asked for is the one the backlog counts");
+    if (!out || !equals_ci(driver_key, "hackrf")) {
+        return false;
+    }
+    out->arg_key = "buffers";
+    out->arg_value = "4";
+    out->backlog_samples = (kHackrfQueueBuffers + kHackrfTransfersInFlight + kReaderBlocks) * kHackrfBufferSamples;
+    return true;
+}
+
+double
+soapy_fs4_channel_floor_hz(double capture_rate_hz) {
+    return capture_rate_hz / 2.0 + (double)DSD_ANALOG_RTL_DSP_BW_MAX_KHZ * 1000.0;
+}
+
+double
+soapy_floor_bandwidth(double floor_hz, const std::vector<SoapyRange>& ranges) {
+    double best = 0.0;
+    double widest = 0.0;
+    bool have_best = false;
+    bool have_widest = false;
+    for (const SoapyRange& range : ranges) {
+        if (range.maximum < range.minimum) {
+            continue;
+        }
+        double point = 0.0;
+        if (range_point_at_or_above(floor_hz, range, &point) && (!have_best || point < best)) {
+            best = point;
+            have_best = true;
+        }
+        const double last = range_last_point(range);
+        if (!have_widest || last > widest) {
+            widest = last;
+            have_widest = true;
+        }
+    }
+    if (have_best) {
+        return best;
+    }
+    return have_widest ? widest : floor_hz;
+}
+
+bool
+soapy_bandwidth_cuts_offset(double applied_hz, double capture_rate_hz) {
+    return capture_rate_hz > 0.0 && applied_hz < soapy_fs4_channel_floor_hz(capture_rate_hz) - kSoapyFloorToleranceHz;
 }
 
 std::string

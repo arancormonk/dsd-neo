@@ -55,6 +55,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     qreal fontPixelSize(qreal sp) const override;
 
+    bool
+    reducedMotion() const override {
+        return m_reduced_motion;
+    }
+
     qreal
     keyboardTop() const override {
         return m_scale.keyboardTop();
@@ -435,6 +440,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief IncomingDocuments.take() (#831): a document that reached it since refresh() last polled. */
     QString newerIncomingDocument() override;
 
+    /** @brief The APK's documentation assets, which cmake/stage_android_package.cmake stages with their index. */
+    QString
+    noticeDirectory() const override {
+        return QStringLiteral("assets:/doc/dsd-neo");
+    }
+
   private:
     /**
      * @brief Makes its host one postSignInFill() can reach, from construction until it goes
@@ -463,7 +474,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void noteRecordingShareFailed(const QString& path);
     /** @brief A share's copy step ended (@p staged: the platform took it): its store hold @p hold goes. */
     void endRecordingShare(const QString& path, int hold, bool staged);
-    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()). */
+    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()) and
+     * the diagnostics share copies past their hour (DiagnosticsShare.clean(), issue #800). */
     void startRecordingShareClean();
     /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
     struct TransferLink;
@@ -590,6 +602,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static bool platformShareRecording(const QString& path, const QString& title);
     /** @brief RecordingShare.clean() on the calling (worker) thread: the share copies past their day go. */
     static void platformCleanRecordingShares();
+    /** @brief DiagnosticsShare.clean() on the calling (worker) thread: the diagnostics share copies past their hour go,
+     * an older build's among them (issue #800, D10). */
+    static void platformCleanDiagnosticsShares();
     /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
     static QString platformTakeRecordingShareFailure();
     /**
@@ -824,6 +839,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     uint64_t m_health_cleared_session = 0;
     QVariantMap m_receiver_health = DecoderHost::healthyReceiver();
     QString m_audio_route = QStringLiteral("System default");
+    /* Issue #800: animator duration scale 0 ("Remove animations"), read with the rest of the presentation. */
+    bool m_reduced_motion = false;
     bool m_notification_permission_needed = false;
     // #708: the open play's generation (0: nothing to poll), and the running transfer (0: none) with its total (-1
     // until the worker counted it).

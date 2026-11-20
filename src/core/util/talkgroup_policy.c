@@ -1838,6 +1838,32 @@ dsd_tg_policy_lookup_label_scoped(const dsd_state* state, const dsd_alias_scope*
 }
 
 int
+dsd_tg_policy_lookup_learned_label(const dsd_state* state, const dsd_alias_scope* scope, uint32_t id, char* name,
+                                   size_t name_sz) {
+    if (name && name_sz > 0) {
+        name[0] = '\0';
+    }
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (!ctx || !scope || !scope->valid) {
+        return 0;
+    }
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        const tg_policy_row_key* k = &ctx->table.keys[i];
+        const dsd_tg_policy_entry* e = &ctx->table.entries[i];
+        if (k->kind != DSD_TG_POLICY_ROW_EXACT || !k->alias || k->id_start != id || k->id_end != id
+            || e->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || !dsd_alias_scope_equal(&e->scope, scope)) {
+            continue;
+        }
+        if (e->name[0] == '\0') {
+            return 0;
+        }
+        tg_policy_safe_copy(name, name_sz, e->name);
+        return 1;
+    }
+    return 0;
+}
+
+int
 dsd_tg_policy_lookup_group_label(const dsd_state* state, uint32_t tg, char* mode, size_t mode_sz, char* name,
                                  size_t name_sz) {
     dsd_tg_policy_lookup lookup;

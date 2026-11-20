@@ -11,8 +11,10 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <errno.h>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
+#include <thread>
 
 #include "dsd-neo/core/safe_api.h"
 
@@ -63,8 +65,7 @@ test_guard_and_wrap_contracts(void) {
     input_ring_destroy(NULL);
     input_ring_enable_space_notify(NULL, 1);
 
-    struct input_ring_state ring;
-    DSD_MEMSET(&ring, 0, sizeof(ring));
+    struct input_ring_state ring{};
     input_ring_read_commit(NULL, 1U);
     input_ring_read_commit(&ring, 1U);
 
@@ -166,16 +167,120 @@ test_guard_and_wrap_contracts(void) {
     return rc;
 }
 
+namespace {
+
+/* What the discard seam saw, as a purge request moved the generation. */
+struct discard_seam_probe {
+    struct input_ring_state* ring;
+    int calls;
+    int lock_free_to_others; /* another thread could take generation_m there */
+};
+
+/* What the commit seam saw, between a conditional commit's check and its publication. */
+struct commit_seam_probe {
+    struct input_ring_state* ring;
+    int lock_free_to_others; /* another thread could take generation_m there */
+    std::thread purge;       /* a purge requested there */
+    std::atomic<uint64_t> produced_at_purge{UINT64_MAX};
+};
+
+} // namespace
+
+/* Whether another thread could take @p ring's generation_m now. */
+static int
+generation_lock_free_to_others(struct input_ring_state* ring) {
+    int free_to_others = 0;
+    std::thread other([ring, &free_to_others] {
+        if (ring->generation_m.try_lock()) {
+            free_to_others = 1;
+            ring->generation_m.unlock();
+        }
+    });
+    other.join();
+    return free_to_others;
+}
+
+static void
+discard_seam(void* arg) {
+    discard_seam_probe* probe = static_cast<discard_seam_probe*>(arg);
+    probe->calls++;
+    probe->lock_free_to_others |= generation_lock_free_to_others(probe->ring);
+}
+
+static void
+commit_seam(void* arg) {
+    commit_seam_probe* probe = static_cast<commit_seam_probe*>(arg);
+    probe->lock_free_to_others = generation_lock_free_to_others(probe->ring);
+    probe->purge = std::thread([probe]() {
+        input_ring_request_discard(probe->ring);
+        probe->produced_at_purge.store(probe->ring->produced_total.load(std::memory_order_acquire));
+    });
+}
+
+/* A purge requested between a conditional commit's check and its publication waits for the publication: the commit
+   holds generation_m throughout, so no other thread can take it there, and the purge lands after the commit. */
+static int
+test_purge_waits_for_a_conditional_commit(void) {
+    struct input_ring_state ring_storage{};
+    struct input_ring_state* ring = &ring_storage;
+    int rc = expect_int("seam ring init", input_ring_init(ring, 8), 0);
+    float* p1 = NULL;
+    float* p2 = NULL;
+    size_t n1 = 0;
+    size_t n2 = 0;
+    const uint64_t generation = input_ring_discard_generation(ring);
+    const uint64_t produced_before = ring->produced_total.load();
+    rc |= expect_int("reserve two for the seam", input_ring_reserve(ring, 2U, &p1, &n1, &p2, &n2), 2);
+    commit_seam_probe probe;
+    probe.ring = ring;
+    probe.lock_free_to_others = 0;
+    ring->test_commit_hook = commit_seam;
+    ring->test_commit_arg = &probe;
+    rc |= expect_int("the conditional commit commits", input_ring_commit_if_generation(ring, 2U, generation), 1);
+    ring->test_commit_hook = NULL;
+    ring->test_commit_arg = NULL;
+    if (probe.purge.joinable()) {
+        probe.purge.join();
+    }
+    rc |= expect_int("no other thread takes the lock between the check and the commit", probe.lock_free_to_others, 0);
+    rc |= expect_int("the purge lands after the commit", probe.produced_at_purge.load() == produced_before + 2U, 1);
+    rc |= expect_int("and moves the generation", input_ring_discard_generation(ring) == generation + 1U, 1);
+    input_ring_destroy(ring);
+    return rc;
+}
+
+/* A purge request holds generation_m while it moves the generation, so it can never move it between a conditional
+   commit's check and its publication, which hold the same lock. */
+static int
+test_purge_moves_the_generation_under_its_lock(void) {
+    struct input_ring_state ring_storage{};
+    struct input_ring_state* ring = &ring_storage;
+    int rc = expect_int("discard seam ring init", input_ring_init(ring, 8), 0);
+    discard_seam_probe probe{ring, 0, 0};
+    ring->test_discard_hook = discard_seam;
+    ring->test_discard_arg = &probe;
+    const uint64_t generation = input_ring_discard_generation(ring);
+    input_ring_request_discard(ring);
+    ring->test_discard_hook = NULL;
+    ring->test_discard_arg = NULL;
+    rc |= expect_int("the discard seam runs", probe.calls, 1);
+    rc |= expect_int("no other thread takes the lock as the purge moves the generation", probe.lock_free_to_others, 0);
+    rc |= expect_int("which then moves", input_ring_discard_generation(ring) == generation + 1U, 1);
+    input_ring_destroy(ring);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
 
     rc |= test_guard_and_wrap_contracts();
+    rc |= test_purge_waits_for_a_conditional_commit();
+    rc |= test_purge_moves_the_generation_under_its_lock();
 
     rc |= expect_int("init(NULL, 8)", input_ring_init(NULL, 8), -1);
 
-    struct input_ring_state ring;
-    DSD_MEMSET(&ring, 0, sizeof(ring));
+    struct input_ring_state ring{};
 
     rc |= expect_int("init(&ring, 0)", input_ring_init(&ring, 0), -1);
 
@@ -207,10 +312,11 @@ main(void) {
         p1[3] = 4.0f;
     }
     input_ring_request_discard(&ring);
-    if (input_ring_discard_generation_matches(&ring, discard_generation)) {
-        input_ring_commit(&ring, 4U);
-    }
+    rc |= expect_int("a stale reservation's commit is refused",
+                     input_ring_commit_if_generation(&ring, 4U, discard_generation), 0);
     rc |= expect_size("stale reservation not committed", input_ring_used(&ring), 0U);
+    rc |= expect_int("a current reservation commits",
+                     input_ring_commit_if_generation(&ring, 0U, input_ring_discard_generation(&ring)), 1);
 
     float write_a[6] = {10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
     rc |= expect_int("reserve initial six", input_ring_reserve(&ring, 6U, &p1, &n1, &p2, &n2), 6);

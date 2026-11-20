@@ -24,6 +24,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -426,6 +427,13 @@ processHDU(dsd_opts* opts, dsd_state* state) {
         p25_status_accum_classify(state);
         return;
     }
+
+    /* An HDU begins a transmission, whichever radio sends it and whether or not its words decoded (issue #800): the
+       hard-decoded voice-user identity and the L3Harris Part A of the call it leaves ACTIVE (the last transmission's
+       terminator missed) no longer name the source of a GPS link control that follows. Only a voice-user link control
+       of the new transmission names it again (p25_lcw.c). */
+    dsd_position_attribution_clear(&state->p25_p1_lc_attribution);
+    DSD_MEMSET(&state->p25_p1_harris_part_a, 0, sizeof(state->p25_p1_harris_part_a));
 
     // Now put the corrected data on the DSD structures
 

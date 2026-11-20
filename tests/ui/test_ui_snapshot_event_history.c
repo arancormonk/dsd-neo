@@ -13,6 +13,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -822,6 +823,24 @@ main(void) {
     history[0].Event_History_Items[1].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "RADIO-123");
+    /* So does the admitted position the row's GPS text describes, with its sender scope (issue #800). */
+    dsd_event_pos row_pos;
+    DSD_MEMSET(&row_pos, 0, sizeof row_pos);
+    row_pos.valid = 1U;
+    row_pos.rev = 42U;
+    row_pos.proc_instance = UINT64_C(0x1122334455667788);
+    row_pos.lat_e7 = 225000000;
+    row_pos.lon_e7 = 450000000;
+    row_pos.err_m = 10U;
+    row_pos.kind = (uint8_t)DSD_POS_DMR_LRRP;
+    row_pos.scope.kind = (uint8_t)DSD_POS_SCOPE_DMR;
+    row_pos.scope.a = 7U;
+    history[0].Event_History_Items[1].pos = row_pos;
+    history[0].Event_History_Items[1].rx_scope.resolved = 1U;
+    history[0].Event_History_Items[1].rx_scope.scope.kind = (uint8_t)DSD_POS_SCOPE_DMR;
+    history[0].Event_History_Items[1].rx_scope.scope.a = 7U;
+    DSD_SNPRINTF(history[0].Event_History_Items[1].gps_s, sizeof history[0].Event_History_Items[1].gps_s, "%s",
+                 "GPS 22.5 45.0");
     /* The staged row's rdio-scanner export verdict and the talkgroup it was judged on (issue #773 D7) ride the
        snapshot with the row. */
     history[0].Event_History_Items[0].policy_target_id = 123U;
@@ -880,6 +899,9 @@ main(void) {
     history[0].Event_History_Items[1].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "MUTATED");
+    history[0].Event_History_Items[1].pos.rev = 43U;
+    history[0].Event_History_Items[1].pos.lat_e7 = 100000000;
+    history[0].Event_History_Items[1].rx_scope.scope.a = 8U;
     cc->count = 1;
     cc->candidates[0] = 999999999L;
     cc->added = 99U;
@@ -907,6 +929,10 @@ main(void) {
            == (DSD_RXID_P25_WACN | DSD_RXID_P25_SITE | DSD_RXID_CC_FREQ));
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
+    assert(memcmp(&snap->event_history_s[0].Event_History_Items[1].pos, &row_pos, sizeof row_pos) == 0);
+    assert(strcmp(snap->event_history_s[0].Event_History_Items[1].gps_s, "GPS 22.5 45.0") == 0);
+    assert(snap->event_history_s[0].Event_History_Items[1].rx_scope.resolved == 1U
+           && snap->event_history_s[0].Event_History_Items[1].rx_scope.scope.a == 7U);
     assert(memcmp(&snap->event_history_s[0].Event_History_Items[1].site_id, &row_site, sizeof row_site) == 0);
     assert(snap->event_history_s[0].Event_History_Items[1].channel == 12U
            && snap->event_history_s[0].Event_History_Items[1].call_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN);

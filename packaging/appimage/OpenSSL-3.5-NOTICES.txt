@@ -1,0 +1,485 @@
+OpenSSL (https://www.openssl.org) copyright notices for the libcrypto the Linux AppImage carries
+(usr/lib/libcrypto.so.3): release 3.5.9 (tag openssl-3.5.9, commit
+45e844fa2a14ec92d146bd8f5778ac130b6625fb, the OPENSSL_SHA pin in tools/ci-dependency-pins.env),
+built by the AppImage job for linux-x86_64 and linux-aarch64 with OpenSSL's default options plus
+shared and no-tests. The AppImage carries libcrypto only: no libssl, and neither the engines nor the
+legacy provider, which this build makes as separate modules. The holder list below is the union of
+the sources the two architectures can compile; a file one of them does not compile (the x86_64
+assembly on aarch64 and the reverse) stays listed. OpenSSL is under the Apache License 2.0,
+Apache-2.0.txt; OpenSSL-AUTHORS.md (the same AUTHORS.md as release 3.5.9) lists The OpenSSL Project
+Authors; LicenseRef-OpenSSL-KISA-SEED.txt reproduces the SEED terms, which release 3.5.9 carries
+unchanged. README.md names the project's holders:
+
+Copyright (c) 1998-2026 The OpenSSL Project Authors
+
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson
+
+All rights reserved.
+
+The sources the library is built from also name these holders, besides The OpenSSL Project Authors:
+
+Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
+    crypto/bn/bn_gf2m.c
+    crypto/cryptlib.c
+    crypto/ec/ec2_oct.c
+    crypto/ec/ec2_smpl.c
+    crypto/ec/ec_curve.c
+    crypto/ec/ec_cvt.c
+    crypto/ec/ec_key.c
+    crypto/ec/ec_lib.c
+    crypto/ec/ec_local.h
+    crypto/ec/ec_mult.c
+    crypto/ec/ec_oct.c
+    crypto/ec/ecdh_ossl.c
+    crypto/ec/eck_prn.c
+    crypto/ec/ecp_mont.c
+    crypto/ec/ecp_nist.c
+    crypto/ec/ecp_oct.c
+    crypto/ec/ecp_smpl.c
+    crypto/engine/eng_fat.c
+    crypto/engine/eng_list.c
+    crypto/engine/eng_local.h
+    crypto/engine/eng_openssl.c
+    include/openssl/bn.h
+    include/openssl/crypto.h.in
+    include/openssl/ec.h
+    include/openssl/engine.h
+    include/openssl/ssl.h.in
+    include/openssl/ssl3.h
+    include/openssl/thread.h
+    include/openssl/tls1.h
+    include/openssl/x509.h.in
+Copyright (c) 2004 Kungliga Tekniska Högskolan (Royal Institute of Technology, Stockholm, Sweden).
+    crypto/x509/v3_pci.c
+    crypto/x509/v3_pcia.c
+Copyright (c) 2004, 2018, Richard Levitte <richard@levitte.org>
+    crypto/LPdir_unix.c
+Copyright (c) 2004, EdelKey Project. All Rights Reserved.
+    crypto/srp/srp_lib.c
+    crypto/srp/srp_vfy.c
+    include/openssl/srp.h.in
+Copyright (c) 2004, Richard Levitte <richard@levitte.org>
+    include/internal/o_dir.h
+Copyright (C) 2006, Network Resonance, Inc. Copyright (C) 2011, RTFM, Inc.
+    include/openssl/srtp.h
+Copyright (c) 2007 KISA(Korea Information Security Agency). All rights reserved.
+    crypto/seed/seed.c
+    crypto/seed/seed_local.h
+    include/openssl/seed.h
+Copyright (c) 2008 Andy Polyakov <appro@openssl.org>
+    crypto/camellia/asm/cmll-x86_64.pl
+Copyright (c) 2012, Intel Corporation. All Rights Reserved.
+    crypto/bn/asm/rsaz-avx2.pl
+    crypto/bn/asm/rsaz-x86_64.pl
+    crypto/bn/rsaz_exp.c
+Copyright (c) 2012-2014 Daniel J. Bernstein
+    crypto/siphash/siphash.c
+Copyright (c) 2012-2016 Jean-Philippe Aumasson
+    crypto/siphash/siphash.c
+Copyright (c) 2014, Intel Corporation. All Rights Reserved.
+    crypto/ec/asm/ecp_nistz256-x86_64.pl
+    crypto/ec/ecp_nistz256.c
+Copyright (c) 2015 CloudFlare, Inc.
+    crypto/ec/asm/ecp_nistz256-x86_64.pl
+Copyright (c) 2015, CloudFlare, Inc.
+    crypto/ec/ecp_nistz256.c
+Copyright (c) 2016 David Gwynne <david@gwynne.id.au>
+    crypto/rbtree/rbtree.c
+    include/internal/ossl_rbtree.h
+Copyright (c) 2017 National Security Research Institute.  All rights reserved.
+    include/crypto/aria.h
+Copyright (C) 2017 National Security Research Institute. All Rights Reserved.
+    crypto/aria/aria.c
+Copyright (c) 2017, Oracle and/or its affiliates.  All rights reserved.
+    crypto/aria/aria.c
+    crypto/evp/e_aria.c
+    include/crypto/aria.h
+Copyright (c) 2018, Oracle and/or its affiliates.  All rights reserved.
+    include/crypto/sha.h
+Copyright (c) 2018-2019, Oracle and/or its affiliates.  All rights reserved.
+    crypto/bn/bn_rsa_fips186_4.c
+    crypto/evp/kdf_lib.c
+    crypto/rsa/rsa_sp800_56b_check.c
+    crypto/rsa/rsa_sp800_56b_gen.c
+Copyright (c) 2019, Oracle and/or its affiliates.  All rights reserved.
+    crypto/param_build.c
+    crypto/params.c
+    crypto/params_from_text.c
+    crypto/property/defn_cache.c
+    crypto/property/property.c
+    crypto/property/property_local.h
+    crypto/property/property_parse.c
+    crypto/property/property_string.c
+    crypto/sparse_array.c
+    include/crypto/sparse_array.h
+    include/internal/property.h
+    include/openssl/param_build.h
+    include/openssl/params.h
+    providers/implementations/kdfs/sskdf.c
+    providers/implementations/kdfs/x942kdf.c
+Copyright (c) 2020, Intel Corporation. All Rights Reserved.
+    crypto/bn/asm/rsaz-2k-avx512.pl
+    crypto/bn/rsaz_exp.h
+Copyright (c) 2020-2021, Intel Corporation. All Rights Reserved.
+    crypto/bn/rsaz_exp_x2.c
+Copyright (c) 2021, Intel Corporation. All Rights Reserved.
+    crypto/bn/asm/rsaz-3k-avx512.pl
+    crypto/bn/asm/rsaz-4k-avx512.pl
+    crypto/modes/asm/aes-gcm-avx512.pl
+    providers/implementations/ciphers/cipher_aes_gcm_hw_vaes_avx512.inc
+Copyright (C) 2023 Intel Corporation
+    crypto/aes/asm/aesni-xts-avx512.pl
+Copyright (c) 2024, Intel Corporation. All Rights Reserved.
+    crypto/bn/asm/rsaz-2k-avxifma.pl
+    crypto/bn/asm/rsaz-3k-avxifma.pl
+    crypto/bn/asm/rsaz-4k-avxifma.pl
+Copyright 2004-2014, Akamai Technologies. All Rights Reserved.
+    crypto/mem_sec.c
+Copyright 2005 Nokia. All rights reserved.
+    include/openssl/ssl.h.in
+    include/openssl/tls1.h
+Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .
+    crypto/camellia/camellia.c
+    crypto/camellia/cmll_local.h
+Copyright 2012, Samuel Neves <sneves@dei.uc.pt>
+    providers/implementations/digests/blake2_impl.h
+    providers/implementations/digests/blake2b_prov.c
+    providers/implementations/digests/blake2s_prov.c
+Copyright 2014 Cryptography Research, Inc.
+    crypto/ec/curve448/arch_32/f_impl32.c
+    crypto/ec/curve448/arch_64/f_impl64.c
+    crypto/ec/curve448/field.h
+    crypto/ec/curve448/word.h
+Copyright 2014-2016 Cryptography Research, Inc.
+    crypto/ec/curve448/arch_32/f_impl.h
+    crypto/ec/curve448/arch_64/f_impl.h
+Copyright 2015 Cryptography Research, Inc.
+    crypto/ec/curve448/curve448utils.h
+Copyright 2015-2016 Cryptography Research, Inc.
+    crypto/ec/curve448/curve448.c
+    crypto/ec/curve448/curve448_tables.c
+    crypto/ec/curve448/ed448.h
+    crypto/ec/curve448/eddsa.c
+    crypto/ec/curve448/f_generic.c
+    crypto/ec/curve448/point_448.h
+    crypto/ec/curve448/scalar.c
+Copyright 2016 Cryptography Research, Inc.
+    crypto/ec/curve448/arch_32/arch_intrinsics.h
+    crypto/ec/curve448/arch_64/arch_intrinsics.h
+Copyright 2017 BaishanCloud. All rights reserved.
+    crypto/rsa/rsa_mp.c
+Copyright 2017 Ribose Inc. All Rights Reserved.
+    crypto/evp/e_sm4.c
+    crypto/sm2/sm2_crypt.c
+    crypto/sm2/sm2_sign.c
+    crypto/sm3/legacy_sm3.c
+    crypto/sm3/sm3.c
+    crypto/sm3/sm3_local.h
+    crypto/sm4/sm4.c
+    include/crypto/sm2.h
+    include/crypto/sm4.h
+    include/internal/sm3.h
+Copyright 2019 Red Hat, Inc.
+    providers/implementations/kdfs/kbkdf.c
+Copyright Nokia 2007-2018
+    crypto/crmf/crmf_lib.c
+Copyright Nokia 2007-2019
+    crypto/cmp/cmp_asn.c
+    crypto/cmp/cmp_client.c
+    crypto/cmp/cmp_ctx.c
+    crypto/cmp/cmp_hdr.c
+    crypto/cmp/cmp_http.c
+    crypto/cmp/cmp_local.h
+    crypto/cmp/cmp_msg.c
+    crypto/cmp/cmp_protect.c
+    crypto/cmp/cmp_server.c
+    crypto/cmp/cmp_status.c
+    crypto/cmp/cmp_util.c
+    crypto/crmf/crmf_asn.c
+    crypto/crmf/crmf_local.h
+    crypto/crmf/crmf_pbm.c
+    include/openssl/cmp.h.in
+    include/openssl/cmp_util.h
+    include/openssl/crmf.h.in
+Copyright Nokia 2007-2020
+    crypto/cmp/cmp_vfy.c
+Copyright Patrick Powell 1995
+    crypto/bio/bio_print.c
+Copyright Siemens AG 2015-2019
+    crypto/cmp/cmp_asn.c
+    crypto/cmp/cmp_client.c
+    crypto/cmp/cmp_ctx.c
+    crypto/cmp/cmp_hdr.c
+    crypto/cmp/cmp_http.c
+    crypto/cmp/cmp_local.h
+    crypto/cmp/cmp_msg.c
+    crypto/cmp/cmp_protect.c
+    crypto/cmp/cmp_server.c
+    crypto/cmp/cmp_status.c
+    crypto/cmp/cmp_util.c
+    crypto/crmf/crmf_asn.c
+    crypto/crmf/crmf_lib.c
+    crypto/crmf/crmf_local.h
+    crypto/crmf/crmf_pbm.c
+    include/openssl/cmp.h.in
+    include/openssl/cmp_util.h
+    include/openssl/crmf.h.in
+Copyright Siemens AG 2015-2020
+    crypto/cmp/cmp_vfy.c
+Copyright Siemens AG 2018-2020
+    crypto/http/http_client.c
+    include/openssl/http.h
+Copyright Siemens AG 2022
+    crypto/cmp/cmp_genm.c
+
+----- crypto/siphash/siphash.c, lines 12-23 (CC0-1.0) -----
+
+   SipHash reference C implementation
+
+   Copyright (c) 2012-2016 Jean-Philippe Aumasson
+   Copyright (c) 2012-2014 Daniel J. Bernstein
+
+   To the extent possible under law, the author(s) have dedicated all copyright
+   and related and neighboring rights to this software to the public domain
+   worldwide. This software is distributed without any warranty.
+
+   You should have received a copy of the CC0 Public Domain Dedication along
+   with this software. If not, see
+   <http://creativecommons.org/publicdomain/zero/1.0/>.
+
+crypto/LPdir_unix.c and include/internal/o_dir.h are also offered under these terms; dsd-neo uses
+them under the Apache License 2.0.
+
+----- crypto/LPdir_unix.c, lines 11-36 -----
+
+ * This file is dual-licensed and is also available under the following
+ * terms:
+ *
+ * Copyright (c) 2004, 2018, Richard Levitte <richard@levitte.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----- include/internal/o_dir.h, lines 11-36 -----
+
+ * This file is dual-licensed and is also available under the following
+ * terms:
+ *
+ * Copyright (c) 2004, Richard Levitte <richard@levitte.org>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+
+crypto/x509/v3_pci.c and crypto/x509/v3_pcia.c are also offered under these terms; dsd-neo uses them
+under the Apache License 2.0.
+
+----- crypto/x509/v3_pci.c, lines 11-43 -----
+
+ * This file is dual-licensed and is also available under the following
+ * terms:
+ *
+ * Copyright (c) 2004 Kungliga Tekniska Högskolan
+ * (Royal Institute of Technology, Stockholm, Sweden).
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the Institute nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE INSTITUTE AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE INSTITUTE OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+
+----- crypto/camellia/asm/cmll-x86_64.pl, lines 11-18 -----
+
+# Copyright (c) 2008 Andy Polyakov <appro@openssl.org>
+#
+# This module may be used under the terms of either the GNU General
+# Public License version 2 or later, the GNU Lesser General Public
+# License version 2.1 or later, the Mozilla Public License version
+# 1.1 or the BSD License. The exact terms of either license are
+# distributed along with this module. For further details see
+# http://www.openssl.org/~appro/camellia/.
+
+The x86_64 assembly generators by Andy Polyakov (for example crypto/aes/asm/aesni-x86_64.pl and
+crypto/bn/asm/x86_64-mont.pl) carry this note; obtained from OpenSSL, they are under OpenSSL's
+license:
+
+----- crypto/aes/asm/aesni-x86_64.pl, lines 11-14 -----
+
+# Written by Andy Polyakov <appro@openssl.org> for the OpenSSL
+# project. The module is, however, dual licensed under OpenSSL and
+# CRYPTOGAMS licenses depending on where you obtain it. For further
+# details see http://www.openssl.org/~appro/cryptogams/.
+
+----- crypto/aes/asm/vpaes-x86_64.pl, lines 14-15 -----
+
+## By Mike Hamburg (Stanford University), 2009
+## Public domain.
+
+----- crypto/aes/asm/bsaes-x86_64.pl, lines 14-16 -----
+
+### Author: Emilia Käsper and Peter Schwabe			###
+### Date: 2009-03-19						###
+### Public domain						###
+
+----- crypto/aria/aria.c, lines 12-18 -----
+
+ * Copyright (C) 2017 National Security Research Institute. All Rights Reserved.
+ *
+ * Information for ARIA
+ *     http://210.104.33.10/ARIA/index-e.html (English)
+ *     http://seed.kisa.or.kr/ (Korean)
+ *
+ * Public domain version is distributed above.
+
+----- crypto/bio/bio_print.c, lines 18-23 -----
+
+/*
+ * Copyright Patrick Powell 1995
+ * This code is based on code written by Patrick Powell <papowell@astart.com>
+ * It may be used for any purpose as long as this notice remains intact
+ * on all source code distributions.
+ */
+
+----- crypto/camellia/camellia.c, lines 10-23 -----
+
+/* ====================================================================
+ * Copyright 2006 NTT (Nippon Telegraph and Telephone Corporation) .
+ * ALL RIGHTS RESERVED.
+ *
+ * Intellectual Property information for Camellia:
+ *     http://info.isl.ntt.co.jp/crypt/eng/info/chiteki.html
+ *
+ * News Release for Announcement of Camellia open source:
+ *     http://www.ntt.co.jp/news/news06e/0604/060413a.html
+ *
+ * The Camellia Code included herein is developed by
+ * NTT (Nippon Telegraph and Telephone Corporation), and is contributed
+ * to the OpenSSL project.
+ */
+
+----- crypto/aes/aes_core.c, lines 10-34 -----
+
+/**
+ * rijndael-alg-fst.c
+ *
+ * @version 3.0 (December 2000)
+ *
+ * Optimised ANSI C code for the Rijndael cipher (now AES)
+ *
+ * @author Vincent Rijmen
+ * @author Antoon Bosselaers
+ * @author Paulo Barreto
+ *
+ * This code is hereby placed in the public domain.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHORS ''AS IS'' AND ANY EXPRESS
+ * OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHORS OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+The aarch64 assembly generators by Andy Polyakov (for example crypto/aes/asm/aesv8-armx.pl and
+crypto/bn/asm/armv8-mont.pl) carry the same dual-license note as the x86_64 ones above; obtained
+from OpenSSL, they are under OpenSSL's license.
+
+----- crypto/modes/asm/aes-gcm-armv8_64.pl, lines 11-15 -----
+
+# Written by Fangming Fang <fangming.fang@arm.com> for the OpenSSL project,
+# derived from https://github.com/ARM-software/AArch64cryptolib, original
+# author Samuel Lee <Samuel.Lee@arm.com>. The module is, however, dual
+# licensed under OpenSSL and CRYPTOGAMS licenses depending on where you
+# obtain it. For further details see http://www.openssl.org/~appro/cryptogams/.
+
+----- crypto/modes/asm/aes-gcm-armv8-unroll8_64.pl, lines 11-15 -----
+
+# Written by Xiaokang Qian <xiaokang.qian@arm.com> for the OpenSSL project,
+# derived from https://github.com/ARM-software/AArch64cryptolib, original
+# author Samuel Lee <Samuel.Lee@arm.com>. The module is, however, dual
+# licensed under OpenSSL and SPDX BSD-3-Clause licenses depending on where you
+# obtain it.
+
+----- crypto/aes/asm/bsaes-armv8.pl, lines 35-46 -----
+
+// Copyright 2021-2025 The OpenSSL Project Authors. All Rights Reserved.
+//
+// Licensed under the OpenSSL license (the "License").  You may not use
+// this file except in compliance with the License.  You can obtain a copy
+// in the file LICENSE in the source distribution or at
+// https://www.openssl.org/source/license.html
+//
+// ====================================================================
+// Written by Ben Avison <bavison@riscosopen.org> for the OpenSSL
+// project. Rights for redistribution and usage in source and binary
+// forms are granted according to the OpenSSL license.
+// ====================================================================
+
+----- crypto/aes/asm/vpaes-armv8.pl, lines 14-15 -----
+
+## By Mike Hamburg (Stanford University), 2009
+## Public domain.

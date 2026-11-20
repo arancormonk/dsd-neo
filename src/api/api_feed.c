@@ -24,6 +24,7 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_list_view.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
@@ -82,6 +84,21 @@ static uint64_t g_eh_push[2];
 static uint64_t g_eh_commit[2];
 static uint64_t g_eh_fp[2][DSD_EVENT_HISTORY_LEN];
 static int g_eh_valid = 0;
+
+/* The position feed follower (issue #800), decode thread once the observer is registered: the stream followed and the
+   last seq looked at, and the lines gathered at one publish. */
+enum { DSD_API_POSITION_PAGE = 32 };
+
+static uint64_t g_pos_stream = 0;
+static uint64_t g_pos_seq = 0;
+static dsd_position_fix g_pos_page[DSD_API_POSITION_PAGE];
+static dsd_json_buf g_positions;
+/* Where each line of g_positions starts and its record's rev, for each subscriber's own cutoff. */
+static dsd_api_position_line g_pos_lines[DSD_POSITION_FEED_CAPACITY];
+static size_t g_pos_line_count = 0U;
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_pos_test_fail_line = 0; /* decode thread: the n-th next position line fails (0: none) */
+#endif
 
 static uint64_t g_last_telemetry_ms = 0;
 /* Decode thread: the cache (g_latest and the scan avoid copy) holds records of this run, refreshed while a client is
@@ -524,6 +541,37 @@ api_analog_mode(int protocol, uint8_t mode) {
     }
 }
 
+/* Degrees x 1e7 as a JSON number with seven decimals, from the integer: no floating point on the way. */
+static void
+api_e7_text(int32_t v, char* out, size_t cap) {
+    const int64_t wide = v;
+    const uint64_t mag = (uint64_t)(wide < 0 ? -wide : wide);
+    DSD_SNPRINTF(out, cap, "%s%llu.%07llu", wide < 0 ? "-" : "", (unsigned long long)(mag / 10000000U),
+                 (unsigned long long)(mag % 10000000U));
+}
+
+/* The admitted position the row's GPS text describes (issue #800), only when the row carries one. */
+static void
+encode_event_pos(dsd_json_writer* w, const dsd_event_pos* pos) {
+    if (!pos->valid) {
+        return;
+    }
+    char lat[24];
+    char lon[24];
+    api_e7_text(pos->lat_e7, lat, sizeof lat);
+    api_e7_text(pos->lon_e7, lon, sizeof lon);
+    (void)dsd_json_key(w, "pos");
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_key(w, "lat");
+    (void)dsd_json_value_raw(w, lat);
+    (void)dsd_json_key(w, "lon");
+    (void)dsd_json_value_raw(w, lon);
+    (void)dsd_json_kv_u64(w, "err_m", pos->err_m);
+    (void)dsd_json_kv_u64(w, "flags", pos->flags);
+    (void)dsd_json_kv_u64(w, "rev", pos->rev);
+    (void)dsd_json_obj_end(w);
+}
+
 static void
 encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t push, uint64_t instance) {
     (void)dsd_json_key(w, "row");
@@ -575,6 +623,7 @@ encode_event_row(dsd_json_writer* w, const Event_History* e, int slot, uint64_t 
     (void)dsd_json_kv_i64(w, "event_start_time", (int64_t)e->event_start_time);
     (void)dsd_json_kv_strn(w, "alias", e->alias, sizeof e->alias);
     (void)dsd_json_kv_strn(w, "gps", e->gps_s, sizeof e->gps_s);
+    encode_event_pos(w, &e->pos);
     (void)dsd_json_kv_strn(w, "text", e->text_message, sizeof e->text_message);
     (void)dsd_json_kv_strn(w, "event", e->event_string, sizeof e->event_string);
     (void)dsd_json_kv_strn(w, "internal", e->internal_str, sizeof e->internal_str);
@@ -648,6 +697,19 @@ fnv1a_site(uint64_t h, const dsd_received_identity* id) {
     return fnv1a_str(h, id->dmr_brand, sizeof id->dmr_brand);
 }
 
+/* The position a row reports (encode_event_pos()); nothing for a row without one, so a blank row hashes as before. */
+static uint64_t
+fnv1a_pos(uint64_t h, const dsd_event_pos* pos) {
+    if (!pos->valid) {
+        return h;
+    }
+    h = fnv1a_u64(h, pos->rev);
+    h = fnv1a_u64(h, (uint64_t)(int64_t)pos->lat_e7);
+    h = fnv1a_u64(h, (uint64_t)(int64_t)pos->lon_e7);
+    h = fnv1a_u64(h, pos->err_m);
+    return fnv1a_u64(h, pos->flags);
+}
+
 /* Everything a client sees of a committed row. */
 static uint64_t
 row_fingerprint(const Event_History* e) {
@@ -704,6 +766,7 @@ row_fingerprint(const Event_History* e) {
     h = fnv1a_str(h, e->event_string, sizeof e->event_string);
     h = fnv1a_str(h, e->internal_str, sizeof e->internal_str);
     h = fnv1a_byte(h, e->call_channel_kind);
+    h = fnv1a_pos(h, &e->pos);
     return fnv1a_site(h, &e->site_id);
 }
 
@@ -720,6 +783,33 @@ eh_init_empty_fingerprint(void) {
     blank.receive_identity.kind = (uint8_t)DSD_RECEIVE_NONE; /* Kind "none", never kind 0 (slot) (issue #637). */
     g_eh_empty_fp = row_fingerprint(&blank);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_api_feed_test_encode_event_row(const Event_History* e, char* out, size_t cap) {
+    if (e == NULL || out == NULL || cap == 0U) {
+        return -1;
+    }
+    dsd_json_buf b;
+    dsd_json_buf_init(&b);
+    dsd_json_writer w;
+    dsd_json_writer_init(&w, &b);
+    (void)dsd_json_obj_begin(&w);
+    encode_event_row(&w, e, 0, 1U, 1U);
+    (void)dsd_json_obj_end(&w);
+    const int ok = !dsd_json_writer_failed(&w) && b.data != NULL && b.len < cap;
+    if (ok) {
+        DSD_MEMCPY(out, b.data, b.len + 1U);
+    }
+    dsd_json_buf_free(&b);
+    return ok ? 0 : -1;
+}
+
+uint64_t
+dsd_api_feed_test_row_fingerprint(const Event_History* e) {
+    return row_fingerprint(e);
+}
+#endif
 
 /* Append the line for committed row @p idx of @p ring to g_events. */
 static void
@@ -797,6 +887,176 @@ track_events(const dsd_state* state) {
     g_eh_valid = 1;
     if (send && g_events.len > 0U && g_events.data != NULL) {
         dsd_api_broadcast(g_events.data, g_events.len, DSD_API_TOPIC_EVENT);
+    }
+}
+
+/*============================================================================
+ * Positions (issue #800)
+ *============================================================================*/
+
+/* A value the record holds as "unknown" is null. */
+static void
+kv_u64_or_null(dsd_json_writer* w, const char* key, uint64_t v, int known) {
+    if (known) {
+        (void)dsd_json_kv_u64(w, key, v);
+    } else {
+        (void)dsd_json_kv_null(w, key);
+    }
+}
+
+static void
+encode_position_scope(dsd_json_writer* w, const char* key, const dsd_position_scope* scope) {
+    (void)dsd_json_key(w, key);
+    (void)dsd_json_obj_begin(w);
+    (void)dsd_json_kv_u64(w, "kind", scope->kind);
+    (void)dsd_json_kv_u64(w, "a", scope->a);
+    (void)dsd_json_kv_u64(w, "b", scope->b);
+    (void)dsd_json_obj_end(w);
+}
+
+/* The measured values; each is null while the report did not carry it. */
+static void
+encode_position_values(dsd_json_writer* w, const dsd_position_fix* f) {
+    char lat[24];
+    char lon[24];
+    api_e7_text(f->lat_e7, lat, sizeof lat);
+    api_e7_text(f->lon_e7, lon, sizeof lon);
+    (void)dsd_json_key(w, "lat");
+    (void)dsd_json_value_raw(w, lat);
+    (void)dsd_json_key(w, "lon");
+    (void)dsd_json_value_raw(w, lon);
+    if (f->alt_dm != DSD_POSITION_ALT_UNKNOWN) {
+        (void)dsd_json_kv_i64(w, "alt_dm", f->alt_dm);
+    } else {
+        (void)dsd_json_kv_null(w, "alt_dm");
+    }
+    kv_u64_or_null(w, "err_m", f->err_m, f->err_m != DSD_POSITION_ERR_UNKNOWN);
+    kv_u64_or_null(w, "speed_dkmh", f->speed_dkmh, f->speed_dkmh != DSD_POSITION_SPEED_UNKNOWN);
+    kv_u64_or_null(w, "heading_ddeg", f->heading_ddeg, f->heading_ddeg <= DSD_POSITION_HEADING_MAX);
+    kv_u64_or_null(w, "age_class", f->age_class, f->age_class != DSD_POSITION_AGE_CLASS_NONE);
+    kv_u64_or_null(w, "sats", f->sats, f->sats != DSD_POSITION_SATS_NONE);
+    if (f->fix_time_s != 0) {
+        (void)dsd_json_kv_i64(w, "fix_time", f->fix_time_s);
+    } else {
+        (void)dsd_json_kv_null(w, "fix_time");
+    }
+}
+
+/* One "position" line for kept record @p f of stream @p stream into g_line; 0 when it is whole. */
+static int
+build_position(const dsd_position_fix* f, uint64_t stream) {
+    dsd_json_writer w;
+    begin_line(&g_line, &w, "position");
+    (void)dsd_json_kv_u64_str(&w, "pos_stream", stream);
+    (void)dsd_json_kv_u64(&w, "pos_seq", f->seq);
+    (void)dsd_json_kv_u64(&w, "rev", f->rev);
+    (void)dsd_json_kv_u64(&w, "kind", f->kind);
+    (void)dsd_json_kv_u64(&w, "protocol", f->protocol);
+    (void)dsd_json_kv_u64(&w, "slot", f->slot);
+    (void)dsd_json_kv_u64(&w, "flags", f->flags);
+    encode_position_values(&w, f);
+    (void)dsd_json_kv_u64(&w, "source_id", f->source_id);
+    (void)dsd_json_kv_u64(&w, "target_id", f->target_id);
+    (void)dsd_json_kv_strn(&w, "source_text", f->source_text, sizeof f->source_text);
+    (void)dsd_json_kv_strn(&w, "label", f->label, sizeof f->label);
+    encode_position_scope(&w, "sender_scope", &f->sender_scope);
+    encode_position_scope(&w, "reception_scope", &f->reception_scope);
+    (void)dsd_json_kv_i64(&w, "identity_freq_hz", f->identity_freq_hz);
+    (void)dsd_json_kv_i64(&w, "freq_hz", f->freq_hz);
+    (void)dsd_json_kv_i64(&w, "rx_time", f->rx_time_s);
+    (void)dsd_json_kv_u64(&w, "rx_clock", f->rx_clock);
+    return end_line(&g_line, &w);
+}
+
+/* Append the line of kept record @p f to g_positions and index it; 0 when it is whole in the batch. */
+static int
+gather_position_line(const dsd_position_fix* f, uint64_t stream) {
+    if (g_pos_line_count >= (size_t)DSD_POSITION_FEED_CAPACITY) {
+        return -1;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_pos_test_fail_line > 0 && --g_pos_test_fail_line == 0) {
+        return -1;
+    }
+#endif
+    const size_t offset = g_positions.len;
+    if (build_position(f, stream) != 0 || dsd_json_buf_append(&g_positions, g_line.data, g_line.len) != 0) {
+        return -1;
+    }
+    g_pos_lines[g_pos_line_count].offset = offset;
+    g_pos_lines[g_pos_line_count].rev = f->rev;
+    g_pos_line_count++;
+    return 0;
+}
+
+/* Gather a line for every kept record after g_pos_seq into g_positions, page by page, and move the cursor past each one
+   gathered. A line that cannot be built or appended stops the batch there: the cursor stays before it, so the next
+   publish tries it and the rest again, and a subscriber misses none of the records still in the ring. */
+static void
+gather_positions(const dsd_state* state) {
+    dsd_json_buf_reset(&g_positions);
+    g_pos_line_count = 0U;
+    for (;;) {
+        dsd_position_feed_meta meta;
+        const int n = dsd_position_feed_copy_since(state, g_pos_seq, g_pos_page, DSD_API_POSITION_PAGE, &meta);
+        for (int i = 0; i < n; i++) {
+            if (gather_position_line(&g_pos_page[i], meta.stream_id) != 0) {
+                return;
+            }
+            g_pos_seq = g_pos_page[i].seq;
+        }
+        if (n <= 0 || !meta.more) {
+            return;
+        }
+    }
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_api_feed_test_fail_position_line(int nth) {
+    g_pos_test_fail_line = nth;
+}
+#endif
+
+/* Follow the live position feed at every publish, whether or not anyone listens, and send what was kept since the last
+   publish to the subscribers when there are any: like the event rings, so a subscriber gets every record kept after it
+   subscribed (a cursor taken at its first publish would skip one kept in between). The batch can hold records kept
+   before a subscriber subscribed (since the previous publish); the server sends each subscriber only the records after
+   its own cutoff, the revision when it subscribed (dsd_api_broadcast_positions()), so none from before reach it. A new
+   run is a new stream, sent from its first record. While nobody listens this reads the ring's newest seq and builds
+   nothing. A record the ring overwrote before a publish could send it is a gap in pos_seq. */
+static void
+track_positions(const dsd_state* state) {
+    dsd_position_feed_meta live;
+    if (dsd_position_feed_copy_since(state, 0U, NULL, 0U, &live) < 0 || live.stream_id == 0U) {
+        /* No ring (no run): the cursor stays, the next run is a new stream. */
+        return;
+    }
+    if (live.stream_id != g_pos_stream) {
+        g_pos_stream = live.stream_id;
+        g_pos_seq = 0U;
+    }
+    if (!dsd_api_topic_interest(DSD_API_TOPIC_POSITIONS)) {
+        g_pos_seq = live.newest_seq;
+        return;
+    }
+    gather_positions(state);
+    if (g_pos_line_count > 0U && g_positions.data != NULL) {
+        dsd_api_broadcast_positions(g_positions.data, g_positions.len, g_pos_lines, g_pos_line_count);
+    }
+}
+
+/* Where the topic starts, before the observer is registered: at what the decoder last published, so a server started
+   during a run sends none of the run's earlier records; a stream published later is followed from its start. */
+static void
+positions_baseline(void) {
+    dsd_app_position_cursor published;
+    if (dsd_app_position_copy_since(0U, 0U, NULL, 0U, &published) == 0) {
+        g_pos_stream = published.stream_id;
+        g_pos_seq = published.newest_seq;
+    } else {
+        g_pos_stream = 0U;
+        g_pos_seq = 0U;
     }
 }
 
@@ -1259,6 +1519,7 @@ feed_state(const dsd_state* state, void* user) {
         return;
     }
     track_events(state);
+    track_positions(state);
     if (dsd_api_client_count() <= 0) {
         /* Nothing is refreshed without a client, so nothing is kept that a later client could take for current. */
         if (g_cache_live) {
@@ -1302,6 +1563,7 @@ dsd_api_feed_start(void) {
     /* Reset before registering: once registered, these belong to the decode thread. */
     eh_init_empty_fingerprint();
     g_eh_valid = 0;
+    positions_baseline();
     g_last_telemetry_ms = 0U;
     g_live_opts = NULL;
     g_sa_built_valid = 0;
@@ -1325,6 +1587,7 @@ dsd_api_feed_stop(void) {
     g_live_opts = NULL;
     dsd_json_buf_free(&g_line);
     dsd_json_buf_free(&g_events);
+    dsd_json_buf_free(&g_positions);
     ensure_feed_mu();
     dsd_mutex_lock(&g_feed_mu);
     for (int i = 0; i < DSD_API_TOPIC_COUNT; i++) {

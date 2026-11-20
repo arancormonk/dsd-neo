@@ -622,6 +622,19 @@ __wrap_rtl_stream_get_request_rate_hz(void) {
     return g_rtl_request_rate_hz;
 }
 
+/* When the fake stream's input came back from the last retune's mute (rtl_stream_input_listening_since_ns()): 0 none,
+   -1 still muted, 1 at g_rtl_listening_since_ns. */
+static int g_rtl_listening_rc;
+static uint64_t g_rtl_listening_since_ns;
+
+int
+__wrap_rtl_stream_input_listening_since_ns(uint64_t* out_ns) {
+    if (g_rtl_listening_rc > 0 && out_ns) {
+        *out_ns = g_rtl_listening_since_ns;
+    }
+    return g_rtl_listening_rc;
+}
+
 /* The complex rate the fake front end runs at (issue #806): g_rtl_complex_rate_hz, else its digital family's rate,
  * which no resampler moves then, as on an RTL-SDR; the analog monitor resamples only its output. */
 int
@@ -6443,6 +6456,60 @@ expect_learned_channels_hold(dsd_opts* opts, dsd_state* state, const char* what)
 }
 
 /*
+ * A HackRF retune mutes the input for over half a second at its lowest rates while the driver's queue from before it
+ * drains. The -Y hangtime counts listening on the row, so it does not run out while the input is still muted, and once
+ * the input is back it runs from then, not from the landing: a row is not left before the decoder heard any of it.
+ */
+static int
+test_y_hangtime_waits_for_the_input(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 957012500;
+    state->trunk_lcn_freq[1] = 958012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* The row landed 5 s ago, well past -t 1, but its input is still muted. */
+    const double now_m = dsd_decode_now_mono_s();
+    state->last_cc_sync_time = time(NULL) - 5;
+    state->last_cc_sync_time_m = now_m - 5.0;
+    seed_visit_anchor(state, now_m - 5.0);
+    g_rtl_listening_rc = -1;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("y-hangtime-muted-row-kept", state->lcn_freq_roll == 0 && g_rtl_tune_calls == 0);
+
+    /* The input came back 200 ms ago: the hangtime runs from then. */
+    g_rtl_listening_rc = 1;
+    g_rtl_listening_since_ns = (uint64_t)((now_m - 0.2) * 1e9);
+    noCarrier(opts, state);
+    rc |= expect_true("y-hangtime-runs-from-the-input", state->lcn_freq_roll == 0 && g_rtl_tune_calls == 0);
+
+    /* Back 2.5 s ago, after the landing: -t 1 has run out since then. */
+    g_rtl_listening_since_ns = (uint64_t)((now_m - 2.5) * 1e9);
+    noCarrier(opts, state);
+    rc |= expect_true("y-hangtime-steps-once-heard", state->lcn_freq_roll == 1 && g_rtl_tune_calls > 0);
+
+    g_rtl_listening_rc = 0;
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/*
  * Issue #697: -Y with no list of the user's -- none at start, or after Clear channel map, which leaves -Y on -- stays
  * where it is until one is imported. Channels a site announces are appended to the list then, and they never make the
  * scanner hop, nor arm the per-visit cap or the voice gate that would end the reception for them.
@@ -9472,6 +9539,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
     state->payload_algid = 0x84;
     state->payload_keyid = 0x1234;
     state->payload_miP = 0x0102030405060708ULL;
+    state->nxdn_payload_mi = 0x1122334455667788ULL; /* an NXDN call's received IV */
+    state->nxdn_iv_on_air = 1U;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
 
@@ -9523,6 +9592,8 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                           && state->p25_p2_ess_b_stale[0] == 1U && state->p25_p2_ess_b_stale[1] == 1U);
     rc |= expect_true("assemblies: the boundary drops the ended call's P25 crypto",
                       state->payload_algid == 0 && state->payload_keyid == 0 && state->payload_miP == 0ULL);
+    rc |= expect_true("assemblies: the boundary drops the NXDN working register and its received IV",
+                      state->nxdn_payload_mi == 0ULL && state->nxdn_iv_on_air == 0U);
 
     free_test_runtime(opts, state);
     return rc;
@@ -17327,6 +17398,8 @@ main(void) {
     state->dmr_lrrp_target[1] = 5678U;
     state->dmr_data_target_is_group[0] = 1U;
     state->dmr_data_target_is_group[1] = 1U;
+    state->dmr_data_checked_group[0] = 1U;
+    state->dmr_data_checked_group[1] = 1U;
     // NXDN's CRC evidence is per-transmission: carrying it across a carrier loss would let
     // the next channel's first noise frame stop a scan and unmute (issue #398).
     state->nxdn_confirmed = 1;
@@ -17391,7 +17464,8 @@ main(void) {
                           && state->data_header_bit_padding[0] == 0U && state->data_header_bit_padding[1] == 0U);
     rc |= expect_true("dmr-data-target-reset", state->dmr_lrrp_target[0] == 0U && state->dmr_lrrp_target[1] == 0U);
     rc |= expect_true("dmr-data-target-group-flag-reset",
-                      state->dmr_data_target_is_group[0] == 0U && state->dmr_data_target_is_group[1] == 0U);
+                      state->dmr_data_target_is_group[0] == 0U && state->dmr_data_target_is_group[1] == 0U
+                          && state->dmr_data_checked_group[0] == 0U && state->dmr_data_checked_group[1] == 0U);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {
@@ -19057,6 +19131,7 @@ main(void) {
     rc |= test_typed_scan_nfm_rows_switch_family(1);
     rc |= test_trunk_scan_nfm_target_then_trunked_target();
     rc |= test_visit_cap_scanner_hops();
+    rc |= test_y_hangtime_waits_for_the_input();
     rc |= test_learned_channels_never_rotate_the_scanner();
     rc |= test_visit_cap_passes_over_a_width_skipped_row();
     rc |= test_legacy_step_retunes_after_a_manual_tune();

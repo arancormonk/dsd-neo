@@ -18,12 +18,14 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
@@ -49,6 +51,9 @@ dsd_append(char* dst, size_t dstsz, const char* src) {
 }
 
 enum { P25_PDU_MAX_DECODE_BYTES = 18 * 129 };
+
+/* A SAP 48 payload's NMEA sentences are read whole (issue #800): every payload this file decodes fits. */
+_Static_assert((int)P25_PDU_MAX_DECODE_BYTES <= (int)NMEA_PAYLOAD_MAX_BYTES, "a P25 NMEA payload must be read whole");
 
 typedef struct {
     uint8_t fmt;
@@ -659,14 +664,17 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     p25_decode_sap(ea_sap, ea_sap_string, sizeof ea_sap_string);
     UNUSED(ea_sap_string);
 
+    /* The packet's sender, sanitised once before any text or record names it (p25_source_id_is_subscriber()): a
+       special address names no radio. The header line above prints it as sent. */
+    const uint32_t sender = p25_source_id_is_subscriber(ea_llid) ? ea_llid : 0U;
     char ea_str[200];
     DSD_MEMSET(ea_str, 0, sizeof(ea_str));
-    DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
+    DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %u; SAP:%02X;%s", sender, ea_sap, ea_sap_string);
     dsd_append(state->dmr_lrrp_gps[0], sizeof state->dmr_lrrp_gps[0], ea_str);
 
     *sap = ea_sap;
     *ptr += 12;
-    return ea_llid;
+    return sender;
 }
 
 typedef struct {
@@ -826,17 +834,21 @@ p25_read_pdu_data_fields(const uint8_t* input) {
     pdu.blks = input[6] & 0x7F;
     pdu.pad = input[7] & 0x1F;
     pdu.offset = input[9] & 0x3F;
-    pdu.source_id = pdu.io == 0 ? pdu.llid : 0U;
+    /* An inbound packet's sender, sanitised once before any text or record names it: a special address names no radio
+       (p25_source_id_is_subscriber()). The header dump and the JSON keep the LLID as sent. */
+    pdu.source_id = (pdu.io == 0 && p25_source_id_is_subscriber(pdu.llid)) ? pdu.llid : 0U;
     pdu.target_id = pdu.io == 1 ? pdu.llid : 0U;
     return pdu;
 }
 
+/* The user data octets of a packet of @p len octets: less its header, its CRC32 and its @p pad octets; none when the
+ * packet is shorter (issue #800, fail closed: a header or CRC octet is never user data). */
 static int
 p25_pdu_payload_len(int len, uint8_t pad) {
     if (len > (12 + 4 + pad)) {
         return len - (12 + 4 + pad);
     }
-    return len;
+    return 0;
 }
 
 static int
@@ -912,7 +924,9 @@ p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFi
         p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
         status.json_emitted = 1;
     }
-    status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), input + ptr);
+    /* Exactly the user data left at the cursor (p25_pdu_payload_span()), so the IPv4 whole-datagram check never
+       counts a pad or CRC octet as part of the datagram (issue #800, fail closed). */
+    status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)p25_pdu_payload_span(len, ptr), input + ptr);
     return status;
 }
 
@@ -943,25 +957,55 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         span = P25_PDU_MAX_DECODE_BYTES;
     }
 
-    uint8_t nmea_valid = 0;
-    if (payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!') {
-        uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
-        DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
-        dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
+    /* The packet's verdict: the MDPU decodes this packet inside its CRC scope on slot 0 (p25p1_mdpu.c). */
+    const int packet_verified = state->event_crc_invalid[0] == 0U;
+    if (!packet_verified) {
+        /* A packet whose CRC failed (-F) keeps its notice, never its payload: a damaged octet can turn an NMEA report
+           into what reads as text, and the location service's text can hold a position in any form, so neither branch
+           below prints or stages any of it (issue #800, fail closed). The raw dump stays with -Z. */
+        DSD_FPRINTF(stderr, " P25 Location Service: payload withheld (CRC ERR);");
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
+                     "P25 Location Service: payload withheld (CRC ERR);");
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
+        return status;
+    }
 
+    /* The reception the MDPU's header was heard on (processMPDU()); none for a packet that did not come through it,
+       which takes the current one. The header's CRC and the blocks' are separate checks: neither shows the two were
+       heard together across a retune, a trunk-scan switch or a change of P25 phase. A packet whose header was heard on
+       another reception than the receiver is on now stages nothing, in either branch below, and gives no notice, as
+       the NMEA parser withholds such a packet whole (issue #800, fail closed). */
+    const dsd_position_origin* origin = state->p25_mdpu_origin.valid ? &state->p25_mdpu_origin : NULL;
+    if (origin != NULL && !dsd_position_origin_matches(state, origin)) {
+        DSD_FPRINTF(stderr, " P25 Location Service: payload withheld (reception changed);");
+        state->dmr_lrrp_gps[0][0] = '\0';
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
+        status.data_notice_emitted = 1;
+        return status;
+    }
+
+    uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+    dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
+    /* NMEA as its parser frames it, line ends before the first sentence included. */
+    const int nmea_shaped = nmea_payload_framed(payload_bits, span);
+    if (nmea_shaped) {
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
+        /* The sanitised sender (p25_read_pdu_data_fields()): a special address left none, and the report is anonymous. */
         state->dmr_lrrp_source[slot] = pdu->source_id;
         state->dmr_lrrp_target[slot] = pdu->target_id;
         // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
         // --dmr-tg-key-csv lookup treat this address as one.
         state->dmr_data_target_is_group[slot] = 0;
-        nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span);
-        status.data_notice_emitted = nmea_valid != 0U;
-    }
-
-    if (!nmea_valid) {
+        state->dmr_data_checked_group[slot] = 0;
+        status.data_notice_emitted =
+            nmea_sentence_checker(opts, state, payload_bits, slot, span, packet_verified, origin) != 0U;
+    } else {
+        /* Only a checked packet's payload that is not NMEA is plain text: sentences whose checksums failed are never
+           shown or kept as text, since their coordinates were not checked (issue #800 2.4). The location service's text can hold a
+           position in any form, so its line names the service (issue #800, D10): the diagnostics log removes it. */
         uint8_t write_history = (state != NULL && state->event_history_s != NULL) ? 1U : 0U;
-        utf8_to_text(state, write_history, (uint16_t)span, payload);
+        utf8_to_text_labelled(state, write_history, (uint16_t)span, payload, "P25 Location Service Text");
     }
     p25_store_lrrp_text_for_history(state);
     const char* summary = dsd_event_staged_text(state, 0);
@@ -975,7 +1019,9 @@ p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataF
     P25PduDecodeStatus status = {0};
     uint8_t* payload = input + ptr;
     switch (pdu->sap) {
-        case 0: status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); return status;
+        case 0:
+            status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)p25_pdu_payload_span(len, ptr), payload);
+            return status;
         case 4: return p25_handle_sap4_packet_data(opts, state, pdu, input, len, ptr, encrypted);
         case 6: p25_handle_sap6_sndcp_data(opts, state, pdu, payload, len, ptr, encrypted); break;
         case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;

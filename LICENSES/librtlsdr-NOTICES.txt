@@ -1,0 +1,50 @@
+librtlsdr (https://github.com/arancormonk/rtl-sdr, a mirror of https://gitea.osmocom.org/sdr/rtl-sdr)
+copyright notices for the librtlsdr library dsd-neo carries in the Windows ZIP (rtlsdr.dll), the
+Linux AppImage and the macOS DMG, built from rtl-sdr v2.0.3, commit
+797f8143266d983c56d8f35d2d442527529dd8a5, and in the Android app, built from the v2.0.3 sources
+in android/third_party/librtlsdr. Each build compiles the library sources of src/CMakeLists.txt
+(librtlsdr.c, tuner_e4k.c, tuner_fc0012.c, tuner_fc0013.c, tuner_fc2580.c and tuner_r82xx.c) and
+the include/ headers they include; the rtl_* programs are not built into any package. The holder
+lines of those files follow as they are written, with the files that carry them. Every file that
+names a license grants the GNU General Public License version 2 or (at your option) any later
+version; that text is librtlsdr-GPL-2.0-or-later.txt. The dsd-neo changes each build applies are
+listed in librtlsdr-PATCHES.txt (the desktop packages) and in the dsd-neo source
+(android/third_party/patches).
+
+Copyright (C) 2012-2014 by Steve Markgraf <steve@steve-m.de>
+    src/librtlsdr.c
+Copyright (C) 2012-2013 by Steve Markgraf <steve@steve-m.de>
+    include/rtl-sdr.h
+Copyright (C) 2012 by Dimitri Stolnikov <horiz0n@gmx.net>
+    src/librtlsdr.c
+    include/rtl-sdr.h
+Copyright (C) 2012 by Hoernchen <la@tfc-server.de>
+    include/rtl-sdr_export.h
+(C) 2011-2012 by Harald Welte <laforge@gnumonks.org>
+(C) 2012 by Sylvain Munaut <tnt@246tNt.com>
+(C) 2012 by Hoernchen <la@tfc-server.de>
+All Rights Reserved
+    src/tuner_e4k.c (Elonics E4000 tuner driver)
+    include/tuner_e4k.h
+Copyright (C) 2012 Hans-Frieder Vogt <hfvogt@gmx.net>
+modified for use in librtlsdr
+Copyright (C) 2012 Steve Markgraf <steve@steve-m.de>
+    src/tuner_fc0012.c (Fitipower FC0012 tuner driver)
+    include/tuner_fc0012.h
+    include/tuner_fc0013.h
+Copyright (C) 2012 Hans-Frieder Vogt <hfvogt@gmx.net>
+partially based on driver code from Fitipower
+Copyright (C) 2010 Fitipower Integrated Technology Inc
+modified for use in librtlsdr
+Copyright (C) 2012 Steve Markgraf <steve@steve-m.de>
+    src/tuner_fc0013.c (Fitipower FC0013 tuner driver)
+Copyright (C) 2013 Mauro Carvalho Chehab <mchehab@redhat.com>
+Copyright (C) 2013 Steve Markgraf <steve@steve-m.de>
+    src/tuner_r82xx.c (Rafael Micro R820T/R828D driver, "a heavily modified version of the
+    driver found in the Linux kernel")
+    include/tuner_r82xx.h
+
+src/tuner_fc2580.c (FCI FC2580 tuner driver) names no holder; its header says it is "taken from
+the kernel driver that can be found on http://linux.terratec.de/tv_en.html". include/reg_field.h,
+include/rtlsdr_i2c.h and include/tuner_fc2580.h carry no notice. The package's AUTHORS file names
+Steve Markgraf, Dimitri Stolnikov, Hoernchen and Kyle Keen.

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_env.h"
@@ -97,21 +98,41 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
+utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label) {
     (void)state;
     (void)wr;
     (void)len;
     (void)input;
+    (void)label;
 }
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
     (void)opts;
+    (void)packet_verified;
+    (void)origin;
     (void)state;
     (void)input;
     (void)slot;
     (void)len_bytes;
+    return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    /* The real framing: line ends, then '$' or '!'. */
+    for (int i = 0; input != NULL && i < len_bytes; i++) {
+        unsigned octet = 0U;
+        for (int b = 0; b < 8; b++) {
+            octet = (octet << 1) | (input[(i * 8) + b] & 1U);
+        }
+        if (octet != (unsigned)'\r' && octet != (unsigned)'\n') {
+            return octet == (unsigned)'$' || octet == (unsigned)'!';
+        }
+    }
     return 0;
 }
 

@@ -203,6 +203,9 @@ class TalkgroupListModel : public QAbstractListModel {
     int m_tgRole = -1;
     int m_sessionRole = -1;
     int m_kindRole = -1;
+    /* The history's "gi" role (who a call was to: 1 a radio, a private call, whose target is no talkgroup); -1 when the
+     * history has none, and then every target counts, as before. */
+    int m_giRole = -1;
     QVector<Row> m_rows;
     QStringList m_categories;
     int m_notTunedCount = 0;

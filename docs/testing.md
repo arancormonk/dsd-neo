@@ -84,8 +84,8 @@ control channel without `-F` and requires the notice and no accepted content; `D
 `DECODE_IQ_DMR_POLARITY_AUTO` are its controls and must never print it.
 
 `CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
-`CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing
-CRC-failed location rows, with slot isolation and both file date formats; the LIP vectors follow
+`CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders keep a CRC-failed fix out of both their position
+text and the location file (issue #800), with slot isolation and both file date formats; the LIP vectors follow
 TS 102 361-4 Table 6.79 and TS 100 392-18-1 Table 6.1. `DMR_USBD_LIP_LRRP_CRC` runs
 BPTC-encoded USBD LIP bursts through the real burst handler in strict and relaxed/RAS modes, checking
 decoded coordinates, file rows, CRC-flag restoration, and that strict mode decodes no CRC-failed USBD and
@@ -1105,7 +1105,19 @@ the step's `iq_step_l`/`iq_step_m`. It reads each sidecar back through the repla
 | `DECODE_IQ_P25P2_CC_AIRSPY_375K` | `p25p2_cc` at 375,000 Hz under `-f2`: at least 8 SACCH (10). The capture is remodulated audio with no RS-checkable payload, so this is DUID-FEC-level evidence only, and weak. |
 | `DECODE_IQ_DMR_VOICE_AIRSPY_312K` | `dmr_voice_synth`'s first 2 s at 312,500 Hz under `-fs`: at least 10 voice bursts (16, less one superframe) and the voice header. FSK modes ran right at these rates before the step too; this is the control. |
 | `DECODE_IQ_TETRA_CALL_AIRSPY_375K` | `tetra_call_real_air_72k`'s first 2 s at 375,000 Hz under `-fT -Z` at a 72 kHz DSP bandwidth (`L/M=96/125`): at least 66 identities and 23 TCH/FS bursts whose CRC passed (70 and 25), with no rate warning. |
+| `DECODE_IQ_TETRA_CALL_SOAPY_156K` | The same excerpt at 156,250 Hz, where a HackRF at 10 MS/s through SoapySDR is after six half-band passes, its sidecar naming `source_backend` `soapy`: the replay runs one more pass (`base_decim=2`) to 78,125 Hz and the `576/625` step, a ratio no other case runs; the same thresholds (it decodes 70 and 24). Its cell identity comes from the native-rate recording (`REFERENCE_FIXTURE` in `iq_decode_check.cmake`: that run's first identity is the value, and every identity this run decodes must be it), so no identifier is typed into the case. Partial-chain coverage only: it does not run a live 10 MS/s ingest or the Fs/4 tuning before the passes. |
 | `DECODE_IQ_P25P1_CQPSK_VC_AIRSPY_375K_DETERMINISM` | `p25p1_cqpsk_vc` at 375,000 Hz: fast, realtime, short-read and jitter legs of the replay determinism harness decode line for line the same (below). `_STALLED_SINK` (where the harness can wrap the audio device) adds a sink that stalls. |
+
+A SoapySDR device that picks its own rate is tested without hardware through a stand-in driver
+(`rtl_device_test_soapy_gain_device()`), which reports the rate and bandwidth lists a real driver does, a hardware
+key, a configured profile and bandwidth, and a read-back that differs from the rate written.
+`IO_RTL_DEVICE_SOAPY_RATE` models SoapyHackRF, SoapySDRPlay3, SoapyPlutoSDR, SoapyLMS7 and SoapyAirspyHF from their
+sources (rates, opened filters, the explicit-bandwidth warning, a stream open's capture and input ring through
+`rtl_stream_test_open_radio_capture()`, the filter on retunes). `IO_SOAPY_STREAM_LOSS`'s
+`retune_mute_covers_hackrf_backlog` feeds the reader a HackRF's whole stale backlog after a retune: the driver's queue
+at the depth dsd-neo gives it (the `buffers` stream argument, read from the device) and libhackrf's four transfers in
+flight, at 10 MS/s and at 2 MS/s, and checks that the mute the stream arms on that device lets none of it into the input
+ring and the samples after it through. These are the drivers' source bounds, not measured latency.
 
 `ENGINE_AIRSPY_FORCED_RATE_*` (`tests/engine/test_engine_airspy_forced_rate.cpp`, Airspy builds with GNU or Clang
 outside macOS) run the same samples live. They link the private test-hook archives in a linker group
@@ -4442,13 +4454,31 @@ each platform a release ships for:
 | `android shape (arm64, headless, forced radio pipeline)` | the Android option set on arm64 | the Android ABI's instruction set (not Bionic) |
 | `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math)` | `perf-bench` with `-march=x86-64-v3`, GCC | optimized, fast-math code generation like the shipped builds, with AVX2/FMA |
 | `Linux • RelWithDebInfo • ctest (x86-64-v3, fast-math, clang)` | the same with Clang | the macOS release toolchain's fast-math code generation; with `-Werror`, `-Wnan-infinity-disabled` rejects `isnan()`/`isinf()` builtins and NaN/infinity constants in fast-math code. Clang can silently fold hand-written bit tests; only runtime tests fed NaN or infinity catch those dead guards (see "Fast-math and non-finite values" in `docs/code_map.md`) |
-| `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang | the DMG; libc++, ld64 and BSD libc |
+| `macOS • Debug • ctest (arm64)` | `dev-debug`, AppleClang, Homebrew libraries | the DMG's toolchain; libc++, ld64 and BSD libc (the DMG's own build, `build-portable-dmg`, uses the `macos-arm64-release` preset and vcpkg) |
 | `Windows • Debug • ctest (MSVC x64)` | `win-msvc-debug` with Ninja | the ZIP; MSVC, the debug CRT and 32-bit `long` |
 
 Tests that need GNU ld `--wrap` seams register only on Linux, and the `TOOLS_*`
 script tests only where bash is (not Windows), so the macOS and Windows suites
 are smaller than the Linux one; each job prints its registered test count before
 running.
+
+The Windows release scripts' tests run their scripts under pwsh many times, so a
+busy runner could push one ctest entry past its limit. Their classes run as
+several entries that `ctest -j` runs side by side: `TOOLS_SOAPY_RELEASE_SCRIPTS_1`
+to `_4` (`tests/tools/test_soapy_module_packaging.py`) and
+`TOOLS_STAGE_RUNTIME_DLLS_1` and `_2` (`tests/tools/test_stage_runtime_dlls.py`).
+Each entry sets `DSD_NEO_TEST_SHARD=<i>/<n>`, and the module's `load_tests` hook
+(`tests/tools/unittest_shards.py`) keeps that shard's tests: the ones its table
+names, chosen from measured times, and a share of any test the table does not
+name, so a new test runs in exactly one entry. A test in shard 1 checks that the
+shards run every test of the class once. Without the variable the module runs
+every test, as before. The entries also set `TMPDIR` to `pwsh-test-scratch` in
+the build tree: off Windows, pwsh reads every folder of a path it resolves from
+the root down, so under a system temp folder that holds many thousand entries
+each resolution costs a full read of it, and a class ran about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
+tree passes steps 0-3 before or after a test's change use its `-SkipProgramRuns`
+switch; `test_verify_release_tree`, every refusal and the release jobs run the
+whole script.
 
 The libairspy and librtlsdr transfer tests (`VENDORED_LIBAIRSPY_TRANSFERS`,
 `VENDORED_LIBRTLSDR_TRANSFERS`, `VENDORED_LIBRTLSDR_ASYNC_ALLOC`) build the

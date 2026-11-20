@@ -9,7 +9,9 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
@@ -17,7 +19,6 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,6 +62,11 @@ static unsigned int g_lip_calls;
 static unsigned int g_nmea_calls;
 static uint32_t g_nmea_last_src;
 static int g_nmea_last_type;
+/* The addressing the last report decoder was handed (issue #800: the UDT header's source, destination, I/G bit). */
+static dsd_gps_address g_nmea_last_addr;
+static dsd_gps_address g_lip_last_addr;
+/* The I/G bit build_udt_header() writes (1: the destination is a talkgroup). */
+static uint8_t g_udt_header_ig;
 static unsigned int g_utf8_calls;
 static uint16_t g_utf8_last_len;
 static uint8_t g_utf8_first_byte;
@@ -123,6 +129,8 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     g_datacall_last_slot = slot;
     g_datacall_last_category = category;
     DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", notice ? notice : "");
+    // The consuming notice takes the staged GPS (a position report the UDT carried stages it).
+    DSD_SNPRINTF(g_datacall_last_gps, sizeof(g_datacall_last_gps), "%s", dsd_event_staged_gps(state, slot));
     return 0;
 }
 
@@ -142,37 +150,37 @@ dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t sl
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
-    (void)src;
     (void)opts;
     (void)bits;
     g_lip_calls++;
+    if (src != NULL) {
+        g_lip_last_addr = *src;
+    }
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "LIP: 41.500000, -87.250000");
+    // An admitted report is staged for the UDT's own notice.
+    dsd_event_stage_gps(state, (uint8_t)state->currentslot, state->dmr_embedded_gps[state->currentslot]);
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type) {
+nmea_iec_61162_1(const dsd_opts* opts, dsd_state* state, const uint8_t* input, size_t bit_count,
+                 const dsd_gps_address* addr, int type) {
+    (void)bit_count;
     (void)opts;
     (void)input;
     g_nmea_calls++;
-    g_nmea_last_src = src;
+    g_nmea_last_src = addr ? addr->source_id : 0U;
+    if (addr != NULL) {
+        g_nmea_last_addr = *addr;
+    }
     g_nmea_last_type = type;
     DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
                  "GPS: (41.500000, -87.250000)");
-}
-
-// Stubs to avoid linking runtime/core
-int
-dsd_unicode_supported(void) {
-    return 0;
-}
-
-const char*
-dsd_degrees_glyph(void) {
-    return "";
+    dsd_event_stage_gps(state, (uint8_t)state->currentslot, state->dmr_embedded_gps[state->currentslot]);
 }
 
 // FEC RS(12,9) stubs used by dmr_utils.c
@@ -313,13 +321,16 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     g_utf8_first_byte = input ? input[0] : 0U;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_locn(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
-    (void)state;
     (void)len;
     (void)DMR_PDU;
+    // As the real decoder leaves the slot text after a report it did not admit (issue #800).
+    DSD_SNPRINTF(state->dmr_lrrp_gps[state->currentslot & 1], sizeof state->dmr_lrrp_gps[0], "%s",
+                 "NMEA / LOCN; Source: 1 Position suppressed (CRC ERR);");
+    return 0;
 }
 
 static void
@@ -372,8 +383,9 @@ static void
 build_udt_header(uint8_t dheader[12], uint8_t bits[196], uint8_t udt_format, uint32_t target, uint32_t source) {
     DSD_MEMSET(dheader, 0, 12);
     DSD_MEMSET(bits, 0, 196);
-    set_bits(bits, 4, 0U, 4); // DPF=0 UDT
-    set_bits(bits, 8, 0U, 4); // SAP=0 UDT
+    set_bits(bits, 0, g_udt_header_ig, 1); // I/G
+    set_bits(bits, 4, 0U, 4);              // DPF=0 UDT
+    set_bits(bits, 8, 0U, 4);              // SAP=0 UDT
     set_bits(bits, 12, udt_format, 4);
     set_bits(bits, 16, target & 0x00FFFFFFU, 24);
     set_bits(bits, 40, source & 0x00FFFFFFU, 24);
@@ -525,6 +537,8 @@ reset_datacall_spy(void) {
     g_nmea_calls = 0;
     g_nmea_last_src = 0;
     g_nmea_last_type = 0;
+    DSD_MEMSET(&g_nmea_last_addr, 0, sizeof(g_nmea_last_addr));
+    DSD_MEMSET(&g_lip_last_addr, 0, sizeof(g_lip_last_addr));
     g_utf8_calls = 0;
     g_utf8_last_len = 0;
     g_utf8_first_byte = 0;
@@ -694,6 +708,26 @@ test_udt_text_and_dispatch_formats(void) {
     assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
 }
 
+/* A position report a UDT carries is addressed by the UDT header that its CRC covers: source, destination and I/G. */
+static void
+test_udt_reports_carry_header_destination(void) {
+    uint8_t block[12];
+    for (uint8_t ig = 0U; ig < 2U; ig++) {
+        g_udt_header_ig = ig;
+        build_udt_flag_block(block, 0U);
+        run_udt_single_block(0x05U, block, NULL);
+        assert(g_nmea_calls == 1U);
+        assert(g_nmea_last_addr.source_id == 0x000222U && g_nmea_last_addr.target_id == 0x000111U
+               && g_nmea_last_addr.target_group == ig);
+        build_udt_flag_block(block, 0U);
+        run_udt_single_block(0x0BU, block, NULL);
+        assert(g_lip_calls == 1U);
+        assert(g_lip_last_addr.source_id == 0x000222U && g_lip_last_addr.target_id == 0x000111U
+               && g_lip_last_addr.target_group == ig);
+    }
+    g_udt_header_ig = 0U;
+}
+
 static void
 test_udt_binary_addressing_reserved_and_slot1_paths(void) {
     uint8_t block[12];
@@ -750,6 +784,8 @@ test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
     opts.dmr_crc_relaxed_default = 0;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = 4;
@@ -783,6 +819,8 @@ run_type1_pdu_for_sap(uint8_t sap, const uint8_t block[12]) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = sap;
@@ -836,6 +874,8 @@ run_type1_mnis_pdu_captured(const uint8_t pdu[24], uint8_t poc, const char* cap_
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1083,9 +1123,13 @@ test_type1_mnis_short_pdu_length_underflow_guard(void) {
     DSD_MEMSET(history, 0, sizeof(history));
 
     opts.aggressive_framesync = 0;
+    // A failed packet's report text prints only with -Z (issue #800, fail closed); this test measures it.
+    opts.payload = 1;
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_block_counter[0] = 1;
     state.data_header_format[0] = 2;
@@ -1105,13 +1149,19 @@ test_type1_mnis_short_pdu_length_underflow_guard(void) {
         (void)remove(cap.path);
         return 1;
     }
-    (void)remove(cap.path);
+    static char printed[8192];
+    if (dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+        return 1;
+    }
 
-    // 12 octets arrived and the payload starts at +7, so 5 is the most that can ever be readable.
-    const uint16_t max_readable = (uint16_t)(sizeof(block) - 7U);
-    if (g_utf8_calls == 0U || g_utf8_last_len > max_readable) {
-        DSD_FPRINTF(stderr, "mnis-short-pdu: payload handler got len %u, more than the %u octets received\n",
-                    g_utf8_last_len, max_readable);
+    // 12 octets arrived and the payload starts at +7, so 5 is the most that can ever be readable. The LOCN report's
+    // text prints under its own label (issue #800, D10), one character per octet handed over.
+    const size_t max_readable = sizeof(block) - 7U;
+    const char* text = strstr(printed, "\n LOCN Text: ");
+    const size_t shown = text != NULL ? strcspn(text + strlen("\n LOCN Text: "), "\n\x1b") : 0U;
+    if (text == NULL || shown > max_readable) {
+        DSD_FPRINTF(stderr, "mnis-short-pdu: payload handler got len %zu, more than the %zu octets received\n", shown,
+                    max_readable);
         rc = 1;
     }
     return rc;
@@ -1137,9 +1187,14 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
     DSD_MEMSET(history, 0, sizeof(history));
 
     opts.aggressive_framesync = 0;
+    // The report text of a packet whose checks failed prints only with -Z (issue #800, fail closed); this test reads
+    // that text to measure the length handed over.
+    opts.payload = 1;
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1161,17 +1216,27 @@ test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
         (void)remove(cap.path);
         return 1;
     }
-    (void)remove(cap.path);
+    static char printed[8192];
+    if (dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+        return 1;
+    }
 
     // 24 octets assembled, the payload starts at +7, the CRC32 trailer is 4 and there are no pad
-    // octets, so all 13 remaining octets are readable. The old code handed over 1.
-    if (g_utf8_calls != 1U || g_utf8_last_len != 13U) {
-        DSD_FPRINTF(stderr, "mnis-locn-len: expected one 13 octet text call, got %u calls len %u\n", g_utf8_calls,
-                    g_utf8_last_len);
+    // octets, so all 13 remaining octets are readable. The old code handed over 1. The report's text prints under its
+    // own label (issue #800, D10), never as a "UTF8 Text" dump.
+    const char* text = strstr(printed, "\n LOCN Text: ");
+    if (text == NULL || strncmp(text + strlen("\n LOCN Text: "), "ABCDEFGHIJKLM", 13U) != 0
+        || text[strlen("\n LOCN Text: ") + 13U] == '^') {
+        DSD_FPRINTF(stderr, "mnis-locn-len: expected the 13 octet report text from the +7 payload offset\n");
         rc = 1;
     }
-    if (g_utf8_first_byte != 0x41U) {
-        DSD_FPRINTF(stderr, "mnis-locn-len: text started at %02X, not at the +7 payload offset\n", g_utf8_first_byte);
+    if (g_utf8_calls != 0U) {
+        DSD_FPRINTF(stderr, "mnis-locn-len: the report text went out as %u UTF8 Text dump(s)\n", g_utf8_calls);
+        rc = 1;
+    }
+    // dmr_locn() stages an admitted position itself; the slot text is never staged as the notice's GPS (issue #800).
+    if (dsd_event_staged_gps(&state, 0)[0] != '\0') {
+        DSD_FPRINTF(stderr, "mnis-locn-len: LOCN text staged as GPS: %s\n", dsd_event_staged_gps(&state, 0));
         rc = 1;
     }
     return rc;
@@ -1199,6 +1264,8 @@ test_type1_mnis_notice_labels_match_observation(void) {
     state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 2;
     state.data_block_counter[0] = 2;
     state.data_header_format[0] = 2;
@@ -1329,6 +1396,8 @@ test_type1_encrypted_notice_reports_missing_key(void) {
     opts.aggressive_framesync = 1;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_header_blocks[0] = 1;
     state.data_header_format[0] = 2;
     state.data_header_sap[0] = 4;
@@ -1360,6 +1429,8 @@ test_type2_rejects_out_of_bounds_aggregate_length(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[0]);
     state.data_block_counter[0] = 9;
     state.data_block_crc_valid[0][0] = 1;
 
@@ -1637,6 +1708,8 @@ test_irrecoverable_header_resets_data_state(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     state.currentslot = 1;
     state.data_header_valid[1] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[1]);
     state.data_p_head[1] = 1;
     state.data_conf_data[1] = 1;
     state.data_block_counter[1] = 9;
@@ -2098,6 +2171,8 @@ run_type1_length_case(uint8_t sap, uint8_t width, uint8_t blocks, uint8_t poc, u
     state.event_history_s = history;
     state.currentslot = slot;
     state.data_header_valid[slot] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, &state, &state.dmr_data_origin[slot]);
     state.data_header_blocks[slot] = blocks;
     state.data_header_format[slot] = 2;
     state.data_header_sap[slot] = sap;
@@ -2140,8 +2215,11 @@ test_type1_length_is_received_octets_less_crc_and_pad(void) {
     // The reporter's PDU: nine octets in one rate-3/4 unconfirmed block, 18 - 4 - 5 pad octets.
     rc |= (run_type1_length_case(3U, 18U, 1U, 5U, 0U) != 9U);
     rc |= (run_type1_length_case(4U, 24U, 2U, 7U, 1U) != (uint16_t)(48U - 4U - 7U));
-    // A pad count larger than the data (a relaxed-CRC header) is ignored rather than wrapped.
-    rc |= (run_type1_length_case(3U, 12U, 1U, 20U, 0U) != 8U);
+    // A pad count larger than the data leaves no user data (issue #800, fail closed): never wrapped, never ignored.
+    rc |= (run_type1_length_case(3U, 12U, 1U, 20U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 9U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 8U, 0U) != 0U);
+    rc |= (run_type1_length_case(3U, 12U, 1U, 7U, 0U) != 1U);
     // Widths too narrow to hold a CRC32 carry no data.
     rc |= (run_type1_length_case(3U, 2U, 1U, 0U, 0U) != 0U);
     rc |= (run_type1_length_case(3U, 3U, 1U, 0U, 0U) != 0U);
@@ -2311,6 +2389,7 @@ main(int argc, char** argv) {
     test_reset_blocks_restores_integer_defaults();
     test_udt_iso7_single_block_dispatches_text_event();
     test_udt_text_and_dispatch_formats();
+    test_udt_reports_carry_header_destination();
     test_udt_binary_addressing_reserved_and_slot1_paths();
     test_crc_valid_type1_pdu_dispatches_in_strict_mode();
     test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps();

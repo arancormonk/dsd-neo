@@ -42,6 +42,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -1438,6 +1439,169 @@ test_roaming_prefs() {
     for (const QString& key : {maxKey, marginKey, QStringLiteral("roaming/enabled"), unitKey}) {
         stored.remove(key);
     }
+}
+
+/* Issue #800 (spec 4.8): the map's prefs. Defaults, the values each refuses, damaged stored values, and the view's
+ * write held in memory until it goes to the file. */
+void
+test_map_prefs() {
+    clear_prefs_file();
+    // Taken now: a settings object going writes the file, so the check below must not make one.
+    const QString iniPath = prefs_file().fileName();
+    const auto view = [](double lat, double lon, double zoom) {
+        return QVariantMap{
+            {QStringLiteral("latitude"), lat}, {QStringLiteral("longitude"), lon}, {QStringLiteral("zoom"), zoom}};
+    };
+    const auto near = [](const QVariantMap& got, const QVariantMap& want) {
+        for (const char* key : {"latitude", "longitude", "zoom"}) {
+            if (!got.contains(QLatin1String(key))
+                || std::fabs(got.value(QLatin1String(key)).toDouble() - want.value(QLatin1String(key)).toDouble())
+                       > 1e-6) {
+                return false;
+            }
+        }
+        return got.size() == 3;
+    };
+    {
+        AppPrefs prefs;
+        expect("map: tiles start off", !prefs.mapTilesEnabled());
+        expect("map: the OpenStreetMap template by default",
+               prefs.mapTileUrl() == QStringLiteral("https://tile.openstreetmap.org/{z}/{x}/{y}.png"));
+        expect("map: the OpenStreetMap attribution by default",
+               prefs.mapTileAttribution() == QStringLiteral("\u00A9 OpenStreetMap contributors"));
+        expect("map: every age by default", prefs.mapAgeFilter() == 0);
+        expect("map: no view saved", prefs.mapViewport().isEmpty());
+
+        int tiles = 0;
+        int ages = 0;
+        int views = 0;
+        QObject::connect(&prefs, &AppPrefs::mapTilesChanged, &prefs, [&tiles]() { ++tiles; });
+        QObject::connect(&prefs, &AppPrefs::mapAgeFilterChanged, &prefs, [&ages]() { ++ages; });
+        QObject::connect(&prefs, &AppPrefs::mapViewportChanged, &prefs, [&views]() { ++views; });
+        prefs.setMapTileUrl(QStringLiteral("https://tiles.example.org/{z}/{x}/{y}.png"));
+        prefs.setMapTileUrl(QStringLiteral("https://tiles.example.org/{z}/{x}/{y}.png"));
+        expect("map: a template is kept, once", tiles == 1 && prefs.mapTileUrl().contains("tiles.example.org"));
+        prefs.setMapTileUrl(QString());
+        expect("map: empty text brings the default back", tiles == 2
+                                                              && !prefs_file().contains(QStringLiteral("map/tileUrl"))
+                                                              && prefs.mapTileUrl().contains("tile.openstreetmap.org"));
+        prefs.setMapTileAttribution(QStringLiteral("Example tiles"));
+        prefs.setMapTileAttribution(QString());
+        expect("map: an attribution, then the default again",
+               tiles == 4 && prefs.mapTileAttribution().contains("OpenStreetMap"));
+        for (const int bad : {60, -1, 7200, 1}) {
+            prefs.setMapAgeFilter(bad);
+        }
+        expect("map: an age no pill offers is refused", ages == 0 && !prefs_file().contains("map/ageFilter"));
+        prefs.setMapAgeFilter(3600);
+        prefs.setMapAgeFilter(3600);
+        expect("map: an offered age is kept, once", ages == 1 && prefs.mapAgeFilter() == 3600);
+        prefs.setMapAgeFilter(0);
+        expect("map: and all again", ages == 2 && prefs.mapAgeFilter() == 0);
+
+        constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+        constexpr double kInf = std::numeric_limits<double>::infinity();
+        for (const QVariantMap& bad : {view(86.0, 0, 3), view(-86.0, 0, 3), view(10, 181, 3), view(10, -180.5, 3),
+                                       view(10, 20, -0.5), view(10, 20, 19.5), view(kNan, 20, 3), view(10, kInf, 3),
+                                       view(10, 20, kNan), QVariantMap{{QStringLiteral("latitude"), 10.0}},
+                                       QVariantMap{{QStringLiteral("latitude"), QStringLiteral("north")},
+                                                   {QStringLiteral("longitude"), 20.0},
+                                                   {QStringLiteral("zoom"), 3.0}}}) {
+            prefs.setMapViewport(bad);
+        }
+        expect("map: a view off the map, or not a view, is refused", views == 0 && prefs.mapViewport().isEmpty());
+        prefs.setMapViewport(view(22.5, 45.0, 12.25));
+        expect("map: a view reads back at once", views == 1 && near(prefs.mapViewport(), view(22.5, 45.0, 12.25)));
+        expect("map: and waits before it is written", !prefs_file().contains(QStringLiteral("map/viewport")));
+        prefs.setMapViewport(view(22.5, 45.0, 12.25));
+        expect("map: the same view again is no change", views == 1);
+        prefs.setMapViewport(view(10.0, 20.0, 4.0));
+        expect("map: the newest view wins", views == 2 && near(prefs.mapViewport(), view(10.0, 20.0, 4.0)));
+        // Up to 5 s for the 1 s timer, so a slowed sanitizer run does not flake.
+        for (int i = 0; i < 100 && !prefs_file().contains(QStringLiteral("map/viewport")); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            QCoreApplication::processEvents();
+        }
+        expect("map: a second later the view is in the file", prefs_file().contains(QStringLiteral("map/viewport")));
+        prefs.setMapViewport(view(-30.0, -60.0, 8.0));
+        prefs.onApplicationStateChanged(Qt::ApplicationActive);
+        expect("map: staying in the foreground writes nothing yet",
+               !near(AppPrefs().mapViewport(), view(-30.0, -60.0, 8.0)));
+        prefs.onApplicationStateChanged(Qt::ApplicationSuspended);
+        {
+            // On disk at once, with no event to come: a suspended app may get none.
+            QFile ini(iniPath);
+            expect("map: the settings file opens", ini.open(QIODevice::ReadOnly));
+            expect("map: leaving the foreground writes the held view to the file",
+                   ini.readAll().contains("-300000000"));
+        }
+        expect("map: and a restart reads it", near(AppPrefs().mapViewport(), view(-30.0, -60.0, 8.0)));
+        // The edges of the map are views too: the projection's latitude limit, the antimeridian, both zoom ends.
+        prefs.setMapViewport(view(85.05112877980659, 180.0, 19.0));
+        expect("map: the north-east edge at the closest zoom",
+               near(prefs.mapViewport(), view(85.0511287, 180.0, 19.0)));
+        prefs.setMapViewport(view(-85.05112877980659, -180.0, 0.0));
+        expect("map: the south-west edge at the widest zoom",
+               near(prefs.mapViewport(), view(-85.0511287, -180.0, 0.0)));
+        prefs.setMapTilesEnabled(true);
+        prefs.setMapViewport(view(22.5, 45.0, 12.25));
+    }
+    {
+        const AppPrefs reloaded;
+        expect("map: the switch persists", reloaded.mapTilesEnabled());
+        expect("map: a view held when the app closes is written then",
+               near(reloaded.mapViewport(), view(22.5, 45.0, 12.25)));
+    }
+    {
+        AppPrefs prefs;
+        prefs.setMapViewport({});
+    }
+    expect("map: {} removes the saved view", !prefs_file().contains(QStringLiteral("map/viewport")));
+
+    // What another build or a hand edit leaves reads as no view, or as the default.
+    QSettings stored = prefs_file();
+    for (const QVariant& damaged : {QVariant(QStringLiteral("{\"latE7\":1}")), QVariant(QStringLiteral("not json")),
+                                    QVariant(QStringLiteral("{\"latE7\":900000000,\"lonE7\":0,\"zoomE3\":3000}")),
+                                    QVariant(QStringLiteral("{\"latE7\":1.5,\"lonE7\":0,\"zoomE3\":3000}")),
+                                    QVariant(QStringLiteral("{\"latE7\":0,\"lonE7\":0,\"zoomE3\":20000}")),
+                                    QVariant(QStringList{QStringLiteral("{\"latE7\":0"), QStringLiteral("\"lonE7\":0"),
+                                                         QStringLiteral("\"zoomE3\":3000}")})}) {
+        stored.setValue(QStringLiteral("map/viewport"), damaged);
+        expect("map: a damaged view reads as none", AppPrefs().mapViewport().isEmpty());
+    }
+    stored.setValue(QStringLiteral("map/viewport"),
+                    QStringLiteral("{\"latE7\":225000000,\"lonE7\":-450000000,\"zoomE3\":3500}"));
+    expect("map: a stored view reads in degrees", near(AppPrefs().mapViewport(), view(22.5, -45.0, 3.5)));
+    stored.setValue(QStringLiteral("map/ageFilter"), QStringLiteral("soon"));
+    expect("map: an age that is no number reads as all", AppPrefs().mapAgeFilter() == 0);
+    stored.setValue(QStringLiteral("map/ageFilter"), 120);
+    expect("map: an age no pill offers reads as all", AppPrefs().mapAgeFilter() == 0);
+    // PR2 r2: the tile opt-in turns on only for a value that means true. A hand-edited "off" (which QVariant::toBool()
+    // reads as true), "on", a list or junk reads as off, so opening the map sends nothing.
+    for (const QVariant& notYes :
+         {QVariant(QStringLiteral("off")), QVariant(QStringLiteral("on")), QVariant(QStringLiteral("yes")),
+          QVariant(QStringLiteral("2")), QVariant(QStringList{QStringLiteral("true"), QStringLiteral("true")}),
+          QVariant(QString())}) {
+        stored.setValue(QStringLiteral("map/tilesEnabled"), notYes);
+        expect(qPrintable(QStringLiteral("map: tiles stay off for a stored ") + notYes.toString()),
+               !AppPrefs().mapTilesEnabled());
+    }
+    for (const QVariant& yes : {QVariant(true), QVariant(QStringLiteral("true")), QVariant(QStringLiteral("TRUE")),
+                                QVariant(QStringLiteral("1")), QVariant(1)}) {
+        stored.setValue(QStringLiteral("map/tilesEnabled"), yes);
+        expect(qPrintable(QStringLiteral("map: tiles are on for a stored ") + yes.toString()),
+               AppPrefs().mapTilesEnabled());
+    }
+    // The same rule for every stored switch: junk reads as the switch's default, never as on.
+    stored.setValue(QStringLiteral("listen/background"), QStringLiteral("nope"));
+    expect("prefs: a garbled switch reads as its default (on)", AppPrefs().backgroundListening());
+    stored.setValue(QStringLiteral("listen/background"), QStringLiteral("false"));
+    expect("prefs: a stored false is false", !AppPrefs().backgroundListening());
+    stored.setValue(QStringLiteral("roaming/enabled"), QStringLiteral("off"));
+    expect("prefs: a garbled opt-in reads as its default (off)", !AppPrefs().roamingEnabled());
+    stored.setValue(QStringLiteral("recording/recordCalls"), QStringLiteral("off"));
+    expect("prefs: and so does call recording's", !AppPrefs().recordCalls());
+    clear_prefs_file();
 }
 
 /* The saved-systems sort last chosen, one of five ids, "added" for anything else. */
@@ -2943,6 +3107,15 @@ test_prefs_key_table(void) {
         {"roamingEnabled", true, "roaming/enabled"},
         {"roamingMaxDistanceKm", 50.0, "roaming/maxDistanceKm"},
         {"roamingMarginKm", 5.0, "roaming/marginKm"},
+        // Issue #800: the map's tile source, age filter and view.
+        {"mapTilesEnabled", true, "map/tilesEnabled"},
+        {"mapTileUrl", QStringLiteral("https://tiles.example.org/{z}/{x}/{y}.png"), "map/tileUrl"},
+        {"mapTileAttribution", QStringLiteral("Example tiles"), "map/tileAttribution"},
+        {"mapAgeFilter", 900, "map/ageFilter"},
+        {"mapViewport",
+         QVariantMap{
+             {QStringLiteral("latitude"), 22.5}, {QStringLiteral("longitude"), 45.0}, {QStringLiteral("zoom"), 12.0}},
+         "map/viewport"},
     };
     QStringList covered;
     int writable = 0;
@@ -3032,6 +3205,11 @@ test_prefs_key_table(void) {
         QStringLiteral("location/lastFixAt"),
         QStringLiteral("location/lastLat"),
         QStringLiteral("location/lastLon"),
+        QStringLiteral("map/ageFilter"),
+        QStringLiteral("map/tileAttribution"),
+        QStringLiteral("map/tileUrl"),
+        QStringLiteral("map/tilesEnabled"),
+        QStringLiteral("map/viewport"),
         QStringLiteral("monitor/detailsExpanded"),
         QStringLiteral("roaming/enabled"),
         QStringLiteral("ui/chooseFilesInApp"),
@@ -3082,6 +3260,15 @@ test_prefs_key_table(void) {
            before.contains(QStringLiteral("roaming/maxDistanceKm"))
                && before.contains(QStringLiteral("roaming/marginKm"))
                && !before.contains(QStringLiteral("roaming/enabled")));
+    // Issue #800 (spec 4.8): a backup carries none of the map's keys: the tile URL can hold a key, the view is a place
+    // the user looked at.
+    const QStringList mapKeys = {QStringLiteral("map/tilesEnabled"), QStringLiteral("map/tileUrl"),
+                                 QStringLiteral("map/tileAttribution"), QStringLiteral("map/viewport"),
+                                 QStringLiteral("map/ageFilter")};
+    for (const QString& key : mapKeys) {
+        expect(qPrintable(QStringLiteral("a backup leaves %1 out").arg(key)),
+               file.contains(key) && !portable.contains(key) && !before.contains(key));
+    }
 
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
@@ -3112,6 +3299,9 @@ test_prefs_key_table(void) {
                && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
                && after.value(QStringLiteral("location/lastLat")).toInt() == 9
                && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore"));
+    for (const QString& key : mapKeys) {
+        expect(qPrintable(QStringLiteral("a restore leaves %1 as it was").arg(key)), after.contains(key));
+    }
     expect("unknown keys are ignored", !after.contains(QStringLiteral("not/a/key")));
     {
         AppPrefs fresh;
@@ -3934,6 +4124,7 @@ main(int argc, char** argv) {
     test_listen_section_pref();
     test_systems_sort_pref();
     test_roaming_prefs();
+    test_map_prefs();
     test_hangtime_unreadable_value();
     test_recording_prefs();
     test_analog_max_gap_pref();

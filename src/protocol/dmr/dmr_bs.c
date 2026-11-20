@@ -305,12 +305,14 @@ collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) 
         ctx->tact_okay = 1;
     }
     if (ctx->tact_okay != 1) {
+        dmr_note_unread_burst(opts, state); /* a repeater's burst on a lane its CACH does not name (issue #800) */
         return 0;
     }
 
     ctx->internalslot = dmr_bs_next_slot(ctx);
     ctx->prev_slot = (int8_t)ctx->internalslot;
     state->currentslot = ctx->internalslot;
+    dmr_note_burst_lane(opts, state);
     return 1;
 }
 
@@ -824,11 +826,14 @@ decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ct
         ctx->tact_okay = 1;
     }
     if (ctx->tact_okay != 1) {
+        dmr_note_unread_burst(NULL, state); /* a repeater's burst on a lane its CACH does not name (issue #800) */
         return 0;
     }
 
     ctx->internalslot = ctx->tact_bits[1];
     state->currentslot = ctx->internalslot;
+    /* A repeater's burst on two-slot lanes: no single-slot fold (issue #800, fail closed). */
+    dmr_note_burst_lane(NULL, state);
     dmr_confidence_note_voice_sync(state, ctx->internalslot);
     reset_dmr_bs_slot_keystream_counters(state, ctx->internalslot);
     return 1;

@@ -179,6 +179,14 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* When the input came back from a retune's mute (trunk_tuning.c), for the -Y countdown: no retune armed one here. */
+double
+dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0.0;
+}
+
 /* And its receive-family request count (trunk_tuning.c): no front end takes a live request here. */
 uint32_t
 dsd_engine_scan_family_requests(const dsd_opts* opts) {

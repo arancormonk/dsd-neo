@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -67,7 +68,8 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
     (void)src;
     (void)opts;
@@ -76,6 +78,8 @@ lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, siz
     uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
                  "LIP: 41.500000, -87.250000");
+    // An admitted report is staged for the datagram's own notice.
+    dsd_event_stage_gps(state, slot, state->dmr_embedded_gps[slot]);
 }
 
 void
@@ -99,6 +103,12 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     g_datacall_slot = slot;
     g_datacall_category = category;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    // The consuming notice takes the staged GPS (an admitted LIP report is staged by its decoder) and consumes it;
+    // the staged text stays readable for the cases that check it.
+    if (dsd_event_staged_gps(state, slot)[0] != '\0') {
+        DSD_SNPRINTF(g_datacall_gps, sizeof(g_datacall_gps), "%s", dsd_event_staged_gps(state, slot));
+        dsd_event_stage_gps(state, slot, "");
+    }
     return 0;
 }
 
@@ -237,10 +247,10 @@ build_ipv4_udp_lrrp(uint8_t* out, size_t cap, uint8_t ihl_words) {
     out[p++] = 0x00;
     out[p++] = 0x00; // lon = 0x20000000
 
-    // 0x6C SPEED: raw units 1/100 mph -> 10.00 mph (0x03E8)
+    // 0x6C SPEED: ufloatvar m/s -> 10 m/s (integer 0x0A, fraction 0x00)
     out[p++] = 0x6C;
-    out[p++] = 0x03;
-    out[p++] = 0xE8;
+    out[p++] = 0x0A;
+    out[p++] = 0x00;
 
     // 0x56 HEADING: 2-degree increments -> 90 degrees (45)
     out[p++] = 0x56;

@@ -102,14 +102,15 @@ withoutFragment(QByteArray text) {
     return text;
 }
 
-/** @brief Up to @p limit trailing bytes of the file at @p path; empty if it cannot be read. */
+/** @brief Up to @p limit trailing bytes of the file at @p path; empty if it cannot be read, and then @p failed (when
+ * given) is set. */
 QByteArray
-readTail(const QString& path, qint64 limit) {
+readTail(const QString& path, qint64 limit, bool* failed = nullptr) {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    if (file.size() > limit && !file.seek(file.size() - limit)) {
+    if (!file.open(QIODevice::ReadOnly) || (file.size() > limit && !file.seek(file.size() - limit))) {
+        if (failed != nullptr) {
+            *failed = true;
+        }
         return {};
     }
     return file.readAll();
@@ -139,6 +140,9 @@ bootOf(const QByteArray& record) {
 }
 
 const char kDroppedRecord[] = "[redacted sensitive diagnostic]";
+// Issue #800, D10: what a record holding a received position becomes. Not kDroppedRecord: a position names no key, so
+// the lines after it are not read as the rest of a key's value (StreamCapture::continuesValue()).
+const char kPositionRecord[] = "[redacted position]";
 
 /**
  * @brief What marks a record as key-bearing: a key word, or a key-taking CLI option.
@@ -418,7 +422,9 @@ const MeasurementTemplate kMeasurementTemplates[] = {
     {nullptr, "[SYNC] range:[%.1f,%.1f] dc:", nullptr},
     {nullptr, "(%.2f,%.2f|%.0f\xC2\xB0,%.2f)", nullptr},
     // Positions: LIP and Harris/NMEA reports (dsd_gps.c), DMR LRRP and NMEA LOCN (dmr_pdu.c), M17 GNSS (m17.c). A %s is
-    // the degree glyph (dsd_degrees_glyph(): the sign or " deg") and the hemisphere letter, or the optional time.
+    // the degree glyph (dsd_degrees_glyph(): the sign or " deg") and the hemisphere letter, or the optional time. Their
+    // numbers leave the key scan as every template's do, so a key beside them still drops the record; the record then
+    // reaches no log as it is: holdsReceivedPosition() removes it whole (issue #800, D10).
     {nullptr, "Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf)", nullptr},
     {nullptr, "GPS: %f%s, %f%s;", nullptr},
     {nullptr, "Harris GPS: %.6lf%s, %.6lf%s;", nullptr},
@@ -631,6 +637,153 @@ holdsKeyLabel(const QString& text) {
     return withoutMeasurementFields(withoutSyncLabels(text)).contains(keyLabel());
 }
 
+/*
+ * Issue #800, D10: what marks a record that holds a received position, or a part of one, or belongs to a PDU that
+ * carries one: the label its producer prints on that line. Each entry names the decoder paths whose print text it
+ * matches (at the time of writing); keep it in step when they change, and give every print of a received position or
+ * of a part of one a label here. A record matching any entry is removed whole, its raw payload bytes with it when the
+ * path prints them on that line. A label is the producer's, never the shape of what the air delivered: a part of a
+ * report can look like anything (a D-STAR GPS data block begins wherever the slow data split the record). Dumps that
+ * do not say what they carry (the -Z payload lines "DMR PDU Payload", "P25 MBT Payload", "Short Data Raw", NXDN
+ * "UDCH Data" and "DATA:", D-STAR "SD:", M17 "LSF:"/"pkt:"/"PKT:", CSBK and voice bytes) are kept live: they come
+ * before the decode that names the PDU, and most carry no position (older builds printed "Short Data Raw" and
+ * "UDCH Data" without -Z, so a stored one goes on load: kLegacyPositionForms). A dump printed without -Z of a PDU that
+ * can carry a position has an entry here. Without -Z every decoder line that prints a received
+ * position or a part of one carries one of these labels (UI_QT_DIAGNOSTICS_LOG drives the producers that print
+ * received text to check it, and every producer of a received position to check each part of its report). A contiguous
+ * run of ten or more hex digits is redacted anyway (redact()).
+ */
+// One QRegularExpression fragment per entry; the comment names the decoder paths whose print text it matches.
+const char* const kPositionMarkers[] = {
+    // dsd_gps.c LIP, DMR embedded, APX, NXDN; dmr_pdu.c LRRP details; dstar_slow_data.c APRS
+    "\\b(?:Lat|Lon|Latitude|Longitude|Altitude)\\s*:",
+    // dsd_gps.c GPS:/Harris GPS:/Embedded GPS:/NXDN GPS:; m17.c GNSS GPS:; p25_lcw.c (Harris) GPS Block;
+    // p25p2_vpdu.c L3Harris GPS Location; dstar_slow_data.c "GPS DATA:", the GPS data blocks as they arrive, a part of
+    // a D-PRS record or NMEA sentence each
+    "\\bGPS\\b",
+    // m17.c META and packet GNSS (its "GPS:" line carries the radius, source and station type)
+    "\\bGNSS\\b",
+    // dmr_pdu.c LRRP; and Wrapped LRRP, with each line of a report's details (LRRP Time/Radius/Alt Accuracy/Speed/
+    // Track); dmr_block.c MNIS LRRP
+    "\\bLRRP\\b",
+    // dmr_pdu.c NMEA / LOCN; dmr_block.c MNIS "LOCN Text:", the report's own text
+    "\\bLOCN\\b",
+    // dsd_gps.c UDT NMEA, "NMEA Fix:" and "NMEA:", the checked sentences as received; dmr_block.c UDT NMEA
+    "\\bNMEA\\b",
+    // dsd_gps.c LIP; dmr_dburst.c USBD service 0 ("Location Information Protocol") with its payload; TETRA SDS LIP
+    "\\bLIP\\b|Location Information Protocol|Location Report",
+    // dmr_dburst.c: every USBD's payload, printed without -Z. Fail closed: a reserved or manufacturer-specific
+    // service's bytes (TS 102 361-1 table 9.55) are not known to hold no position.
+    "\\bUSBD - Service\\b",
+    // dmr_pdu.c P25 Tier 2 Location Service; p25p1_pdu_data.c the SAP 48 location service's plain text ("P25 Location
+    // Service Text:")
+    "Location Service",
+    // dsd_gps.c Position Error and Position Calculation Error; dmr_pdu.c Position: (suppressed)
+    "\\bPosition\\b",
+    // dstar_slow_data.c APRS and D-PRS
+    "\\bAPRS\\b|\\bD-?PRS\\b",
+    // dmr_pdu.c and dsd_gps.c Cellocator time and location
+    "\\bCellocator\\b",
+    // dstar_slow_data.c slow data that opens with no known block type: GPS data blocks a record or sentence began in
+    // an earlier superframe ("_UNK:" is D-STAR's alone)
+    "\\b_UNK:",
+};
+
+/*
+ * A backstop beside the labels: the shapes a received position takes as text, for a line no label covers (a raw
+ * short-data payload printed as text, a stored tail from a build whose labels differed). The labels are what the
+ * redaction rests on (kPositionMarkers); no shape exempts anything.
+ */
+const char* const kPositionShapes[] = {
+    // raw NMEA sentences
+    "\\$[A-Z]{2}(?:RMC|GGA|GLL|GNS|VTG),",
+    // a D-PRS record's prefix
+    "\\$\\$CRC",
+    // the LOCN hemisphere form (dmr_locn_parse_fields()): a latitude field and a longitude field in either order,
+    // anything between them; any character at the separator
+    "[NS][0-9]{4}.[0-9]{4}.*[EW][0-9]{5}.[0-9]{4}|[EW][0-9]{5}.[0-9]{4}.*[NS][0-9]{4}.[0-9]{4}",
+    // the D-PRS form (dstar_aprs_parse()): ddmm.hhN, the symbol table (an overlay letter or digit, or '/' or '\\'),
+    // dddmm.hhE
+    "[0-9]{4}\\.[0-9]{2}[NS].[0-9]{5}\\.[0-9]{2}[EW]",
+};
+
+/*
+ * Issue #800, D10, fail closed: the print text older builds (v2.10.0, the first with a saved tail, through the build
+ * before position labels) gave a received position or a part of one under a label kPositionMarkers does not hold. A
+ * stored tail cannot tell which build wrote a record, so a record loaded from it (redactStored()) that matches any of
+ * these goes too, whatever build wrote it: a current build's record under the same label (a DMR or UDT "UTF8 Text:"
+ * message, a D-STAR "TEXT:" message, a -Z "Short Data Raw" or "UDCH Data" dump) is dropped on reload with them. Built
+ * from every default-mode print of a received position, a part of one or the raw bytes of a message that carries one,
+ * from v2.10.0 through this build (the print text did not change between v2.10.0 and the base of issue #800).
+ */
+const char* const kLegacyPositionForms[] = {
+    // p25p1_pdu_data.c SAP 48 location service plain text and dmr_block.c MNIS LOCN report text (utf8_to_text())
+    "\\bUTF8 Text\\s*:",
+    // dstar_slow_data.c fixed-form slow data other than D-PRS: the GPS data blocks, printed as " TEXT: "
+    "\\bTEXT:",
+    // dmr_pdu.c dmr_lrrp_print_details(): a report's time, radius, altitude accuracy, speed and track, each on a line of
+    // its own; m17.c GNSS packet: its radius on a line of its own, with the data source and station type after it
+    "\\bTime: [0-9]{4}\\.[0-9]{2}\\.[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}",
+    "\\bRadius\\s*:",
+    "\\bAlt Accuracy\\s*:",
+    "\\bSpeed\\s*:",
+    "\\bTrack\\s*:",
+    // dsd_gps.c nmea_sentence_checker(): a checked sentence of any type, printed bare after whatever came before it
+    "[$!][A-Z][A-Z0-9]{2,},[^*]*\\*[0-9A-Fa-f]{2}",
+    // Raw dumps older builds printed without -Z, which this build prints only with it: dmr_pdu.c
+    // dmr_sd_pdu_print_raw() (a LOCN position's bytes, bracketed) and nxdn_deperm.c nxdn_print_udch_data() (a data
+    // call's bytes, then their ASCII form: a part of an NMEA sentence or of a report)
+    "\\bShort Data Raw\\s*:",
+    "\\bUDCH Data\\s*:",
+};
+
+/** @brief One alternation of @p entries, each a QRegularExpression fragment. */
+template <size_t N>
+QRegularExpression
+alternationOf(const char* const (&entries)[N]) {
+    QStringList alternatives;
+    for (const char* entry : entries) {
+        alternatives.append(QStringLiteral("(?:") + QString::fromUtf8(entry) + QLatin1Char(')'));
+    }
+    return QRegularExpression(alternatives.join(QLatin1Char('|')));
+}
+
+/** @brief Whether @p text carries a producer's label for a received position (kPositionMarkers). */
+bool
+namesPositionProducer(const QString& text) {
+    static const QRegularExpression markers = alternationOf(kPositionMarkers);
+    return text.contains(markers);
+}
+
+/**
+ * @brief Whether @p text holds a position received over the air (issue #800, D10), which no log or export keeps.
+ *
+ * A record carrying a producer's label (kPositionMarkers); else, as a backstop, one matching a position's shape
+ * (kPositionShapes), holding a pair of decimal degrees with at least four places (the producers print five or six; a
+ * frequency or a measurement with its unit is no coordinate), or a degrees-and-minutes pair (NMEA, APRS; the minutes'
+ * fraction is optional, as nmea_parse_coordinate() reads it). A label can stand on a record with no coordinates
+ * ("LIP: truncated;"); the record goes too. The device's own location is never logged.
+ */
+bool
+holdsReceivedPosition(const QString& text) {
+    static const QRegularExpression shapes = alternationOf(kPositionShapes);
+    static const QRegularExpression degrees(
+        QStringLiteral("(?<![0-9.])[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9])\\s*(?:\\x{00B0}|deg)?\\s*[NSns]?\\s*[,/;]?\\s*"
+                       "[-+]?[0-9]{1,3}\\.[0-9]{4,}(?![0-9.])(?!\\s*(?:[kMG]?Hz|dB|ppm|ms\\b|s\\b|%))"));
+    static const QRegularExpression minutes(QStringLiteral(
+        "(?<![0-9])[0-9]{4}(?:\\.[0-9]*)?\\s*,?\\s*[NS]\\b.{0,3}?(?<![0-9])[0-9]{5}(?:\\.[0-9]*)?\\s*,?\\s*"
+        "[EW]\\b"));
+    return namesPositionProducer(text) || text.contains(shapes) || text.contains(degrees) || text.contains(minutes);
+}
+
+/** @brief Whether @p text carries a label an older build printed a received position or a part of one under
+ * (kLegacyPositionForms). */
+bool
+holdsLegacyPosition(const QString& text) {
+    static const QRegularExpression forms = alternationOf(kLegacyPositionForms);
+    return text.contains(forms);
+}
+
 QString
 withoutAnsi(QString text) {
     static const QRegularExpression ansi(QStringLiteral("\\x1b\\[[0-?]*[ -/]*[@-~]"));
@@ -737,7 +890,7 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
         context.clear();
         for (const qsizetype at : contextAt) {
             if (at >= 0 && at < *keepFrom) {
-                context.append(DiagnosticsLog::redact(QString::fromUtf8(lines.at(at))));
+                context.append(QString::fromUtf8(lines.at(at)));
             }
         }
         if (context.size() == reserved) {
@@ -745,6 +898,67 @@ droppedContext(const QList<QByteArray>& lines, std::initializer_list<qsizetype> 
         }
         reserved = static_cast<int>(context.size());
     }
+}
+
+/**
+ * @brief Issue #800, D10, fail closed: the records of a stored segment's @p text as a load shows them, each through
+ * DiagnosticsLog::redactStored(), one per line.
+ *
+ * A record an older build stored with a position in it (or one under a label those builds used for one) leaves the
+ * files as well as the rings: what this returns is what the load writes back. A line holding a NUL (what a crash
+ * leaves where data was never written), an empty line and an unterminated last line are no records and go.
+ */
+QByteArray
+storedRecords(const QByteArray& text) {
+    QByteArray records;
+    records.reserve(text.size());
+    for (const auto& line : withoutFragment(text).split('\n')) {
+        if (!line.isEmpty() && !line.contains('\0')) {
+            records += DiagnosticsLog::redactStored(QString::fromUtf8(line)).toUtf8();
+            records += '\n';
+        }
+    }
+    return records;
+}
+
+/**
+ * @brief Puts the scrubbed @p records in place of the segment at @p path when they differ from @p stored, what it held:
+ * rewritten, or removed when the rewrite fails, so no record the load removed stays on the device (issue #800, D10).
+ * The rewritten segment keeps the modification time it had, so the scrub never restarts its seven days
+ * (cleanDirectory()).
+ */
+void
+replaceStoredRecords(const QString& path, const QByteArray& stored, const QByteArray& records) {
+    if (records == stored) {
+        return;
+    }
+    const QDateTime modified = QFileInfo(path).lastModified();
+    const bool replaced = records.isEmpty() ? QFile::remove(path) : replaceFile(path, records);
+    if (!replaced) {
+        if (QFileInfo::exists(path)) {
+            (void)QFile::remove(path);
+        }
+        return;
+    }
+    QFile file(path);
+    if (!records.isEmpty() && modified.isValid() && file.open(QIODevice::Append)) {
+        (void)file.setFileTime(modified, QFileDevice::FileModificationTime);
+    }
+}
+
+/**
+ * @brief Up to @p limit trailing bytes of the stored segment at @p path, for loadSegments(). A segment file that exists
+ * but cannot be read cannot be scrubbed, so it is removed (issue #800, D10, fail closed); anything else at the path
+ * (a folder) is left alone.
+ */
+QByteArray
+readStoredSegment(const QString& path, qint64 limit) {
+    bool failed = false;
+    QByteArray bytes = readTail(path, limit, &failed);
+    if (failed && QFileInfo(path).isFile()) {
+        (void)QFile::remove(path);
+    }
+    return bytes;
 }
 
 /**
@@ -1026,11 +1240,31 @@ DiagnosticsLog::redact(QString text) {
     if (holdsKeyLabel(text)) {
         return QLatin1String(kDroppedRecord);
     }
+    // Issue #800, D10: after the key rule, which it leaves as it was. A stored record an older build kept is redacted
+    // again when it is loaded (redactStored()), so no copy or share of the log holds one either.
+    if (holdsReceivedPosition(text)) {
+        return QLatin1String(kPositionRecord);
+    }
     static const QRegularExpression hex(QStringLiteral("(?i)[0-9a-f]{10,}"));
     text.replace(hex, QStringLiteral("[redacted]"));
     text.replace(QChar('\r'), QChar(' '));
     text.replace(QChar('\n'), QChar(' '));
     return text;
+}
+
+QString
+DiagnosticsLog::redactStored(const QString& text) {
+    QString redacted = redact(text);
+    // Issue #800, D10, fail closed: a record the key or position rule already removed stays as that rule left it.
+    if (redacted == QLatin1String(kDroppedRecord) || redacted == QLatin1String(kPositionRecord)) {
+        return redacted;
+    }
+    return holdsLegacyPosition(withoutAnsi(text)) ? QString::fromLatin1(kPositionRecord) : redacted;
+}
+
+bool
+DiagnosticsLog::namesPositionProducerForTest(const QString& text) {
+    return namesPositionProducer(withoutAnsi(text));
 }
 
 std::pair<int, int>
@@ -1137,9 +1371,12 @@ DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) con
     const QString prevPath = filePath(segments.previous);
     const qint64 limit = segments.limit;
     const qint64 total = 2 * limit;
-    QByteArray prev = withoutFragment(readTail(prevPath, 2 * total));
-    QByteArray tail = withoutFragment(readTail(tailPath, 2 * total));
-    if (prev.size() > limit || tail.size() > limit) {
+    const QByteArray prevStored = readStoredSegment(prevPath, 2 * total);
+    const QByteArray tailStored = readStoredSegment(tailPath, 2 * total);
+    QByteArray prev = withoutFragment(prevStored);
+    QByteArray tail = withoutFragment(tailStored);
+    const bool split = prev.size() > limit || tail.size() > limit;
+    if (split) {
         // An older build's single tail (up to 256 KiB), or anything else over a segment: split at line starts
         // into the two bounded segments, keeping no more than before. A current segment over the cap is an
         // older build's tail that was never split (this writer rotates first), so it alone is the record: a
@@ -1147,13 +1384,27 @@ DiagnosticsLog::loadSegments(const Segments& segments, qsizetype* currentAt) con
         const QByteArray all = lineAlignedTail(tail.size() > limit ? tail : prev + tail, total);
         tail = lineAlignedTail(all, limit);
         prev = lineAlignedTail(all.left(all.size() - tail.size()), limit);
+    }
+    // Issue #800, D10, fail closed: what the segments hold is scrubbed as it loads (storedRecords(); a replacement
+    // record can be longer than the line it replaces, so each stays within its bound), and only the scrubbed records
+    // are written back, so no file keeps a record the load removed.
+    prev = lineAlignedTail(storedRecords(prev), limit);
+    tail = lineAlignedTail(storedRecords(tail), limit);
+    if (split) {
         // The current segment is rewritten only once the previous one holds its prefix: until then the unsplit tail
-        // stays the record, and the next load splits it again.
+        // stays the record, and the next load splits it again. A segment the split could not write is scrubbed in
+        // place, or removed when that fails too.
         const bool prevWritten =
             prev.isEmpty() ? (!QFileInfo::exists(prevPath) || QFile::remove(prevPath)) : replaceFile(prevPath, prev);
-        if (prevWritten) {
-            (void)replaceFile(tailPath, tail);
+        if (!prevWritten) {
+            replaceStoredRecords(prevPath, prevStored, storedRecords(prevStored));
         }
+        if (!prevWritten || !replaceFile(tailPath, tail)) {
+            replaceStoredRecords(tailPath, tailStored, storedRecords(tailStored));
+        }
+    } else {
+        replaceStoredRecords(prevPath, prevStored, prev);
+        replaceStoredRecords(tailPath, tailStored, tail);
     }
     const QByteArray all = prev + tail;
     QByteArray bounded = lineAlignedTail(all, total);
@@ -1203,7 +1454,7 @@ DiagnosticsLog::seedRing(const QByteArray& text) {
         m_protectedPrevious.append(pushRingLocked(line));
     }
     for (qsizetype i = keepFrom; i < lines.size(); ++i) {
-        const quint64 id = pushRingLocked(redact(QString::fromUtf8(lines.at(i))));
+        const quint64 id = pushRingLocked(QString::fromUtf8(lines.at(i)));
         if (i == lastProcessAt || i == lastSessionAt) {
             m_protectedPrevious.append(id);
         }
@@ -1243,7 +1494,7 @@ DiagnosticsLog::seedHostRing(const QByteArray& text, qsizetype currentAt) {
         } else if (line.startsWith(kSessionPrefix)) {
             lastSession = line;
         }
-        lines.append(redact(QString::fromUtf8(line)));
+        lines.append(QString::fromUtf8(line));
     }
     // The newest records that fit beside the divider.
     lines = lines.mid(std::max<qsizetype>(0, lines.size() - (kHostRingLimit - 1)));

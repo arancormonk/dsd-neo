@@ -339,12 +339,14 @@ target_link_libraries(
 )
 
 # No-op DMR unit activity producers and the core reason tables, for tests that compile the DMR CSBK or data decoders
-# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. The targets that need it
-# are listed once, after they are defined (_dsd_dmr_decoder_stub_targets).
+# (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. Also no-op LIP and
+# Cellocator service decoders for tests that compile dmr_pdu.c and define neither. The targets that need it are listed
+# once, after they are defined (_dsd_dmr_decoder_stub_targets).
 add_library(
     dsd-neo_test_dmr_decoder_stubs
     STATIC
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_unit_activity_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_pdu_service_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity_reason.c
 )
 target_include_directories(
@@ -705,6 +707,19 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_CORE_DMR_KEY_MAP
   dsd-neo/core/dmr_key_map.h
   C
+)
+# The attribution rule position producers borrow a call's identity by (issue #800).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_attribution
+  HEADERS_PUBLIC_CORE_POSITION_ATTRIBUTION
+  dsd-neo/core/position_attribution.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_attribution_cxx
+  HEADERS_PUBLIC_CORE_POSITION_ATTRIBUTION_CXX
+  dsd-neo/core/position_attribution.h
+  CXX
 )
 # The trunk-scan list spec opts, the next start and the user config share (issue #697).
 dsd_neo_add_public_header_smoke_test(
@@ -1427,6 +1442,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/history_tap.h
   CXX
 )
+# Issue #800: the published position feed's cursor view, read by the Qt app.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_position_view
+  HEADERS_PUBLIC_APP_CONTROL_POSITION_VIEW
+  dsd-neo/app_control/position_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_position_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_POSITION_VIEW_CXX
+  dsd-neo/app_control/position_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_wav_journal
   HEADERS_PUBLIC_CORE_WAV_JOURNAL
@@ -1692,6 +1720,18 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_CORE_SOURCE_ALIAS
   dsd-neo/core/source_alias.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position
+  HEADERS_PUBLIC_CORE_POSITION
+  dsd-neo/core/position.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_position_cxx
+  HEADERS_PUBLIC_CORE_POSITION_CXX
+  dsd-neo/core/position.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_unit_activity
@@ -2011,7 +2051,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dstar_header_utils
-    PRIVATE dsd-neo_proto_dstar
+    PRIVATE dsd-neo_proto_dstar dsd-neo_test_support
 )
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
@@ -2021,7 +2061,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/audio/dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
@@ -2037,7 +2079,9 @@ add_executable(
     dsd-neo_test_dstar_confirm
     protocol/dstar/test_dstar_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_sd_state.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
@@ -2048,6 +2092,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dstar_confirm PRIVATE dsd-neo_platform)
 add_test(NAME DSTAR_CONFIRM COMMAND dsd-neo_test_dstar_confirm)
+
+# Issue #800 2.10: a D-PRS position only from a whole GPS-A record whose CRC-16/X.25 matches, collected across
+# superframes, bounded and bound to its call; real slow-data decoder, call state, history and feed.
+add_executable(dsd-neo_test_dstar_dprs protocol/dstar/test_dstar_dprs.c)
+target_include_directories(
+    dsd-neo_test_dstar_dprs
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dstar
+)
+target_link_libraries(dsd-neo_test_dstar_dprs PRIVATE dsd-neo_proto_dstar)
+add_test(NAME DSTAR_DPRS COMMAND dsd-neo_test_dstar_dprs)
 
 add_executable(
     dsd-neo_test_dstar_sync_dispatch
@@ -2506,6 +2562,58 @@ foreach(
     else()
         target_link_libraries(
             ${_dsd_nxdn_dmr_target}
+            PRIVATE
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                dsd-neo_test_support
+        )
+    endif()
+endforeach()
+
+# Position reports in NXDN and ASCII NMEA data (issue #800): the NMEA sentence parser and producer with the P25 SAP 48
+# packet path, and the NXDN GPS report through the data call dispatch (header binding, field bounds). Both reach the
+# real event layer, feed and -L writer through the same library group as the NXDN tests above.
+add_executable(dsd-neo_test_core_nmea_sentence core/test_core_nmea_sentence.c)
+target_include_directories(
+    dsd-neo_test_core_nmea_sentence
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/core/gps
+)
+add_test(NAME CORE_NMEA_SENTENCE COMMAND dsd-neo_test_core_nmea_sentence)
+
+add_executable(
+    dsd-neo_test_nxdn_gps_dispatch
+    protocol/nxdn/test_nxdn_gps_dispatch.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_gps_dispatch
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_GPS_DISPATCH COMMAND dsd-neo_test_nxdn_gps_dispatch)
+
+foreach(
+    _dsd_position_target
+    IN
+    ITEMS dsd-neo_test_core_nmea_sentence dsd-neo_test_nxdn_gps_dispatch
+)
+    if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            ${_dsd_position_target}
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_nxdn
+                dsd-neo_proto_p25
+                dsd-neo_proto_dmr
+                dsd-neo_core
+                "-Wl,--end-group"
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            ${_dsd_position_target}
             PRIVATE
                 dsd-neo_proto_nxdn
                 dsd-neo_proto_p25
@@ -5073,6 +5181,47 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_spectrum_trace_geometry
 )
 
+# The map's Web Mercator arithmetic (map_math.h), header-only and Qt-free like
+# spectrum_math.h: projection from fixed-point positions, the tiles a view at a
+# fractional zoom needs, the wrap at 180 degrees, the pinch anchor, taps and
+# fit-to-markers. A slip in any of them draws a radio in the wrong place.
+add_executable(dsd-neo_test_ui_qt_map_math ui/test_ui_qt_map_math.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_math
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+# IEEE semantics, as dsd-neo_ui_qt builds its includers: the non-finite cases
+# check guards that fast-math would compile out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE -fno-fast-math)
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_math PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_MATH COMMAND dsd-neo_test_ui_qt_map_math)
+
+# The map's trails, accuracy circles and marker sprites as triangles
+# (map_geometry.h, header-only over the spectrum trace's stroke builder):
+# breaks never bridged, real dashes, circles that cover each pixel once and
+# stay cheap far larger than the view, sprites on whole device pixels.
+add_executable(
+    dsd-neo_test_ui_qt_map_geometry
+    ui/test_ui_qt_map_geometry.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_map_geometry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_map_geometry
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(dsd-neo_test_ui_qt_map_geometry PRIVATE /fp:precise)
+endif()
+add_test(NAME UI_QT_MAP_GEOMETRY COMMAND dsd-neo_test_ui_qt_map_geometry)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -5109,6 +5258,8 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
+    # Issue #800: the map prefs refuse NaN and infinite views, which fast-math folds away.
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_persistence)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
     add_executable(
@@ -5249,6 +5400,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
@@ -5275,6 +5427,54 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_site_roaming PROPERTIES AUTOMOC ON)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_site_roaming)
     add_test(NAME UI_QT_SITE_ROAMING COMMAND dsd-neo_test_ui_qt_site_roaming)
+    set_tests_properties(
+        UI_QT_SITE_ROAMING
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # #800: the location feed GPS roaming and the map share (idempotent named leases over the host's one feed, a
+    # restart once per foreground epoch move with the notice first, host replacement, permission changes), and the
+    # one-shot location broker (overlapping requesters, cancel, stale ids, an answer inside the call), each over a
+    # scripted host.
+    foreach(_location_case IN ITEMS feed requests)
+        string(TOUPPER "${_location_case}" _location_case_upper)
+        add_executable(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            ui/test_ui_qt_location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_${_location_case}.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/qt
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PRIVATE QT_NO_KEYWORDS
+        )
+        set_target_properties(
+            dsd-neo_test_ui_qt_location_${_location_case}
+            PROPERTIES AUTOMOC ON
+        )
+        add_test(
+            NAME UI_QT_LOCATION_${_location_case_upper}
+            COMMAND dsd-neo_test_ui_qt_location_${_location_case}
+        )
+        set_tests_properties(
+            UI_QT_LOCATION_${_location_case_upper}
+            PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        )
+    endforeach()
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
@@ -5338,6 +5538,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
@@ -5382,6 +5583,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
@@ -5546,6 +5748,38 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_IMPORT_TRANSPORT
         COMMAND dsd-neo_test_ui_qt_import_transport
+    )
+
+    # The licences screen's text: where the source code of the Qt version built with is, then every file the
+    # package's notice index names, in its order (missing ones shown as missing).
+    add_executable(
+        dsd-neo_test_ui_qt_license_notices
+        ui/test_ui_qt_license_notices.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE Qt6::Gui dsd-neo_crypto dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_license_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_license_notices
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LICENSE_NOTICES
+        COMMAND dsd-neo_test_ui_qt_license_notices
     )
 
     # Closing the app so a drive opens after a restart (#830): refused while a copy runs, the session stopped and
@@ -5825,6 +6059,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -5886,6 +6121,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -5943,6 +6179,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/sign_in_autofill.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -6215,6 +6452,17 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
             ui/qml_spectrum_stub.cpp
+            # Issue #800: the map canvas, its tile worker on a canned transport, and the production track model over
+            # a canned position stream (ui/qml_map_stub.cpp): no network, no decoder.
+            ui/qml_map_stub.h
+            ui/qml_map_stub.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -6254,6 +6502,9 @@ if(DSD_ENABLE_QT_UI)
             # Issue #786: GPS roaming's executor and its decision core, which Main drives.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_roaming_controller.cpp
+            # Issue #800: the location feed roaming shares, and the one-shot location broker.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
@@ -6429,11 +6680,24 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
         )
+        # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
+        # an index naming it and a file the folder lacks, as the APK staging writes one.
+        set(_dsd_test_notice_dir "${CMAKE_CURRENT_BINARY_DIR}/qml-notices")
+        file(
+            WRITE "${_dsd_test_notice_dir}/notice-index.txt"
+            "LICENSE\nlicenses/gone.txt\n"
+        )
         qt_add_resources(
             dsd-neo_test_ui_qt_qml "test_license_notices"
-            PREFIX "/dsdneo/notices"
+            PREFIX "/dsdneo/test-notices"
             BASE "${PROJECT_SOURCE_DIR}"
             FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+        )
+        qt_add_resources(
+            dsd-neo_test_ui_qt_qml "test_license_notice_index"
+            PREFIX "/dsdneo/test-notices"
+            BASE "${_dsd_test_notice_dir}"
+            FILES "${_dsd_test_notice_dir}/notice-index.txt"
         )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS
@@ -6508,6 +6772,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -6555,6 +6821,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -6584,6 +6852,68 @@ add_test(
     COMMAND dsd-neo_test_app_control_snapshot_unit_activity
 )
 
+# Issue #800: the published position ring and its cursor view: drains, gaps, stream restarts, the clock sample, copy
+# counts, no allocation (counted through GNU ld --wrap where it links) and concurrent readers (run it under tsan too).
+add_executable(
+    dsd-neo_test_app_control_position_view
+    ui/test_app_control_position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/unit_activity.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_position_view
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_position_view
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_position_view
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_test_audio_activity
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+if(NOT APPLE AND NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(
+        dsd-neo_test_app_control_position_view
+        PRIVATE DSD_TEST_POSITION_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_control_position_view
+        PRIVATE
+            "LINKER:--wrap=malloc"
+            "LINKER:--wrap=calloc"
+            "LINKER:--wrap=realloc"
+    )
+endif()
+add_test(
+    NAME APP_CONTROL_POSITION_VIEW
+    COMMAND dsd-neo_test_app_control_position_view
+)
+
 # Issue #708: the History tap, the second reader of the published history, against a racing publisher and the single
 # consumer (run it under the tsan preset too).
 add_executable(
@@ -6606,6 +6936,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
@@ -6849,6 +7181,218 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
+
+# Issue #800: the map's tile fetch. The public suite runs against the library as
+# shipped (with libcurl it also cancels a stalled HTTPS transfer on a loopback
+# socket). The NO_CURL build compiles tile_fetch.c alone without USE_CURL on
+# every configure, so the stub is pinned even where libcurl is installed.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH
+  dsd-neo/runtime/tile_fetch.h
+  C
+)
+# Also as C++: the Qt tile worker is the consumer.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_tile_fetch_cxx
+  HEADERS_PUBLIC_RUNTIME_TILE_FETCH_CXX
+  dsd-neo/runtime/tile_fetch.h
+  CXX
+)
+add_executable(
+    dsd-neo_test_runtime_tile_fetch
+    runtime/test_runtime_tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_tile_fetch PRIVATE dsd-neo_runtime)
+# test_env.h: the loopback cases clear any proxy the runner exports.
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch
+    PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+# On POSIX the executable answers its own getaddrinfo() (and can hold it), so the
+# test can cancel a fetch while its name lookup hangs.
+if(NOT WIN32)
+    target_sources(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE test_support/fake_getaddrinfo.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_tile_fetch
+        PRIVATE DSD_TILE_FETCH_TEST_FAKE_RESOLVER
+    )
+endif()
+add_test(NAME RUNTIME_TILE_FETCH COMMAND dsd-neo_test_runtime_tile_fetch)
+
+add_executable(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    runtime/test_runtime_tile_fetch.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/runtime
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE DSD_TILE_FETCH_TEST_STANDALONE
+)
+target_link_libraries(
+    dsd-neo_test_runtime_tile_fetch_no_curl
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_TILE_FETCH_NO_CURL
+    COMMAND dsd-neo_test_runtime_tile_fetch_no_curl
+)
+
+# The built-in libcurl transport with every easy-handle call routed through the
+# test (DSD_TILE_FETCH_TEST_HOOKS): options and their values, fail-closed setup,
+# caps and cancel, with no network. Built a second time with the curl version
+# forced below 7.85 for the CURLOPT_PROTOCOLS branch. A forced version only ever
+# lowers the installed headers' one, and the test picks its expectations from the
+# same effective version, so both build on every supported curl (7.56 and up).
+# CURL_DISABLE_DEPRECATION because both name CURLOPT_PROTOCOLS, deprecated in
+# current headers.
+if(DSD_HAS_CURL)
+    foreach(
+        _tile_variant
+        IN
+        ITEMS
+            "tile_fetch_curl;RUNTIME_TILE_FETCH_CURL;"
+            "tile_fetch_curl_pre_7_85;RUNTIME_TILE_FETCH_CURL_PRE_7_85;DSD_TILE_FETCH_TEST_CURL_VERSION_NUM=0x075400"
+    )
+        list(GET _tile_variant 0 _tile_target)
+        list(GET _tile_variant 1 _tile_test)
+        list(GET _tile_variant 2 _tile_define)
+        add_executable(
+            dsd-neo_test_runtime_${_tile_target}
+            runtime/test_runtime_tile_fetch_curl.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE
+                DSD_TILE_FETCH_TEST_HOOKS
+                CURL_DISABLE_DEPRECATION
+                ${_tile_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_tile_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME ${_tile_test}
+            COMMAND dsd-neo_test_runtime_${_tile_target}
+        )
+    endforeach()
+
+    # dsd_curl_perform_cancellable() branch by branch, its multi-interface calls
+    # routed through the test (DSD_CURL_COMMON_TEST_HOOKS). Built a second time
+    # with the curl version forced to 7.65 for the curl_multi_wait branch. Quick
+    # exit (8.20) and curl_multi_poll (7.66) are each chosen from the effective
+    # version, which a forced one only lowers.
+    foreach(
+        _cc_variant
+        IN
+        ITEMS
+            "curl_cancellable;RUNTIME_CURL_CANCELLABLE;"
+            "curl_cancellable_pre_7_66;RUNTIME_CURL_CANCELLABLE_PRE_7_66;DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=0x074100"
+    )
+        list(GET _cc_variant 0 _cc_target)
+        list(GET _cc_variant 1 _cc_test)
+        list(GET _cc_variant 2 _cc_define)
+        add_executable(
+            dsd-neo_test_runtime_${_cc_target}
+            runtime/test_runtime_curl_cancellable.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE DSD_CURL_COMMON_TEST_HOOKS ${_cc_define}
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_${_cc_target}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(NAME ${_cc_test} COMMAND dsd-neo_test_runtime_${_cc_target})
+    endforeach()
+
+    # The built-in transport with the real libcurl against a loopback server, over
+    # plain http (DSD_TILE_FETCH_TEST_PLAIN_HTTP; the shipped library is https
+    # only): an answer over the body cap keeps its status and the header lines
+    # libcurl delivered (Retry-After), with a declared length and without.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            runtime/test_runtime_tile_fetch_plain_http.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/tile_fetch.c
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+                ${PROJECT_SOURCE_DIR}/tests/test_support
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP
+        )
+        target_link_libraries(
+            dsd-neo_test_runtime_tile_fetch_plain_http
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+        add_test(
+            NAME RUNTIME_TILE_FETCH_PLAIN_HTTP
+            COMMAND dsd-neo_test_runtime_tile_fetch_plain_http
+        )
+    endif()
+
+    # Build checks, no test: curl_common.c as shipped (no hooks) with the curl
+    # version forced below 8.20 (no CURLMOPT_QUICK_EXIT) and below 7.66
+    # (curl_multi_wait), so warnings-as-errors catches code that only compiles
+    # against current headers. A forced version above the installed one is
+    # ignored (curl_common.c clamps it), so older headers build these too.
+    foreach(_cc_old_version IN ITEMS 0x081300 0x074100)
+        add_library(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            OBJECT
+            ${PROJECT_SOURCE_DIR}/src/runtime/curl_common.c
+        )
+        target_include_directories(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/runtime
+        )
+        target_compile_definitions(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE DSD_CURL_COMMON_TEST_CURL_VERSION_NUM=${_cc_old_version}
+        )
+        target_link_libraries(
+            dsd-neo_test_build_curl_common_${_cc_old_version}
+            PRIVATE dsd-neo_platform dsd-neo_feature_curl
+        )
+    endforeach()
+endif()
 
 # rr_import.c is pure policy - no transport, no parser - and compiles
 # unconditionally, so its suite is registered outside the expat gate below.
@@ -7411,6 +7955,25 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         NAME CORE_EVENTS_STAGED_PAYLOAD
         COMMAND dsd-neo_test_core_events_staged_payload
     )
+
+    # History rows carry the admitted position (issue #800): the position writers, push, staging, merge, snapshot.
+    add_executable(
+        dsd-neo_test_core_event_position
+        core/test_core_event_position.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_event_position
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_event_position
+        PRIVATE dsd-neo_core dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_core_event_position
+        PRIVATE "LINKER:--wrap=beeper"
+    )
+    add_test(NAME CORE_EVENT_POSITION COMMAND dsd-neo_test_core_event_position)
 
     add_executable(
         dsd-neo_test_core_call_alert_history
@@ -7991,6 +8554,44 @@ target_link_libraries(
         ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME CORE_UNIT_ACTIVITY COMMAND dsd-neo_test_core_unit_activity)
+
+# The verified position feed (issue #800): admission, scopes and labels, the repeat rule, the ring and its stream.
+add_executable(dsd-neo_test_core_position_feed core/test_core_position_feed.c)
+target_include_directories(
+    dsd-neo_test_core_position_feed
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_position_feed
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_POSITION_FEED COMMAND dsd-neo_test_core_position_feed)
+
+# The attribution rule producers that borrow a call's identity use, as a matrix (issue #800).
+add_executable(
+    dsd-neo_test_core_position_attribution
+    core/test_core_position_attribution.c
+)
+target_include_directories(
+    dsd-neo_test_core_position_attribution
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_position_attribution
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_runtime
+        dsd-neo_platform
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME CORE_POSITION_ATTRIBUTION
+    COMMAND dsd-neo_test_core_position_attribution
+)
 
 # The unit activity reason tables; the P25 ones against the P25 prints' former table.
 add_executable(
@@ -9022,6 +9623,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_analog_profile"
             "-Wl,--wrap=rtl_stream_get_request_rate_hz"
             "-Wl,--wrap=rtl_stream_get_complex_rate_hz"
+            "-Wl,--wrap=rtl_stream_input_listening_since_ns"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=SetModulation"
@@ -9687,7 +10289,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
-# The engine commits and publishes the last call before the frontends' stop hooks.
+# The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
+# the published position sample (app-control, issue #800) reads the run as stopped.
 add_executable(
     dsd-neo_test_engine_lifecycle_finalize
     engine/test_engine_lifecycle_finalize.c
@@ -9698,7 +10301,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_engine_lifecycle_finalize
-    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    PRIVATE dsd-neo_engine dsd-neo_app_control ${LIBS} dsd-neo_test_support
 )
 add_test(
     NAME ENGINE_LIFECYCLE_FINALIZE
@@ -10755,7 +11358,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"
             "LINKER:--wrap=dsd_engine_signal_search_active"
-            "LINKER:--wrap=dmr_data_burst_handler"
+            "LINKER:--wrap=dmr_data_burst_handler_origin"
             "LINKER:--wrap=dsd_audio_write"
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
@@ -12547,6 +13150,105 @@ target_link_libraries(
 )
 add_test(NAME P25_P1_TDULC COMMAND dsd-neo_test_p25_p1_tdulc)
 
+# P25 P1 L3Harris GPS updates through the real link control dispatch, decoder, admission, history and -L (issue #800)
+add_executable(
+    dsd-neo_test_p25_p1_harris_gps
+    protocol/p25/test_p25_p1_harris_gps.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_harris_gps
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p1_harris_gps
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p1_harris_gps
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P1_HARRIS_GPS COMMAND dsd-neo_test_p25_p1_harris_gps)
+
+# DMR embedded GPS attribution through the real full-LC dispatch: the attribution rule's reception (issue #800)
+add_executable(
+    dsd-neo_test_dmr_embedded_gps_attribution
+    protocol/dmr/test_dmr_embedded_gps_attribution.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_embedded_gps_attribution
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_dmr_embedded_gps_attribution
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_dmr_embedded_gps_attribution
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME DMR_EMBEDDED_GPS_ATTRIBUTION
+    COMMAND dsd-neo_test_dmr_embedded_gps_attribution
+)
+
+# P25 P2 L3Harris GPS through the real MAC dispatch, trunk SM identity verdicts, decoder, admission and -L (issue #800)
+add_executable(
+    dsd-neo_test_p25_p2_harris_gps
+    protocol/p25/test_p25_p2_harris_gps.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_harris_gps
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_harris_gps
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_harris_gps
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P2_HARRIS_GPS COMMAND dsd-neo_test_p25_p2_harris_gps)
+
 # P25 P1 TDULC should not force immediate CC return
 add_executable(
     dsd-neo_test_p25_p1_tdulc_no_cc_bounce
@@ -13438,6 +14140,24 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_m17_confirm PRIVATE dsd-neo_platform)
 add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
+
+# Issue #800 2.2, N1, D13: an M17 position only from the GNSS META of a checked link setup (RF LSF, LICH LSD, IP stream
+# frame, MPKT), never from a monitored local transmission, a -F decoded LSF or a packet; real decoder, call state,
+# history and feed.
+add_executable(
+    dsd-neo_test_m17_gnss_position
+    protocol/m17/test_m17_gnss_position.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_convolution.c
+)
+target_include_directories(
+    dsd-neo_test_m17_gnss_position
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+target_link_libraries(
+    dsd-neo_test_m17_gnss_position
+    PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
+)
+add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
 # test, and decoded by the real FEC.
@@ -14966,6 +15686,70 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+
+# DMR USBD LIP (#800 spec 2.13): a Poll Response only from an inbound (MS-sourced) sync, at either polarity, through the
+# real single-slot data path; the symbol reader is replaced by linker wraps.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        protocol/dmr/test_dmr_usbd_inbound_sync.c
+        test_support/dmr_bptc_test_encoder.c
+    )
+    target_include_directories(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder, and
+        # NXDN needs core back: one group, so a linker that reads archives once in order (GNU ld) resolves both ways.
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_dmr_usbd_inbound_sync
+        PRIVATE
+            "LINKER:--wrap=getDibitSoft"
+            "LINKER:--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(
+        NAME DMR_USBD_INBOUND_SYNC
+        COMMAND dsd-neo_test_dmr_usbd_inbound_sync
+    )
+    add_executable(
+        dsd-neo_test_dmr_data_header_air
+        protocol/dmr/test_dmr_data_header_air.c
+        test_support/dmr_bptc_test_encoder.c
+    )
+    target_include_directories(
+        dsd-neo_test_dmr_data_header_air
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_dmr_data_header_air
+        # The voice path the single-slot reader links reaches the NXDN scrambler (LFSRN) through core's vocoder, and
+        # NXDN needs core back: one group, so a linker that reads archives once in order (GNU ld) resolves both ways.
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_proto_nxdn
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_dmr_data_header_air
+        PRIVATE
+            "LINKER:--wrap=getDibitSoft"
+            "LINKER:--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(NAME DMR_DATA_HEADER_AIR COMMAND dsd-neo_test_dmr_data_header_air)
+endif()
 add_executable(
     dsd-neo_test_dmr_flco_mono_crc_scope
     protocol/dmr/test_dmr_flco_mono_crc_scope.c
@@ -15454,8 +16238,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15486,8 +16272,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15515,8 +16303,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15546,8 +16336,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15577,8 +16369,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15608,8 +16402,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15640,8 +16436,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15669,8 +16467,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_empty_payload_type
     protocol/dmr/test_dmr_lrrp_empty_payload_type.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15701,8 +16501,10 @@ add_executable(
     dsd-neo_test_dmr_lrrp_wrapped_document
     protocol/dmr/test_dmr_lrrp_wrapped_document.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15733,8 +16535,10 @@ add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
     protocol/dmr/test_dmr_pdu_utf16_text.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15762,8 +16566,10 @@ add_executable(
     dsd-neo_test_dmr_tms_utf16le
     protocol/dmr/test_dmr_tms_utf16le.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15789,6 +16595,7 @@ add_executable(
     protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15820,6 +16627,7 @@ add_executable(
     protocol/dmr/test_dmr_lrrp_event_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15851,6 +16659,7 @@ add_executable(
     protocol/dmr/test_dmr_udp_comp_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15870,18 +16679,30 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_udp_comp_header PRIVATE dsd-neo_platform)
 add_test(NAME DMR_UDP_COMP_HEADER COMMAND dsd-neo_test_dmr_udp_comp_header)
 
-# DMR LRRP: coordinate formula comparison (RadioReference vs ok-dmrlib vs dsd-neo)
+# DMR LRRP: fixed latitude/longitude reference vectors through the real decoder (AABF-D-1 7.3.37-38, issue #800)
 add_executable(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
     protocol/dmr/test_dmr_lrrp_coordinate_formulas.c
+    test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
 )
 target_link_libraries(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_test_receive_support dsd-neo_platform dsd-neo_test_support
 )
 add_test(
     NAME DMR_LRRP_COORDINATE_FORMULAS
@@ -15893,8 +16714,10 @@ add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
     test_support/data_event_gps_shim.c
+    test_support/data_event_position_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
@@ -15916,12 +16739,25 @@ add_test(
 )
 
 # DMR embedded GPS: position error mapping (ETSI 7.2.15) matches SDRTrunk
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_dmr_embedded_gps_position_error
@@ -15946,12 +16782,25 @@ add_test(
 )
 
 # Core GPS: CRC-failed location rows are suppressed while decoded state is retained (#550)
+# dsd_gps.c admits every position report (position_feed.c), whose label freeze reads the source-alias and
+# talkgroup-policy lookups; their own dependencies follow.
 add_executable(
     dsd-neo_test_core_gps_lrrp_crc_gating
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
 )
 target_include_directories(
     dsd-neo_test_core_gps_lrrp_crc_gating
@@ -15974,6 +16823,44 @@ add_test(
     NAME CORE_GPS_LRRP_CRC_GATING
     COMMAND dsd-neo_test_core_gps_lrrp_crc_gating
 )
+
+# Issue #800: a position report names the destination its checked carrier named, with its group qualifier
+add_executable(
+    dsd-neo_test_core_gps_destination
+    core/test_core_gps_destination.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_attribution.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/nmea_sentence.c
+    test_support/data_event_position_stub.c
+)
+target_include_directories(
+    dsd-neo_test_core_gps_destination
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_core_gps_destination
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_gps_destination
+    PRIVATE
+        dsd-neo_test_receive_support
+        dsd-neo_platform
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME CORE_GPS_DESTINATION COMMAND dsd-neo_test_core_gps_destination)
 
 # DMR embedded talker alias: do not truncate when header length is inconsistent with payload
 add_executable(
@@ -16657,6 +17544,7 @@ set(_dsd_tetra_test_sources
     tetra_publication
     tetra_voice_gate
     tetra_calls
+    tetra_lip
     viterbi
 )
 
@@ -16672,10 +17560,26 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/protocol/tetra
     )
-    target_link_libraries(
-        "${_dsd_tetra_target}"
-        PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
-    )
+    # The LIP reports reach core's GPS decoders, whose object also holds a caller of the DMR text decoder: one group,
+    # so a linker that reads archives once in order (GNU ld) finds it after core.
+    if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            "${_dsd_tetra_target}"
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_proto_tetra
+                dsd-neo_core
+                dsd-neo_proto_dmr
+                "-Wl,--end-group"
+                dsd-neo_fec
+                dsd-neo_test_support
+        )
+    else()
+        target_link_libraries(
+            "${_dsd_tetra_target}"
+            PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
+        )
+    endif()
     string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
     string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)
     add_test(
@@ -19659,6 +20563,30 @@ if(DSD_HAS_RADIO)
     )
     set_tests_properties(IO_SOAPY_STREAM_LOSS PROPERTIES TIMEOUT 120)
 
+    # The rate and tuner filter a SoapySDR device runs (a HackRF's preferred rate, profile filters opened for the
+    # Fs/4 offset, the explicit-bandwidth warning) and what a stream open on one sizes, through the device's own
+    # calls on a stand-in driver. Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        io/test_io_rtl_device_soapy_rate.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_device_soapy_rate
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_DEVICE_SOAPY_RATE
+        COMMAND dsd-neo_test_io_rtl_device_soapy_rate
+    )
+
     # The SoapySDR reader's CS16 conversion, grouped fs/4 rotation included, bit for
     # bit against the per-sample rotation. Skips in a build without SoapySDR.
     add_executable(
@@ -20446,6 +21374,7 @@ add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
 
 set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_core_apx_embedded_alias_utf16
+    dsd-neo_test_core_gps_destination
     dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_core_hytera_bp_silence
     dsd-neo_test_core_straight_keystream_validation
@@ -20456,6 +21385,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_grant_policy
     dsd-neo_test_dmr_preempt
     dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
     dsd-neo_test_dmr_lrrp_crc_gating
     dsd-neo_test_dmr_lrrp_empty_payload_type
     dsd-neo_test_dmr_lrrp_event_crc_gating
@@ -20571,6 +21501,7 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     # Core, app-control and terminal sources compiled in directly. Some exist only
     # with curses or radio support, hence the TARGET check below.
     dsd-neo_test_app_control_frontend_metrics
+    dsd-neo_test_core_gps_destination
     dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_dmr_embedded_gps_position_error
     dsd-neo_test_ui_chooser_navigation
@@ -21596,16 +22527,21 @@ if(DSD_HAS_RADIO)
     # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
     # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
     # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
-    # through a resampled replay (288 kHz), not the recorded chain.
+    # through a resampled replay (288 kHz), not the recorded chain. TETRA_CALL_SOAPY_156K is the same TETRA excerpt as a
+    # HackRF at 10 MS/s through SoapySDR leaves it after six half-band passes (156,250 Hz): one more pass to 78,125 Hz
+    # and the 576/625 step, a ratio no other case runs. It covers that part of the chain only, not the live 10 MS/s
+    # ingest or the Fs/4 tuning. Its cell identity is the one the same recording decodes at its native rate
+    # (REFERENCE_FIXTURE in iq_decode_check.cmake): every identity it decodes must be that one.
     foreach(
         _forced_case
         IN
         ITEMS
-            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
-            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
+            "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125@@-"
+            "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625@@-"
+            "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125@@-"
+            "TETRA_CALL_SOAPY_156K@@tetra_call_soapy_156k@@-fT -Z@@\\[TETRA BSCH\\] MCC=[0-9]+ MNC=[0-9]+ CC=0x[0-9a-f]+@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=156250 Hz, base_decim=2, I/Q step L/M=576/625@@tetra_call_real_air_72k"
     )
         string(REPLACE "@@" ";" _forced_fields "${_forced_case}")
         list(GET _forced_fields 0 _forced_name)
@@ -21616,11 +22552,18 @@ if(DSD_HAS_RADIO)
         list(GET _forced_fields 5 _forced_expected2)
         list(GET _forced_fields 6 _forced_min2)
         list(GET _forced_fields 7 _forced_chain)
+        list(GET _forced_fields 8 _forced_reference)
         set(_forced_second)
         if(NOT _forced_expected2 STREQUAL "-")
             set(_forced_second
                 "-DEXPECTED2=${_forced_expected2}"
                 "-DMIN_MATCHES2=${_forced_min2}"
+            )
+        endif()
+        if(NOT _forced_reference STREQUAL "-")
+            list(
+                APPEND _forced_second
+                "-DREFERENCE_FIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${_forced_reference}.iq.json"
             )
         endif()
         add_test(
@@ -25786,6 +26729,9 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
+        # Issue #800: the map's tracks, polled on every tick.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -25795,6 +26741,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -25849,6 +26796,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_tap
         ui/test_ui_qt_call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -25887,6 +26835,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
@@ -25926,6 +26875,85 @@ if(DSD_ENABLE_QT_UI)
     set_tests_properties(
         UI_QT_RECORDING_STORE
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+endif()
+
+if(DSD_ENABLE_QT_UI)
+    # Issue #800: the map's tile cache (RFC 9111 private-cache rules, the disk LRU and the decoded-image bound) and its
+    # tile worker (generations, no prefetch, the backoff, https-only templates, the teardown during a stalled
+    # transfer), through a fake transport: no network.
+    add_executable(
+        dsd-neo_test_ui_qt_map_tiles
+        ui/test_ui_qt_map_tiles.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE Qt6::Core Qt6::Gui dsd-neo_runtime dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_tiles
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_map_tiles PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_TILES COMMAND dsd-neo_test_ui_qt_map_tiles)
+    set_tests_properties(
+        UI_QT_MAP_TILES
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # Issue #800: the map view's scene-graph tree, the one a device draws (headless Qt renders only the software
+    # path, which the QML suite covers): its layers, the pan that only moves the overlay, and tiles through the
+    # production worker on the QML suite's canned transport (no network).
+    add_executable(
+        dsd-neo_test_ui_qt_map_view
+        ui/test_ui_qt_map_view.cpp
+        ui/qml_map_stub.h
+        ui/qml_map_stub.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_view_paint.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_cache.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_http.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/map_tile_worker.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/position_tap.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${CMAKE_CURRENT_SOURCE_DIR}/ui
+    )
+    find_package(Qt6 REQUIRED COMPONENTS Gui Quick)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE
+            Qt6::Gui
+            Qt6::Quick
+            dsd-neo_app_control
+            dsd-neo_runtime
+            dsd-neo_core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_map_view
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_map_view)
+    set_target_properties(dsd-neo_test_ui_qt_map_view PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_MAP_VIEW COMMAND dsd-neo_test_ui_qt_map_view)
+    set_tests_properties(
+        UI_QT_MAP_VIEW
+        PROPERTIES
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
     )
 endif()
 
@@ -26105,6 +27133,55 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_legal_inventory.py
+    )
+    # The release notice check: a package's documentation folder holds every
+    # notice its records' <platform>_release maps name, with its source's content.
+    add_test(
+        NAME TOOLS_CHECK_RELEASE_NOTICES
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_release_notices.py
+    )
+    # The APK's Qt kit, NDK runtime, Gradle release runtime classpath and native
+    # libraries against legal/android-runtime-lock.json, with fake builds.
+    add_test(
+        NAME TOOLS_CHECK_ANDROID_RUNTIME_LOCK
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_android_runtime_lock.py
+    )
+    # The directions to Qt's source that go beside every APK: generated from the
+    # Qt kit the build used, published with the APK and in a release's notes.
+    add_test(
+        NAME TOOLS_ANDROID_SOURCE_DIRECTIONS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_android_source_directions.py
+    )
+    # The macOS DMG's dependency check, with fake otool and codesign: every staged
+    # file is built for the triplet's deployment target and loads only staged
+    # libraries. The check and its fakes are bash scripts, so it registers only
+    # where bash is (not Windows).
+    if(NOT WIN32 AND DSD_NEO_BASH_EXECUTABLE)
+        add_test(
+            NAME TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_macos_portable_deps.py
+        )
+        set_tests_properties(
+            TOOLS_CHECK_MACOS_PORTABLE_DEPS
+            PROPERTIES ENVIRONMENT "DSD_TEST_BASH=${DSD_NEO_BASH_EXECUTABLE}"
+        )
+    endif()
+    # The Windows ZIP's SoapySDR modules: overlays, pins, notices, legal records and
+    # the release jobs' calls (the pwsh half registers as TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4).
+    add_test(
+        NAME TOOLS_SOAPY_MODULE_PACKAGING
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_soapy_module_packaging.py
+            SoapyModulePackaging
     )
     add_test(
         NAME TOOLS_CI_SCHEDULING
@@ -26416,6 +27493,58 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
     endif()
+    # tools/windows/stage_runtime_dlls.ps1 under pwsh, with fake dumpbin, llvm-readobj
+    # and objdump tools. The fakes are POSIX scripts, so this registers off Windows
+    # wherever pwsh is installed; the Windows release jobs run the script with the real
+    # dumpbin.
+    find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
+    if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
+        # The tests' folders, and the scripts' own, go under the build tree, not the
+        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
+        # from the root down, so each resolution under a temp folder that holds many
+        # thousand entries costs a full read of it.
+        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
+        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
+        # About 30 runs of the script under pwsh: a busy machine can take minutes, so
+        # the class runs as two entries that ctest -j runs side by side. Each keeps
+        # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
+        # every test runs in exactly one.
+        foreach(_dsd_shard RANGE 1 2)
+            add_test(
+                NAME TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_stage_runtime_dlls.py
+            )
+            set_tests_properties(
+                TOOLS_STAGE_RUNTIME_DLLS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 300
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
+            )
+        endforeach()
+        # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
+        # verify_release_tree.ps1 over a fake release tree, and the readers it uses fed
+        # output that Windows builds of SoapySDRUtil and dsd-neo printed under Wine. The
+        # fakes are POSIX scripts here too. About 80 script runs under pwsh, as four
+        # entries of the SoapyReleaseScripts class, sharded as above.
+        foreach(_dsd_shard RANGE 1 4)
+            add_test(
+                NAME TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tests/tools/test_soapy_module_packaging.py
+            )
+            set_tests_properties(
+                TOOLS_SOAPY_RELEASE_SCRIPTS_${_dsd_shard}
+                PROPERTIES
+                    TIMEOUT 600
+                    ENVIRONMENT
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
+            )
+        endforeach()
+    endif()
     # tools/noise_squelch_model.py's report on canned results (issue #518 follow-up).
     # The model imports numpy and scipy, so it registers only where the tests' Python
     # has them.
@@ -26660,6 +27789,35 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_UNIT_ACTIVITY_MODEL
         COMMAND dsd-neo_test_ui_qt_unit_activity_model
+    )
+    # Issue #800: the map's tracks over the position view's cursor (the real read, on a ring the test publishes), and
+    # their background capture.
+    add_executable(
+        dsd-neo_test_ui_qt_position_model
+        ui/test_ui_qt_position_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_position_model
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_app_control
+            Qt6::Test
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_POSITION_MODEL
+        COMMAND dsd-neo_test_ui_qt_position_model
+    )
+    set_tests_properties(
+        UI_QT_POSITION_MODEL
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()
 
@@ -27662,10 +28820,57 @@ set(_dsd_dmr_decoder_stub_targets
     dsd-neo_test_dmr_lrrp_event_crc_gating
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
 )
 foreach(_dsd_dmr_stub_target IN LISTS _dsd_dmr_decoder_stub_targets)
     target_link_libraries(
         "${_dsd_dmr_stub_target}"
         PRIVATE dsd-neo_test_dmr_decoder_stubs
+    )
+endforeach()
+
+# The real position admission (issue #800) without the core library, for tests that compile protocol decoders
+# directly: no reception has an alias scope and no source has a label (tests/test_support/position_feed_label_stubs.c).
+add_library(
+    dsd-neo_test_position_support
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/position_feed_label_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_position_support
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_position_support
+    PUBLIC
+        dsd-neo_test_receive_support
+        $<LINK_ONLY:dsd-neo_runtime>
+        $<LINK_ONLY:dsd-neo_platform>
+)
+
+# Tests that compile the DMR PDU decoders (dmr_pdu.c) directly: LRRP and LOCN admit their positions.
+set(_dsd_dmr_pdu_position_targets
+    dsd-neo_test_dmr_lrrp_time_fallback
+    dsd-neo_test_dmr_lrrp_time_valid
+    dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_response_token_lengths
+    dsd-neo_test_dmr_lrrp_resync_prefix
+    dsd-neo_test_dmr_lrrp_position_token_precedence
+    dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
+    dsd-neo_test_dmr_lrrp_ip_udp_lengths
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    dsd-neo_test_dmr_udp_comp_header
+    dsd-neo_test_dmr_locn_time_fallback
+    dsd-neo_test_dmr_lrrp_coordinate_formulas
+)
+foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
+    target_link_libraries(
+        "${_dsd_dmr_pdu_target}"
+        PRIVATE dsd-neo_test_position_support
     )
 endforeach()

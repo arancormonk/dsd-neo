@@ -2603,6 +2603,48 @@ test_api_cancel_during_drain_returns_promptly(void) {
 #endif
 }
 
+// The user's Stop while an attempt is stuck in its TLS handshake (an https endpoint that accepts and never answers).
+// libcurl calls no progress callback in that phase, so with curl_easy_perform() the abort waited out the attempt's
+// whole timeout (10 s here); it must land within about a second.
+static int
+test_api_cancel_during_tls_handshake(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char http_url[128] = {0};
+    char api_url[160] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts || rdio_test_stalled_server_start(&stalled, http_url, sizeof(http_url)) != 0) {
+        free(opts);
+        return 1;
+    }
+    DSD_SNPRINTF(api_url, sizeof(api_url), "https://%s", http_url + strlen("http://"));
+    rdio_cancel_opts(opts, api_url, 10000, 1);
+
+    rdio_cancel_jobs jobs;
+    int rc = rdio_cancel_jobs_queue(&jobs, "dsdneo_rdio_cancel_tls", 1, opts);
+    // Let the worker connect and send its ClientHello, so the cancel meets a stalled handshake.
+    dsd_sleep_ms(500U);
+
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    const uint64_t elapsed = dsd_realtime_mono_ms() - t0;
+    if (elapsed >= 1500U) {
+        DSD_FPRINTF(stderr, "cancel during TLS handshake: shutdown took %llu ms\n", (unsigned long long)elapsed);
+        rc = 1;
+    }
+    rc |= rdio_cancel_jobs_expect_files(&jobs, 1, "cancel during TLS handshake");
+
+    rdio_cancel_jobs_remove(&jobs);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(opts);
+    return rc;
+#endif
+}
+
 // A cancel with no worker running yet still covers the uploads queued after it, such as the final call that cleanup
 // closes: the worker starts for it and sends nothing.
 static int
@@ -3078,6 +3120,7 @@ main(void) {
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();
     rc |= test_api_cancel_during_drain_returns_promptly();
+    rc |= test_api_cancel_during_tls_handshake();
     rc |= test_api_cancel_covers_uploads_queued_after_it();
     rc |= test_api_drain_uploads_every_job_after_cancel_clears();
     rc |= test_upload_holds_name_rule();

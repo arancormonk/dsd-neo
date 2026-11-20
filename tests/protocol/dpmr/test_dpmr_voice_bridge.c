@@ -123,7 +123,7 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
         g_mbe_cipher[g_mbe_calls] = (int)state->nxdn_cipher_type;
         g_mbe_scrambled[g_mbe_calls] = (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED
                                         || state->dPMRVoiceFS2Frame.Scrambled[1] == DPMR_HALF_SCRAMBLED);
-        g_mbe_mi[g_mbe_calls] = state->payload_miN;
+        g_mbe_mi[g_mbe_calls] = state->nxdn_payload_mi;
     }
     g_mbe_calls++;
 }
@@ -206,7 +206,7 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     reset_capture();
 
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.payload_miN = 0x7777ULL;
+    state.nxdn_payload_mi = 0x7777ULL;
     state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
     state.dPMRVoiceFS2Frame.Version[0] = 3;
@@ -244,7 +244,7 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     opts.floating_point = 1;
     state.synctype = DSD_SYNC_DPMR_FS3_POS;
     state.R = 0x12345ULL;
-    state.payload_miN = 0x8888ULL;
+    state.nxdn_payload_mi = 0x8888ULL;
     state.dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;

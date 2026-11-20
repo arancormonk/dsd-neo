@@ -1,0 +1,213 @@
+LAME (https://lame.sourceforge.io/) copyright notices for the LAME library dsd-neo's packages carry:
+release 3.100 (archive https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz,
+SHA512
+0844b9eadb4aacf8000444621451277de365041cc1d97b7f7a589da0b7a23899310afd4e4d81114b9912aa97832621d20588034715573d417b2923948c08634b),
+as vcpkg's mp3lame port builds it: with MSVC for the Windows ZIP (libmp3lame.dll), and with LAME's
+configure script for the Android app (linked statically) and the macOS DMG (a shared library). Each build compiles libmp3lame and the
+mpglib decoder it links, and the headers they include; the SSE file
+libmp3lame/vector/xmm_quantize_sub.c is compiled for Windows only. Most files are under the GNU
+Library General Public License version 2 or later (mp3lame-copyright.txt, the upstream COPYING); libmp3lame/gain_analysis.c
+and .h are under the GNU Lesser General Public License version 2.1 or later (mp3lame-LGPL-2.1.txt).
+The upstream README and LICENSE are mp3lame-README.txt and mp3lame-LICENSE.txt. The holder lines of
+the compiled files follow, then mpglib/README and the header of libmp3lame/fft.c, unmodified.
+
+Copyright (c) 1999 A.L. Faber
+    libmp3lame/VbrTag.c
+    libmp3lame/VbrTag.h
+    libmp3lame/machine.h
+    libmp3lame/version.c
+    libmp3lame/version.h
+Copyright (c) 1999 Albert L Faber
+    libmp3lame/tables.c
+    libmp3lame/tables.h
+    libmp3lame/util.c
+    libmp3lame/util.h
+Copyright (c) 1999 Mark Taylor
+    include/lame.h
+    libmp3lame/encoder.c
+    libmp3lame/l3side.h
+    libmp3lame/lame-analysis.h
+    libmp3lame/psymodel.h
+    libmp3lame/quantize.h
+    libmp3lame/reservoir.h
+    libmp3lame/vbrquantize.h
+Copyright (c) 1999 Takehiro TOMINAGA
+    libmp3lame/bitstream.h
+    libmp3lame/newmdct.h
+    libmp3lame/quantize_pvt.h
+Copyright (c) 1999-2000 Mark Taylor
+    libmp3lame/bitstream.c
+    libmp3lame/lame.c
+    libmp3lame/mpglib_interface.c
+    libmp3lame/psymodel.c
+    libmp3lame/quantize.c
+    libmp3lame/reservoir.c
+    libmp3lame/vbrquantize.c
+Copyright (c) 1999-2000 Takehiro Tominaga
+    libmp3lame/fft.c
+    libmp3lame/newmdct.c
+Copyright (c) 1999-2002 Takehiro Tominaga
+    libmp3lame/bitstream.c
+    libmp3lame/quantize_pvt.c
+Copyright (c) 1999-2003 Takehiro Tominaga
+    libmp3lame/quantize.c
+Copyright (c) 1999-2005 Takehiro TOMINAGA
+    libmp3lame/takehiro.c
+Copyright (C) 1999-2010 The L.A.M.E. project
+    mpglib/common.c
+    mpglib/common.h
+    mpglib/dct64_i386.c
+    mpglib/dct64_i386.h
+    mpglib/decode_i386.c
+    mpglib/decode_i386.h
+    mpglib/huffman.h
+    mpglib/interface.h
+    mpglib/l2tables.h
+    mpglib/layer1.c
+    mpglib/layer1.h
+    mpglib/layer2.c
+    mpglib/layer2.h
+    mpglib/layer3.c
+    mpglib/layer3.h
+    mpglib/mpg123.h
+    mpglib/mpglib.h
+    mpglib/tabinit.c
+    mpglib/tabinit.h
+Copyright (C) 1999-2012 The L.A.M.E. project
+    mpglib/interface.c
+Copyright (C) 2000 Don Melton
+    libmp3lame/id3tag.c
+Copyright (C) 2000 Don Melton.
+    include/lame.h
+Copyright (c) 2000 Mark Taylor
+    libmp3lame/encoder.h
+    libmp3lame/fft.h
+Copyright (c) 2000-2002 Takehiro Tominaga
+    libmp3lame/encoder.c
+Copyright (c) 2000-2003 Takehiro Tominaga
+    libmp3lame/psymodel.c
+Copyright (c) 2000-2004 Alexander Leidinger
+    libmp3lame/lame.c
+Copyright (c) 2000-2005 Alexander Leidinger
+    libmp3lame/psymodel.c
+    libmp3lame/util.c
+Copyright (c) 2000-2005 Gabriel Bouvigne
+    libmp3lame/lame.c
+    libmp3lame/psymodel.c
+Copyright (c) 2000-2005 Takehiro Tominaga
+    libmp3lame/lame.c
+Copyright (c) 2000-2011 Robert Hegemann
+    libmp3lame/encoder.c
+    libmp3lame/quantize.c
+Copyright (c) 2000-2012 Robert Hegemann
+    libmp3lame/psymodel.c
+    libmp3lame/quantize_pvt.c
+    libmp3lame/vbrquantize.c
+Copyright (c) 2000-2017 Robert Hegemann
+    libmp3lame/lame.c
+Copyright (C) 2001 David Robinson and Glen Sawyer
+    libmp3lame/gain_analysis.c
+    libmp3lame/gain_analysis.h
+Copyright (c) 2001 Gabriel Bouvigne
+    libmp3lame/encoder.c
+Copyright (c) 2001 John Dahlstrom
+    libmp3lame/encoder.c
+Copyright (c) 2001 Jonathan Dee
+    libmp3lame/VbrTag.c
+Copyright (c) 2001 Naoki Shibata
+    libmp3lame/quantize_pvt.c
+Copyright (c) 2001-2002 Naoki Shibata
+    libmp3lame/psymodel.c
+Copyright (c) 2001-2005 Alexander Leidinger
+    libmp3lame/set_get.c
+Copyright (c) 2001-2005 Gabriel Bouvigne
+    libmp3lame/quantize.c
+Copyright (c) 2002-2005 Gabriel Bouvigne
+    libmp3lame/quantize_pvt.c
+    libmp3lame/takehiro.c
+Copyright (c) 2002-2008 Gabriel Bouvigne
+    libmp3lame/presets.c
+Copyright (C) 2003 Gabriel Bouvigne / Lame project
+    libmp3lame/set_get.h
+Copyright (c) 2003 Olcios
+    libmp3lame/mpglib_interface.c
+Copyright (c) 2005-2006 Gabriel Bouvigne
+    libmp3lame/vector/xmm_quantize_sub.c
+Copyright (c) 2006 Gabriel Bouvigne
+    libmp3lame/vector/lame_intrin.h
+Copyright (c) 2007-2012 Robert Hegemann
+    libmp3lame/presets.c
+Copyright (c) 2008 Robert Hegemann
+    libmp3lame/mpglib_interface.c
+    libmp3lame/util.h
+Copyright (C) 2011-2017 Robert Hegemann
+    libmp3lame/id3tag.c
+Copyright 1988, 1993; Ron Mayer
+    libmp3lame/fft.c
+VALUE "LegalCopyright", "Copyright (C) 1999-2011 The L.A.M.E. Team\0"
+    libmp3lame/lame.rc
+
+----- mpglib/README -----
+
+hip - Hip Isn't a Player
+A LGPLed mpeg audio decoding library.
+
+Based off of Michael Hipp's mpglib 0.2a <http://www.mpg123.de/>, with many
+improvements by the lame development team (see AUTHORS).
+
+The interface to the library is based off of vorbisfile.  If you add mp3
+support to your app using this library it should be a snap to add Ogg Vorbis
+support as well.
+
+This isn't as fast as mpg123 will be for decoding as none of it is in
+assmbler.  
+
+Seeking currently isn't implemented.
+
+
+From mpglib's orginal README:
+=============================
+
+PLEASE NOTE: This software may contain patented algorithms (at least
+  patented in some countries). It may be not allowed to sell/use products
+  based on this source code in these countries. Check this out first!
+
+COPYRIGHT of MP3 music:
+  Please note, that the duplicating of copyrighted music without explicit
+  permission violates the rights of the owner.
+
+----- libmp3lame/fft.c, lines 1-33 -----
+
+/*
+** FFT and FHT routines
+**  Copyright 1988, 1993; Ron Mayer
+**      Copyright (c) 1999-2000 Takehiro Tominaga
+**
+**  fht(fz,n);
+**      Does a hartley transform of "n" points in the array "fz".
+**
+** NOTE: This routine uses at least 2 patented algorithms, and may be
+**       under the restrictions of a bunch of different organizations.
+**       Although I wrote it completely myself; it is kind of a derivative
+**       of a routine I once authored and released under the GPL, so it
+**       may fall under the free software foundation's restrictions;
+**       it was worked on as a Stanford Univ project, so they claim
+**       some rights to it; it was further optimized at work here, so
+**       I think this company claims parts of it.  The patents are
+**       held by R. Bracewell (the FHT algorithm) and O. Buneman (the
+**       trig generator), both at Stanford Univ.
+**       If it were up to me, I'd say go do whatever you want with it;
+**       but it would be polite to give credit to the following people
+**       if you use this anywhere:
+**           Euler     - probable inventor of the fourier transform.
+**           Gauss     - probable inventor of the FFT.
+**           Hartley   - probable inventor of the hartley transform.
+**           Buneman   - for a really cool trig generator
+**           Mayer(me) - for authoring this particular version and
+**                       including all the optimizations in one package.
+**       Thanks,
+**       Ron Mayer; mayer@acuson.com
+** and added some optimization by
+**           Mather    - idea of using lookup table
+**           Takehiro  - some dirty hack for speed up
+*/

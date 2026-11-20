@@ -31,6 +31,7 @@
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -220,6 +221,17 @@ int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {
     (void)state;
     return g_scan_waiting;
+}
+
+/* From engine/trunk_tuning.c, which this fixture does not link: when the input came back from the last retune's mute
+   (0: no retune armed one, -1: still muted). */
+static double g_listening_since_m = 0.0;
+
+double
+dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_listening_since_m;
 }
 
 /* From engine/channel_scan.c, which this fixture does not link: the operator hold keeps the row on air unless a case
@@ -1050,6 +1062,43 @@ test_y_timing_legacy_hangtime_window(void) {
     fix.opts->trunk_hangtime = 1.0e9f;
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.0, 100.0);
     CHECK("absurd hangtime saturates the span", fix.state->scan_timing.span_ms == UINT32_MAX);
+    fixture_free(&fix);
+}
+
+/* The countdown is the step rule's own deadline: while a retune's mute still holds the input, no window runs (the rule
+   does not step then), and once the input is back after the anchor the window runs -t from that return. */
+static void
+test_y_timing_hangtime_waits_for_the_input(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_voice_only = 0;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time = (time_t)1000;
+    fix.state->last_cc_sync_time_m = 100.0;
+    g_listening_since_m = -1.0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    CHECK("a muted input's hangtime is still the reason",
+          fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("but no window runs while it is muted", fix.state->scan_timing.span_ms == 0U);
+    /* Back at 101.5 s: -t 2 from then (103.5 s) is later than the wall-clock rule's 103 s, so the step waits for it. */
+    g_listening_since_m = 101.5;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 101.75, 1001.75);
+    check_timing_window("start at the input's return", "deadline -t after it", "a -t span", &fix.state->scan_timing,
+                        101.5, 103.5, 2000U);
+    /* Back at 100.6 s: -t 2 from then (102.6 s) comes before the wall-clock rule's 103 s, which decides. */
+    g_listening_since_m = 100.6;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.75, 1000.75);
+    check_timing_window("early return start", "early return deadline", "early return span", &fix.state->scan_timing,
+                        100.0, 103.0, 3000U);
+    /* Back before the anchor (traffic since): the wall-clock rule as before. */
+    g_listening_since_m = 99.0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    check_timing_window("anchor start", "anchor deadline", "anchor span", &fix.state->scan_timing, 100.0, 103.0, 3000U);
+    g_listening_since_m = 0.0;
     fixture_free(&fix);
 }
 
@@ -2004,6 +2053,7 @@ main(void) {
     test_tg_hold_call_active();
     test_y_timing_silent_under_trunk_scan();
     test_y_timing_legacy_hangtime_window();
+    test_y_timing_hangtime_waits_for_the_input();
     test_y_timing_hangtime_without_anchor();
     test_y_timing_without_a_channel_map();
     test_y_timing_manual_hold_pauses_the_timer();

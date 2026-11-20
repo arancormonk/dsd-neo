@@ -24,4 +24,17 @@ struct dsd_state;
  */
 int dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]);
 
+/**
+ * @brief Put a header whose CRC-16/X.25 passed on the slot 0 call: the RF header or the header slow data repeats.
+ *
+ * Its fields, printable text: @p rpt2 and @p rpt1 (the route), @p dst (UR) and @p my (the 8-octet MY callsign and the
+ * 4-octet suffix, 12 octets). The source is the MY field only when it names a station (dstar_callsign_present() of its
+ * first 8 octets): a suffix alone is no caller. The call then becomes the transmission's
+ * (dsd_state::dstar_tx_call_epoch, which slow data checks before anything of it reaches a call); a blank MY field, or
+ * a data header, leaves the transmission naming none. @p protocol is the D-STAR sync type the header was decoded
+ * under; @p data is 1 for a data header (flag 0x80): its call is a data call.
+ */
+void dstar_header_observe(struct dsd_state* state, int protocol, int data, const char* rpt2, const char* rpt1,
+                          const char* dst, const char* my);
+
 #endif /* DSD_NEO_PROTOCOL_DSTAR_HEADER_H */

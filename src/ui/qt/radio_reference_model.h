@@ -31,6 +31,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -60,6 +61,7 @@ QVariantMap rr_site_place(const QList<int>& countyIds, const QVariantList& syste
 class AppPrefs;
 class DecoderHost;
 class ImportedFilesModel;
+class LocationRequests;
 
 class RadioReferenceModel : public QObject {
     Q_OBJECT
@@ -141,6 +143,9 @@ class RadioReferenceModel : public QObject {
     RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* importedFiles, DecoderHost* host,
                         QObject* parent = nullptr);
     ~RadioReferenceModel() override;
+
+    /** @brief The one-shot location broker the nearby lookup asks through (as "radioReference"); none: no lookup. */
+    void setLocationRequests(LocationRequests* requests);
 
     bool available() const;
     bool hasAppKey() const;
@@ -295,7 +300,6 @@ class RadioReferenceModel : public QObject {
 
     /** @brief Best-effort cancel of everything in flight. */
     Q_INVOKABLE void cancel();
-    Q_INVOKABLE qint64 nextLocationRequestId();
 
     /**
      * @brief Drop the loaded system, returning the screen to its results stage.
@@ -394,7 +398,6 @@ class RadioReferenceModel : public QObject {
     bool fillAuth(dsd_rr_auth* auth) const;
 
   Q_SIGNALS:
-    void locationRequestAllocated(qint64 requestId);
     void credentialsChanged();
     void accountStateChanged();
     void busyChanged();
@@ -469,6 +472,8 @@ class RadioReferenceModel : public QObject {
     void applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs, bool geocodeOk,
                        const QString& postal, const QString& country, const QString& error);
     void applyLocationCancelled(qint64 id);
+    void onLocationAnswered(const QString& requester, qint64 id, const QVariantMap& result);
+    void onLocationEnded(const QString& requester, qint64 id);
     void startBatch(const QString& status);
 
     /**
@@ -545,6 +550,7 @@ class RadioReferenceModel : public QObject {
     AppPrefs* m_prefs = nullptr;
     ImportedFilesModel* m_importedFiles = nullptr;
     DecoderHost* m_host = nullptr;
+    QPointer<LocationRequests> m_locationRequests;
     dsd_rr_client* m_client = nullptr;
 
     /* Session-only, never persisted, never shown. */

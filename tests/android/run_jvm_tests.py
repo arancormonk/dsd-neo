@@ -1561,6 +1561,12 @@ SUITES = {
                 tests=("RecordingShareTest.kt",),
                 stubs=("ShareContext.kt", "ShareEnvironment.kt", "ShareFileProvider.kt", "Uri.kt", "Log.kt"),
             ),
+            # The diagnostics share's copies (issue #800, D10): cleaned at app start and at each share.
+            Build(
+                sources=("DiagnosticsShare.kt",),
+                tests=("DiagnosticsShareTest.kt",),
+                stubs=("ShareContext.kt", "ShareFileProvider.kt", "Uri.kt", "DiagnosticsNative.kt"),
+            ),
         ),
     ),
     # Which receiver kind is attached, from the USB ids on the bus. Plain Kotlin with no Android imports, so no stubs.

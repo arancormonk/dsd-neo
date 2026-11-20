@@ -459,7 +459,8 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
     uint32_t end = 4;
     for (short o = 0; o < 2; o++) {
         if (state->dPMRVoiceFS2Frame.FrameNumbering[o] == 0) {
-            state->payload_miN = 0;
+            state->nxdn_payload_mi = 0; /* the scrambler reloads from the key (shared with NXDN) */
+            state->nxdn_iv_on_air = 0U;
         }
         if (o == 1) {
             start = 4;

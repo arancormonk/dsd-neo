@@ -8,6 +8,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
+#include <mutex>
 #include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
@@ -15,6 +16,20 @@
 #ifdef USE_RADIO
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif
+
+/* An empty ring over @p mem_ptr of @p capacity floats, its counters cleared. */
+static void
+input_ring_take_buffer(struct input_ring_state* r, void* mem_ptr, size_t capacity) {
+    r->buffer = static_cast<float*>(mem_ptr);
+    r->capacity = capacity;
+    r->head.store(0, std::memory_order_relaxed);
+    r->tail.store(0, std::memory_order_relaxed);
+    r->space_notify_enabled.store(0, std::memory_order_relaxed);
+    r->producer_drops.store(0, std::memory_order_relaxed);
+    r->read_timeouts.store(0, std::memory_order_relaxed);
+    r->discard_generation.store(0, std::memory_order_relaxed);
+    input_ring_reset_positions(r);
+}
 
 int
 input_ring_init(struct input_ring_state* r, size_t capacity) {
@@ -50,15 +65,23 @@ input_ring_init(struct input_ring_state* r, size_t capacity) {
         return -1;
     }
 
-    r->buffer = static_cast<float*>(mem_ptr);
-    r->capacity = capacity;
-    r->head.store(0, std::memory_order_relaxed);
-    r->tail.store(0, std::memory_order_relaxed);
-    r->space_notify_enabled.store(0, std::memory_order_relaxed);
-    r->producer_drops.store(0, std::memory_order_relaxed);
-    r->read_timeouts.store(0, std::memory_order_relaxed);
-    r->discard_generation.store(0, std::memory_order_relaxed);
-    input_ring_reset_positions(r);
+    input_ring_take_buffer(r, mem_ptr, capacity);
+    return 0;
+}
+
+int
+input_ring_reallocate(struct input_ring_state* r, size_t capacity) {
+    if (!r || capacity == 0 || r->capacity == 0 || capacity > SIZE_MAX / sizeof(float)) {
+        return -1;
+    }
+    void* mem_ptr = dsd_neo_aligned_malloc(capacity * sizeof(float));
+    if (!mem_ptr) {
+        return -1;
+    }
+    if (r->buffer) {
+        dsd_neo_aligned_free(r->buffer);
+    }
+    input_ring_take_buffer(r, mem_ptr, capacity);
     return 0;
 }
 
@@ -201,6 +224,22 @@ input_ring_reserve(struct input_ring_state* r, size_t min_needed, float** p1, si
     *n2 = grant - to_end;
 
     return (int)grant;
+}
+
+int
+input_ring_commit_if_generation(struct input_ring_state* r, size_t produced, uint64_t generation) {
+    if (!r) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(r->generation_m);
+    if (r->discard_generation.load(std::memory_order_acquire) != generation) {
+        return 0;
+    }
+    if (r->test_commit_hook) {
+        r->test_commit_hook(r->test_commit_arg);
+    }
+    input_ring_commit(r, produced);
+    return 1;
 }
 
 /**

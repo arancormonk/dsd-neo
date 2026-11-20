@@ -776,12 +776,31 @@ test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
     return err;
 }
 
+/* A null-encryption LSF's META: decoded only once its CRC passed and its call was published, never by applying the
+ * LSF alone or from one -F decoded despite a failed CRC (issue #800 2.2). */
+static int
+finalize_meta_lsf(dsd_opts* opts, dsd_state* state, uint8_t subtype, const uint8_t meta[M17_AES_NONCE_BYTES],
+                  int corrupt) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    build_lsf_bits(lsf_bits, 0x0000009FDD51ULL, 0x0000009FDD51ULL,
+                   m17_compose_frame_info(1U, 2U, 0U, subtype, 9U, 0U, 0U), meta);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    return m17_finalize_lsf_crc(opts, state, lsf_packed, corrupt ? (uint16_t)(crc ^ 1U) : crc);
+}
+
 static int
 test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
+    dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
     DSD_MEMSET(expected_text, 0, sizeof(expected_text));
     DSD_MEMCPY(expected_text, "LSF-META-TEXT", M17_TEXT_BLOCK_BYTES);
+    uint8_t meta[M17_AES_NONCE_BYTES];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    meta[0] = 0x11U;
+    DSD_MEMCPY(meta + 1, expected_text, M17_TEXT_BLOCK_BYTES);
 
     struct m17_lsf_result res = valid_lsf_result();
     res.et = 0U;
@@ -789,21 +808,34 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
     res.has_meta = 1U;
     res.meta_is_iv = 0U;
     res.cn = 9U;
-    DSD_MEMSET(res.meta, 0, sizeof(res.meta));
-    res.meta[0] = 0x11U;
-    DSD_MEMCPY(res.meta + 1, expected_text, M17_TEXT_BLOCK_BYTES);
+    DSD_MEMCPY(res.meta, meta, sizeof(res.meta));
 
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
 
     int err = 0;
+    /* Applying the LSF sets the decoder up and stores the META; it decodes none of it. */
     err |= expect_int("null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
+    err |= expect_bytes("null META payload stored", state->m17_meta, res.meta, sizeof(res.meta));
+    err |= expect_u8("applied LSF decodes no META text", state->m17_text_meta_received_bitmap, 0U);
+
+    err |= expect_int("checked null META LSF passes", finalize_meta_lsf(opts, state, 0U, meta, 0), 0);
     err |= expect_u8("null META text expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
     err |= expect_u8("null META text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("null META text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("null META text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
-    err |= expect_bytes("null META payload stored", state->m17_meta, res.meta, sizeof(res.meta));
 
+    /* -F decodes an LSF whose CRC failed, but not its META. */
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->m17_can_en = -1;
+    err |= expect_int("relaxed bad null META LSF fails its CRC", finalize_meta_lsf(opts, state, 0U, meta, 1), 1);
+    err |= expect_u8("relaxed bad LSF still decodes its CAN", state->m17_can, 9U);
+    err |= expect_u8("relaxed bad LSF decodes no META text", state->m17_text_meta_received_bitmap, 0U);
+
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = 4;
     state->m17_text_meta_expected_bitmap = 0x0FU;
@@ -811,7 +843,7 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
     state->m17_text_meta_control_or = 0xF2U;
     DSD_MEMSET(state->m17_text_meta, 0x5AU, sizeof(state->m17_text_meta));
 
-    err |= expect_int("CAN-filtered null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
+    err |= expect_int("CAN-filtered null META LSF passes", finalize_meta_lsf(opts, state, 0U, meta, 0), 0);
     err |= expect_u8("CAN-filtered null META preserves expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("CAN-filtered null META preserves received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("CAN-filtered null META preserves control", state->m17_text_meta_control_or, 0xF2U);
@@ -819,21 +851,22 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
         err |= expect_u8("CAN-filtered null META preserves text", state->m17_text_meta[i], 0x5AU);
     }
 
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_text_meta_expected_bitmap = 0x0FU;
     state->m17_text_meta_received_bitmap = 0x02U;
     state->m17_text_meta_control_or = 0xF2U;
     DSD_MEMSET(state->m17_text_meta, 0x5AU, sizeof(state->m17_text_meta));
-    res.es = 3U;
 
-    err |= expect_int("reserved null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
+    err |= expect_int("reserved null META LSF passes", finalize_meta_lsf(opts, state, 3U, meta, 0), 0);
     err |= expect_u8("reserved null META preserves expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("reserved null META preserves received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("reserved null META preserves control", state->m17_text_meta_control_or, 0xF2U);
     for (size_t i = 0U; i < sizeof(state->m17_text_meta); i++) {
         err |= expect_u8("reserved null META preserves text", state->m17_text_meta[i], 0x5AU);
     }
+    dsd_state_ext_free_all(state);
     return err;
 }
 

@@ -23,6 +23,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
@@ -1784,6 +1785,23 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
     return 0;
 }
 
+/* Whether the -t hangtime has run out on the row on air: since the hangtime anchor (the landing, or the last traffic),
+   and, when the input came back from the landing's retune mute after that anchor, since the input came back too
+   (dsd_engine_scan_input_listening_since_m()): a HackRF's backlog mute is over half a second at its lowest rates, and
+   a row must not be left before the decoder has heard any of it. Not run out while the input is still muted. */
+static int
+no_carrier_hangtime_ran_out(const dsd_opts* opts, const dsd_state* state, time_t now) {
+    if ((now - state->last_cc_sync_time) <= opts->trunk_hangtime) {
+        return 0;
+    }
+    const double listening_m = dsd_engine_scan_input_listening_since_m(opts, state);
+    if (listening_m < 0.0) {
+        return 0;
+    }
+    return listening_m <= state->last_cc_sync_time_m
+           || (dsd_decode_now_mono_s() - listening_m) > (double)opts->trunk_hangtime;
+}
+
 /* The timed -Y step's decision: the forced leaves, then the stays, then the voice gate, then the hangtime
    rule, with a quiet result (issue #834) stepping a row the voice gate still qualifies, or one the hangtime rule
    decides, before its time. Heard voice is the voice gate's alone. */
@@ -1823,7 +1841,7 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t no
                || (opts->scan_skip_silent && dsd_scan_voice_gate_qualifying(opts, state)
                    && no_carrier_quiet_skip(opts, state));
     }
-    return ((now - state->last_cc_sync_time) > opts->trunk_hangtime
+    return (no_carrier_hangtime_ran_out(opts, state, now)
             && !live_scanner_y_frames_hold_row(opts, state, dsd_decode_now_mono_s()))
            || no_carrier_quiet_skip(opts, state);
 }
@@ -3150,6 +3168,8 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dropL = 256;
     state->dropR = 256;
     state->payload_miN = 0;
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
     forget_dmr_voice_crypto_continuity(state);
     state->p25vc = 0;
     state->payload_miP = 0;
@@ -3181,6 +3201,8 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     // substitute for clearing it here.
     state->dmr_data_target_is_group[0] = 0;
     state->dmr_data_target_is_group[1] = 0;
+    state->dmr_data_checked_group[0] = 0;
+    state->dmr_data_checked_group[1] = 0;
     state->data_header_blocks[0] = 1;
     state->data_header_blocks[1] = 1;
     state->data_header_padding[0] = 0;
@@ -3701,6 +3723,7 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     opts->dPMR_next_part_of_superframe = 0;
     /* M17: the LSF from LICH chunks, the packet and the signature. */
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_signature_advertised = 0;
@@ -3717,6 +3740,10 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     p25p2_frame_forget_carrier(state);
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
+    /* NXDN: its own working register (the Scramble LFSR, or the IV a VCALL_IV carried), which the P25 slot reset above
+       cleared too while the two shared one register: the next carrier's call loads or receives its own. */
+    state->nxdn_payload_mi = 0;
+    state->nxdn_iv_on_air = 0U;
 }
 
 void
@@ -4014,6 +4041,7 @@ dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
 static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
     state->m17_str_dt = 9;
@@ -4860,21 +4888,35 @@ dsd_engine_test_live_scanner_run(dsd_opts* opts, dsd_state* state, int max_passe
     }
 }
 
+/* Where a run got to: decoding (its input open and its frontends started, so it may publish what it decodes) and,
+ * apart, whether a start hook ran, which only then has a stop hook to pair with. An embedder can attach telemetry
+ * without a start hook, so the final publish follows the first, not the second. */
+typedef struct {
+    int decoding;
+    int hook_started;
+} dsd_engine_run_started;
+
+/* The run starts decoding: the frontends' start hook first, when there is one. A failed start leaves the run unstarted:
+ * no lifecycle publish and no stop hook. */
 static int
 dsd_engine_lifecycle_start_if_needed(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                                     int* lifecycle_started) {
-    if (!hooks || !hooks->start || !lifecycle_started || *lifecycle_started) {
+                                     dsd_engine_run_started* lifecycle_started) {
+    if (!lifecycle_started || lifecycle_started->decoding) {
         return 0;
     }
-    if (hooks->start(opts, state, hooks->context) != 0) {
-        return -1;
+    if (hooks && hooks->start) {
+        if (hooks->start(opts, state, hooks->context) != 0) {
+            return -1;
+        }
+        lifecycle_started->hook_started = 1;
     }
-    *lifecycle_started = 1;
+    lifecycle_started->decoding = 1;
     return 0;
 }
 
 static int
-liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks, int* lifecycle_started) {
+liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+            dsd_engine_run_started* lifecycle_started) {
     if (!opts || !state) {
         return -1;
     }
@@ -5231,7 +5273,7 @@ dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts, const dsd_state* stat
 
 static int
 dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     /* The digital stream carries only the decoded 8 kHz Codec2 monitor (issue #658); the -8 baseband monitor writes
        the raw stream, which runs at the analog sink rate. */
@@ -5260,7 +5302,7 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
@@ -5275,7 +5317,7 @@ dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                            int* lifecycle_started) {
+                            dsd_engine_run_started* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
@@ -5289,7 +5331,7 @@ dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
 
 static int
 dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                                   int* lifecycle_started) {
+                                   dsd_engine_run_started* lifecycle_started) {
     opts->pulse_digi_rate_out = 8000;
     if (dsd_engine_run_open_audio_output_if_needed(opts, state) != 0) {
         return -1;
@@ -5302,7 +5344,7 @@ dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_e
 
 static int
 dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                             int* lifecycle_started) {
+                             dsd_engine_run_started* lifecycle_started) {
     if (opts->playfiles == 1) {
         if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
             return -1;
@@ -5423,7 +5465,7 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
 
     int rc = 0;
     int early_exit = 0;
-    int lifecycle_started = 0;
+    dsd_engine_run_started lifecycle_started = {0, 0};
     dsd_exitflag_store(0);
     /* This thread decodes the run: its accepted retunes drop the received identity's access code at once. */
     dsd_engine_set_decoder_thread(1);
@@ -5449,6 +5491,9 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
     }
 
     dsd_engine_run_record_start_time_if_debug(state);
+    /* The run's position feed: a new stream, allocated here and never on the decode path. A failed allocation leaves
+       the feed off for the run; admission, history and -L do not depend on it. */
+    (void)dsd_position_feed_start(state);
     dsd_engine_run_install_hooks();
 
     if (dsd_engine_run_common_setup(opts, state, &early_exit) != 0) {
@@ -5464,13 +5509,20 @@ engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_
 ENGINE_OUT:
     /* The run leaves its carrier: nothing it decoded says the receiver is on a two-slot carrier any more. */
     state->tdma_carrier = 0U;
-    if (lifecycle_started && hooks && hooks->stop) {
+    if (lifecycle_started.decoding) {
         /* The session's last calls are committed and published while the frontends are still attached, so a
-           frontend that records them (the control API's event subscribers) gets the final transmission too. */
+           frontend that records them (the control API's event subscribers) gets the final transmission too. A
+           frontend with no stop hook (Android passes only start) still gets the final publish: its history tap reads
+           the last published rings after the stop, and so does one an embedder attached with no start hook at all.
+           The exit flag is set before that publish: the published position feed's clock sample (app-control's
+           position view, issue #800) takes it as the run's end, so publishing first would leave a stopped run reading
+           as running (ENGINE_LIFECYCLE_FINALIZE pins the order). */
         dsd_exitflag_store(1);
         dsd_engine_finalize_calls(opts, state);
         dsd_telemetry_publish_both_and_redraw(opts, state);
-        hooks->stop(opts, state, hooks->context);
+        if (lifecycle_started.hook_started && hooks && hooks->stop) {
+            hooks->stop(opts, state, hooks->context);
+        }
     }
     dsd_engine_cleanup(opts, state);
     /* The watchdog has stopped: what this session published and noted goes with it. */

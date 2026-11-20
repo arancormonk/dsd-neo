@@ -61,9 +61,35 @@ Item {
             var texts = [];
             for (var i = 0; i < chips.count; ++i) {
                 var chip = chips.itemAtIndex(i);
-                texts.push(chip !== null ? chip.text : null);
+                texts.push(chip !== null ? chip.pill.text : null);
             }
             return texts;
+        }
+
+        // Issue #800 (F1): the category chips under the edit sheet, while a scan's hops bring other tables and the
+        // chips are re-laid out: none comes back into reach under the sheet (a list view writes each delegate
+        // root's ignored flag; each pill sits below its root, so its own gate holds). Shown again, they are nodes.
+        function test_chips_under_the_edit_sheet_stay_out_of_reach() {
+            var chips = item("talkgroupChips");
+            tryVerify(function () { return chips.itemAtIndex(1) !== null; });
+            var sheet = item("talkgroupEditSheet");
+            sheet.visible = true;
+            for (var i = 0; i < 4; ++i)
+                verify(testContext.applyTalkgroupTable(i % 2));
+            tryVerify(function () { return chips.itemAtIndex(1) !== null; });
+            waitForRendering(chips);
+            for (i = 0; i < chips.count; ++i) {
+                var chip = chips.itemAtIndex(i);
+                if (chip === null)
+                    continue;
+                var node = testContext.accessibleNode(chip.pill);
+                verify(!node.inTree, "chip " + i + " is reachable under the sheet: " + JSON.stringify(node));
+                var root = testContext.accessibleNode(chip);
+                verify(!root.inTree || (root.name === "" && !root.focusable && (root.actions || []).length === 0),
+                       "chip " + i + "'s root offers something under the sheet: " + JSON.stringify(root));
+            }
+            sheet.visible = false;
+            tryVerify(function () { return testContext.accessibleNode(chips.itemAtIndex(0).pill).inTree; });
         }
 
         function initTestCase() {
@@ -138,7 +164,7 @@ Item {
             tryVerify(function () { return chips.itemAtIndex(2) !== null; });
             verify(chipBuildSpy.count > 0, "opening builds the chips, and the spy sees it");
             compare(chipTexts(chips), ["All", "POLICE", "WORKS"]);
-            verify(chips.itemAtIndex(2).active, "the picked category is still the active chip");
+            verify(chips.itemAtIndex(2).pill.active, "the picked category is still the active chip");
             // Without the search, the category alone: both WORKS rows.
             search.text = "";
             tryCompare(cards, "count", 2);

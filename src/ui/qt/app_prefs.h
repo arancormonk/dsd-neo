@@ -24,6 +24,7 @@
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -137,6 +138,16 @@ class AppPrefs : public QObject {
     Q_PROPERTY(double roamingMarginKm READ roamingMarginKm WRITE setRoamingMarginKm NOTIFY roamingDistancesChanged)
     Q_PROPERTY(QVariantList roamingMaxDistanceChoices READ roamingMaxDistanceChoices NOTIFY roamingDistancesChanged)
     Q_PROPERTY(QVariantList roamingMarginChoices READ roamingMarginChoices NOTIFY roamingDistancesChanged)
+    /* Issue #800 (spec 4.8): the map. All device-local: a tile URL can carry a key, the view is a place the user
+     * looked at, and the switch and the filter follow this device. Following a radio or the device is never saved.
+     * One signal for the tile source's three: the map settings sheet saves them together. */
+    Q_PROPERTY(bool mapTilesEnabled READ mapTilesEnabled WRITE setMapTilesEnabled NOTIFY mapTilesChanged)
+    Q_PROPERTY(QString mapTileUrl READ mapTileUrl WRITE setMapTileUrl NOTIFY mapTilesChanged)
+    Q_PROPERTY(QString mapTileAttribution READ mapTileAttribution WRITE setMapTileAttribution NOTIFY mapTilesChanged)
+    Q_PROPERTY(int mapAgeFilter READ mapAgeFilter WRITE setMapAgeFilter NOTIFY mapAgeFilterChanged)
+    /* {latitude, longitude, zoom} of the map's view, or {} when none is saved. The map writes it only while its view
+     * owes nothing to the device's own position (MapViewKeeper.qml); AppPrefs only keeps what it is given. */
+    Q_PROPERTY(QVariantMap mapViewport READ mapViewport WRITE setMapViewport NOTIFY mapViewportChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -391,6 +402,50 @@ class AppPrefs : public QObject {
     /** @brief The margins the unit shown offers, in km. */
     QVariantList roamingMarginChoices() const;
 
+    /** @brief The map loads online tiles (issue #800); off by default, so nothing is sent until the user turns it on.
+     *         Device-local. */
+    bool mapTilesEnabled() const;
+    void setMapTilesEnabled(bool on);
+
+    /** @brief The tile URL template; the OpenStreetMap one when none (or empty text) is stored. Kept as given: the
+     *         tile source checks it before any request. Device-local, since a template can carry a key. */
+    QString mapTileUrl() const;
+    /** @brief Store @p url; empty text removes the key, so the default reads again. */
+    void setMapTileUrl(const QString& url);
+
+    /** @brief The attribution the map shows for its tiles; "© OpenStreetMap contributors" when none (or empty text) is
+     *         stored. Device-local with the template it belongs to. */
+    QString mapTileAttribution() const;
+    /** @brief Store @p text; empty text removes the key, so the default reads again. */
+    void setMapTileAttribution(const QString& text);
+
+    /** @brief The map's age filter in seconds: 0 (all), 900 or 3600; anything else stored reads as 0. Device-local. */
+    int mapAgeFilter() const;
+    /** @brief Store @p seconds if it is one of the three; any other value is refused and writes nothing. */
+    void setMapAgeFilter(int seconds);
+
+    /**
+     * @brief The saved map view as {latitude, longitude, zoom} (degrees, zoom level), or {} when none is saved or
+     * what is stored is not one. Device-local.
+     *
+     * A write is kept in memory and reaches the settings file a second after the last one, when the app leaves the
+     * foreground, or when this object goes: a pan writes on every frame, and each QSettings write rewrites the file.
+     * Reads see the newest write at once.
+     */
+    QVariantMap mapViewport() const;
+    /** @brief Store @p view: latitude within the map's ±85.0511°, longitude within ±180°, zoom within 0..19, all
+     *         finite (kept to 1e-7° and 0.001 zoom). {} removes the saved view; anything else is refused and writes
+     *         nothing. */
+    void setMapViewport(const QVariantMap& view);
+    /** @brief Write a map view still held in memory to the settings file now (see mapViewport()). */
+    void flushMapViewport();
+
+  public Q_SLOTS:
+    /** @brief The app left the foreground (anything but Active): write a held map view to the file now, since Android
+     *         may end a background app without another turn of the event loop. Connected to QGuiApplication when
+     *         there is one. */
+    void onApplicationStateChanged(Qt::ApplicationState state);
+
   Q_SIGNALS:
     void autoStartOnAttachChanged();
     void lastStartedKindChanged();
@@ -431,6 +486,9 @@ class AppPrefs : public QObject {
     void analogPrerollMsChanged();
     void roamingEnabledChanged();
     void roamingDistancesChanged();
+    void mapTilesChanged();
+    void mapAgeFilterChanged();
+    void mapViewportChanged();
 
   private:
     /** Drop a fix 24 h old (or from the future); true when one was stored. Tells no one: callers do. */
@@ -440,6 +498,8 @@ class AppPrefs : public QObject {
     void armLocationExpiry();
     /** Store roaming distance @p km under key @p key (the Key enum's) if it is one of the key's choices. */
     void setRoamingKm(int key, double km);
+    /** Store map text @p text under key @p key (the Key enum's), or remove the key for empty text. */
+    void setMapText(int key, const QString& text);
 
     /** @brief The app's settings file; the single place its scope and names are spelled. */
     class Settings : public QSettings {
@@ -449,6 +509,10 @@ class AppPrefs : public QObject {
 
     QTimer m_locationExpiry;
     mutable Settings m_settings;
+    /* The map view not yet written (issue #800): its stored text ("" removes the key), while m_viewportHeld. */
+    QString m_viewportText;
+    bool m_viewportHeld = false;
+    QTimer m_viewportWrite;
 };
 
 } // namespace dsd_qt

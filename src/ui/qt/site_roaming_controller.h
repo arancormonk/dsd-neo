@@ -53,6 +53,7 @@ namespace dsd_qt {
 
 class AppPrefs;
 class DecoderHost;
+class LocationFeed;
 class SavedSystemsModel;
 
 class SiteRoaming : public QObject {
@@ -198,6 +199,11 @@ class SiteRoaming : public QObject {
 
     /** @brief The host the session runs on; null (a host with no roaming) leaves roaming Off. */
     void setHost(DecoderHost* host);
+    /**
+     * @brief The location feed roaming holds its lease on (LocationFeed::roamingLease()), shared with the map; the
+     * caller keeps its host the same as this one's. Null (the default) is a feed of roaming's own over its host.
+     */
+    void setLocationFeed(LocationFeed* feed);
     /** @brief The monotonic clock in ms every time here is read from: the frontend's by default, a test's instead. */
     void setClock(std::function<qint64()> clock);
     /**
@@ -399,6 +405,9 @@ class SiteRoaming : public QObject {
     void retireStartForForeground();
     void onHostSession();
     void onStreamUpdate(const QVariantMap& record);
+    void onFeedForegroundMoved(qint64 epoch);
+    void onFeedLeasesDropped();
+    void attachFeed(LocationFeed* feed);
     void onEnabledChanged();
     void noteForeground();
     void onForegroundLost();
@@ -474,6 +483,10 @@ class SiteRoaming : public QObject {
     qint64 m_nextPermissionId = 1;
     QString m_failedUid;
 
+    /* The feed roaming takes its lease on: the shared one (setLocationFeed()), else its own over m_host. */
+    QPointer<LocationFeed> m_feed;
+    LocationFeed* m_ownFeed = nullptr;
+    /* Roaming follows the feed in this foreground epoch (its lease taken since the last foreground loss). */
     bool m_streamOn = false;
     QString m_streamState;
     /* The newest fix stamp seen from each provider, and as it stood at the last reset (a foreground loss): a fix at

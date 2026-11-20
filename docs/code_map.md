@@ -42,11 +42,16 @@ Generated (do not edit/commit):
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run that
+    started decoding (its input opened and its start hook, when it has one, ran and succeeded)
     `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
-    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
-    frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
-    repeats the step, which then finds nothing left to do
+    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry, then calls the
+    frontends' stop hook when a start hook ran, so a frontend that records calls gets the final transmission; a
+    frontend with only a start hook (Android) gets the final publish too, which its history tap reads after the stop
+    (bug B1, issue #800), and so does an embedder that attached telemetry itself and passed no hooks (the published
+    position feed then reads as stopped, with the run's last records). A start hook that fails adds no publish and no
+    stop call. `dsd_engine_cleanup()` repeats the step, which then finds nothing left to do. At the start of every run the
+    engine also starts the run's position feed (`dsd_position_feed_start()`, below), beside the debug start time
   - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
     and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
     at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any
@@ -2152,10 +2157,10 @@ suite runs under this compiler.
   carried), and an NXDN VCALL_IV or SCCH republish describes no call there.
   The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
   alias, position or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
-  `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol), so a P25 Motorola,
-  Harris or Tait alias, a DMR talker alias, DMR/P25/NXDN GPS, LIP (DMR's, or a UDP port 5017 report in P25 Phase 1
-  packet data, named by the frame that carried it, `lip_pdu_protocol()`) and DMR UDT NMEA, D-STAR slow data or an NXDN
-  alias decoded before its own call opened leaves another protocol's open call alone; the P25 aliases that take their
+  `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol; an admitted position
+  report goes through `dsd_event_enrich_position()`, which checks the report's own protocol family), so a P25 Motorola,
+  Harris or Tait alias, a DMR talker alias, a position report, D-STAR slow data or an NXDN alias decoded before its own
+  call opened leaves another protocol's open call alone; the P25 aliases that take their
   talker from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
   protocol's radio learns a P25 alias. Writers still choose the phase themselves where the store's rule is wider than
   theirs (a key choice record takes an ended call, so P25 `p25_crypto_publish_canonical()` and the DMR autoload record
@@ -2164,7 +2169,8 @@ suite runs under this compiler.
   `nxdn_scch_enrich_identity()`, `ysf_enrich_identity()`, the DMR Cap+ seed). A P25 TDULC's link control, read after its
   end has run, takes an ended call only when that end closed it: the TDULC ended it, or it follows back to back the TDU
   or TDULC that did (`p25p1_terminator_note_end()`, `dsd_state::p25_p1_terminator_end_*`, `p25_lcw_from_tdulc()`'s
-  `ended_epoch`), never an older call the slot still holds.
+  `ended_epoch`, which the Motorola talker end reads), never an older call the slot still holds. A GPS link control in
+  a TDULC binds only to the call that TDULC closed (`p25_lcw_from_tdulc()`'s `closing`, issue #800).
   Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
   `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
@@ -2241,14 +2247,28 @@ suite runs under this compiler.
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
   its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
   defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
-  `--lrrp-extra-port` ports are part of it. The compressed path passes the data header's LLIDs as the radios and a
-  NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
+  `--lrrp-extra-port` ports are part of it. The IPv4 path dispatches only a whole datagram
+  (`decode_ip_pdu_whole()`, issue #800 fail closed), judged against exactly the user data its caller hands over: the
+  DMR packet's octets less the CRC32 and the pad octets (`dmr_block_type1_checked_len()`), a P25 packet's user data left
+  at the cursor after its optional headers, never a pad or CRC octet (`p25_pdu_payload_span()`; a packet shorter than
+  its header, CRC32 and pad octets has none, `p25_pdu_payload_len()`; test `CORE_NMEA_SENTENCE`). An IPv4 fragment (More Fragments set or a nonzero offset) is not
+  reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
+  quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
+  service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
+  decoded;` or `Truncated UDP;`. An ICMP message's data is decoded as a datagram only for the error types that quote
+  the invoking datagram (`decode_ip_pdu_icmp_quotes_datagram()`: 3, 4, 5, 11, 12); an Echo Request or Reply (or any
+  other type) carries opaque data, so a report copied into it is never one (test `DMR_LIP_CARRIERS`). The compressed
+  path passes the data header's LLIDs as the radios and a NULL IPv4 header (9361/49198 then print the LLIDs), and
+  appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
   is exactly one ARS message of that specification's section 3.4 (`dmr_ars_record_is_exact()`; a TMS ack shares the
   0xBF header octet and differs by length; length-value sizes are octets). The SAP length handed to every SAP decoder
-  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); the decrypt
+  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); a pad count
+  larger than the octets the blocks hold after the CRC32 (after the MNIS header's 7 for MNIS) leaves no user data at all,
+  whatever the header's check said, so no SAP or MNIS decoder (LRRP, LIP, LOCN among them) reads a packet whose lengths
+  disagree (`dmr_block_type1_checked_len()`, issue #800 fail closed; test `DMR_EVENT_CRC`); the decrypt
   window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
   P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
   set; `data_block_crc_valid` holds the header plus 127 block verdicts.
@@ -2285,8 +2305,11 @@ suite runs under this compiler.
   slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go through
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
   to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
-  its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
-  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
+  its call -- D-STAR slow-data text and APRS (and those only through the call their transmission's checked header named,
+  `dstar_slow_data.c`), the NXDN alias and DCR call sign memory -- reaches a row only through
+  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
+  a call of the detail's own protocol (the caller passes the sync type it decoded under, checked by
+  `dsd_call_state_update_is_protocols()`: D-STAR text never lands on a DMR call still open on the slot), and
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
   call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
   checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
@@ -2601,20 +2624,25 @@ suite runs under this compiler.
   else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system (`sys_id1`..`_3`), the TETRA
   MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part not received takes the value a
   row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
-  X2-TDMA rows carry none. The row takes the parts whole from the record of the carrier the call began on (the record's
-  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, and a note
+  X2-TDMA rows carry none. The row takes the parts whole from the record of the reception the call began on (the
+  reception generation is the call's `dsd_call_snapshot::rx_gen`, `dsd_state_reception_generation()`: a retune or a
+  change of P25 phase keeps the record's epoch but is another reception, issue #800): the record keeps them one
+  consistent observation, and a note
   naming another system, site or access code (an IDAS SCCH site ID that disagrees with the Type-D system ID, another
   EDACS or P25 system, another NAC on the carrier) moves the record's epoch, so the row keeps the identity it was heard
   under, never a mix. While the call is ACTIVE it takes the live record; once it has ENDED, the record the canonical
   layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
-  `dsd_call_snapshot::ended_rx_id` while its epoch is still the call's, else captures none): identity received after the
+  `dsd_call_snapshot::ended_rx_id` while the reception generation is still the call's, else captures none, so a call
+  that ends unrendered after a retune keeps none of the next carrier's system or scope, only its own frequency, test
+  `CORE_EVENT_POSITION` `test_ended_scope_of_the_calls_own_reception()`): identity received after the
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
   what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
   switch never takes the next carrier's. Direct mode empties the record, so the end also notes whether a TETRA call
   ended on a direct mode carrier (`dsd_call_snapshot::ended_tetra_direct`), and the ended row keeps its DMO mark from
   that. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
-  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
+  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch and reception generation, as the grant
+  was heard on this carrier
   (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - History site and call channel (issue #799; `dsd_events.c`). Beside the `sys_id` slots a row keeps the whole site it
   was heard on, `Event_History::site_id` (a `dsd_received_identity` holding only the site parts,
@@ -2792,13 +2820,369 @@ suite runs under this compiler.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 and 14
   (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
   the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
-  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
+  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below), and 17 (taken from the ui
+  range): `DSD_STATE_EXT_CORE_POSITION_FEED`, the run's verified position feed (below);
   runtime 6, and 15 (taken from the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an
   I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these six.
+  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
+- API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
+  17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
+  point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
+  checks they ran: `pos_verified` (the position's own CRC/FEC check) and `source_verified` (source, target and
+  group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
+  the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
+  (`dsd_position_origin_capture()`/`_matches()`: the reception generation, `dsd_state_reception_generation()`, which
+  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase, together with
+  the trunk tuning generation), or
+  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
+  a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
+  destination kept),
+  freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
+  none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
+  tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
+  any kind, feed-only and none included, through the scoped lookup call rows use, the radio list first; a foreign
+  sender, with its own different scope, only through a label learned in that scope,
+  `dsd_tg_policy_lookup_learned_label()`), and
+  stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
+  or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
+  equal, where it was heard included: protocol class, slot, tuned frequency, reception scope and label, so the same fix
+  on the other slot, another visited network or the other P25 phase is a new record (Phase 1 and Phase 2 TDMA slot 1
+  publish one slot value; a radio that changes phase keeps both records, while both polarities of one phase fold;
+  where either report's reception scope is unknown, only the same reception generation is one place, so two
+  conventional receptions no scope names, a colour code apart, keep both records); kept less than 30 s ago on the
+  decode clock; anonymous sources never
+  fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
+  producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
+  takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0
+  with `DSD_POS_FLAG_SLOT_UNKNOWN`, which is never the same place as another report (test
+  `DMR_EMBEDDED_GPS_ATTRIBUTION`). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
+  still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
+  it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
+  `pos_seq` cursor never matches a report of an earlier process. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
+  seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
+- API note: history rows carry the admitted fix (`Event_History::pos`, a padding-free `dsd_event_pos`, issue #800).
+  Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
+  admitted record: `dsd_event_enrich_position()` (the slot's ACTIVE call of an epoch),
+  `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
+  ends before it dispatches its own link control; both take the `dsd_opts` the event log is written through, and a
+  position written into a row that already committed appends the row's `GPS:` line to `-J` with the row's own stamp,
+  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`; the `-J` and terminal history GPS
+  detail lines take their label from `dsd_event_gps_detail_label()`, none when `gps_s` already starts with `GPS:`, as
+  DMR embedded GPS, UDT NMEA, Motorola APX and M17 text does, so the line has one; tests `P25_P1_HARRIS_GPS`,
+  `DMR_FLCO_MONO_CRC_SCOPE`),
+  `dsd_event_set_open_call_position()` (D-STAR slow data, through the call its transmission's header named),
+  `dsd_event_stage_position()` (the next data notice;
+  `Event_History_Staged::pos_fix` keeps the whole record) and
+  `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol class,
+  `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, so an anonymous Phase 2 report never lands on an
+  anonymous Phase 1 call still open on the slot; the
+  report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
+  report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its
+  source later -- a fill in the same epoch or a reacquired segment's -- drops it with its GPS text,
+  `dsd_event_pos_requalify_row()`, as History's fold does, `drop_anonymous_gps_of_named()`; a notice given a report
+  whose identity admission cleared drops its own source and target), requires the report to have been heard where
+  the row was, and lets only a newer `rev` replace a position. Where it was heard is one reception rule
+  (`dsd_position_same_reception()`, `<dsd-neo/core/position.h>`, fail closed), used by every row writer, the
+  reacquisition merge and the attribution rule: two receptions (`dsd_position_reception`: scope, NAC discriminator,
+  protocol class, reception generation, the tuned frequency it was read with) of two known protocol classes that differ
+  (P25 Phase 1 and Phase 2, `dsd_sync_protocol_class()`), or of two known tuned frequencies that differ (two carriers
+  of one system, whose scope, a P25 WACN and SYSID, names no carrier: `dsd_position_reception::tuned_hz`, a row's
+  `dsd_event_rx_scope::tuned_hz`, a report's `freq_hz`), are never one; else they are one when both scopes are known
+  and equal, or when they
+  share the reception generation (`dsd_state_reception_generation()`: the received identity's epoch, plus the applied
+  trunking retunes, `dsd_state::rx_tune_seq`, and the P25 phase changes, `dsd_state::rx_phase_seq`, both of which keep
+  the system the record holds) and nothing says otherwise (an unknown scope, or one scope only refining the other: a
+  NAC then the WACN and SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one
+  kind are two receptions within one generation, and an unknown side never matches across generations, so a NAC heard
+  before a retune and a WACN and SYSID learned after it are two receptions, not a refinement. The row side is the row's
+  own `Event_History::rx_scope` (with the generation it was read under, `rx_gen`) and sync type, never the closing
+  call's: a terminator's
+  GPS decoded after its segment merged into a row heard on another carrier is refused there. The sender scope in
+  `pos.scope` is only the track key. A call row takes
+  its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
+  began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
+  row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
+  same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
+  WACN and SYSID read after a sync loss, but only when the row and the segment were heard on one reception by the
+  reception rule, read on both as they were before anything is adopted: a stronger identity never overrides two known,
+  different tuned frequencies or NAC discriminators, so a row committed on one carrier keeps its frequency and
+  reception and refuses the other carrier's GPS, `watchdog_event_rx_scope_learns()`), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
+  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
+  segment's GPS (a position, GPS text, a sender scope) only when it was heard on the row's reception by the reception
+  rule, after the merge folds in what the segment learned: a segment whose reception is unknown (a reacquisition with
+  only a colour code after a reset) or another merges as a call and keeps its GPS off the row (test
+  `CORE_EVENT_POSITION`).
+  Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
+  no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
+  `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
+  `API_FEED`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+- API note: position producers (issue #800). Each decoder that reads a position fills one `dsd_position_fix` (its
+  `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
+  nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
+  gets its GPS text, history position, `-L` row and feed record; a refused report prints its fields without
+  coordinates (`(refused)`), and a report whose check failed or that `-F` accepted as RAS prints only that
+  (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`): its other content (an MNIS LOCN report's text, an LRRP
+  document's time, radius, altitude, speed and track, a LOCN time, a LIP report's motion, error, reason and time, a UDT
+  NMEA report's speed, time and course, an embedded GPS LC's position error and protect flag, an L3Harris update's
+  quality, which an unchecked one, a soft-decoded half among them, reports only as `Harris GPS: not used (unchecked)`)
+  prints only with `-Z`, by one rule
+  (`dsd_gps_report_content_printable()`, `<dsd-neo/core/gps.h>`; tests `DMR_EVENT_CRC`, `DMR_LRRP_CRC_GATING`,
+  `DMR_LIP_CARRIERS`, `DMR_EMBEDDED_GPS_ATTRIBUTION`, `CORE_GPS_LRRP_CRC_GATING`, `P25_P1_HARRIS_GPS`). Every producer
+  prints
+  a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
+  sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
+  before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
+  month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
+  (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). The record names the destination
+  (`target_id`, `DSD_POS_FLAG_TARGET_GROUP`) wherever the same checked carrier that names the source names one, so the
+  same fix sent to two destinations is two records; it stays 0 only where no checked destination exists (a USBD
+  hash, an M17 or D-STAR callsign destination, which the numeric record has no field for, a TETRA SDS whose MAC
+  address does not say group). Per kind, position check / source check:
+  - DMR LRRP and LOCN (`dmr_pdu.c`), LIP over UDT or UDP and binary UDT NMEA (`dsd_gps.c`): the data packet's header,
+    CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet (its source, target and G/I bit as the
+    checked standard header gave them: `dmr_data_checked_group`, which an MNIS DPF 15 header leaves alone; a UDT
+    report takes the UDT header's source, destination and I/G bit as a `dsd_gps_address`, LIP over UDP the
+    datagram's source and destination, qualified as a group like LRRP's). LRRP
+    reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
+    0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
+    at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    parse, and a resync-guessed position is never published. Every caller hands `dmr_lrrp()` its whole checked payload
+    (an MNIS one of any length; only the console echo of a LOCN report's text is bounded), and a position comes only
+    from the whole declared document: one that declares more than the payload holds gives none (`Position suppressed
+    (incomplete document)`), since the shape that ranks highest may be in the part missing. The LRRP summary (the
+    packet's notice text) carries the speed and heading of an admitted report only, as admission left them; a failed,
+    refused or incomplete report's motion prints only in the `-Z` details (tests `DMR_EVENT_CRC`,
+    `DMR_LRRP_RESPONSE_TOKEN_LENGTHS`). An MNIS payload (`dmr_block_type1_handle_mnis()`) ends where the packet CRC32's
+    span ends: Motorola's compressed data leaves the octet just before the CRC32 out of the CRC
+    (`dmr_block_type1_update_crc()`), so that octet is never payload, and no DMR packet service reads past the span its
+    CRC covered (`dmr_block_type1_checked_len()`). A checked MNIS LOCN report's text (`LOCN Text:`) prints only once
+    `dmr_locn()` admitted its position, else only with `-Z`. UDT NMEA needs Q=1 and the format's fields (80 bits
+    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length, and a
+    short report is read no further than its 80 bits). These go to their own data notice
+    (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
+    specification) and is read from whole user octets only (defined short data, DPF 13: the header's bit padding comes
+    off first, so a digit the padding would complete was never sent); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
+    century closest to the decode clock's date as an RMC's), else the fix time is
+    unknown, so two reports that differ only in time are not folded as a repeat.
+  - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
+    `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
+    one is not decoded. The source is an 8-bit hash (`SOURCE_HASHED`): its own anonymous notice
+    `USBD LIP Poll Response; SRC(Hash): NNN;`, never `-L`. `lip_parse_short_report()` and its text and `-L` helpers are
+    shared with TETRA.
+  - DMR embedded GPS (`dmr_embedded_gps()`): the embedded LC checksum (`WEAK_CHECK`) / a checked, non-RAS full LC of
+    the same transmission named the call's source (`dmr_lc_attribution[slot]`, learned in `dmr_flco.c` bound to the
+    transmission and the reception, cleared at every voice LC header and carrier change), else unverified; the
+    destination and group flag that LC named while the call still has that target. By the attribution rule below: a
+    relock onto another colour code, or another site named on the carrier, keeps the call but leaves the next fix
+    anonymous until a checked full LC under the new reception names the talker (test `DMR_EMBEDDED_GPS_ATTRIBUTION`).
+  - P25 Phase 1 L3Harris and Motorola APX (MFID $90 LCO $06, `FORMAT_PROVISIONAL`) link control (`p25_lcw.c`,
+    `nmea_harris()`, `apx_embedded_gps()` with a `dsd_gps_report_ctx`): a hard RS decode of the LDU1 or TDULC LC (a
+    soft-erasure retry is unchecked); L3Harris pairs Part A (LCO 42 or 44) only with the Part B of its parity (43 or
+    45) on the same call epoch and source within 2 s on the decode clock, in storage of its own
+    (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE Phase 1
+    call (`p25_p1_lc_attribution`, by the attribution rule below: a checked NID naming another NAC, or another system
+    named, without the call ending leaves the report anonymous, in the call and in its terminator).
+    Every Phase 1 LC verdict (identity events, preemption candidates, the checked-identity record, the GPS position)
+    depends on that hard decode (`p25_lcw_ctx.lc_hard`). A terminator's GPS LC belongs to the call that terminator
+    ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
+    and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
+    `p25_sm_checked_call_identity()` (P25 SM below), by the attribution rule below: never from a Phase 1 call still
+    open on the slot, never across a reception change.
+  - Attribution rule (`<dsd-neo/core/position_attribution.h>`, `src/core/gps/position_attribution.c`). Every producer
+    that names a report's sender from a call rather than from the report (DMR embedded GPS, P25 Phase 1 GPS link
+    control and Motorola APX, P25 Phase 2 L3Harris MAC) records its evidence with `dsd_position_attribution_learn()`
+    when a checked message of the call names it, and borrows it only through `dsd_position_attribution_grant()`:
+    the call is open (ACTIVE, or the call the report's own terminator just ended,
+    `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
+    protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
+    transmission (a healed fade keeps it); the reception generation (`dsd_state_reception_generation()`, moved by
+    another access code, system, site or family, an applied trunking retune or a change of P25 phase: a Phase 1 call
+    left open across Phase 2 frames names no later report's sender) is the one it was learned under (the reception
+    rule, `dsd_position_same_reception()`, on the generation alone: the evidence keeps no scope); for DMR, the
+    burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
+    `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
+    a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
+    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and no burst of another sender kind came between on the
+    evidence's lane: every DMR burst counts by its sync word alone (`dmr_note_burst_slot()` in `dmr_flco.c`), and
+    revokes the embedded GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that
+    burst's lanes (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds
+    the burst's LCs, the data lane the burst's slot). A burst a reader reads is noted once its slot is known
+    (`dmr_note_burst_lane()`: `dmr_data_sync()` after the CACH, the MS voice bootstrap, the BS burst readers); one no
+    reader reads, or reads the slot of, is noted by its sync word (`dmr_note_unread_burst()`: an MS or direct-mode burst
+    before anything of it is read, so also one whose slot type fails; a repeater's burst whose CACH fails, on both
+    lanes; an MS or direct-mode burst the dispatcher holds back unread under trunking or with stereo and mono off,
+    `dispatch_dmr.c`). So a return to direct mode after a repeater-mode burst is not the direct-mode call either
+    (`test_direct_mode_after_an_interruption()`, `test_unread_burst_interrupts_its_lane()`, `DMR_DATA_HEADER_AIR`,
+    `DMR_SYNC_DISPATCH`). Another lane's bursts never touch it, and the reception generation does not move with a DMR
+    burst mode. The lanes are the decoder's, not the air's: an MS-sourced burst carries no CACH, so the decoder reads it
+    on lane 0, the lane a repeater's slot 1 (TS1) bursts are on as well. MS-sourced bursts and BS slot 1 bursts
+    therefore revoke each other's evidence and data bindings (fail closed: only a sender is dropped), while BS slot 2
+    bursts keep lane 1 of their own; a direct-mode burst's voice and LCs are on lane 0 too, a direct-mode slot 2
+    burst's data on lane 1. A carrier with BS-sourced bursts on slot
+    2 and MS-sourced ones interleaved keeps each lane's evidence (`test_two_lanes_of_two_sender_kinds()`); and the
+    call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
+    The P25 trunk SM binds its published record to the generation of its last publication
+    (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another
+    generation is dropped when the record is published again; its flags count only under that generation) and binds
+    the slot's assignment the same way (`identity_rx_gen`, rebound by every message applied after the generation moved:
+    `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
+    inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
+    `p25_sm_verdicts_now()`, which counts none earned under another reception generation, so Phase 1 frames heard
+    between two Phase 2 messages of one call end the talker's verdict (test `P25_P2_HARRIS_GPS`
+    `test_phase_change_reuse()`). The one carry is a grant's: `p25_grant_store_slot_context()` runs after the retune
+    the grant causes (`p25_grant_try_tune_vc()`, which applies to the reception at once on the decoder thread), so the
+    grant's checked talker counts on the channel it sends the receiver to, and only there
+    (`test_grant_carry_across_its_retune()`). The other
+    producers name the sender from the report's own carrier
+    (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
+    the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
+  - A P25 special address (`$FFFFFC`-`$FFFFFF`: FNE use, System Default, Registration Default, ALL units; the table
+    the unit activity log uses) names no radio wherever a report's source comes from
+    (`dsd_position_source_names_radio()`, `p25_source_id_is_subscriber()`): admission clears such a source and keeps the
+    destination, so a checked report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits
+    as the source: LRRP, LOCN, LIP over UDP from 10.255.255.253) is anonymous. The sender is sanitised once, where the
+    packet is read and before any text or record is made of it (`decode_ip_pdu()`; the MDPU header and its extended
+    address in `p25p1_pdu_data.c`), so the notice row, its text (`LIP SRC:`, the LRRP summary, `EXT ADD SRC:`) and the
+    report all name no sender; only the raw header dump prints the address as sent. DMR addressing is unchanged.
+    Test: `DMR_LIP_CARRIERS`.
+  - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
+    P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
+    sentence there is kept as text but chosen as no report), is the report / the same packet, whose
+    header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
+    type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
+    date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
+    replayed capture keeps its own century; with no century within 50 years, such as 29 February 00 received in 2080,
+    the fix time is unknown). The checked sentences' text reaches the console (`NMEA:`) and the notice only from a
+    packet whose report admission admitted (`nmea_packet_text()`, after admission): a CRC-failed packet's says
+    `NMEA withheld (CRC ERR)`, and one with no measured fix or a refused report (a status V RMC, an RMC at exactly
+    0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
+    rejected. A payload is NMEA
+    when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. A SAP 48 packet whose CRC failed (`-F`)
+    takes neither branch (`p25_handle_sap48_location_data()`, fail closed): a damaged first octet makes an NMEA report
+    read as text, and the service's text can hold a position in any form, so its payload is never printed, staged or
+    kept as text or GPS; its notice says `P25 Location Service: payload withheld (CRC ERR);` (the raw MPDU dump stays
+    with `-Z`; test `CORE_NMEA_SENTENCE`). Nor does one whose MDPU header was heard on another reception than the one
+    the receiver is on now (`p25_mdpu_origin`: a retune, target switch or change of P25 phase since the header): the
+    header and block CRCs are separate checks, so neither branch stages anything, the packet gives no notice, and the
+    console says `P25 Location Service: payload withheld (reception changed);`. The sentences and the report are read
+    from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
+    the kept text is bounded).
+  - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
+    call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
+    `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,
+    FACCH3/UDCH2 or CAC CRC, a FACCH1 none of whose copies passed -- a rejected header, another reception or carrier,
+    or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
+    names its destination. Its own notice.
+  - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
+    packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
+    monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
+    so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
+    transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
+    number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
+    transmission) and the reception generation, except that a byte-identical copy of any of the last 16 network frames
+    (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
+    from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
+    `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
+    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_gnss_state`, freed
+    with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
+    reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
+    the published target stays unknown). The epoch is the call
+    the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
+    call is still ACTIVE on the slot, so each such RF report is admitted again and none touches that call's row. An LSD
+    assembled from LICH chunks (`m17_lich_assembly`) is bound from its first chunk to the transmission (the ACTIVE M17
+    call's epoch, 0 none; an LSF frame, a packet frame, an EOT and the carrier's end empty it), the confirmation
+    (`m17_confirmed`) and the reception generation; a chunk heard after any of them changed resets it, and only an LSD
+    holding all six chunks under one binding, its CRC passed, names a call or carries a position (`-F` may still show
+    the rest). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
+    position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
+    `dstar_dprs_assembly`; both slow-data assemblies live in the D-STAR state extension, slot 30, `dstar_sd_st()`,
+    created at first use, never in public `dsd_state`; if it cannot be created no record or message is assembled) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
+    its own mini-header, except a rebroadcast header's own nine blocks (`dstar_sd_first_block()`): the header CRC covers
+    their octets but not their mini-headers, so none of them is ever text or GPS data, whatever type its mini-header
+    names; the block after them is read like any other. Only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
+    of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
+    position), only text blocks
+    (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
+    rule (fail closed, `dstar_sd_binding` in `dstar_sd_state.h`): from its first byte or block an assembly is bound to the
+    transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
+    `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
+    (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
+    still matches; 0 none, and 0 once a retune, target switch, another system's frame or another protocol's frame (an
+    M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
+    ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
+    none of the last message's characters; a text block whose place is at or before one heard since the last block 0
+    starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
+    evidence. What an assembly
+    produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
+    the row takes its position only through it, and only when the record's own CRC-covered APRS source, its -SSID
+    aside, is that callsign too (`dstar_dprs_source_is()`: another station's record, heard while a call whose
+    boundaries were missed stays ACTIVE, is not the call's; otherwise the feed takes the record anonymous), and the message reaches
+    the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
+    Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
+    header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
+    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
+    field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked RF header with DATA
+    set opens its data call but names no call for slow data; a checked slow-data
+    header with DATA set names no call and opens none, and revokes what a header heard before named
+    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared; the record and message assembled under that naming drop at
+    their next use by the binding rule, while an anonymous one, assembled while nothing was named, goes on), so a voice
+    call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
+    concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
+    sender's own MCC/MNC as the sender scope when sent.
+  - DMR packet binding (`dmr_data_header_binds()` in `dmr_block.c`, fail closed). A data block, and a DPF 15 header
+    that extends a standard one, belongs to the standard data header that armed its lane only when it came on the
+    reception that header's origin still matches and in a burst of the same identity (`dmr_data_air[slot]`,
+    `dsd_position_dmr_air()`): the sender kind by its sync word (BS-sourced, MS-sourced, direct mode) and, on the
+    single-slot decoder, the over-the-air slot (proven by the CACH, named by a direct-mode sync word; an MS-sourced burst
+    has none to prove, decided limit; a BS-sourced lane still Checking binds nothing). Otherwise the packet is dropped
+    (`Data block not from its header's slot or reception; packet dropped;`), so a header's radio never names another
+    transmission's blocks; an MBC header clears the origin, so no data block binds to it (test `DMR_DATA_HEADER_AIR`,
+    through the real single-slot data path).
+  - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
+    DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
+    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU
+    (`tetra_mac_fragment::origin`, which `tetra_mac_sdu::origin` carries to the MLE) and each TETRA concatenation, whose
+    first part keeps its own first fragment's) and pass it to admission (LRRP
+    and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
+    `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
+    retune, target switch, reception change or change of P25 phase came in between (the L3Harris Part B also refuses
+    to pair: `GPS Part A of another reception`). Such a report publishes nothing of its own under the
+    reception the receiver is on now: no text, no staged GPS and no notice of its own (`nmea_sentence_checker()` and
+    `sds_lip_report()` test the origin before they stage anything; the other producers stage only what admission
+    admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
+    `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
+    always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
+    bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
+    from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
+    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, the call a D-STAR header
+    named, `dstar_tx_call_epoch`) stay in their protocols, and the call state knows none of them: it never gives out
+    an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
+    reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
+    A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
+    header, whatever its CRC, begins another transmission (`dstar_tx_begin()`: the half-assembled D-PRS record and text
+    message are dropped) whose slow data reaches no call, its D-PRS records anonymous, until a checked header, on RF or
+    in the slow data, names the transmission's MY callsign on the reception the slow data is heard on
+    (`dstar_tx_named_call()`; a checked header with a blank MY
+    field names no one and leaves them anonymous too). Tests:
+    `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
+    `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
+    `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
@@ -4025,7 +4409,13 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  the record, and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or for a
+  protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
+  closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
+  multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
+  protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
+  reception generation, keeping the record; an applied retune starts the carrier reached's phase afresh, so a Phase 2
+  voice channel a Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
@@ -4370,6 +4760,16 @@ suite runs under this compiler.
     whether one sits at the read position) however the two split the stream. Marks a purge discarded around are dropped,
     a second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
     Test: `RUNTIME_INPUT_RING_GAP` (arbitrary short blocks on one thread and two, purge, duplicate, full queue).
+    A producer commit that depends on the discard generation (`input_ring_commit_if_generation()`) and a purge
+    request (`input_ring_request_discard()`) both hold `generation_m`, so a purge falls wholly before or after such
+    a commit (`test_commit_hook` lets a test act between the check and the commit). The SoapySDR reader takes the
+    generation under `soapy_lock` right before `readStream()`, the native Airspy reader as its callback starts; both
+    record a read in the I/Q capture under the same lock, only while the generation holds (a purge comes before the
+    retune's RETUNE record), and a stale read leaves a `retune_reconfigure` MUTE of its length there instead. A
+    stale read is dropped whole: counted and stepped over by the Fs/4 rotation, with no gap mark. A replay restarts
+    its Fs/4 rotation at a RESET; the SoapySDR reader restarts its own before its first record after one, which
+    `rtl_device_record_capture_reset()` records under `generation_m` (`capture_reset_seq`), so its reads and MUTEs
+    fall wholly before or after the RESET. Test: `RUNTIME_INPUT_RING_INIT`, `IO_RTL_REPLAY_EOF_AND_CF32`.
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
     `dsd_decode_now_realtime_s()`) with SYSTEM (platform clocks, default), REPLAY (`anchor + media_ns`, anchor floored
@@ -4863,7 +5263,7 @@ suite runs under this compiler.
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
     `include/dsd-neo/runtime/radioreference.h` and `radioreference_generate.h`; needs `USE_CURL` and `USE_EXPAT`, and
     reports `dsd_rr_available() == 0` without them. Shared curl setup lives in the module-private
-    `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
+    `src/runtime/curl_common.h`, alongside `rdio_export.c`'s and `tile_fetch.c`'s use of it.
     `dsd_rr_site::has_position` validates latitude/longitude independently of the optional coverage radius;
     `(0,0)` is a missing-position placeholder. Invalid coverage becomes zero and never erases valid coordinates.
     Places: `dsd_rr_trs_details` keeps the system's `Trs.sState` and `Trs.sCounty` ids (`state_ids`, `county_ids`;
@@ -4893,6 +5293,59 @@ suite runs under this compiler.
     or without curl and expat, so the no-expat configuration still builds it. `radioreference/rr_provenance.c`
     reads and writes the plain-text `<file>.rr` sidecars that make a generated CSV refreshable. Both
     frontends consume that header, so the Qt model and the terminal wizard cannot drift apart.
+  - Map tile fetch (issue #800; `include/dsd-neo/runtime/tile_fetch.h`, `src/runtime/tile_fetch.c`): one blocking
+    HTTPS GET of one map tile per `dsd_tile_fetch()` call, for the Qt map's tile worker, which owns the thread, the
+    cache and the backoff (UI, Qt, "Map"). The header names no curl or Qt type, includes only `<stddef.h>` and declares
+    every entry point unconditionally: `dsd_tile_fetch_available()` is the runtime answer, true only with libcurl that
+    lists `https` **and** has an asynchronous resolver (`CURL_VERSION_ASYNCHDNS`), since with `NOSIGNAL` a synchronous
+    lookup ignores every timeout; without them, the built-in transport returns `DSD_TILE_FETCH_ERR_UNSUPPORTED` ("online
+    map tiles are not available in this build"). The probe reads `dsd_curl_version_info()` (`curl_common.h`): the one
+    `curl_version_info()` call, made inside `dsd_curl_global_ready()`'s initialization, since that call is not
+    thread-safe (before `curl_global_init()` it sets up static data, and every call rewrites static buffers; TSan saw
+    two first-use probes race) and the map's probe can race an rdio upload's or a RadioReference request's first init.
+    Nothing else may call `curl_version_info()`. An init failure reads as unavailable (and a fetch is `ERR_SETUP`).
+    Rules:
+    - https only, twice: the request URL is checked (`https://` + host, visible ASCII, at most 2048 B; else
+      `ERR_INVALID`, nothing sent), and after `dsd_curl_apply_hardening()` (which allows http for rdio) the helper
+      restricts the protocol itself, `CURLOPT_PROTOCOLS_STR "https"` from libcurl 7.85 and `CURLPROTO_HTTPS` below,
+      with the hardening's version guard. Android's cleartext flag does not bind native sockets, so this is the rule.
+    - Every `curl_easy_setopt` result is checked, and any failure fails the fetch closed (`ERR_SETUP`, nothing sent).
+    - Redirects are never followed: any 3xx but 304 is `ERR_REDIRECT`, a failure the worker backs off from.
+    - Caps: body 512 KiB (`DSD_TILE_FETCH_BODY_CAP_BYTES`), header block 32 KiB; over either is `ERR_TOO_LARGE`.
+      When only the body was over, `http_status` and the header fields (Retry-After) libcurl delivered are still
+      filled, so the worker can tell an oversized 429/5xx page (backoff) from an oversized tile (a miss). With a
+      declared `Content-Length` over the cap (`CURLE_FILESIZE_EXCEEDED`, never the header cap) libcurl 8.5 and older
+      stop before the closing blank line (7.81 and 8.5: every line but it; 7.65: the status line only), so the lines
+      seen so far are kept; a write refusal can be the header cap, so there the block must be whole.
+      `RUNTIME_TILE_FETCH_PLAIN_HTTP` drives the real libcurl against a loopback server (plain http via the
+      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`). A URL libcurl rejects as malformed
+      (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
+    - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
+      for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
+      per-fetch easy and multi handles stay private, so cancel, caps and options are unchanged. Measured against the
+      default server, 6 sequential tiles: 1066 ms and a new connection each without it, 393 ms with one connection.
+    - Response fields (`ETag`, `Last-Modified`, `Cache-Control`, `Expires`, `Date`, `Age`, `Vary`, `Retry-After`) come
+      raw from the final header block with `header_present`/`header_invalid` masks; interpreting them is the caller's.
+      An `ETag` or `Last-Modified` with a tab is invalid on receipt: it could not be sent back in `If-None-Match` /
+      `If-Modified-Since` (`tf_request_value_ok()`), so the next request goes out unconditionally instead of failing.
+      A `Cache-Control` or `Vary` that cannot be carried whole fails the fetch (`ERR_BAD_HEADER`), so a lost `no-store`
+      or `Vary: *` can never be cached.
+    - Cancel: an opaque atomic token. The built-in transport runs through `dsd_curl_perform_cancellable()`
+      (`curl_common.h`; its third user after `rr_client.c` and `rdio_export.c`): a private multi handle polled every
+      100 ms at most in every phase, plus `XFERINFOFUNCTION` for the transfer itself, because libcurl calls no progress
+      callback during connect or TLS. A name lookup stops within that bound only from libcurl 8.20
+      (`CURLMOPT_QUICK_EXIT`, the stuck resolver thread ends by itself); older libcurl returns when the system resolver
+      does, so no caller may wait for a fetch on a UI thread.
+    - Privacy: nothing in the helper logs, and no error text carries the URL (a template can hold a key).
+    - The transport is injectable per request (`dsd_tile_fetch_transport`, like `dsd_rr_transport`); the curl option
+      seam `DSD_TILE_FETCH_TEST_HOOKS` is compiled only into tests. User-Agent: `dsd_tile_fetch_user_agent()`,
+      `dsd-neo/<version> (+https://github.com/arancormonk/dsd-neo)`.
+    Tests: `RUNTIME_TILE_FETCH` (fake transport and a held name lookup: caps, header parsing, classification, cancel),
+    `RUNTIME_TILE_FETCH_NO_CURL`,
+    `RUNTIME_TILE_FETCH_CURL` and `RUNTIME_TILE_FETCH_CURL_PRE_7_85` (the options and their fail-closed setup, with
+    libcurl only), and the header smoke tests. A test-only forced curl version (`DSD_TILE_FETCH_TEST_CURL_VERSION_NUM`,
+    `DSD_CURL_COMMON_TEST_CURL_VERSION_NUM`) only ever lowers the installed headers' version, and the tests pick their
+    expectations from the same effective version, so every target builds on each supported libcurl (7.56 and up).
   - Session input failure latch (`include/dsd-neo/runtime/input_failure.h`, `src/runtime/input_failure.c`): the last
     failure of the session's input, kind and native code (`dsd_input_failure_report()`; `dsd_input_failure_clear()`
     at the session's start and when an Airspy opens or an rtl_tcp server connects), which
@@ -5083,7 +5536,18 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   Every park's idle dwell runs from its landing
   (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
   listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
-  after it. A dwell disarmed in between stays disarmed, and every disarm records its cause
+  after it. On an RTL-family input the dwell starts no earlier than the input's return from the retune's mute
+  (`trunk_scan_listening_dwell_start()`, `dsd_engine_scan_input_listening_since_m()`, `rtl_stream_input_listening_since_ns()`:
+  when the demodulator first takes a sample the reader committed after the post-retune mute was armed, or a second
+  past the mute's end at the rate if none comes), and every reader of the dwell (the tick, the hunt's
+  `dsd_engine_trunk_scan_dwell_due()`, the timing report) holds it unstarted while the input is muted: a HackRF's
+  backlog mute is over half a second at 2 MS/s. The first tick that sees the input back latches that start for the
+  armed dwell (`trunk_scan_latch_listening()`, before the state machine runs), so a later retune on the same target (a
+  control channel probe) neither moves nor pauses the dwell. The -Y hangtime rule does the same
+  (`no_carrier_hangtime_ran_out()` in `engine.c`): not run out while the input is muted, and, when the input came back
+  after the hangtime anchor, `-t` counts from then as well. The -Y countdown
+  (`scan_y_timing_fill_hangtime()`) publishes the same deadline: no window while the input is muted, and `-t` from
+  its return when that ends later than the wall-clock rule. A dwell disarmed in between stays disarmed, and every disarm records its cause
   (`trunk_scan_disarm_dwell()`, `trunk_scan_dwell_disarm`): a conventional activity hold (the activity callback, and
   the `CARRIER`/`ACTIVITY_HOLD`/`VOICE` stays) has a known end, `last_allowed_activity_m` plus the effective hold on
   the coordinator's decode clock, the deadline `trunk_scan_activity_hold_running()` measures; the operator's hold
@@ -6913,6 +7377,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`, `UI_QT_METRICS_MODEL`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
+- Positions (issue #800): `include/dsd-neo/app_control/position_view.h`, `src/app_control/position_view.c` and the
+  private `position_ring.h`. One static published ring of 1,024 records in `ui_snapshot.c`, beside `g_pub_eh`: the
+  publish hop copies the feed records above the last one it published under `g_mu`, the consumer hop copies none, and
+  nothing allocates. A run's first publish replaces the previous run's records, and a publish with no live feed keeps
+  the last run's, so its final publish (Engine above) stays readable after the stop. `dsd_app_position_copy_since()`
+  reads it from any thread with a cursor of the reader's own (`stream_id`, `last_seq`, `oldest_seq`/`newest_seq`,
+  `more`, `lost`, `reset`) and the clock sample stored with the ring (`stream_id`, `decode_now_s`, `clock_source`,
+  `running`, which the exit flag clears at the final publish), so a frontend ages a replay's fix on the replay clock
+  only while that run is going. Test: `APP_CONTROL_POSITION_VIEW`.
 - Unit activity: `include/dsd-neo/app_control/unit_activity_view.h` and `src/app_control/unit_activity_view.c` read
   a snapshot's unit activity ring (Core) for every frontend (the Qt Activity screen, the terminal panel), so both say
   the same thing.
@@ -7050,7 +7523,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     restart drops above. A collection reports the entries it found as its total. `status.scan_avoids` is the held
     summary; `get {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a
     reference under the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on
-    the session thread outside every lock, so the replaced block is freed by its last reader
+    the session thread outside every lock, so the replaced block is freed by its last reader. Positions (issue #800):
+    `track_positions()` follows the decoder's live feed (`dsd_position_feed_copy_since()`) at every publish, as
+    `track_events()` follows the rings, and builds and broadcasts `position` lines (topic `positions`, `pos_stream` as
+    a decimal string, `pos_seq`) only while a client subscribes; with none it moves its cursor to the newest seq. A
+    new stream is followed from its first record. `dsd_api_feed_start()` takes the baseline from the published ring
+    (`dsd_app_position_copy_since()`), so a server started during a run sends none of the run's earlier records.
+    There is no backlog and no `get`: a batch can hold records kept since the previous publish, before a session
+    subscribed, so each session keeps its own cutoff (`pos_after_rev`, `dsd_position_last_rev()` when it subscribed to
+    positions) and `dsd_api_broadcast_positions()` queues it only the lines whose record `rev` is later (tests
+    `API_SERVER`, `API_FEED`). A line that cannot be built or appended stops the batch, and the feed's cursor moves only
+    past the lines gathered, so the next publish retries the rest. A gap in `pos_seq` is a report kept while
+    unsubscribed or overwritten in the 1,024-record ring between two publishes
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
@@ -9532,6 +10016,95 @@ Key public headers:
     `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
     `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
     meter's level the same).
+  - SoapySDR rate, filter and capture ceiling (`soapy_profile.cpp`, `rtl_device.cpp`, `rtl_sdr_fm.cpp`). Rate: the
+    plan's call, `rtl_device_nearest_supported_rate()`, goes through `dsdneo::soapy_profile_sample_rate()`: the
+    advertised point that matches a profile's `preferred_sample_rate_hz` (`soapy_rate_supported_point()`: the listed rate
+    or range point `minimum + k * step` closest to it within 1 Hz, both neighbouring steps considered, an exact one
+    winning whatever the order and, of two equally close, the one that rounds to the rate asked for, and for the
+    preference only one that rounds to it or below, since 10 MS/s is the capture ceiling too), else the nearest rate as
+    before. Only the HackRF profile has
+    one (10 MS/s); the request stays RTL-shaped, so the planner sees a device-forced rate and steps from it as for an
+    Airspy, and `soapy_profile = "generic"` keeps the nearest rate. The write, `rtl_device_set_sample_rate()`, programs
+    the rate it is asked for when the list or a range holds it (`dsdneo::soapy_nearest_sample_rate()`: a driver may
+    list a few rates and advertise a range too), else the nearest listed or range rate, and never the preference: the
+    stream asks for the planned rate, and a refused retune's rollback (`controller_restore_refused_capture()`) for the
+    rate the device delivered before the retune (`capture_snapshot_restore_rate_hz()`), which must not become the
+    preferred rate again; a HackRF asked for 10 MS/s may have delivered 2 MS/s until the refused hop. The rollback
+    reads that write back first; only when it did not bring the capture's rate back (the device refused the write, or
+    wrote another rate for it that delivers something else) does it write the rate that capture was programmed with
+    (`capture_write_restore_rate()`). The plan is made for the rate written (`rtl_device_set_sample_rate_written()`),
+    checked by the read-back. The start and every retune likewise judge the read-back against the rate written, not
+    the rate staged (`controller_take_initial_readback()`, `program_capture_frequency_and_rate()`), while the capture
+    frequency stays placed for the staged rate until the read-back moves it. Every rate and
+    bandwidth these helpers return is a point a range holds (a step, or for a range with no step a value within its
+    ends), never above its maximum (`range_last_point()`: the last whole step at or below it; the 1 Hz tolerance only
+    compares a request with a point), never the preference or the floor itself. Profile detection
+    names an Airspy HF+ (`airspyhf`, `airspy hf`) before the `airspy` keyword and gives it the generic profile; a key
+    that names a profile ends the search. Filter: while the capture runs the Fs/4 shift (`fs4_shift_capture_active()`;
+    not with `DSD_NEO_DISABLE_FS4_SHIFT=1`), a profile's default bandwidth that the device would snap below
+    `soapy_fs4_channel_floor_hz()` (rate / 2 plus the widest DSP bandwidth, 72 kHz) opens to `soapy_floor_bandwidth()`,
+    the narrowest the device admits at or above it (within the 0.5 Hz the warning allows, `kSoapyFloorToleranceHz`, so
+    the filter chosen is never one the warning flags), or its widest (`soapy_open_default_bandwidth()`); an explicit
+    `soapy_bandwidth_hz` or tuner bandwidth is applied as the device takes it; 0 stays driver-automatic and a device
+    with no bandwidth range gets none. Notices come after the write took and judge the filter the driver reports
+    (`soapy_bandwidth_readback_locked()`: `getBandwidth()`, else the value written, a non-finite report included, checked
+    with `rtl_is_finite()` since `rtl_device.cpp` keeps fast-math; the read-back is made only while a notice can apply,
+    `soapy_bandwidth_notice_applies()`, so with the Fs/4 shift off a retune pays no driver round trip for it): an opened default that keeps the
+    channel says so, and any filter narrower than the floor (explicit, kept by the driver, or the widest it has) is
+    warned about, each once per filter and rate (`soapy_note_bandwidth()`). SoapySDR rewrites the rate on every retune
+    (`rtl_device_capture_settings_generation()`), and the bandwidth follows each rate the chain accepts, a failed
+    write's read-back included (`capture_rate_write_failed()`). Ceiling and ring: the capture ceiling is per rate-plan
+    backend (`capture_rate_ceiling_hz()`): 10 MS/s (`kMaxDeviceCaptureRateHz`, a native Airspy's
+    `DSD_AIRSPY_MAX_RATE`) for SoapySDR and the native Airspy, `kMaxCaptureRateHz` (3.2 MS/s) for RTL-SDR and rtl_tcp;
+    `kMaxCaptureRateHz` still bounds the request planner and the raw I/Q stream. The open's
+    `stream_open_validate_device_capture_rate()` checks an advertised rate early for every backend but SoapySDR, whose
+    drivers may deliver another; for the same reason a provisional plan refused on a SoapySDR device's advertised rate
+    is deferred (`capture_provisional_plan()`: the chain runs the request's own plan until the read-back's final plan
+    validates the rate delivered), and a rate whose capture frequency would be out of range, or, on a retune, that is
+    above the rate the running input ring holds, is not staged when an advertised rate fits both
+    (`capture_provisional_rate()`, `rtl_device_rate_written_within()`: the advertised rate nearest the request among
+    those at or below the limit in whole hertz, as `llround()` programs and reads a rate back, listed rates and range
+    points compared with one another (`soapy_nearest_sample_rate_within()`), without the preference; the capture is placed for it and moved again for the rate the
+    device delivers). When no advertised rate's capture frequency fits, a SoapySDR device is tuned to the centre itself
+    until the read-back, whose rate places the capture or refuses it (`capture_stage_provisional_plan()`;
+    `apply_actual_capture_rate()` judges the capture after every read-back, even one that did not move the rate). `rtl_device_rate_written_for()`, with no limit, answers with the setter's own choice
+    (`soapy_nearest_sample_rate()`, which prefers a listed rate when neither the list nor a range holds the request); for a native Airspy it answers
+    with the rate asked for, as the setter writes it, while the planning query answers with the rate the Airspy runs. A final plan refused on the rate written is made again on a SoapySDR
+    read-back a few Hz off it, as the planner's tolerance takes it (`rate_chain_plan_delivered()`: a device listing
+    3,072,025 Hz that delivers 3,072,000 Hz runs a 48 kHz chain), still counting the rate written as programmed and
+    the device as having forced its rate when that differs from the request. A read-back is bounded before it is narrowed: `rtl_device_get_sample_rate()` reports
+    a SoapySDR rate of `INT_MAX` Hz or more as `INT_MAX`, which every ceiling refuses, never as no read-back; with no
+    usable read-back the rate written stands for it, bounded the same way (rates are rounded with `llround()`, since
+    `long` is 32 bits on Windows). The binding
+    check is `capture_rate_within_limits()` on the rate a device delivers
+    (read-back, else programmed), at the start (`controller_take_initial_readback()`) and on every later read-back
+    (`apply_actual_capture_rate()`, refused as a rate-plan refusal with the existing rollback). The input ring holds the
+    default ring's time at the capture rate (`input_ring_capacity_for_rate()`: `kInputRingDefaultFloats` doubled until
+    it does): a native Airspy's is sized from its rate at open (`stream_open_init_airspy_input()`, which also keeps
+    `airspy_info` and `centered_iq`), and every radio's again for the delivered rate once the start is programmed
+    (`stream_open_size_input_for_capture()`, before any thread starts). Resizing goes through
+    `input_ring_reallocate()` (`runtime/input_ring.cpp`), which allocates the new buffer before releasing the old and
+    keeps the ring's lock and conditions, so a failed size leaves the teardown a ring to signal; the raw I/Q stream's
+    ring (`stream_open_size_net_input()`) is replaced the same way. `g_input_ring_rate_hz` records the rate the ring
+    holds; the ring is never resized under the stream's threads, so a later read-back above it is refused. Retune
+    backlog: a driver whose receive queue dsd-neo bounds (`dsdneo::soapy_driver_stream_queue()`, by driver key: a HackRF
+    gets `buffers=4` at `setupStream()`, `soapy_stream_args_for()`) reports what it can still hold after a retune
+    (`rtl_device_retune_backlog_samples()`: that queue, libhackrf's 4 transfers and the one MTU block a reader paused
+    between its read and the mute holds, 1,179,648 samples), and the default
+    retune mute never ends inside it (`retune_mute_bytes()`); an explicit `DSD_NEO_RETUNE_MUTE_MS` is kept. Tests:
+    `IO_SOAPY_PROFILE` (helpers, Airspy HF+ detection, advertised points), `IO_RTL_DEVICE_SOAPY_RATE` (HackRF, SDRplay,
+    ADALM-Pluto, LimeSDR and Airspy HF+ stand-ins with their drivers' lists and ranges: rate planned and written, a
+    rollback to the saved rate, to the rate delivered, to the rate written and to the request that gave it, a usable
+    read-back of an unusable advertised rate and its forced flag, a preferred rate out of tuning range, a read-back
+    judged against the rate written, a rollback that stops once restored or retries after a refused write, a 2.4 GS/s
+    rate written, opened filters, notices on the driver's read-back (an infinite one
+    included) and after the write, no read-back with the Fs/4 shift off, a stream open's capture and ring, an advertised
+    rate above the ceiling or one the chain cannot use, a 2.4 GS/s read-back at the open and on a hop, a failed ring
+    size, the filter on retunes and after a failed rate write), `IO_RTL_CAPTURE_WRITES` (ceiling on the start's read-back, ring for a read-back above the advertised rate, a
+    retune above the ring refused and rolled back), `IO_RTL_STREAM_START_FAILURE` (a native Airspy open: centred I/Q,
+    no shift, ring for 10 MS/s), `DECODE_IQ_TETRA_CALL_SOAPY_156K` (the 576/625 step after the last half-band pass,
+    its cell identity the native-rate recording's), `IO_SOAPY_STREAM_LOSS` (the retune mute covers a HackRF's whole
+    bounded backlog and a reader's held block at 10 and 2 MS/s).
   - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
     setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
     else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode
@@ -11791,9 +12364,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     reconciled from the canonical call after a verified VCALL publication and after an SCCH identity that belongs to
     the receiver's repeater (`nxdn_call_identity_reconcile()`), so a new call on the followed carrier is what a
     candidate is compared against. Its private/group class is the naming message's own (a VCALL's call type, 4 =
-    private, as admission judges it; a busy message's G/U bit), else the canonical call's group or private kind, else,
-    for a generic voice call (late entry, an INFO2 target message), the held call's when it names that target; a generic
-    voice call is never read as group, and one of no known class leaves the held call unknown (only Hold displaces it).
+    private, as admission judges it; a busy message's or an INFO2 target message's G/U bit), else the canonical call's
+    group or private kind, else, for a generic voice call (late entry), the held call's when it names that target; a
+    generic voice call is never read as group, and one of no known class leaves the held call unknown (only Hold
+    displaces it).
     Its `follow_m` moves only when the identity changes (target, kind, or frequency
     when both are known); one heard on another frequency than the receiver's is not known here. A follow replaces the
     previous record outright unless it re-follows the call the receiver still holds (`NXDN_FOLLOW_HELD`, a Type-D busy
@@ -11844,12 +12418,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     refuse.
   - Type-D association (`nxdn_idas_assoc()`): a busy repeater message's or INFO2 target message's go-to repeater is
     MATCH (its mapped frequency is the receiver's), OTHER, or UNKNOWN (no repeater 1-30, unmapped, or the receiver's
-    frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and a
-    busy message's G/U bit sets the canonical call's group or private kind, so a later INFO2 for that target never reads
-    a previous call's class; an INFO2 naming another target than the live call's names another call, which takes no
-    class from it (`nxdn_scch_named_kind()`: a generic voice call, so the held call is unknown and yields only to Hold
-    until a classified message names it); UNKNOWN never relabels. While voice is live a busy message for OTHER takes the receiver for
-    the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
+    frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and the
+    message's G/U bit (INFO2 has INFO4's format, TS 1-E §6.5.2.3, §6.5.3.3) sets the canonical call's group or private
+    kind, so a later message for that target never reads a previous call's class: an INFO2 naming another target than
+    the live call's names another call, of its own G/U class, held and judged for preemption as that class; an INFO2 or
+    busy INFO4 with ID 0 (the Null ID) names no destination and changes nothing (no identity, no recent activity, no
+    tune; an End of Transmission still ends the sending); UNKNOWN never relabels. While voice is live a busy message for OTHER
+    takes the receiver for the held talkgroup over a call not of it, else by preemption; MATCH and UNKNOWN never move it; with no voice for a
     second the message is followed as before. INFO3 names no go-to repeater (`rep1` is a free repeater), so its source
     enrichment is unchanged and can misname a talker (documented limit); it never changes the target or the policy. A
     source other than the live call's makes the canonical layer open another epoch of the same target and class, which
@@ -12900,6 +13475,85 @@ Private per-protocol modules worth knowing about:
   that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
   decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
+- P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
+  assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
+  `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own
+  CRC, a link control's hard RS decode). One rule holds for every field, in the slot's assignment and in the record of
+  its canonical call (`p25_sm_published_identity`): the message that names a value sets that field's flag from its
+  own check; a later message naming the same value sets the flag when its check passed and never clears it, without
+  a new epoch or a new crypto classification; a message that omits the field (0 or absent) leaves the field and its
+  flag as they are; a message naming a different value replaces the field and its flag takes that message's verdict;
+  a new call epoch, a release or a reset clears all three. A failed check never sets a flag, and a field inherited
+  from an earlier assignment keeps that assignment's flag. Every site that sets or confirms identity applies it
+  through `p25_sm_identity_claim` (only the fields the message itself named): new grants (`p25_grant_store_slot_context`,
+  a new assignment), duplicate grants (`p25_grant_duplicate_apply_identity()` → `p25_slot_apply_identity_claim()`: a
+  repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
+  by the target its call is judged by that names another target or kind, replaces that field in the assignment with
+  its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
+  with the new talker, a new canonical epoch, and `p25_grant_duplicate_start_new_call()` drops everything call-specific
+  the earlier talker left on the slot (ALG ID, key ID and MI, service options, talker alias) and classifies the new
+  call from the repeat's own service options alone, encryption pending when it carries none; test
+  `P25_P2_HARRIS_GPS`), voice starts that change the call (`p25_voice_start_commit_identity`) and ones that change
+  nothing (`p25_voice_start_promote_identity`), the trunk-off publication (`p25_sm_conventional_note_identity`), and
+  Phase 2 MAC_SIGNAL voice users that observe the canonical call themselves (`p25p2_vpdu_observe_voice()` →
+  `p25_sm_note_call_identity()`, with the MAC CRC verdict). A voice user also updates the slot's assignment
+  (`p25_slot_note_voice_user()`): naming the assignment's kind and target, it applies there as a repeated grant does,
+  so a later source-less MAC_ACTIVE inherits the latest talker with that voice user's verdict, never the grant's; naming
+  another kind or target, it drops the assignment's source, which no longer says who is talking. An addressless voice
+  start (a MAC_ACTIVE with no voice user) takes the canonical call's talker only while that call is the assignment's
+  (same kind and target, `p25_voice_assignment_call_src()`), so a talker of another talkgroup is never paired with
+  the assignment's talkgroup.
+  The record holds the call's current source, target and kind, its protocol and the reception generation its flags
+  were earned under (`rx_gen`); `p25_sm_merge_published_identity()` keeps a flag only within the same epoch, reception
+  generation and value, and an assignment's verdicts are carried into it only under the reception generation the
+  assignment was accepted under (`identity_rx_gen`; a grant's, after the retune it causes). Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
+  older convenience emitters publish unchecked, and the event builders default to unchecked.
+  `p25_sm_checked_call_identity()` returns the record only while the call is ACTIVE on that epoch with that source,
+  target and kind, all three checked and a source named, and by the attribution rule (Core, position producers) for the
+  report's protocol class: a Phase 1 call never names a Phase 2 report's sender, and a NAC or system change without the
+  call ending withholds the record until a checked message names the call again. Position producers attribute a Phase 2
+  report only through it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no
+  radio on its positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a
+  checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
+  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c` `p25_lcw_note_checked_identity()`), which
+  follows the same rule and fails closed: any later voice user of the call (LCO $00, $03, $4A, LCGRGR) that does not
+  record a radio takes the record away, unless it only repeats the record's source by a soft decode or names source 0
+  (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
+  ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
+  a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
+  display (test `P25_P1_HARRIS_GPS`). The LC record also counts only while the state machine's record of the same
+  call has not withdrawn that talker (`p25_sm_call_source_withdrawn()`: it names another source, or that one without
+  its checked flag as it counts now), so any checked message the state machine applies to the call, a repeated grant
+  naming a special address or a non-local source among them, revokes the LC evidence as well (test
+  `P25_P1_HARRIS_GPS` `test_repeat_grant_withdraws_evidence()`). A link control
+  counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
+  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
+  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
+  a report during such a call or from such an LLID is kept anonymous (and admission clears one that reaches a report
+  another way, `dsd_position_source_names_radio()`). A message whose source field holds one is no evidence for any
+  talker either (fail closed, `p25_sm_identity_claim::source_placeholder`): the call may keep the assignment's talker
+  for display, as before, but that talker loses its checked flag in the assignment and in the record, so a dispatcher
+  or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
+  identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
+  user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
+  than reading as an omitted field. A source that is not a complete local address of the reception is read the same
+  way (`p25_sm_event_t::source_nonlocal`): its value stays for display, but it is never checked and it takes the
+  source's flag away. That is a unit named only by its home SUID whose WACN and System ID are not the reception's
+  checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is not known): the
+  Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
+  LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
+  source address as well as the home SUID names the talker by the working address, which is local: the extended voice
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
+  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
+  The
+  verdicts are bound to their reception: a claim applied after the reception generation moved (another access code
+  or system, a retune, a change of P25 phase) first drops every flag the assignment earned under the old one and
+  rebinds `identity_rx_gen` (`p25_slot_bind_reception()`: voice
+  starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names
+  the next report, and nothing checked under the old one is inherited. Tests: `P25_P2_HARRIS_GPS`,
+  `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
@@ -12959,10 +13613,80 @@ Private per-protocol modules worth knowing about:
   (7-bit CRC, `nxdn_scch_info::acts`) is printed, but its recent-activity entries, idle-repeater clears and expiry, its
   termination's call end, its busy message's control channel and tune, and its call option's cipher, key and crypto
   publication wait for the confirmation, which the next frame's SCCH gives (a real IDAS message repeats; one acts a
-  frame, 80 ms, later). Its IV parts (IV A in an INFO2 naming ID 31, IV B and C in an INFO1) are the decoder's working
-  IV (`payload_miN`), kept either way and cleared with it at no carrier and when a tuned call is released, so IV A
-  sent before the confirmation still completes the IV the call takes once it is
-  (`test_type_d_scch_iv_a_before_confirmation_is_kept`). The "Type-D" category it names stays with its own frame only,
+  frame, 80 ms, later). `nxdn_scch_parse()` reads the field layout of NXDN TS 1-E §6.5 (its comment has the bit table;
+  TS 2-B §5.1.2's test vectors pin it): the ID of an INFO2, INFO3 or INFO4 is always a unit or group ID (31 is a
+  standard ID); the idle, halt, free repeater and site ID messages are outbound only (`nxdn_scch_is_status()`).
+  Content TS 1-E does not define (`nxdn_scch_content_problem()`; a reserved value is not valid, Table 9.1-1) is printed,
+  the field at fault named, and nothing else: no confirmation evidence or SCCH streak, no frame position, no area,
+  control channel sync, hunt, activity, identity, site, tune, cipher or key. That is: the reserved Home Repeater / Prefix
+  31 in an INFO2, INFO3 or busy INFO4 (Table 6.6-4); an inbound INFO1 whose Pass Character is not 31 (Fig 6.5-3); an
+  inbound SCCH whose Repeater in Use is 0 (the outbound registration command), or an inbound INFO1 or INFO3 whose
+  Repeater in Use is 31 (only an INFO4 or INFO2 carries the end of transmission), no repeater (§6.6.11, Table 6.6-9);
+  the reserved Free Repeater 31 (Table 6.6-8) in an outbound INFO1, an outbound INFO3 or the free repeater message; an ID the Unit and Group ID tables reserve, 2001-2040 (Tables 6.6-5, 6.6-6); the special IDs 2042 and 2043
+  under a prefix other than 0 (§6.6.7, §6.6.8); an INFO3 sender naming a status code (2041, 2044-2046) or All Units
+  (2047), a sender being one unit (§6.6.7.2); an INFO4 or INFO2 naming a status code inbound; a site ID message with the
+  reserved Site Type 00 or a reserved Site Code, 0 or 251-255 (§6.6.4, §6.6.5: `nxdn_scch_site_valid()`, which the site
+  ID message's writes read too); the free repeater and site ID messages print the field at fault. The standard ID 31 is
+  valid. Every Spare bit is ignored on reception (Table 9.1-1): an INFO1 with its Spare bit set still places its frame
+  and is evidence, and only its Call Option, Cipher Type and Key ID are not taken (D2; some decoders read IV parts
+  there); such an INFO1 is valid content. A data frame whose only checked content is a content-invalid SCCH
+  (`nxdn_scch_content_problem()` names a field, `nxdn_channel_result::scch_invalid`) neither stamps an already confirmed
+  carrier active nor extends the scanner's hold (`nxdn_finish_decoded_frame()`); a transmission that frame's spacing
+  confirms starts its hold there. The "Type-D" layout a content-invalid SCCH names stays with its frame even on a
+  confirmed transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later channel of that
+  frame verified (`dsd_nxdn_note_type_c()`). An End of Transmission (Repeater in Use / Go to Repeater
+  31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, `nxdn_scch_update_busy_display()`).
+  An INFO4 EOT's tuner return is the busy message's policy and tune, as before (`nxdn_scch_apply_busy_tune()`); an
+  INFO2 EOT retunes nothing, as before, so the release the frame's FACCH1 carries still runs and the receiver is never
+  marked as following a voice channel by it. A DISC's return to the control channel (`nxdn_element_handle_disc()`) is as it
+  was: documented limit, the return's tune request is not kept, `trunk_is_tuned` and the follow are cleared as soon as
+  the tune is asked, a PENDING one included, so a return that is still in flight or fails later is neither tracked nor
+  retried (NXDN's control-channel hunt, `nxdn_cc_hunt.c`, and the DMR, P25, TETRA and EDACS returns keep and settle
+  theirs). A call option naming a cipher Type-D reserves (10, 11; shown as DES/AES) is kept like any other. No SCCH
+  carries an IV or writes the scrambler register or IV: Type-D defines only Scramble (TS 1-E Table 6.6-31, TS 1-F §16),
+  whose register the key loads at a superframe's start and which runs on four 49-bit VCH slots a frame, a
+  FACCH1-stolen slot included (TS 1-F Fig 16.4-1, TS 1-D Fig 5.4-2). A frame of the voice superframe that can carry its
+  own position (an SCCH on an RTCH2 whose LICH names the superframe structure, USC 1x, TS 1-E Table 5.2-1, or a
+  superframe SACCH: `nxdn_frame_steps_after_signalling()`) steps its stolen slots after its signalling: a
+  CRC-verified, valid SCCH, or a CRC-verified superframe SACCH segment, hands its frame position to the rest of the
+  frame (`nxdn_channel_result::seed_part`, returned by `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()`, kept in
+  `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
+  carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on every frame of the
+  voice superframe (a fully stolen one with no position included: its slots still run the register on), places the
+  register at the frame's start with the cipher and key this frame chose, only from a checked position and only once (a scalar
+  key loaded only; the SACCH segment decoder places nothing itself, so a VCALL the SACCH completed may choose them
+  first), then steps the stolen slots, so the voice after a leading FACCH1 starts two slots in; a failed SCCH or SACCH
+  places nothing, and the register runs on. Every other frame steps them before its signalling, exactly as before: a
+  DCR SB0/PICH header, a non-superframe SACCH's, a control channel's, and a standalone Type-D frame of the
+  non-superframe structure (USC 0x), whose single SCCH (structure 00 means "single", not 4/4, Table 6.3-1) places
+  nothing. So a reset or an IV that signalling delivers (the DCR SACCH2's first block, a header's VCALL_IV) stands for
+  the voice after it, and a VCALL it carries that selects Scramble or loads a key takes none of its slots. Voice withheld before the transmission is confirmed still runs the Scramble
+  register across its words (`nxdn_step_withheld_voice()`), nothing playing.
+  Register and MI provenance: NXDN (and dPMR's scrambler) works in its own register, `dsd_state::nxdn_payload_mi`, the
+  Scramble LFSR or the DES/AES IV. P25 Phase 2 and DMR keep slot 2's MI in `payload_miN`, which P25 publishes, and NXDN
+  shared it once: a key loaded there, by an unconfirmed frame on a false IDAS sync during P25 Phase 2 reception
+  included, could be published as that slot's MI. No NXDN path reads or writes `payload_miN` now; the resets that clear
+  it (no carrier, a carrier boundary, a released tune, a reset of call tracking, init) clear NXDN's register and flag
+  too. An NXDN call's published MI (crypto publications, event history, the API feed) and the terminal's NXDN "IV" are
+  only an IV a CRC-verified VCALL_IV carried over the air, while the register still holds it (`dsd_state::nxdn_iv_on_air`,
+  `nxdn_published_mi()`); the register a scrambled call loaded from the key and ran on (`nxdn_reset_payload_seed_if_forced()`,
+  `LFSRN()`, an assignment's key load, a reset clear the flag) is never one, and the terminal shows the scrambler seed
+  only through the key redaction (`test_nxdn_keeps_the_shared_register`, `test_unconfirmed_frame_keeps_the_shared_register`,
+  `test_nxdn_history_mi_only_from_received_iv`, `test_nxdn_encryption_line_redacts_the_seed`). The DES/AES IV, muting and
+  keystream arming are otherwise unchanged: the vocoder starts a session from the working IV at a superframe start
+  after a VCALL_IV (`nxdn_new_iv`), and a call is decryptable once its cipher has a key.
+  Documented limit, DES/AES late entry: TS 1-D §5.4.4.2(4) sends the first IV in the first frame's FACCH1 beside the
+  VCALL and then one VCALL_IV in the SACCH of every second superframe, each for the next two-superframe session (8
+  frames, 640 ms; TS 1-A defines DES and AES for Type-C). A receiver that joins a DES/AES call mid-call has no IV for
+  the session in progress, and can play garbled audio until the next IV takes effect: on Type-C the next SACCH
+  VCALL_IV, up to about 0.64 s away (longer if one is lost). Type-D (TS 1-E, TS 1-F) defines no DES/AES and no
+  VCALL_IV (Table 6.6-31; its message type 0x03 is unassigned): the 22-bit Type-D VCALL_IV decoders read is a FACCH1 message, Type-D has no SACCH
+  superframe to repeat one in and SCCH carries none, so a Type-D DES/AES call joined after its IV went by can stay
+  garbled for the rest of the call. The parsed SCCH diagnostics print the bits some decoders read as IV parts only
+  through the key redaction; the `-Z` raw payload dump after them prints all four decoded bytes, which are on-air bits,
+  not key material (`test_scch_crc_gates_scrambler_reload`,
+  `test_stolen_slots_step_after_the_scch_places_the_register`). The "Type-D" category a valid SCCH names stays with its
+  own frame only,
   the frame's FACCH1 reading it
   (`nxdn_decode_frame_channels()`); a single-frame DCR SACCH2's scrambler and crypto, and a non-superframe SACCH's
   release (`nxdn_message_type()`), Station ID event and control channel sync (`nxdn_element_mark_control_sync()`), the
@@ -13010,7 +13734,8 @@ Private per-protocol modules worth knowing about:
   protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
-  `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
+  `processDSTAR_HD()`, the header rebroadcast in `dstar_slow_data.c`, or a whole D-PRS (GPS-A) record whose `$$CRCxxxx`
+  matches its text (issue #800; the `$$CRC` literal alone proves nothing) — and both confirm on a second frame arriving
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
@@ -13251,7 +13976,8 @@ evidence (`air_ksg`: per network, the set of KSG numbers its signalling named; `
 the encryption mode
 of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
 and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
-and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44, and the party
+its MAC address names, so two messages' parts to two parties never make one message) and the D-MM
 STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
@@ -13281,13 +14007,18 @@ its SYSINFO names another location area, whose call identifiers may differ (clau
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
 timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
 timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
-first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). The first fragment
+captures the reception it came from (`dsd_position_origin_capture()`), and a MAC-FRAG or MAC-END heard under another
+one (a retune however made, the trunking state machine's Next Channel with no carrier boundary among them, a trunk-scan
+switch, a received identity change) drops the TM-SDU instead of continuing it (`fragment_continues()`, issue #800, fail
+closed), so nothing rebuilt from two receptions reaches the MLE. It is dropped
 after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
 `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
 a network change drops),
-`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot), `TETRA_LIP`
+(a LIP report in a TM-SDU whose fragments straddle a retune or identity change gives nothing),
 `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
 over).
@@ -14020,7 +14751,20 @@ single "current call".
   clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
   records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
-  not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
+  not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
+  PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
+  reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
+  so a message sent again whole completes), its parts addressed to one party, by value and identity space
+  (`tetra_calls_addressed_party()`: an SSI, an SMI and a USSI of one value are three parties, so their parts never
+  join; parts addressed by an event label alone name no party, so their message's position is refused as `recipient
+  unknown`). A repeated part 1 is a duplicate only with
+  the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
+  one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
+  party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
+  learned for its network. The destination's group or individual kind is not known (the MAC address does not say),
+  so the record names no target (`target_id` 0, never `TARGET_GROUP`; the notice still shows the address). Test:
+  `TETRA_LIP`.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
@@ -14444,12 +15188,39 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
   (option `DSD_ENABLE_QT_UI`, default OFF)
-- Legal resources: `DecoderHost::licenseNotices()` reads the retained project and
-  dependency notices, including `legal/status.md` and the selected mbelib installation's
-  unresolved disclosures. `cmake/MbelibNotices.cmake` requires those dependency records;
-  the root CMake `legal` install component and `cmake/stage_android_package.cmake` carry
-  them into portable packages and Android assets. `tools/legal_inventory.py` checks
-  retained notice hashes and supplements release SBOMs without asserting legal clearance.
+- Legal resources: the licences screen (`LicensesScreen.qml`) first shows where the source
+  code of the Qt version the app is built with is (`DecoderHost::qtSourceNotice()`: Qt's
+  archive URLs for qtbase, qtdeclarative and qtsvg, from `QT_VERSION_*`, and a pointer to
+  `licenses/Qt-SOURCE.txt`, the release's directions with the Public Suffix List's pinned source, which
+  `android/CMakeLists.txt` writes with `tools/android_source_directions.py` from the build's Qt kit and the `qt`
+  record's `android_release` map stages), then lists by name
+  every file that the package's notice folder (`noticeDirectory()`: `assets:/doc/dsd-neo`
+  in the APK, none in the base host) names in its `notice-index.txt`, in that order
+  (`licenseFiles()`). A file's text is read and laid out only when it is opened, one at a
+  time (`licenseFileText()`; Back returns to the list): together they are near a megabyte.
+  A name the index does not give, a path out of the folder or a file the package lacks
+  reads as missing. `cmake/stage_android_package.cmake` writes the index from the folder as
+  staged (LICENSE, COPYRIGHT and THIRD_PARTY.md first, then the rest sorted), so a notice an
+  `android_release` map adds reaches the screen with no app change. The UI library compiles
+  in no notices. `cmake/MbelibNotices.cmake` requires the selected mbelib installation's
+  records; the root CMake `legal` install component and `cmake/stage_android_package.cmake`
+  carry them into portable packages and Android assets. Each record in `legal/components.json`
+  names the notices a package carries for it in a per-platform map (`windows_release`,
+  `android_release`, `macos_release`); `cmake/stage_release_notices.cmake` stages a
+  platform's map (the APK and the macOS DMG), `tools/legal_inventory.py --release-notices
+  <platform>` lists it, and `tools/check_release_notices.py` checks a package's
+  documentation folder against it, text included (the DMG's staged tree and mounted image,
+  and the folder `android-ci` unpacks from the finished APK). The desktop maps also list the
+  files each component is in (`binaries`: Windows file names; for the DMG, the executable's
+  name or a library's name without its version and `.dylib`), and the check refuses a file in
+  the mounted DMG's `bin/` or `lib/` that no record lists. `tools/legal_inventory.py` checks the maps
+  and retained notice hashes and supplements release SBOMs without asserting legal clearance.
+  `legal/android-runtime-lock.json` holds what the `qt`, `ndk-runtime`, `androidx`, `kotlin` and `project` records
+  were reviewed for (Qt version and kit SBOM namespaces, NDK revision, the Gradle release runtime classpath, the SHA-256
+  of the Qt Java libraries in the generated Gradle project's `libs/`, the APK's `lib/arm64-v8a/` files, and the SHA-256
+  of each Qt one in the reviewed kit, whose files matched the SHA-1 the kit's build SBOMs record); `tools/check_android_runtime_lock.py` fails android-ci's APK job
+  when the build differs, so a Qt, NDK or Gradle dependency update lands only with the records and the lock reviewed
+  together.
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Status rows that never wrap (issue #669): `ui_row.{h,c}` builds a row from atomic fields and draws it whole, or cut
@@ -15099,9 +15870,10 @@ Qt Quick frontend (`src/ui/qt`):
   before that rebuild; skipped while Home is hidden, a sheet covers it or another tab is current, and never repeated
   for the same text). Nearest without a fix says "Nearest needs your
   location" and "Showing names until a location arrives" with a flat "Use my location" action; with a fix it says
-  "Using your location from %1" with "Update location". Both go through the site chooser's request contract
-  (`radioReference.nextLocationRequestId()`, `decoderHost.requestSiteLocation`; a newer request elsewhere supersedes
-  it, hiding Home or leaving Systems cancels it, a late or retired answer is ignored), and call
+  "Using your location from %1" with "Update location". Both go through the one-shot broker the site chooser uses
+  (`locationRequests.requestSite("savedSystems")`, "Map" under UI, Qt; a newer request from any screen supersedes it
+  and the broker says so with `ended()`, hiding Home or leaving Systems cancels it, an answer for another id is
+  ignored), and call
   `savedSystemCards.markLocationRequested()` right before a request and `clearLocationRequest()` when it fails, is
   cancelled or answered, so only a fix the user asked for here reorders a screen reader's cards. Enter in the field
   hides the keyboard and leaves the focus in it (`PlexTextField.keepsFocusOnEnter`: the field also takes Return and
@@ -15503,27 +16275,30 @@ Qt Quick frontend (`src/ui/qt`):
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
     clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
-    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared, or
+    while the fragment is withdrawn from it (issue #800: its reading named another call, `FragmentPart::withdrawn`); a
     double, which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and
     `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
-    is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
+    is set with `setRecordingProvider()`) by the row's fragments, a withdrawn one left out (`recording_fragments()`, as
+    the export's recording names are): the row keeps its key only to know its later readings, and a reading that agrees
+    again gives its recording back; the provider names the fragments whose recordings
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
     store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
     read (`recordingEntryNames()`, the recording store below), for a History export.
   - Export rows and file (History CSV export; `call_history_export.{h,cpp}`): `exportRows(sourceRows)` turns this
     model's rows, in the order given (a row out of range is skipped), into `ExportRow`s of plain values, each read
-    through the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code,
-    tone, site and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none
-    without a provider, or when its answer does not cover every row), so an export takes the store's lock once. The
-    row's `end` and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder:
-    BOM, CRLF, `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel,
-    access_code, tone, site, message, recordings), header
+    through the role History shows it by (`data()`: a channel id by its `setChannelNames()` name, the access code, tone,
+    site and analog mode texts), and every row's recording names from one `recordingEntryNames()` call (none without a
+    provider, or when its answer does not cover every row), so an export takes the store's lock once. The row's `end`
+    and the other internal fields stay out. `call_history_export::file(rows, zone)` is the pure builder: BOM, CRLF,
+    `csv_text` quoting and formula guard on the text columns (name, radio_name, system, channel, access_code, tone,
+    site, message, recordings), header
     `started_local,utc_offset,started_utc,duration_s,type,name,talkgroup,radio_id,radio_name,system,channel,`
-    `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings`. The start is written in
-    the zone given at that instant (`yyyy-MM-dd HH:mm:ss`), that instant's offset (`UTC+05:30`) and ISO UTC (`...Z`),
-    all three empty for no start; durations, talkgroups, radio ids and frequencies that are not known are empty;
-    `type` is `call` or `message`; `analog_mode` is `NFM`, `AM`, `analog` (mode unknown) or empty; flags `1`/`0`. The
-    recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
+    `frequency_hz,access_code,tone,site,analog_mode,encrypted,emergency,message,recordings,call_kind`. The start is
+    written in the zone given at that instant (`yyyy-MM-dd HH:mm:ss`), that instant's offset (`UTC+05:30`) and ISO UTC
+    (`...Z`), all three empty for no start; durations, talkgroups, radio ids and frequencies that are not known are
+    empty; `type` is `call` or `message`; `analog_mode` is `NFM`, `AM`, `analog` (mode unknown) or empty; flags `1`/`0`.
+    The recordings cell joins the names with ` | `, each `\` written `\\` and each `|` written `\|`
     (`joinRecordingNames()`; `splitRecordingNames()` reads it back). No clock or locale is read. Tests:
     `UI_QT_CALL_HISTORY_EXPORT`. The file's columns and rules for readers are in `docs/csv-formats.md` "History file".
   - Exporter (`call_history_exporter.{h,cpp}`, `CallHistoryExporter`, context property `historyExport`): what
@@ -16052,11 +16827,16 @@ Qt Quick frontend (`src/ui/qt`):
     one that names Capacity Max with the mask, channel and stamps unchanged. H1: an update for a fragment is applied to
     the row that holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges
     with, because a fragment that no longer passes the merge test with the row it was folded into would otherwise be
-    dropped. Decided limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the
+    dropped. Issue #800: so is any reading of a held fragment, an update or not: the seen key holds the row's start,
+    which the core can fill in or move later (`watchdog_event_merge_stamps()`; a row with no start reads its end), so
+    a reading the seen store takes for new is still the fragment its row holds by ring identity, and merging it by
+    content could land it on another row or log a second one. Decided limits: L7, with a split on conflicting parts a
+    fragment that knows fewer parts (none, or the
     system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
     backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
     conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
-    part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
+    part by part, and is not split back out of the row (a row whose only fragment it is follows that fragment's newest
+    reading, issue #800). Persistence: the row's `site` object (one key per part; the DMR
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
     first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`; when the
@@ -16092,6 +16872,155 @@ Qt Quick frontend (`src/ui/qt`):
     mode (`Analog NFM`, `Analog AM`, `Analog`) on the Encrypted/Unencrypted line (index 11); every line keeps its place,
     so `siteLineIndex` stays 9. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`,
     `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
+  - Call history texts, position and identity (issue #800; `call_history_model.{h,cpp}`, `call_history_merge.h`,
+    `call_history_payload.{h,cpp}`).
+    - Call kind: `Row::gi` and `FragmentPart::gi` (`Event_History::gi`: 0 a talkgroup, 1 a radio, a private call, -1 not
+      known), the `gi` role and record key, persisted when known (`gi`; absent reads -1). A group call and a private
+      call to the same number are two calls (`call_kinds_differ()` in `fragment_call_compatible()` and
+      `rows_identity_compatible()`); a fold adopts a known kind, and a row named only "Call to N" for not knowing it
+      takes the name the kind gives ("Talkgroup N", "Radio N"). The lists' meta line (`Util.targetMeta()`: "TG N", "TO
+      RADIO N", "TO N"), the detail sheet (`Util.targetLine()`) and Hold ("Hold TG N", "Hold radio N", "Hold N") say it
+      the same way. The Talkgroups screen's heard cards leave out a private call's radio (`heardTalkgroups()`,
+      `TalkgroupListModel::heardFromRoles()` by the `gi` role; not knowing counts as before), and the History CSV export
+      ends with `call_kind` (`talkgroup`, `radio`, `unknown`; empty without a target).
+    - Payload: every row, voice and notice alike, keeps its message text (`messageText`, with its provenance) and its
+      GPS text with the structured position (`gpsText`, `Row::Position`: lat/lon x 1e7, error, flags, kind, rev,
+      process instance, receive time), read from `Event_History::text_message`, `gps_s` and `pos`; the ring's position
+      only while `pos.valid` and its values pass `call_history_position_values_valid()`. `DetailRole` joins the two
+      texts with ` · `; a row an older build stored keeps its one text as `legacyDetail`.
+    - Identity: `Row` keeps the raw identity apart from display names: `protocol` (the sync type), `sourceText` and
+      `targetText` (raw `src_str`/`tgt_str`, kept only for protocols that name calls by text -- M17, D-STAR, YSF,
+      dPMR -- by `call_history_identity_text_is_raw()`: the EDACS `LID_<id>`, `LID_UNK` and AFS labels render a number
+      or its absence, and M17's `UNKNOWN` source names nobody), `sourceScope` (`pos.scope` and its discriminator, set
+      with or without a position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
+      two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4; two known raw target texts
+      that differ are two calls with a talkgroup too, `rows_identity_compatible()`), and
+      requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
+      plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
+      matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
+      Capacity Plus / EDACS, then a full system) must be equal, except that one known in part
+      (`call_history_scope_covers()`: an EDACS scope's site or system still 0, a P25 NAC scope with no tuned frequency)
+      joins one that knows those parts with the same values, and the row keeps the fuller
+      (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
+      stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
+      rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
+      Fail closed (gate g62-r7): the row learns the fuller or stronger scope, and takes a fragment's fix, only from a
+      fragment heard on the row's reception (`fragment_same_reception()`, read on the row as it was before the reading
+      folds in anything): one protocol class (`call_history_position_class()`, the core's
+      `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
+      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: never on two
+      known carriers, `Row::rxHz`, the tuned frequency the reception was read with, which goes with `rxScope` and not
+      with the newest fragment's `freqHz`; else both scopes
+      known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
+      `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
+      receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
+      to its first fragment still folded in (gate g62-r8), chosen from the parts as they stand once the reading is in
+      (gate g62-r9: a withdrawn fragment restored at its own place ahead of the others is the anchor again, so the row
+      returns to its reception and phase and takes that fragment's new fix): a new reading of that fragment is judged as
+      the row's own reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
+      alias neither withdraws its fix nor moves it to another fragment's phase; after every fold the fixes the row
+      keeps are only those of fragments heard on its reception now (`requalify_row_gps()`), so a row rebuilt onto the
+      other P25 phase (its anchor withdrawn) keeps no fix of the first. The merge of the conversation is
+      not gated: a call heard on 450 MHz with only a tuned-frequency scope and a fragment under a NAC on 451 MHz are one
+      row, which keeps its 450 MHz reception and none of the other carrier's fix; a Phase 1 row takes no Phase 2 fix.
+    - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each
+      fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
+      fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
+      frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
+      gave, decode session, its sender (source number and text, sender system), sync type, numeric target and target
+      text, its source label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
+      replaces its part whole (`merge_parts()`; a reading older by `Row::fragmentVers` changes nothing), so nothing an
+      earlier reading gave outlives it (a message, sender, destination, name, site text or anything else the ring
+      entry no longer carries is gone), and every row field a part gives is rebuilt from the parts on every fold
+      (`foldRow()`): what the row's other parts gave (`rest_of_row()`, which leaves out every part the reading gives
+      again), then each part the reading gives (`fold_reading_parts()`), so what the row held stays ahead of what an
+      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type, the
+      numeric target and the raw destination are the call's, not the sender's: they fold from every part of the call
+      (`fold_call_identity()`; the core fills a committed call's unknown target in place on reacquisition,
+      `watchdog_event_merge_identity_fields()`, and the row takes it with the name the part gave, notifying `tg`), so a senderless fragment's destination keeps a later fragment naming another
+      destination off the row, and with the destination the row takes the name it gave its part when the row's own
+      name is only a label (a channel or a placeholder, not its service). A part gives the sender, label and message
+      only when it names the row's radio (`fold_part()`,
+      `part_gives_sender()`: the radio the row named, while a part still names it; the first a part names when the row
+      named none), so an anonymous fragment never enriches a named row, and one naming another radio (another number,
+      callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
+      no radio again, and no other radio's part names it. Its other fields fold from every part of the call. An update
+      found by its fragment, which is not merged again, is judged against what the row's other fragments gave
+      (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
+      fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
+      protocol family, reception and sender system, numeric target and raw target text, a target either side does not
+      know no conflict), never against
+      its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
+      other than the row's) is withdrawn (`withdraw_parts()`) and gives nothing, and the row is rebuilt from the rest,
+      every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
+      code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
+      recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
+      The parts are persisted (`fp`, `pv` 2 for a part that holds its sender; a part an earlier build stored without
+      one takes the row's). A row an older build stored without parts is converted into the same model when it is
+      loaded (`row_from_json()`, `ensure_parts()`, `legacy_part_of()`): one part per fragment, each holding the row's
+      values, and a value that carries provenance (frequency, code, channel, label, message) only in the part of the
+      fragment its slot and push stamp name; a row with no fragments gets one part under a key of its own
+      (`legacy|` and its seen key, `legacy_part_key()`, stored in `fp` like a fragment key), so two such rows a load
+      merge folds together are two parts and the row keeps what either gave (the later row's source and emergency
+      flag). So withdrawing such a fragment takes back only those values: its
+      sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
+      the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
+      stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
+      unknown run, an older store's, does the start guard the push stamp), and a reading
+      gives its own only when it names the row's radio and was heard on the row's reception (`fold_gps()`,
+      `fragment_same_reception()`). The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from a fragment heard on the row's
+      reception, whoever sent it. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
+      greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
+      unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
+      `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
+      wins with or without a position, so the core's text-only GPS write applies while an older spill line (keyed or
+      text-only) replayed over a newer save never does. A store without `gpsVer` falls back to the keys, and the same
+      fragment read again with no key takes what it says. The row keeps every fragment's GPS unit, the latest reading
+      of each (`Row::gpsOthers` beside the one shown), and shows the best of them: when the shown fragment's newer
+      reading drops its fix, the best remaining fragment's fix shows, whatever order the readings arrive in and after
+      a reload. A later reading of one fragment with neither GPS text nor a position (the core withdrew its report)
+      withdraws that fragment's unit (`call_history_gps_withdraws()`), so its fix is neither shown nor saved; a named
+      row drops only its anonymous units. A whole reading older than one the row already folded from
+      the same fragment (`Row::fragmentVers`, the ring's `commit_rev` of the newest reading of each fragment) is stale
+      and folds in nothing (`foldRow()`), so an older spill line never brings back a label, message, frequency or code
+      the fragment has replaced since. The session ordinal is persisted per ring
+      (`callHistory/sessionOrd/next` and `/rings`, the newest 64), given the first time a ring is read; the background
+      tap takes a reserved block of 1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at
+      every stop, so a later run's fix wins whatever order the fragments are read in.
+    - Re-ingest and notices: `SeenState` keeps digests of the GPS text, message and position (`gpx`, `msx`, `psx`),
+      so a late fix or message on a committed row is read again; an entry from an older build reads 0, so such a row
+      is read once more. It also keeps a digest of the raw identity (`idx`, `call_history_identity_digest()`: sync
+      type, `rx_scope` and whether it was read, `pos.scope` with its discriminator, `src_str`, `tgt_str`), so a row
+      whose system the core resolves in place is read again and its fragment checked against the row again; an entry
+      without one (an older build's, or `load()`'s seed) takes the first read's without counting it as a change, as
+      the site text digest does. A repeated notice (`notices_same_delivery()`) must match the texts, the fix
+      (coordinates, error, flags, kind), the raw target and identity. Against a notice an older build stored (one
+      `detail`, no message or GPS text) the texts compared are the ones that build would have stored
+      (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
+      replay after an upgrade gives the stored row its parts rather than logging it again, and the name this build
+      gives the delivery (an unsummarised notice's whole detail line, `absorbRepeatedNotice()`, notifying `name`), so
+      a later replay, with neither row legacy any more, still finds it; two rows of this build compare their whole
+      detail line. A fold looks a row's fragments up among its parts through an index
+      (`PartLookup`) once both are more than a few, and takes a reading's parts out of the rest or withdraws them in one
+      pass (`rest_of_row()`, `withdraw_parts()`), so a long call of many short fragments folds in time linear in its
+      parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
+      (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      `rx`, `rxGen`/`rxRing` (the reception generation the reception was read under and its ring, hex; both or neither),
+      `rxHz` (the tuned frequency the reception was read with, while known),
+      `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
+      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
+      `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
+      under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only
+      when known (`detail` only for a legacy text); spill lines
+      add `ord`, which with the fragment's `frv` gives a spilled reading back its GPS run and version when it carries
+      no GPS to store them with (`spilled_reading_provenance()`), so a fix the core withdrew while the app was away is
+      withdrawn from the row when the spill folds, as the same reading read live does. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
+      part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
+      could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on
+      a NAC or frequency scope, a frequency scope's frequency known, EDACS parts 0 or `0x10000 |` the number), and a
+      stored `proto` that is no whole number loads as not known. Tests: `UI_QT_CALL_HISTORY_MODEL`,
+      `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -16355,7 +17284,10 @@ Qt Quick frontend (`src/ui/qt`):
   started, latched in `noteSessionStart()`, and as they are now: an edit while it runs reaches the decoder only at the
   next start, so it can take roaming away but never give it), and whose decoder
   snapshot (`facts`, which Main binds to `metrics`) shows trunking, a tunable input, no scan, no operator hold and no
-  held talkgroup. The location feed runs only while armed. Main's start path carries out a switch: `switchRequested()`
+  held talkgroup. Roaming holds the shared `LocationFeed`'s "roaming" lease (`setLocationFeed()`, before `setHost()`
+  in `qt_ui.cpp`; "Map" under UI, Qt) only while armed: the feed starts the host's stream at the first lease and
+  starts it again after a foreground move, the epoch notice first, as roaming's own `m_seenEpoch` handling expects.
+  Main's start path carries out a switch: `switchRequested()`
   (Main records `pendingRestart.kind == "roam"`), `DecoderHost::stopForSwitch()`, then at Idle `startPlan()` (the
   checks: the foreground epoch and user stop generation read from the host now, the verdict derived again, the
   destination still a roamable, unavoided site of the group captured at the session's start), `noteWaitingForUsb()` /
@@ -16368,7 +17300,8 @@ Qt Quick frontend (`src/ui/qt`):
   change of a name alone (a site renamed by an RR update) or of the unit shown is a change of the view and is
   announced; the recovery notice is derived again from its two sites' names (`refreshNotice()`, its own signal). Tests:
   `check_executor_metadata_changes()`, `tst_site_roaming.qml` `test_24c`.
-  Rule: a fix the host delivers (`locationStreamUpdate`, emitted inside its refresh, which `UiController::tick()` runs
+  Rule: a fix the host delivers (`locationStreamUpdate`, passed on in the same call by `LocationFeed::updated()`,
+  emitted inside its refresh, which `UiController::tick()` runs
   before the tick's model refresh) is stored at once and judged as the event loop turns (`evaluateSoon()`, one queued
   call), so the decision reads that tick's decoder snapshot (`facts`): a call that began between polls holds the
   switch. The initialization edge, also signalled inside the host's refresh, revokes the evidence (`revoke()` in
@@ -16459,8 +17392,9 @@ Qt Quick frontend (`src/ui/qt`):
   with `Qt.callLater`). Tests: `tst_site_chooser_sheet.qml`, `tst_monitor_roaming.qml`, `tst_settings_roaming.qml`
   (`UI_QT_QML_CALL_LISTS`).
 - Hidden lists (issue #782, `qml/KeepPlace.qml`): History's log (`callLogList`, both `HistoryScreen` instances), Home's
-  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`) and the Activity list (`activityList`, keyed by
-  seq through `UnitActivityFilterModel::rowForSeq()`) get their models from a `KeepPlace` only
+  recent calls (`homeRecentList`), the Talkgroups grid (`talkgroupGrid`), the Activity list (`activityList`, keyed by
+  seq through `UnitActivityFilterModel::rowForSeq()`) and the Map's List (`MapList.qml`, keyed by track id through
+  `positionView.rowForTrack()`; issue #800) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
   them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
@@ -16646,6 +17580,10 @@ Qt Quick frontend (`src/ui/qt`):
   `DiscardDialog` closes with the surface under it, so it never returns when that reopens.
   `RadioReferenceScreen.reset()` keeps the typed zip code and system ID (and their tab) across visits instead;
   `doImport()` clears them.
+- Sheet room (issue #800): `ModalSheet.bottomInset` (default 0) is room at the bottom the panel stays out of, as if
+  the sheet ended there, for something drawn over the dim that must stay readable (the map's attribution chip).
+  `availableHeight` (the sheet less the inset, above the keyboard) is what the panel centres in and what
+  `maximumHeight` is taken from, so the inset is lost once, not twice. Every other sheet leaves it at 0, unchanged.
 - Composing (preedit) text (issue #718): an Android keyboard holds the word being typed as preedit, which
   `TextInput.text` leaves out, so forms would save a name without its last word, judge an edit unchanged or reject a
   field as empty. `input_commit.{h,cpp}` (`InputCommit`, the `inputCommit` context object, wrapped by
@@ -17025,8 +17963,10 @@ Qt Quick frontend (`src/ui/qt`):
   with no error and no change to the saved fix, and `SiteChooserSheet` returns to its idle text (`ANDROID_LOCATION_JVM`,
   `UI_QT_ANDROID_HOST` `check_location_record()`, `UI_QT_RADIO_REFERENCE`, `tst_site_chooser_sheet.qml`).
   `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
-  `DecoderHost::requestSiteLocation` shares request ownership and cancellation with nearby import but asks Android
-  for coordinates only: fixes must be at most 30 seconds old, a cache must also be within 100 m to finish immediately,
+  `DecoderHost::requestSiteLocation` asks Android for coordinates only, and `LocationRequests` (issue #800, "Map"
+  below) owns the single request for every requester (the site chooser, Nearest, nearby import and the map), so a
+  newer request ends the one before it and only its own id is answered: fixes must be at most 30 seconds old, a cache
+  must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
   permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
@@ -17558,15 +18498,58 @@ Qt Quick frontend (`src/ui/qt`):
   exemption kind with each echo marker and key form. A producer line whose code is a key option with a value of at most two digits would
   still be kept. Keep `kProducerLines` and `kMeasurementTemplates` in step with those producers' format strings, give
   a new producer of a signed number a line in the corpus, and keep the key-option pattern in step with
-  `src/runtime/cli/args.c`. The persistent
-  tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
-  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
+  `src/runtime/cli/args.c`. Received positions (issue #800, D10): after the key rule, `redact()` replaces a whole
+  record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`). The rule
+  rests on the producer's label, never on the shape of what the air delivered (a part of a report can look like
+  anything): a line matching `kPositionMarkers`, one entry per producer's position, position-message or report-text
+  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks and the M17 GNSS line, which also carries
+  its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
+  `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
+  `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks, and every USBD
+  payload line (`USBD - Service`), printed without `-Z`: fail closed, a reserved or manufacturer-specific service's
+  bytes are not known to hold no position). As a backstop, a line no label covers still goes when it matches
+  `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
+  `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
+  degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
+  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded: `loadSegments()`
+  passes every record of both segments of both logs (`tail`, `host`) through `DiagnosticsLog::redactStored()`
+  (`storedRecords()`) before the rings are seeded or a legacy tail is split, and writes the scrubbed records back over
+  any segment they changed (`replaceStoredRecords()`; removed when the rewrite fails; the split writes only scrubbed
+  records), so an older build's log never reaches Copy or Share with one and no position line stays on the device
+  until rotation (test `UI_QT_DIAGNOSTICS_LOG`, `storedPositionsLeaveTheFiles()`). Fail closed: a stored record carries no mark of the build that wrote it, so
+  the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
+  printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
+  text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
+  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, a checked NMEA sentence of
+  any type printed bare, and the raw dumps older builds printed without `-Z`: DMR `Short Data Raw:` with a LOCN
+  position's bracketed bytes and NXDN `UDCH Data:` with a data call's bytes and their ASCII form), whichever build
+  wrote it; a current build's text message or `-Z` dump under the same label (DMR or UDT `UTF8 Text:`, D-STAR
+  `TEXT:`, `Short Data Raw:`, `UDCH Data:`) is kept live and dropped on reload. The list is built from every
+  default-mode print of a received position, a part of one or the raw bytes of a message that carries one, v2.10.0
+  through this build; keep it in step when a release changes such a print's label. Raw dumps under generic prefixes
+  (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept
+  live and can hold an encoded position; without `-Z` every line that prints a received position, a part of one or
+  the raw bytes of a message that can carry one carries a label. Keep
+  `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
+  `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
+  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a
+  new producer of a received position in `everyProducerLabelsEveryPartOfItsReport()`, which checks that every line
+  holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
+  carries the label.
+  The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file (only the load
+  does, below). It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
   it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
   - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
-  - splits an older build's single tail at line starts.
+  - splits an older build's single tail at line starts;
+  - scrubs every stored record (`storedRecords()`, issue #800, D10) and writes back a segment the scrub changed, with
+    its old modification time, so the scrub never restarts the seven days (`replaceStoredRecords()`; the segment is
+    removed when the rewrite fails); a segment file that exists but cannot be read is removed (fail closed: it cannot
+    be scrubbed).
 
   Host, session and process records (issue #782) also go to a store of their own, so decoder output cannot push them
   out: `m_hostRing` (`kHostRingLimit`, 500) and the segment pair `host.prev.log`/`host.log`, each at most
@@ -17939,6 +18922,319 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_SPECTRUM_TRACE_GEOMETRY` (coverage against the exact ramped outline), `UI_QT_SPECTRUM_MODEL` (the GPU tree
   through a test hook, the software picture, a real window, one fold per frame, model destruction, fractional edges),
   `UI_QT_SPECTRUM_MATH`.
+- Map (issue #800; user guide in `android/README.md` "Map", privacy in `PRIVACY_POLICY.md` "Map"). Where the radios
+  that sent a checked position are, from the verified position feed (`app_control/position_view.h`, above). The parts,
+  data first:
+  - `map_math.h` (Qt-free, header-only): Web Mercator arithmetic. Positions in fixed point (`world_from_e7()` refuses
+    out-of-range values), the ±85.0511° clamp, the ±180° wrap, the visible tiles at the nearest whole zoom (centre
+    first, at most 1024), pan and zoom about an anchor, one drawn copy of every point (the one nearest the view centre;
+    taps test the same copy), tracks continuous across 180°, and fit-to-markers on the shortest east-west arc.
+    `clamp_viewport()` raises the zoom until the world is at least as wide as the view, so no second copy of the world
+    shows. A non-finite point is a track break, never bridged. Test: `UI_QT_MAP_MATH`.
+  - `map_geometry.h` (Qt-free, header-only, on `spectrum_trace_geometry.{h,cpp}`): triangle lists for trails (the
+    spectrum stroke; dashed where provisional, clipped to the view; trails are opaque, since strokes overlap at sharp
+    turns), accuracy circles (one cover per pixel, view-clipped) and device-pixel-snapped marker sprite quads. Test:
+    `UI_QT_MAP_GEOMETRY`. Both headers rely on IEEE semantics: their includers build with `-fno-fast-math`.
+  - `map_tile_http.{h,cpp}` (pure HTTP field parsers: HTTP-date, delta-seconds, Cache-Control, Vary) and
+    `map_tile_cache.{h,cpp}` (`MapTileCache`, worker thread only): an RFC 9111 private cache. Freshness: `max-age`,
+    else `Expires − Date`, age from `Age`/`Date`; a malformed value is stale; the 7-day default only when the server
+    gives no freshness at all (OSM's tile policy). `no-store`: never on disk or in the decoded-image cache, and it
+    removes an older entry; `no-cache`: stored, and every reuse revalidates first; `must-revalidate`: never served
+    stale; `Vary: *` never stored, other `Vary` fields stored with the values sent and compared on reuse. A 304 merges
+    its metadata into the entry (§4.3.4). A 304 is matched to the entry by a weak ETag comparison, on purpose: the cache
+    holds one response per tile, the one the request named in `If-None-Match`. One
+    file per tile (`<z>-<x>-<y>.tile`: magic, metadata JSON, PNG; written whole by `QSaveFile`, owner-only) under
+    `QStandardPaths::CacheLocation/map-tiles/<first 128 bits of the template's SHA-256>`, so the template itself is
+    never written. A lookup opens an entry with `ExistingOnly`, so a miss writes nothing to the directory. A memory hit
+    by hand renews its file's LRU stamp at most hourly (`kRecencyStepSecs`); a device-placed view's never does.
+    `mapTileReusable()` is also false for a response that varies on `If-None-Match`/`If-Modified-Since`.
+    64 decoded tiles in memory, a 50 MB disk LRU across every template folder by mtime; unreadable
+    entries are deleted and stray temp files removed at the first scan. `Storage::MemoryOnly` (a view the device's
+    position placed; spec 4.8, final review I1) never touches the disk: no read (a read can stamp the access time), no
+    write, no mtime stamp, no delete, no directory. A memory entry is `persistable` only while its image is its file's
+    and no MemoryOnly store or 304 merge touched it, so a later 304 by hand never writes what a device-placed view
+    merged. The cache is outside the backup allowlist
+    (`backup_archive.h`), so it is never backed up. Wall clock through `realtime_clock.h`.
+  - `map_tile_worker.{h,cpp}` (`MapTileWorker`, registered as `MapTileSource`): GUI-thread object, off by default
+    (no thread, no disk, no request while off; started lazily at the first enable). Its work runs on one
+    `std::thread` with a condition variable, never a QThread event loop (Android suspends those with the app). One tile
+    at a time in the order asked, cache hits first, in-view keys only, no prefetch. Every `requestTiles()` and
+    `clearRequests()` makes a new generation; the owner (`MapView`) clears on close, List, hiding and the app leaving
+    the foreground. A key still asked for keeps its fetch in flight. Epochs: work started before an on/off or template
+    change delivers nothing, posts no state, adds no backoff and is never retried, so one template's validators never
+    reach another server. Backoff: 1 s doubling to 5 min, or `Retry-After` (seconds or date, at least 1 s); a success
+    or a template change resets it (on/off does not). A miss (a hole: 404, 410, 204 or an empty 200; a response over
+    the body or header cap, `ERR_TOO_LARGE`; or a 200 whose body is not a PNG the map can use, not PNG or over
+    512×512) skips that tile for its generation with no backoff and resets the wait like a success. It also drops the
+    key from the cache (memory only for a device-placed view) and withdraws it (`tileReady` with a null image), so a
+    stale copy shown while it was revalidated goes at once and never comes back from the cache. `tileReady` carries
+    `reusable` (`mapTileReusable()`: false for `no-store`, `no-cache`, `must-revalidate`); the canvas shows such an
+    image only while its key stays in view. A 200 is stored with the validators the request sent as nominated values,
+    so a `Vary: If-None-Match` entry never matches a later unconditional request.
+    Only the non-PNG 200 is evidence about the source: when a view's requests end and
+    the epoch has seen such a body and no usable PNG (no fetch, no cache hit), the state is `NoPngTiles` ("The tile
+    server sent no PNG tiles the map can use. Check Map settings."), and the next PNG makes it `Ready`. Holes alone
+    never lead there (a regional server's 404s outside its coverage stay `Ready`). Network failures, 429, 5xx, redirects
+    and a 304 that selects nothing keep the global backoff. `requestTiles(keys, origin)`: `ViewOrigin::FromDevice` makes
+    the generation memory only; a fetch kept in flight takes the OR of every generation that kept it, read once its
+    answer is in, so a late result of a device-placed view never reaches the disk. That read also closes the fetch to
+    adoption (generation and storage fixed together), so a view asking for the key while the answer is decoded looks
+    it up afresh, and a retry never carries a hand view's storage into a device-placed one. An oversized answer is a
+    miss only for 200, 204, 404 and 410; an oversized 429 or 5xx page backs off (Retry-After) and keeps the cached
+    copy. A view served wholly from the cache clears `Retrying` (the backoff deadline stays). Each worker passes one
+    `dsd_tile_fetch_session`, so its fetches reuse connections. Results go back with a queued
+    `invokeMethod`; a fetch that returns after a stop is neither decoded (PNG at most 512×512, on the worker) nor
+    stored. Teardown never waits on the GUI thread: the destructor sets stop and cancel and leaves a ref-counted core to
+    the thread, which ends by itself. Every thread is in a registry, joined at the next start;
+    `shutdownThreads(kShutdownJoinMs)` (2 s, android/main.cpp `TeardownStage("map tile threads")` right after
+    `engine.reset()`, and a `qAddPostRoutine` on every platform) joins what ends in time and releases only an old
+    libcurl stuck in a name lookup. `validTemplate()`: `https://`, a host without braces or userinfo that is a valid
+    name (labels of letters, digits, `-`, `_`) or a bracketed IPv6 literal, with an optional port 1-65535, each of
+    `{z}{x}{y}` exactly once (a repeat is refused), no other braces, at most 2048 B filled; `templateHost()` gives the
+    host (with port) the settings sheet names. The worker never logs or stores the template or a tile URL; the template
+    is kept only in the device-local `map/tileUrl` pref ("Prefs" below).
+    Test: `UI_QT_MAP_TILES` (fake transport: hits, revalidation, 304, `no-store`, no prefetch, cancel, generations,
+    epochs, backoff, Retry-After, UA, https only, each placeholder once, misses without backoff, `NoPngTiles` only
+    from non-PNG 200s, device-placed views kept off disk (late results included), the exit join).
+  - `position_model.{h,cpp}` (`PositionModel`, context property `positions`; `PositionFilterModel` as `positionView`):
+    the map's tracks, kept for the app's life (D4: not in `clearLiveModels()`, a Stop keeps them).
+    `UiController::refreshModels()` polls `dsd_app_position_copy_since()` before its no-redraw return, and once more at
+    Stop. A track is a typed source (protocol family, scope, ID or callsign; D7 identity): 100 points each, 200 tracks,
+    the row whose newest report arrived first evicted first, named or not (spec 4.5). Anonymous rows (one per report)
+    are held to `kAnonymousCapacity` (50, a quarter): a new one past that share replaces the oldest anonymous row, so a
+    hashed flood (every DMR USBD LIP is hashed) keeps at most 50 rows and at least 150 stay for named radios, while a
+    fresh anonymous fix still never gives way to a stale named track. Hashed or unverified sources are anonymous single
+    points with no trail or name; validity-unknown fixes (D11) are kept apart, hollow and never on a trail; provisional
+    formats (D12) are flagged per point (dashed). A trail breaks at a cursor loss, a queue drop and a stream change, and
+    the List shows one gap row ("Positions may be missing from …") only where reports may really be missing (a stream
+    read to its end after its run stopped is read through). Ages: SYSTEM fixes on the wall clock; REPLAY fixes only on
+    the sample of their own running replay that the view returns with the cursor, so no clock is ever mixed; no age is
+    older than any filter. `ageFilterSeconds` (0, 900, 3600) is the map's and the List's filter; a 1 s timer runs while
+    `ageing` (the map screen shows). Rows never move once placed (a11y). The flat roles (flags, readings, `kindText`,
+    `fixTime`) describe a track's newest report; `currentFix` and `unknownFix` (maps, `{}` when none) describe the
+    filled marker's own report and the open ring's, each with its flags, readings, times, `newest`, its own recipient
+    (`targetId`, `targetGroup`: a track's reports can each name another, and the sheet's identity line and a List row
+    name the shown report's) and `ageAtSendMaxSeconds` (LIP's time elapsed: under 5 s, 5 min or 30 min old when sent,
+    for a report with no time of its own; the sheet says it in the Measured line, "Measured less than 30 minutes before
+    it was sent", and a List row from 5 min up). `clear()` is a boundary at the published head
+    (`position_skip_to_head()`): a report published after the last poll but before Clear is never read; only reports
+    published after it repopulate the map. `reportAgeSeconds` (the measurement's own time, `fixTime`,
+    the radio's UTC) is -1 when that time is more than 2 s ahead of the receive clock (a radio clock ahead, a replay
+    with no UTC
+    anchor): it cannot be compared, so the sheet shows the time, never "just now". `currentShown`/`unknownShown`
+    (age roles, so a filter change or an age tick
+    announces them) say whether the canvas draws the marker and the ring under the age filter. The detail sheet and the
+    List describe only what is drawn (final review M1): the sheet's "Position" block is the drawn marker's report, else
+    the drawn ring's (else a History pin), with its own states, readings and age; a drawn ring beside a drawn marker
+    gets a "Newer report"/"Earlier report" block; a List row says the shown report's states, format, distance and age,
+    and "Newer report may be old or invalid" (with its format and weak check) only for a drawn ring beside the marker.
+    The sheet's ring block names its own recipient when it is not the shown report's. The distance line says "from you"
+    while a live fix is followed, "from your last known position" once that fix is a minute old with nothing newer,
+    "from your saved location" for the saved fix. `positionView.trackCount` leaves the gap row out, so the
+    filtered-empty state ("No positions in …", Show all) shows after a loss too, on the map and below the List's gap row
+    (declared after the List, so the gap row is read and tabbed first).
+  - `position_tap.{h,cpp}` (`PositionTap`): the History tap pattern (`call_history_tap.h`) for positions. Started on
+    Hidden/Suspended, a `std::thread` polls every second into a 20,000-record queue (oldest dropped, counted, marked as
+    a loss) and hands it over at the first poll after the app shows again. `position_read_page()` is the cursor read
+    and gap rule both share. A thread that cannot be started (`std::system_error`) is a tap that did not start, as
+    when its buffers cannot be had. Test: `UI_QT_POSITION_MODEL`.
+  - `location_feed.{h,cpp}` (`LocationFeed`, context property `locationFeed`): the one owner of the host's continuous
+    location stream (`DecoderHost::startLocationStream()`/`stopLocationStream()`/`locationStreamUpdate`), through
+    idempotent named leases ("roaming" for `SiteRoaming`, "map" for live follow). The first lease starts the stream,
+    the last one stops it. The feed follows the application state itself: Hidden/Suspended clears `record` at once (no
+    fix from before can read as live); Active runs `noteForeground()`, which on a moved foreground epoch emits
+    `foregroundMoved()` first and then starts the stream once for every lease, so roaming still sees the notice before
+    the first new fix. `setHost()` drops every lease (`leasesDropped()`). `record.fixAtMs` is monotonic
+    (`dsd_realtime_mono_ms()`), never epoch time, and a stream fix is never saved; `nowMs()` reads that clock for a
+    consumer that ages a fix no new record replaces (the platform repeats its last measurement, however old, and the
+    host sends only changes). A lease taken on a running feed changes nothing: its consumer reads the standing
+    `record` itself. Test: `UI_QT_LOCATION_FEED`.
+  - `location_requests.{h,cpp}` (`LocationRequests`, context property `locationRequests`): the one-shot broker over
+    `DecoderHost::requestSiteLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
+    one on every new request (`LocationSupport.kt`), so the broker owns the single request in flight: the newest
+    wins, the one it replaces is cancelled and its requester told with `ended()`, and only the pending id is ever
+    answered (`answered(requester, id, result)`). Requesters: "siteChooser", "savedSystems" (Listen's Nearest),
+    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me). An answer a host gives inside the
+    request call is delivered once the event loop turns. Saving the one-shot fix stays the requester's
+    (`prefs.setLocationFix()`). Test: `UI_QT_LOCATION_REQUESTS`. Both objects are published by `qt_ui.cpp`
+    `publish_location()` and, under the same names, by the QML harness (`tests/ui/qml_test_context.h`, over
+    `LocationRelayHost`).
+  - `map_view_item.{h,cpp}`, `map_view_paint.cpp`, `map_view_detail.h`, `map_scene.h` (`MapViewItem`, registered as
+    `MapView`): the canvas, a `QQuickItem` on the scene graph like the spectrum trace: one `QSGImageNode` per tile
+    (greyscale duotone, ink and paper from Theme), trails and circles as geometry, markers from a pre-rendered sprite
+    atlas, labels rendered on the GUI thread when the scene changes. The software scene graph (every QML test) paints a
+    `QImage` instead. One visual variable per state: freshness is fill strength over a halo base (4 levels, ages from
+    the model), an unconfirmed source a dashed outline, validity unknown an open ring at its own fix (no freshness: it
+    has no fill), a provisional format a double outline and a dashed trail, emergency the alert colour with the word
+    in the label (it outranks the selection's label colour), the selected track cyan (trail, label, halo). An
+    accuracy disc is drawn only for a bounded error: a lower
+    bound (`DSD_POS_FLAG_ERR_LOWER_BOUND`, "more than 200 km") draws none, the sheet and List say "more than". A
+    label stands by the track's mark that is on screen: its current position, else its open ring. Labels
+    (`map_scene.h` `place_labels()`) try each side of their marker (right, left, above, below) and take the first one
+    inside the view that covers no marker (the device dot included), no `labelObstacles` keep-out and no label already
+    placed. Order: the selected track, then emergencies, then the most recently heard, by the age of the mark the label
+    stands by this frame (the ring's own age when it stands by the ring; `map_view_detail.h`). An
+    emergency's label is never dropped (spec 4.6, never hue alone): emergencies are placed first, so every other label,
+    the selected one included, yields to them; with no clear side it takes the side covering the least, keeping clear
+    of keep-outs while any side does, and may cover a plain marker or another emergency's label (both drawn, the
+    newest on top; labels are drawn lowest priority first). Any other label with no clear side is left out; the List
+    has every name. `labelObstacles` is a list of rects (item coordinates) labels keep clear of: `MapScreen.qml` binds
+    the control column, the chip column and the attribution, each while visible. The marker sprite itself differs for
+    an emergency by colour only; the word is the label's. A pan within half the view's larger side only moves the
+    trails and circles (one transform node). While a zoom is in progress (any zoom change starts a 150 ms single-shot
+    settle timer, `m_zooming`) they are also scaled (`map_scene.h` `view_transform()`, `reusable_scaled()`: same view
+    size, within half a zoom step, the built area still covering the view) and built again once the zoom has held still,
+    so a pinch no longer rebuilds 200 × 100 trails per frame. New data, a colour, a wrap-copy flip or a resize rebuilds
+    at once; copies are counted against the camera carried on the short way (`continued_viewport()`), so a camera
+    crossing its own wrap (0.99 to 0.01) rebuilds too. While the canvas is hidden (`active` false, invisible, or no
+    window: the List, or the map closed with its screen kept) the model goes on but the scene is not rebuilt; it is
+    built once when the canvas shows again (or when a camera call such as `fitAll()` needs it). While a new
+    zoom's tiles load, earlier zooms' tiles in view stand in (at most 64), except an image the cache rules do not let
+    be shown again (`reusable` false), which goes as soon as its key leaves the view's tiles. A null `tileReady` image
+    withdraws its key at once and marks it settled (blank) for that source, so once every key in view is held or
+    withdrawn no parent stands in over a child the server does not have; the same image delivered again (a memory hit
+    for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
+    The item holds no gesture state: the screen's
+    handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
+    `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
+    the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
+    of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
+    puts its target in the middle of the part below it (`belowTopInset()`); the zoom buttons zoom about that same point
+    (`focusPoint()`), or about the followed mark while following. `fitPadding` is label
+    room at the text size
+    (`72 × fontSize(12)/12` px), capped at a quarter of the canvas height. `followTrackId` and `followDevice` are
+    tracked in one place (`followNow()`): the target is the followed track's drawn mark (its current position, else
+    its open ring when the age filter hid the position) or the device dot, and the camera moves whenever that target
+    changes (a new fix, an age tick that hides or shows a mark, a new device fix), centring it below the chips as they
+    are then. The chips (`topInset`) never move the camera themselves: they come and go with tile trouble, and a camera
+    that followed them would change the tiles in view and so the chips again. A camera put elsewhere by other means (a
+    restored view through `centerLatitude`/`centerLongitude`/`zoom`, a new canvas size) re-centres a running follow at
+    once (`rearmFollow()`). A pan ends either follow; a pinch, wheel or zoom-button step keeps it, starting from where
+    the follow is taking the camera and zooming about the followed mark (`followAnchor()`), the same with the camera
+    animated as with reduced motion. A fit ends either before it takes in the device dot, so it fits the dot that
+    remains once live follow lets go. Every one-shot centring (`centredOn()`) and a follow's first raise a zoom too low
+    to put the point in the middle (the whole world shorter than the canvas) just enough; a follow's later steps keep
+    the zoom the user chose. `cameraUsedDevicePosition` turns true once the
+    camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
+    saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
+    `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks
+    for the same keys again, so a device-placed view never rides on a request made by hand. Tile loading stops at once
+    (not at the next polish, which a hidden window never gets) when the app goes Hidden/Suspended, the item hides or
+    leaves its window, or `active` goes false (the List). Test: `UI_QT_MAP_VIEW` (GPU tree through test hooks, the
+    software picture, pan reuse across the wrap, zoom-time scaling and the settle rebuild, label priority, background
+    stop, device-placed views asking memory only), `UI_QT_MAP_GEOMETRY` (label placement and the emergency rule,
+    `BoxGrid`, `view_transform()`), `tst_map_view.qml` (labels clear of markers and keep-outs, the emergency label never
+    dropped, the dashed outline's gaps), `tst_map_screen.qml` (the keep-out binding).
+  - QML: `MapScreen.qml` (the screen: top bar with List/Map, the age pills (in the bar itself on a wide layout), the
+    tiles prompt laid out between the bar and the canvas, never over a radio (it scrolls in a band that leaves the
+    canvas room for the flat controls, `promptScroll`), the status column of chips (the pin, what is followed, tile
+    trouble, location notices) and the controls of 48 px buttons, kept apart by one rule: the controls' arrangement
+    comes from the canvas height (`controls.naturalArrangement`: a column at the bottom right, else a row, else a row
+    with the zoom pair flat); the chips take the room left of the controls while it is at least 240 px (`status.beside`,
+    centred in it, down to just above the attribution), else span the canvas above the controls, in the arrangement
+    (natural to flat) that leaves them the most room; the credit stays beside the controls while that room holds its
+    longest word (`attribution.minimumWidth`), else stacks above them across the canvas (`attribution.stacked`), so it
+    wraps whole and is never cut in any arrangement; a chip stack taller than its room scrolls (`status` is a
+    PlexFlickable whose band holds a chip's 48 px action whole), and `topInset` follows that band; the focus moving into
+    a band (Tab, a screen reader's step) scrolls the focused control into it (`revealBandFocus()`, `Theme.revealFocus`),
+    the attribution chip, which wraps (up to 3 lines) rather than cuts and stays above the detail sheet through
+    `ModalSheet.bottomInset`; the empty-state card keeps clear of the device's dot: centred while that clears it, else
+    in the larger room above or below), `MapList.qml` (the List: the History pin's row, then the device's own row, the
+    saved fix in words, which also shows the List with no radio heard, both in the ListView's header so every row
+    scrolls on one surface, their heights keyed on a pin or a dot existing, not on the List showing, so a List opened
+    from the map starts at its start with both in view (a reader who scrolled further keeps their place, `KeepPlace`); a
+    row's time, and the gap row's, carry their date when not today (`MapText.clockText()`); the List holds no live
+    lease), `MapPositionSheet.qml` (a marker's, row's or pin's detail sheet: Follow only for a confirmed radio, since an
+    anonymous report is a single point no later report moves; Show on map and starting a Follow only while the map draws
+    a mark for the track, with a line saying the age filter hides it; a satellite count of 0 is said, unlike none; an
+    evicted track's last details say their times, the frozen ages dropped; "Measured at" carries its date when not today
+    (`MapText.clockText()` on `savedSystems.realtimeNowMs()`); a History pin's target follows the row's `gi`
+    (`Util.targetLine()`: "Talkgroup N", "Sent to radio N", "Sent to N"), the saved position's `targetGroup` only when
+    `gi` is not known), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me and Follow my position),
+    `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and `MapGlyph.qml` (drawn glyphs, no
+    icon font), `MapText.js` (every word a fix is described in). Theme has `mapPaper`, `mapTileInk`, `mapGrid`,
+    `mapDevice` (not cyan: cyan means selected), `mapOverlay` and a writable `reducedMotion`, fed by
+    `DecoderHost::reducedMotion` (Android: `ValueAnimator.areAnimatorsEnabled()`, read in `refreshPresentation()`;
+    desktop false): with it the camera jumps (`cameraDurationMs` 0, else 250 ms).
+  - Tiles: off until "Load map tiles" (the prompt's, or the empty state's once the prompt is set aside) or the Map
+    settings switch, and the prompt and the settings name the host the viewed area goes to. The prompt's × sets it
+    aside for the app's run (`tilesPromptDismissed`, in memory, not a pref: the screen is kept between visits). The
+    attribution ("© OpenStreetMap contributors") is always
+    visible and links to openstreetmap.org/copyright while the default source is used (`Qt.openUrlExternally`).
+    OpenStreetMap's own server (`MapText.isOsmTileHost()`: tile.openstreetmap.org and its lettered names, by host
+    name, `MapText.hostName()`: no user part, port or trailing dot, any case) needs that
+    credit in the attribution: the settings form does not save it without, and the map shows it in front of a saved
+    credit that leaves it out (`MapText.shownCredit()`), and its credit links to its copyright page however its
+    address is written; another server takes any credit. Tile trouble is a quiet
+    chip, never a modal. The canvas's drag, pinch and wheel handlers stand down while anything covers the map
+    (`Navigation.allows(map)`, as Spectrum's do); taps go through `GatedTapHandler`. The History pin is hit-tested
+    before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
+  - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
+    refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
+    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow on,
+    precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
+    when the lease is taken, since the host repeats nothing). A stream fix is live while at most
+    `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
+    stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
+    Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
+    for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
+    running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device
+    row, a fit, the zoom buttons, the wheel, a drag or pinch) keeps the view: its answer saves the dot but neither
+    centres it nor arms Follow (`MapLocator.keepView()`, `moveOnAnswer`). On Android an Item stays visible while the app
+    is hidden, so `MapScreen.appForeground` (the application state: Hidden or Suspended is away, Inactive is not, as the
+    feed reads it) joins the lease (`MapLocator.foreground`) and `positions.ageing`: the lease goes while the app is
+    away and comes back on return with follow on; the feed's own state slot runs first and finds no lease held, so the
+    platform feed starts once. A live fix moves the dot and the camera, nothing else. Desktop has no location: the
+    button is hidden.
+  - Navigation: `mainRoot.mapOpen`, a `Loader` built at the first open and kept (its view, tile source and the List's
+    place survive a close), declared after the session tools so it covers idle and session History. Its guard joins
+    `callRecordingsOpen` at the six sites that block auto-start and the session tools under it. Entries: the session
+    menu row "Map" (`sessionMenuMap`, unconditional), History's top bar "Map" (`historyMapButton`, idle and in a
+    session, so kept tracks stay reachable after Stop) and "Show on map" in the History/Listen/Monitor detail sheet
+    (`historyShowOnMap`, `HistoryDetailSheet.showMap`, false in Signal search; only for a row with a position). "Show on
+    map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
+    row is still logged and its screen shows, its close then returning to that row found again by uid
+    (`rowFocusFor(uid)` on History, Listen and the monitor: the row it first opened from is gone, as a covered list
+    holds no rows); when the row has left the log the focus goes to the History list
+    (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
+    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
+    `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
+    screen away), Back focuses the screen the map leaves to (`focusScreen()`, the top root surface). Opened from the
+    session menu, the session-menu return ("Text a screen reader reaches") hands the focus to Session options. A
+    close the app makes (an incoming document) reopens nothing.
+    Stop keeps the map open. The pin is the row's saved fix
+    (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
+    errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText,
+    receivedTime?}`, `{}`
+    without one); `position_kind_text.h` names a report format in the same words on the map and on the pin.
+  - Prefs (spec 4.8; `AppPrefs`, all device-local, so never in a backup and untouched by a restore): `map/tilesEnabled`
+    (on only for a stored `true`/`1`; any other text, "off" included, reads as off, as every stored switch reads junk
+    as its default through `stored_flag()`),
+    `map/tileUrl` (a template can hold a key), `map/tileAttribution` (both read as the OpenStreetMap defaults when
+    unset or empty), `map/ageFilter` (0, 900 or 3600) and `map/viewport` (`{latitude, longitude, zoom}`, stored as
+    whole numbers: 1e-7°, 0.001 zoom). A view write is held in memory and reaches the file a second after the last
+    one, when the app leaves the foreground, or when `AppPrefs` goes, since a pan writes every frame and each QSettings
+    write rewrites the file. Follow is never saved. Rule: no view derived from the device's position is ever stored.
+    `MapViewKeeper.qml` saves the view on every change only while `cameraUsedDevicePosition` is false; once Locate me,
+    follow or a fit that took in the device dot has used it, nothing more is saved that visit (a later pan or zoom
+    still starts from there), and closing the map puts the view back on the last saved one (or on the whole world,
+    with the camera placed again at the next open, when none is saved), so the next visit starts from a view the
+    device did not shape. A first open restores the saved view instead of fitting the radios. Tests:
+    `UI_QT_PERSISTENCE` (`test_map_prefs()`, the pinned key table, a backup leaving the map keys out and a restore
+    leaving them alone), `UI_QT_BACKUP_ARCHIVE` (an edited backup's map keys dropped), `tst_map_prefs.qml` (follow
+    on, follow off then zoom, follow off then fit, close, restart, a first fit with the device, the pin).
+  - Accessibility: the canvas is `Accessible.ignored`; the List is its complete equivalent (every mark, each state in
+    words, the same sheet and Follow), detached while hidden (`KeepPlace`), its row names paced (`SpeechPacer`,
+    `Navigation.speechPeriodMs`), rows updated in place. An unnamed radio is its bare ID everywhere (List, sheet title,
+    map label), so the words match the label. The drawn History pin is not a node either: its equivalents are the
+    `mapPinChip` ("Details") on the map and `mapPinRow` leading the List (a Button named "Saved position from History:
+    <name>", described by its received date and time, format and states), both through `openPinDetails()`. The detail
+    sheet follows #782: fixed slots (5 state lines, 13 detail lines) behind integer-model Repeaters, shown by `visible`
+    and renamed in place; the ages are read apart (`ages`) by its three `LiveText` lines only, so a tick renames them
+    and rebuilds nothing. Every map action has a button. Tests: `tst_map_screen.qml`, `tst_main_map.qml` (navigation),
+    `tst_map_view.qml` (pixels),
+    `qml_a11y/tst_a11y_map.qml` (churn while fixes arrive).
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
@@ -18782,7 +20078,8 @@ because a user stop or leaving the foreground came after its expectations; the n
 `stopForSwitch()` (default `stop()`), `switchStopping()` (property, notified with `sessionStateChanged()`;
 default false: the Stopping on screen began with `stopForSwitch()` and no `stop()` came since), `retireRoamAttempt()` (true when the roam's start never runs;
 default false, a start the base host accepted runs), `userStopGeneration()` and `foregroundEpoch()` (synchronous reads,
-default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()`, `requestRoamingPermission(id)`,
+default 0, negative when unreadable), `startLocationStream()`, `stopLocationStream()` (on the Qt side called only by
+`LocationFeed`, the stream's one owner since issue #800), `requestRoamingPermission(id)`,
 `openAppLocationSettings()`, `openLocationSourceSettings()` (no-ops), and the signal `locationStreamUpdate(record)`:
 {generation, state, hasFix} and with a fix {provider, measurementNs, lat, lon, accuracyM, fixAtMs}. `fixAtMs` is the
 poll's `dsd_realtime_mono_ms()` less the record's `ageMs`, so it is on the frontend's monotonic clock; Android's
@@ -20066,7 +21363,8 @@ item view refills its delegates even while invisible, so:
 - A hidden sheet or screen does not keep a live list model bound. It hands the view its model only while visible:
   `model: sheet.visible ? (metrics.decryptionSlots || []) : []` (KeySheet's slots), `FieldGrid`'s `live: sheet.visible`
   (SiteSheet), `screen.live` (the Talkgroups chips), or `qml/KeepPlace.qml` for a scrolled list that must reopen at the
-  reader's place (History, Home's recent calls, the Talkgroups grid, Activity; see "Hidden lists" under UI, Qt), or a
+  reader's place (History, Home's recent calls, the Talkgroups grid, Activity, the Map's List; see "Hidden lists" under
+  UI, Qt), or a
   `Binding` that keeps the last model while hidden for Repeaters in a scrolled `Column` (the Signal search screen's
   detections and avoids, same section). Opening fills it from the readings as they are then. A sheet whose content
   follows the snapshot can instead refresh only while visible (`NetworkSheet`).
@@ -20184,7 +21482,41 @@ the tree with the empty name it had then, and kept it once the sheet closed: its
 already was, which changes nothing. Diagnostics lines that arrived while the log streamed were nameless on Pause.
 `ReadableText` and every other gated name follow the rule (Diagnostics' rows keep no name while the log streams,
 from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
-Test: `tst_readable_text_gate.qml`.
+Test: `tst_readable_text_gate.qml`. A list view's write reaches only the root of each delegate (issue #800, device finding F1; a `Repeater` writes
+nothing), and it also makes a root with no accessible properties a bare node (`Client`, nameless, no actions). So a
+delegate that is a control keeps its accessible node on a child that fills it, never on the root, and gates that
+child itself (`Accessible.ignored`, name, description and focusable from `Navigation.allows()` and `visible`), as
+`plexComboRow` does: `CallRow`, the Map List's rows, Imports' file cards and the file browser's entries, each with a
+`node` property naming that child. The row's text sits inside the node (what a screen reader reaches is the text's
+own ancestor chain), the node is sized by binding to the row, not anchored (anchored, a list that put a reader's place
+back measured new rows before their text and landed a row off), and the root gates its own flag as well, so a cover
+with no re-layout leaves nothing of it. The keyboard lands on the node too: it is the row's Tab stop and carries the
+focus ring, and a focus given to the root (a list or a caller focusing the row) is passed on to it, so Tab and a
+sheet's focus return reach a node a screen reader names and can press; key events still reach the root's handlers. A shared control laid out by a view as its whole delegate sits in a plain,
+gated item (Talkgroups' category chips, each delegate's `pill`). A role
+switch is not enough: Qt offers Press for any item with an `onPressAction` handler, whatever its role, and the
+Android bridge makes a node with Press clickable, which TalkBack stops on with no text. Rows whose node is a
+`ReadableText` or a static text with a gated name (Diagnostics, Activity, channel review, scan-list preview) offer
+nothing once gated and stay as they are. Before, a screen pushed over the running session (Map, Diagnostics, Call
+recordings, the session's tools) left the Monitor's and History's recent calls named and pressable under it as soon
+as a call landing underneath re-laid them out, and a TalkBack touch on the map's canvas landed on one. With a screen
+reader on, the Map also moves the focus to its Back button on open, so TalkBack leaves the covered control that
+opened it at once. Tests: `tst_a11y_covered_screens.qml` (nothing under a pushed screen, nor the Map List under its
+sheet, offers a name, focus, a control's role or any action; a touch walk on the canvas finds nothing that does;
+rows are nodes again on return), `tst_a11y_talkgroups.qml` (chips under the edit sheet).
+
+The session-menu return (issue #800, found with a hardware keyboard): every screen or sheet a session-menu row opens
+(Sites, Radio, Spectrum, Scan lists, Talkgroups, Activity, Map, History, Settings, Diagnostics, Edit, and any row
+added later) gives the keyboard focus back to Session options (`MonitorScreen.sessionOptions`) once Back has closed it
+and nothing else is pushed, or to the screen underneath (`focusScreen()`) when a Stop took the session away
+meanwhile. It is one rule in Main, not one per screen: the menu's `onTriggered` notes the return
+(`noteSessionMenuReturn()`) before it opens anything, and when `Navigation.layers` and `Navigation.modals` are both
+empty again `finishSessionMenuReturn()` runs, after the closing screen's own restores (a sheet's opener, the map's
+`returnFromMap`), and moves the focus only when they left no control focused (the window root, a root surface itself,
+or nothing). It is needed because the menu closes onto the covered monitor before its row fires, so the window root
+holds the focus by then and no screen knows its way back: Back used to leave no item focused and Tab did nothing.
+Test: `tst_main_session_tools.qml test_session_menu_return` (every row, opened by the keyboard; then the same with a
+Stop under it).
 
 A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
 issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while

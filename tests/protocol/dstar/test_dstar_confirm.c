@@ -7,7 +7,8 @@
  * Unit coverage for the D-STAR transmission confirmation gate (issue #421).
  *
  * The gate decides whether the 1992 symbols a voice superframe consumes bought the hunt
- * profile anything. A CRC-16/X.25 -- the RF header, or the header rebroadcast in slow data --
+ * profile anything. A CRC-16/X.25 -- the RF header, the header rebroadcast in slow data, or a
+ * whole D-PRS record whose CRC matches (issue #800, tests/protocol/dstar/test_dstar_dprs.c) --
  * is proof by itself; a superframe that carries only filler has to repeat, because one
  * arriving at all means a second exact 24-symbol sync word was matched.
  *
@@ -18,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
 static int g_failures;
 
@@ -139,8 +142,28 @@ main(void) {
     run_frame(state, 0);
     expect("confirmation survives empty frames", dstar_confirm_is_confirmed(state), 1);
 
+    /* The reset forgets the transmission whole: what its slow data was assembling too, and the call its header named
+       (issue #800 2.10); the next transmission is another one. */
+    dstar_sd_state* sd = dstar_sd_st(state);
+    if (!sd) {
+        DSD_FPRINTF(stderr, "alloc-failed: slow-data state\n");
+        free(state);
+        return 1;
+    }
+    sd->dprs.collecting = 1U;
+    sd->dprs.len = 12U;
+    sd->dprs.bind.call_epoch = 7U;
+    sd->text.places = 3U;
+    state->dstar_tx_call_epoch = 7U;
+    const uint32_t tx = state->dstar_tx_seq;
     dstar_confirm_reset(state);
     expect("reset clears confirmation", dstar_confirm_is_confirmed(state), 0);
+    expect("reset forgets the D-PRS record", sd->dprs.collecting, 0);
+    expect("reset empties the D-PRS record", sd->dprs.len, 0);
+    expect("reset unbinds the D-PRS record", sd->dprs.bind.call_epoch != 0U, 0);
+    expect("reset forgets the text message", sd->text.places, 0);
+    expect("reset forgets the named call", state->dstar_tx_call_epoch != 0U, 0);
+    expect("reset begins another transmission", state->dstar_tx_seq != tx, 1);
 
     /* One unchecked superframe is not enough; the second running is. */
     run_frame(state, DSTAR_EVIDENCE_WEAK);
@@ -186,6 +209,7 @@ main(void) {
     dstar_confirm_end_frame(NULL, NULL);
     expect("null state is not confirmed", dstar_confirm_is_confirmed(NULL), 0);
 
+    dsd_state_ext_free_all(state);
     free(state);
     if (g_failures == 0) {
         DSD_FPRINTF(stdout, "DSTAR_CONFIRM: OK\n");

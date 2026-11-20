@@ -1155,6 +1155,12 @@ test_detail_before_the_call_opens_leaves_no_orphan_row(void) {
     // The detail repeats once B is open and lands on B's own row.
     rc |= expect_int("enrichment of the open call lands",
                      dsd_event_enrich_gps(&state, 0U, call_b.protocol, call_b.epoch, "APRS - Lat: 41d"), 1);
+    // Detail of another protocol family is no detail of B: D-STAR slow data while B, a DMR call, is still open.
+    rc |= expect_int(
+        "another protocol's detail on the open call is declined",
+        dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "DSTAR TEXT"), 0);
+    rc |= expect_str_eq("B's row keeps no other protocol's text", event_history[0].Event_History_Items[0].text_message,
+                        "");
     rc |= expect_int(
         "direct detail for the open call lands",
         dsd_event_set_open_call_detail(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_DETAIL_TEXT, "CQ CQ"), 1);

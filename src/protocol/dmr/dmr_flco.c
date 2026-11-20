@@ -24,6 +24,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/source_alias.h>
@@ -200,6 +201,45 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
     }
     if (type == 3) {
         DSD_FPRINTF(stderr, "%s", type3_color);
+    }
+}
+
+void
+dmr_note_burst_slot(const dsd_opts* opts, dsd_state* state, int slot) {
+    if (!state) {
+        return;
+    }
+    if (slot < 0) {
+        dmr_note_burst_slot(opts, state, 0);
+        dmr_note_burst_slot(opts, state, 1);
+        return;
+    }
+    const uint8_t lane = (uint8_t)(slot & 1);
+    const int folds = opts != NULL && dmr_mono_folds_standalone_burst(opts, state);
+    dsd_position_dmr_note_lane_burst(state, folds ? 0U : lane, lane);
+}
+
+void
+dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+    if (state) {
+        dmr_note_burst_slot(opts, state, state->currentslot & 1);
+    }
+}
+
+void
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* A repeater's burst whose CACH was not read names no lane: both. An MS-sourced or direct-mode burst has no CACH:
+       its reader reads its voice and LCs on lane 0, and a direct-mode slot 2 burst's data on lane 1 as well. */
+    if (DSD_SYNC_IS_DMR_BS(state->synctype)) {
+        dmr_note_burst_slot(opts, state, -1);
+        return;
+    }
+    dmr_note_burst_slot(opts, state, 0);
+    if (state->dmr_dm_sync_slot == 2U) {
+        dmr_note_burst_slot(opts, state, 1);
     }
 }
 
@@ -1111,6 +1151,34 @@ dmr_flco_forget_replaced_crypto_continuity(dsd_state* state, uint8_t slot) {
     }
 }
 
+/* A full LC whose own check passed (not a RAS acceptance) named the slot's ACTIVE DMR call's source: the embedded GPS
+   LC that follows in this transmission is that radio's (spec 2.2), sent to the target the same LC named while the call
+   still has it. The evidence is bound to the transmission (a fade the call layer heals keeps it) and to the reception
+   (dsd_position_attribution_learn()); any other LC leaves it alone. */
+static void
+dmr_flco_note_checked_source(const dmr_flco_ctx* ctx, uint8_t slot) {
+    dsd_position_attribution_call call;
+    if (!dmr_flco_crc_checked(ctx) || !dsd_position_attribution_call_from_slot(ctx->state, slot, &call)
+        || !DSD_SYNC_IS_DMR(call.protocol)) {
+        return;
+    }
+    (void)dsd_position_attribution_learn(
+        ctx->state, &call, ctx->source, ctx->target, dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE,
+        DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION, &ctx->state->dmr_lc_attribution[slot]);
+}
+
+/* A voice LC header begins a transmission, whichever radio sends it: the record of the one before no longer names the
+   source of an embedded GPS LC that follows (spec 2.2), even while the call stays ACTIVE (its terminator missed). Only
+   this header itself can name the new one, through dmr_flco_note_checked_source() when its own check passed; a header
+   whose check failed, a RAS acceptance, a protected or an unknown LC leaves the transmission's reports unattributed. */
+static void
+dmr_flco_forget_checked_source(const dmr_flco_ctx* ctx) {
+    if (ctx->type != 1U || ctx->slot >= 2U) {
+        return;
+    }
+    dsd_position_attribution_clear(&ctx->state->dmr_lc_attribution[ctx->slot]);
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -1151,6 +1219,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);
     // The checked LC names the slot's call for the trunk state machine: what a preemption candidate is compared with.
     dmr_sm_note_lc_identity(ctx->opts, ctx->state, (int)slot, observation.kind, ctx->target, ctx->source);
+    dmr_flco_note_checked_source(ctx, slot);
     dsd_call_snapshot after;
     const int have_after = dsd_call_state_get(ctx->state, slot, &after) > 0;
     const int epoch_forked = was_active && have_after && after.epoch != before.epoch;
@@ -1795,6 +1864,7 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_run(dmr_flco_ctx* ctx) {
     dmr_flco_ensure_heal_hook();
+    dmr_flco_forget_checked_source(ctx);
     dmr_flco_detect_special_modes(ctx);
     ctx->protected_lc = dmr_flco_is_protected(ctx);
     dmr_flco_print_protected_lc(ctx);

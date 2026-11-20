@@ -23,20 +23,32 @@
 extern "C" {
 #endif
 
-/** Decode an LCW carried by an active-call data unit such as LDU1. */
+struct dsd_event_closing_call;
+
+/**
+ * Decode an LCW carried by an active-call data unit such as LDU1.
+ *
+ * @p irrecoverable_errors is the RS decode's verdict: a nonzero count leaves
+ * everything the link control names unchecked (no checked identity, no
+ * checked position; issue #800), as a soft-erasure retry does.
+ */
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
 /**
  * Decode an LCW carried by a TDULC terminator.
  *
  * Voice-user metadata is retained, but cannot emit a new voice-start event
- * after the terminator has ended the current transmission. The link control
- * speaks for the open P25 Phase 1 call, or for the ended one whose epoch is
- * @p ended_epoch: the call this TDULC ended, or the one the TDULC it repeats
- * ended (0: none). An older ended call the slot still holds is not its call.
+ * after the terminator has ended the current transmission. @p closing is the
+ * call the terminator ended, captured (dsd_event_capture_closing_call()) just
+ * before it did: a GPS link control in the terminator belongs to that call
+ * (issue #800, spec N2). NULL when none was captured. The link control's other
+ * talker lookups speak for the open P25 Phase 1 call, or for the ended one
+ * whose epoch is @p ended_epoch: the call this TDULC ended, or the one the
+ * TDULC it repeats ended (0: none). An older ended call the slot still holds is
+ * not its call. @p irrecoverable_errors is the RS verdict, as for p25_lcw().
  */
 void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-                        uint64_t ended_epoch);
+                        const struct dsd_event_closing_call* closing, uint64_t ended_epoch);
 
 #ifdef __cplusplus
 }

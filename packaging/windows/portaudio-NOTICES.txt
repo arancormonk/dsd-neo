@@ -1,0 +1,152 @@
+PortAudio (https://github.com/PortAudio/portaudio) copyright notices for the Windows portaudio.dll:
+release v19.7.0, commit 147dd722548358763a8b649b3e4b41dfffbcfbb6 (archive
+https://github.com/PortAudio/portaudio/archive/147dd722548358763a8b649b3e4b41dfffbcfbb6.tar.gz,
+SHA512
+0f56e5f5b004f51915f29771b8fc1fe886f1fef5d65ab5ea1db43f43c49917476b9eec14b36aa54d3e9fb4d8bdf61e68c79624d00b7e548d4c493395a758233a),
+as the project's portaudio overlay builds it with MSVC: the common sources, the Windows sources and
+the DirectSound, MME, WASAPI and WDM-KS host APIs (no ASIO), and the headers they include. Each file
+is under the PortAudio license, the MIT license of portaudio-copyright.txt (the upstream
+LICENSE.txt); its holder lines follow.
+
+include/pa_win_ds.h
+    Copyright (c) 1999-2007 Ross Bencina and Phil Burk
+
+include/pa_win_wasapi.h
+    Copyright (c) 1999-2018 Ross Bencina and Phil Burk
+    Copyright (c) 2006-2010 David Viens
+    Copyright (c) 2010-2018 Dmitry Kostjuchenko
+
+include/pa_win_waveformat.h
+    Copyright (c) 2007 Ross Bencina
+
+include/pa_win_wdmks.h
+    Copyright (c) 1999-2007 Ross Bencina and Phil Burk
+
+include/pa_win_wmme.h
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+include/portaudio.h
+    Copyright (c) 1999-2002 Ross Bencina and Phil Burk
+
+src/common/pa_allocation.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/common/pa_allocation.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_converters.c
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_converters.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_cpuload.c
+    Copyright (c) 2002 Ross Bencina
+
+src/common/pa_cpuload.h
+    Copyright (c) 2002 Ross Bencina
+
+src/common/pa_debugprint.c
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_debugprint.h
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_dither.c
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_dither.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_endianness.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_front.c
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_hostapi.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_memorybarrier.h
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_process.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/common/pa_process.h
+    Copyright (c) 1999-2002 Phil Burk, Ross Bencina
+
+src/common/pa_ringbuffer.c
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_ringbuffer.h
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/common/pa_stream.c
+    Copyright (c) 2008 Ross Bencina
+
+src/common/pa_stream.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/common/pa_trace.c
+    Copyright (c) 1999-2000 Phil Burk
+
+src/common/pa_trace.h
+    Copyright (c) 1999-2000 Phil Burk
+
+src/common/pa_types.h
+    Copyright (c) 1999-2006 Ross Bencina, Phil Burk
+
+src/common/pa_util.h
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/hostapi/dsound/pa_win_ds.c
+    Copyright (c) 1999-2007 Ross Bencina, Phil Burk, Robert Marsanyi
+
+src/hostapi/dsound/pa_win_ds_dynlink.c
+    Copyright (c) 1999-2006 Phil Burk, Robert Marsanyi and Ross Bencina
+
+src/hostapi/dsound/pa_win_ds_dynlink.h
+    Copyright (c) 1999-2006 Phil Burk, Robert Marsanyi and Ross Bencina
+
+src/hostapi/skeleton/pa_hostapi_skeleton.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/hostapi/wasapi/pa_win_wasapi.c
+    Copyright (c) 2006-2010 David Viens
+    Copyright (c) 2010-2019 Dmitry Kostjuchenko
+    Copyright (c) 1999-2019 Ross Bencina, Phil Burk
+
+src/hostapi/wdmks/pa_win_wdmks.c
+    Copyright (c) 1999-2004 Andrew Baldwin, Ross Bencina, Phil Burk
+
+src/hostapi/wmme/pa_win_wmme.c
+    Copyright (c) 1999-2000 Ross Bencina and Phil Burk
+
+src/os/win/pa_win_coinitialize.c
+    Copyright (c) 1999-2011 Ross Bencina, Dmitry Kostjuchenko
+    Copyright (c) 1999-2011 Ross Bencina, Phil Burk
+
+src/os/win/pa_win_coinitialize.h
+    Copyright (c) 1999-2011 Ross Bencina, Phil Burk
+
+src/os/win/pa_win_hostapis.c
+    Copyright (c) 1999-2008 Ross Bencina, Phil Burk
+
+src/os/win/pa_win_util.c
+    Copyright (c) 1999-2008 Ross Bencina
+
+src/os/win/pa_win_waveformat.c
+    Copyright (c) 2007 Ross Bencina
+
+src/os/win/pa_win_wdmks_utils.c
+    Copyright (c) 1999 - 2007 Andrew Baldwin, Ross Bencina
+
+src/os/win/pa_win_wdmks_utils.h
+    Copyright (c) 1999 - 2007 Ross Bencina, Andrew Baldwin
+
+src/os/win/pa_x86_plain_converters.c
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk
+
+src/os/win/pa_x86_plain_converters.h
+    Copyright (c) 1999-2002 Ross Bencina, Phil Burk

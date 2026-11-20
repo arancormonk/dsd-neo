@@ -53,7 +53,8 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * Core facilities use dedicated slots rather than expanding `dsd_state`.
      * Engine owns 0, 1, 3 and 7; core owns 2, 4, 5 and 8, and 13 and 14 (taken from the io range); runtime owns 6, and 15
      * (taken from the io range); DSP owns 9, 10 and 11 (taken from the core range, as runtime took 6 from the engine
-     * range) and 12 (taken from the io range); app-control owns 16, from the ui range.
+     * range) and 12 (taken from the io range); app-control owns 16, from the ui range; core owns 17, also from the ui
+     * range.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,
@@ -87,6 +88,10 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* App-control's frequency entry that sent a scan to one of its rows and still waits on its tune (issue #644,
      * src/app_control/scan_entry_toast.c): what its landing's toast names. Decoder-thread private. */
     DSD_STATE_EXT_APP_SCAN_ENTRY = 16,
+    /* The run's verified position feed: the kept position reports and the repeat rule's last kept report per track
+     * (src/core/gps/position_feed.c, <dsd-neo/core/position.h>, issue #800). Created at run start, freed with the
+     * state's extensions. Decoder-thread private: frontends read the copies app-control publishes. */
+    DSD_STATE_EXT_CORE_POSITION_FEED = 17,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
     DSD_STATE_EXT_PROTO_DMR_RC = 25,
     DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,
@@ -97,6 +102,12 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* P25 Phase 2 scrambling code recovery: the candidate waiting for its confirmation
      * (src/protocol/p25/phase2/p25p2_seed_recover.c). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER = 29,
+    /* D-STAR slow-data assemblies: the D-PRS record and the text message being collected
+     * (src/protocol/dstar/dstar_sd_state.h, issue #800). Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA = 30,
+    /* M17 GNSS META repeat rule: the last admitted report's transmission and the network frames that carried it
+     * (src/protocol/m17/m17.c m17_gnss_state, issue #800). Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_M17_GNSS = 31,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);

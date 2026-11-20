@@ -36,6 +36,7 @@
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "location_requests.h"
 #include "qstring_scrub.h"
 #include "teardown_trace.h"
 
@@ -531,10 +532,6 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
         staging.removeRecursively();
     }
 
-    if (m_host != nullptr) {
-        connect(m_host, &DecoderHost::locationResult, this, &RadioReferenceModel::applyLocation);
-        connect(m_host, &DecoderHost::locationCancelled, this, &RadioReferenceModel::applyLocationCancelled);
-    }
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::onCredentialEdited);
         connect(m_prefs, &AppPrefs::rrAppKeyChanged, this, &RadioReferenceModel::onCredentialEdited);
@@ -914,44 +911,72 @@ rr_zip_from_postal(const QString& postalCode, const QString& countryCode) {
     return digits ? postalCode : QString();
 }
 
+namespace {
+/* This model's name with the one-shot location broker. */
+QString
+location_requester() {
+    return QStringLiteral("radioReference");
+}
+} // namespace
+
+void
+RadioReferenceModel::setLocationRequests(LocationRequests* requests) {
+    if (m_locationRequests == requests) {
+        return;
+    }
+    cancelLocation();
+    if (m_locationRequests != nullptr) {
+        disconnect(m_locationRequests, nullptr, this, nullptr);
+    }
+    m_locationRequests = requests;
+    if (requests != nullptr) {
+        connect(requests, &LocationRequests::answered, this, &RadioReferenceModel::onLocationAnswered);
+        connect(requests, &LocationRequests::ended, this, &RadioReferenceModel::onLocationEnded);
+    }
+}
+
 void
 RadioReferenceModel::cancelLocation() {
     const qint64 id = m_locationRequestId;
     m_locationRequestId = 0;
-    if (id != 0 && m_host != nullptr) {
-        m_host->cancelLocationRequest(id);
+    if (id != 0 && m_locationRequests != nullptr) {
+        m_locationRequests->cancel(id);
     }
-}
-
-qint64
-RadioReferenceModel::nextLocationRequestId() {
-    const bool hadLocation = m_locationRequestId != 0;
-    cancelLocation();
-    if (hadLocation) {
-        m_statusText.clear();
-        Q_EMIT statusChanged();
-        Q_EMIT busyChanged();
-    }
-    // One Qt-thread allocator for nearby lookup and the site chooser, across recreation.
-    static qint64 nextId = 0;
-    const qint64 id = ++nextId;
-    Q_EMIT locationRequestAllocated(id);
-    return id;
 }
 
 void
 RadioReferenceModel::lookupNearby() {
     startBatch(tr("Finding your location…"));
-    if (m_host == nullptr || !m_host->locationSupported()) {
+    if (m_host == nullptr || !m_host->locationSupported() || m_locationRequests == nullptr) {
         setError(UnsupportedError, tr("Location is not supported on this platform."));
         return;
     }
     m_locationGeneration = m_generation;
-    // Qt main thread only. IDs remain unique if the model is recreated while a
-    // platform worker is still retiring a cancelled geocoder.
-    m_locationRequestId = nextLocationRequestId();
+    // The broker gives up any other requester's request first, and answers this one by its id.
+    m_locationRequestId = m_locationRequests->requestCurrent(location_requester());
     Q_EMIT busyChanged();
-    m_host->requestCurrentLocation(m_locationRequestId);
+}
+
+void
+RadioReferenceModel::onLocationAnswered(const QString& requester, qint64 id, const QVariantMap& result) {
+    if (requester != location_requester()) {
+        return;
+    }
+    applyLocation(
+        id, result.value(QStringLiteral("fixOk")).toBool(), result.value(QStringLiteral("lat")).toDouble(),
+        result.value(QStringLiteral("lon")).toDouble(), result.value(QStringLiteral("accuracyM")).toDouble(),
+        result.value(QStringLiteral("fixAtMs")).toLongLong(), result.value(QStringLiteral("geocodeOk")).toBool(),
+        result.value(QStringLiteral("postalCode")).toString(), result.value(QStringLiteral("countryCode")).toString(),
+        result.value(QStringLiteral("error")).toString());
+}
+
+/* Ended unanswered: the platform cancelled it (#782), or another requester's newer request took over. Neither failed,
+ * so the lookup settles with no error. */
+void
+RadioReferenceModel::onLocationEnded(const QString& requester, qint64 id) {
+    if (requester == location_requester()) {
+        applyLocationCancelled(id);
+    }
 }
 
 /* A lookup the platform ended unanswered (#782): it settles like a result, with no error, since nothing failed. */

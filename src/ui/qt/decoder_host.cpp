@@ -18,6 +18,9 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
+#include <QLatin1Char>
+#include <QString>
+#include <QStringList>
 
 #include "document_import_transport.h"
 #include "document_save_transport.h"
@@ -57,6 +60,54 @@ abort_handed_out(const std::vector<std::weak_ptr<Transport>>& handedOut) {
             transport->abort();
         }
     }
+}
+
+/** @brief Where the source code of the Qt version this app is built with is, named from Qt's own version macros, and
+ * the packaged file with the directions written from the build's Qt kit (the Public Suffix List's pinned source). */
+QString
+qt_source_notice() {
+    const QString series = QStringLiteral("%1.%2").arg(QT_VERSION_MAJOR).arg(QT_VERSION_MINOR);
+    const QString version = QStringLiteral("%1.%2").arg(series).arg(QT_VERSION_PATCH);
+    QStringList lines{
+        QStringLiteral("Qt source code"),
+        QString(),
+        QStringLiteral(
+            "This app includes Qt %1 (The Qt Company Ltd. and other contributors) under the GNU Lesser "
+            "General Public License version 3, whose text is licenses/LGPL-3.0-only.txt in the list below. That "
+            "license adds permissions to the GNU General Public License version 3, whose text is LICENSE. dsd-neo "
+            "applies no patches to Qt: the app carries Qt's libraries, plugins and Android code as Qt %1 "
+            "publishes them.")
+            .arg(version),
+        QString(),
+        QStringLiteral("The complete source code of Qt %1 is in Qt's official archive:").arg(version),
+    };
+    for (const auto* module : {"qtbase", "qtdeclarative", "qtsvg"}) {
+        lines.append(QStringLiteral("https://download.qt.io/archive/qt/%1/%2/submodules/%3-everywhere-src-%2.tar.xz")
+                         .arg(series, version, QLatin1String(module)));
+    }
+    lines.append(QString());
+    lines.append(QStringLiteral("While Qt %1 is a current release, the same files are also under "
+                                "https://download.qt.io/official_releases/qt/%2/%1/submodules/.")
+                     .arg(version, series));
+    lines.append(QString());
+    lines.append(QStringLiteral("licenses/Qt-SOURCE.txt in the list below gives these directions as the release "
+                                "does, written from the Qt kit the app was built with. It also names the source form "
+                                "of the Public Suffix List that Qt Network compiles in, at the commit this app "
+                                "carries."));
+    return lines.join(QLatin1Char('\n'));
+}
+
+/** @brief Whether @p name, a line of the notice index, is a plain path inside the notice folder. */
+bool
+notice_path_ok(const QString& name) {
+    if (name.isEmpty() || name.startsWith(QLatin1Char('/')) || name.contains(QLatin1Char('\\'))
+        || name.contains(QLatin1Char(':'))) {
+        return false;
+    }
+    const QStringList parts = name.split(QLatin1Char('/'));
+    return std::none_of(parts.cbegin(), parts.cend(), [](const QString& part) {
+        return part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..");
+    });
 }
 
 } // namespace
@@ -137,46 +188,34 @@ DecoderHost::copyText(const QString& text) const {
 }
 
 QString
-DecoderHost::licenseNotices() const {
-    QStringList notices;
-    for (const auto* name : {"LICENSE",
-                             "COPYRIGHT",
-                             "THIRD_PARTY.md",
-                             "src/ui/qt/fonts/IBMPlex-LICENSE.txt",
-                             "src/third_party/ezpwd/lesser.txt",
-                             "pffft-LICENSE.txt",
-                             "pffft-NOTICES.txt",
-                             "tetra_crypto-LICENSE.txt",
-                             "legal/status.md",
-                             "legal/source-delivery.md",
-                             "LICENSES/ISC.txt",
-                             "LICENSES/Unlicense.txt",
-                             "LICENSES/gqrx-scanner-MIT.txt",
-                             "LICENSES/LicenseRef-BCH3-Noncommercial.txt",
-                             "LICENSES/LicenseRef-Simon-Rockliff.txt",
-                             "mbelib-neo/LICENSE",
-                             "mbelib-neo/GPL-2.0-or-later.txt",
-                             "mbelib-neo/ISC.txt",
-                             "mbelib-neo/LicenseRef-PFFFT.txt",
-                             "mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt",
-                             "mbelib-neo/upstream-mbelib-attribution.md",
-                             "mbelib-neo/legal/status.md",
-                             "mbelib-neo/legal/patents.md",
-                             "mbelib-neo/pffft/LICENSE.txt",
-                             "mbelib-neo/pffft/PFFFT-NOTICES.txt"}) {
-        QFile file(QStringLiteral(":/dsdneo/notices/") + QLatin1String(name));
-        if (file.open(QIODevice::ReadOnly)) {
-            notices.append(QLatin1String(name) + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));
+DecoderHost::qtSourceNotice() {
+    return qt_source_notice();
+}
+
+QStringList
+DecoderHost::licenseFiles() const {
+    const QString directory = noticeDirectory();
+    QFile index(directory + QStringLiteral("/notice-index.txt"));
+    if (directory.isEmpty() || !index.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QStringList names;
+    for (const QString& line : QString::fromUtf8(index.readAll()).split(QLatin1Char('\n'))) {
+        const QString name = line.trimmed();
+        if (!name.isEmpty()) {
+            names.append(name);
         }
     }
-    for (const auto* name :
-         {"libusb-LGPL-2.1-or-later.txt", "librtlsdr-GPL-2.0-or-later.txt", "libairspy-LICENSE.txt"}) {
-        QFile file(QStringLiteral("assets:/doc/dsd-neo/licenses/") + QLatin1String(name));
-        if (file.open(QIODevice::ReadOnly)) {
-            notices.append(QString::fromUtf8(file.readAll()));
-        }
+    return names;
+}
+
+QString
+DecoderHost::licenseFileText(const QString& name) const {
+    QFile file(noticeDirectory() + QLatin1Char('/') + name);
+    if (notice_path_ok(name) && licenseFiles().contains(name) && file.open(QIODevice::ReadOnly)) {
+        return QString::fromUtf8(file.readAll());
     }
-    return notices.join(QStringLiteral("\n\n"));
+    return QStringLiteral("This file is missing from the package.");
 }
 
 QStringList

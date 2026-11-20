@@ -157,6 +157,16 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return g_scan_dsp_rate_hz;
 }
 
+/* When the RTL input came back from its last retune's mute (trunk_tuning.c): 0 none, -1 still muted. */
+static double g_scan_listening_since_m;
+
+double
+dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_listening_since_m;
+}
+
 /* The -Y scanner's receive-family request count (trunk_tuning.c), linked with channel_scan.c. */
 uint32_t
 dsd_engine_scan_family_requests(const dsd_opts* opts) {
@@ -8073,12 +8083,19 @@ test_target_switch_forgets_the_received_identity(void) {
         test_rc = 1;
     }
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    // A's DMR checked-LC record (issue #800) names a radio of a's carrier: b's embedded GPS fixes never take it.
+    state.dmr_lc_attribution[0].transmission = 1U;
+    state.dmr_lc_attribution[0].source = 1001U;
     state.symbol_clock = 7000U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rx_id.valid != 0U) {
         DSD_FPRINTF(stderr, "rx-id: the switch to b kept the record: active=%zu valid=%08X\n",
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+    if (state.dmr_lc_attribution[0].transmission != 0U || state.dmr_lc_attribution[0].source != 0U) {
+        DSD_FPRINTF(stderr, "rx-id: the switch to b kept a's DMR checked-LC record\n");
         test_rc = 1;
     }
     /* What the frame sync and the decoders hold buffered from a is no frame of b's. */
@@ -8889,6 +8906,7 @@ dwell_scan_init(dsd_opts* opts, dsd_state* state, char* dir, char* target_path) 
 static void
 dwell_scan_done(dsd_opts* opts, dsd_state* state, const char* dir, const char* target_path) {
     dsd_engine_trunk_scan_shutdown(opts, state);
+    g_scan_listening_since_m = 0.0;
     g_counting_tune_to_cc_latency_ns = 0U;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
     dsd_decode_clock_use_system();
@@ -8967,6 +8985,67 @@ test_idle_dwell_counts_from_a_blocking_tunes_landing(void) {
     test_rc |= expect_active_target(&state, "a tick 200 ms after the landing", 1U);
     set_decode_now_s(100.72);
     test_rc |= expect_control_rc("260 ms after the landing", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/* A park whose retune mute still discards the device's samples from before it (a HackRF's whole queue at 2 MS/s, about
+   600 ms): the idle dwell times listening on the target, so it starts when the first samples after the mute arrive, not
+   at the landing, and neither the hunt's yield nor a tick rotates the target before it has run from then. */
+static int
+test_idle_dwell_starts_when_the_input_comes_back(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* Target a parked at 100.0 s with a 250 ms dwell; its input is muted until 100.40 s. */
+    g_scan_listening_since_m = -1.0;
+    set_decode_now_s(100.30);
+    test_rc |= expect_control_rc("no dwell while the input is muted", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a tick while the input is muted", 0U);
+    g_scan_listening_since_m = 100.40;
+    set_decode_now_s(100.60);
+    test_rc |= expect_control_rc("200 ms after the input came back", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a tick 200 ms after the input came back", 0U);
+    set_decode_now_s(100.66);
+    test_rc |= expect_control_rc("260 ms after the input came back", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell counted from the input's return", 1U);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/* A target whose state machine retunes again after the park (a control channel probe every few seconds on a silent
+   system): each retune mutes the input again, but the dwell's start is the input's return from the park's own mute, so
+   the later mutes neither move it nor pause it, and the target still rotates when it runs out. */
+static int
+test_idle_dwell_keeps_the_parks_listening_start(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* Target a parked at 100.0 s with a 250 ms dwell; the input came back at 100.10 s and a tick saw it. */
+    g_scan_listening_since_m = 100.10;
+    set_decode_now_s(100.20);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a tick 100 ms after the input came back", 0U);
+    /* A probe retunes at 100.30 s; its mute lasts past the dwell's end. */
+    g_scan_listening_since_m = -1.0;
+    set_decode_now_s(100.36);
+    test_rc |= expect_control_rc("the dwell from the park's listening start runs out",
+                                 dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the target rotates despite the probe's mute", 1U);
     dwell_scan_done(&opts, &state, dir, target_path);
     return test_rc;
 }
@@ -27247,6 +27326,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);
     rc |= run_with_default_tune_hook(test_idle_dwell_due_yields_once_and_counts_from_the_landing);
     rc |= run_with_default_tune_hook(test_idle_dwell_counts_from_a_blocking_tunes_landing);
+    rc |= run_with_default_tune_hook(test_idle_dwell_starts_when_the_input_comes_back);
+    rc |= run_with_default_tune_hook(test_idle_dwell_keeps_the_parks_listening_start);
     rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_dwell_due_answers_again_after_a_tick_that_lost_the_guard);
     rc |= run_with_default_tune_hook(test_dwell_due_after_a_tone_check_stay);

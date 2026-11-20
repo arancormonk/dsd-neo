@@ -19,6 +19,9 @@ typedef struct {
 } dsd_call_state_ext;
 
 dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);
+/* @p src as a call keeps an identity text (dsd_call_snapshot::source_text): surrounding whitespace dropped, inner runs
+ * one space, control characters '_'. @p dst holds DSD_CALL_IDENTITY_TEXT_SIZE bytes; NULL @p src gives "". */
+void dsd_call_state_normalize_identity_text(char* dst, const char* src);
 
 /**
  * True when the snapshot names a call concretely enough for "the same call" to mean anything:

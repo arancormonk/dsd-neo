@@ -45,6 +45,11 @@
  *   earlier design again swaps it back, a third rate is designed, and a third rate that cannot be designed stops the
  *   stream.
  *
+ * The capture ceiling and the input ring follow the rate a SoapySDR device delivers, not the one it advertised: a start
+ * whose read-back is above 10 MS/s fails, an open whose device reads back 6 MS/s after advertising 2 MS/s sizes the
+ * input ring for 6 MS/s, and a retune whose read-back jumps above the rate the running ring holds is refused and rolled
+ * back.
+ *
  * Automatic tuner gain (B8): a capture under automatic gain records the mode and no gain, not the stale manual gain
  * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked. A SoapySDR device
  * reports automatic only when its driver took the automatic request, and its capture records the same.
@@ -1023,6 +1028,66 @@ test_retune_readback_changes_plan(void) {
     rig_close_snapping(r);
 }
 
+/* The capture ceiling holds on the rate a SoapySDR device reads back, not only on the one it advertised: a start whose
+ * read-back is 12 MS/s fails, one at 10 MS/s runs. */
+void
+test_start_readback_above_ceiling_refused(void) {
+    {
+        rig r;
+        rtl_stream_test_set_rate_plan_backend(DSD_RATE_PLAN_BACKEND_SOAPY);
+        rig_begin(r, kTunerR820T, kCenterHz, 12000000U);
+        assert(r.start.rc != 0);
+        rig_close_snapping(r);
+    }
+    rig r;
+    rig_open_snapping(r, 10000000U);
+    assert(r.start.capture_rate_hz == 10000000U);
+    rig_close_snapping(r);
+}
+
+/* A SoapySDR device that advertised 2 MS/s and reads back 6 MS/s once programmed: the stream's input ring is sized for
+ * the 6 MS/s it delivers (the default ring's time at that rate, a power of two), not left at the default. */
+void
+test_open_ring_follows_readback(void) {
+    static const double only_2m[] = {2000000.0};
+    rtl_device_test_soapy_gain_fake fake{};
+    fake.driver_key = "generic";
+    fake.listed_rates = only_2m;
+    fake.listed_rate_count = 1U;
+    fake.readback_rate_hz = 6000000.0;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (dev == nullptr) {
+        printf("IO_RTL_CAPTURE_WRITES: no SoapySDR in this build; Soapy case skipped\n");
+        return;
+    }
+    dsd_opts* opts = make_rtl_opts();
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
+    rtl_stream_test_capture_result got{};
+    assert(rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, kCenterHz, &got) == 0);
+    assert(got.rc == 0);
+    assert(got.capture_rate_hz == 6000000U);
+    assert(got.capture_freq_hz == kCenterHz + 6000000U / 4U);
+    assert(got.input_ring_capacity_floats == 4194304U);
+    free(opts);
+    rtl_device_test_soapy_gain_device_free(dev);
+}
+
+/* A retune whose read-back jumps above the rate the running input ring was sized for (2 MS/s at the start, so the
+ * default ring) is refused, and the device and the rate chain go back on the 2 MS/s capture: the ring is never resized
+ * while the stream runs. */
+void
+test_retune_readback_above_ring_refused(void) {
+    rig r;
+    rig_open_snapping(r, 2000000U);
+    r.dongle->tuner.rate = 6000000U;
+    arm_readback(r, 6000000U, 2000000U);
+    const rtl_stream_test_capture_result got = manual_retune(kHopsHz[0], 0);
+    disarm_readback(r);
+    expect_rolled_back(r, got);
+    assert(got.nominal_hz == r.start.nominal_hz);
+    rig_close_snapping(r);
+}
+
 /* A step design that fails once the device is programmed: the start fails; a retune is refused, the device goes back
  * on the capture it had, and the step keeps running the design it ran there. */
 void
@@ -1535,6 +1600,9 @@ main(int argc, char** argv) {
         {"retune_readback_refused", test_retune_readback_out_of_tolerance_refused},
         {"far_readback", test_far_readback_repicks_passes},
         {"readback_changes_plan", test_retune_readback_changes_plan},
+        {"start_readback_ceiling", test_start_readback_above_ceiling_refused},
+        {"open_ring_follows_readback", test_open_ring_follows_readback},
+        {"retune_readback_above_ring", test_retune_readback_above_ring_refused},
         {"step_design_failure", test_step_design_failure_rolls_back},
         {"rollback_swaps_back", test_rollback_swaps_step_back},
         {"rollback_third_rate", test_rollback_designs_third_rate},

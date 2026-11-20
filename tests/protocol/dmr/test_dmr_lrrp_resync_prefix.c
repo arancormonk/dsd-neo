@@ -4,15 +4,19 @@
  */
 
 /*
- * Regression: LRRP token parsing should resync if an unexpected prefix byte is present
- * before the token stream and that byte masquerades as a known token id.
+ * LRRP resync (issue #800 bug 2.18): a reading that only skipping leading bytes finds is a guess. The document's own
+ * token order always wins over it, and a guessed position is never published: the summary (the data notice's text)
+ * says a position was withheld and why, without coordinates.
  *
- * Without resync, the parser can desync and either miss the position token or decode
- * incorrect coordinates.
+ * 1. A junk byte before the token stream that masquerades as a fixed-length token: only a resync finds the point, so
+ *    it is reported as withheld.
+ * 2. The issue's vector: request ID 51 60 00 00, then the point (22.5, 45). A resync inside the request ID reads a
+ *    "circle" at about (67.5, 45); the document's own order gives the point and wins.
  */
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -45,7 +49,8 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
     (void)src;
     (void)opts;
@@ -133,12 +138,6 @@ expect_has_point(const char* s, double exp_lat, double exp_lon, const char* tag)
     return 0;
 }
 
-static void
-expected_from_raw_twos(uint32_t lat_raw, uint32_t lon_raw, double* out_lat, double* out_lon) {
-    *out_lat = ((double)((int32_t)lat_raw) * 90.0) / 2147483648.0;
-    *out_lon = ((double)((int32_t)lon_raw) * 180.0) / 2147483648.0;
-}
-
 int
 main(void) {
     int rc = 0;
@@ -150,15 +149,11 @@ main(void) {
     st.currentslot = 0;
     opts.lrrp_file_output = 0;
 
-    uint32_t lat_raw = 0x10000000u;
-    uint32_t lon_raw = 0x20000000u;
-    double exp_lat = 0.0;
-    double exp_lon = 0.0;
-    expected_from_raw_twos(lat_raw, lon_raw, &exp_lat, &exp_lon);
-
     // Inject a 1-byte prefix before the token stream that looks like TRIGGER_PERIODIC (0x31).
     // The next byte is a valid token id (0x66), which would desync without resync.
     {
+        const uint32_t lat_raw = 0x10000000u;
+        const uint32_t lon_raw = 0x20000000u;
         uint8_t pdu[32];
         DSD_MEMSET(pdu, 0, sizeof pdu);
         size_t i = 0;
@@ -177,7 +172,20 @@ main(void) {
         pdu[i++] = (lon_raw >> 0) & 0xFF;
 
         dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
-        rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "resync prefix byte");
+        if (strcmp(st.dmr_lrrp_gps[0], "LRRP SRC: 123; Position suppressed (layout not confirmed);") != 0) {
+            DSD_FPRINTF(stderr, "resync prefix byte: got '%s'\n", st.dmr_lrrp_gps[0]);
+            rc |= 1;
+        }
+    }
+
+    // The issue's vector: the request ID's 0x51 must not start a circle.
+    {
+        static const uint8_t vec[] = {0x07, 0x0F, 0x22, 0x04, 0x51, 0x60, 0x00, 0x00, 0x66,
+                                      0x20, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00};
+        uint8_t pdu[sizeof vec];
+        DSD_MEMCPY(pdu, vec, sizeof vec);
+        dmr_lrrp(&opts, &st, (uint16_t)sizeof pdu, /*src*/ 123, /*dst*/ 456, pdu, 1);
+        rc |= expect_has_point(st.dmr_lrrp_gps[0], 22.5, 45.0, "request id is not a circle");
     }
 
     return rc;

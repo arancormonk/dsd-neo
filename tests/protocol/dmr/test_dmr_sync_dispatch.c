@@ -31,6 +31,7 @@ static int ms_bootstrap_calls;
 static int ms_data_calls;
 static int open_left_calls;
 static int rc_calls;
+static int unread_notes;
 static int close_protocol_synctype = DSD_SYNC_NONE;
 /* The tracked DMR tune's judgement the dispatcher settles before a frame is read (dmr_sm_resolve_tracked_tune()), and
    how many had run when the data handler read its frame. */
@@ -48,6 +49,7 @@ reset_calls(void) {
     ms_data_calls = 0;
     open_left_calls = 0;
     rc_calls = 0;
+    unread_notes = 0;
     close_protocol_synctype = DSD_SYNC_NONE;
     resolve_calls = 0;
     resolved_before_data_sync = -1;
@@ -127,6 +129,13 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     (void)state;
     data_sync_calls++;
     resolved_before_data_sync = resolve_calls;
+}
+
+void
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    unread_notes++;
 }
 
 void
@@ -359,6 +368,8 @@ test_trunked_direct_mode_paths_report_withheld(void) {
     state.synctype = DSD_SYNC_DMR_MS_VOICE;
     assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
     assert(ms_bootstrap_calls == 0);
+    /* Unread, but noted on its lane by its sync word (issue #800, fail closed). */
+    assert(unread_notes == 1);
 
     /* MS data. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -369,6 +380,7 @@ test_trunked_direct_mode_paths_report_withheld(void) {
     state.synctype = DSD_SYNC_DMR_MS_DATA;
     assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
     assert(ms_data_calls == 0);
+    assert(unread_notes == 1);
 
     /* Mono on a non-BS sync reaches the same gate through dmr_bootstrap_mono(). */
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -381,6 +393,7 @@ test_trunked_direct_mode_paths_report_withheld(void) {
     assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
     assert(ms_bootstrap_calls == 0);
     assert(bs_bootstrap_calls == 0);
+    assert(unread_notes == 1);
 }
 
 /* The other direction, which is what keeps the claim narrow: wherever a burst is actually
@@ -426,6 +439,16 @@ test_dispatched_dmr_paths_stay_productive(void) {
     state.synctype = DSD_SYNC_DMR_BS_DATA_NEG;
     assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
     assert(data_sync_calls == 1);
+    assert(unread_notes == 0); /* the reader notes it, by its CACH */
+
+    /* Stereo and mono off on an MS voice sync: nothing reads the frame, but its sync word still names its sender kind
+       on its lane (issue #800, fail closed). */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(ms_bootstrap_calls == 0 && unread_notes == 1);
 }
 
 static void

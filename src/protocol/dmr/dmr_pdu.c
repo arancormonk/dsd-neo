@@ -16,8 +16,9 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/core/utf16.h>
@@ -28,10 +29,8 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "dmr_ars.h"
 #include "dmr_pdu_internal.h"
@@ -42,23 +41,6 @@
 #include "dsd-neo/platform/platform.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
-
-//convert a value that is stored as a string decimal into a decimal uint16_t
-static uint16_t
-convert_hex_to_dec(uint16_t input) {
-    char num_str[10];
-    int n = DSD_SNPRINTF(num_str, sizeof(num_str), "%X", input);
-    if (n <= 0 || (size_t)n >= sizeof(num_str)) {
-        return 0;
-    }
-    errno = 0;
-    char* end = NULL;
-    unsigned long value = strtoul(num_str, &end, 10);
-    if (errno != 0 || end == num_str || *end != '\0' || value > 0xFFFFUL) {
-        return 0;
-    }
-    return (uint16_t)value;
-}
 
 static void
 utf16_text_emit_scalar(uint32_t scalar) {
@@ -132,8 +114,13 @@ utf16le_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input
 
 void
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    utf8_to_text_labelled(state, wr, len, input, "UTF8 Text");
+}
+
+void
+utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label) {
     uint8_t slot = state->currentslot;
-    DSD_FPRINTF(stderr, "\n UTF8 Text: ");
+    DSD_FPRINTF(stderr, "\n %s: ", label != NULL ? label : "UTF8 Text");
 
     if (wr == 1) {
         dsd_event_stage_text(state, slot, "");
@@ -166,18 +153,17 @@ dmr_sd_pdu_store_text(dsd_state* state, uint8_t slot, const char* text) {
     dsd_event_stage_text(state, slot, text);
 }
 
+// A raw dump, like every payload dump, only with the payload option (-Z): its bytes can be a position (LOCN), which
+// the default output and the diagnostics log never show.
 static void
-dmr_sd_pdu_print_raw(const uint8_t* dmr_pdu, uint16_t len) {
+dmr_sd_pdu_print_raw(const dsd_opts* opts, const uint8_t* dmr_pdu, uint16_t len) {
+    if (opts->payload != 1) {
+        return;
+    }
     DSD_FPRINTF(stderr, "\n Short Data Raw: ");
     for (uint16_t i = 0; i < len; i++) {
         DSD_FPRINTF(stderr, "[%02X]", dmr_pdu[i]);
     }
-}
-
-static void
-dmr_sd_pdu_copy_location(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t len, const uint8_t* dmr_pdu) {
-    dmr_locn(opts, state, len, dmr_pdu);
-    dsd_event_stage_gps(state, slot, state->dmr_lrrp_gps[slot]);
 }
 
 static void
@@ -188,6 +174,15 @@ dmr_sd_pdu_append_result_flags(char* summary, size_t summary_size, const dmr_tex
     if (result->truncated) {
         dsd_append(summary, summary_size, "display truncated; ");
     }
+}
+
+/* The whole octets of user data in @p len assembled octets less the header's @p bit_padding (TS 102 361-1 9.3.25):
+ * an octet the pad bits reach is not the sender's, so a position parser never reads it. 0 when the padding is longer
+ * than the data. */
+static uint16_t
+dmr_sd_pdu_whole_user_octets(uint16_t len, uint8_t bit_padding) {
+    const size_t bits = (size_t)len * 8U;
+    return (size_t)bit_padding > bits ? 0U : (uint16_t)((bits - (size_t)bit_padding) / 8U);
 }
 
 void
@@ -240,8 +235,12 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
             char detail[96];
             DSD_SNPRINTF(detail, sizeof(detail), "DD format 0x%02X; raw/unsupported encoding; ", dd_format);
             dsd_append(summary, sizeof(summary), detail);
-            dmr_sd_pdu_print_raw(dmr_pdu, len);
-            dmr_sd_pdu_copy_location(opts, state, slot, len, dmr_pdu);
+            dmr_sd_pdu_print_raw(opts, dmr_pdu, len);
+            // An admitted LOCN position is staged for this packet's notice by dmr_locn() itself. It reads the user
+            // data only: the header's bit padding fills the end of the last octet(s), and a digit it completes was
+            // never sent.
+            (void)dmr_locn(opts, state, dmr_sd_pdu_whole_user_octets(len, state->data_header_bit_padding[slot]),
+                           dmr_pdu);
         }
     } else {
         uint16_t bounded_len = len;
@@ -565,13 +564,20 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     const dsd_event_category category =
         by_content ? DSD_EVENT_CATEGORY_CONTROL
                    : dmr_udp_event_category(src.known ? src.port : 0U, dst.known ? dst.port : 0U);
-    if (state->dmr_embedded_gps[slot][0] != '\0') {
-        (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
-                                                             state->dmr_embedded_gps[slot]);
-        return;
+    if (state->dmr_embedded_gps[slot][0] == '\0') {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
     }
-    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
+    // An admitted LIP report was staged with its text by lip_pdu_decoder(); the notice consumes it.
     (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
+}
+
+/* The ICMP error messages (RFC 792, RFC 1812 4.3.2.3: Destination Unreachable 3, Source Quench 4, Redirect 5, Time
+ * Exceeded 11, Parameter Problem 12) that return the invoking datagram after their 8-octet header. Every other type's
+ * data (an Echo Request or Reply among them) is opaque, not a datagram: a report copied into it was never sent as one,
+ * so it is never decoded (issue #800). */
+static int
+decode_ip_pdu_icmp_quotes_datagram(uint8_t icmp_type) {
+    return icmp_type == 3U || icmp_type == 4U || icmp_type == 5U || icmp_type == 11U || icmp_type == 12U;
 }
 
 static void DSD_ATTR_USED
@@ -598,12 +604,14 @@ decode_ip_pdu_handle_icmp(dsd_opts* opts, dsd_state* state, size_t effective_len
         DSD_FPRINTF(stderr, " Unreachable;");
     }
     size_t attached_off = ip_header_len + 8u;
-    if (effective_len > attached_off && input[attached_off] == 0x45) {
+    if (decode_ip_pdu_icmp_quotes_datagram(icmp_type) && effective_len > attached_off && input[attached_off] == 0x45) {
         DSD_FPRINTF(stderr, "\n ------------Attached Message-------------");
         size_t rem = effective_len - attached_off;
         if (rem > UINT16_MAX) {
             rem = UINT16_MAX;
         }
+        /* The datagram the ICMP sender returns, often cut after its first octets: decoded only when whole
+           (decode_ip_pdu_whole()). */
         decode_ip_pdu(opts, state, (uint16_t)rem, input + attached_off);
     }
 }
@@ -859,6 +867,15 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
     return 0;
 }
 
+// Whether the destination @p dest a DMR data packet names is a talkgroup: it is the slot's checked data header target
+// and that header's G/I bit said group (dsd_state::dmr_data_checked_group). Only a DMR header qualifies one.
+static uint8_t
+dmr_pdu_header_target_is_group(const dsd_state* state, uint8_t slot, uint32_t dest) {
+    return (uint8_t)(DSD_SYNC_IS_DMR(state->lastsynctype) && dest != 0U
+                     && (uint64_t)state->dmr_lrrp_target[slot & 1U] == (uint64_t)dest
+                     && state->dmr_data_checked_group[slot & 1U] != 0U);
+}
+
 // `ip_hdr` is the IPv4 header on the IPv4 path and NULL on the compressed one, which carries no
 // addresses; the two P25 services that print them name the radios instead.
 static int DSD_ATTR_USED
@@ -883,7 +900,13 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             }
             DSD_MEMSET(bits, 0, sizeof(bits));
             dsd_unpack_bytes_to_bits(payload, payload_len, bits, sizeof(bits), decode_len);
-            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, src24);
+            // The checked packet names the source and the destination, a talkgroup as LRRP qualifies one.
+            const dsd_gps_address addr = {
+                .source_id = src24,
+                .target_id = dst24,
+                .target_group = dmr_pdu_header_target_is_group(state, slot, dst24),
+            };
+            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, &addr);
             return 1;
         }
         case 9361:
@@ -961,7 +984,11 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
     size_t udp_payload_len = (udp_len >= 8u) ? ((size_t)udp_len - 8u) : 0u;
     size_t max_payload_len = (effective_len > udp_payload_off) ? (effective_len - udp_payload_off) : 0u;
     if (udp_payload_len > max_payload_len) {
-        udp_payload_len = max_payload_len;
+        /* The datagram says more payload than its IP datagram holds: the payload is cut short, and nothing of it is
+           decoded (as for a fragment, decode_ip_pdu_whole()). */
+        DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
+        DSD_FPRINTF(stderr, "Truncated UDP;");
+        return;
     }
     uint16_t payload_len = (uint16_t)udp_payload_len;
     const uint8_t* payload = input + udp_payload_off;
@@ -994,6 +1021,46 @@ decode_ip_pdu_print_header(const dsd_opts* opts, const dmr_ip_pdu_header* hdr) {
         "%d; Protocol: 0x%02X; Checksum: %04X; PDU Len: %d;",
         hdr->version, hdr->ihl, hdr->tos, hdr->tlen, hdr->iden, hdr->ipf, hdr->offset, hdr->ttl, hdr->prot, hdr->hsum,
         hdr->len);
+}
+
+/* The one rule every IPv4 payload path goes through (issue #800, fail closed): the transport header and payload are
+ * read only from a whole datagram. A fragment -- More Fragments set, or a nonzero fragment offset -- is not
+ * reassembled: a later fragment's first octets are data, not a UDP header (they can look like any port and report),
+ * and the first fragment holds only part of the payload. A datagram whose total length the PDU does not hold (an ICMP
+ * error quotes only the first octets of the datagram it returns, which then reaches here through
+ * decode_ip_pdu_handle_icmp()) is cut short the same way. None of these names ports, reaches a service decoder or
+ * gives a position. Returns 1 for a whole datagram. */
+static int
+decode_ip_pdu_whole(const dmr_ip_pdu_header* hdr) {
+    const size_t header_len = (size_t)hdr->ihl * 4U;
+    return (hdr->ipf & 0x1U) == 0U && hdr->offset == 0U && (size_t)hdr->tlen >= header_len && hdr->tlen <= hdr->len;
+}
+
+/* The UDP ports of a whole datagram (decode_ip_pdu_whole()); left 0 when the datagram has no room for them. */
+static void
+decode_ip_pdu_udp_ports(const uint8_t* input, size_t effective_len, size_t ip_header_len, uint16_t* src_port,
+                        uint16_t* dst_port) {
+    if (effective_len >= ip_header_len + 8u) {
+        *src_port = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
+        *dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
+    }
+}
+
+/* The notice text and console line of a datagram decode_ip_pdu_whole() keeps from the decoders. */
+static void
+decode_ip_pdu_note_not_decoded(dsd_state* state, uint8_t slot, const dmr_ip_pdu_header* hdr, const uint8_t* input) {
+    const int fragment = (hdr->ipf & 0x1U) != 0U || hdr->offset != 0U;
+    const char* why = fragment ? "IP Fragment" : "Incomplete Datagram";
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),
+                 "IP SRC: %d.%d.%d.%d; DST: %d.%d.%d.%d; %s; not decoded;", input[12], input[13], input[14], input[15],
+                 input[16], input[17], input[18], input[19], why);
+    if (fragment) {
+        DSD_FPRINTF(stderr, "\n %s; Offset: %u; More Fragments: %u; not reassembled;", why, (unsigned)hdr->offset * 8U,
+                    (unsigned)(hdr->ipf & 0x1U));
+    } else {
+        DSD_FPRINTF(stderr, "\n %s; Total Len: %u; Held: %u; not decoded;", why, (unsigned)hdr->tlen,
+                    (unsigned)hdr->len);
+    }
 }
 
 static void
@@ -1041,13 +1108,8 @@ decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_
                           uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
     const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
-    // An ICMP wrapper never claims a fix produced by its enclosed packet.
-    const int fresh = prot != 1 && state->dmr_embedded_gps[slot][0] != '\0';
-    if (fresh) {
-        return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category,
-                                                              state->dmr_lrrp_gps[slot], state->dmr_embedded_gps[slot])
-               == 0;
-    }
+    // An admitted LIP report was staged with its text by lip_pdu_decoder() and this notice consumes it. An ICMP
+    // wrapper never claims a fix produced by its enclosed packet: that packet's own notice consumed it.
     if (state->dmr_embedded_gps[slot][0] == '\0') {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", previous_gps);
     }
@@ -1103,27 +1165,147 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     dmr_ip_pdu_header hdr = {version, ihl, tos, tlen, iden, ipf, offset, ttl, prot, hsum, len};
     decode_ip_pdu_print_header(opts, &hdr);
 
-    uint32_t src24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
+    // The sender, sanitised once before any text or record is made of it: a P25 network endpoint's address names no
+    // radio (dsd_position_source_names_radio()), so no notice, summary, -L row or report names it as one. The header
+    // dump below still prints the address as sent.
+    const uint32_t addr24 = (uint32_t)((input[13] << 16) | (input[14] << 8) | input[15]);
+    const uint32_t src24 = dsd_position_source_names_radio(state->lastsynctype, addr24) ? addr24 : 0U;
     uint32_t dst24 = (uint32_t)((input[17] << 16) | (input[18] << 8) | input[19]);
+    const int whole = decode_ip_pdu_whole(&hdr);
     uint16_t src_port = 0;
     uint16_t dst_port = 0;
-    if (prot == 0x11) {
-        if (effective_len >= ip_header_len + 8u) {
-            src_port = (uint16_t)((input[ip_header_len + 0] << 8) | input[ip_header_len + 1]);
-            dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
-        }
+    if (whole && prot == 0x11) {
+        decode_ip_pdu_udp_ports(input, effective_len, ip_header_len, &src_port, &dst_port);
     }
-    decode_ip_pdu_print_endpoints(prot, src24, dst24, src_port, dst_port, input);
+    decode_ip_pdu_print_endpoints(whole ? prot : 0U, addr24, dst24, src_port, dst_port, input);
     char previous_gps[sizeof state->dmr_embedded_gps[slot]];
     DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
     state->dmr_embedded_gps[slot][0] = '\0';
-    decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
+    if (whole) {
+        decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
+    } else {
+        decode_ip_pdu_note_not_decoded(state, slot, &hdr, input);
+    }
 
     return decode_ip_pdu_emit_notice(opts, state, slot, prot, src24, dst24, src_port, dst_port, previous_gps);
 }
 
+// LRRP (MOTOTRBO Location Request/Response Protocol) documents.
+//
+// Latitude and longitude are TIA-102.AABF-D-1 §7.3.37-38: latitude is a sign bit plus a 31-bit magnitude in units of
+// 90/2^31 degree (90 itself is sent as 2^31-1), longitude a 32-bit two's complement value in units of 360/2^32 degree
+// (SDRTrunk's Point2d reads them the same way). TIA-102.BAJC-B gives the units of the rest: metres, metres per
+// second, a horizontal direction in 2-degree steps (below 180) and UTC times. No public document gives the binary
+// token grammar. The numbers that vary in size (uintvar, sintvar, ufloatvar, sfloatvar) follow ok-dmrlib, Moto.Net and
+// SClass TETRALRRP, which agree with each other and with real off-air reports, and Motorola's MOTOTRBO System Planners
+// list speed, altitude and radius as variable sized fields. SDRTrunk's fixed widths cite no source and do not fit the
+// real reports. Tokens of which no real report was found (0x50, 0x52, 0x54, 0x68, 0x6A) are not guessed: one ends the
+// position parse, as does any token this parser does not know.
+
+// The bytes of one uintvar or sintvar at most: five 7-bit groups hold any 32-bit value (a float's fraction is a
+// uintvar too, so its denominator is at most 128^5).
+#define DMR_LRRP_VARINT_MAX_BYTES 5U
+// The leading bytes a resync reading may skip.
+#define DMR_LRRP_RESYNC_MAX_SKIP  6U
+
+// A number as sent: whole + frac / 128^frac_bytes, negative when the sign bit was set. frac_bytes is 0 for an
+// integer token.
 typedef struct {
-    // decoded time (token 0x34)
+    uint32_t whole;
+    uint32_t frac;
+    uint8_t frac_bytes;
+    uint8_t negative;
+} dmr_lrrp_number;
+
+// The 7-bit groups after a first group that continues: returns the bytes read in all, or 0 when the number runs past
+// `avail`, takes more than DMR_LRRP_VARINT_MAX_BYTES or does not fit 32 bits.
+static size_t
+dmr_lrrp_read_groups(const uint8_t* p, size_t avail, uint64_t value, uint32_t* out) {
+    for (size_t i = 1U; i < avail && i < DMR_LRRP_VARINT_MAX_BYTES; i++) {
+        value = (value << 7) | (uint64_t)(p[i] & 0x7FU);
+        if (value > UINT32_MAX) {
+            return 0U;
+        }
+        if ((p[i] & 0x80U) == 0U) {
+            *out = (uint32_t)value;
+            return i + 1U;
+        }
+    }
+    return 0U;
+}
+
+// uintvar: 7-bit groups, most significant first, the top bit set on every byte but the last.
+static size_t
+dmr_lrrp_read_uintvar(const uint8_t* p, size_t avail, uint32_t* out) {
+    if (avail == 0U) {
+        return 0U;
+    }
+    if ((p[0] & 0x80U) == 0U) {
+        *out = p[0];
+        return 1U;
+    }
+    return dmr_lrrp_read_groups(p, avail, (uint64_t)(p[0] & 0x7FU), out);
+}
+
+// sintvar: a uintvar whose first byte carries the sign in bit 6 and only six value bits.
+static size_t
+dmr_lrrp_read_sintvar(const uint8_t* p, size_t avail, uint32_t* magnitude, uint8_t* negative) {
+    if (avail == 0U) {
+        return 0U;
+    }
+    *negative = (uint8_t)((p[0] & 0x40U) != 0U);
+    if ((p[0] & 0x80U) == 0U) {
+        *magnitude = (uint32_t)(p[0] & 0x3FU);
+        return 1U;
+    }
+    return dmr_lrrp_read_groups(p, avail, (uint64_t)(p[0] & 0x3FU), magnitude);
+}
+
+// One number: a uintvar or sintvar, followed for a float by its fraction (a uintvar over 128 per byte it takes).
+// Returns the bytes read, or 0 when it is malformed or runs past `avail`.
+static size_t
+dmr_lrrp_read_number(const uint8_t* p, size_t avail, int is_signed, int is_float, dmr_lrrp_number* out) {
+    dmr_lrrp_number n = {0U, 0U, 0U, 0U};
+    size_t used =
+        is_signed ? dmr_lrrp_read_sintvar(p, avail, &n.whole, &n.negative) : dmr_lrrp_read_uintvar(p, avail, &n.whole);
+    if (used == 0U) {
+        return 0U;
+    }
+    if (is_float) {
+        const size_t frac_used = dmr_lrrp_read_uintvar(p + used, avail - used, &n.frac);
+        if (frac_used == 0U) {
+            return 0U;
+        }
+        n.frac_bytes = (uint8_t)frac_used;
+        used += frac_used;
+    }
+    *out = n;
+    return used;
+}
+
+// |n| x scale, rounded to the nearest whole unit.
+static uint64_t
+dmr_lrrp_number_scaled(const dmr_lrrp_number* n, uint32_t scale) {
+    uint64_t value = (uint64_t)n->whole * scale;
+    if (n->frac_bytes != 0U) {
+        const uint64_t den = (uint64_t)1U << (7U * n->frac_bytes);
+        value += ((uint64_t)n->frac * scale * 2U + den) / (2U * den);
+    }
+    return value;
+}
+
+// The number as a double, for printing only.
+static double
+dmr_lrrp_number_value(const dmr_lrrp_number* n) {
+    double value = (double)n->whole;
+    if (n->frac_bytes != 0U) {
+        value += (double)n->frac / (double)((uint64_t)1U << (7U * n->frac_bytes));
+    }
+    return n->negative ? -value : value;
+}
+
+typedef struct {
+    // token 0x34, UTC; year 0 when absent or invalid
     uint16_t year;
     uint16_t month;
     uint16_t day;
@@ -1131,335 +1313,295 @@ typedef struct {
     uint16_t minute;
     uint16_t second;
 
-    // decoded position (point/circle 2D/3D)
+    // the position: the shape of best rank (dmr_lrrp_shapes)
     uint32_t lat_raw;
     uint32_t lon_raw;
-    uint16_t rad_raw;
-    uint32_t alt_raw;
-    uint16_t alt_acc_raw;
     uint8_t have_pos;
+    uint8_t pos_rank;
+    uint8_t pos_zero;        // the position is exactly 0, 0 (dmr_lrrp_zero_pair())
+    dmr_lrrp_number radius;  // metres
+    dmr_lrrp_number alt;     // metres
+    dmr_lrrp_number alt_acc; // metres
     uint8_t have_rad;
     uint8_t have_alt;
     uint8_t have_alt_acc;
-    // TokenType order for position tokens: CIRCLE_2D, CIRCLE_3D, POINT_2D, POINT_3D.
-    uint8_t pos_best_rank;
 
-    // speed/heading
-    double velocity_mph; // units are 1/100 mph per SDRTrunk Speed.java
-    uint8_t vel_set;
-    uint16_t heading_deg; // degrees, 2-degree increments per SDRTrunk Heading.java
-    uint8_t heading_set;
-
-    // parser quality metrics
-    int known_tokens;
-    int unknown_tokens;
-    int truncated_tokens;
+    dmr_lrrp_number speed; // horizontal speed, metres per second (0x6B integer, 0x6C float)
+    uint8_t have_speed;
+    uint8_t heading_units; // horizontal direction in 2-degree steps, below 180
+    uint8_t have_heading;
+    uint8_t heading_seen; // a 0x56 was read, in range or not: only the first counts
 } dmr_lrrp_parse_result;
 
 static void
 dmr_lrrp_parse_result_init(dmr_lrrp_parse_result* r) {
     *r = (dmr_lrrp_parse_result){0};
-    r->pos_best_rank = 0xFFu;
+    r->pos_rank = 0xFFu;
 }
 
-static size_t
-dmr_lrrp_take_bytes(size_t remaining, size_t full, dmr_lrrp_parse_result* r) {
-    if (remaining >= full) {
-        return full;
+// The fields after a shape's latitude and longitude, in their order on the air.
+enum { DMR_LRRP_FIELD_RADIUS = 1U, DMR_LRRP_FIELD_ALT = 2U, DMR_LRRP_FIELD_ALT_ACC = 4U };
+
+// The position tokens (shapes). When a document carries more than one, the lowest rank wins: SDRTrunk's TokenType
+// order (circle-2d, circle-3d, point-2d, point-3d), an integer variant ranking with its float one.
+typedef struct {
+    uint8_t token;
+    uint8_t rank;
+    uint8_t fields;
+    uint8_t is_float;
+} dmr_lrrp_shape;
+
+static const dmr_lrrp_shape dmr_lrrp_shapes[] = {
+    {0x51, 0U, DMR_LRRP_FIELD_RADIUS, 1U},                                               // circle-2d
+    {0x53, 1U, DMR_LRRP_FIELD_RADIUS | DMR_LRRP_FIELD_ALT | DMR_LRRP_FIELD_ALT_ACC, 0U}, // circle-3d, integers
+    {0x55, 1U, DMR_LRRP_FIELD_RADIUS | DMR_LRRP_FIELD_ALT | DMR_LRRP_FIELD_ALT_ACC, 1U}, // circle-3d
+    {0x66, 2U, 0U, 0U},                                                                  // point-2d
+    {0x67, 3U, DMR_LRRP_FIELD_ALT, 0U},                                                  // point-3d, integer
+    {0x69, 3U, DMR_LRRP_FIELD_ALT, 1U},                                                  // point-3d
+};
+
+static const dmr_lrrp_shape*
+dmr_lrrp_shape_for(uint8_t token) {
+    for (size_t i = 0; i < sizeof dmr_lrrp_shapes / sizeof dmr_lrrp_shapes[0]; i++) {
+        if (dmr_lrrp_shapes[i].token == token) {
+            return &dmr_lrrp_shapes[i];
+        }
     }
-    r->truncated_tokens++;
-    return remaining;
+    return NULL;
 }
 
+static uint32_t
+dmr_lrrp_be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static void dmr_lrrp_fill_coordinates(uint32_t lat_raw, uint32_t lon_raw, dsd_position_fix* fix);
+
+// Whether a shape's coordinates are exactly 0, 0 as the record would hold them: never a position (admission refuses
+// it), so such a shape does not take the place of another shape's position, whatever their ranks. One zero coordinate
+// is a place.
 static int
-dmr_lrrp_position_token_meta(uint8_t token, size_t* full, uint8_t* rank) {
-    switch (token) {
-        case 0x51:
-            *full = 11u;
-            *rank = 0u;
-            return 1;
-        case 0x55:
-            *full = 16u;
-            *rank = 1u;
-            return 1;
-        case 0x66:
-            *full = 9u;
-            *rank = 2u;
-            return 1;
-        case 0x69:
-            *full = 12u;
-            *rank = 3u;
-            return 1;
-        default: return 0;
-    }
+dmr_lrrp_zero_pair(uint32_t lat_raw, uint32_t lon_raw) {
+    dsd_position_fix fix;
+    dmr_lrrp_fill_coordinates(lat_raw, lon_raw, &fix);
+    return fix.lat_e7 == 0 && fix.lon_e7 == 0;
 }
 
+// A shape token at p[0] with `avail` bytes from it. Returns the bytes it takes, or 0 when it is malformed or cut.
+static size_t
+dmr_lrrp_parse_shape(const uint8_t* p, size_t avail, const dmr_lrrp_shape* shape, dmr_lrrp_parse_result* r) {
+    if (avail < 9U) {
+        return 0U;
+    }
+    size_t used = 9U;
+    dmr_lrrp_number values[3];
+    static const uint8_t order[3] = {DMR_LRRP_FIELD_RADIUS, DMR_LRRP_FIELD_ALT, DMR_LRRP_FIELD_ALT_ACC};
+    for (size_t f = 0; f < 3U; f++) {
+        if ((shape->fields & order[f]) == 0U) {
+            continue;
+        }
+        const int is_signed = order[f] == DMR_LRRP_FIELD_ALT;
+        const size_t n = dmr_lrrp_read_number(p + used, avail - used, is_signed, shape->is_float, &values[f]);
+        if (n == 0U) {
+            return 0U;
+        }
+        used += n;
+    }
+    /* A shape at 0, 0 is kept only while no other shape gave a position (it is then refused as a position). */
+    const uint8_t zero = (uint8_t)dmr_lrrp_zero_pair(dmr_lrrp_be32(p + 1), dmr_lrrp_be32(p + 5));
+    if (!r->have_pos || zero < r->pos_zero || (zero == r->pos_zero && r->pos_rank > shape->rank)) {
+        r->pos_rank = shape->rank;
+        r->pos_zero = zero;
+        r->lat_raw = dmr_lrrp_be32(p + 1);
+        r->lon_raw = dmr_lrrp_be32(p + 5);
+        r->have_pos = 1U;
+        r->have_rad = (uint8_t)((shape->fields & DMR_LRRP_FIELD_RADIUS) != 0U);
+        r->have_alt = (uint8_t)((shape->fields & DMR_LRRP_FIELD_ALT) != 0U);
+        r->have_alt_acc = (uint8_t)((shape->fields & DMR_LRRP_FIELD_ALT_ACC) != 0U);
+        r->radius = values[0];
+        r->alt = values[1];
+        r->alt_acc = values[2];
+    }
+    return used;
+}
+
+static uint16_t
+dmr_lrrp_days_in_month(uint16_t year, uint16_t month) {
+    static const uint8_t days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2U && (year % 4U) == 0U && ((year % 100U) != 0U || (year % 400U) == 0U)) {
+        return 29U;
+    }
+    return (month >= 1U && month <= 12U) ? days[month - 1U] : 0U;
+}
+
+// A calendar date and time that exists: day within its month, hours 0-23, minutes and seconds 0-59.
+static int
+dmr_pdu_datetime_valid(uint16_t year, uint16_t month, uint16_t day, uint16_t hour, uint16_t minute, uint16_t second) {
+    return month >= 1U && month <= 12U && day >= 1U && day <= dmr_lrrp_days_in_month(year, month) && hour <= 23U
+           && minute <= 59U && second <= 59U;
+}
+
+// Seconds since 1970-01-01 00:00:00 UTC of a valid date and time in 2000-2099.
+static int64_t
+dmr_pdu_unix_time(uint16_t year, uint16_t month, uint16_t day, uint16_t hour, uint16_t minute, uint16_t second) {
+    int64_t days = 10957; // 1970-01-01 to 2000-01-01
+    for (uint16_t y = 2000U; y < year; y++) {
+        days += (dmr_lrrp_days_in_month(y, 2U) == 29U) ? 366 : 365;
+    }
+    for (uint16_t m = 1U; m < month; m++) {
+        days += dmr_lrrp_days_in_month(year, m);
+    }
+    days += (int64_t)day - 1;
+    return days * 86400 + (int64_t)hour * 3600 + (int64_t)minute * 60 + (int64_t)second;
+}
+
+// Token 0x34 (5 bytes after the id): year 14 bits, month 4, day 5, hour 5, minute 6, second 6, UTC. The first valid
+// one counts; an impossible date (31 February included) or a year outside 2000-2037 is left out.
 static void
-dmr_lrrp_parse_timestamp_token(const uint8_t* pdu, size_t idx, dmr_lrrp_parse_result* r) {
+dmr_lrrp_parse_timestamp_token(const uint8_t* p, dmr_lrrp_parse_result* r) {
     if (r->year != 0) {
         return;
     }
-    r->year = (uint16_t)((pdu[idx + 1] << 6) + (pdu[idx + 2] >> 2));
-    r->month = (uint16_t)(((pdu[idx + 2] & 0x3) << 2) + ((pdu[idx + 3] & 0xC0) >> 6));
-    r->day = (uint16_t)(((pdu[idx + 3] & 0x3E) >> 1));
-    r->hour = (uint16_t)(((pdu[idx + 3] & 0x01) << 4) + ((pdu[idx + 4] & 0xF0) >> 4));
-    r->minute = (uint16_t)(((pdu[idx + 4] & 0x0F) << 2) + ((pdu[idx + 5] & 0xC0) >> 6));
-    r->second = (uint16_t)((pdu[idx + 5] & 0x3F));
-
-    int valid = 1;
-    if (!(r->month >= 1 && r->month <= 12)) {
-        valid = 0;
-    }
-    if (!(r->day >= 1 && r->day <= 31)) {
-        valid = 0;
-    }
-    if (!(r->hour <= 23 && r->minute <= 59 && r->second <= 59)) {
-        valid = 0;
-    }
-    if (!(r->year >= 2000 && r->year <= 2037)) {
-        valid = 0;
-    }
-    if (!valid) {
-        r->year = r->month = r->day = r->hour = r->minute = r->second = 0;
-    }
-}
-
-static void
-dmr_lrrp_parse_position_token(const uint8_t* pdu, size_t idx, uint8_t token, uint8_t rank, dmr_lrrp_parse_result* r) {
-    if (r->pos_best_rank <= rank) {
+    const uint16_t year = (uint16_t)((p[1] << 6) + (p[2] >> 2));
+    const uint16_t month = (uint16_t)(((p[2] & 0x3) << 2) + ((p[3] & 0xC0) >> 6));
+    const uint16_t day = (uint16_t)((p[3] & 0x3E) >> 1);
+    const uint16_t hour = (uint16_t)(((p[3] & 0x01) << 4) + ((p[4] & 0xF0) >> 4));
+    const uint16_t minute = (uint16_t)(((p[4] & 0x0F) << 2) + ((p[5] & 0xC0) >> 6));
+    const uint16_t second = (uint16_t)(p[5] & 0x3F);
+    if (year < 2000U || year > 2037U || !dmr_pdu_datetime_valid(year, month, day, hour, minute, second)) {
         return;
     }
-    r->pos_best_rank = rank;
-    r->lat_raw = ((uint32_t)pdu[idx + 1] << 24) | ((uint32_t)pdu[idx + 2] << 16) | ((uint32_t)pdu[idx + 3] << 8)
-                 | (uint32_t)pdu[idx + 4];
-    r->lon_raw = ((uint32_t)pdu[idx + 5] << 24) | ((uint32_t)pdu[idx + 6] << 16) | ((uint32_t)pdu[idx + 7] << 8)
-                 | (uint32_t)pdu[idx + 8];
-    r->have_pos = 1;
-
-    if (token == 0x51) {
-        r->rad_raw = ((uint16_t)pdu[idx + 9] << 8) | (uint16_t)pdu[idx + 10];
-        r->alt_raw = 0;
-        r->alt_acc_raw = 0;
-        r->have_rad = 1;
-        r->have_alt = 0;
-        r->have_alt_acc = 0;
-    } else if (token == 0x55) {
-        r->rad_raw = ((uint16_t)pdu[idx + 9] << 8) | (uint16_t)pdu[idx + 10];
-        r->alt_raw = ((uint16_t)pdu[idx + 11] << 8) | (uint16_t)pdu[idx + 12];
-        r->alt_acc_raw = ((uint16_t)pdu[idx + 13] << 8) | (uint16_t)pdu[idx + 14];
-        r->have_rad = 1;
-        r->have_alt = 1;
-        r->have_alt_acc = 1;
-    } else if (token == 0x66) {
-        r->rad_raw = 0;
-        r->alt_raw = 0;
-        r->alt_acc_raw = 0;
-        r->have_rad = 0;
-        r->have_alt = 0;
-        r->have_alt_acc = 0;
-    } else if (token == 0x69) {
-        r->alt_raw = ((uint32_t)pdu[idx + 9] << 16) | ((uint32_t)pdu[idx + 10] << 8) | (uint32_t)pdu[idx + 11];
-        r->rad_raw = 0;
-        r->alt_acc_raw = 0;
-        r->have_rad = 0;
-        r->have_alt = 1;
-        r->have_alt_acc = 0;
-    }
+    r->year = year;
+    r->month = month;
+    r->day = day;
+    r->hour = hour;
+    r->minute = minute;
+    r->second = second;
 }
 
-static int
-dmr_lrrp_parse_identity_token(uint8_t token, const uint8_t* pdu, size_t idx, size_t remaining, dmr_lrrp_parse_result* r,
-                              size_t* need) {
-    if (token != 0x22) {
-        return 0;
-    }
-    if (remaining < 2u) {
-        *need = remaining;
-        r->truncated_tokens++;
-    } else {
-        size_t payload = (size_t)pdu[idx + 1];
-        *need = dmr_lrrp_take_bytes(remaining, 2u + payload, r);
-    }
-    return 1;
-}
-
-static int
-dmr_lrrp_parse_len1_token(uint8_t token, size_t remaining, dmr_lrrp_parse_result* r, size_t* need) {
+// Tokens of a fixed size whose content no output uses. Returns the size, or 0 for another token.
+static size_t
+dmr_lrrp_opaque_token_len(uint8_t token) {
     switch (token) {
-        case 0x23:
-        case 0x31:
-        case 0x4A:
-        case 0x78:
-        case 0x61:
-        case 0x73: *need = dmr_lrrp_take_bytes(remaining, 2u, r); return 1;
-        default: return 0;
-    }
-}
-
-static int
-dmr_lrrp_parse_len0_token(uint8_t token, size_t* need) {
-    switch (token) {
-        case 0x42:
+        case 0x38:
         case 0x3A:
-        case 0x50:
-        case 0x52:
-        case 0x54:
+        case 0x42:
         case 0x57:
         case 0x62:
-        case 0x64:
-        case 0x38: *need = 1u; return 1;
-        default: return 0;
+        case 0x64: return 1U;
+        case 0x23:
+        case 0x31:
+        case 0x36:
+        case 0x4A:
+        case 0x61:
+        case 0x73:
+        case 0x78: return 2U;
+        default: return 0U;
     }
 }
 
-static int
-dmr_lrrp_parse_tvr_token(uint8_t token, const uint8_t* pdu, size_t idx, size_t remaining, dmr_lrrp_parse_result* r,
-                         size_t* need) {
-    if (token == 0x34) {
-        *need = dmr_lrrp_take_bytes(remaining, 6u, r);
-        if (*need == 6u) {
-            dmr_lrrp_parse_timestamp_token(pdu, idx, r);
+// The motion tokens: horizontal direction (0x56, 2-degree steps; 180 or more is no direction), horizontal speed in
+// m/s (0x6B integer, 0x6C float) and vertical speed (0x70, sfloatvar: real reports carry it; no output uses it). The
+// first direction and the first horizontal speed count. Returns the bytes taken, 0 when the token is not one of them or
+// is malformed or cut.
+static size_t
+dmr_lrrp_parse_motion_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result* r) {
+    if (p[0] == 0x56) {
+        if (avail < 2U) {
+            return 0U;
         }
-        return 1;
-    }
-    if (token == 0x36) {
-        *need = dmr_lrrp_take_bytes(remaining, 2u, r);
-        return 1;
-    }
-    if (token == 0x37) {
-        if (remaining < 2u) {
-            *need = remaining;
-            r->truncated_tokens++;
-        } else {
-            size_t full = (pdu[idx + 1] & 0x80) ? 3u : 2u;
-            *need = dmr_lrrp_take_bytes(remaining, full, r);
+        if (!r->heading_seen) {
+            r->heading_seen = 1U;
+            r->heading_units = p[1];
+            r->have_heading = (uint8_t)(p[1] < 180U);
         }
-        return 1;
+        return 2U;
     }
-    return 0;
+    if (p[0] != 0x6B && p[0] != 0x6C && p[0] != 0x70) {
+        return 0U;
+    }
+    dmr_lrrp_number speed;
+    const size_t n = dmr_lrrp_read_number(p + 1, avail - 1U, p[0] == 0x70, p[0] != 0x6B, &speed);
+    if (n == 0U) {
+        return 0U;
+    }
+    if (p[0] != 0x70 && !r->have_speed) {
+        r->speed = speed;
+        r->have_speed = 1U;
+    }
+    return n + 1U;
 }
 
-static int
-dmr_lrrp_parse_speed_heading_token(uint8_t token, const uint8_t* pdu, size_t idx, size_t remaining,
-                                   dmr_lrrp_parse_result* r, size_t* need) {
-    if (token == 0x6C) {
-        *need = dmr_lrrp_take_bytes(remaining, 3u, r);
-        if (*need == 3u && !r->vel_set) {
-            r->velocity_mph = ((double)(((uint16_t)pdu[idx + 1] << 8) | (uint16_t)pdu[idx + 2])) * 0.01;
-            r->vel_set = 1;
+// The tokens that carry a value (request ID, time, result, level of confidence, motion). Returns the bytes taken, 0
+// when the token is not one of them or is malformed or cut.
+static size_t
+dmr_lrrp_parse_value_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result* r) {
+    uint32_t ignored = 0U;
+    size_t n = 0U;
+    switch (p[0]) {
+        case 0x22: { // request ID: a uintvar length, then that many bytes
+            uint32_t id_len = 0U;
+            n = dmr_lrrp_read_uintvar(p + 1, avail - 1U, &id_len);
+            return (n != 0U && (size_t)id_len <= avail - 1U - n) ? 1U + n + (size_t)id_len : 0U;
         }
-        return 1;
+        case 0x34:
+            if (avail < 6U) {
+                return 0U;
+            }
+            dmr_lrrp_parse_timestamp_token(p, r);
+            return 6U;
+        case 0x37: // result code
+        case 0x65: // level of confidence (a percentage; real reports carry it)
+            n = dmr_lrrp_read_uintvar(p + 1, avail - 1U, &ignored);
+            return n == 0U ? 0U : n + 1U;
+        default: return dmr_lrrp_parse_motion_token(p, avail, r);
     }
-    if (token == 0x56) {
-        *need = dmr_lrrp_take_bytes(remaining, 2u, r);
-        if (*need == 2u && !r->heading_set) {
-            r->heading_deg = (uint16_t)pdu[idx + 1] * 2u;
-            r->heading_set = 1;
-        }
-        return 1;
-    }
-    return 0;
 }
 
-static int
-dmr_lrrp_parse_position_class_token(uint8_t token, const uint8_t* pdu, size_t idx, size_t remaining,
-                                    dmr_lrrp_parse_result* r, size_t* need) {
-    size_t full = 0u;
-    uint8_t rank = 0u;
-    if (!dmr_lrrp_position_token_meta(token, &full, &rank)) {
-        return 0;
+// One token at p[0] with `avail` (> 0) bytes from it: the bytes it takes, or 0 when the parse ends there (a token
+// that is unknown, has no real sample, or is malformed or cut).
+static size_t
+dmr_lrrp_parse_token(const uint8_t* p, size_t avail, dmr_lrrp_parse_result* r) {
+    const size_t opaque = dmr_lrrp_opaque_token_len(p[0]);
+    if (opaque != 0U) {
+        return opaque <= avail ? opaque : 0U;
     }
-    *need = dmr_lrrp_take_bytes(remaining, full, r);
-    if (*need == full) {
-        dmr_lrrp_parse_position_token(pdu, idx, token, rank, r);
+    const dmr_lrrp_shape* shape = dmr_lrrp_shape_for(p[0]);
+    if (shape != NULL) {
+        return dmr_lrrp_parse_shape(p, avail, shape, r);
     }
-    return 1;
+    return dmr_lrrp_parse_value_token(p, avail, r);
 }
 
+// Parse the tokens in pdu[start, start + len) in order until the end or a token that ends the parse.
 static void
-dmr_lrrp_parse_response_tokens(const uint8_t* pdu, size_t avail, size_t idx_start, size_t remaining,
-                               dmr_lrrp_parse_result* r) {
-    size_t idx = idx_start;
-    while (remaining > 0 && idx < avail) {
-        uint8_t token = pdu[idx];
-        size_t need = 1;
-        int known = 1;
-        int handled = dmr_lrrp_parse_identity_token(token, pdu, idx, remaining, r, &need);
-        if (!handled) {
-            handled = dmr_lrrp_parse_len1_token(token, remaining, r, &need);
+dmr_lrrp_parse_tokens(const uint8_t* pdu, size_t start, size_t len, dmr_lrrp_parse_result* r) {
+    size_t idx = start;
+    size_t remaining = len;
+    while (remaining > 0U) {
+        const size_t need = dmr_lrrp_parse_token(pdu + idx, remaining, r);
+        if (need == 0U || need > remaining) {
+            return;
         }
-        if (!handled) {
-            handled = dmr_lrrp_parse_len0_token(token, &need);
-        }
-        if (!handled) {
-            handled = dmr_lrrp_parse_tvr_token(token, pdu, idx, remaining, r, &need);
-        }
-        if (!handled) {
-            handled = dmr_lrrp_parse_speed_heading_token(token, pdu, idx, remaining, r, &need);
-        }
-        if (!handled) {
-            handled = dmr_lrrp_parse_position_class_token(token, pdu, idx, remaining, r, &need);
-        }
-        if (!handled) {
-            known = 0;
-            need = 1u;
-        }
-
-        if (known) {
-            r->known_tokens++;
-        } else {
-            r->unknown_tokens++;
-        }
-
         idx += need;
         remaining -= need;
     }
 }
 
+// Whether a reading that skips one to DMR_LRRP_RESYNC_MAX_SKIP leading bytes finds a position the document's own
+// token order did not. Such a reading is a guess: it is reported as one and never published.
 static int
-dmr_lrrp_parse_score(const dmr_lrrp_parse_result* r, size_t prefix_skip) {
-    int score = 0;
-    score -= (int)prefix_skip * 5;
-    score += r->known_tokens * 10;
-    score -= r->unknown_tokens;
-    score -= r->truncated_tokens * 50;
-
-    if (r->have_pos) {
-        score += 1000 - ((int)r->pos_best_rank * 10);
-        // Penalize (0,0) which often shows up as a desync / bogus decode.
-        if (r->lat_raw == 0u && r->lon_raw == 0u) {
-            score -= 200;
+dmr_lrrp_resync_finds_position(const uint8_t* pdu, size_t start, size_t len) {
+    for (size_t skip = 1U; skip <= DMR_LRRP_RESYNC_MAX_SKIP && skip < len; skip++) {
+        dmr_lrrp_parse_result guess;
+        dmr_lrrp_parse_result_init(&guess);
+        dmr_lrrp_parse_tokens(pdu, start + skip, len - skip, &guess);
+        if (guess.have_pos) {
+            return 1;
         }
     }
-    if (r->year) {
-        score += 100;
-    }
-    if (r->vel_set) {
-        score += 50;
-    }
-    if (r->heading_set) {
-        score += 50;
-    }
-    if (r->have_rad) {
-        score += 20;
-    }
-    if (r->have_alt) {
-        score += 20;
-    }
-    if (r->have_alt_acc) {
-        score += 20;
-    }
-
-    return score;
+    return 0;
 }
-
-typedef struct {
-    double lat;
-    double lon;
-    double rad;
-    double alt;
-    double alt_acc;
-} dmr_lrrp_scaled;
 
 static void
 dmr_lrrp_classify_type(uint8_t lrrp_type, uint8_t* is_request, uint8_t* is_response) {
@@ -1474,14 +1616,21 @@ dmr_lrrp_classify_type(uint8_t lrrp_type, uint8_t* is_request, uint8_t* is_respo
         case 0x0B:
         case 0x0D:
         case 0x11:
+        case 0x13: // unsolicited location report
         case 0x15: *is_response = 1; break;
         default: break;
     }
 }
 
+// The document length after the type byte: a uintvar. Returns the bytes it takes (0 when it is malformed).
+static size_t
+dmr_lrrp_read_doc_len(const uint8_t* pdu, size_t avail, uint32_t* doc_len) {
+    return avail > 1U ? dmr_lrrp_read_uintvar(pdu + 1, avail - 1U, doc_len) : 0U;
+}
+
 // Some senders wrap a conformant LRRP document in a short fixed envelope
 // (#453): a leading byte dsd-neo does not classify, a counter and a few
-// constant bytes, then an ordinary document whose length byte runs exactly to
+// constant bytes, then an ordinary document whose length runs exactly to
 // the end of the UDP payload. Returns the offset of that inner document, or 0
 // when the payload holds no such document within the first few bytes. The
 // exact-end check is what keeps this from firing on unrelated data.
@@ -1495,8 +1644,9 @@ dmr_lrrp_wrapped_document_offset(const uint8_t* pdu, size_t avail) {
         if (!is_request && !is_response) {
             continue;
         }
-        size_t inner_len = (size_t)pdu[off + 1u];
-        if (inner_len > 0u && off + 2u + inner_len == avail) {
+        uint32_t inner_len = 0U;
+        const size_t hdr = dmr_lrrp_read_doc_len(pdu + off, avail - off, &inner_len);
+        if (hdr != 0U && inner_len > 0u && off + 1u + hdr + (size_t)inner_len == avail) {
             return off;
         }
     }
@@ -1504,90 +1654,113 @@ dmr_lrrp_wrapped_document_offset(const uint8_t* pdu, size_t avail) {
 }
 
 static int
-dmr_lrrp_has_position_token(const uint8_t* pdu, size_t avail, size_t token_len) {
-    for (size_t i = 0; i < token_len && (2u + i) < avail; i++) {
-        uint8_t b = pdu[2u + i];
-        if (b == 0x51 || b == 0x55 || b == 0x66 || b == 0x69) {
+dmr_lrrp_has_position_token(const uint8_t* pdu, size_t start, size_t token_len) {
+    for (size_t i = 0; i < token_len; i++) {
+        if (dmr_lrrp_shape_for(pdu[start + i]) != NULL) {
             return 1;
         }
     }
     return 0;
 }
 
+typedef struct {
+    uint32_t source;
+    uint32_t dest;
+    uint8_t slot;
+    uint8_t is_request;
+    uint8_t is_response;
+    uint8_t lrrp_type;
+    uint8_t pos_verified;         // the packet's own checks passed (not RAS) and it holds the whole document
+    uint8_t guessed;              // only a resync guess found a position
+    const char* suppressed_label; // why a decoded position is withheld
+} dmr_lrrp_emit_context;
+
+// The latitude (sign bit + 31-bit magnitude, x90/2^31) and longitude (two's complement, x360/2^32) in 1e-7 degree,
+// rounded to the nearest unit. Every 32-bit value is in range: the magnitude tops out at 2^31-1, which is 90.
 static void
-dmr_lrrp_parse_best_response(const uint8_t* pdu, size_t avail, size_t token_len, dmr_lrrp_parse_result* best) {
-    const size_t max_skip = 6u;
-    int best_score = -1000000;
-    for (size_t skip = 0; skip <= max_skip && skip <= token_len; skip++) {
-        dmr_lrrp_parse_result cur;
-        dmr_lrrp_parse_result_init(&cur);
-        dmr_lrrp_parse_response_tokens(pdu, avail, 2u + skip, token_len - skip, &cur);
-        int score = dmr_lrrp_parse_score(&cur, skip);
-        if (score > best_score) {
-            best_score = score;
-            *best = cur;
+dmr_lrrp_fill_coordinates(uint32_t lat_raw, uint32_t lon_raw, dsd_position_fix* fix) {
+    const uint32_t lat_mag = lat_raw & 0x7FFFFFFFU;
+    const int64_t lat_e7 = (int64_t)(((uint64_t)lat_mag * 900000000U + 0x40000000U) >> 31);
+    fix->lat_e7 = (int32_t)(((lat_raw & 0x80000000U) != 0U) ? -lat_e7 : lat_e7);
+    const int32_t lon_signed = (int32_t)lon_raw;
+    const uint64_t lon_mag = (lon_signed < 0) ? (uint64_t)(-(int64_t)lon_signed) : (uint64_t)lon_signed;
+    const int64_t lon_e7 = (int64_t)((lon_mag * 1800000000U + 0x40000000U) >> 31);
+    fix->lon_e7 = (int32_t)((lon_signed < 0) ? -lon_e7 : lon_e7);
+}
+
+// Altitude, radius (the position error), speed and heading in the record's units; a value the record cannot hold
+// stays unknown.
+static void
+dmr_lrrp_fill_extras(const dmr_lrrp_parse_result* best, dsd_position_fix* fix) {
+    if (best->have_alt) {
+        const uint64_t dm = dmr_lrrp_number_scaled(&best->alt, 10U);
+        if (dm <= (uint64_t)INT32_MAX) {
+            fix->alt_dm = best->alt.negative ? -(int32_t)dm : (int32_t)dm;
         }
     }
+    if (best->have_rad && best->radius.whole < UINT32_MAX) {
+        // A radius is an uncertainty: a fraction rounds up. A radius of 0 (an integer 0x53 radius, or 0.0) is
+        // DSD_POSITION_ERR_UNKNOWN: the record has no "exact" error.
+        fix->err_m = best->radius.whole + (uint32_t)(best->radius.frac_bytes != 0U && best->radius.frac != 0U);
+    }
+    if (best->have_speed) {
+        const uint64_t dkmh = dmr_lrrp_number_scaled(&best->speed, 36U); // 1 m/s = 3.6 km/h
+        if (dkmh < (uint64_t)DSD_POSITION_SPEED_UNKNOWN) {
+            fix->speed_dkmh = (uint16_t)dkmh;
+        }
+    }
+    if (best->have_heading) {
+        fix->heading_ddeg = (uint16_t)(best->heading_units * 20U);
+    }
 }
 
-static dmr_lrrp_scaled
-dmr_lrrp_compute_scaled(const dmr_lrrp_parse_result* best) {
-    dmr_lrrp_scaled s;
-    s.lat = 0.0;
-    s.lon = 0.0;
-    s.rad = 0.0;
-    s.alt = 0.0;
-    s.alt_acc = 0.0;
-    if (best->have_pos) {
-        s.lat = ((double)((int32_t)best->lat_raw) * 90.0) / 2147483648.0;
-        s.lon = ((double)((int32_t)best->lon_raw) * 180.0) / 2147483648.0;
-    }
-    if (best->have_rad) {
-        s.rad = (double)best->rad_raw * 0.01;
-    }
-    if (best->have_alt) {
-        s.alt = (double)best->alt_raw * 0.01;
-    }
-    if (best->have_alt_acc) {
-        s.alt_acc = (double)best->alt_acc_raw * 0.01;
-    }
-    return s;
+// The carrier's protocol as a position record holds it.
+static uint8_t
+dmr_pdu_position_protocol(const dsd_state* state) {
+    return (state->lastsynctype >= 0 && state->lastsynctype < (int)DSD_POSITION_PROTOCOL_NONE)
+               ? (uint8_t)state->lastsynctype
+               : (uint8_t)DSD_POSITION_PROTOCOL_NONE;
 }
 
+// The reception the packet carrying a position report began on (spec 2.3 step 3): the DMR data header's for a DMR
+// packet (dmr_dheader()), the MDPU header's for a P25 Phase 1 one (processMPDU()). NULL when none was captured, which
+// takes the current reception.
+static const dsd_position_origin*
+dmr_pdu_position_origin(const dsd_state* state, uint8_t slot) {
+    const dsd_position_origin* origin = NULL;
+    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        origin = &state->dmr_data_origin[slot & 1U];
+    } else if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        origin = &state->p25_mdpu_origin;
+    }
+    return (origin != NULL && origin->valid != 0U) ? origin : NULL;
+}
+
+// The decoded document as a position report.
 static void
-dmr_lrrp_print_details(const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s, uint8_t pdu_crc_ok,
-                       const char* suppressed_label) {
-    if (best->year) {
-        DSD_FPRINTF(stderr, "\n Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day, best->hour,
-                    best->minute, best->second);
+dmr_lrrp_fill_fix(const dsd_state* state, const dmr_lrrp_parse_result* best, const dmr_lrrp_emit_context* ctx,
+                  dsd_position_fix* fix) {
+    dsd_position_fix_init(fix);
+    fix->kind = DSD_POS_DMR_LRRP;
+    fix->protocol = dmr_pdu_position_protocol(state);
+    fix->slot = ctx->slot;
+    dmr_lrrp_fill_coordinates(best->lat_raw, best->lon_raw, fix);
+    dmr_lrrp_fill_extras(best, fix);
+    if (best->year != 0U) {
+        fix->fix_time_s = dmr_pdu_unix_time(best->year, best->month, best->day, best->hour, best->minute, best->second);
     }
-    if (best->have_pos && pdu_crc_ok) {
-        DSD_FPRINTF(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", s->lat, s->lon, s->lat, s->lon);
-    } else if (best->have_pos && !pdu_crc_ok) {
-        DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", suppressed_label);
-    }
-    if (best->have_rad) {
-        DSD_FPRINTF(stderr, "\n Radius: %.2lfm", s->rad);
-    }
-    if (best->have_alt) {
-        DSD_FPRINTF(stderr, "\n Altitude: %.2lfm", s->alt);
-    }
-    if (best->have_alt_acc) {
-        DSD_FPRINTF(stderr, "\n Alt Accuracy: %.2lfm", s->alt_acc);
-    }
-    if (best->vel_set) {
-        DSD_FPRINTF(stderr, "\n Speed: %.2lf mph %.2lf km/h %.2lf m/s", best->velocity_mph,
-                    (best->velocity_mph * 1.60934), (best->velocity_mph * 0.44704));
-    }
-    if (best->heading_set) {
-        DSD_FPRINTF(stderr, "\n Track: %d%s", (int)best->heading_deg, dsd_degrees_glyph());
+    fix->source_id = ctx->source;
+    fix->target_id = ctx->dest;
+    if (dmr_pdu_header_target_is_group(state, ctx->slot, ctx->dest)) {
+        fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
     }
 }
 
+// One `-L` row from an admitted report (LRRP and LOCN share the format): receive date and time, source, latitude,
+// longitude, speed in km/h and heading in degrees (0 for an unknown speed or heading, the format's placeholder).
 static void
-dmr_lrrp_write_file_if_needed(const dsd_opts* opts, const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s,
-                              uint8_t pdu_crc_ok, uint32_t source) {
-    if (opts->lrrp_file_output != 1 || !pdu_crc_ok || s->lat == 0.0 || s->lon == 0.0) {
+dmr_pdu_write_location_row(const dsd_opts* opts, const dsd_position_fix* fix) {
+    if (opts->lrrp_file_output != 1) {
         return;
     }
     char timestr[9];
@@ -1598,55 +1771,102 @@ dmr_lrrp_write_file_if_needed(const dsd_opts* opts, const dmr_lrrp_parse_result*
     if (pFile == NULL) {
         return;
     }
+    const double speed_kmh = (fix->speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) ? (double)fix->speed_dkmh / 10.0 : 0.0;
+    const int heading = (fix->heading_ddeg != DSD_POSITION_HEADING_UNKNOWN) ? (int)(fix->heading_ddeg / 10U) : 0;
     DSD_FPRINTF(pFile, "%s\t%s\t", datestr, timestr);
-    DSD_FPRINTF(pFile, "%08d\t", source);
-    DSD_FPRINTF(pFile, "%.5lf\t", s->lat);
-    DSD_FPRINTF(pFile, "%.5lf\t", s->lon);
-    DSD_FPRINTF(pFile, "%.3lf\t ", (best->velocity_mph * 1.60934));
-    DSD_FPRINTF(pFile, "%d\t", (int)best->heading_deg);
+    DSD_FPRINTF(pFile, "%08u\t", (unsigned)fix->source_id);
+    DSD_FPRINTF(pFile, "%.5lf\t", (double)fix->lat_e7 / 10000000.0);
+    DSD_FPRINTF(pFile, "%.5lf\t", (double)fix->lon_e7 / 10000000.0);
+    DSD_FPRINTF(pFile, "%.3lf\t ", speed_kmh);
+    DSD_FPRINTF(pFile, "%d\t", heading);
     DSD_FPRINTF(pFile, "\n");
     fclose(pFile);
 }
 
-typedef struct {
-    uint32_t source;
-    uint32_t dest;
-    uint8_t is_request;
-    uint8_t is_response;
-    uint8_t lrrp_type;
-    const char* suppressed_label; // why a position is withheld: "CRC ERR", or "RAS" for RAS-only provenance
-} dmr_lrrp_emit_context;
+static void
+dmr_lrrp_print_details(const dsd_opts* opts, const dmr_lrrp_parse_result* best, const dsd_position_fix* fix,
+                       int admitted, const dmr_lrrp_emit_context* ctx) {
+    /* Each line is a part of the report, so each carries the producer's label (issue #800, D10): the diagnostics log
+       removes them. A report whose packet failed its checks prints only that its position was suppressed; the rest of
+       it only with -Z (dsd_gps_report_content_printable()). */
+    if (!dsd_gps_report_content_printable(ctx->pos_verified, opts->payload)) {
+        if (best->have_pos || ctx->guessed) {
+            DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", ctx->suppressed_label);
+        }
+        return;
+    }
+    if (best->year) {
+        DSD_FPRINTF(stderr, "\n LRRP Time: %04d.%02d.%02d %02d:%02d:%02d", best->year, best->month, best->day,
+                    best->hour, best->minute, best->second);
+    }
+    if (admitted) {
+        const double lat = (double)fix->lat_e7 / 10000000.0;
+        const double lon = (double)fix->lon_e7 / 10000000.0;
+        DSD_FPRINTF(stderr, "\n Lat: %.5lf Lon: %.5lf (%.5lf, %.5lf)", lat, lon, lat, lon);
+    } else if (best->have_pos || ctx->guessed) {
+        DSD_FPRINTF(stderr, "\n Position: (suppressed; %s)", ctx->suppressed_label);
+    }
+    if (best->have_rad) {
+        DSD_FPRINTF(stderr, "\n LRRP Radius: %.2lfm", dmr_lrrp_number_value(&best->radius));
+    }
+    if (best->have_alt) {
+        DSD_FPRINTF(stderr, "\n Altitude: %.2lfm", dmr_lrrp_number_value(&best->alt));
+    }
+    if (best->have_alt_acc) {
+        DSD_FPRINTF(stderr, "\n LRRP Alt Accuracy: %.2lfm", dmr_lrrp_number_value(&best->alt_acc));
+    }
+    if (best->have_speed) {
+        const double mps = dmr_lrrp_number_value(&best->speed);
+        DSD_FPRINTF(stderr, "\n LRRP Speed: %.2lf km/h %.2lf m/s", mps * 3.6, mps);
+    }
+    if (best->have_heading) {
+        DSD_FPRINTF(stderr, "\n LRRP Track: %d%s", (int)best->heading_units * 2, dsd_degrees_glyph());
+    }
+}
 
 static void
-dmr_lrrp_build_summary(char* out, size_t out_sz, const dmr_lrrp_parse_result* best, const dmr_lrrp_scaled* s,
-                       const dmr_lrrp_emit_context* ctx, uint8_t pdu_crc_ok) {
-    const uint32_t source = ctx->source;
-    const uint32_t dest = ctx->dest;
-    if (best->have_pos && pdu_crc_ok) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; (%lf, %lf)", source, s->lat, s->lon);
-    } else if (best->have_pos && !pdu_crc_ok) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Position suppressed (%s);", source, ctx->suppressed_label);
+dmr_lrrp_build_summary(char* out, size_t out_sz, const dmr_lrrp_parse_result* best, const dsd_position_fix* fix,
+                       int admitted, const dmr_lrrp_emit_context* ctx) {
+    const unsigned source = ctx->source;
+    const unsigned dest = ctx->dest;
+    if (admitted) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %u; (%lf, %lf)", source, (double)fix->lat_e7 / 10000000.0,
+                     (double)fix->lon_e7 / 10000000.0);
+    } else if (best->have_pos || ctx->guessed) {
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %u; Position suppressed (%s);", source, ctx->suppressed_label);
     } else if (ctx->is_request) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %u; Request from TGT: %u;", source, dest);
     } else if (ctx->is_response) {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %u; Response to TGT: %u;", source, dest);
     } else {
-        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", source, ctx->lrrp_type, dest);
+        DSD_SNPRINTF(out, out_sz, "LRRP SRC: %u; Unknown Format %02X; TGT: %u;", source, ctx->lrrp_type, dest);
     }
 }
 
 // A zero-length message reaches here with an empty `best`: no details print,
 // nothing is written to the LRRP file, and the summary is chosen by the type
 // byte alone (sdrtrunk and lrrpdec.py label it the same way, #453).
+//
+// The position goes on only when the packet's checks passed and the document's own token order gave it: admitted, it
+// is staged for the packet's data notice (the row's GPS) and written to `-L`; otherwise the summary says it was
+// withheld and why.
 static void
-dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_lrrp_parse_result* best,
-                      uint8_t pdu_crc_ok, const dmr_lrrp_emit_context* ctx) {
-    dmr_lrrp_scaled s = dmr_lrrp_compute_scaled(best);
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    dmr_lrrp_print_details(best, &s, pdu_crc_ok, ctx->suppressed_label);
-    if (dsd_receive_current_allows(opts, state, slot)) {
-        dmr_lrrp_write_file_if_needed(opts, best, &s, pdu_crc_ok, ctx->source);
+dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, const dmr_lrrp_parse_result* best,
+                      dmr_lrrp_emit_context* ctx) {
+    const uint8_t slot = ctx->slot;
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    dsd_position_admit_result admitted = DSD_POSITION_REFUSED;
+    if (best->have_pos && ctx->pos_verified) {
+        dmr_lrrp_fill_fix(state, best, ctx, &fix);
+        // The same checked packet names the source and the target.
+        admitted = dsd_position_admit(opts, state, &fix, 1, 1, dmr_pdu_position_origin(state, slot));
+        if (admitted == DSD_POSITION_REFUSED) {
+            ctx->suppressed_label = "not usable";
+        }
     }
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    dmr_lrrp_print_details(opts, best, &fix, admitted != DSD_POSITION_REFUSED, ctx);
 
     char lrrpstr[100];
     char velstr[20];
@@ -1654,29 +1874,58 @@ dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, cons
     lrrpstr[0] = '\0';
     velstr[0] = '\0';
     degstr[0] = '\0';
-    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &s, ctx, pdu_crc_ok);
-    if (best->vel_set) {
-        DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", best->velocity_mph * 1.60934);
+    dmr_lrrp_build_summary(lrrpstr, sizeof lrrpstr, best, &fix, admitted != DSD_POSITION_REFUSED, ctx);
+    // The summary is the packet's notice text: the motion of an admitted report only, as admission left it (a value
+    // out of range unknown), never a failed, refused or incomplete report's (issue #800, fail closed). The explicit
+    // payload diagnostics (dmr_lrrp_print_details() under -Z) keep the rest.
+    if (admitted != DSD_POSITION_REFUSED && fix.speed_dkmh != DSD_POSITION_SPEED_UNKNOWN) {
+        DSD_SNPRINTF(velstr, sizeof velstr, " %.2lf km/h", (double)fix.speed_dkmh / 10.0);
     }
-    if (best->heading_set) {
-        DSD_SNPRINTF(degstr, sizeof degstr, " %d%s  ", (int)best->heading_deg, dsd_degrees_glyph());
+    if (admitted != DSD_POSITION_REFUSED && fix.heading_ddeg != DSD_POSITION_HEADING_UNKNOWN) {
+        DSD_SNPRINTF(degstr, sizeof degstr, " %u%s  ", (unsigned)(fix.heading_ddeg / 10U), dsd_degrees_glyph());
     }
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
-    if (!best->have_pos || !pdu_crc_ok) {
+    if (admitted == DSD_POSITION_REFUSED) {
         DSD_FPRINTF(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
+        return;
     }
+    (void)dsd_event_stage_position(state, slot, &fix, state->dmr_lrrp_gps[slot]);
+    dmr_pdu_write_location_row(opts, &fix);
 }
 
-//The contents of this function are mostly trial and error
+// Why a position is withheld before admission: the packet's checks (a RAS-accepted header alone is not a failed
+// check), else a document the payload holds only part of, else a reading only a resync guess found.
+static const char*
+dmr_lrrp_suppressed_label(const dsd_state* state, uint8_t slot, uint8_t packet_ok, uint8_t complete) {
+    if (!packet_ok) {
+        const uint8_t scope = state->event_crc_invalid[slot];
+        return (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
+    }
+    return complete ? "layout not confirmed" : "incomplete document";
+}
+
+// The document's tokens in @p pdu (@p len octets from its type byte): their start in *start and their length, the
+// declared length or what the payload holds of it. *complete is 1 only when the payload holds the whole declared
+// document: a position is taken only from that (issue #800, fail closed), as the token that would rank highest may be in
+// the part missing. Every caller hands over its whole checked payload.
+static size_t
+dmr_lrrp_document_tokens(const uint8_t* pdu, uint16_t len, size_t* start, uint8_t* complete) {
+    uint32_t doc_len = 0U;
+    const size_t hdr = dmr_lrrp_read_doc_len(pdu, (size_t)len, &doc_len);
+    *start = 1U + hdr;
+    const size_t token_avail = (hdr != 0U && (size_t)len > *start) ? (size_t)len - *start : 0U;
+    *complete = (uint8_t)(hdr != 0U && (size_t)doc_len <= token_avail);
+    return ((size_t)doc_len < token_avail) ? (size_t)doc_len : token_avail;
+}
+
 void
 dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest, const uint8_t* DMR_PDU,
          uint8_t pdu_crc_ok) {
     if (!DMR_PDU || len < 2) {
         return;
     }
-    uint8_t slot = state->currentslot;
+    const uint8_t slot = (uint8_t)(state->currentslot & 1);
     uint8_t lrrp_type = DMR_PDU[0];
-    uint8_t payload_len = DMR_PDU[1];
     uint8_t is_request = 0;
     uint8_t is_response = 0;
     dmr_lrrp_classify_type(lrrp_type, &is_request, &is_response);
@@ -1687,223 +1936,257 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
             DMR_PDU += off;
             len = (uint16_t)(len - off);
             lrrp_type = DMR_PDU[0];
-            payload_len = DMR_PDU[1];
             dmr_lrrp_classify_type(lrrp_type, &is_request, &is_response);
         }
     }
 
+    size_t start = 0U;
+    uint8_t complete = 0U;
+    const size_t token_len = dmr_lrrp_document_tokens(DMR_PDU, len, &start, &complete);
+
     dmr_lrrp_parse_result best;
     dmr_lrrp_parse_result_init(&best);
-    size_t avail = (size_t)len;
-    size_t token_avail = (avail > 2u) ? (avail - 2u) : 0u;
-    size_t token_len = (size_t)payload_len;
-    if (token_len > token_avail) {
-        token_len = token_avail;
-    }
-
     int want_response_parse = is_response;
     if (!want_response_parse && !is_request && token_len > 0u) {
-        want_response_parse = dmr_lrrp_has_position_token(DMR_PDU, avail, token_len);
+        want_response_parse = dmr_lrrp_has_position_token(DMR_PDU, start, token_len);
     }
+    uint8_t guessed = 0U;
     if (want_response_parse) {
-        dmr_lrrp_parse_best_response(DMR_PDU, avail, token_len, &best);
+        dmr_lrrp_parse_tokens(DMR_PDU, start, token_len, &best);
+        guessed = (uint8_t)(!best.have_pos && dmr_lrrp_resync_finds_position(DMR_PDU, start, token_len));
     }
-    if (!source) {
-        source = (uint32_t)state->dmr_lrrp_source[state->currentslot];
-    }
-    // The caller's scope says why the PDU is unverified: a RAS-accepted header alone is not a failed check.
-    const uint8_t scope = state->event_crc_invalid[slot & 1U];
-    const char* suppressed_label =
-        (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
-    dmr_lrrp_emit_context emit_ctx = {source, dest, is_request, is_response, lrrp_type, suppressed_label};
-    dmr_lrrp_emit_payload(opts, state, slot, &best, pdu_crc_ok, &emit_ctx);
+    // The source is the caller's: every caller passes the source its notice observation names (IPv4 source address,
+    // MNIS or compressed-header data header source), so the record and its notice agree even when it is 0.
+    const uint8_t pos_verified = (uint8_t)(pdu_crc_ok == 1U && complete);
+    dmr_lrrp_emit_context emit_ctx = {
+        .source = source,
+        .dest = dest,
+        .slot = slot,
+        .is_request = is_request,
+        .is_response = is_response,
+        .lrrp_type = lrrp_type,
+        .pos_verified = pos_verified,
+        .guessed = guessed,
+        .suppressed_label = dmr_lrrp_suppressed_label(state, slot, (uint8_t)(pdu_crc_ok == 1U), complete),
+    };
+    dmr_lrrp_emit_payload(opts, state, &best, &emit_ctx);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+// DMR "LOCN": a text location report reached through MNIS type 0x01 and defined short data. No specification
+// defines it; the decoder is dsd-fme's, written from observed traffic. The fields are `A` hhmmss DDMMYY, `N`/`S`
+// DDMM.mmmm and `E`/`W` DDDMM.mmmm. Its reports are published as provisional (decision D12). Every field is checked
+// before it is used: digits only, a date that exists, degrees within 90/180 (the boundary only with zero minutes),
+// minutes below 60.
 typedef struct {
-    uint8_t time;
-    uint8_t lat;
-    uint8_t lon;
+    uint8_t time; // a valid date and time was read
     uint8_t hour;
     uint8_t minute;
     uint8_t second;
-    uint8_t year;
+    uint16_t year; // the full year (dsd_gps_two_digit_year_date()), with `time`
     uint8_t month;
     uint8_t day;
-    uint16_t lat_deg;
-    uint16_t lat_min;
-    uint16_t lat_sec;
-    uint16_t lon_deg;
-    uint16_t lon_min;
-    uint16_t lon_sec;
-    int lat_sign;
-    int lon_sign;
+    int64_t days;      // the date's days since 1970-01-01, with `time`
+    uint8_t lat;       // a latitude field was read
+    uint8_t lon;       // a longitude field was read
+    uint8_t lat_valid; // and its value is in range
+    uint8_t lon_valid;
+    int32_t lat_e7;
+    int32_t lon_e7;
 } dmr_locn_data;
 
-static void
-dmr_locn_validate_time(dmr_locn_data* d) {
-    int yy = ((d->year >> 4) & 0xF) * 10 + (d->year & 0xF);
-    int mm = ((d->month >> 4) & 0xF) * 10 + (d->month & 0xF);
-    int dd = ((d->day >> 4) & 0xF) * 10 + (d->day & 0xF);
-    int hh = ((d->hour >> 4) & 0xF) * 10 + (d->hour & 0xF);
-    int mi = ((d->minute >> 4) & 0xF) * 10 + (d->minute & 0xF);
-    int ss = ((d->second >> 4) & 0xF) * 10 + (d->second & 0xF);
-    int full_year = 2000 + yy;
-    int valid = 1;
-    if (!(mm >= 1 && mm <= 12)) {
-        valid = 0;
+// `n` ASCII digits as a number; 0 when any of them is not a digit.
+static int
+dmr_locn_digits(const uint8_t* p, size_t n, uint32_t* out) {
+    uint32_t value = 0U;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') {
+            return 0;
+        }
+        value = value * 10U + (uint32_t)(p[i] - '0');
     }
-    if (!(dd >= 1 && dd <= 31)) {
-        valid = 0;
+    *out = value;
+    return 1;
+}
+
+// `A` hhmmss DDMMYY at p[0]. Returns 1 when the twelve characters are digits (the field is a time field), and sets
+// the time only when the date and time exist. The two-digit year is read in the century that puts the date closest to
+// its reception on the decode clock (as an NMEA RMC's).
+static int
+dmr_locn_parse_time(const uint8_t* p, dmr_locn_data* d) {
+    uint32_t v[6];
+    for (size_t i = 0; i < 6U; i++) {
+        if (!dmr_locn_digits(p + 1 + i * 2U, 2U, &v[i])) {
+            return 0;
+        }
     }
-    if (!(hh >= 0 && hh <= 23 && mi >= 0 && mi <= 59 && ss >= 0 && ss <= 59)) {
-        valid = 0;
+    int64_t year = 0;
+    d->time = (uint8_t)(v[0] <= 23U && v[1] <= 59U && v[2] <= 59U
+                        && dsd_gps_two_digit_year_date(v[5], v[4], v[3], (int64_t)dsd_decode_time(), &year, &d->days));
+    d->hour = (uint8_t)v[0];
+    d->minute = (uint8_t)v[1];
+    d->second = (uint8_t)v[2];
+    d->day = (uint8_t)v[3];
+    d->month = (uint8_t)v[4];
+    d->year = d->time ? (uint16_t)year : (uint16_t)(2000U + v[5]);
+    return 1;
+}
+
+// Whether any of the digits that run on from p[0] (at most `avail` bytes) is not 0: fraction digits past the four
+// the format keeps.
+static int
+dmr_locn_more_digits_nonzero(const uint8_t* p, size_t avail) {
+    for (size_t i = 0; i < avail && p[i] >= '0' && p[i] <= '9'; i++) {
+        if (p[i] != '0') {
+            return 1;
+        }
     }
-    if (!(full_year >= 2000 && full_year <= 2037)) {
-        valid = 0;
+    return 0;
+}
+
+// One coordinate: `deg_digits` degree digits, two minute digits, the '.' separator, four digits of 1/10000 minute,
+// after the hemisphere letter at p[0], with `avail` bytes from p[0]. Returns 1 when they have that shape (the field is
+// a coordinate field); *valid says whether the value is in range (degrees <= max_deg, minutes <= 59, the boundary only
+// with zero minutes and a fraction whose every digit is 0, any that run on past the four included).
+static int
+dmr_locn_parse_coord(const uint8_t* p, size_t avail, size_t deg_digits, uint32_t max_deg, int negative, int32_t* e7,
+                     uint8_t* valid) {
+    uint32_t deg = 0U;
+    uint32_t min = 0U;
+    uint32_t frac = 0U;
+    const size_t end = 8U + deg_digits;
+    if (avail < end || !dmr_locn_digits(p + 1, deg_digits, &deg) || !dmr_locn_digits(p + 1 + deg_digits, 2U, &min)
+        || p[3 + deg_digits] != (uint8_t)'.' || !dmr_locn_digits(p + 4 + deg_digits, 4U, &frac)) {
+        return 0;
     }
-    if (!valid) {
-        d->time = 0;
+    const int boundary_ok = min == 0U && frac == 0U && !dmr_locn_more_digits_nonzero(p + end, avail - end);
+    *valid = (uint8_t)(min <= 59U && (deg < max_deg || (deg == max_deg && boundary_ok)));
+    if (*valid) {
+        // degrees + (minutes + frac / 10000) / 60, in 1e-7 degree, rounded
+        const int64_t value = (int64_t)deg * 10000000 + ((int64_t)(min * 10000U + frac) * 100 + 3) / 6;
+        *e7 = (int32_t)(negative ? -value : value);
     }
+    return 1;
+}
+
+// Returns the characters a field at pdu[i] takes, or 1 when pdu[i] starts no field.
+static uint16_t
+dmr_locn_parse_field(const uint8_t* pdu, uint16_t len, uint16_t i, dmr_locn_data* d) {
+    const uint8_t c = pdu[i];
+    if (c == 0x41 && (uint16_t)(i + 12U) < len) {
+        return dmr_locn_parse_time(pdu + i, d) ? 13U : 1U;
+    }
+    if ((c == 0x4E || c == 0x53) && (uint16_t)(i + 9U) < len) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 2U, 90U, c == 0x53, &d->lat_e7, &d->lat_valid)) {
+            return 1U;
+        }
+        d->lat = 1;
+        return 10U;
+    }
+    if ((c == 0x45 || c == 0x57) && (uint16_t)(i + 10U) < len) {
+        if (!dmr_locn_parse_coord(pdu + i, (size_t)(len - i), 3U, 180U, c == 0x57, &d->lon_e7, &d->lon_valid)) {
+            return 1U;
+        }
+        d->lon = 1;
+        return 11U;
+    }
+    return 1U;
 }
 
 static void
 dmr_locn_parse_fields(const uint8_t* pdu, uint16_t len, dmr_locn_data* d) {
     uint16_t i = 0;
     while (i < len) {
-        uint16_t advance = 1;
-        switch (pdu[i]) {
-            case 0x41:
-                if ((uint16_t)(i + 12U) >= len) {
-                    return;
-                }
-                d->time = 1;
-                d->hour = ((pdu[i + 1] - 0x30) << 4) | (pdu[i + 2] - 0x30);
-                d->minute = ((pdu[i + 3] - 0x30) << 4) | (pdu[i + 4] - 0x30);
-                d->second = ((pdu[i + 5] - 0x30) << 4) | (pdu[i + 6] - 0x30);
-                d->day = ((pdu[i + 7] - 0x30) << 4) | (pdu[i + 8] - 0x30);
-                d->month = ((pdu[i + 9] - 0x30) << 4) | (pdu[i + 10] - 0x30);
-                d->year = ((pdu[i + 11] - 0x30) << 4) | (pdu[i + 12] - 0x30);
-                dmr_locn_validate_time(d);
-                advance = 13;
-                break;
-            case 0x53:
-                d->lat_sign = -1;
-                /* fall through */
-            case 0x4E:
-                if ((uint16_t)(i + 9U) >= len) {
-                    return;
-                }
-                d->lat = 1;
-                d->lat_deg = ((pdu[i + 1] - 0x30) << 4) | (pdu[i + 2] - 0x30);
-                d->lat_min = ((pdu[i + 3] - 0x30) << 4) | (pdu[i + 4] - 0x30);
-                d->lat_sec = ((pdu[i + 6] - 0x30) << 12) | ((pdu[i + 7] - 0x30) << 8) | ((pdu[i + 8] - 0x30) << 4)
-                             | ((pdu[i + 9] - 0x30) << 0);
-                advance = 9;
-                break;
-            case 0x57:
-                d->lon_sign = -1;
-                /* fall through */
-            case 0x45:
-                if ((uint16_t)(i + 10U) >= len) {
-                    return;
-                }
-                d->lon = 1;
-                d->lon_deg = ((pdu[i + 1] - 0x30) << 8) | ((pdu[i + 2] - 0x30) << 4) | ((pdu[i + 3] - 0x30) << 0);
-                d->lon_min = ((pdu[i + 4] - 0x30) << 4) | (pdu[i + 5] - 0x30);
-                d->lon_sec = ((pdu[i + 7] - 0x30) << 12) | ((pdu[i + 8] - 0x30) << 8) | ((pdu[i + 9] - 0x30) << 4)
-                             | ((pdu[i + 10] - 0x30) << 0);
-                advance = 9;
-                break;
-            default: break;
-        }
-        i = (uint16_t)(i + advance);
+        i = (uint16_t)(i + dmr_locn_parse_field(pdu, len, i, d));
     }
 }
 
+/* The report's line: its coordinates when admitted, else why its position was withheld. @p content 0 (a report whose
+ * packet failed its checks, without -Z: dsd_gps_report_content_printable()) leaves its time out too. */
 static void
-dmr_locn_compute_lat_lon(dmr_locn_data* d, double* latitude, double* longitude) {
-    d->lat_deg = convert_hex_to_dec(d->lat_deg);
-    d->lat_min = convert_hex_to_dec(d->lat_min);
-    d->lat_sec = convert_hex_to_dec(d->lat_sec);
-    d->lon_deg = convert_hex_to_dec(d->lon_deg);
-    d->lon_min = convert_hex_to_dec(d->lon_min);
-    d->lon_sec = convert_hex_to_dec(d->lon_sec);
-
-    *latitude =
-        (double)d->lat_sign * ((double)d->lat_deg + ((double)d->lat_min / 60.0) + ((double)d->lat_sec / 600000.0));
-    *longitude =
-        (double)d->lon_sign * ((double)d->lon_deg + ((double)d->lon_min / 60.0) + ((double)d->lon_sec / 600000.0));
-}
-
-static void DSD_ATTR_USED
-dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitude, double longitude) {
-    if (opts->lrrp_file_output != 1 || state->event_crc_invalid[state->currentslot & 1]
-        || !dsd_receive_current_allows(opts, state, state->currentslot)) {
-        return;
-    }
-    char timestr[9];
-    char datestr[11];
-    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(dsd_decode_time(), DSD_LOCAL_DATETIME_DATE_SLASH, datestr, sizeof datestr);
-    FILE* pFile = dsd_fopen_private(opts->lrrp_out_file, "a");
-    if (pFile == NULL) {
-        return;
-    }
-    DSD_FPRINTF(pFile, "%s\t%s\t", datestr, timestr);
-    DSD_FPRINTF(pFile, "%08lld\t", state->dmr_lrrp_source[state->currentslot]);
-    DSD_FPRINTF(pFile, "%.5lf\t", latitude);
-    DSD_FPRINTF(pFile, "%.5lf\t", longitude);
-    DSD_FPRINTF(pFile, "%.3lf\t ", 0.0);
-    DSD_FPRINTF(pFile, "%d\t", 0);
-    DSD_FPRINTF(pFile, "\n");
-    fclose(pFile);
-}
-
-static void DSD_ATTR_USED
-dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d, double latitude,
-              double longitude) {
+dmr_locn_emit(dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d, const dsd_position_fix* fix,
+              const char* withheld, int content) {
     const char* deg_glyph = dsd_degrees_glyph();
     char locnstr[50];
-    char latstr[75];
-    char lonstr[75];
-    locnstr[0] = '\0';
-    latstr[0] = '\0';
-    lonstr[0] = '\0';
-
+    char posstr[100];
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n NMEA / LOCN; Source: %u;", (unsigned)source);
-    if (d->time) {
-        DSD_FPRINTF(stderr, " 20%02X/%02X/%02X %02X:%02X:%02X", d->year, d->month, d->day, d->hour, d->minute,
-                    d->second);
+    if (d->time && content) {
+        DSD_FPRINTF(stderr, " %04u/%02u/%02u %02u:%02u:%02u", d->year, d->month, d->day, d->hour, d->minute, d->second);
     }
-    DSD_FPRINTF(stderr, " (%.5lf%s, %.5lf%s);", latitude, deg_glyph, longitude, deg_glyph);
-
     DSD_SNPRINTF(locnstr, sizeof locnstr, "NMEA / LOCN; Source: %u ", (unsigned)source);
-    DSD_SNPRINTF(latstr, sizeof latstr, "(%.5lf%s, ", latitude, deg_glyph);
-    DSD_SNPRINTF(lonstr, sizeof lonstr, "%.5lf%s)", longitude, deg_glyph);
-    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s%s", locnstr, latstr, lonstr);
+    if (withheld == NULL) {
+        const double lat = (double)fix->lat_e7 / 10000000.0;
+        const double lon = (double)fix->lon_e7 / 10000000.0;
+        DSD_FPRINTF(stderr, " (%.5lf%s, %.5lf%s);", lat, deg_glyph, lon, deg_glyph);
+        DSD_SNPRINTF(posstr, sizeof posstr, "(%.5lf%s, %.5lf%s)", lat, deg_glyph, lon, deg_glyph);
+    } else {
+        DSD_FPRINTF(stderr, " Position suppressed (%s);", withheld);
+        DSD_SNPRINTF(posstr, sizeof posstr, "Position suppressed (%s);", withheld);
+    }
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "%s%s", locnstr, posstr);
 }
 
-void
+// The report a checked, in-range LOCN gives: its coordinates, its date and time when the `A` field held a valid one
+// (read as UTC, the NMEA convention the format follows; unknown otherwise), the data header's source and target.
+static void
+dmr_locn_fill_fix(const dsd_state* state, uint8_t slot, uint32_t source, const dmr_locn_data* d,
+                  dsd_position_fix* fix) {
+    fix->kind = DSD_POS_DMR_LOCN;
+    fix->protocol = dmr_pdu_position_protocol(state);
+    fix->slot = slot;
+    fix->lat_e7 = d->lat_e7;
+    fix->lon_e7 = d->lon_e7;
+    if (d->time) {
+        fix->fix_time_s =
+            (d->days * 86400) + ((int64_t)d->hour * 3600) + ((int64_t)d->minute * 60) + (int64_t)d->second;
+    }
+    fix->flags = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+    fix->source_id = source;
+    fix->target_id = (uint32_t)state->dmr_lrrp_target[slot];
+    if (DSD_SYNC_IS_DMR(state->lastsynctype) && state->dmr_data_checked_group[slot] != 0U) {
+        fix->flags |= (uint16_t)DSD_POS_FLAG_TARGET_GROUP;
+    }
+}
+
+int
 dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
-    uint8_t slot = state->currentslot;
-    uint32_t source = (uint32_t)state->dmr_lrrp_source[slot];
+    if (DMR_PDU == NULL) {
+        return 0;
+    }
+    const uint8_t slot = (uint8_t)(state->currentslot & 1);
+    const uint32_t source = (uint32_t)state->dmr_lrrp_source[slot];
     dmr_locn_data d;
     DSD_MEMSET(&d, 0, sizeof(d));
-    d.lat_sign = 1;
-    d.lon_sign = 1;
-
     dmr_locn_parse_fields(DMR_PDU, len, &d);
     if (!(d.lat && d.lon)) {
-        return;
+        return 0;
     }
 
-    double latitude = 0.0;
-    double longitude = 0.0;
-    dmr_locn_compute_lat_lon(&d, &latitude, &longitude);
-    dmr_locn_emit(state, slot, source, &d, latitude, longitude);
-    dmr_locn_write_file(opts, state, latitude, longitude);
+    const uint8_t scope = state->event_crc_invalid[slot];
+    const char* withheld = NULL;
+    dsd_position_fix fix;
+    dsd_position_fix_init(&fix);
+    if (scope != 0U) {
+        // The failed check is the reason even when a damaged field is also out of range.
+        withheld = (!dsd_crc_is_failed(scope) && (scope & DSD_CRC_RAS_UNVERIFIED) != 0U) ? "RAS" : "CRC ERR";
+    } else if (!(d.lat_valid && d.lon_valid)) {
+        withheld = "invalid";
+    } else {
+        dmr_locn_fill_fix(state, slot, source, &d, &fix);
+        // The packet's checks passed; its data header names the source and the target.
+        if (dsd_position_admit(opts, state, &fix, 1, 1, dmr_pdu_position_origin(state, slot)) == DSD_POSITION_REFUSED) {
+            withheld = "not usable";
+        }
+    }
+    dmr_locn_emit(state, slot, source, &d, &fix, withheld,
+                  dsd_gps_report_content_printable(scope == 0U, opts->payload));
+    if (withheld != NULL) {
+        return 0;
+    }
+    (void)dsd_event_stage_position(state, slot, &fix, state->dmr_lrrp_gps[slot]);
+    dmr_pdu_write_location_row(opts, &fix);
+    return 1;
 }
 
 static inline void

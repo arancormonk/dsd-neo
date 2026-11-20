@@ -22,6 +22,12 @@ extern "C" {
 void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
 
 /**
+ * @brief utf8_to_text() on a line that opens with @p label instead of "UTF8 Text": the label of a service whose text
+ *        may hold a position (the P25 location service), so the diagnostics log can recognise the line (issue #800).
+ */
+void utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label);
+
+/**
  * @brief Print @p len octets of UTF-16BE text (ETSI TS 102 361-3 text messaging) to stderr, with
  *        the printable characters copied as UTF-8 into the slot's staged event text when @p wr is 1.
  *

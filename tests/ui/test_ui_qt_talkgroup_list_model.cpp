@@ -322,6 +322,9 @@ class AlternateHistory : public QAbstractListModel {
   public:
     bool present = false;
     uint32_t tg = 8001;
+    /* A "gi" role (who the call was to), only when set before the model reads the roles. */
+    bool withGi = false;
+    int gi = -1;
 
     int
     rowCount(const QModelIndex& parent = QModelIndex()) const override {
@@ -330,7 +333,12 @@ class AlternateHistory : public QAbstractListModel {
 
     QHash<int, QByteArray>
     roleNames() const override {
-        return {{Qt::UserRole + 71, "tg"}, {Qt::UserRole + 72, "session"}, {Qt::UserRole + 73, "kind"}};
+        QHash<int, QByteArray> roles = {
+            {Qt::UserRole + 71, "tg"}, {Qt::UserRole + 72, "session"}, {Qt::UserRole + 73, "kind"}};
+        if (withGi) {
+            roles.insert(Qt::UserRole + 74, "gi");
+        }
+        return roles;
     }
 
     QVariant
@@ -342,6 +350,7 @@ class AlternateHistory : public QAbstractListModel {
             case Qt::UserRole + 71: return tg;
             case Qt::UserRole + 72: return 100;
             case Qt::UserRole + 73: return 0;
+            case Qt::UserRole + 74: return gi;
             default: return {};
         }
     }
@@ -392,6 +401,24 @@ test_history_role_names_and_mutations() {
     history.reset();
     model.refresh(fixture.opts, fixture.state);
     expect("history reset invalidates heard set", model.count() == 1 && find(model, 8002).isValid());
+}
+
+/* Re-review r1 (issue #800): a private call's target is a radio, never a talkgroup heard; a call whose kind is not
+ * known still counts, as before. */
+void
+test_private_calls_are_not_heard_talkgroups() {
+    Fixture fixture;
+    AlternateHistory history;
+    history.withGi = true;
+    history.gi = 1;
+    TalkgroupListModel model(&history);
+    history.insert();
+    model.refresh(fixture.opts, fixture.state);
+    expect("r1: a private call's radio gets no talkgroup card", model.count() == 0);
+    history.gi = -1;
+    history.change();
+    model.refresh(fixture.opts, fixture.state);
+    expect("r1: not knowing the kind, it is heard as before", model.count() == 1 && find(model, 8002).isValid());
 }
 
 void
@@ -743,6 +770,7 @@ main(int argc, char** argv) {
     test_temporary_avoid_status();
     test_policy_and_heard_rows();
     test_history_role_names_and_mutations();
+    test_private_calls_are_not_heard_talkgroups();
     test_replay_heard_again_lists_its_talkgroups();
     test_heard_rows_read_history_storage_directly();
     test_overlapping_ranges_cover_heard_talkgroups();

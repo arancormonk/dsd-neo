@@ -982,6 +982,36 @@ test_hdu_soft_recovered_crypto_is_not_received(void) {
     return rc;
 }
 
+/* Issue #800: an HDU begins another transmission, maybe another radio's while the call stays ACTIVE (its terminator
+   missed): the hard-decoded voice-user identity and the L3Harris Part A of the transmission before no longer attribute
+   a GPS link control, whether the HDU decoded hard, soft or not at all. */
+static int
+test_hdu_forgets_the_checked_identity(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int decode = 0; decode < 3; decode++) {
+        reset_hook_counters();
+        reset_fec_stubs();
+        reset_soft_inputs();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        g_rs_hard_result = decode == 0 ? 0 : 1;
+        g_rs_soft_result = decode == 2 ? 1 : 0;
+        state.p25_p1_lc_attribution.call_epoch = 5U;
+        state.p25_p1_lc_attribution.source = 1001U;
+        state.p25_p1_lc_attribution.target = 100U;
+        state.p25_p1_harris_part_a.valid = 1U;
+        state.p25_p1_harris_part_a.epoch = 5U;
+        state.p25_p1_harris_part_a.source = 1001U;
+        processHDU(&opts, &state);
+        rc |= expect_int("HDU forgets the checked identity",
+                         state.p25_p1_lc_attribution.call_epoch == 0U && state.p25_p1_lc_attribution.source == 0U, 1);
+        rc |= expect_int("HDU forgets the Part A", state.p25_p1_harris_part_a.valid, 0);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1001,6 +1031,8 @@ main(void) {
     rc |= test_hdu_talkgroup_comes_from_the_open_p25_call_only();
     rc |= test_hdu_split_by_a_carrier_boundary_publishes_nothing();
     rc |= test_hdu_cut_by_an_input_interruption_publishes_nothing();
+    reset_fec_stubs();
+    rc |= test_hdu_forgets_the_checked_identity();
     dsd_decode_clock_use_system();
     return rc;
 }

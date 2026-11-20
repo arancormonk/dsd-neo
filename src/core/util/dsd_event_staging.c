@@ -9,6 +9,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/position.h"
 #include "dsd_event_staging.h"
 
 static int
@@ -49,7 +50,65 @@ dsd_event_stage_gps(dsd_state* state, uint8_t slot, const char* gps) {
     dsd_event_history_transaction_begin(state, &transaction);
     Event_History_Staged* staged = &state->event_history_s[slot].staged;
     DSD_SNPRINTF(staged->gps_s, sizeof staged->gps_s, "%s", gps != NULL ? gps : "");
+    /* Text without a position: a position staged before it no longer describes the staged text. */
+    DSD_MEMSET(&staged->pos_fix, 0, sizeof staged->pos_fix);
     dsd_event_history_transaction_end(&transaction);
+}
+
+int
+dsd_event_stage_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text) {
+    if (!staging_available(state, slot) || !dsd_event_pos_fix_admitted(fix) || gps_text == NULL) {
+        return -1;
+    }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    Event_History_Staged* staged = &state->event_history_s[slot].staged;
+    DSD_SNPRINTF(staged->gps_s, sizeof staged->gps_s, "%s", gps_text);
+    staged->pos_fix = *fix;
+    dsd_event_history_transaction_end(&transaction);
+    return 1;
+}
+
+const dsd_position_fix*
+dsd_event_staged_position(const dsd_state* state, uint8_t slot) {
+    static const dsd_position_fix none = {0}; /* zero: rev 0 */
+    return staging_available(state, slot) ? &state->event_history_s[slot].staged.pos_fix : &none;
+}
+
+int
+dsd_event_pos_fix_admitted(const dsd_position_fix* fix) {
+    return fix != NULL && fix->rev != 0U && fix->proc_instance != 0U;
+}
+
+void
+dsd_event_pos_set_from_fix(dsd_event_pos* pos, const dsd_position_fix* fix) {
+    DSD_MEMSET(pos, 0, sizeof(*pos));
+    pos->proc_instance = fix->proc_instance;
+    pos->rev = fix->rev;
+    pos->rx_time_s = fix->rx_time_s;
+    pos->identity_freq_hz = fix->identity_freq_hz;
+    pos->lat_e7 = fix->lat_e7;
+    pos->lon_e7 = fix->lon_e7;
+    pos->err_m = fix->err_m;
+    pos->flags = fix->flags;
+    pos->valid = 1U;
+    pos->rx_clock = fix->rx_clock;
+    pos->kind = fix->kind;
+    pos->anonymous =
+        (uint8_t)((fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U
+                  || (fix->source_id == 0U && fix->source_text[0] == '\0'));
+    pos->scope.kind = fix->sender_scope.kind;
+    pos->scope.a = fix->sender_scope.a;
+    pos->scope.b = fix->sender_scope.b;
+}
+
+void
+dsd_event_pos_drop_position(dsd_event_pos* pos) {
+    const dsd_position_scope scope = pos->scope;
+    const int64_t identity_freq_hz = pos->identity_freq_hz;
+    DSD_MEMSET(pos, 0, sizeof(*pos));
+    pos->scope = scope;
+    pos->identity_freq_hz = identity_freq_hz;
 }
 
 const char*

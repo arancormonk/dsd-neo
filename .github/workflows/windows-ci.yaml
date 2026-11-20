@@ -144,80 +144,17 @@ jobs:
         if: github.event_name != 'pull_request'
         id: stage
         shell: pwsh
-        run: |
-          $exe = Get-ChildItem -Path 'build/win-msvc-release/apps/dsd-cli' -Recurse -Filter 'dsd-neo.exe' |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $exe) { throw "Exe not found under build/win-msvc-release/apps/dsd-cli" }
-          $stage = 'dist/dsd-neo-msvc'
-          $binDir = Join-Path $stage 'bin'
-          $docDir = Join-Path $stage 'share/doc/dsd-neo'
-          $licenseDir = Join-Path $docDir 'licenses'
-          New-Item -ItemType Directory -Force -Path $binDir,$docDir,$licenseDir | Out-Null
-          Copy-Item -Force $exe $binDir
+        run: >-
+          ./tools/windows/stage_release_tree.ps1
+          -BuildDir build/win-msvc-release
+          -StageDir dist/dsd-neo-msvc
+          -InstalledDir "$env:GITHUB_WORKSPACE/vcpkg_installed/$env:VCPKG_TARGET_TRIPLET"
 
-          $triplet = $env:VCPKG_TARGET_TRIPLET
-          if (-not $triplet) { $triplet = $env:VCPKG_DEFAULT_TRIPLET }
-          if (-not $triplet) { $triplet = 'x64-windows-dynamic-release' }
-          $vcpkgBin = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'vcpkg_installed' (Join-Path $triplet 'bin'))
-          $searchDirs = @()
-          if (Test-Path $vcpkgBin) { $searchDirs += $vcpkgBin }
-          & 'tools/windows/stage_runtime_dlls.ps1' `
-            -TargetBinary (Join-Path $binDir 'dsd-neo.exe') `
-            -DestinationDir $binDir `
-            -SearchDirs $searchDirs
-
-          cmake --install build/win-msvc-release --prefix $stage --component legal
-          if ($LASTEXITCODE -ne 0) { throw "Legal notice installation failed" }
-          Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction Stop
-          Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
-          Copy-Item -Force 'build/win-msvc-release/pffft-licenses/pffft-LICENSE.txt','build/win-msvc-release/pffft-licenses/pffft-NOTICES.txt' $licenseDir -ErrorAction Stop
-          Copy-Item -Force 'build/win-msvc-release/tetra_crypto-licenses/tetra_crypto-LICENSE.txt' $licenseDir -ErrorAction Stop
-          Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
-          # The bundled librtlsdr is GPL-2.0-or-later and built by the vcpkg overlay with the dsd-neo patches.
-          Copy-Item -Force 'android/third_party/librtlsdr/COPYING' (Join-Path $licenseDir 'librtlsdr-GPL-2.0-or-later.txt') -ErrorAction Stop
-          Copy-Item -Force 'packaging/librtlsdr-PATCHES.txt' (Join-Path $licenseDir 'librtlsdr-PATCHES.txt') -ErrorAction Stop
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-LICENSE.txt','licenses/pffft-NOTICES.txt','licenses/tetra_crypto-LICENSE.txt','licenses/libairspy-LICENSE.txt','licenses/librtlsdr-GPL-2.0-or-later.txt','licenses/librtlsdr-PATCHES.txt','legal/status.md','legal/components.json','licenses/ISC.txt','licenses/Unlicense.txt','licenses/gqrx-scanner-MIT.txt','licenses/LicenseRef-BCH3-Noncommercial.txt','licenses/LicenseRef-Simon-Rockliff.txt','licenses/mbelib-neo/ISC.txt','licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt','licenses/mbelib-neo/legal/status.md','licenses/mbelib-neo/legal/patents.md')
-          foreach ($f in $required) {
-            $p = Join-Path $docDir $f
-            if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }
-          }
-
-      # The overlay applies the patches; this checks the DLL the ZIP ships came out of
-      # that build. Only librtlsdr has a probe here: the libairspy patch adds no mark
-      # to a Windows build (tools/check_patched_usb_libs.sh probes it on Linux and macOS).
-      - name: Verify the bundled librtlsdr is the patched build (MSVC)
+      # The patched librtlsdr, hardening of every staged PE, the DLL closure and the
+      # bundled SoapySDR modules, loaded without hardware.
+      - name: Verify staged release tree (MSVC)
         shell: pwsh
-        run: |
-          $dlls = @(Get-ChildItem -Path 'dist/dsd-neo-msvc/bin' -File -Filter '*rtlsdr*.dll')
-          if ($dlls.Count -ne 1) { throw "Expected exactly one staged librtlsdr DLL, found $($dlls.Count)" }
-          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dlls[0].FullName))
-          if (-not $text.Contains('no transfer left, canceling')) {
-            throw "$($dlls[0].Name) lacks the reader's 'no transfer left' message: it was not built with 0003-librtlsdr-account-for-every-transfer.patch"
-          }
-          Write-Host "$($dlls[0].Name): built with the librtlsdr transfer patches"
-
-      - name: Verify staged release hardening (MSVC)
-        shell: pwsh
-        run: |
-          $bin = 'dist/dsd-neo-msvc/bin'
-          if (!(Test-Path $bin)) { throw "Staged bin directory not found: $bin" }
-          $artifacts = @(Get-ChildItem -Path $bin -File | Where-Object { $_.Extension -in @('.exe', '.dll') })
-          if ($artifacts.Count -eq 0) { throw "No staged PE artifacts found under $bin" }
-          foreach ($artifact in $artifacts) {
-            ./tools/check_release_hardening.ps1 $artifact.FullName
-          }
-
-      - name: Smoke test staged binary (MSVC)
-        shell: pwsh
-        run: |
-          $exe = 'dist/dsd-neo-msvc/bin/dsd-neo.exe'
-          if (!(Test-Path $exe)) { throw "Staged exe not found: $exe" }
-          $bin = Split-Path -Parent $exe
-          # Ensure the staged tree is self-contained by avoiding PATH leakage
-          # from the build environment (vcpkg/VS).
-          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
-          Write-Host "Running: $exe -h"
-          & $exe -h
+        run: ./tools/windows/verify_release_tree.ps1 -Root dist/dsd-neo-msvc
 
       - name: Archive native MSVC ZIP
         shell: pwsh
@@ -240,23 +177,19 @@ jobs:
           echo "ART_NAME=$artName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         id: zip
 
-      - name: Verify ZIP contents (extract and run help)
+      # The same checks on the ZIP unpacked into a new folder, as a user gets it.
+      - name: Verify ZIP contents (extract and verify)
         shell: pwsh
+        env:
+          ZIP_PATH: ${{ steps.zip.outputs.ZIP_PATH }}
         run: |
-          $zip = '${{ steps.zip.outputs.ZIP_PATH }}'
+          $zip = $env:ZIP_PATH
           if (!(Test-Path $zip)) { throw "ZIP not found: $zip" }
           $dest = Join-Path $env:RUNNER_TEMP ('dsd-neo-msvc-' + [System.Guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
-          $bin = Join-Path $dest 'bin'
-          $exe = Join-Path $bin 'dsd-neo.exe'
-          if (!(Test-Path $exe)) { throw "Extracted exe not found: $exe" }
-          # Ensure the ZIP is self-contained by avoiding PATH leakage from the
-          # build environment.
-          $env:PATH = "$bin;$env:SystemRoot\\System32;$env:SystemRoot"
-          Write-Host "Running: $exe -h"
-          & $exe -h
+          ./tools/windows/verify_release_tree.ps1 -Root $dest
 
       - name: Upload native MSVC artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

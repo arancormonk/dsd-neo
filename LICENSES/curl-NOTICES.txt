@@ -1,0 +1,99 @@
+libcurl (https://curl.se/, https://github.com/curl/curl) copyright notices for the libcurl
+dsd-neo's packages carry: release 8.23.0, tag curl-8_23_0 (archive
+https://github.com/curl/curl/archive/curl-8_23_0.tar.gz, SHA512
+e1003f374675a6ae50463995a6c705208c4247120093f1fcccf030847161235b3dfc0e40927114ccbc5b4530893990ccb96ec15400ffe4bcb275d26a0499f10e),
+as vcpkg's curl port builds it: with Schannel for the Windows ZIP (libcurl.dll), with OpenSSL,
+linked statically, for the Android app, and with OpenSSL as a shared library for the macOS DMG, which
+also compiles the Apple trust-store files of curl-macos-NOTICES.txt. curl-copyright.txt, the copyright file the port installs,
+carries the curl license with Daniel Stenberg's notice and the ISC notice of lib/curlx/inet_ntop.c.
+The sources compiled into the library that name other holders, with each holder line as written; the
+Schannel and SSPI files (lib/vtls/schannel*.c, lib/socks_sspi.c, lib/vauth/*_sspi.c,
+lib/curlx/version_win32.c) are compiled for Windows only:
+
+lib/conncache.c
+    Copyright (C) Linus Nielsen Feltzing, <linus@haxx.se>
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/conncache.h
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Linus Nielsen Feltzing, <linus@haxx.se>
+
+lib/cshutdn.c
+    Copyright (C) Linus Nielsen Feltzing, <linus@haxx.se>
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/cshutdn.h
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Linus Nielsen Feltzing, <linus@haxx.se>
+
+lib/curl_ntlm_core.c
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>
+
+lib/curl_sha256.h
+    Copyright (C) Florin Petriuc, <petriuc.florin@gmail.com>
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/curl_sha512_256.c
+    Copyright (C) Evgeny Grin (Karlson2k), <k2k@narod.ru>.
+
+lib/curl_sha512_256.h
+    Copyright (C) Evgeny Grin (Karlson2k), <k2k@narod.ru>.
+
+lib/curlx/inet_ntop.c
+    Copyright (C) 1996-2022  Internet Software Consortium.
+
+lib/curlx/inet_pton.c
+    Copyright (c) Internet Software Consortium.
+
+lib/curlx/version_win32.c
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+
+lib/curlx/version_win32.h
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+
+lib/mqtt.c
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Björn Stenberg, <bjorn@haxx.se>
+
+lib/mqtt.h
+    Copyright (C) Björn Stenberg, <bjorn@haxx.se>
+
+lib/sha256.c
+    Copyright (C) Florin Petriuc, <petriuc.florin@gmail.com>
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/socks_sspi.c
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Markus Moeller, <markus_moeller@compuserve.com>
+
+lib/vauth/digest_sspi.c
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/vauth/krb5_sspi.c
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+
+lib/vauth/vauth.c
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+
+lib/vauth/vauth.h
+    Copyright (C) Steve Holme, <steve_holme@hotmail.com>.
+
+lib/vtls/schannel.c
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+    Copyright (C) Marc Hoersken, <info@marc-hoersken.de>
+    Copyright (C) Mark Salisbury, <mark.salisbury@hp.com>
+
+lib/vtls/schannel.h
+    Copyright (C) Marc Hoersken, <info@marc-hoersken.de>, et al.
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/vtls/schannel_int.h
+    Copyright (C) Marc Hoersken, <info@marc-hoersken.de>, et al.
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.
+
+lib/vtls/schannel_verify.c
+    Copyright (C) Marc Hoersken, <info@marc-hoersken.de>
+    Copyright (C) Mark Salisbury, <mark.salisbury@hp.com>
+    Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al.

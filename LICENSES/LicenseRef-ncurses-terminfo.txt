@@ -1,0 +1,65 @@
+ncurses 6.5 (archive https://invisible-mirror.net/archives/ncurses/ncurses-6.5.tar.gz, SHA512
+fc5a13409d2a530a1325776dcce3a99127ddc2c03999cfeb0065d0eee2d68456274fb1c7b3cc99c1937bc657d0e7fca97016e147f93c7821b5a4a6837db821e8):
+the terminal database the macOS DMG carries in share/terminfo is compiled by ncurses' tic from
+misc/terminfo.src, which carries no copyright notice of its own. Its terms are stated in the file
+itself; reproduced unmodified from misc/terminfo.src lines 1-39 and 270-288:
+
+######## TERMINAL TYPE DESCRIPTIONS SOURCE FILE
+#
+# This version of terminfo.src is distributed with ncurses and is maintained
+# by Thomas E. Dickey (TD).
+#
+# Report bugs and new terminal descriptions to
+#	bug-ncurses@gnu.org
+#
+#	$Revision: 1.1143 $
+#	$Date: 2024/03/09 20:01:40 $
+#
+# The original header is preserved below for reference.  It is noted that there
+# is a "newer" version which differs in some cosmetic details (but actually
+# stopped updates several years ago); we have decided to not change the header
+# unless there is also a change in content.
+#
+# To further muddy the waters, it is noted that changes to this file as part of
+# maintenance of ncurses (since 1996) are generally conceded to be copyright
+# under the ncurses MIT-style license.  That was the effect of the agreement
+# which the principal authors of ncurses made in 1998.  However, since much of
+# the file itself is of unknown authorship (and the disclaimer below makes it
+# obvious that Raymond cannot or will not convey rights over those parts),
+# there is no explicit copyright notice on the file itself.
+#
+# It would also be a nuisance to split the file into unknown/known authorship
+# and move pieces as they are maintained, since many of the maintenance changes
+# have been small corrections to Raymond's translations to/from termcap format,
+# correcting the data but not the accompanying annotations.
+#
+# In any case, note that almost half of this file is not data but annotations
+# which reflect creative effort.  Furthermore, the structure of entries to
+# reuse common chunks also is creative (and subject to copyright).  Finally,
+# some portions of the data are derivative work under a compatible MIT-style
+# license from xterm.
+#
+#------------------------------------------------------------------------------
+# https://invisible-island.net/ncurses/ncurses.faq.html#terminfo_copying
+# https://invisible-island.net/personal/copyrights.html#removing_notes
+#------------------------------------------------------------------------------
+...
+# COPYRIGHTS AND OTHER DELUSIONS
+#
+# The BSD ancestor of this file had a standard Regents of the University of
+# California copyright with dates from 1980 to 1993.
+#
+# Some information has been merged in from a terminfo file SCO distributes.
+# It has an obnoxious boilerplate copyright which I'm ignoring because they
+# took so much of the content from the ancestral BSD versions of this file
+# and didn't attribute it, thereby violating the BSD Regents' copyright.
+#
+# Not that anyone should care.  However many valid functions copyrights may
+# serve, putting one on a termcap/terminfo file with hundreds of anonymous
+# contributors makes about as much sense as copyrighting a wall-full of
+# graffiti -- it's legally dubious, ethically bogus, and patently ridiculous.
+#
+# This file deliberately has no copyright.  It belongs to no one and everyone.
+# If you claim you own it, you will merely succeed in looking like a fool.
+# Use it as you like.  Use it at your own risk.  Copy and redistribute freely.
+# There are no guarantees anywhere.  Svaha!

@@ -236,17 +236,26 @@ test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
         const uint32_t src = 5555U;
         state = foreign_call_fixture(opts, gps[i].call_protocol, 0U, 100U, src);
         DSD_MEMSET(bits, 0, sizeof(bits));
+        /* The P25 link-control reports as a checked message of the report's source would carry them, to the slot's
+           ACTIVE call; the carried reports addressed from that source. */
+        dsd_gps_report_ctx p25_ctx;
+        DSD_MEMSET(&p25_ctx, 0, sizeof(p25_ctx));
+        p25_ctx.source_id = src;
+        p25_ctx.protocol = DSD_SYNC_P25P1_POS;
+        p25_ctx.pos_verified = 1U;
+        p25_ctx.source_verified = 1U;
+        const dsd_gps_address addr = {src, 0U, 0U};
         switch (gps[i].writer) {
             case 0: dmr_embedded_gps(opts, state, bits); break;
-            case 1: apx_embedded_gps(opts, state, bits); break;
-            case 2: nmea_harris(opts, state, bits, 0U, 0); break;
-            case 3: nxdn_gps_report(opts, state, bits, src); break;
+            case 1: (void)apx_embedded_gps(opts, state, bits, &p25_ctx); break;
+            case 2: (void)nmea_harris(opts, state, bits, &p25_ctx); break;
+            case 3: nxdn_gps_report(opts, state, bits, sizeof(bits), src, NULL); break;
             case 4:
                 state->lastsynctype =
                     DSD_SYNC_DMR_BS_DATA_POS; // carried by a DMR data frame (a zeroed state reads P25)
-                lip_pdu_decoder(opts, state, bits, 76U, src);
+                lip_pdu_decoder(opts, state, bits, 76U, &addr);
                 break;
-            default: nmea_iec_61162_1(opts, state, bits, src, 1); break;
+            default: nmea_iec_61162_1(opts, state, bits, sizeof(bits), &addr, 1); break;
         }
         DSD_SNPRINTF(label, sizeof(label), "%s leaves the other protocol's call row alone", gps[i].name);
         expect_true(label, state->event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');

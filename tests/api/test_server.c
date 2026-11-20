@@ -6,7 +6,8 @@
 /*
  * Loopback integration tests for the TCP JSON Lines API server: framing, session commands, authentication, the
  * connection limits and their reclamation, refusal of non-JSON (cross-protocol) input, peers that vanish mid-send,
- * the telemetry feed driven through a real frontend runtime, and the scan avoid summary and pages (issue #672).
+ * the telemetry feed driven through a real frontend runtime, the scan avoid summary and pages (issue #672), and the
+ * positions topic (issue #800).
  */
 
 #include <assert.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
@@ -909,6 +911,108 @@ test_feed(void) {
     dsd_socket_close(c);
     /* The observer is gone: publishing now reaches no feed. */
     dsd_telemetry_publish_both_and_redraw(opts, state);
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/* A verified report from made-up radio 4321 at 10.0 N, 20.0 E plus @p step * 1e-7 degrees of latitude. */
+static void
+admit_position(dsd_state* state, int32_t step) {
+    dsd_position_fix f;
+    dsd_position_fix_init(&f);
+    f.kind = DSD_POS_DMR_LRRP;
+    f.protocol = DSD_SYNC_DMR_BS_DATA_POS;
+    f.lat_e7 = 100000000 + step;
+    f.lon_e7 = 200000000;
+    f.source_id = 4321U;
+    assert(dsd_position_admit(NULL, state, &f, 1, 1, NULL) == DSD_POSITION_ADMITTED_KEPT);
+}
+
+/* Issue #800: the positions topic is named in the welcome, in "all", and subscribes and unsubscribes like the others;
+   a subscriber gets the reports kept after its subscription, each with its stream as a decimal string, and none of the
+   run's reports published before the server started, nor any kept before its own subscription. */
+static void
+test_positions_topic(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    initOpts(opts);
+    initState(state);
+    assert(dsd_position_feed_start(state) == 0);
+    char stream[64];
+    DSD_SNPRINTF(stream, sizeof stream,
+                 "\"pos_stream\":\"%llu\",\"pos_seq\":", (unsigned long long)dsd_position_feed_stream_id(state));
+    dsd_app_frontend_runtime_start(opts, state); /* the run's first publish */
+    admit_position(state, 0);                    /* kept and published before the server starts: never sent */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    const int port = start_server(NULL, 0, 0);
+
+    dsd_socket_t c = connect_port(port);
+    expect_line(c, "\"topics\":[\"call\",\"event\",\"system\",\"metrics\",\"quality\",\"status\",\"result\","
+                   "\"positions\"],");
+    send_str(c, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c, "{\"id\":1,\"ok\":true,\"topics\":[\"positions\"]}");
+    admit_position(state, 1);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U));
+    assert(strstr(g_line, "\"pos_seq\":2,") != NULL
+           && strstr(g_line, "\"lat\":10.0000001,\"lon\":20.0000000,") != NULL);
+    assert(strstr(g_line, "\"source_id\":4321,") != NULL);
+
+    send_str(c, "{\"id\":2,\"cmd\":\"unsubscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c, "{\"id\":2,\"ok\":true,\"topics\":[]}");
+    admit_position(state, 2);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(!await_line(c, "position", NULL, 300U));
+
+    send_str(c, "{\"id\":3,\"cmd\":\"subscribe\",\"topics\":[\"all\"]}\n");
+    expect_line(c, "{\"id\":3,\"ok\":true,\"topics\":[\"call\",\"event\",\"system\",\"metrics\",\"quality\","
+                   "\"status\",\"result\",\"positions\"]}");
+    admit_position(state, 3);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U));
+    assert(strstr(g_line, "\"pos_seq\":4,") != NULL); /* 3 was kept while unsubscribed: never sent */
+
+    /* No backlog when reports were kept after the last publish and before the subscription: 40 kept with nobody
+       listening, then a subscription, then a publish with nothing new sends none of them; the next report is the first
+       line the subscriber gets. */
+    send_str(c, "{\"id\":4,\"cmd\":\"unsubscribe\",\"topics\":[\"all\"]}\n");
+    assert(await_text(c, "{\"id\":4,\"ok\":true,\"topics\":[]}", 5000U)); /* after the lines "all" had queued */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    for (int32_t k = 4; k < 44; k++) {
+        admit_position(state, k); /* pos_seq 5..44 */
+    }
+    send_str(c, "{\"id\":5,\"cmd\":\"subscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c, "{\"id\":5,\"ok\":true,\"topics\":[\"positions\"]}");
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(!await_line(c, "position", NULL, 300U));
+    admit_position(state, 44); /* pos_seq 45 */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U));
+    assert(strstr(g_line, "\"pos_seq\":45,") != NULL);
+
+    /* A client that subscribes while another one listens gets none of the reports kept before its subscription, though
+       the same publish sends them to the other client; both get the next one. */
+    dsd_socket_t c2 = connect_port(port);
+    expect_line(c2, "\"positions\"],");
+    admit_position(state, 45); /* pos_seq 46: kept before c2 subscribes */
+    admit_position(state, 46); /* pos_seq 47 */
+    send_str(c2, "{\"id\":1,\"cmd\":\"subscribe\",\"topics\":[\"positions\"]}\n");
+    expect_line(c2, "{\"id\":1,\"ok\":true,\"topics\":[\"positions\"]}");
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":46,") != NULL);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":47,") != NULL);
+    assert(!await_line(c2, "position", NULL, 300U));
+    admit_position(state, 47); /* pos_seq 48 */
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+    assert(await_line(c, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":48,") != NULL);
+    assert(await_line(c2, "position", stream, 3000U) && strstr(g_line, "\"pos_seq\":48,") != NULL);
+
+    dsd_socket_close(c2);
+    dsd_socket_close(c);
+    dsd_api_stop();
     dsd_app_frontend_runtime_stop();
     freeState(state);
     free(state);
@@ -2179,6 +2283,7 @@ main(void) {
     test_vanishing_peer();
     test_authentication();
     test_feed();
+    test_positions_topic();
     test_rr_apply_outcome_in_status_feed();
     test_scan_avoids();
     test_scan_lists();

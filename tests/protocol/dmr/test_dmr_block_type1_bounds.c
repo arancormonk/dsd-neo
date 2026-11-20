@@ -15,6 +15,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
@@ -39,6 +40,8 @@ seed_incomplete_pdu(dsd_state* state, uint16_t byte_ctr) {
     state->currentslot = 0;
     state->data_byte_ctr[0] = byte_ctr;
     state->data_header_valid[0] = 1;
+    // The reception the header was heard on, which its blocks must share (issue #800).
+    dsd_position_origin_capture(NULL, state, &state->dmr_data_origin[0]);
     state->data_block_counter[0] = 1;
     state->data_header_blocks[0] = 9; /* != data_block_counter, so the PDU stays open */
     state->data_conf_data[0] = 0;
@@ -97,6 +100,8 @@ main(void) {
         state->data_block_counter[0] = 1;
         state->data_header_blocks[0] = 9;
         state->data_header_valid[0] = 1;
+        // The reception the header was heard on, which its blocks must share (issue #800).
+        dsd_position_origin_capture(NULL, state, &state->dmr_data_origin[0]);
         dmr_block_assembler(opts, state, block, 24, 0x06, 1);
         if (state->data_byte_ctr[0] > cap) {
             DSD_FPRINTF(stderr, "burst %d: byte ctr %u exceeds cap %u\n", i, (unsigned)state->data_byte_ctr[0],

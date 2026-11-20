@@ -2061,6 +2061,9 @@ Item {
 
         // Whether a press at the middle of @p item reaches it: inside every clipping ancestor (the Advanced panel clips
         // while its height animates open, the scroll view clips to its viewport), at the same place as at the last ask.
+        // Callers first wait for the editor's final layout (waitForEditorLayout()): while the Advanced panel grows, the
+        // rows below it (Save) are placed only on the next frame and still lie over its lower part, and the item can be
+        // inside its clip and still while a press there goes to Save.
         property var lastPointerPlace: null
         function settledForPointer(item) {
             for (var at = item.parent; at; at = at.parent) {
@@ -2082,12 +2085,13 @@ Item {
         // the focus and the keyboard's word was dropped.
         function tapComboWhileComposing(fieldName, typed, word, comboName) {
             edit(fieldName, typed);
+            waitForEditorLayout();
             var field = control(fieldName);
             var combo = control(comboName);
             var scroll = control("scanListScroll");
-            // Scrolled again at every look: while a panel above still animates
-            // open, the screen keeps the focused field in view as its content
-            // grows, which can move the combo back out of the viewport.
+            // Scrolled again at every look: the screen keeps the focused field
+            // in view as its content changes, which can move the combo back
+            // out of the viewport.
             lastPointerPlace = null;
             tryVerify(function () {
                 var top = Math.min(field.mapToItem(scroll.contentItem, 0, 0).y,
@@ -2164,6 +2168,7 @@ Item {
         function test_skip_silent_pointer_click() {
             edit("scanListName", "Pointer");
             control("scanAdvancedToggle").Accessible.pressAction();
+            waitForEditorLayout();
             var box = control("scanSkipSilent");
             box.forceActiveFocus();
             for (var want of [true, false]) {

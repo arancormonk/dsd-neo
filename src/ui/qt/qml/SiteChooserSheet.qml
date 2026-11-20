@@ -364,30 +364,20 @@ ModalSheet {
         notice = "";
         locationUpdated = false;
         if (locationId)
-            decoderHost.cancelLocationRequest(locationId);
-        locationId = radioReference.nextLocationRequestId();
-        decoderHost.requestSiteLocation(locationId);
+            locationRequests.cancel(locationId);
+        locationId = locationRequests.requestSite("siteChooser");
     }
     onVisibleChanged: {
         if (!visible)
             keyboardPlace = null;
         if (!visible && locationId) {
-            decoderHost.cancelLocationRequest(locationId);
+            locationRequests.cancel(locationId);
             locationId = 0;
         }
     }
     Component.onDestruction: {
         if (locationId)
-            decoderHost.cancelLocationRequest(locationId);
-    }
-    Connections {
-        target: radioReference
-        function onLocationRequestAllocated(requestId) {
-            if (sheet.locationId && sheet.locationId !== requestId) {
-                decoderHost.cancelLocationRequest(sheet.locationId);
-                sheet.locationId = 0;
-            }
-        }
+            locationRequests.cancel(locationId);
     }
     onDismissed: userAction()
     Connections {
@@ -404,23 +394,24 @@ ModalSheet {
             sheet.refresh();
         }
     }
+    // The one-shot broker answers only the request still pending; a newer one anywhere ends this one.
     Connections {
-        target: decoderHost
-        ignoreUnknownSignals: true
-        function onLocationResult(requestId, fixOk, lat, lon, accuracyM, fixAtMs, geocodeOk, postal, country, error) {
+        target: locationRequests
+        function onAnswered(requester, requestId, result) {
             if (!sheet.visible || requestId !== sheet.locationId || !sheet.locationId)
                 return;
             sheet.locationId = 0;
-            if (fixOk) {
-                prefs.setLocationFix(lat, lon, fixAtMs, accuracyM);
+            if (result.fixOk) {
+                prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
                 sheet.locationUpdated = prefs.lastFixAt > 0;
             }
             // Asked for: the rows take the order of now, also while GPS roaming holds it.
             sheet.takeOrder();
             sheet.notice = sheet.locationUpdated ? "" : (prefs.lastFixAt > 0 ? qsTr("Location unavailable. Distances still use your saved location. Try again or choose a site manually.") : qsTr("Location unavailable. Check location access in your device settings, then try again or choose a site manually."));
         }
-        // A permission prompt Android closed unanswered (#782): nothing failed, so the sheet just returns to idle.
-        function onLocationCancelled(requestId) {
+        // A permission prompt Android closed unanswered (#782), or a newer request elsewhere: nothing failed, so the
+        // sheet just returns to idle.
+        function onEnded(requester, requestId) {
             if (requestId === sheet.locationId && sheet.locationId)
                 sheet.locationId = 0;
         }

@@ -224,6 +224,54 @@ extern "C" {
      || (s) == DSD_SYNC_DPMR_FS1_NEG || (s) == DSD_SYNC_DPMR_FS2_NEG || (s) == DSD_SYNC_DPMR_FS3_NEG                   \
      || (s) == DSD_SYNC_DPMR_FS4_NEG || (s) == DSD_SYNC_TETRA_NDB_NEG || (s) == DSD_SYNC_TETRA_SB_NEG)
 
+/**
+ * @brief The protocol family of sync type @p s (issue #800): one value per system type, so both polarities and both
+ * phases or bursts of one system give one family. 1 P25, 2 DMR, 3 NXDN, 4 TETRA, 5 D-STAR, 6 M17, 7 EDACS and
+ * ProVoice; any other sync type is its own family, 0x100 + @p s. The position feed's tracks and the History merge both
+ * read it (dsd_position_protocol_family(), call_history_protocol_family()).
+ */
+static inline int
+dsd_sync_protocol_family(int s) {
+    if (DSD_SYNC_IS_P25(s)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_DMR(s)) {
+        return 2;
+    }
+    if (DSD_SYNC_IS_NXDN(s)) {
+        return 3;
+    }
+    if (DSD_SYNC_IS_TETRA(s)) {
+        return 4;
+    }
+    if (DSD_SYNC_IS_DSTAR(s)) {
+        return 5;
+    }
+    if (DSD_SYNC_IS_M17(s)) {
+        return 6;
+    }
+    if (DSD_SYNC_IS_EDACS(s)) {
+        return 7;
+    }
+    return 0x100 + s;
+}
+
+/**
+ * @brief The protocol class of sync type @p s (issue #800): the protocol family (dsd_sync_protocol_family()), except
+ * that P25 Phase 1 (0x1001) and Phase 2 (0x1002) are two classes. Two receptions of different classes are never one
+ * (dsd_position_same_reception()), and sender evidence never crosses classes (dsd_position_attribution_class()).
+ */
+static inline int
+dsd_sync_protocol_class(int s) {
+    if (DSD_SYNC_IS_P25P1(s)) {
+        return 0x1001;
+    }
+    if (DSD_SYNC_IS_P25P2(s)) {
+        return 0x1002;
+    }
+    return dsd_sync_protocol_family(s);
+}
+
 /* ============================================================================
  * Safe String Mapping Function
  *

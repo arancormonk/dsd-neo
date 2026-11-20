@@ -2481,7 +2481,8 @@ ui_history_render_single_slot_item(const Event_History* item, const ui_history_r
     if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, dsd_event_gps_detail_label(item->gps_s),
+                                      item->gps_s)) {
         return;
     }
     (void)ui_history_print_detail_line(ctx->history_stop_y, NULL, "DSD-neo: ", item->internal_str);
@@ -2513,7 +2514,8 @@ ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const 
     if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, dsd_event_gps_detail_label(item->gps_s),
+                                      item->gps_s)) {
         return;
     }
     (void)ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "DSD-neo: ", item->internal_str);
@@ -3100,6 +3102,18 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* The NXDN "IV:" field: the IV a CRC-verified VCALL_IV carried over the air while the working register still holds it
+   (dsd_state::nxdn_iv_on_air), or "none". Never the register a scrambled call loaded from the key and ran on, which it
+   may still hold when the cipher changes. */
+static void
+ui_print_nxdn_received_iv(const dsd_state* state) {
+    if (state->nxdn_iv_on_air != 0U) { /* an IV of all zero bits is still one received */
+        printw("IV: %016llX ", state->nxdn_payload_mi);
+    } else {
+        printw("IV: none ");
+    }
+}
+
 static void
 ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n|");
@@ -3121,7 +3135,10 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             attron(COLOR_PAIR(3));
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
-                printw("Seed: %04llX ", state->payload_miN);
+                /* The scrambler register: the key itself at each superframe's start, key stream after. */
+                char seed_text[16];
+                printw("Seed: %s ", dsd_secret_format_hex(seed_text, sizeof seed_text, opts->show_keys,
+                                                          state->nxdn_payload_mi, 4U, 0));
                 char key_text[16];
                 printw("Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));
@@ -3129,7 +3146,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x2:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            ui_print_nxdn_received_iv(state);
             attron(COLOR_PAIR(2));
             printw("DES1 ");
             if (state->R != 0) {
@@ -3141,7 +3158,7 @@ ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
             break;
         case 0x3:
             attron(COLOR_PAIR(1));
-            printw("IV: %016llX ", state->payload_miN);
+            ui_print_nxdn_received_iv(state);
             attron(COLOR_PAIR(2));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] == 1) {

@@ -39,7 +39,12 @@
  * is trimmed or the log cleared. B1: a row keeps its end, so a merged or updated span past the plausible cap reads
  * unknown and stays so (after a later update of an earlier fragment, a reload and a spill fold), a row past the cap
  * chains merges from its start, not its end (a clock-shifted span absorbs nothing), a row an older build stored ends
- * where its known duration says, and a row with no start stamp keeps its duration unknown through an update. */
+ * where its known duration says, and a row with no start stamp keeps its duration unknown through an update.
+ * Issue #800: a voice row keeps its GPS text and message (B2), a late enrichment re-reads it, and both survive a save,
+ * a reload and the spill with the structured position; a fragment's fix joins only its own radio's row; a merged row
+ * shows the fix of its newest fragment by run and rev (2.7); two callsign callers (B3), two textual destinations under
+ * one service (B4) and two conventional systems (B5) stay apart; a notice decoded again collapses only on the same
+ * fix. */
 
 #include <QByteArray>
 #include <QChar>
@@ -75,12 +80,14 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -95,7 +102,9 @@
 #include "json_store.h"
 
 #include "call_history_filter.h"
+#include "call_history_merge.h"
 #include "call_history_model.h"
+#include "call_history_payload.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -188,6 +197,10 @@ struct RingFixture {
         DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", tgt_str);
         DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", t_name);
         DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
+        // Every row the core commits was read under the reception's received identity epoch (issue #800): one epoch
+        // for the whole fixture, as a run with no system change has, unless a test moves it (with_epoch()).
+        item->rx_scope.rx_gen = 1U;
+        item->rx_scope.epoch_known = 1U;
         ring->push_seq++;
         ring->commit_rev++;
         ring->revision++;
@@ -2915,7 +2928,8 @@ fnv1a32(const char* text) {
 /* The core can change a committed row's site text in place and nothing else (a reacquisition merge's union taking the
  * text that names Capacity Max): the mask, channel and stamps stay. The seen entry's text digest is what tells the row
  * has advanced. It is compared with the fragment last read, not with the row shown: a fragment read back to the
- * standard text re-reads too, and the row keeps the text the union prefers. */
+ * standard text re-reads too, and the row, whose only fragment it is, follows its newest reading (issue #800: a
+ * fragment's part is its newest reading, whole). */
 void
 test_site_text_changed_in_place_reingests(void) {
     resetStorage();
@@ -2953,7 +2967,11 @@ test_site_text_changed_in_place_reingests(void) {
     ring.touchCommitted(0);
     model.refresh(ring.state);
     expect("a text changed back re-reads, as the fragment last read differs", changed.count() > 0);
-    expect("and the row keeps the text that names Capacity Max", model.count() == 1 && site_text(model, 0) == capmax);
+    expect(
+        "and the row follows the text its only fragment now reads",
+        model.count() == 1
+            && site_text(model, 0)
+                   == u8("DMR \xC2\xB7 TIII Large \xC2\xB7 Net 2 \xC2\xB7 Site 2 \xC2\xB7 SYS 2101 \xC2\xB7 LPCN 38"));
     changed.clear();
     ring.touchCommitted(0);
     model.refresh(ring.state);
@@ -3246,7 +3264,9 @@ test_record_for_uid(void) {
                 {"receivedTone", CallHistoryModel::ReceivedToneRole},
                 {"siteText", CallHistoryModel::SiteTextRole},
                 {"analog", CallHistoryModel::AnalogRole},
-                {"analogMode", CallHistoryModel::AnalogModeRole}};
+                {"analogMode", CallHistoryModel::AnalogModeRole},
+                {"position", CallHistoryModel::PositionRole},
+                {"gi", CallHistoryModel::GiRole}};
 
     expect("the map has one key per detail", record.size() == static_cast<int>(sizeof(keys) / sizeof(keys[0])));
     for (const auto& key : keys) {
@@ -3767,6 +3787,21 @@ class FakeRecordings : public dsd_qt::CallRecordingProvider {
             }
         }
         return false;
+    }
+
+    QList<QStringList>
+    recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override {
+        QList<QStringList> names;
+        for (const QStringList& fragments : fragmentsPerRow) {
+            QStringList row;
+            for (const QString& fragment : fragments) {
+                if (recorded.contains(fragment)) {
+                    row.append(fragment);
+                }
+            }
+            names.append(row);
+        }
+        return names;
     }
 };
 
@@ -5142,6 +5177,2538 @@ test_row_without_start_time_reads_unknown(void) {
                != QStringLiteral("TIME UNKNOWN"));
 }
 
+/* ---- Issue #800: texts, positions and raw identity (B2-B5, 2.7). Synthetic coordinates and identities only. ---- */
+
+/** Give a ring row GPS text and the admitted position it describes, as the core's position writers do. */
+Event_History*
+with_gps(Event_History* item, const char* text, int32_t lat_e7, int32_t lon_e7, uint64_t rev) {
+    DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", text);
+    item->pos.valid = 1U;
+    item->pos.lat_e7 = lat_e7;
+    item->pos.lon_e7 = lon_e7;
+    item->pos.err_m = 10U;
+    item->pos.flags = 0U;
+    item->pos.kind = DSD_POS_DMR_EMBEDDED;
+    item->pos.rev = rev;
+    item->pos.proc_instance = 0xC0FFEE00ULL;
+    return item;
+}
+
+/** Give a ring row the reception identity the core stamps (Event_History::rx_scope). */
+Event_History*
+with_rx(Event_History* item, uint8_t kind, uint32_t a, uint32_t b, int64_t freq_hz) {
+    item->rx_scope.scope.kind = kind;
+    item->rx_scope.scope.a = a;
+    item->rx_scope.scope.b = b;
+    item->rx_scope.identity_freq_hz = freq_hz;
+    item->rx_scope.resolved = 1U;
+    item->freq_hz = kind == DSD_POS_SCOPE_FEED_TUNED_FREQ ? static_cast<int64_t>(a) : freq_hz;
+    return item;
+}
+
+QString
+detail_of(const CallHistoryModel& model, int row) {
+    return model.data(model.index(row), CallHistoryModel::DetailRole).toString();
+}
+
+/** The stored row with talkgroup @p tg and source @p src. */
+QJsonObject
+stored_row_with(qulonglong tg, qulonglong src) {
+    for (const auto& value : dsd_qt::json_store_load_array("call_history.json")) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QLatin1String("tg")).toVariant().toULongLong() == tg
+            && row.value(QLatin1String("src")).toVariant().toULongLong() == src) {
+            return row;
+        }
+    }
+    return QJsonObject();
+}
+
+/** The stored rows and seen entries as the background tap's spill lines. */
+QByteArray
+stores_as_spill_lines(void) {
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonArray seen = dsd_qt::json_store_load_array("call_history_seen.json");
+    QByteArray bytes;
+    for (const auto& rowValue : rows) {
+        const QJsonObject row = rowValue.toObject();
+        const QString key = QStringLiteral("%1|%2|%3|%4|%5")
+                                .arg(row.value(QLatin1String("slot")).toInt())
+                                .arg(row.value(QLatin1String("seq")).toVariant().toULongLong())
+                                .arg(row.value(QLatin1String("when")).toVariant().toLongLong())
+                                .arg(row.value(QLatin1String("tg")).toVariant().toULongLong())
+                                .arg(row.value(QLatin1String("kind")).toInt());
+        QJsonObject line;
+        line.insert(QLatin1String("v"), 1);
+        line.insert(QLatin1String("key"), key);
+        for (const auto& seenValue : seen) {
+            QJsonObject entry = seenValue.toObject();
+            if (entry.value(QLatin1String("key")).toString() == key) {
+                entry.remove(QLatin1String("key"));
+                line.insert(QLatin1String("seen"), entry);
+            }
+        }
+        line.insert(QLatin1String("row"), row);
+        bytes += QJsonDocument(line).toJson(QJsonDocument::Compact) + '\n';
+    }
+    return bytes;
+}
+
+/** Write @p bytes as the spill the next model folds, beside whatever the stores hold. */
+void
+write_spill_beside_stores(const QByteArray& bytes) {
+    QFile spill(dsd_qt::json_store_path(QStringLiteral("call_history_spill.jsonl")));
+    expect("the spill is written", spill.open(QIODevice::WriteOnly) && spill.write(bytes) == bytes.size());
+}
+
+/** Rewrite the stored rows and seen entries as the background tap's spill lines, and remove both stores. */
+void
+stores_to_spill(void) {
+    const QByteArray bytes = stores_as_spill_lines();
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history.json")));
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("call_history_seen.json")));
+    write_spill_beside_stores(bytes);
+}
+
+/* B2: a voice row keeps its GPS text and text message (the terminal and the API show them), a notice with both keeps
+ * both, and a late enrichment of a committed call (GPS, then a text-only GPS line, then a message) is read again in
+ * place. */
+void
+test_voice_row_keeps_gps_and_message(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754700000;
+    Event_History* call = ring.commit(0, 80001U, 8001U, when, when + 5);
+    with_gps(call, "GPS: 22.50000 45.00000", 225000000, 450000000, 3U);
+    DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Meet at the north gate");
+    Event_History* notice = ring.commitNotice(0, when + 30, "2026-11-17 12:00:30 LRRP position");
+    with_gps(notice, "LRRP: 10.00000 20.00000", 100000000, 200000000, 4U);
+    DSD_SNPRINTF(notice->text_message, sizeof(notice->text_message), "%s", "Status 7");
+    model.refresh(ring.state);
+    expect("B2: the call and the notice land", model.count() == 2);
+    const int voice = row_with_tg(model, 80001U);
+    expect("B2: a voice row shows its message and its GPS text",
+           voice >= 0 && detail_of(model, voice) == u8("Meet at the north gate \xC2\xB7 GPS: 22.50000 45.00000"));
+    const int notice_row = voice == 0 ? 1 : 0;
+    expect("B2: a notice with both keeps both, the GPS text included",
+           detail_of(model, notice_row) == u8("Status 7 \xC2\xB7 LRRP: 10.00000 20.00000"));
+
+    // A committed call the core enriches in place afterwards: read again, as the same row.
+    Event_History* late = ring.commit(0, 80002U, 8002U, when + 100, when + 104);
+    model.refresh(ring.state);
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    with_gps(late, "GPS: 22.60000 45.10000", 226000000, 451000000, 5U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    const int lateRow = row_with_tg(model, 80002U);
+    expect("B2: a late GPS fix re-reads the committed call in place",
+           model.count() == 3 && lateRow >= 0 && detail_of(model, lateRow) == QStringLiteral("GPS: 22.60000 45.10000"));
+    expect("B2: the re-read announces the detail",
+           !changed.isEmpty()
+               && qvariant_cast<QVector<int>>(changed.last().at(2)).contains(CallHistoryModel::DetailRole));
+    // The core's text-only GPS write: new text, the position dropped. The same fragment takes what it says now.
+    DSD_SNPRINTF(late->gps_s, sizeof(late->gps_s), "%s", "GPS: Protected");
+    late->pos.valid = 0U;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("B2: a text-only GPS update of the same call replaces its text",
+           detail_of(model, row_with_tg(model, 80002U)) == QStringLiteral("GPS: Protected"));
+    DSD_SNPRINTF(late->text_message, sizeof(late->text_message), "%s", "On my way");
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("B2: a late message joins the GPS text",
+           model.count() == 3
+               && detail_of(model, row_with_tg(model, 80002U)) == u8("On my way \xC2\xB7 GPS: Protected"));
+}
+
+/* Issue #800, P7: the map's "Show on map" pin reads a row's saved fix through the position role and recordFor(): its
+ * place, error, states and format, and nothing for a row without one. */
+void
+test_position_role_feeds_the_map_pin(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754701000;
+    Event_History* call = ring.commit(0, 80051U, 8051U, when, when + 5);
+    with_gps(call, "GPS: 22.50000 45.00000", 225000000, -450000000, 3U);
+    call->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_VALIDITY_UNKNOWN | DSD_POS_FLAG_FORMAT_PROVISIONAL
+                                            | DSD_POS_FLAG_ERR_LOWER_BOUND | DSD_POS_FLAG_EMERGENCY);
+    call->pos.rx_time_s = when + 2;
+    ring.commit(0, 80052U, 8052U, when + 20, when + 25);
+    Event_History* group = ring.commit(0, 80053U, 8053U, when + 30, when + 35);
+    with_gps(group, "GPS: 22.60000 45.10000", 226000000, -451000000, 3U);
+    group->pos.flags = static_cast<uint16_t>(DSD_POS_FLAG_TARGET_GROUP);
+    model.refresh(ring.state);
+    const int withFix = row_with_tg(model, 80051U);
+    const int without = row_with_tg(model, 80052U);
+    const int toGroup = row_with_tg(model, 80053U);
+    expect("P7: both rows land", withFix >= 0 && without >= 0);
+    const QVariantMap pos = model.data(model.index(withFix), CallHistoryModel::PositionRole).toMap();
+    expect("P7: the role is named for QML", model.roleNames().value(CallHistoryModel::PositionRole) == "position");
+    expect("P7: the pin's place in degrees",
+           std::fabs(pos.value(QStringLiteral("latitude")).toDouble() - 22.5) < 1e-9
+               && std::fabs(pos.value(QStringLiteral("longitude")).toDouble() + 45.0) < 1e-9);
+    expect("P7: the error and that it is a lower bound", pos.value(QStringLiteral("errorM")).toUInt() == 10U
+                                                             && pos.value(QStringLiteral("errorLowerBound")).toBool());
+    expect("P7: the states in their own keys",
+           pos.value(QStringLiteral("validityUnknown")).toBool() && pos.value(QStringLiteral("provisional")).toBool()
+               && pos.value(QStringLiteral("emergency")).toBool() && !pos.value(QStringLiteral("anonymous")).toBool()
+               && !pos.value(QStringLiteral("weakCheck")).toBool());
+    expect("P7: the format in words",
+           pos.value(QStringLiteral("kindText")).toString() == QStringLiteral("DMR embedded GPS"));
+    expect("P7: when it was received", pos.value(QStringLiteral("receivedTime")).toLongLong() == when + 2);
+    // Review r2: the row's target is its call's, a talkgroup or a radio; the pin says "Talkgroup" only on the report's
+    // own word.
+    expect("r2: a report that names no talkgroup is not one",
+           pos.contains(QStringLiteral("targetGroup")) && !pos.value(QStringLiteral("targetGroup")).toBool());
+    expect("r2: a report to a talkgroup says so",
+           toGroup >= 0
+               && model.data(model.index(toGroup), CallHistoryModel::PositionRole)
+                      .toMap()
+                      .value(QStringLiteral("targetGroup"))
+                      .toBool());
+    expect("P7: a row without a fix has none",
+           model.data(model.index(without), CallHistoryModel::PositionRole).toMap().isEmpty());
+    const QString uid = model.data(model.index(withFix), CallHistoryModel::UidRole).toString();
+    expect("P7: the detail sheet's record carries it",
+           model.recordFor(uid).value(QStringLiteral("position")).toMap() == pos);
+}
+
+/* Review r2 (issue #800): who a call was to (Event_History::gi: 0 a talkgroup, 1 a radio, -1 not known) is the row's:
+ * a role and a record key, the name a row with no other gets, part of the call's identity (a group call and a private
+ * call to the same number from the same radio are two rows, a fragment that only learns the kind folds in), and kept
+ * across a save and a reload (only when known: a row an older build stored reads -1). */
+void
+test_call_kind_is_kept_and_parts_calls(void) {
+    const time_t when = 1754702000;
+    {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 42U, 7U, when, when + 3)->gi = 1;
+        ring.commit(1, 43U, 8U, when + 20, when + 23)->gi = -1;
+        ring.commit(0, 44U, 9U, when + 40, when + 43)->gi = 0;
+        model.refresh(ring.state);
+        const int priv = row_with_tg(model, 42U), unknown = row_with_tg(model, 43U), group = row_with_tg(model, 44U);
+        expect("r2: three rows", priv >= 0 && unknown >= 0 && group >= 0);
+        expect("r2: the role names the kind",
+               model.roleNames().value(CallHistoryModel::GiRole) == "gi"
+                   && model.data(model.index(priv), CallHistoryModel::GiRole).toInt() == 1
+                   && model.data(model.index(unknown), CallHistoryModel::GiRole).toInt() == -1
+                   && model.data(model.index(group), CallHistoryModel::GiRole).toInt() == 0);
+        expect("r2: a private call is named for its radio",
+               model.data(model.index(priv), CallHistoryModel::NameRole).toString() == QStringLiteral("Radio 42"));
+        expect("r2: not knowing the kind, for the number",
+               model.data(model.index(unknown), CallHistoryModel::NameRole).toString() == QStringLiteral("Call to 43"));
+        expect("r2: a group call for its talkgroup",
+               model.data(model.index(group), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 44"));
+        const QString uid = model.data(model.index(priv), CallHistoryModel::UidRole).toString();
+        expect("r2: the record carries it", model.recordFor(uid).value(QStringLiteral("gi")).toInt() == 1);
+        expect("r2: the export row carries it",
+               model.exportRows({priv, group}).value(0).gi == 1 && model.exportRows({priv, group}).value(1).gi == 0);
+        // Re-review r1: a private call's radio is never a talkgroup heard; not knowing stays as before.
+        const QList<uint32_t> heard = model.heardTalkgroups(0);
+        expect("r1: heard talkgroups leave the radio out",
+               !heard.contains(42U) && heard.contains(43U) && heard.contains(44U));
+    }
+    {
+        const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        expect("r2: a known kind is stored, an unknown one is not",
+               stored_row_with_tg(rows, 42U).value(QLatin1String("gi")).toInt(-9) == 1
+                   && stored_row_with_tg(rows, 44U).value(QLatin1String("gi")).toInt(-9) == 0
+                   && !stored_row_with_tg(rows, 43U).contains(QLatin1String("gi")));
+        RingFixture ring;
+        CallHistoryModel reloaded;
+        expect("r2: a reload keeps it",
+               reloaded.data(reloaded.index(row_with_tg(reloaded, 42U)), CallHistoryModel::GiRole).toInt() == 1
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 44U)), CallHistoryModel::GiRole).toInt() == 0
+                   && reloaded.data(reloaded.index(row_with_tg(reloaded, 43U)), CallHistoryModel::GiRole).toInt()
+                          == -1);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 50U, 9U, when, when + 3)->gi = 0;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 50U, 9U, when + 5, when + 8)->gi = 1;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a group call and a private call to one number are two rows (incremental)"
+                           : "r2: a group call and a private call to one number are two rows (batched)",
+               model.count() == 2);
+    }
+    for (int incremental = 0; incremental < 2; incremental++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 51U, 9U, when, when + 3)->gi = -1;
+        if (incremental) {
+            model.refresh(ring.state);
+        }
+        ring.commit(0, 51U, 9U, when + 5, when + 8)->gi = 0;
+        model.refresh(ring.state);
+        expect(incremental ? "r2: a fragment that learns the kind folds in (incremental)"
+                           : "r2: a fragment that learns the kind folds in (batched)",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::GiRole).toInt() == 0
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                          == QStringLiteral("Talkgroup 51"));
+    }
+}
+
+/* B2: the texts and the structured position survive a save, a reload and the spill, and a reloaded or spilled seen
+ * entry knows them, so the ring row reads as no update. A stored position no report could hold loads as none. */
+void
+test_texts_and_position_survive_save_reload_and_spill(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754701000;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80101U, 8101U, when, when + 4);
+        with_gps(call, "GPS: -22.50000 -45.00000", -225000000, -450000000, 11U);
+        DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Copy");
+        model.refresh(ring.state);
+        expect("B2 store: the call lands", model.count() == 1);
+    } // destructor flushes the stores
+    const QJsonObject stored = stored_row_with(80101U, 8101U);
+    const QJsonObject pos = stored.value(QLatin1String("pos")).toObject();
+    expect("B2 store: the texts are stored apart",
+           stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: -22.50000 -45.00000")
+               && stored.value(QLatin1String("msg")).toString() == QStringLiteral("Copy")
+               && !stored.contains(QLatin1String("detail")));
+    expect("B2 store: the position is stored with its rev and run",
+           pos.value(QLatin1String("lat")).toInt() == -225000000
+               && pos.value(QLatin1String("lon")).toInt() == -450000000
+               && pos.value(QLatin1String("rev")).toString() == QStringLiteral("b")
+               && stored.value(QLatin1String("gpsOrd")).toInt() > 0);
+    const QString expected = u8("Copy \xC2\xB7 GPS: -22.50000 -45.00000");
+    {
+        CallHistoryModel reloaded;
+        expect("B2 store: the reload shows both", reloaded.count() == 1 && detail_of(reloaded, 0) == expected);
+        QSignalSpy changed(&reloaded, &QAbstractItemModel::dataChanged);
+        reloaded.refresh(ring.state);
+        expect("B2 store: the reloaded seen entry knows the texts and the fix", changed.isEmpty());
+    }
+    stores_to_spill();
+    {
+        CallHistoryModel spilled;
+        expect("B2 spill: the spilled row shows both", spilled.count() == 1 && detail_of(spilled, 0) == expected);
+        QSignalSpy changed(&spilled, &QAbstractItemModel::dataChanged);
+        spilled.refresh(ring.state);
+        expect("B2 spill: the spilled seen entry knows them too", changed.isEmpty() && spilled.count() == 1);
+    }
+    // A hand-edited position no report could hold (latitude past 90 degrees) loads as none; the text stays.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    QJsonObject bad = row.value(QLatin1String("pos")).toObject();
+    bad.insert(QLatin1String("lat"), 900000001);
+    row.insert(QLatin1String("pos"), bad);
+    rows.replace(0, row);
+    expect("B2 store: the edited store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel edited;
+        edited.startSaveForTest();
+        edited.waitForSaveForTest();
+    }
+    const QJsonObject resaved = stored_row_with(80101U, 8101U);
+    expect("B2 store: an impossible stored position loads as none",
+           !resaved.contains(QLatin1String("pos")) && resaved.value(QLatin1String("gps")).toString().size() > 0);
+}
+
+/* 2.7: a spill line kept after a failed read replays an older revision of a fragment whose newer revision the save
+ * already holds (the same provenance and run): the newer revision stays, its text and its position together. */
+void
+test_spill_replay_keeps_newer_revision(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754702000;
+    QByteArray older;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80201U, 8201U, when, when + 4);
+        with_gps(call, "GPS: 22.50000 45.00000", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        with_gps(call, "GPS: 22.60000 45.10000", 226000000, 451000000, 9U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 replay: the newer revision reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.60000 45.10000"));
+    } // destructor flushes the stores
+    expect("2.7 replay: the save holds revision 9",
+           stored_row_with(80201U, 8201U).value(QLatin1String("pos")).toObject().value(QLatin1String("rev")).toString()
+               == QStringLiteral("9"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("2.7 replay: the older spill line does not replace the newer revision",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: 22.60000 45.10000"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    const QJsonObject pos = stored_row_with(80201U, 8201U).value(QLatin1String("pos")).toObject();
+    expect("2.7 replay: revision 9 stays stored", pos.value(QLatin1String("rev")).toString() == QStringLiteral("9")
+                                                      && pos.value(QLatin1String("lat")).toInt() == 226000000);
+}
+
+/* 2.7: a spill line from before a fragment had a position (text-only GPS) never replaces the saved position the
+ * fragment gained since, but a later text-only update of the same fragment (the core's text-only write) still applies:
+ * readings of one fragment are ordered by the ring's commit_rev, with or without a position. */
+void
+test_spill_text_only_replay_keeps_saved_position(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754703000;
+    QByteArray older;
+    Event_History* call = nullptr;
+    {
+        CallHistoryModel model;
+        call = ring.commit(0, 80301U, 8301U, when, when + 4);
+        DSD_SNPRINTF(call->gps_s, sizeof(call->gps_s), "%s", "GPS: Protected");
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        with_gps(call, "GPS: 22.70000 45.20000", 227000000, 452000000, 9U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 text replay: the fix reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.70000 45.20000"));
+    } // destructor flushes the stores
+    expect("2.7 text replay: the spill line is text-only", !older.contains("\"pos\"") && older.contains("Protected"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("2.7 text replay: the older text-only line does not replace the saved fix",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: 22.70000 45.20000"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+        const QJsonObject pos = stored_row_with(80301U, 8301U).value(QLatin1String("pos")).toObject();
+        expect("2.7 text replay: revision 9 stays stored",
+               pos.value(QLatin1String("rev")).toString() == QStringLiteral("9"));
+        // The core's later text-only write: the same fragment's newer reading applies.
+        DSD_SNPRINTF(call->gps_s, sizeof(call->gps_s), "%s", "GPS: Hidden");
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        reloaded.refresh(ring.state);
+        expect("2.7 text replay: a later text-only update applies",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: Hidden"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    expect("2.7 text replay: the later text-only update is stored without the fix",
+           !stored_row_with(80301U, 8301U).contains(QLatin1String("pos"))
+               && stored_row_with(80301U, 8301U).value(QLatin1String("gps")).toString()
+                      == QStringLiteral("GPS: Hidden"));
+}
+
+/* 2.7: a merged row keeps each fragment's GPS unit. When the fragment whose fix it shows loses that fix (the core's
+ * later text-only write, or a write that clears its GPS text and position both), the row shows the best remaining
+ * fragment's fix, whatever order the readings come in, and also after a reload. A fragment whose GPS the core cleared
+ * keeps no unit on the row: its fix is neither shown nor saved. */
+void
+test_lost_fix_gives_way_to_remaining_fragment(void) {
+    const time_t when = 1754703500;
+    for (const char* lost : {"GPS: Protected", ""}) {
+        const bool cleared = lost[0] == '\0';
+        for (int order = 0; order < 3; order++) {
+            resetStorage();
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* a =
+                with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+            (void)a;
+            Event_History* b =
+                with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
+            a = &ring.rings[0].Event_History_Items[2];
+            b = &ring.rings[0].Event_History_Items[1];
+            if (order == 1) {
+                // Fragment A is read only after B lost its fix.
+                Event_History saved = *a;
+                DSD_MEMSET(a, 0, sizeof(*a));
+                model.refresh(ring.state);
+                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
+                b->pos.valid = 0U;
+                ring.touchCommitted(0);
+                model.refresh(ring.state);
+                *a = saved;
+                ring.touchCommitted(0);
+                model.refresh(ring.state);
+            } else {
+                model.refresh(ring.state);
+                expect("2.7 lost fix: the higher rev shows first",
+                       model.count() == 1 && detail_of(model, 0) == "GPS: B");
+                if (order == 2) {
+                    model.startSaveForTest();
+                    model.waitForSaveForTest();
+                    CallHistoryModel reloaded;
+                    DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
+                    b->pos.valid = 0U;
+                    ring.touchCommitted(0);
+                    reloaded.refresh(ring.state);
+                    expect("2.7 lost fix: after a reload the remaining fix shows",
+                           reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
+                    reloaded.startSaveForTest();
+                    reloaded.waitForSaveForTest();
+                    const QJsonObject stored = stored_row_with(80401U, 8401U);
+                    expect("2.7 lost fix: after a reload the cleared fragment's fix is not saved",
+                           stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
+                               && stored.value(QLatin1String("gpsAlt")).toArray().size() == (cleared ? 0 : 1));
+                    continue;
+                }
+                DSD_SNPRINTF(b->gps_s, sizeof(b->gps_s), "%s", lost);
+                b->pos.valid = 0U;
+                ring.touchCommitted(0);
+                model.refresh(ring.state);
+            }
+            expect(order == 0 ? "2.7 lost fix: the remaining fragment's fix shows"
+                              : "2.7 lost fix: the same row when the text-only reading comes first",
+                   model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: A"));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+            const QJsonObject stored = stored_row_with(80401U, 8401U);
+            expect(cleared ? "2.7 lost fix: the cleared fragment's fix is not saved"
+                           : "2.7 lost fix: the shown fix and the other fragment's text are stored",
+                   stored.value(QLatin1String("gps")).toString() == QStringLiteral("GPS: A")
+                       && stored.value(QLatin1String("gpsAlt")).toArray().size() == (cleared ? 0 : 1));
+            if (cleared) {
+                CallHistoryModel reloaded;
+                expect("2.7 lost fix: the cleared fragment's fix stays gone after a reload",
+                       reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("GPS: A"));
+            }
+        }
+    }
+}
+
+/* 2.7: one fragment's row whose GPS text and position the core clears (the report withdrawn) shows and saves no fix,
+ * live and after a reload. */
+void
+test_cleared_fix_leaves_single_fragment_row(void) {
+    const time_t when = 1754703700;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* call =
+            with_gps(ring.commit(0, 80411U, 8411U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        expect("2.7 cleared fix: the fix shows first", model.count() == 1 && detail_of(model, 0) == "GPS: A");
+        call->gps_s[0] = '\0';
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.7 cleared fix: the row shows no fix", model.count() == 1 && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    const QJsonObject stored = stored_row_with(80411U, 8411U);
+    expect("2.7 cleared fix: no fix is saved", !stored.contains(QLatin1String("gps"))
+                                                   && !stored.contains(QLatin1String("pos"))
+                                                   && !stored.contains(QLatin1String("gpsAlt")));
+    CallHistoryModel reloaded;
+    expect("2.7 cleared fix: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* Issue #800, B2: a notice an older build stored kept one detail, the text message when there was one, else the GPS
+ * text, and named an unsummarised notice by it. Re-delivered from a fresh ring after an upgrade (a replay), the same
+ * delivery now carries its message and its GPS text apart: it is matched against the field that build chose, so it
+ * joins the stored row and gives it its parts rather than logging a second row. A delivery whose message differs is
+ * another one. Rows of this build still compare in full. */
+void
+test_repeated_legacy_notice_matches_its_detail(void) {
+    resetStorage();
+    const time_t when = kCaptureStart + 90;
+    const char* sentence = "$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C";
+    const auto deliver = [&](RingFixture& ring, int slot, time_t at, const char* summary, const char* message) {
+        Event_History* item = ring.commitNotice(slot, at, summary);
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", message);
+        return with_gps(item, "GPS: 22.50000, 45.00000", 225000000, 450000000, 3U);
+    };
+    {
+        CallHistoryModel model;
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: two notices are logged", model.count() == 2);
+    } // destructor flushes the stores
+    // Rewritten as the older build stored them: one detail, the message, and an unsummarised notice named by it.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    for (qsizetype i = 0; i < rows.size(); i++) {
+        QJsonObject legacy = rows.at(i).toObject();
+        for (const QString& key : legacy.keys()) {
+            if (key.startsWith(QLatin1String("msg")) || key.startsWith(QLatin1String("gps"))
+                || key == QLatin1String("pos") || key == QLatin1String("fr") || key == QLatin1String("frv")) {
+                legacy.remove(key);
+            }
+        }
+        legacy.insert(QLatin1String("detail"), QString::fromLatin1(sentence));
+        if (legacy.value(QLatin1String("name")).toString() != QLatin1String("NMEA from 44")) {
+            legacy.insert(QLatin1String("name"), QString::fromLatin1(sentence));
+        }
+        rows.replace(i, legacy);
+    }
+    expect("legacy notice: the older store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel model;
+        expect("legacy notice: the stored rows show their one detail",
+               model.count() == 2 && detail_of(model, 0) == QLatin1String(sentence)
+                   && detail_of(model, 1) == QLatin1String(sentence));
+        model.beginSession();
+        RingFixture ring;
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(ring, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(ring.state);
+        expect("legacy notice: the deliveries heard again log no new row", model.count() == 2);
+        expect("legacy notice: the stored rows gain their message and GPS text",
+               model.count() == 2
+                   && detail_of(model, 0)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000")
+                   && detail_of(model, 1)
+                          == QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000"));
+        // Another message at the same stamp is another delivery.
+        deliver(ring, 1, when, "2010-01-01 00:01:30 NMEA from 44", "Another message");
+        model.refresh(ring.state);
+        expect("legacy notice: a delivery with another message is another row", model.count() == 3);
+        // The migrated rows carry the name this build gives the deliveries, so a second replay, with neither row legacy
+        // any more, still finds them.
+        const QString line = QString::fromLatin1(sentence) + QStringLiteral(" \u00B7 GPS: 22.50000, 45.00000");
+        QStringList names;
+        for (int i = 0; i < model.count(); i++) {
+            names.append(model.data(model.index(i), CallHistoryModel::NameRole).toString());
+        }
+        expect("legacy notice: the unsummarised notice is named by its whole detail line now",
+               names.contains(line) && names.contains(QStringLiteral("NMEA from 44")));
+        RingFixture again;
+        deliver(again, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+        deliver(again, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+        model.refresh(again.state);
+        expect("legacy notice: a second replay logs no new row", model.count() == 3);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    reloaded.beginSession();
+    RingFixture third;
+    deliver(third, 1, when, "2010-01-01 00:01:30 NMEA from 44", sentence);
+    deliver(third, 1, when + 5, "2010-01-01 00:01:35 ", sentence);
+    reloaded.refresh(third.state);
+    expect("legacy notice: a replay after a reload logs no new row", reloaded.count() == 3);
+}
+
+/* Issue #800, B5: on the single-slot DMR decoder a fragment whose over-the-air slot was still pending merges into a
+ * slot-1 call. When a later reading of it proves slot 2, that update (found by its fragment, never merged again) is
+ * held to the receive-service rule the merge applies: it is another service's, so its part and its fix are taken back
+ * and the slot-1 row shows none of it, live and after a reload. */
+void
+test_update_proving_other_slot_is_taken_back(void) {
+    const time_t when = kCaptureStart + 450;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* slot1 = ring.commit(0, 1101, 2101, when, when + 4, "", "", "Base channel");
+        slot1->receive_identity = {7, DSD_RECEIVE_DCC, 1, 1, 0};
+        DSD_SNPRINTF(slot1->service_label, sizeof slot1->service_label, "%s", "Dispatch");
+        model.refresh(ring.state);
+        Event_History* pending = with_gps(ring.commit(0, 1101, 2101, when + 5, when + 9, "", "", "Base channel"),
+                                          "GPS: P", 225000000, 450000000, 4U);
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 0, 1};
+        model.refresh(ring.state);
+        expect("slot proof: the pending-slot fragment joins the slot-1 call",
+               model.count() == 1 && detail_of(model, 0) == "GPS: P");
+        pending->receive_identity = {7, DSD_RECEIVE_DCC, 1, 2, 0};
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("slot proof: the fragment proven on slot 2 gives the slot-1 row nothing",
+               model.count() == 1 && detail_of(model, 0).isEmpty()
+                   && model.data(model.index(0), CallHistoryModel::ServiceNameRole) == "Dispatch");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("slot proof: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* Issue #800: the core fills a committed call's unknown target in place when a reacquired segment names it
+ * (watchdog_event_merge_identity_fields()), without moving the row's push stamp. The reading is found by its fragment,
+ * and the row takes the numeric target with it, as it takes the fix: a scan-channel DMR call that learns talkgroup 100
+ * shows it (TgRole, notified) beside its fix, and keeps both after a reload, whether the learning fragment is the row's
+ * only one or one of two. */
+void
+test_fragment_update_learns_target(void) {
+    const time_t when = kCaptureStart + 470;
+    for (int fragments = 1; fragments <= 2; fragments++) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            if (fragments == 2) {
+                ring.commit(0, 0U, 3001U, when - 6, when - 2, "", "", "Scan A");
+                model.refresh(ring.state);
+            }
+            Event_History* item = ring.commit(0, 0U, 3001U, when, when + 4, "", "", "Scan A");
+            model.refresh(ring.state);
+            expect("target: the call is one row with no target",
+                   model.count() == 1 && model.data(model.index(0), CallHistoryModel::TgRole).toULongLong() == 0U);
+            QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+            item->target_id = 100U;
+            with_gps(item, "GPS: learned", 225000000, 450000000, 3U);
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect("target: the row shows the target its fragment learned, beside the fix",
+                   model.count() == 1 && model.data(model.index(0), CallHistoryModel::TgRole).toULongLong() == 100U
+                       && detail_of(model, 0) == QStringLiteral("GPS: learned"));
+            expect("target: the learned target is notified", data_changed_with(changed, {CallHistoryModel::TgRole}));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        CallHistoryModel reloaded;
+        expect("target: the learned target and the fix after a reload",
+               reloaded.count() == 1 && reloaded.data(reloaded.index(0), CallHistoryModel::TgRole).toULongLong() == 100U
+                   && detail_of(reloaded, 0) == QStringLiteral("GPS: learned"));
+    }
+}
+
+/* Issue #800: a long call folds many short fragments, each into a row holding all the earlier ones. A fold looks every
+ * fragment of the row up among its parts; done by a scan per fragment that is N^2 for the row of N, N^3 over the call,
+ * and the UI thread stalls. The lookups read a bounded number of parts per part the row holds, per fold. */
+void
+test_long_call_fold_lookups_stay_linear(void) {
+    const time_t when = kCaptureStart + 900;
+    const qint64 fragments = 200;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    (void)CallHistoryModel::takePartLookupStepsForTest();
+    for (qint64 i = 0; i < fragments; i++) {
+        ring.commit(0, 1201, 2201, when + 2 * i, when + 2 * i + 1);
+        model.refresh(ring.state);
+    }
+    const qint64 steps = CallHistoryModel::takePartLookupStepsForTest();
+    expect("long call: one row holds every fragment", model.count() == 1);
+    // A fold of a row of n parts reads at most ten per part: 10 * (1 + 2 + ... + fragments) over the call.
+    expect("long call: the part lookups stay linear per fold", steps <= 10 * fragments * (fragments + 1) / 2);
+    // Both recording roles ask which fragments' recordings are the row's, on the GUI thread, at every delegate read:
+    // its parts are read once per ask, not once per fragment.
+    FakeRecordings recordings;
+    model.setRecordingProvider(&recordings);
+    (void)model.data(model.index(0), CallHistoryModel::RecordingsRole);
+    (void)model.data(model.index(0), CallHistoryModel::HasRecordingRole);
+    const qint64 roleSteps = CallHistoryModel::takePartLookupStepsForTest();
+    expect("long call: the recording roles read each part once", roleSteps > 0 && roleSteps <= 2 * fragments);
+    model.setRecordingProvider(nullptr);
+}
+
+/* 2.7: a committed fragment with no start reads its end as its start; the core can fill the start in later
+ * (watchdog_event_merge_stamps()) or move the end, so the same fragment (ring, slot and push stamp) is read with another
+ * start. That reading still replaces and withdraws its own GPS unit: a fragment is known by its ring identity, never by
+ * its stamps, so an obsolete fix neither stays beside the new one nor outlives a reading that clears it, live and after
+ * a reload. */
+void
+test_restamped_fragment_withdraws_its_fix(void) {
+    const time_t when = 1754703800;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* call = with_gps(ring.commit(0, 80421U, 8421U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+        model.refresh(ring.state);
+        expect("restamped: the fix shows first", model.count() == 1 && detail_of(model, 0) == "GPS: A");
+        // The start is filled in and the report replaced: the row shows the new fix only, never the old one beside it.
+        call->event_start_time = when;
+        with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: the new reading replaces the fragment's fix",
+               model.count() == 1 && detail_of(model, 0) == "GPS: B");
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        expect("restamped: the replaced fix is not kept beside the new one",
+               !stored_row_with(80421U, 8421U).contains(QLatin1String("gpsAlt")));
+        // The end moves and the core clears the report: the fragment's fix goes.
+        call->event_time = when + 9;
+        call->gps_s[0] = '\0';
+        call->pos.valid = 0U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("restamped: a reading that clears the fix withdraws it",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    const QJsonObject stored = stored_row_with(80421U, 8421U);
+    expect("restamped: no fix is saved", !stored.contains(QLatin1String("gps"))
+                                             && !stored.contains(QLatin1String("pos"))
+                                             && !stored.contains(QLatin1String("gpsAlt")));
+    CallHistoryModel reloaded;
+    expect("restamped: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
+/* 2.7: a fragment read again with another start is still the fragment its row holds, found by its ring identity
+ * however far down the log the row sits: no second row for it, however far the merge search reaches. */
+void
+test_restamped_fragment_found_by_identity(void) {
+    const time_t when = 1754704000;
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* call = with_gps(ring.commit(0, 80431U, 8431U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+    model.refresh(ring.state);
+    ring.commitBatch(0, 40, 81000U, 9100U, when + 100);
+    model.refresh(ring.state);
+    expect("restamped far: 41 rows", model.count() == 41);
+    call = &ring.rings[0].Event_History_Items[41];
+    expect("restamped far: the ring row is the fragment", call->target_id == 80431U && call->source_id == 8431U);
+    call->event_start_time = when;
+    with_gps(call, "GPS: B", 226000000, 451000000, 6U);
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("restamped far: no second row for the fragment", model.count() == 41);
+    expect("restamped far: its row reads the new fix", detail_of(model, 40) == "GPS: B");
+}
+
+/* B2: a spill line kept after a failed read replays an older reading of a fragment whose newer reading the save
+ * already holds (the same fragment of the same run): nothing of the older reading comes back, neither its message nor
+ * its source label (an alias the core learned in place since), as no older GPS reading does. */
+void
+test_spill_replay_keeps_newer_message(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754703600;
+    QByteArray older;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80501U, 8501U, when, when + 4);
+        DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Earlier");
+        DSD_SNPRINTF(call->s_name, sizeof(call->s_name), "%s", "Radio 8501");
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        older = stores_as_spill_lines();
+        DSD_SNPRINTF(call->text_message, sizeof(call->text_message), "%s", "Updated");
+        DSD_SNPRINTF(call->s_name, sizeof(call->s_name), "%s", "Alias 8501");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("B2 replay: the newer reading reads in place",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Updated")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias 8501"));
+    } // destructor flushes the stores
+    expect("B2 replay: the spill line holds the earlier reading",
+           older.contains("Earlier") && older.contains("Radio 8501"));
+    write_spill_beside_stores(older);
+    {
+        CallHistoryModel reloaded;
+        expect("B2 replay: the older spill line does not bring the earlier message back",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("Updated"));
+        expect("B2 replay: the older spill line does not bring the earlier label back",
+               reloaded.count() == 1
+                   && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias 8501"));
+        reloaded.startSaveForTest();
+        reloaded.waitForSaveForTest();
+    }
+    expect("B2 replay: the newer reading stays stored",
+           stored_row_with(80501U, 8501U).value(QLatin1String("msg")).toString() == QStringLiteral("Updated")
+               && stored_row_with(80501U, 8501U).value(QLatin1String("srcName")).toString()
+                      == QStringLiteral("Alias 8501"));
+}
+
+/* Spec 2.14: a row that names its source never shows an anonymous report. A ring row read while its call named no
+ * source keeps its anonymous fix; once the same row names a radio with the fix still on it (as an older core left it),
+ * the fix and its text go, also from a store that kept them. */
+void
+test_named_row_drops_anonymous_position(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754706000;
+    {
+        CallHistoryModel model;
+        Event_History* call = ring.commit(0, 80401U, 0U, when, when + 4);
+        call->systype = DSD_SYNC_P25P1_POS;
+        with_gps(call, "GPS: 22.80000 45.30000", 228000000, 453000000, 7U);
+        call->pos.flags = DSD_POS_FLAG_SOURCE_UNVERIFIED;
+        call->pos.anonymous = 1U;
+        model.refresh(ring.state);
+        expect("2.14: a nameless call shows its anonymous fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: 22.80000 45.30000"));
+        call->source_id = 3001U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("2.14: once the call names its radio, the anonymous fix goes",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+    } // destructor flushes the stores
+    const QJsonObject stored = stored_row_with(80401U, 3001U);
+    expect("2.14: the named row stores no anonymous fix",
+           !stored.isEmpty() && !stored.contains(QLatin1String("pos")) && !stored.contains(QLatin1String("gps")));
+    // A store that kept one (written before this rule) loads without it.
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    QJsonObject pos;
+    pos.insert(QLatin1String("lat"), 228000000);
+    pos.insert(QLatin1String("lon"), 453000000);
+    pos.insert(QLatin1String("err"), 10);
+    pos.insert(QLatin1String("flags"), static_cast<int>(DSD_POS_FLAG_SOURCE_UNVERIFIED));
+    pos.insert(QLatin1String("kind"), static_cast<int>(DSD_POS_P25_HARRIS));
+    pos.insert(QLatin1String("rev"), QStringLiteral("7"));
+    row.insert(QLatin1String("pos"), pos);
+    row.insert(QLatin1String("gps"), QStringLiteral("GPS: 22.80000 45.30000"));
+    rows.replace(0, row);
+    expect("2.14: the edited store is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel reloaded;
+        expect("2.14: a stored anonymous fix on a named row loads as none",
+               reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
+}
+
+/* B2: a fragment gives the row its text and position only when it is the row's radio. An anonymous fragment's fix never
+ * enriches a named call, in either order, and an update of an absorbed fragment that later names another radio keeps
+ * the row's radio and its fix. */
+void
+test_fragment_texts_follow_the_rows_radio(void) {
+    resetStorage();
+    const time_t when = 1754702000;
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        with_gps(ring.commit(0, 80201U, 0U, when, when + 3), "GPS: anon", 225000000, 450000000, 7U);
+        model.refresh(ring.state);
+        expect("B2 identity: the anonymous fragment shows its fix", detail_of(model, 0) == QStringLiteral("GPS: anon"));
+        ring.commit(0, 80201U, 8201U, when + 5, when + 9);
+        model.refresh(ring.state);
+        expect("B2 identity: anonymous then named is one call", model.count() == 1);
+        expect("B2 identity: the anonymous fix is not the named radio's",
+               model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 8201U
+                   && detail_of(model, 0).isEmpty());
+    }
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 80202U, 8202U, when, when + 3);
+        model.refresh(ring.state);
+        with_gps(ring.commit(0, 80202U, 0U, when + 5, when + 9), "GPS: anon", 225000000, 450000000, 7U);
+        model.refresh(ring.state);
+        expect("B2 identity: named then anonymous is one call", model.count() == 1);
+        expect("B2 identity: the anonymous fix does not join the named call", detail_of(model, 0).isEmpty());
+    }
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        with_gps(ring.commit(0, 80203U, 8203U, when, when + 3), "GPS: radio 8203", 225000000, 450000000, 7U);
+        Event_History* absorbed = ring.commit(0, 80203U, 0U, when + 5, when + 9);
+        model.refresh(ring.state);
+        expect("B2 identity: the source-less fragment joins", model.count() == 1);
+        // The core fills the absorbed fragment later with another radio and that radio's fix.
+        absorbed->source_id = 8299U;
+        with_gps(absorbed, "GPS: radio 8299", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 901U;
+        absorbed->pos.scope.b = 9U;
+        DSD_SNPRINTF(absorbed->tgt_str, sizeof(absorbed->tgt_str), "%s", "OTHER");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("B2 identity: the row keeps its radio and its radio's fix",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 8203U
+                   && detail_of(model, 0) == QStringLiteral("GPS: radio 8203"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+        const QJsonObject stored = stored_row_with(80203U, 8203U);
+        expect("B2 identity: the other radio's sender system and target are not the row's",
+               !stored.isEmpty() && !stored.contains(QLatin1String("sscope"))
+                   && !stored.contains(QLatin1String("tgtText")));
+    }
+}
+
+/* B2/B3: an update of an absorbed fragment that later names another radio keeps the row's source label, as it keeps the
+ * row's radio and fix: another callsign on a D-STAR row (no source number to tell them apart), and the same number from
+ * another sender system. */
+void
+test_fragment_label_follows_the_rows_radio(void) {
+    const time_t when = 1754702100;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* first = ring.commit(0, 0U, 0U, when, when + 3, "CQCQCQ");
+        first->systype = DSD_SYNC_DSTAR_HD_POS;
+        DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "N0ONE");
+        with_gps(first, "DPRS: one", 225000000, 450000000, 3U)->pos.kind = DSD_POS_DSTAR_DPRS;
+        Event_History* absorbed = ring.commit(0, 0U, 0U, when + 4, when + 7, "CQCQCQ");
+        absorbed->systype = DSD_SYNC_DSTAR_HD_POS;
+        model.refresh(ring.state);
+        expect("label: the anonymous D-STAR fragment joins N0ONE's call",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("N0ONE"));
+        // The core fills the absorbed fragment later with another caller.
+        DSD_SNPRINTF(absorbed->src_str, sizeof(absorbed->src_str), "%s", "N0TWO");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: another callsign does not rename the row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("N0ONE")
+                   && detail_of(model, 0) == QStringLiteral("DPRS: one"));
+    }
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* named = ring.commit(0, 80211U, 8211U, when + 20, when + 23);
+        DSD_SNPRINTF(named->s_name, sizeof(named->s_name), "%s", "Radio A");
+        with_gps(named, "GPS: radio A", 225000000, 450000000, 3U);
+        named->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        named->pos.scope.a = 901U;
+        named->pos.scope.b = 9U;
+        Event_History* absorbed = ring.commit(0, 80211U, 0U, when + 24, when + 27);
+        model.refresh(ring.state);
+        expect("label: the source-less fragment joins radio A's call",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Radio A"));
+        // The same number, learned later from another system.
+        absorbed->source_id = 8211U;
+        DSD_SNPRINTF(absorbed->s_name, sizeof(absorbed->s_name), "%s", "Radio B");
+        with_gps(absorbed, "GPS: radio B", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 902U;
+        absorbed->pos.scope.b = 9U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: the same number of another system does not rename the row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Radio A")
+                   && detail_of(model, 0) == QStringLiteral("GPS: radio A"));
+    }
+    resetStorage();
+    {
+        // A nameless call heard on one system, whose absorbed fragment later names a radio of another: the row names
+        // no radio of the other system, by number or by name, and keeps its own fix.
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* nameless = ring.commit(0, 80212U, 0U, when + 40, when + 43);
+        with_gps(nameless, "GPS: nameless", 225000000, 450000000, 3U);
+        nameless->pos.anonymous = 1U;
+        nameless->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        nameless->pos.scope.a = 901U;
+        nameless->pos.scope.b = 9U;
+        Event_History* absorbed = ring.commit(0, 80212U, 0U, when + 44, when + 47);
+        model.refresh(ring.state);
+        expect("label: two nameless fragments are one call", model.count() == 1);
+        absorbed->source_id = 8212U;
+        DSD_SNPRINTF(absorbed->s_name, sizeof(absorbed->s_name), "%s", "Radio B");
+        with_gps(absorbed, "GPS: radio B", 226000000, 451000000, 9U);
+        absorbed->pos.scope.kind = DSD_POS_SCOPE_TETRA;
+        absorbed->pos.scope.a = 902U;
+        absorbed->pos.scope.b = 9U;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("label: a radio of another system does not name the nameless row",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 0U
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          != QStringLiteral("Radio B")
+                   && detail_of(model, 0) == QStringLiteral("GPS: nameless"));
+    }
+}
+
+/* 2.7: a merged row shows the fix of its newest fragment by run and rev, never by stamps. The run after a backward wall
+ * clock step still orders by rev; a later run's fix wins over an earlier run's higher rev, read live or as a backlog; a
+ * reload keeps the run ordinals, so a ring read again after a relaunch is the same run. Every fragment is heard on one
+ * known reception (the same tuned frequency): two runs' epochs say nothing of each other, so only a known, equal
+ * reception lets a later run's fix onto the row (call_history_same_reception()). */
+void
+test_position_order_follows_runs_and_revs(void) {
+    const time_t when = 1754703000;
+    const auto heard = [](Event_History* item) {
+        return with_rx(item, DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+    };
+    for (int backlog = 0; backlog < 2; backlog++) {
+        resetStorage();
+        RingFixture first;
+        RingFixture second;
+        {
+            CallHistoryModel model;
+            // The second fragment starts before the first (the wall clock stepped back), but its fix is newer.
+            with_gps(heard(first.commit(0, 80301U, 8301U, when + 10, when + 14)), "GPS: A", 225000000, 450000000, 5U);
+            if (backlog == 0) {
+                model.refresh(first.state);
+            }
+            with_gps(heard(first.commit(0, 80301U, 8301U, when + 2, when + 8)), "GPS: B", 226000000, 451000000, 9U);
+            model.refresh(first.state);
+            expect("2.7: one run's fragments are one call", model.count() == 1);
+            expect("2.7: within a run the higher rev wins, whatever the stamps",
+                   detail_of(model, 0) == QStringLiteral("GPS: B"));
+            // The next run counts its revs from the start again.
+            with_gps(heard(second.commit(0, 80301U, 8301U, when + 20, when + 24)), "GPS: C", 227000000, 452000000, 2U);
+            model.refresh(second.state);
+            expect("2.7: the next run's fragment joins the call", model.count() == 1);
+            expect("2.7: a later run's fix beats an earlier run's higher rev",
+                   detail_of(model, 0) == QStringLiteral("GPS: C"));
+        }
+        CallHistoryModel relaunched;
+        expect("2.7: the reload shows the same fix",
+               relaunched.count() == 1 && detail_of(relaunched, 0) == QStringLiteral("GPS: C"));
+        // The running ring read again after the relaunch keeps its run: a fragment with a lower rev loses.
+        with_gps(heard(second.commit(0, 80301U, 8301U, when + 26, when + 28)), "GPS: D", 228000000, 453000000, 1U);
+        relaunched.refresh(second.state);
+        expect("2.7: a relaunch keeps the ring's run",
+               relaunched.count() == 1 && detail_of(relaunched, 0) == QStringLiteral("GPS: C"));
+        const QJsonObject stored = stored_row_with(80301U, 8301U);
+        expect("2.7: the run ordinals are stored with the fix", stored.value(QLatin1String("gpsOrd")).toInt() >= 2);
+    }
+}
+
+/* B3: two callsign callers (D-STAR) to one destination on one frequency, seconds apart, are two calls, each with its
+ * own fix, also when their display names are the same. */
+void
+test_callsign_callers_stay_apart(void) {
+    const time_t when = 1754704000;
+    for (int sameAlias = 0; sameAlias < 2; sameAlias++) {
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 0U, 0U, when, when + 3, "CQCQCQ");
+        ring.commit(0, 0U, 0U, when + 4, when + 7, "CQCQCQ");
+        // A commit shifts the ring: the older call is at index 2 now.
+        Event_History* one = &ring.rings[0].Event_History_Items[2];
+        Event_History* two = &ring.rings[0].Event_History_Items[1];
+        const char* callers[2] = {"N0CALL", "N0CALL-1"};
+        Event_History* items[2] = {one, two};
+        for (int i = 0; i < 2; i++) {
+            items[i]->systype = DSD_SYNC_DSTAR_HD_POS;
+            items[i]->freq_hz = 145500000;
+            DSD_SNPRINTF(items[i]->src_str, sizeof(items[i]->src_str), "%s", callers[i]);
+            if (sameAlias != 0) {
+                DSD_SNPRINTF(items[i]->s_name, sizeof(items[i]->s_name), "%s", "Club station");
+            }
+        }
+        with_gps(one, "DPRS: caller 0", 225000000, 450000000, 3U)->pos.kind = DSD_POS_DSTAR_DPRS;
+        with_gps(two, "DPRS: caller 1", 226000000, 451000000, 4U)->pos.kind = DSD_POS_DSTAR_DPRS;
+        model.refresh(ring.state);
+        expect(sameAlias != 0 ? "B3: same-alias callsign callers are two calls"
+                              : "B3: two callsign callers are two calls",
+               model.count() == 2);
+        QSet<QString> details;
+        for (int i = 0; i < model.count(); i++) {
+            details.insert(detail_of(model, i));
+        }
+        expect("B3: each caller keeps its own fix", details.contains(QStringLiteral("DPRS: caller 0"))
+                                                        && details.contains(QStringLiteral("DPRS: caller 1")));
+    }
+    // The same caller's two fragments still merge.
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    for (int i = 0; i < 2; i++) {
+        Event_History* item = ring.commit(0, 0U, 0U, when + 5 * i, when + 5 * i + 3, "CQCQCQ");
+        item->systype = DSD_SYNC_DSTAR_HD_POS;
+        DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", i == 0 ? "N0CALL" : "N0CALL  ");
+    }
+    model.refresh(ring.state);
+    expect("B3: one caller's fragments (padding aside) are one call", model.count() == 1);
+}
+
+/* The text the core writes beside a numeric identity is no raw identity: an EDACS late-entry fragment with an unknown
+ * source (`LID_UNK`) and its identified continuation a second later (`LID_<id>`) are one call, as their numbers say,
+ * also through a reload. An M17 `UNKNOWN` source (the broadcast address) names nobody either. */
+void
+test_identity_placeholders_are_no_raw_identity(void) {
+    const time_t when = 1754705000;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* first = ring.commit(0, 100U, 0U, when, when + 3, "100_AFS_06_041");
+        first->systype = DSD_SYNC_EDACS_POS;
+        DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "LID_UNK");
+        Event_History* second = ring.commit(0, 100U, 5001U, when + 4, when + 9, "100_AFS_06_041");
+        second->systype = DSD_SYNC_EDACS_POS;
+        DSD_SNPRINTF(second->src_str, sizeof(second->src_str), "%s", "LID_5001");
+        model.refresh(ring.state);
+        expect("EDACS placeholders: the unknown-source fragment joins its continuation", model.count() == 1);
+    }
+    const QJsonObject stored = stored_row_with(100U, 5001U);
+    expect("EDACS placeholders: no raw text is stored", !stored.isEmpty() && !stored.contains(QLatin1String("srcText"))
+                                                            && !stored.contains(QLatin1String("tgtText")));
+    {
+        CallHistoryModel reloaded;
+        expect("EDACS placeholders: one call after a reload", reloaded.count() == 1);
+    }
+    expect("M17 UNKNOWN source is no identity",
+           !dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_M17_LSF_POS, true, "UNKNOWN"));
+    expect("M17 BROADCAST destination is one",
+           dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_M17_LSF_POS, false, "BROADCAST"));
+    expect("an EDACS LID is no identity",
+           !dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_EDACS_POS, true, "LID_5001"));
+    expect("a D-STAR callsign is one",
+           dsd_qt::call_history_identity_text_is_raw(DSD_SYNC_DSTAR_HD_POS, true, "N0CALL"));
+}
+
+/* B4: one M17 caller's calls to two destinations under one named CAN are two calls, though the service name names
+ * both rows; and they stay two through a reload. */
+void
+test_textual_destinations_under_one_service_stay_apart(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754705000;
+    {
+        CallHistoryModel model;
+        const char* destinations[2] = {"DEST-ONE", "DEST-TWO"};
+        for (int i = 0; i < 2; i++) {
+            Event_History* item = ring.commit(0, 0U, 0U, when + 4 * i, when + 4 * i + 3, destinations[i]);
+            item->systype = DSD_SYNC_M17_STR_POS;
+            DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "N0CALL");
+            DSD_SNPRINTF(item->service_label, sizeof(item->service_label), "%s", "Club CAN 3");
+        }
+        model.refresh(ring.state);
+        expect("B4: both rows are named by the service",
+               model.count() == 2
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("Club CAN 3")
+                   && model.data(model.index(1), CallHistoryModel::NameRole).toString()
+                          == QStringLiteral("Club CAN 3"));
+    }
+    CallHistoryModel reloaded;
+    expect("B4: two destinations stay two calls after a reload", reloaded.count() == 2);
+}
+
+/* B5: rows whose known systems differ are two calls: two conventional DMR systems on two frequencies, and two
+ * conventional P25 channels of one NAC; live, after a reload and through the spill. A trunked call on two voice
+ * channels of one system, and a Capacity Plus radio before and after a rest channel move, stay one call; so does a row
+ * an older build stored, which knows no system. */
+void
+test_system_identity_splits_conventional_systems(void) {
+    const time_t when = 1754706000;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a[2];
+        uint32_t b;
+        int64_t freq[2];
+        int rows;
+    };
+
+    // A Capacity Plus scope (alias_learn.h): a = (trunking system << 8) | colour code, b = site number.
+    constexpr uint32_t kCapPlusCc1 = (static_cast<uint32_t>(DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) << 8) | 1U;
+    const Case cases[] = {
+        {"B5: two conventional DMR systems", DSD_POS_SCOPE_FEED_TUNED_FREQ, {446006250U, 446093750U}, 0U, {0, 0}, 2},
+        {"B5: two conventional P25 channels of one NAC",
+         DSD_POS_SCOPE_P25_NAC,
+         {0x293U, 0x293U},
+         0U,
+         {155100000, 155400000},
+         2},
+        {"B5: a trunked call on two voice channels", DSD_POS_SCOPE_P25, {0xBEE00U, 0xBEE00U}, 0x1A3U, {0, 0}, 1},
+        {"B5: a Capacity Plus radio across a rest channel move",
+         DSD_POS_SCOPE_DMR,
+         {kCapPlusCc1, kCapPlusCc1},
+         5U,
+         {0, 0},
+         1},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                Event_History* item = ring.commit(0, 80601U, 8601U, when + 5 * i, when + 5 * i + 3);
+                item->systype = c.kind == DSD_POS_SCOPE_P25 || c.kind == DSD_POS_SCOPE_P25_NAC
+                                    ? DSD_SYNC_P25P1_POS
+                                    : DSD_SYNC_DMR_BS_VOICE_POS;
+                item->access_code_kind = DSD_ACCESS_CODE_NONE;
+                with_rx(item, c.kind, c.a[i], c.b, c.freq[i]);
+                if (c.kind == DSD_POS_SCOPE_P25 || c.kind == DSD_POS_SCOPE_DMR) {
+                    item->freq_hz = 851000000 + 12500 * i; // a different voice or rest channel each time
+                }
+            }
+            model.refresh(ring.state);
+            expect(c.what, model.count() == c.rows);
+        }
+        CallHistoryModel reloaded;
+        expect(c.what, reloaded.count() == c.rows);
+        if (c.rows == 2) {
+            const QJsonObject rx = stored_row_with(80601U, 8601U).value(QLatin1String("rx")).toObject();
+            expect("B5: the reception system is stored", rx.value(QLatin1String("k")).toInt() == c.kind);
+        }
+    }
+    // Through the spill: the two conventional cases are two calls there too.
+    for (const Case& c : cases) {
+        if (c.rows != 2) {
+            continue;
+        }
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                Event_History* item = ring.commit(0, 80602U, 8602U, when + 5 * i, when + 5 * i + 3);
+                item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_VOICE_POS;
+                with_rx(item, c.kind, c.a[i], c.b, c.freq[i]);
+            }
+            model.refresh(ring.state);
+            expect(c.what, model.count() == 2);
+        }
+        stores_to_spill();
+        {
+            CallHistoryModel spilled;
+            expect(c.what, spilled.count() == 2);
+        }
+    }
+    // A row an older build stored knows no system and still merges with a fragment that knows one.
+    resetStorage();
+    RingFixture old;
+    {
+        CallHistoryModel model;
+        old.commit(0, 80603U, 8603U, when, when + 3);
+        model.refresh(old.state);
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    row.remove(QLatin1String("rx"));
+    row.remove(QLatin1String("proto"));
+    rows.replace(0, row);
+    expect("B5: the older row is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    CallHistoryModel upgraded;
+    with_rx(old.commit(0, 80603U, 8603U, when + 5, when + 8), DSD_POS_SCOPE_FEED_TUNED_FREQ, 446006250U, 0U, 0);
+    upgraded.refresh(old.state);
+    expect("B5: a row with no recorded system merges as before", upgraded.count() == 1);
+}
+
+/* B5 ruling: a weaker identity joins a stronger one of the same family. A trunked P25 call whose first fragment knew
+ * only the NAC (each voice channel its own discriminator) joins the fragments that learned the WACN and SYSID, in
+ * either order, and the row keeps the full scope; two full scopes that differ stay two calls. */
+void
+test_weaker_identity_joins_stronger(void) {
+    const time_t when = 1754706500;
+    for (int fullFirst = 0; fullFirst < 2; fullFirst++) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            const uint8_t kinds[3] = {
+                fullFirst != 0 ? static_cast<uint8_t>(DSD_POS_SCOPE_P25) : static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC),
+                fullFirst != 0 ? static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC) : static_cast<uint8_t>(DSD_POS_SCOPE_P25),
+                DSD_POS_SCOPE_P25_NAC};
+            for (int i = 0; i < 3; i++) {
+                Event_History* item = ring.commit(0, 80611U, 8611U, when + 5 * i, when + 5 * i + 3);
+                const bool full = kinds[i] == DSD_POS_SCOPE_P25;
+                with_rx(item, kinds[i], full ? 0xBEE00U : 0x293U, full ? 0x1A3U : 0U, full ? 0 : 851000000 + 12500 * i);
+                item->freq_hz = 851000000 + 12500 * i;
+                model.refresh(ring.state);
+            }
+            expect(fullFirst != 0 ? "B5: a full scope then NAC fragments are one call"
+                                  : "B5: NAC fragments and the full scope are one call",
+                   model.count() == 1);
+        } // destructor flushes the stores
+        const QJsonObject rx = stored_row_with(80611U, 8611U).value(QLatin1String("rx")).toObject();
+        expect("B5: the merged row keeps the full scope", rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_P25
+                                                              && rx.value(QLatin1String("b")).toInt() == 0x1A3);
+        CallHistoryModel reloaded;
+        expect("B5: the merged call stays one after a reload", reloaded.count() == 1);
+    }
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    for (int i = 0; i < 2; i++) {
+        with_rx(ring.commit(0, 80612U, 8612U, when + 5 * i, when + 5 * i + 3), DSD_POS_SCOPE_P25, 0xBEE00U,
+                i == 0 ? 0x1A3U : 0x1A4U, 0);
+    }
+    model.refresh(ring.state);
+    expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
+}
+
+/* Issue #800, fail closed: two carriers of one system are two receptions, though the system's scope (a P25 WACN and
+ * SYSID) names no carrier. A call's fragment heard on 450 MHz and a fragment of the same talkgroup and radio heard on
+ * 451 MHz with a fix, both under that system: the calls still merge, but the row takes none of the 451 MHz fix, live
+ * and after a reload (the carrier its reception was read with is stored, `rxHz`). On 450 MHz both times it takes it. */
+void
+test_fix_stays_on_its_carrier(void) {
+    const time_t when = 1754706500;
+    for (int moved = 0; moved <= 1; moved++) {
+        resetStorage();
+        {
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* first =
+                with_rx(ring.commit(0, 80625U, 8625U, when, when + 3), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            first->systype = DSD_SYNC_P25P1_POS;
+            first->rx_scope.tuned_hz = 450000000;
+            model.refresh(ring.state);
+            Event_History* second = with_gps(
+                with_rx(ring.commit(0, 80625U, 8625U, when + 5, when + 8), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0),
+                "GPS: second fragment", 225000000, 450000000, 4U);
+            second->systype = DSD_SYNC_P25P1_POS;
+            second->rx_scope.tuned_hz = moved ? 451000000 : 450000000;
+            model.refresh(ring.state);
+            expect("carrier: the fragments merge", model.count() == 1);
+            expect(moved ? "carrier: the other carrier's fix is not the row's" : "carrier: one carrier's fix is",
+                   model.count() == 1 && detail_of(model, 0).isEmpty() == (moved != 0));
+        } // destructor flushes the stores
+        const QJsonObject stored = stored_row_with(80625U, 8625U);
+        expect("carrier: the row's carrier is stored",
+               stored.value(QLatin1String("rxHz")).toVariant().toLongLong() == 450000000);
+        expect("carrier: the stored row's fix", stored.contains(QLatin1String("gps")) == (moved == 0));
+        CallHistoryModel reloaded;
+        expect("carrier: after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty() == (moved != 0));
+    }
+}
+
+/* Issue #800, fail closed: a fragment gives a merged row its fix, and the row learns a stronger reception scope from it,
+ * only when it was heard on the reception the row's other fragments were, read before anything is adopted (the core's
+ * reception rule, call_history_same_reception()). A P25 call heard on 450 MHz with only a tuned-frequency scope, then
+ * a fragment of the same talkgroup and radio under a NAC scoped to 451 MHz, in one epoch: the calls still merge, but
+ * the row keeps its 450 MHz reception and none of the 451 MHz fragment's fix, live and after a reload. A fragment of
+ * another decoder run with no known reception is no reception of the row's either: its epoch counts in another ring.
+ * The same fragments on one tuned frequency still give the row their fix. */
+void
+test_fix_stays_on_its_reception(void) {
+    const time_t when = 1754706400;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        Event_History* first =
+            with_rx(ring.commit(0, 80621U, 8621U, when, when + 3), DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+        first->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(ring.state);
+        Event_History* second = with_gps(
+            with_rx(ring.commit(0, 80621U, 8621U, when + 5, when + 8), DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 451000000),
+            "GPS: other carrier", 225000000, 450000000, 4U);
+        second->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(ring.state);
+        expect("reception: the two carriers' fragments still merge", model.count() == 1);
+        expect("reception: the other carrier's fix is not the row's",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+        // Another run's fragment with no known reception: its epoch says nothing of this ring's.
+        RingFixture other;
+        Event_History* unknown =
+            with_gps(other.commit(0, 80621U, 8621U, when + 10, when + 13), "GPS: other run", 226000000, 451000000, 2U);
+        unknown->systype = DSD_SYNC_P25P1_POS;
+        model.refresh(other.state);
+        expect("reception: another run's fragment of no known reception gives no fix",
+               model.count() == 1 && detail_of(model, 0).isEmpty());
+    } // destructor flushes the stores
+    const QJsonObject rx = stored_row_with(80621U, 8621U).value(QLatin1String("rx")).toObject();
+    expect("reception: the row keeps the reception it was heard on",
+           rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_FEED_TUNED_FREQ
+               && !stored_row_with(80621U, 8621U).contains(QLatin1String("gps")));
+    CallHistoryModel reloaded;
+    expect("reception: none of it after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    resetStorage();
+    RingFixture same;
+    CallHistoryModel model;
+    for (int i = 0; i < 2; i++) {
+        Event_History* item = with_rx(
+            same.commit(0, 80622U, 8622U, when + 5 * static_cast<time_t>(i), when + 5 * static_cast<time_t>(i) + 3),
+            DSD_POS_SCOPE_FEED_TUNED_FREQ, 450000000U, 0U, 0);
+        item->systype = DSD_SYNC_P25P1_POS;
+        if (i == 1) {
+            with_gps(item, "GPS: same carrier", 225000000, 450000000, 4U);
+        }
+        model.refresh(same.state);
+    }
+    expect("reception: a fragment of the row's reception gives its fix",
+           model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: same carrier"));
+}
+
+/* Issue #800, fail closed: the two P25 phases may be one conversation (call_history_protocol_family()), but a fix is
+ * one protocol class's (call_history_position_class(), the core's dsd_position_attribution_class()). With the same
+ * known system, frequency, talkgroup and radio, a Phase 1 fragment then a Phase 2 fragment carrying a fix are one row,
+ * and the Phase 1 row takes none of the Phase 2 fix, in either order, live and after a reload. */
+void
+test_fix_stays_on_its_p25_phase(void) {
+    const time_t when = 1754706450;
+    for (int phase2First = 0; phase2First < 2; phase2First++) {
+        resetStorage();
+        {
+            RingFixture ring;
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                const bool phase2 = (i == 0) == (phase2First != 0);
+                Event_History* item = with_rx(ring.commit(0, 80631U, 8631U, when + 5 * static_cast<time_t>(i),
+                                                          when + 5 * static_cast<time_t>(i) + 3),
+                                              DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+                item->freq_hz = 851000000;
+                item->systype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+                if (i == 1) {
+                    with_gps(item, "GPS: other phase", 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+                }
+                model.refresh(ring.state);
+            }
+            expect("phase: the two phases' fragments are one row", model.count() == 1);
+            expect("phase: the other phase's fix is not the row's",
+                   model.count() == 1 && detail_of(model, 0).isEmpty());
+        } // destructor flushes the stores
+        expect("phase: no fix is stored", !stored_row_with(80631U, 8631U).contains(QLatin1String("gps")));
+        CallHistoryModel reloaded;
+        expect("phase: none after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
+}
+
+/* One fragment of a merged P25 row (@p tg, @p src) heard on Phase 1 or 2 of one known system and frequency, with a
+ * Harris fix when @p gps is not null. */
+Event_History*
+commit_phase_fragment(RingFixture& ring, uint32_t tg, uint32_t src, time_t start, bool phase2, const char* gps) {
+    Event_History* item = with_rx(ring.commit(0, tg, src, start, start + 3), DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+    item->freq_hz = 851000000;
+    item->systype = phase2 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+    if (gps != nullptr) {
+        with_gps(item, gps, 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+    }
+    return item;
+}
+
+/* Issue #800, fail closed: a merged row stays anchored to the fragment it was first heard as. A Phase 1 fragment with
+ * a fix, then a Phase 2 fragment of the same conversation: a new reading of the first fragment that changes only its
+ * end leaves the row a Phase 1 row and keeps its fix (it was judged against the Phase 2 rest alone, which took it).
+ * Phase 1, Phase 2, then Phase 1 with a fix: the same update keeps the row on Phase 1 with the third fragment's fix
+ * (it was rebuilt Phase 2 first, keeping a Phase 1 fix on a Phase 2 row). And when the first fragment's new reading
+ * names another call, the row is rebuilt from the Phase 2 fragment: a retained Phase 1 fix is no longer the row's. */
+void
+test_merged_row_keeps_its_anchor(void) {
+    const time_t when = 1754706470;
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80641U, 8641U, when, false, "GPS: phase one");
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80641U, 8641U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        expect("anchor: one row with the Phase 1 fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one"));
+        ring.rings[0].Event_History_Items[2].event_time += 1; // the first fragment's end moves
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: an end update keeps the fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one"));
+    } // destructor flushes the stores
+    expect("anchor: the row stays a Phase 1 row",
+           stored_row_with(80641U, 8641U).value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS);
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80642U, 8642U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80642U, 8642U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80642U, 8642U, when + 10, false, "GPS: phase one again");
+        model.refresh(ring.state);
+        expect("anchor: the Phase 1 row takes the third fragment's fix",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one again"));
+        ring.rings[0].Event_History_Items[3].event_time += 1;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: after the update the row keeps it",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one again"));
+    }
+    expect("anchor: still a Phase 1 row",
+           stored_row_with(80642U, 8642U).value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS);
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80643U, 8643U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80643U, 8643U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80643U, 8643U, when + 10, false, "GPS: phase one kept");
+        model.refresh(ring.state);
+        // The first fragment read again on another system: another call, withdrawn from the row.
+        (void)with_rx(&ring.rings[0].Event_History_Items[3], DSD_POS_SCOPE_P25, 0xBEE01U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: a Phase 2 row keeps no Phase 1 fix", detail_of(model, 0).isEmpty());
+    }
+    const QJsonObject rebuilt = stored_row_with(80643U, 8643U);
+    expect("anchor: the rebuilt row is a Phase 2 row with no fix",
+           rebuilt.value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P2_POS
+               && !rebuilt.contains(QLatin1String("gps")));
+    // Gate g62-r9: the first fragment withdrawn (another system), then read again on the row's system with a fix. It
+    // is restored at its own place ahead of the Phase 2 fragment, so it is the row's anchor again: the row goes back to
+    // Phase 1 and takes the fix heard there.
+    resetStorage();
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        commit_phase_fragment(ring, 80644U, 8644U, when, false, nullptr);
+        model.refresh(ring.state);
+        commit_phase_fragment(ring, 80644U, 8644U, when + 5, true, nullptr);
+        model.refresh(ring.state);
+        Event_History* first = &ring.rings[0].Event_History_Items[2];
+        (void)with_rx(first, DSD_POS_SCOPE_P25, 0xBEE01U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: the withdrawn first fragment leaves a Phase 2 row", model.count() == 1);
+        (void)with_rx(first, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        with_gps(first, "GPS: phase one restored", 225000000, 450000000, 4U)->pos.kind = DSD_POS_P25_HARRIS;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("anchor: the restored anchor's fix is the row's",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("GPS: phase one restored"));
+    }
+    const QJsonObject restored = stored_row_with(80644U, 8644U);
+    expect("anchor: the restored row is a Phase 1 row with the fix",
+           restored.value(QLatin1String("proto")).toInt() == DSD_SYNC_P25P1_POS
+               && restored.contains(QLatin1String("gps")));
+}
+
+/* B5: an identity known in part is the same system as one that knows more of it. An EDACS call whose first fragment knew
+ * only the site joins the fragment that also learned the system, in either order, and the row keeps the site and the
+ * system; a conventional P25 fragment whose tuned frequency was not known joins the one heard with it. Two fragments
+ * whose known parts differ (another system on the same site, a site-only and a system-only identity that cannot be told
+ * apart) stay two calls. */
+void
+test_partial_identity_joins_fuller(void) {
+    const time_t when = 1754706700;
+    constexpr uint32_t kSite = 0x10000U | 5U;
+    constexpr uint32_t kSystem = 0x10000U | 7U;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a[2];
+        uint32_t b[2];
+        int64_t freq[2];
+        int rows;
+    };
+
+    const Case cases[] = {
+        {"B5: an EDACS site, then its system learned",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {0U, kSystem},
+         {0, 0},
+         1},
+        {"B5: an EDACS site and system, then a site-only fragment",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {kSystem, 0U},
+         {0, 0},
+         1},
+        {"B5: two EDACS systems on one site",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, kSite},
+         {kSystem, 0x10000U | 8U},
+         {0, 0},
+         2},
+        {"B5: an EDACS site-only and a system-only identity",
+         DSD_POS_SCOPE_FEED_EDACS,
+         {kSite, 0U},
+         {0U, kSystem},
+         {0, 0},
+         2},
+        {"B5: a P25 NAC, then its tuned frequency known",
+         DSD_POS_SCOPE_P25_NAC,
+         {0x293U, 0x293U},
+         {0U, 0U},
+         {0, 155100000},
+         1},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            for (int i = 0; i < 2; i++) {
+                Event_History* item = ring.commit(0, 80631U, 8631U, when + 5 * i, when + 5 * i + 3);
+                item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_EDACS_POS;
+                item->access_code_kind = DSD_ACCESS_CODE_NONE;
+                with_rx(item, c.kind, c.a[i], c.b[i], c.freq[i]);
+                model.refresh(ring.state);
+            }
+            expect(c.what, model.count() == c.rows);
+        }
+        CallHistoryModel reloaded;
+        expect(c.what, reloaded.count() == c.rows);
+        if (c.rows == 1) {
+            const QJsonObject rx = stored_row_with(80631U, 8631U).value(QLatin1String("rx")).toObject();
+            const bool fuller = c.kind == DSD_POS_SCOPE_FEED_EDACS
+                                    ? rx.value(QLatin1String("a")).toInt() == static_cast<int>(kSite)
+                                          && rx.value(QLatin1String("b")).toInt() == static_cast<int>(kSystem)
+                                    : rx.value(QLatin1String("f")).toInteger() == 155100000;
+            expect("B5: the merged row keeps every part either fragment knew", fuller);
+        }
+    }
+}
+
+/* B2/B5: an update found by its fragment is not merged again, so its reception system is checked before it gives the
+ * row anything. A P25 call row heard on one full system (its sender scope unknown: no fix yet) merges a NAC-only
+ * fragment of the same radio; when that fragment's later reading names another full system and brings a fix local to
+ * that system, the row keeps no position from it, live and after a reload. The same update from the row's own system
+ * gives it the fix. */
+void
+test_late_position_rechecks_reception_system(void) {
+    const time_t when = 1754706600;
+    for (int sameSystem = 0; sameSystem < 2; sameSystem++) {
+        resetStorage();
+        RingFixture ring;
+        const uint32_t sysid = sameSystem != 0 ? 0x1A3U : 0x1A4U;
+        {
+            CallHistoryModel model;
+            Event_History* a = ring.commit(0, 80621U, 8621U, when, when + 3);
+            a->systype = DSD_SYNC_P25P1_POS;
+            with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            Event_History* b = ring.commit(0, 80621U, 8621U, when + 5, when + 8);
+            b->systype = DSD_SYNC_P25P1_POS;
+            with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 851012500);
+            model.refresh(ring.state);
+            expect("late position: the NAC-only fragment joins the call", model.count() == 1);
+            b = &ring.rings[0].Event_History_Items[1];
+            with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, sysid, 0);
+            with_gps(b, "GPS: B", 225000000, 450000000, 7U);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25;
+            b->pos.scope.a = 0xBEE00U;
+            b->pos.scope.b = sysid;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect(sameSystem != 0 ? "late position: the row's own system gives it the fix"
+                                   : "late position: another system's fix stays off the row",
+                   model.count() == 1 && (detail_of(model, 0) == QStringLiteral("GPS: B")) == (sameSystem != 0));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        const QJsonObject stored = stored_row_with(80621U, 8621U);
+        expect(sameSystem != 0 ? "late position: the own system's fix is saved"
+                               : "late position: another system's fix is not saved",
+               stored.contains(QLatin1String("pos")) == (sameSystem != 0)
+                   && stored.value(QLatin1String("rx")).toObject().value(QLatin1String("b")).toInt() == 0x1A3);
+        CallHistoryModel reloaded;
+        expect("late position: the same after a reload",
+               reloaded.count() == 1 && (detail_of(reloaded, 0) == QStringLiteral("GPS: B")) == (sameSystem != 0));
+    }
+}
+
+/* B2/B5: a fragment that gave a row its fix, message and source label while its identity agreed with the row's takes
+ * them back when its later reading names another reception system. A P25 call row heard on one full system merges a
+ * NAC-only fragment of the same radio that brings a fix, a message and a label; when that fragment's later reading
+ * names another full system, the row shows none of them (or the best remaining fragment's fix, when its own fragment
+ * has one), live, saved and after a reload. */
+void
+test_fragment_on_another_system_withdraws_payload(void) {
+    const time_t when = 1754706650;
+    for (int ownFix = 0; ownFix < 2; ownFix++) {
+        resetStorage();
+        RingFixture ring;
+        const QString shownAfter = ownFix != 0 ? QStringLiteral("GPS: A") : QString();
+        {
+            CallHistoryModel model;
+            Event_History* a = ring.commit(0, 80651U, 8651U, when, when + 3);
+            a->systype = DSD_SYNC_P25P1_POS;
+            with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+            if (ownFix != 0) {
+                with_gps(a, "GPS: A", 100000000, 200000000, 3U);
+                a->pos.scope.kind = DSD_POS_SCOPE_P25;
+                a->pos.scope.a = 0xBEE00U;
+                a->pos.scope.b = 0x1A3U;
+            }
+            Event_History* b = ring.commit(0, 80651U, 8651U, when + 5, when + 8);
+            b->systype = DSD_SYNC_P25P1_POS;
+            with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+            with_gps(b, "GPS: B", 225000000, 450000000, 7U);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25_NAC;
+            b->pos.scope.a = 0x293U;
+            b->pos.identity_freq_hz = 452500000;
+            DSD_SNPRINTF(b->text_message, sizeof(b->text_message), "%s", "Copy B");
+            DSD_SNPRINTF(b->s_name, sizeof(b->s_name), "%s", "Alias B");
+            model.refresh(ring.state);
+            expect("withdraw: the NAC-only fragment joins the call and gives it its fix, message and label",
+                   model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy B · GPS: B")
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              == QStringLiteral("Alias B"));
+            b = &ring.rings[0].Event_History_Items[1];
+            with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+            b->pos.scope.kind = DSD_POS_SCOPE_P25;
+            b->pos.scope.a = 0xBEE00U;
+            b->pos.scope.b = 0x1A4U;
+            b->pos.identity_freq_hz = 0;
+            ring.touchCommitted(0);
+            model.refresh(ring.state);
+            expect(ownFix != 0 ? "withdraw: another system's fragment gives way to the row's own fix"
+                               : "withdraw: another system's fragment leaves the row no fix and no message",
+                   model.count() == 1 && detail_of(model, 0) == shownAfter);
+            expect("withdraw: another system's fragment takes its label back",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              != QStringLiteral("Alias B"));
+            model.startSaveForTest();
+            model.waitForSaveForTest();
+        }
+        const QJsonObject stored = stored_row_with(80651U, 8651U);
+        const QJsonObject pos = stored.value(QLatin1String("pos")).toObject();
+        const bool posSaved = stored.contains(QLatin1String("pos"));
+        expect("withdraw: the withdrawn fix, message and label are not saved",
+               !stored.contains(QLatin1String("msg")) && !stored.contains(QLatin1String("gpsAlt"))
+                   && stored.value(QLatin1String("srcName")).toString() != QStringLiteral("Alias B")
+                   && posSaved == (ownFix != 0) && (!posSaved || pos.value(QLatin1String("lat")).toInt() == 100000000));
+        CallHistoryModel reloaded;
+        expect("withdraw: the same after a reload",
+               reloaded.count() == 1 && detail_of(reloaded, 0) == shownAfter
+                   && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                          != QStringLiteral("Alias B"));
+    }
+}
+
+/** The fields of row @p row that a fragment's part gives it (FragmentPart), as one line to compare. */
+QString
+part_fields_of(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return QStringLiteral("freq=%1 code=%2 site=%3 svc=%4 name=%5 em=%6 enc=%7 dur=%8 when=%9")
+        .arg(model.data(idx, CallHistoryModel::FreqHzRole).toLongLong())
+        .arg(model.data(idx, CallHistoryModel::AccessCodeRole).toString())
+        .arg(model.data(idx, CallHistoryModel::SiteTextRole).toString())
+        .arg(model.data(idx, CallHistoryModel::ServiceNameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::NameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::EmergencyRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::EncRole).toBool() ? 1 : 0)
+        .arg(model.data(idx, CallHistoryModel::DurationSecsRole).toInt())
+        .arg(model.data(idx, CallHistoryModel::WhenRole).toLongLong());
+}
+
+/* The ruling on B2/B5: a fragment that turns out to be another system's takes back every field it gave its row, not
+ * only its texts: its frequency, access code, site, receive evidence and service (with the name it gave), emergency and
+ * crypto flags, the span it added and the reception scope it strengthened. The row rebuilds them from its other
+ * fragments by the merge's own rules, live and when the withdrawal comes after a reload (the parts are stored). */
+void
+test_fragment_on_another_system_withdraws_call_fields(void) {
+    const time_t when = 1754706800;
+    for (int reloadFirst = 0; reloadFirst < 2; reloadFirst++) {
+        resetStorage();
+        RingFixture ring;
+        QString alone;
+        auto model = std::make_unique<CallHistoryModel>();
+        Event_History* a = ring.commit(0, 80671U, 8671U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(a, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        model->refresh(ring.state);
+        alone = part_fields_of(*model, 0);
+        {
+            Event_History* joining = ring.commit(0, 80671U, 8671U, when + 5, when + 12);
+            joining->systype = DSD_SYNC_P25P1_POS;
+            with_rx(joining, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+            RingFixture::carrier(joining, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+            joining->site_id.family = DSD_RXID_FAMILY_P25;
+            joining->site_id.valid = DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+            joining->site_id.p25_sysid = 0x1A3U;
+            joining->site_id.p25_rfss = 1U;
+            joining->site_id.p25_site = 2U;
+            DSD_SNPRINTF(joining->service_label, sizeof(joining->service_label), "%s", "Service B");
+            joining->receive_identity.known = 1;
+            joining->receive_identity.kind = DSD_RECEIVE_NAC;
+            joining->receive_identity.value = 0x293U;
+            joining->emergency = 1U;
+            joining->enc = 1U;
+        }
+        model->refresh(ring.state);
+        expect("fields: the NAC-only fragment joins the call and gives it its fields",
+               model->count() == 1 && part_fields_of(*model, 0) != alone
+                   && model->data(model->index(0), CallHistoryModel::FreqHzRole).toLongLong() == 453000000);
+        if (reloadFirst != 0) {
+            // Saved and loaded again before the core resolves the fragment: the row's parts come from the store.
+            model->startSaveForTest();
+            model->waitForSaveForTest();
+            model.reset();
+            model = std::make_unique<CallHistoryModel>();
+            expect("fields: the merged row reloads as it was",
+                   model->count() == 1 && part_fields_of(*model, 0) != alone);
+        }
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        b->freq_hz = 453000000;
+        ring.touchCommitted(0);
+        model->refresh(ring.state);
+        const QString after = model->count() == 1 ? part_fields_of(*model, 0) : QStringLiteral("<rows>");
+        expect(reloadFirst != 0 ? "fields: after a reload, another system's fragment gives back every field it gave"
+                                : "fields: another system's fragment gives back every field it gave",
+               after == alone);
+        if (after != alone) {
+            DSD_FPRINTF(stderr, "  want %s\n  got  %s\n", alone.toUtf8().constData(), after.toUtf8().constData());
+        }
+        model->startSaveForTest();
+        model->waitForSaveForTest();
+        model.reset();
+        const QJsonObject stored = stored_row_with(80671U, 8671U);
+        expect("fields: the withdrawn fragment's receive evidence and service are not saved",
+               !stored.isEmpty() && !stored.contains(QLatin1String("receiveKnown"))
+                   && !stored.contains(QLatin1String("service")));
+        expect("fields: the end the withdrawn fragment gave is not saved",
+               stored.value(QLatin1String("end")).toInteger() == static_cast<qint64>(when + 3));
+        CallHistoryModel reloaded;
+        expect("fields: the rebuilt row is the one saved",
+               reloaded.count() == 1 && part_fields_of(reloaded, 0) == alone);
+    }
+
+    // The reception scope the withdrawn fragment strengthened goes back to what the rest knew. An update is judged
+    // against what the row's other fragments gave: here the other fragment's sender system, which the update's
+    // contradicts (its NAC-only reception alone would agree with either system).
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* a = ring.commit(0, 80672U, 8672U, when, when + 3);
+    a->systype = DSD_SYNC_P25P1_POS;
+    with_rx(a, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+    a->pos.scope.kind = DSD_POS_SCOPE_P25;
+    a->pos.scope.a = 0xBEE00U;
+    a->pos.scope.b = 0x1A3U;
+    Event_History* b = ring.commit(0, 80672U, 8672U, when - 6, when + 1);
+    b->systype = DSD_SYNC_P25P1_POS;
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+    model.refresh(ring.state);
+    expect("fields: an earlier fragment starts the row",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when - 6));
+    b = &ring.rings[0].Event_History_Items[1];
+    with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+    b->pos.scope.kind = DSD_POS_SCOPE_P25;
+    b->pos.scope.a = 0xBEE00U;
+    b->pos.scope.b = 0x1A4U;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonObject rx = stored_row_with(80672U, 8672U).value(QLatin1String("rx")).toObject();
+    expect("fields: the reception scope the withdrawn fragment strengthened is the rest's again",
+           model.count() == 1 && rx.value(QLatin1String("k")).toInt() == DSD_POS_SCOPE_P25_NAC
+               && rx.value(QLatin1String("a")).toInt() == 0x293);
+    expect("fields: the start the withdrawn fragment gave is the rest's again",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::WhenRole).toLongLong() == static_cast<qint64>(when)
+               && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 3);
+
+    // A row an older build stored with several fragments keeps no parts to rebuild from: the frequency and access code
+    // the withdrawn fragment gave are cleared rather than kept.
+    resetStorage();
+    RingFixture legacy;
+    {
+        CallHistoryModel merged;
+        Event_History* first = legacy.commit(0, 80673U, 8673U, when, when + 3);
+        first->systype = DSD_SYNC_P25P1_POS;
+        with_rx(first, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(first, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        Event_History* second = legacy.commit(0, 80673U, 8673U, when + 5, when + 8);
+        second->systype = DSD_SYNC_P25P1_POS;
+        with_rx(second, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+        RingFixture::carrier(second, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+        merged.refresh(legacy.state);
+        expect("fields: the older row merges", merged.count() == 1);
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    QJsonObject row = rows.at(0).toObject();
+    expect("fields: a merged row stores its parts", row.contains(QLatin1String("fp")));
+    row.remove(QLatin1String("fp"));
+    rows.replace(0, row);
+    expect("fields: the older row is written", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel older;
+        Event_History* second = &legacy.rings[0].Event_History_Items[1];
+        with_rx(second, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        second->freq_hz = 453000000;
+        legacy.touchCommitted(0);
+        older.refresh(legacy.state);
+        expect("fields: an older row clears the frequency and code the withdrawn fragment gave",
+               older.count() == 1 && older.data(older.index(0), CallHistoryModel::FreqHzRole).toLongLong() == 0
+                   && older.data(older.index(0), CallHistoryModel::AccessCodeRole).toString().isEmpty());
+    }
+}
+
+/* B2/B5: a fragment withdrawn from its row (its reading names another system) is another call's, so its recording is
+ * not the row's: the row's recording roles, recordingsForUid(), the export's recording names and uidForFragment() leave
+ * it out, live and after a reload, while the row keeps the fragment's key to know its later readings. A reading that
+ * agrees again gives the recording back. */
+void
+test_withdrawn_fragment_recordings(void) {
+    const time_t when = 1754706900;
+    resetStorage();
+    RingFixture ring;
+    FakeRecordings recordings;
+    QString joined;
+    qint64 uid = 0;
+    {
+        CallHistoryModel model;
+        model.setRecordingProvider(&recordings);
+        Event_History* a = ring.commit(0, 80681U, 8681U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        Event_History* b = ring.commit(0, 80681U, 8681U, when + 5, when + 8);
+        b->systype = DSD_SYNC_P25P1_POS;
+        with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+        joined = newest_fragment(ring, 0);
+        recordings.recorded = {joined};
+        model.refresh(ring.state);
+        uid = uid_at(model, 0);
+        expect("withdrawn recording: the NAC-only fragment joins the call with its recording",
+               model.count() == 1 && has_recording(model, 0) && model.recordingsForUid(uid).size() == 1
+                   && qRound64(model.uidForFragment(joined)) == uid);
+        b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        const QList<CallHistoryModel::ExportRow> exported = model.exportRows({0});
+        expect("withdrawn recording: the row no longer offers the other system's recording",
+               model.count() == 1 && !has_recording(model, 0)
+                   && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().isEmpty()
+                   && model.recordingsForUid(uid).isEmpty());
+        expect("withdrawn recording: the export names no recording of it",
+               exported.size() == 1 && exported.at(0).recordingNames.isEmpty());
+        expect("withdrawn recording: its recording names no row", qRound64(model.uidForFragment(joined)) == 0);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel reloaded;
+        reloaded.setRecordingProvider(&recordings);
+        expect("withdrawn recording: the same after a reload", reloaded.count() == 1 && !has_recording(reloaded, 0)
+                                                                   && reloaded.recordingsForUid(uid).isEmpty()
+                                                                   && qRound64(reloaded.uidForFragment(joined)) == 0);
+        Event_History* b = &ring.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        ring.touchCommitted(0);
+        reloaded.refresh(ring.state);
+        expect("withdrawn recording: a reading that agrees again gives the recording back",
+               reloaded.count() == 1 && has_recording(reloaded, 0) && reloaded.recordingsForUid(uid).size() == 1
+                   && qRound64(reloaded.uidForFragment(joined)) == uid);
+    }
+}
+
+/** Everything row @p row shows that a fragment can give it: its sender, label and detail (message and GPS) beside the
+ * call fields (part_fields_of()), as one line to compare. */
+QString
+contribution_fields_of(const CallHistoryModel& model, int row) {
+    const QModelIndex idx = model.index(row);
+    return QStringLiteral("session=%1 src=%2 label=%3 detail=%4 %5")
+        .arg(model.data(idx, CallHistoryModel::SessionRole).toLongLong())
+        .arg(model.data(idx, CallHistoryModel::SrcRole).toULongLong())
+        .arg(model.data(idx, CallHistoryModel::SourceNameRole).toString())
+        .arg(model.data(idx, CallHistoryModel::DetailRole).toString())
+        .arg(part_fields_of(model, row));
+}
+
+/* B2/B5, one model for every field: a fragment's contribution is its part (FragmentPart), keyed by its ring identity,
+ * and the row is the fold of its parts. A P25 row of unknown source heard on one full system merges a NAC-only
+ * fragment, heard in the next decode session, that names the radio and gives the row its label, message, fix,
+ * frequency, access code, site, service, flags, span and session. When that fragment's later reading names another system, the row shows exactly what its own
+ * fragment alone gave it, the radio included, live and when the withdrawal comes after a reload; nothing of it is
+ * saved; and a later fragment naming the row's real radio joins the row and names it. */
+void
+test_fragment_contributions_withdraw_together(void) {
+    const time_t when = 1754707000;
+    for (int reloadFirst = 0; reloadFirst < 2; reloadFirst++) {
+        resetStorage();
+        RingFixture ring;
+        auto model = std::make_unique<CallHistoryModel>();
+        Event_History* a = ring.commit(0, 80691U, 0U, when, when + 3);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        RingFixture::carrier(a, 452000000, DSD_ACCESS_CODE_NONE, 0U);
+        model->refresh(ring.state);
+        const QString alone = contribution_fields_of(*model, 0);
+        // Heard in the next decode session: the row becomes that session's too, while the fragment is its own.
+        model->beginSession();
+        Event_History* f = ring.commit(0, 80691U, 8691U, when + 5, when + 12);
+        f->systype = DSD_SYNC_P25P1_POS;
+        with_rx(f, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 453000000);
+        RingFixture::carrier(f, 453000000, DSD_ACCESS_CODE_NAC, 0x293U);
+        with_gps(f, "GPS: F", 225000000, 450000000, 9U);
+        f->pos.scope.kind = DSD_POS_SCOPE_P25_NAC;
+        f->pos.scope.a = 0x293U;
+        f->pos.identity_freq_hz = 453000000;
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Copy F");
+        DSD_SNPRINTF(f->s_name, sizeof(f->s_name), "%s", "Alias F");
+        DSD_SNPRINTF(f->service_label, sizeof(f->service_label), "%s", "Service F");
+        f->receive_identity.known = 1;
+        f->receive_identity.kind = DSD_RECEIVE_NAC;
+        f->receive_identity.value = 0x293U;
+        f->site_id.family = DSD_RXID_FAMILY_P25;
+        f->site_id.valid = DSD_RXID_P25_SYSID | DSD_RXID_P25_SITE;
+        f->site_id.p25_sysid = 0x1A3U;
+        f->site_id.p25_rfss = 1U;
+        f->site_id.p25_site = 2U;
+        f->emergency = 1U;
+        f->enc = 1U;
+        model->refresh(ring.state);
+        expect("contributions: the NAC-only fragment joins the call and names its radio",
+               model->count() == 1 && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8691U
+                   && model->data(model->index(0), CallHistoryModel::SessionRole).toLongLong() == model->session()
+                   && model->data(model->index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias F")
+                   && detail_of(*model, 0) == QStringLiteral("Copy F · GPS: F"));
+        if (reloadFirst != 0) {
+            model->startSaveForTest();
+            model->waitForSaveForTest();
+            model.reset();
+            model = std::make_unique<CallHistoryModel>();
+            expect("contributions: the merged row reloads with its radio",
+                   model->count() == 1
+                       && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8691U);
+        }
+        f = &ring.rings[0].Event_History_Items[1];
+        with_rx(f, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        f->freq_hz = 453000000;
+        f->pos.scope.kind = DSD_POS_SCOPE_P25;
+        f->pos.scope.a = 0xBEE00U;
+        f->pos.scope.b = 0x1A4U;
+        f->pos.identity_freq_hz = 0;
+        ring.touchCommitted(0);
+        model->refresh(ring.state);
+        const QString after = model->count() == 1 ? contribution_fields_of(*model, 0) : QStringLiteral("<rows>");
+        expect(reloadFirst != 0 ? "contributions: after a reload, the withdrawn fragment gives back every field"
+                                : "contributions: the withdrawn fragment gives back every field, its radio included",
+               after == alone);
+        if (after != alone) {
+            DSD_FPRINTF(stderr, "  want %s\n  got  %s\n", alone.toUtf8().constData(), after.toUtf8().constData());
+        }
+        model->startSaveForTest();
+        model->waitForSaveForTest();
+        model.reset();
+        const QJsonObject stored = stored_row_with(80691U, 0U);
+        expect("contributions: nothing the withdrawn fragment gave is saved",
+               !stored.isEmpty() && stored.value(QLatin1String("srcName")).toString().isEmpty()
+                   && !stored.contains(QLatin1String("msg")) && !stored.contains(QLatin1String("gps"))
+                   && !stored.contains(QLatin1String("pos")) && !stored.contains(QLatin1String("sscope"))
+                   && !stored.contains(QLatin1String("service")));
+        model = std::make_unique<CallHistoryModel>();
+        expect("contributions: the rebuilt row is the one reloaded",
+               model->count() == 1 && contribution_fields_of(*model, 0) == alone);
+        Event_History* c = ring.commit(0, 80691U, 8692U, when + 4, when + 8);
+        c->systype = DSD_SYNC_P25P1_POS;
+        with_rx(c, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        model->refresh(ring.state);
+        expect("contributions: a fragment naming the row's real radio joins the row and names it",
+               model->count() == 1 && model->data(model->index(0), CallHistoryModel::SrcRole).toULongLong() == 8692U);
+    }
+}
+
+/* B2: what a fragment gave is its own by its ring identity, not by its start, push stamp and slot alone, which two
+ * decoder runs replaying one call share. A call replayed in two rings at once: the first ring's fragment gives the row
+ * a message, a label and a fix; the second ring's fragment, with the same stamps but none of them, later names another
+ * system. Its withdrawal leaves the first ring's message, label and fix on the row, live and after a reload. */
+void
+test_fragment_withdrawal_keeps_other_ring_payload(void) {
+    const time_t when = 1754707100;
+    resetStorage();
+    RingFixture first;
+    RingFixture second;
+    {
+        CallHistoryModel model;
+        Event_History* a = first.commit(0, 80693U, 8693U, when, when + 4);
+        a->systype = DSD_SYNC_P25P1_POS;
+        with_rx(a, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0);
+        DSD_SNPRINTF(a->text_message, sizeof(a->text_message), "%s", "Copy A");
+        DSD_SNPRINTF(a->s_name, sizeof(a->s_name), "%s", "Alias A");
+        with_gps(a, "GPS: A", 100000000, 200000000, 3U);
+        model.refresh(first.state);
+        Event_History* b = second.commit(0, 80693U, 8693U, when, when + 4);
+        b->systype = DSD_SYNC_P25P1_POS;
+        with_rx(b, DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000);
+        model.refresh(second.state);
+        expect("other ring: the two rings' fragments are one call with the first ring's message and label",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy A · GPS: A")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias A"));
+        b = &second.rings[0].Event_History_Items[1];
+        with_rx(b, DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A4U, 0);
+        second.touchCommitted(0);
+        model.refresh(second.state);
+        expect("other ring: the second ring's withdrawal leaves the first ring's message and label",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Copy A · GPS: A")
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Alias A"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("other ring: the same after a reload",
+           reloaded.count() == 1 && detail_of(reloaded, 0) == QStringLiteral("Copy A · GPS: A")
+               && reloaded.data(reloaded.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Alias A"));
+}
+
+/* B4: an update found by its fragment is not merged again, so its destination is checked again too. An M17 callsign
+ * fragment with no destination yet joins one caller's call to DEST-ONE under the service both name; when its later
+ * reading names DEST-TWO and carries a message, that message is not shown on DEST-ONE's row, live and after a
+ * reload, and its earlier contribution goes. An update is judged against what the row's other fragments gave: a
+ * fragment that gave the row its only destination and later names another simply names that one. */
+void
+test_fragment_update_rechecks_destination(void) {
+    const time_t when = 1754707200;
+    resetStorage();
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* a = ring.commit(0, 0U, 0U, when, when + 3, "DEST-ONE");
+        a->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "N0CALL");
+        DSD_SNPRINTF(a->service_label, sizeof(a->service_label), "%s", "Club CAN 3");
+        Event_History* f = ring.commit(0, 0U, 0U, when + 4, when + 7, "");
+        f->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+        DSD_SNPRINTF(f->service_label, sizeof(f->service_label), "%s", "Club CAN 3");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Hello");
+        model.refresh(ring.state);
+        expect("destination: the fragment with no destination joins the call and gives it its message",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Hello"));
+        f = &ring.rings[0].Event_History_Items[1];
+        DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+        f->event_time = when + 9;
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("destination: another destination's message and span stay off the row",
+               model.count() == 1 && detail_of(model, 0).isEmpty()
+                   && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 3);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel reloaded;
+        expect("destination: the same after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+    }
+
+    resetStorage();
+    RingFixture own;
+    CallHistoryModel model;
+    Event_History* a = own.commit(0, 0U, 0U, when, when + 3, "");
+    a->systype = DSD_SYNC_M17_STR_POS;
+    DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "N0CALL");
+    Event_History* f = own.commit(0, 0U, 0U, when + 4, when + 7, "DEST-ONE");
+    f->systype = DSD_SYNC_M17_STR_POS;
+    DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+    model.refresh(own.state);
+    expect("destination: a fragment gives the row its only destination", model.count() == 1);
+    f = &own.rings[0].Event_History_Items[1];
+    DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+    DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+    own.touchCommitted(0);
+    model.refresh(own.state);
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("destination: its later reading names its new destination on the row",
+           model.count() == 1 && detail_of(model, 0) == QStringLiteral("For two") && rows.size() == 1
+               && rows.at(0).toObject().value(QLatin1String("tgtText")).toString() == QStringLiteral("DEST-TWO"));
+}
+
+/* A stored value reads into a 64-bit field only when it is a whole number: a missing key, a string, a fraction or a
+ * number past 64 bits is refused, and no stand-in value counts as a stored one. */
+void
+test_json_field_fits_judges_conversion(void) {
+    const QJsonObject obj{{QStringLiteral("text"), QStringLiteral("12")},
+                          {QStringLiteral("half"), 0.5},
+                          {QStringLiteral("huge"), 1e300},
+                          {QStringLiteral("neg"), static_cast<qint64>(-5)},
+                          {QStringLiteral("big"), static_cast<qint64>(1) << 40}};
+    qint64 out = 7;
+    expect("json_field_fits: a missing key is refused", !dsd_qt::json_field_fits(obj, "none", &out) && out == 7);
+    expect("json_field_fits: a string is refused", !dsd_qt::json_field_fits(obj, "text", &out) && out == 7);
+    expect("json_field_fits: a fraction is refused", !dsd_qt::json_field_fits(obj, "half", &out) && out == 7);
+    expect("json_field_fits: a number past 64 bits is refused",
+           !dsd_qt::json_field_fits(obj, "huge", &out) && out == 7);
+    expect("json_field_fits: a negative whole number fits", dsd_qt::json_field_fits(obj, "neg", &out) && out == -5);
+    expect("json_field_fits: a 40-bit whole number fits",
+           dsd_qt::json_field_fits(obj, "big", &out) && out == (static_cast<qint64>(1) << 40));
+    uint32_t narrow = 3U;
+    expect("json_field_fits: a value past the field is refused", !dsd_qt::json_field_fits(obj, "big", &narrow)
+                                                                     && !dsd_qt::json_field_fits(obj, "neg", &narrow)
+                                                                     && narrow == 3U);
+}
+
+/* A stored system identity (`rx`, `sscope`) with a part no record could hold reads as not known, so the stored row still
+ * takes in a fragment of its call: a discriminator that is missing, no number, fractional, negative or past a 32-bit
+ * frequency; a discriminator on a scope that has none; a b part where the kind has none; a frequency scope without its
+ * frequency; an EDACS part not in its stored form. So does a stored sync type that is no integer. Each corruption is
+ * applied to a row the model wrote, whose valid identity the next fragment repeats. */
+void
+test_stored_identity_parts_are_validated(void) {
+    const time_t when = 1754706750;
+
+    struct Case {
+        const char* what;
+        uint8_t kind;
+        uint32_t a;
+        uint32_t b;
+        int64_t freq;
+        const char* key;
+        QJsonValue value;
+    };
+
+    const QJsonValue removed(QJsonValue::Undefined);
+    const Case cases[] = {
+        {"stored scope: a missing discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f", removed},
+        {"stored scope: a discriminator that is no number", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(QStringLiteral("452500000"))},
+        {"stored scope: a fractional discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(452500000.5)},
+        {"stored scope: a negative discriminator", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(-452500000))},
+        {"stored scope: a discriminator past 32 bits", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "f",
+         QJsonValue(static_cast<qint64>(0x100000000LL + 452500000LL))},
+        {"stored scope: a NAC scope with a b part", DSD_POS_SCOPE_P25_NAC, 0x293U, 0U, 452500000, "b", QJsonValue(7)},
+        {"stored scope: a discriminator on a full system", DSD_POS_SCOPE_P25, 0xBEE00U, 0x1A3U, 0, "f",
+         QJsonValue(static_cast<qint64>(452500000))},
+        {"stored scope: a tuned-frequency scope without its frequency", DSD_POS_SCOPE_FEED_TUNED_FREQ, 446006250U, 0U,
+         0, "a", QJsonValue(0)},
+        {"stored scope: an EDACS part not in its stored form", DSD_POS_SCOPE_FEED_EDACS, 0x10005U, 0U, 0, "a",
+         QJsonValue(5)},
+    };
+    for (const Case& c : cases) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            Event_History* first = ring.commit(0, 80661U, 8661U, when, when + 3);
+            first->systype = DSD_SYNC_P25P1_POS;
+            with_rx(first, c.kind, c.a, c.b, c.freq);
+            first->pos.scope.kind = c.kind;
+            first->pos.scope.a = c.a;
+            first->pos.scope.b = c.b;
+            first->pos.identity_freq_hz = c.freq;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        for (const char* scopeKey : {"rx", "sscope"}) {
+            QJsonObject scope = row.value(QLatin1String(scopeKey)).toObject();
+            expect(c.what, !scope.isEmpty());
+            if (c.value.isUndefined()) {
+                scope.remove(QLatin1String(c.key));
+            } else {
+                scope.insert(QLatin1String(c.key), c.value);
+            }
+            row.insert(QLatin1String(scopeKey), scope);
+        }
+        rows.replace(0, row);
+        expect(c.what, dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            Event_History* next = ring.commit(0, 80661U, 8661U, when + 5, when + 8);
+            next->systype = DSD_SYNC_P25P1_POS;
+            with_rx(next, c.kind, c.a, c.b, c.freq);
+            next->pos.scope.kind = c.kind;
+            next->pos.scope.a = c.a;
+            next->pos.scope.b = c.b;
+            next->pos.identity_freq_hz = c.freq;
+            reloaded.refresh(ring.state);
+            expect(c.what, reloaded.count() == 1);
+        }
+        const QJsonObject rx = stored_row_with(80661U, 8661U).value(QLatin1String("rx")).toObject();
+        expect(c.what, rx.value(QLatin1String("k")).toInt() == c.kind
+                           && rx.value(QLatin1String("a")).toInteger() == static_cast<qint64>(c.a)
+                           && rx.value(QLatin1String("b")).toInteger() == static_cast<qint64>(c.b)
+                           && rx.value(QLatin1String("f")).toInteger() == c.freq);
+    }
+
+    // A stored sync type that is no integer is not known: the row reads no protocol, not the sync type 0 a string
+    // converts to.
+    for (const QJsonValue& proto : {QJsonValue(QStringLiteral("x")), QJsonValue(0.5)}) {
+        resetStorage();
+        RingFixture ring;
+        {
+            CallHistoryModel model;
+            ring.commit(0, 80662U, 8662U, when, when + 3)->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+            model.refresh(ring.state);
+        }
+        QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+        QJsonObject row = rows.at(0).toObject();
+        expect("stored sync type: written", row.contains(QLatin1String("proto")));
+        row.insert(QLatin1String("proto"), proto);
+        rows.replace(0, row);
+        expect("stored sync type: rewritten", dsd_qt::json_store_save_array("call_history.json", rows));
+        {
+            CallHistoryModel reloaded;
+            reloaded.startSaveForTest();
+            reloaded.waitForSaveForTest();
+        }
+        expect("stored sync type: one that is no integer reads as not known",
+               !stored_row_with(80662U, 8662U).isEmpty()
+                   && !stored_row_with(80662U, 8662U).contains(QLatin1String("proto")));
+    }
+}
+
+/* A notice decoded again is the logged one only when it is the same fix: the same text with another position is another
+ * delivery. The rev and the process of a decode in a fresh ring differ and do not count. */
+void
+test_repeated_notice_compares_the_fix(void) {
+    resetStorage();
+    const time_t when = 1754707000;
+    CallHistoryModel model;
+    {
+        RingFixture ring;
+        with_gps(ring.commitNotice(0, when, "2026-11-17 12:00:00 LRRP position"), "LRRP", 225000000, 450000000, 3U);
+        model.refresh(ring.state);
+        expect("repeat: the notice lands", model.count() == 1);
+    }
+    {
+        RingFixture again;
+        with_gps(again.commitNotice(0, when, "2026-11-17 12:00:00 LRRP position"), "LRRP", 225000000, 450000000, 40U)
+            ->pos.proc_instance = 0xBEEFULL;
+        model.refresh(again.state);
+        expect("repeat: the same fix decoded again is the same delivery", model.count() == 1);
+    }
+    {
+        RingFixture other;
+        with_gps(other.commitNotice(0, when, "2026-11-17 12:00:00 LRRP position"), "LRRP", 226000000, 450000000, 41U);
+        model.refresh(other.state);
+        expect("repeat: the same text with another fix is another delivery", model.count() == 2);
+    }
+}
+
+/* Fail closed, one model (issue #800): a log an older build stored before fragments were kept (no `fr`, no `fp`) is
+ * converted into the fragment-contributions model on load, each stored row a part of its own. Two adjacent rows of one
+ * talkgroup fold into one, and that row is the fold of both parts: the source ID and the emergency flag only the later
+ * row learned are kept, at load and after a save and reload. */
+void
+test_legacy_rows_fold_as_parts(void) {
+    resetStorage();
+    const qint64 when = 1754707300;
+    QJsonObject earlier{{QStringLiteral("when"), when},
+                        {QStringLiteral("end"), when + 3},
+                        {QStringLiteral("name"), QStringLiteral("Talkgroup 80701")},
+                        {QStringLiteral("tg"), 80701},
+                        {QStringLiteral("src"), 0},
+                        {QStringLiteral("durationSecs"), 3},
+                        {QStringLiteral("slot"), 0},
+                        {QStringLiteral("seq"), 1},
+                        {QStringLiteral("session"), 1}};
+    QJsonObject later = earlier;
+    later.insert(QStringLiteral("when"), when + 4);
+    later.insert(QStringLiteral("end"), when + 9);
+    later.insert(QStringLiteral("durationSecs"), 5);
+    later.insert(QStringLiteral("src"), 8701);
+    later.insert(QStringLiteral("em"), true);
+    later.insert(QStringLiteral("seq"), 2);
+    expect("legacy parts: an older build's store is written",
+           dsd_qt::json_store_save_array("call_history.json", QJsonArray{later, earlier}));
+    const auto folded = [when](const CallHistoryModel& model) {
+        const QModelIndex idx = model.index(0);
+        return model.count() == 1 && model.data(idx, CallHistoryModel::SrcRole).toULongLong() == 8701U
+               && model.data(idx, CallHistoryModel::EmergencyRole).toBool()
+               && model.data(idx, CallHistoryModel::WhenRole).toLongLong() == when
+               && model.data(idx, CallHistoryModel::DurationSecsRole).toInt() == 9;
+    };
+    {
+        CallHistoryModel model;
+        expect("legacy parts: the two rows fold into one that keeps what the later row learned", folded(model));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("legacy parts: the same after a save and reload", folded(reloaded));
+}
+
+/* Fail closed (issue #800): a destination is the call's, whoever sent the fragment that names it. Three D-STAR
+ * fragments on one named channel: N0CALL with no destination, an unknown caller to DEST-ONE, then N0CALL to DEST-TWO.
+ * The senderless fragment may join N0CALL's call, but its destination is the row's then, so the third fragment, naming
+ * another destination, is another call; the row shows DEST-ONE, the name its only destination gave it. */
+void
+test_senderless_fragment_keeps_its_destination(void) {
+    resetStorage();
+    const time_t when = 1754707400;
+    RingFixture ring;
+    CallHistoryModel model;
+    Event_History* first = ring.commit(0, 0U, 0U, when, when + 2, "", "", "Club channel");
+    first->systype = DSD_SYNC_DSTAR_HD_POS;
+    DSD_SNPRINTF(first->src_str, sizeof(first->src_str), "%s", "N0CALL");
+    model.refresh(ring.state);
+    Event_History* anonymous = ring.commit(0, 0U, 0U, when + 3, when + 5, "DEST-ONE", "", "Club channel");
+    anonymous->systype = DSD_SYNC_DSTAR_HD_POS;
+    model.refresh(ring.state);
+    expect("destination: the senderless fragment joins N0CALL's call", model.count() == 1);
+    Event_History* other = ring.commit(0, 0U, 0U, when + 6, when + 8, "DEST-TWO", "", "Club channel");
+    other->systype = DSD_SYNC_DSTAR_HD_POS;
+    DSD_SNPRINTF(other->src_str, sizeof(other->src_str), "%s", "N0CALL");
+    model.refresh(ring.state);
+    expect("destination: a fragment naming another destination is another call", model.count() == 2);
+    const int joined = model.count() == 2 ? 1 : 0;
+    expect("destination: the joined row shows the destination its senderless fragment named",
+           model.data(model.index(joined), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-ONE")
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-TWO"));
+    model.startSaveForTest();
+    model.waitForSaveForTest();
+    const QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("destination: the joined row stores its destination",
+           rows.size() == 2 && rows.at(1).toObject().value(QLatin1String("tgtText")).toString() == "DEST-ONE");
+}
+
+/* Fail closed (issue #800): a fragment's part is its newest reading, whole. A single M17 fragment reread from DEST-ONE
+ * to DEST-TWO shows DEST-TWO as its name beside its new message, live and after a reload: the name its destination gave
+ * it changes with the destination. */
+void
+test_reread_destination_renames_row(void) {
+    resetStorage();
+    const time_t when = 1754707500;
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* f = ring.commit(0, 0U, 0U, when, when + 3, "DEST-ONE");
+        f->systype = DSD_SYNC_M17_STR_POS;
+        DSD_SNPRINTF(f->src_str, sizeof(f->src_str), "%s", "N0CALL");
+        model.refresh(ring.state);
+        expect("rename: the row is named by its destination",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-ONE"));
+        f = &ring.rings[0].Event_History_Items[1];
+        DSD_SNPRINTF(f->tgt_str, sizeof(f->tgt_str), "%s", "DEST-TWO");
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "For two");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("rename: the reread destination names the row beside its message",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("DEST-TWO")
+                   && detail_of(model, 0) == QStringLiteral("For two"));
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("rename: the same after a reload",
+           reloaded.count() == 1
+               && reloaded.data(reloaded.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("DEST-TWO"));
+}
+
+/* Fail closed (issue #800): a fragment first read with no source and a text message, then reread naming radio 9999 and
+ * no message, shows no message: the anonymous text its earlier reading carried is not attributed to that radio, live
+ * and after a reload. */
+void
+test_reread_sender_drops_withdrawn_text(void) {
+    resetStorage();
+    const time_t when = 1754707600;
+    RingFixture ring;
+    {
+        CallHistoryModel model;
+        Event_History* f = ring.commit(0, 80702U, 0U, when, when + 3);
+        f->systype = DSD_SYNC_P25P1_POS;
+        DSD_SNPRINTF(f->text_message, sizeof(f->text_message), "%s", "Anonymous text");
+        model.refresh(ring.state);
+        expect("sender: the anonymous reading shows its text",
+               model.count() == 1 && detail_of(model, 0) == QStringLiteral("Anonymous text"));
+        f = &ring.rings[0].Event_History_Items[1];
+        f->source_id = 9999U;
+        f->text_message[0] = '\0';
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("sender: the named reading shows no withdrawn text",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::SrcRole).toULongLong() == 9999U
+                   && detail_of(model, 0).isEmpty());
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    CallHistoryModel reloaded;
+    expect("sender: the same after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
+}
+
 } // namespace
 
 int
@@ -5213,6 +7780,7 @@ main(int argc, char** argv) {
     test_carrier_filled_in_place_reingests();
     test_fragments_on_different_frequencies_merge();
     test_repeated_notice_gains_carrier();
+    test_repeated_legacy_notice_matches_its_detail();
     test_site_roles_and_text();
     test_site_survives_save_and_reload();
     test_store_without_site_keys_loads_unknown();
@@ -5274,6 +7842,48 @@ main(int argc, char** argv) {
     test_startless_fragment_extends_known_end();
     test_startless_fold_keeps_later_end();
     test_row_without_start_time_reads_unknown();
+    test_voice_row_keeps_gps_and_message();
+    test_position_role_feeds_the_map_pin();
+    test_call_kind_is_kept_and_parts_calls();
+    test_texts_and_position_survive_save_reload_and_spill();
+    test_spill_replay_keeps_newer_revision();
+    test_spill_text_only_replay_keeps_saved_position();
+    test_lost_fix_gives_way_to_remaining_fragment();
+    test_cleared_fix_leaves_single_fragment_row();
+    test_restamped_fragment_withdraws_its_fix();
+    test_restamped_fragment_found_by_identity();
+    test_update_proving_other_slot_is_taken_back();
+    test_fragment_update_learns_target();
+    test_long_call_fold_lookups_stay_linear();
+    test_spill_replay_keeps_newer_message();
+    test_fragment_texts_follow_the_rows_radio();
+    test_position_order_follows_runs_and_revs();
+    test_callsign_callers_stay_apart();
+    test_identity_placeholders_are_no_raw_identity();
+    test_named_row_drops_anonymous_position();
+    test_fragment_label_follows_the_rows_radio();
+    test_textual_destinations_under_one_service_stay_apart();
+    test_system_identity_splits_conventional_systems();
+    test_weaker_identity_joins_stronger();
+    test_fix_stays_on_its_reception();
+    test_fix_stays_on_its_carrier();
+    test_fix_stays_on_its_p25_phase();
+    test_merged_row_keeps_its_anchor();
+    test_late_position_rechecks_reception_system();
+    test_fragment_on_another_system_withdraws_payload();
+    test_fragment_on_another_system_withdraws_call_fields();
+    test_withdrawn_fragment_recordings();
+    test_fragment_contributions_withdraw_together();
+    test_fragment_withdrawal_keeps_other_ring_payload();
+    test_fragment_update_rechecks_destination();
+    test_json_field_fits_judges_conversion();
+    test_stored_identity_parts_are_validated();
+    test_partial_identity_joins_fuller();
+    test_repeated_notice_compares_the_fix();
+    test_legacy_rows_fold_as_parts();
+    test_senderless_fragment_keeps_its_destination();
+    test_reread_destination_renames_row();
+    test_reread_sender_drops_withdrawn_text();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -7,7 +7,9 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include "dstar_confirm.h"
+#include "dstar_sd_state.h"
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
@@ -22,6 +24,30 @@ dstar_confirm_reset(dsd_state* state) {
     state->dstar_confirmed = 0;
     state->dstar_confirm_weak_streak = 0;
     state->dstar_confirm_frame_evidence = 0;
+    /* What slow data was assembling belongs to the transmission being forgotten. */
+    dstar_tx_begin(state);
+}
+
+void
+dstar_tx_begin(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dstar_tx_seq++;
+    state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
+    dstar_sd_state_clear(state);
+}
+
+void
+dstar_tx_unname(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->dstar_tx_call_epoch = 0U;
+    DSD_MEMSET(&state->dstar_tx_call_origin, 0, sizeof(state->dstar_tx_call_origin));
+    /* What was assembled under the naming resets at its next use (its binding names a call no longer named); what was
+       assembled under none (anonymous) is no part of it and goes on. */
 }
 
 void

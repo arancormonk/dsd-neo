@@ -10,6 +10,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -22,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/receive_types.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -294,6 +296,114 @@ test_failed_lc_holds_no_scan(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* The embedded GPS LC names the destination the call's checked voice LC named, with its group flag (issue #800): one
+ * radio's fix sent in a group call and then in a private call is two records. */
+static int
+test_checked_lc_names_destination(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    fixture(opts, state); /* group voice LC: talkgroup 2002, source 1001 */
+    CHECK(dsd_position_feed_start(state) == 0);
+    uint8_t bits[96];
+    build_gps(bits);
+    send_lc(opts, state, bits, 1, 3);
+    build_voice_lc(bits, 3003U, 1001U);
+    set_bits(bits, 2, 6, 0x03U); /* unit to unit voice channel user */
+    send_lc(opts, state, bits, 1, 1);
+    build_gps(bits);
+    send_lc(opts, state, bits, 1, 3);
+    dsd_position_fix recs[4];
+    dsd_position_feed_meta meta;
+    CHECK(dsd_position_feed_copy_since(state, 0U, recs, 4, &meta) == 2);
+    CHECK(recs[0].source_id == 1001U && recs[0].target_id == 2002U
+          && (recs[0].flags & DSD_POS_FLAG_TARGET_GROUP) != 0U);
+    CHECK(recs[1].source_id == 1001U && recs[1].target_id == 3003U
+          && (recs[1].flags & DSD_POS_FLAG_TARGET_GROUP) == 0U);
+    return failed;
+}
+
+/* A voice LC header begins another transmission even when its own check failed and the call stays ACTIVE (radio 1001's
+ * terminator was missed): the embedded GPS LC after it is no longer 1001's, and is anonymous until a checked LC names
+ * the radio sending it (issue #800). A RAS-accepted header names no one either. */
+static int
+test_failed_header_unbinds_embedded_gps(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    for (int ras = 0; ras <= 1; ras++) {
+        fixture(opts, state); /* group voice LC: talkgroup 2002, source 1001 */
+        CHECK(dsd_position_feed_start(state) == 0);
+        uint8_t bits[96];
+        build_gps(bits);
+        send_lc(opts, state, bits, 1, 3);
+        build_voice_lc(bits, 2002U, 1002U);
+        if (ras) {
+            /* The burst handler's RAS acceptance: CRCCorrect 1, the slot's scope flagged. */
+            const uint8_t saved = state->event_crc_invalid[0];
+            state->event_crc_invalid[0] = (uint8_t)(saved | DSD_CRC_RAS_UNVERIFIED);
+            uint32_t errors = 0;
+            dmr_flco(opts, state, bits, 1U, &errors, 1);
+            state->event_crc_invalid[0] = saved;
+        } else {
+            send_lc(opts, state, bits, 0, 1);
+        }
+        CHECK(ras || call_is_clean(state)); /* the call layer keeps 1001's call: nothing checked replaced it */
+        build_gps(bits);
+        bits[30] ^= 1U; /* another place, so it is no repeat of the first fix */
+        send_lc(opts, state, bits, 1, 3);
+        build_voice_lc(bits, 2002U, 1002U);
+        send_lc(opts, state, bits, 1, 1);
+        build_gps(bits);
+        bits[31] ^= 1U;
+        send_lc(opts, state, bits, 1, 3);
+        dsd_position_fix recs[4];
+        dsd_position_feed_meta meta;
+        CHECK(dsd_position_feed_copy_since(state, 0U, recs, 4, &meta) == 3);
+        CHECK(recs[0].source_id == 1001U);
+        CHECK(recs[1].source_id == 0U && recs[1].target_id == 0U);
+        CHECK(recs[2].source_id == 1002U && recs[2].target_id == 2002U);
+    }
+    return failed;
+}
+
+/* A P25 call still open on the slot (its terminator missed) is not the call a DMR burst belongs to: the embedded GPS
+ * LC is judged by the receive policy as DMR, and names no one until a DMR call does (issue #800). With a color-code
+ * filter blocking the carrier's color code, the report is withheld even though no P25 filter is set. */
+static int
+test_other_protocol_call_gives_no_policy(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    for (int filtered = 0; filtered <= 1; filtered++) {
+        fixture(opts, state);
+        CHECK(dsd_position_feed_start(state) == 0);
+        dsd_call_observation p25;
+        DSD_MEMSET(&p25, 0, sizeof p25);
+        p25.protocol = DSD_SYNC_P25P1_POS;
+        p25.slot = 0U;
+        p25.kind = DSD_CALL_KIND_GROUP_VOICE;
+        p25.ota_target_id = 2002U;
+        p25.ota_source_id = 1001U;
+        CHECK(dsd_call_state_observe(state, &p25, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0);
+        state->dmr_color_code = 5U;
+        opts->receive.filters[DSD_RECEIVE_DCC].enabled = filtered;
+        opts->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = 1ULL << 5U;
+        uint8_t bits[96];
+        build_gps(bits);
+        send_lc(opts, state, bits, 1, 3);
+        dsd_position_fix recs[2];
+        dsd_position_feed_meta meta;
+        const int n = dsd_position_feed_copy_since(state, 0U, recs, 2, &meta);
+        if (filtered) {
+            CHECK(n == 0);
+            CHECK(strstr(state->dmr_embedded_gps[0], "GPS:") == NULL);
+        } else {
+            CHECK(n == 1);
+            CHECK(n == 1 && DSD_SYNC_IS_DMR(recs[0].protocol) && recs[0].source_id == 0U && recs[0].target_id == 0U);
+        }
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+        CHECK(row->gps_s[0] == '\0');
+        DSD_MEMSET(&opts->receive.filters[DSD_RECEIVE_DCC], 0, sizeof opts->receive.filters[DSD_RECEIVE_DCC]);
+    }
+    return failed;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -312,6 +422,9 @@ main(void) {
     failed |= test_checked_utf8_alias_through_flco(opts, state);
     failed |= test_failed_fragment_abandons_assembly(opts, state);
     failed |= test_failed_lc_holds_no_scan(opts, state);
+    failed |= test_checked_lc_names_destination(opts, state);
+    failed |= test_failed_header_unbinds_embedded_gps(opts, state);
+    failed |= test_other_protocol_call_gives_no_policy(opts, state);
     dsd_state_ext_free_all(state);
     free(history);
     free(state);

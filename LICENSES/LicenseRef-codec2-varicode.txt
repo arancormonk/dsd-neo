@@ -1,0 +1,43 @@
+codec2 varicode license grant
+
+From codec2 (https://github.com/arancormonk/codec2, a fork of https://github.com/drowe67/codec2),
+commit ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44 (release 1.2.0; archive
+https://github.com/arancormonk/codec2/archive/ad5e23bfdf93896a7344e06a5ff65aa76bcc5a44.tar.gz,
+SHA512
+57ccdacb2f6b7716fab642b3a401399f84b982b4a5edbd644931a4db6588e1f1ba2ea033537eebd5938a163c6c98522213ab6a987a1c3ed5c3c36fdab87773a7).
+This note records a reading, not a separate license: dsd-neo lists these files under codec2's
+LGPL-2.1 terms.
+
+----- src/varicode.c, lines 1-24 -----
+
+src/varicode.c, src/varicode.h and src/varicode_table.h grant their terms under "the GNU General
+Public License version 2.1". The Free Software Foundation has published no version 2.1 of the GNU
+General Public License. dsd-neo reads the grant as the GNU Lesser General Public License version
+2.1, the license of codec2's COPYING and the one its README.md names ("Codec 2 is an open source
+(LGPL 2.1) low bit rate speech codec"), and records these files as LGPL-2.1-only. The header of
+src/varicode.c follows, unmodified.
+
+//==========================================================================
+// Name:            varicode.h
+// Purpose:         Varicode encoded and decode functions
+// Created:         Nov 24, 2012
+// Authors:         David Rowe
+//
+// To test:
+//          $ gcc varicode.c -o varicode -DVARICODE_UNITTEST -Wall
+//          $ ./varicode
+//
+// License:
+//
+//  This program is free software; you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License version 2.1,
+//  as published by the Free Software Foundation.  This program is
+//  distributed in the hope that it will be useful, but WITHOUT ANY
+//  WARRANTY; without even the implied warranty of MERCHANTABILITY or
+//  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
+//  License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with this program; if not, see <http://www.gnu.org/licenses/>.
+//
+//==========================================================================

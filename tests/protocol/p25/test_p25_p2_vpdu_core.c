@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -45,6 +46,9 @@ typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 static int g_nmea_harris_calls;
 static uint32_t g_nmea_harris_src;
 static int g_nmea_harris_slot;
+static int g_nmea_harris_source_verified;
+static int g_nmea_harris_pos_verified;
+static uint8_t g_nmea_harris_last_octet;
 
 // Runtime config
 void dsd_neo_config_init(void);
@@ -82,15 +86,18 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
     g_nmea_harris_calls++;
-    g_nmea_harris_src = src;
-    g_nmea_harris_slot = slot;
+    g_nmea_harris_src = ctx ? ctx->source_id : 0U;
+    g_nmea_harris_slot = ctx ? ctx->slot : -1;
+    g_nmea_harris_source_verified = ctx ? ctx->source_verified : -1;
+    g_nmea_harris_pos_verified = ctx ? ctx->pos_verified : -1;
+    g_nmea_harris_last_octet = body ? body[DSD_HARRIS_GPS_BODY_OCTETS - 1] : 0U;
+    return 0;
 }
 
 static int
@@ -1915,6 +1922,63 @@ expect_vendor_display_only_state(const char* tag, const dsd_opts* opts, const ds
     return rc;
 }
 
+/* An L3Harris GPS MAC (`AA A4 11`, 17 octets) at MAC[1 + offset], body octets 0x11..0x1E. */
+static void
+put_harris_gps(unsigned long long int* mac, int offset, int length_octet) {
+    mac[1 + offset] = 0xAA;
+    mac[2 + offset] = 0xA4;
+    mac[3 + offset] = (unsigned long long int)length_octet;
+    for (int i = 0; i < DSD_HARRIS_GPS_BODY_OCTETS; i++) {
+        mac[4 + offset + i] = 0x11ULL + (unsigned long long int)i;
+    }
+}
+
+/* Issue #800 (2.1): the GPS body is decoded only from a MAC whose CRC passed and a segment that holds all 17 octets:
+   never from zero padding or from octets past the transport. */
+static int
+run_harris_gps_incomplete_cases(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24];
+
+    struct {
+        const char* tag;
+        int type;
+        int crc_ok;
+        int offset;
+        int length_octet;
+        int calls;
+    } cases[] = {
+        {"harris gps whole on facch", 0, 1, 0, 0x11, 1},
+        {"harris gps crc failed", 0, 0, 0, 0x11, 0},
+        {"harris gps declares fewer octets", 0, 1, 0, 0x05, 0},
+        {"harris gps declares more octets", 1, 1, 0, 0x12, 0},
+        // After a 5-octet segment, 17 octets end at MAC[22]: past the 20-octet SACCH span.
+        {"harris gps past the sacch span", 1, 1, 5, 0x11, 0},
+        {"harris gps fits the sacch span", 1, 1, 3, 0x11, 1},
+    };
+
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        seed_vendor_display_only_state(&opts, &state);
+        g_nmea_harris_calls = 0;
+        g_nmea_harris_last_octet = 0;
+        DSD_MEMSET(MAC, 0, sizeof MAC);
+        if (cases[c].offset > 0) {
+            MAC[1] = 0x08; // Null Avoid Zero Bias: its length octet sizes the first segment
+            MAC[2] = (unsigned long long int)cases[c].offset;
+        }
+        put_harris_gps(MAC, cases[c].offset, cases[c].length_octet);
+        process_MAC_VPDU_crc(&opts, &state, cases[c].type, P25_MAC_PDU_SIGNAL, MAC, cases[c].crc_ok);
+        rc |= expect_eq_long(cases[c].tag, g_nmea_harris_calls, cases[c].calls);
+        if (cases[c].calls == 1) {
+            rc |= expect_eq_long(cases[c].tag, g_nmea_harris_last_octet, 0x1E);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 static int
 run_vendor_mac_display_only_cases(void) {
     static dsd_opts opts;
@@ -2008,16 +2072,22 @@ run_vendor_mac_display_only_cases(void) {
     MAC[17] = 0x1C;
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_eq_long("harris 0xAA gps calls", g_nmea_harris_calls, 1);
-    rc |= expect_eq_long("harris 0xAA gps source", g_nmea_harris_src, 0x010203);
+    // The seeded call's identity was never published by the trunk state machine from a checked message (spec 2.19).
+    rc |= expect_eq_long("harris 0xAA gps source", g_nmea_harris_src, 0);
+    rc |= expect_eq_long("harris 0xAA gps source unverified", g_nmea_harris_source_verified, 0);
+    rc |= expect_eq_long("harris 0xAA gps position checked", g_nmea_harris_pos_verified, 1);
     rc |= expect_eq_long("harris 0xAA gps slot", g_nmea_harris_slot, 0);
+    rc |= expect_eq_long("harris 0xAA gps last body octet", g_nmea_harris_last_octet, 0x1C);
     rc |= expect_vendor_display_only_state("harris 0xAA", &opts, &state);
     dsd_state_ext_free_all(&state);
 
-    return rc;
+    return rc | run_harris_gps_incomplete_cases();
 }
 
 /* A Harris GPS PDU names no radio of its own: it speaks for the open P25 call on its slot. An ended call, or another
-   protocol's, keeps its source in the slot after it is over, and a position must not be filed under that radio. */
+   protocol's, keeps its source in the slot after it is over, and a position must not be filed under that radio. Even
+   the open P25 call names its source only when checked messages gave it (p25_sm_checked_call_identity(), issue #800):
+   one only observed, as here, names none. */
 static int
 test_harris_gps_source_comes_from_the_open_p25_call_only(void) {
     static const struct {
@@ -2028,7 +2098,7 @@ test_harris_gps_source_comes_from_the_open_p25_call_only(void) {
     } cases[] = {
         {"open dmr call", DSD_SYNC_DMR_BS_VOICE_POS, 0, 0U},
         {"ended p25 call", DSD_SYNC_P25P2_POS, 1, 0U},
-        {"open p25 call", DSD_SYNC_P25P2_POS, 0, 0x0A0B0CU},
+        {"open p25 call, unchecked identity", DSD_SYNC_P25P2_POS, 0, 0U},
     };
 
     int rc = 0;
@@ -2076,6 +2146,8 @@ test_harris_gps_source_comes_from_the_open_p25_call_only(void) {
         rc |= expect_eq_long(label, g_nmea_harris_calls, 1);
         DSD_SNPRINTF(label, sizeof label, "harris gps after %s: source", cases[i].name);
         rc |= expect_eq_long(label, (long)g_nmea_harris_src, (long)cases[i].want_src);
+        DSD_SNPRINTF(label, sizeof label, "harris gps after %s: source unverified", cases[i].name);
+        rc |= expect_eq_long(label, g_nmea_harris_source_verified, 0);
         dsd_state_ext_free_all(&state);
     }
     return rc;
@@ -2746,7 +2818,8 @@ run_cases(void) {
     rc |= test_voice_user_protocol_change_opens_call();
     rc |= test_source_less_conventional_voice_user_requires_matching_end();
 
-    // Case 14: extended private voice (0x22) derives source from the SUID tail.
+    // Case 14: extended private voice (0x22) names the talker by its working source address; the SUID after it is the
+    // radio's home identity, shown apart, never the source (issue #800).
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2762,20 +2835,20 @@ run_cases(void) {
         MAC[5] = 0x45; // target
         MAC[6] = 0x01;
         MAC[7] = 0x02;
-        MAC[8] = 0x03; // abbreviated source bytes, should be superseded
+        MAC[8] = 0x03; // working source address
         MAC[9] = 0x10;
         MAC[10] = 0x20;
         MAC[11] = 0x30;
         MAC[12] = 0x40;
         MAC[13] = 0xAA;
         MAC[14] = 0xBB;
-        MAC[15] = 0xCC; // SUID tail source
+        MAC[15] = 0xCC; // SUID unit ID: the home identity
 
         process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
         dsd_call_snapshot call = {0};
         rc |= expect_true("p2_private_ext canonical call", dsd_call_state_get(&state, 0U, &call) > 0);
         rc |= expect_eq_long("p2_private_ext_target", (long)call.ota_target_id, 0x012345);
-        rc |= expect_eq_long("p2_private_ext_suid_source", (long)call.ota_source_id, 0xAABBCC);
+        rc |= expect_eq_long("p2_private_ext_working_source", (long)call.ota_source_id, 0x010203);
         rc |= expect_eq_long("p2_private_ext_kind", (long)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
         dsd_state_ext_free_all(&state);
     }

@@ -166,6 +166,24 @@ Item {
             compare(sheet.detailLines[radio + 2], "Frequency 851.0125 MHz")
         }
 
+        // Review r2 (issue #800): a private call's row names the radio it was to, never a talkgroup; its details
+        // say "Sent to radio" and its Hold holds the radio.
+        function test_03m_a_private_call_is_to_a_radio() {
+            var name = callHistory.pushWithIds(4001, 7001)
+            verify(callHistory.setRowGi(callHistory.newestUid(), 1))
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name })
+            tryCompare(row, "metaText", "TO RADIO 4001 · SRC 7001 · 0:04")
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            verify(sheet.detailLines.indexOf("Sent to radio 4001") >= 0, JSON.stringify(sheet.detailLines))
+            compare(findChild(sheet, "historyHoldButton").text, "Hold radio 4001")
+            sheet.visible = false
+        }
+
         // A row without either reads exactly as it did, and its details add no line.
         function test_03h_a_row_without_a_code_or_frequency_is_unchanged() {
             var name = callHistory.pushWithIds(4001, 7001)

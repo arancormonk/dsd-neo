@@ -3566,6 +3566,65 @@ test_private_refresh_keeps_reception_scope(void) {
     return rc;
 }
 
+/* A learned alias row of one exact (valid) scope through dsd_tg_policy_lookup_learned_label(), the label a position
+ * report from a foreign sender may take (issue #800): never a user row, an imported alias row, a row learned with no
+ * scope, another scope's row or an empty name. */
+static int
+test_learned_label_exact_scope(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (!st) {
+        return 1;
+    }
+    const dsd_alias_scope home = {DSD_ALIAS_SCOPE_TETRA, 100U, 20U, 1U};
+    const dsd_alias_scope away = {DSD_ALIAS_SCOPE_TETRA, 200U, 30U, 1U};
+    const dsd_alias_scope none = {0U, 0U, 0U, 0U};
+    char name[64];
+
+    /* 501: a user row and, beside it, a row learned in the away scope: only the learned row answers. */
+    rc |= expect_true("user row", add_exact_row(st, 501, "A", "User Row") == 0);
+    dsd_tg_policy_entry learned;
+    init_entry(&learned, 501, "D", "Learned Away", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    learned.scope = away;
+    rc |= expect_true("learned row beside the user row", dsd_tg_policy_append_exact(st, &learned) == 0);
+    rc |= expect_true("the away label", dsd_tg_policy_lookup_learned_label(st, &away, 501, name, sizeof name) == 1
+                                            && strcmp(name, "Learned Away") == 0);
+    rc |= expect_true("never the user row",
+                      dsd_tg_policy_lookup_learned_label(st, &home, 501, name, sizeof name) == 0 && name[0] == '\0');
+    /* 502: an imported alias row (mode D) names the radio everywhere, but is never a learned row. */
+    dsd_tg_policy_entry imported;
+    init_entry(&imported, 502, "D", "Imported", DSD_TG_POLICY_SOURCE_IMPORTED);
+    imported.scope = away; /* offered with a scope: the table keeps a scope only on learned rows */
+    rc |= expect_true("imported row", dsd_tg_policy_append_exact(st, &imported) == 0);
+    rc |= expect_true("never the imported row",
+                      dsd_tg_policy_lookup_learned_label(st, &away, 502, name, sizeof name) == 0);
+    /* 503: learned with no scope (names the radio everywhere) never answers for a scope, and no invalid scope asks. */
+    rc |= expect_true("unscoped learn",
+                      dsd_alias_learn_radio(NULL, st, &none, 503, "Unscoped", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("never the unscoped row",
+                      dsd_tg_policy_lookup_learned_label(st, &away, 503, name, sizeof name) == 0);
+    rc |= expect_true("an invalid scope asks nothing",
+                      dsd_tg_policy_lookup_learned_label(st, &none, 503, name, sizeof name) == 0);
+    rc |=
+        expect_true("no scope asks nothing", dsd_tg_policy_lookup_learned_label(st, NULL, 503, name, sizeof name) == 0);
+    /* 504: learned in the home scope only. */
+    rc |= expect_true("home learn",
+                      dsd_alias_learn_radio(NULL, st, &home, 504, "Home Only", NULL) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("never another scope's row",
+                      dsd_tg_policy_lookup_learned_label(st, &away, 504, name, sizeof name) == 0);
+    rc |= expect_true("its own scope", dsd_tg_policy_lookup_learned_label(st, &home, 504, NULL, 0U) == 1);
+    /* 505: a learned row of the away scope with an empty name labels nothing. */
+    dsd_tg_policy_entry empty;
+    init_entry(&empty, 505, "D", "", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    empty.scope = away;
+    rc |= expect_true("empty learned row", dsd_tg_policy_append_exact(st, &empty) == 0);
+    rc |=
+        expect_true("never an empty name", dsd_tg_policy_lookup_learned_label(st, &away, 505, name, sizeof name) == 0);
+    rc |= expect_true("NULL state", dsd_tg_policy_lookup_learned_label(NULL, &away, 501, name, sizeof name) == 0);
+    free_test_state(st);
+    return rc;
+}
+
 /* Radio policy (D5, D6, D8): a known radio's row only restricts. Group and private calls, the source known or unknown,
  * each radio row variant, a Hold on the target or none, -W on or off. */
 typedef struct {
@@ -4334,6 +4393,7 @@ main(void) {
     rc |= test_unknown_private_endpoints();
     rc |= test_priority_refresh_pattern_and_unknown();
     rc |= test_private_refresh_keeps_reception_scope();
+    rc |= test_learned_label_exact_scope();
     rc |= test_radio_policy_matrix();
     rc |= test_no_radio_policy_no_change();
     rc |= test_row_token_refuses_stray_pattern_text();

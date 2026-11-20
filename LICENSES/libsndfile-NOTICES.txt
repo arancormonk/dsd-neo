@@ -1,0 +1,465 @@
+libsndfile (https://github.com/libsndfile/libsndfile) copyright notices for the libsndfile dsd-neo's
+packages carry, sndfile.dll in the Windows ZIP, the static library in the Android app and the shared
+library in the macOS DMG: release
+1.2.2 (archive https://github.com/libsndfile/libsndfile/archive/1.2.2.tar.gz, SHA512
+fb8b4d367240a8ac9d55be6f053cb19419890691c56a8552d1600d666257992b6e8e41a413a444c9f2d6c5d71406013222c92a3bfa67228944a26475444240a1),
+as vcpkg's libsndfile port builds it: the sources of the sndfile target in CMakeLists.txt, including
+the bundled GSM 06.10 (src/GSM610), G.72x (src/G72x) and ALAC (src/ALAC) codecs, and the headers
+they include. Most files are under the GNU Lesser General Public License 2.1 or later, the text of
+libsndfile-copyright.txt (the copyright file the port installs); src/ima_oki_adpcm.c and .h under version 2 or later of that license;
+src/GSM610 under the notice of libsndfile-GSM610-COPYRIGHT.txt; src/G72x/g72x.c and the other Sun
+files under LicenseRef-Sun-G72x.txt; src/ALAC under the Apache License 2.0 of
+libsndfile-ALAC-Apache-2.0.txt. The holder lines of each file follow, then the BSD-3-Clause notices
+src/ogg.c, src/ogg_opus.c and src/ogg_vorbis.c reproduce for the Xiph.Org code they are based on.
+
+include/sndfile.h
+    Copyright (C) 1999-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ALAC/ALACAudioTypes.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+
+src/ALAC/ALACBitUtilities.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+
+src/ALAC/ALACBitUtilities.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+
+src/ALAC/EndianPortable.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2013-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright 2011 Apple Inc. All rights reserved.
+
+src/ALAC/ag_dec.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright:	(c) 2001-2011 Apple, Inc.
+
+src/ALAC/ag_enc.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2013-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright:	(c) 2001-2011 Apple, Inc.
+
+src/ALAC/aglib.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright:	(C) 2001-2011 Apple, Inc.
+
+src/ALAC/alac_codec.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ALAC/alac_decoder.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2015 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ALAC/alac_encoder.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2015 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ALAC/dp_dec.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright:	(c) 2001-2011 Apple, Inc.
+
+src/ALAC/dp_enc.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright:	(c) 2001-2011 Apple, Inc.
+
+src/ALAC/dplib.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright:	Copyright (C) 2001-2011 Apple, Inc.
+
+src/ALAC/matrix_dec.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright:	(c) 2004-2011 Apple, Inc.
+
+src/ALAC/matrix_enc.c
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright:	(c) 2004-2011 Apple, Inc.
+
+src/ALAC/matrixlib.h
+    Copyright (c) 2011 Apple Inc. All rights reserved.
+    Copyright (C) 2012-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright:	Copyright (C) 2004 to 2011 Apple, Inc.
+
+src/ALAC/shift.h
+    Copyright (C) 2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/G72x/g72x.h
+    Copyright (C) 1999-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/GSM610/add.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/code.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/config.h
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/decode.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm.h
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm610_priv.h
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm_create.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm_decode.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm_destroy.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm_encode.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/gsm_option.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/long_term.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/lpc.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/preprocess.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/rpe.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/short_term.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/GSM610/table.c
+    Copyright 1992 by Jutta Degener and Carsten Bormann, Technische Universitaet Berlin.  See the accompanying file "COPYRIGHT" for details.  THERE IS ABSOLUTELY NO WARRANTY FOR THIS SOFTWARE.
+
+src/aiff.c
+    Copyright (C) 1999-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2005 David Viens <davidv@plogue.com>
+
+src/alac.c
+    Copyright (C) 2011-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/alaw.c
+    Copyright (C) 1999-2013 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/au.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/audio_detect.c
+    Copyright (C) 1999-2012 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/avr.c
+    Copyright (C) 2004-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/broadcast.c
+    Copyright (C) 2006-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2006 Paul Davis <paul@linuxaudiosystems.com>
+
+src/caf.c
+    Copyright (C) 2005-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/cart.c
+    Copyright (C) 2012 Chris Roberts <c.roberts@csrfm.com>
+    Copyright (C) 2006-2013 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2006 Paul Davis <paul@linuxaudiosystems.com>
+
+src/chanmap.c
+    Copyright (C) 2009-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/chanmap.h
+    Copyright (C) 2009-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/chunk.c
+    Copyright (C) 2008-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2012 IOhannes m zmoelnig, IEM <zmoelnig@iem.at>
+
+src/command.c
+    Copyright (C) 2001-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/common.c
+    Copyright (C) 1999-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/common.h
+    Copyright (C) 1999-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/dither.c
+    Copyright (C) 2003-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/double64.c
+    Copyright (C) 1999-2015 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/dwd.c
+    Copyright (C) 2002-2012 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/dwvw.c
+    Copyright (C) 2002-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/file_io.c
+    Copyright (C) 2002-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2003 Ross Bencina <rbencina@iprimus.com.au>
+
+src/flac.c
+    Copyright (C) 2004-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2004 Tobias Gehrig <tgehrig@ira.uka.de>
+
+src/float32.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/g72x.c
+    Copyright (C) 1999-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/gsm610.c
+    Copyright (C) 1999-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/htk.c
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/id3.c
+    Copyright (C) 2010-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/id3.h
+    Copyright (C) 2008-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2019 Arthur Taylor <art@ified.ca>
+
+src/ima_adpcm.c
+    Copyright (C) 1999-2020 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ima_oki_adpcm.c
+    Copyright (C) 2007-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (c) 2007 <robs@users.sourceforge.net>
+
+src/ima_oki_adpcm.h
+    Copyright (C) 2007-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (c) 2007 <robs@users.sourceforge.net>
+
+src/interleave.c
+    Copyright (C) 2002-2013 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ircam.c
+    Copyright (C) 2001-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/macos.c
+    Copyright (C) 2003-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/mat4.c
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/mat5.c
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/mpc2k.c
+    Copyright (C) 2008-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/mpeg.c
+    Copyright (C) 2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2021 Arthur Taylor <art@ified.ca>
+
+src/mpeg.h
+    Copyright (C) 2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2019 Arthur Taylor <art@ified.ca>
+
+src/mpeg_decode.c
+    Copyright (C) 2019 - 2021 Arthur Taylor <art@ified.ca>
+    Copyright (C) 2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/mpeg_l3_encode.c
+    Copyright (C) 2020 Arthur Taylor <art@ified.ca>
+    Copyright (C) 2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ms_adpcm.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/nist.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/nms_adpcm.c
+    Copyright (C) 1999-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2017 Arthur Taylor <art@ified.ca>
+
+src/ogg.c
+    Copyright (C) 2002-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2007 John ffitch
+    Copyright (C) 2018 Arthur Taylor <art@ified.ca>
+    Copyright (c) 1994-2013 Xiph.Org Foundation and contributors
+
+src/ogg.h
+    Copyright (C) 2008-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2018 Arthur Taylor <art@ified.ca>
+
+src/ogg_opus.c
+    Copyright (C) 2013-2020 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2018 Arthur Taylor <art@ified.ca>
+    Copyright (c) 1994-2013 Xiph.Org Foundation and contributors
+
+src/ogg_pcm.c
+    Copyright (C) 2008-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ogg_speex.c
+    Copyright (C) 2008-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ogg_vcomment.c
+    Copyright (C) 2008-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2018 Arthur Taylor <art@ified.ca>
+
+src/ogg_vcomment.h
+    Copyright (C) 2008-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2018 Arthur Taylor <art@ified.ca>
+
+src/ogg_vorbis.c
+    Copyright (C) 2018-2021 Arthur Taylor <art@ified.ca>
+    Copyright (C) 2002-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2002-2005 Michael Smith <msmith@xiph.org>
+    Copyright (C) 2007 John ffitch
+    Copyright (c) 2002, Xiph.org Foundation
+
+src/paf.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/pcm.c
+    Copyright (C) 1999-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/pvf.c
+    Copyright (C) 2002-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/raw.c
+    Copyright (C) 1999-2011 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/rf64.c
+    Copyright (C) 2008-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2009      Uli Franke <cls@nebadje.org>
+
+src/rx2.c
+    Copyright (C) 2001-2012 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/sd2.c
+    Copyright (C) 2001-2020 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2004 Paavo Jumppanen
+
+src/sds.c
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/sf_unistd.h
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/sfconfig.h
+    Copyright (C) 2005-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/sfendian.h
+    Copyright (C) 1999-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/sndfile.c
+    Copyright (C) 1999-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/strings.c
+    Copyright (C) 2001-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/svx.c
+    Copyright (C) 1999-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/txw.c
+    Copyright (C) 2002-2012 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/ulaw.c
+    Copyright (C) 1999-2013 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/voc.c
+    Copyright (C) 2001-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/vox_adpcm.c
+    Copyright (C) 2002-2014 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/w64.c
+    Copyright (C) 1999-2018 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/wav.c
+    Copyright (C) 1999-2019 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2004-2005 David Viens <davidv@plogue.com>
+
+src/wavlike.c
+    Copyright (C) 1999-2020 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2004-2005 David Viens <davidv@plogue.com>
+
+src/wavlike.h
+    Copyright (C) 1999-2016 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/windows.c
+    Copyright (C) 2009-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+
+src/wve.c
+    Copyright (C) 2002-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+    Copyright (C) 2007 Reuben Thomas
+
+src/xi.c
+    Copyright (C) 2003-2017 Erik de Castro Lopo <erikd@mega-nerd.com>
+----- src/ogg.c, lines 22-52 (also in src/ogg_opus.c) -----
+
+** This file contains code based on OpusFile and Opus-Tools, both by
+** Xiph.Org. COPYING from each is identical and is as follows:
+**
+** Copyright (c) 1994-2013 Xiph.Org Foundation and contributors
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+**
+** - Redistributions of source code must retain the above copyright
+** notice, this list of conditions and the following disclaimer.
+**
+** - Redistributions in binary form must reproduce the above copyright
+** notice, this list of conditions and the following disclaimer in the
+** documentation and/or other materials provided with the distribution.
+**
+** - Neither the name of the Xiph.Org Foundation nor the names of its
+** contributors may be used to endorse or promote products derived from
+** this software without specific prior written permission.
+**
+** THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+** ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+** LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+** A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION
+** OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+** SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+** LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+** DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+** THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+** (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+** OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----- src/ogg_vorbis.c, lines 23-52 -----
+
+** Much of this code is based on the examples in libvorbis from the
+** XIPHOPHORUS Company http://www.xiph.org/ which has a BSD-style Licence
+** Copyright (c) 2002, Xiph.org Foundation
+**
+** Redistribution and use in source and binary forms, with or without
+** modification, are permitted provided that the following conditions
+** are met:
+**
+** - Redistributions of source code must retain the above copyright
+** notice, this list of conditions and the following disclaimer.
+**
+** - Redistributions in binary form must reproduce the above copyright
+** notice, this list of conditions and the following disclaimer in the
+** documentation and/or other materials provided with the distribution.
+**
+** - Neither the name of the Xiph.org Foundation nor the names of its
+** contributors may be used to endorse or promote products derived from
+** this software without specific prior written permission.
+**
+** THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+** ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+** LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+** A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION
+** OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+** SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+** LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES ; LOSS OF USE,
+** DATA, OR PROFITS ; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+** THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+** (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+** OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

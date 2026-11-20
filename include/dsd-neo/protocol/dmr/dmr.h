@@ -34,6 +34,24 @@ void dmr_data_sync(dsd_opts* opts, dsd_state* state);
 void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
                             const uint8_t* reliab98);
 
+/**
+ * Who sent a DMR data burst, as its own sync word says (TS 102 361-1 Table 9.2), read by the data path at the
+ * received polarity's correction. The direction of a service that has one (a USBD LIP Poll Request is outbound only,
+ * a Poll Response inbound only: TS 102 361-4 §6.6.11.0) is taken only from the repeater-mode BS and MS syncs.
+ */
+typedef enum {
+    DMR_BURST_ORIGIN_UNKNOWN = 0,    /**< no sync names the sender (an embedded LC, a burst handed in without one) */
+    DMR_BURST_ORIGIN_BS = 1,         /**< BS-sourced data sync: outbound, from a repeater or TSCC */
+    DMR_BURST_ORIGIN_MS = 2,         /**< MS-sourced data sync: inbound, from a radio to its repeater or TSCC */
+    DMR_BURST_ORIGIN_DIRECT_TS1 = 3, /**< direct mode time slot 1 data sync: no direction */
+    DMR_BURST_ORIGIN_DIRECT_TS2 = 4, /**< direct mode time slot 2 data sync: no direction */
+} dmr_burst_origin;
+
+/** dmr_data_burst_handler() for a burst whose sync word the data path read: @p origin says who sent it.
+ * dmr_data_burst_handler() is this with DMR_BURST_ORIGIN_UNKNOWN. */
+void dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                                   const uint8_t* reliab98, dmr_burst_origin origin);
+
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
 
 /* Per-slot encryption-classification hysteresis for the DMR service-option privacy bit.
@@ -118,6 +136,19 @@ int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
+/** A DMR burst of the sender kind its sync word names is on over-the-air slot @p slot (0/1; -1 when not known: both)
+ * (issue #800, fail closed): the sender evidence and data header binding of another sender kind on its lanes are
+ * revoked (dsd_position_dmr_note_lane_burst(); the embedded GPS evidence lane is lane 0 where the single-slot output
+ * folds the burst's LCs, as dmr_flco() does, the data lane the slot's). NULL @p opts folds nothing (a two-slot
+ * reader). */
+void dmr_note_burst_slot(const dsd_opts* opts, dsd_state* state, int slot);
+/** dmr_note_burst_slot() for the burst on state->currentslot, once a reader knows its slot. */
+void dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state);
+/** dmr_note_burst_slot() by the sync word alone, for a burst no reader reads (or reads the slot of): an MS-sourced or
+ * direct-mode burst on lane 0 (a direct-mode slot 2 one on lane 1 as well, where its reader keeps its data), a
+ * repeater's on both. Every burst counts by its sync word, also one held back unread under trunking or whose slot type
+ * or CACH fails. */
+void dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state);
 
 void dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
                uint32_t IrrecoverableErrors);
@@ -151,7 +182,8 @@ void dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t 
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32_t dest,
               const uint8_t* DMR_PDU, uint8_t pdu_crc_ok);
-void dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
+/** Decode a DMR LOCN text location report; returns 1 when its position was admitted (dsd_position_admit()). */
+int dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 
 void dmr_alg_reset(dsd_opts* opts, dsd_state* state);
 void dmr_alg_refresh(dsd_opts* opts, dsd_state* state);

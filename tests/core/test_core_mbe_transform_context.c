@@ -286,8 +286,8 @@ static void
 apply_expected_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
     char cipher[49];
 
-    if (state->payload_miN == 0) {
-        state->payload_miN = state->R;
+    if (state->nxdn_payload_mi == 0) {
+        state->nxdn_payload_mi = state->R;
     }
     copy_ambe49(cipher, ambe_d);
     set_bits_zero(ambe_d);
@@ -1814,7 +1814,7 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
         DSD_MEMSET(&expected_state, 0, sizeof(expected_state));
         expected_state.R = 0x12345ULL;
         apply_expected_nxdn_cipher1(&expected_state, expected_ambe_d);
-        rc |= expect_eq_int("nxdn-cipher1 advances mi", (int)expected_state.payload_miN, 0x0EE5);
+        rc |= expect_eq_int("nxdn-cipher1 advances mi", (int)expected_state.nxdn_payload_mi, 0x0EE5);
         rc |= expect_eq_int("nxdn-cipher1 transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
@@ -1837,7 +1837,7 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("nxdn-cipher1 state mi", (int)state.payload_miN, (int)expected_state.payload_miN);
+    rc |= expect_eq_int("nxdn-cipher1 state mi", (int)state.nxdn_payload_mi, (int)expected_state.nxdn_payload_mi);
     rc |= expect_eq_int("nxdn-cipher1 errs", state.errs, expected_errs);
     rc |= expect_eq_int("nxdn-cipher1 errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("nxdn-cipher1 status", strcmp(state.err_str, expected_err_str), 0);
@@ -1904,7 +1904,7 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     state.nxdn_cipher_type = 0x02;
     state.nxdn_new_iv = 1;
     state.R = 0x0102030405ULL;
-    state.payload_miN = 0x1122334455667788ULL;
+    state.nxdn_payload_mi = 0x1122334455667788ULL;
 
     processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, ambe_fr, imbe7100_fr);
 

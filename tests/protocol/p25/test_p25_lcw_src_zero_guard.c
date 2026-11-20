@@ -11,6 +11,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -34,7 +35,7 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrec
 
 static int g_nmea_harris_calls;
 static uint32_t g_nmea_harris_src;
-static uint16_t g_nmea_harris_prefix;
+static uint8_t g_nmea_harris_lat_deg;
 static int g_apx_gps_calls;
 static int g_apx_alias_header_calls;
 static int g_apx_alias_block_calls;
@@ -109,24 +110,26 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     g_last_alias_prefix = (uint16_t)convert_bits_into_output(input, 16);
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
+apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[], const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
+    (void)ctx;
     g_apx_gps_calls++;
     g_last_alias_prefix = (uint16_t)convert_bits_into_output(lc_bits, 16);
+    return 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
     g_nmea_harris_calls++;
-    g_nmea_harris_src = src;
-    g_nmea_harris_prefix = (uint16_t)convert_bits_into_output(input, 16);
-    (void)slot;
+    g_nmea_harris_src = ctx ? ctx->source_id : 0U;
+    g_nmea_harris_lat_deg = body[3];
+    return 0;
 }
 
 /* ── Bit-packing helper ───────────────────────────────────────────────── */
@@ -738,16 +741,16 @@ main(void) {
     }
 
     /*
-     * Harris GPS is assembled from a block-1 prefix plus block-2 continuation.
-     * A valid prefix dispatches to the GPS decoder stub and then clears the
-     * scratch buffer; a missing block 1 only clears scratch state.
+     * Harris GPS is assembled from Part A plus Part B (TIA-102.AABF-D-1 §7.3.35-36) in Part A's own store. A held
+     * Part A dispatches the 14-octet body to the GPS decoder stub and is used up; a Part B without one dispatches
+     * nothing.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
         g_nmea_harris_calls = 0;
         g_nmea_harris_src = 0;
-        g_nmea_harris_prefix = 0;
+        g_nmea_harris_lat_deg = 0;
         rc |= expect_true("HarrisGPS_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 0x3456, 0x123456));
 
         uint8_t lcw[96];
@@ -757,9 +760,9 @@ main(void) {
         set_bits_msb(lcw, 16, 8, 0x5A);
         set_bits_msb(lcw, 40, 8, 0xC3);
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-        rc |=
-            expect_true("HarrisGPS_block1_prefix", (uint16_t)convert_bits_into_output(st.dmr_pdu_sf[0], 16) == 0x2AA4);
-        rc |= expect_true("HarrisGPS_block1_payload_copy", st.dmr_pdu_sf[0][40] == 0 && st.dmr_pdu_sf[0][41] == 1);
+        rc |= expect_true("HarrisGPS_part_a_held", st.p25_p1_harris_part_a.valid == 1U);
+        rc |= expect_true("HarrisGPS_part_a_octets",
+                          st.p25_p1_harris_part_a.octets[0] == 0x5A && st.p25_p1_harris_part_a.octets[3] == 0xC3);
 
         DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x2B);
@@ -768,16 +771,14 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
         rc |= expect_true("HarrisGPS_valid_dispatch", g_nmea_harris_calls == 1);
         rc |= expect_true("HarrisGPS_dispatch_src", g_nmea_harris_src == 0x123456);
-        rc |= expect_true("HarrisGPS_dispatch_prefix", g_nmea_harris_prefix == 0x2AA4);
-        rc |= expect_true("HarrisGPS_clears_scratch", st.dmr_pdu_sf[0][0] == 0 && st.dmr_pdu_sf[0][40] == 0);
+        rc |= expect_true("HarrisGPS_dispatch_body", g_nmea_harris_lat_deg == 0xC3);
+        rc |= expect_true("HarrisGPS_part_a_used", st.p25_p1_harris_part_a.valid == 0U);
 
-        DSD_MEMSET(st.dmr_pdu_sf[0], 1, sizeof(st.dmr_pdu_sf[0]));
         DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x2B);
         set_bits_msb(lcw, 8, 8, 0xA4);
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-        rc |= expect_true("HarrisGPS_missing_block1_no_dispatch", g_nmea_harris_calls == 1);
-        rc |= expect_true("HarrisGPS_missing_block1_clears_scratch", st.dmr_pdu_sf[0][0] == 0);
+        rc |= expect_true("HarrisGPS_missing_part_a_no_dispatch", g_nmea_harris_calls == 1);
     }
 
     /*

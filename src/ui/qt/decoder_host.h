@@ -70,6 +70,8 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool usesPlatformFontScaling READ usesPlatformFontScaling CONSTANT)
     Q_PROPERTY(qreal keyboardTop READ keyboardTop NOTIFY keyboardChanged)
     Q_PROPERTY(int fontRevision READ fontRevision NOTIFY typographyChanged)
+    /* Issue #800: the platform asks for no animation (Android's "Remove animations"); the map's camera then jumps. */
+    Q_PROPERTY(bool reducedMotion READ reducedMotion NOTIFY reducedMotionChanged)
     Q_PROPERTY(int inputFailureKind READ inputFailureKind NOTIFY runResultChanged)
     Q_PROPERTY(int inputFailureCode READ inputFailureCode NOTIFY runResultChanged)
     Q_PROPERTY(int terminalReason READ terminalReason NOTIFY runResultChanged)
@@ -242,6 +244,12 @@ class DecoderHost : public QObject {
         return 0;
     }
 
+    /** @brief Whether the platform asks apps not to animate (issue #800). A desktop host has no such setting. */
+    virtual bool
+    reducedMotion() const {
+        return false;
+    }
+
     Q_INVOKABLE virtual qreal
     fontPixelSize(qreal sp) const {
         return sp;
@@ -260,7 +268,20 @@ class DecoderHost : public QObject {
         return false;
     }
 
-    Q_INVOKABLE QString licenseNotices() const;
+    /** @brief The licences screen's first section: where the source code of the Qt version built with is. */
+    Q_INVOKABLE static QString qtSourceNotice();
+    /**
+     * @brief The license and notice files the package carries, as the names noticeDirectory()'s index gives them
+     * (notice-index.txt, one path under the folder per line), in its order; none without a folder or an index.
+     *
+     * The packaging writes the index from the files it staged, so the list is what the package carries.
+     */
+    Q_INVOKABLE QStringList licenseFiles() const;
+    /**
+     * @brief The text of @p name, one of licenseFiles(), read when asked. A name the index does not give, a path out
+     * of the folder or a file the package lacks reads as a line saying the file is missing.
+     */
+    Q_INVOKABLE QString licenseFileText(const QString& name) const;
     Q_INVOKABLE bool copyText(const QString& text) const;
 
     virtual int
@@ -1068,6 +1089,7 @@ class DecoderHost : public QObject {
   Q_SIGNALS:
     void backRequested();
     void typographyChanged();
+    void reducedMotionChanged();
     void keyboardChanged();
     void runResultChanged();
     void audioRouteChanged();
@@ -1149,6 +1171,15 @@ class DecoderHost : public QObject {
     void fileAccessRequestDone(qint64 requestId, const QString& outcome);
 
   protected:
+    /**
+     * @brief The folder that holds the package's licence and notice files and their index (licenseFiles()); empty
+     * when the package carries none. The base host: none.
+     */
+    virtual QString
+    noticeDirectory() const {
+        return QString();
+    }
+
     /** @brief Leave @p reference for takeIncomingDocument(), in place of any not taken; empty is no document. */
     void offerIncomingDocument(const QString& reference);
 

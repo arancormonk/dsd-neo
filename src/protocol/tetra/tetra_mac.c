@@ -15,6 +15,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -366,6 +367,7 @@ discard_fragment(tetra_mac_fragment* f) {
     f->nbits = 0;
     f->npieces = 0;
     f->cipher_lost = 0;
+    DSD_MEMSET(&f->origin, 0, sizeof f->origin);
 }
 
 static int
@@ -406,18 +408,26 @@ start_fragment(mac_block* b, const tetra_mac_address* addr, uint8_t enc_mode, co
     f->enc_mode = (uint8_t)(enc_mode & 3u);
     f->cc = (int8_t)b->cc;
     f->addr = *addr;
+    dsd_position_origin_capture(b->opts, b->state, &f->origin);
     b->fragment_seen = 1;
     if (!fragment_append(f, sdu, sdu_bits)) {
         discard_fragment(f);
     }
 }
 
-/* A MAC-FRAG or MAC-END continues the TM-SDU under way on the block's timeslot, if any, from the same cell. */
+/* A MAC-FRAG or MAC-END continues the TM-SDU under way on the block's timeslot, if any, from the same cell and the
+ * reception its first fragment came from (issue #800, fail closed: whatever path moved the receiver, a retune that left
+ * the fragment context standing among them, the parts of two receptions are never one TM-SDU). */
 static int
 fragment_continues(mac_block* b, const char* name) {
     tetra_mac_fragment* const f = b->frag;
     if (!f->active) {
         TETRA_LOG_PAYLOAD(b->ts, "[TETRA %s] CC=%d  no first fragment on this timeslot; discarded\n", name, b->cc);
+        return 0;
+    }
+    if (!dsd_position_origin_matches(b->state, &f->origin)) {
+        TETRA_LOG_PAYLOAD(b->ts, "[TETRA %s] CC=%d  TM-SDU started on another reception; discarded\n", name, b->cc);
+        discard_fragment(f);
         return 0;
     }
     if (f->cc != (int8_t)b->cc) {
@@ -749,6 +759,7 @@ complete_fragment(mac_block* b, const tetra_chan_alloc* alloc, uint8_t enc_mode,
         .has_addr = 1,
         .has_alloc = alloc != NULL,
         .enc_mode = enc_mode,
+        .origin = &f->origin,
     };
     if (used) {
         ctx.air_key = *used;

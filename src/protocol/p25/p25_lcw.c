@@ -20,7 +20,10 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -112,8 +115,10 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_pf;
     uint8_t lc_sf;
     uint8_t allow_voice_start;
+    uint8_t lc_hard; /* the link control passed a hard RS decode (not a soft-erasure retry; spec 2.20) */
     int is_standard_mfid;
-    uint64_t ended_epoch; /* TDULC: the call it ended, or whose end it repeats (0: none) */
+    const dsd_event_closing_call* closing; /* the call the TDULC carrying this LC ended; NULL otherwise */
+    uint64_t ended_epoch;                  /* TDULC: the call it ended, or whose end it repeats (0: none) */
 } p25_lcw_ctx;
 
 typedef void (*p25_lcw_handler_fn)(p25_lcw_ctx* ctx);
@@ -177,15 +182,79 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
 }
 
+/* The call a GPS link control belongs to (issue #800, spec N2): the call the terminator carrying it has just ended,
+ * else slot 0's ACTIVE Phase 1 call, never an ended one. */
+typedef struct {
+    dsd_position_attribution_call view;    /* open 0: no call */
+    const dsd_event_closing_call* closing; /* the terminator's closing call when bound to it */
+} p25_lcw_gps_call;
+
+static void
+p25_lcw_gps_call_get(const p25_lcw_ctx* ctx, p25_lcw_gps_call* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (dsd_position_attribution_call_from_closing(ctx->closing, &out->view)) {
+        out->closing = ctx->closing;
+        return;
+    }
+    /* Only a P25 Phase 1 call: another protocol's call still open on the slot is not the one this link control
+       rides on. */
+    if (!dsd_position_attribution_call_from_slot(ctx->state, 0U, &out->view)
+        || !DSD_SYNC_IS_P25P1(out->view.protocol)) {
+        DSD_MEMSET(&out->view, 0, sizeof(out->view));
+    }
+}
+
+/* The voice-user evidence (issue #800, spec 2.2): p25_p1_lc_attribution, the record of who a later GPS link control
+ * of the call names. A hard-decoded voice user naming a radio by a complete local address records it once the call
+ * (the one p25_lcw_gps_call_get() names: a terminator's closing call, else slot 0's ACTIVE Phase 1 call) carries exactly
+ * this target and source. Fail closed: any other voice user takes the record away unless it only repeats the record's
+ * own source by a soft decode. That is one naming a special address in its source field (p25_source_id_is_subscriber():
+ * no radio), a source that is not a complete local address (@p source_local 0: the Source ID Extension Required flag,
+ * or LCO $4A), another radio by a soft decode, or a radio the call does not hold, whether or not the call keeps its
+ * earlier talker for display. A source of 0 with @p source_local omits the field and leaves the record, as the trunk
+ * state machine reads it. */
+static void
+p25_lcw_note_checked_identity(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, uint8_t group, int source_local) {
+    dsd_position_attribution* evidence = &ctx->state->p25_p1_lc_attribution;
+    if (source == 0U && source_local) {
+        return;
+    }
+    const int names_radio = source_local && p25_source_id_is_subscriber(source);
+    if (names_radio && ctx->lc_hard) {
+        p25_lcw_gps_call call;
+        p25_lcw_gps_call_get(ctx, &call);
+        if (call.view.open && call.view.target == (uint64_t)target
+            && dsd_position_attribution_learn(ctx->state, &call.view, source, target, group,
+                                              DSD_POSITION_ATTRIBUTION_BIND_EPOCH, evidence)) {
+            return;
+        }
+    } else if (names_radio && evidence->call_epoch != 0U && source == evidence->source) {
+        return;
+    }
+    dsd_position_attribution_clear(evidence);
+}
+
+/* A link control reaches the trunk state machine with its identity checked only when it was hard-decoded (spec 2.20); a
+ * soft-erasure retry also succeeds, but its identity stays unchecked. The identity it names reaches the
+ * trunk state machine with the verdict of that decode (spec 2.19), and a source that is not a complete local address
+ * (@p source_local 0: Source ID Extension Required, LCO $4A) as p25_sm_event_t::source_nonlocal, never checked. */
 static int
-p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int is_group, int source_local) {
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, tg, dst, (int)source, is_group, ctx->lc_svcopt);
+    ev.identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
+    ev.source_nonlocal = (uint8_t)(source_local ? 0U : 1U);
+    return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
+}
+
+static int
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, int source_local) {
     ctx->state->generic_talker_alias[0][0] = '\0';
     ctx->state->dmr_so = ctx->lc_svcopt;
 
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
@@ -196,7 +265,7 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
  * drop the previous talker's alias and note the affiliation, then start the voice. A rejected start (or a TDULC,
  * which starts none) returns before the LC's encrypted service option marks the crypto pending. */
 static int
-p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source) {
+p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->generic_talker_alias[0][0] = '\0';
 
@@ -207,7 +276,7 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
     if (!ctx->allow_voice_start) {
         return 0;
     }
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local)) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
@@ -218,13 +287,15 @@ static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
     uint8_t res = (uint8_t)convert_bits_into_output(&ctx->bits[24], 7);
-    uint8_t explicit_src = ctx->bits[24];
+    /* S, Source ID Extension Required (TIA-102.AABF-D §7.3.1): octet 3 bit 0. */
+    uint8_t explicit_src = ctx->bits[31];
     uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
-    UNUSED2(res, explicit_src);
+    UNUSED(res);
 
-    (void)p25_lcw_accept_group_voice_user(ctx, group, source);
+    (void)p25_lcw_accept_group_voice_user(ctx, group, source, explicit_src == 0U);
+    p25_lcw_note_checked_identity(ctx, group, source, 1U, explicit_src == 0U);
 }
 
 static void
@@ -234,7 +305,8 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source, 1);
+    p25_lcw_note_checked_identity(ctx, target, source, 0U, 1);
 }
 
 static void p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint16_t* groups,
@@ -323,6 +395,8 @@ p25_lcw_offer_preemption(p25_lcw_ctx* ctx, const uint16_t* channels, const uint1
         }
         events[n] = p25_sm_ev_group_grant_update(channels[i], 0, groups[i], 0, svcs[i]);
         events[n].preempt_only = 1;
+        // The link control's own fields, checked only when it passed a hard RS decode (spec 2.20).
+        events[n].identity_checked = ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U;
         if (!p25_sm_grant_candidate_rank(ctx->opts, ctx->state, &events[n], &ranks[n])) {
             DSD_MEMSET(&ranks[n], 0, sizeof(ranks[n]));
         }
@@ -427,6 +501,8 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
         && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, 0, ctx->lc_svcopt);
+        ev.identity_checked =
+            ctx->lc_hard ? P25_SM_IDENTITY_CHECKED_ALL : 0U; // the RS-decoded link control's own fields
         p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }
@@ -462,7 +538,7 @@ p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
                 (double)timer / 10.0);
 
-    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0, 1);
     if (ctx->allow_voice_start && !identity_accepted) {
         return;
     }
@@ -517,7 +593,9 @@ p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
+    /* The Source ID is not a complete local address: S is always 1 (TIA-102.AABF-D §7.3.29). */
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src, 0);
+    p25_lcw_note_checked_identity(ctx, target, src, 0U, 0);
 }
 
 /* Group Affiliation Query (TIA-102.AABF-D §7.3.9): octets 1-2 reserved, Target Address octets 3-5, Source Address
@@ -854,10 +932,47 @@ p25_lcw_handle_unknown_standard(const p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unknown Format %02X MFID %02X SVC %02X", ctx->lc_format, ctx->lc_mfid, ctx->lc_svcopt);
 }
 
+/* The call's source as the Part A pairing compares it: 0 when none fits 32 bits. */
+static uint32_t
+p25_lcw_gps_call_source(const p25_lcw_gps_call* call) {
+    return call->view.source <= UINT32_MAX ? (uint32_t)call->view.source : 0U;
+}
+
+/* A GPS report's provenance (spec 2.2): the position is checked when its link control(s) passed a hard RS decode
+ * (@p pos_verified); the source, target and group flag by the attribution rule from the evidence a hard-decoded
+ * voice-user link control of this call gave (p25_lcw_note_checked_identity(), dsd_position_attribution_grant()), and
+ * only while no other checked message of the call withdrew that talker: the trunk state machine's record of the call
+ * (a repeated grant naming a special address or another source, for one) is the one record every P25 message updates,
+ * so its withdrawal revokes this evidence too (p25_sm_call_source_withdrawn(), issue #800, fail closed). */
+static void
+p25_lcw_gps_report_ctx(const p25_lcw_ctx* ctx, const p25_lcw_gps_call* call, int pos_verified,
+                       const dsd_position_origin* origin, dsd_gps_report_ctx* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->origin = origin;
+    out->call_epoch = call->view.epoch;
+    out->closing = call->closing;
+    out->source_id = p25_lcw_gps_call_source(call);
+    out->protocol = DSD_SYNC_IS_P25P1(ctx->state->lastsynctype) ? ctx->state->lastsynctype : DSD_SYNC_P25P1_POS;
+    out->slot = 0U;
+    out->pos_verified = pos_verified ? 1U : 0U;
+    dsd_position_attribution granted;
+    if (dsd_position_attribution_grant(ctx->state, &ctx->state->p25_p1_lc_attribution, &call->view, out->protocol,
+                                       &granted)
+        && !p25_sm_call_source_withdrawn(ctx->state, 0, call->view.epoch, granted.source)) {
+        out->source_verified = 1U;
+        out->target_id = granted.target;
+        out->target_group = granted.group;
+    }
+}
+
 static void
 p25_lcw_handle_mfid90_opcode_06(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " MFID90 (Moto)");
-    apx_embedded_gps(ctx->opts, ctx->state, ctx->bits);
+    p25_lcw_gps_call call;
+    p25_lcw_gps_call_get(ctx, &call);
+    dsd_gps_report_ctx report;
+    p25_lcw_gps_report_ctx(ctx, &call, ctx->lc_hard, NULL, &report);
+    (void)apx_embedded_gps(ctx->opts, ctx->state, ctx->bits, &report);
 }
 
 static void
@@ -877,7 +992,8 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     // The layout is the standard Group Voice Channel User's, with the supergroup for the group.
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src);
+    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src, ctx->bits[31] == 0U);
+    p25_lcw_note_checked_identity(ctx, sg, src, 1U, ctx->bits[31] == 0U);
 }
 
 static void
@@ -1031,6 +1147,81 @@ p25_lcw_dispatch_mfid90(p25_lcw_ctx* ctx) {
     return 0;
 }
 
+/* Longest wait between an L3Harris GPS Part A and its Part B on the decode clock. The halves ride in successive link
+ * controls (an LDU1 every 360 ms); the window allows a few lost between them. */
+#define P25_HARRIS_GPS_PAIR_WINDOW_MS 2000U
+
+static void
+p25_lcw_harris_gps_part_a(p25_lcw_ctx* ctx, uint8_t even) {
+    DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Update Part A");
+    p25_lcw_gps_call call;
+    p25_lcw_gps_call_get(ctx, &call);
+    p25_p1_harris_gps_part_a* a = &ctx->state->p25_p1_harris_part_a;
+    DSD_MEMSET(a, 0, sizeof(*a));
+    for (size_t i = 0; i < sizeof(a->octets); i++) {
+        a->octets[i] = (uint8_t)convert_bits_into_output(&ctx->bits[16U + (8U * i)], 8);
+    }
+    a->even = even;
+    a->hard = ctx->lc_hard;
+    a->source = p25_lcw_gps_call_source(&call);
+    a->epoch = call.view.epoch;
+    a->stored_mono_ms = dsd_decode_now_mono_ms();
+    dsd_position_origin_capture(ctx->opts, ctx->state, &a->origin);
+    a->valid = 1U;
+}
+
+/* Why the pending Part A @p a cannot pair with a Part B of @p even parity heard on @p call; NULL when it can. */
+static const char*
+p25_lcw_harris_gps_unpaired(const dsd_state* state, const p25_p1_harris_gps_part_a* a, const p25_lcw_gps_call* call,
+                            uint8_t even) {
+    if (!a->valid) {
+        return "Missing GPS Part A";
+    }
+    // Both halves must come from one transmission of one source (spec 2.2): with no call open, nothing binds them.
+    if (a->epoch == 0U) {
+        return "GPS Part A outside a call";
+    }
+    if (a->even != even) {
+        return "GPS Part A of another update";
+    }
+    if (a->epoch != call->view.epoch || a->source != p25_lcw_gps_call_source(call)) {
+        return "GPS Part A of another call";
+    }
+    /* Heard on another reception (a retune, another system or a change of P25 phase since, issue #800): a call left
+       open across it is not shown to be the one the Part B rides on. */
+    if (!dsd_position_origin_matches(state, &a->origin)) {
+        return "GPS Part A of another reception";
+    }
+    const uint64_t now_ms = dsd_decode_now_mono_ms();
+    if (now_ms < a->stored_mono_ms || now_ms - a->stored_mono_ms > P25_HARRIS_GPS_PAIR_WINDOW_MS) {
+        return "GPS Part A expired";
+    }
+    return NULL;
+}
+
+static void
+p25_lcw_harris_gps_part_b(p25_lcw_ctx* ctx, uint8_t even) {
+    DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Update Part B");
+    // The pending Part A is used or dropped here, whatever the outcome.
+    const p25_p1_harris_gps_part_a a = ctx->state->p25_p1_harris_part_a;
+    DSD_MEMSET(&ctx->state->p25_p1_harris_part_a, 0, sizeof(ctx->state->p25_p1_harris_part_a));
+    p25_lcw_gps_call call;
+    p25_lcw_gps_call_get(ctx, &call);
+    const char* unpaired = p25_lcw_harris_gps_unpaired(ctx->state, &a, &call, even);
+    if (unpaired != NULL) {
+        DSD_FPRINTF(stderr, " %s", unpaired);
+        return;
+    }
+    uint8_t body[DSD_HARRIS_GPS_BODY_OCTETS];
+    DSD_MEMCPY(body, a.octets, sizeof(a.octets));
+    for (size_t i = 0; i < 7U; i++) {
+        body[7U + i] = (uint8_t)convert_bits_into_output(&ctx->bits[16U + (8U * i)], 8);
+    }
+    dsd_gps_report_ctx report;
+    p25_lcw_gps_report_ctx(ctx, &call, a.hard && ctx->lc_hard, &a.origin, &report);
+    (void)nmea_harris(ctx->opts, ctx->state, body, &report);
+}
+
 static int
 p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
     if (ctx->lc_opcode > 0x31 && ctx->lc_opcode < 0x36) {
@@ -1039,26 +1230,14 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
         return 1;
     }
 
-    if (ctx->lc_opcode == 0x2A) {
-        DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Block 1");
-        DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0], ctx->bits, 16 * sizeof(uint8_t));
-        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40, ctx->bits + 16, 56 * sizeof(uint8_t));
+    // L3Harris GPS update (TIA-102.AABF-D-1 §7.3.35-36): LCO 42/43 for odd-numbered updates, 44/45 for even ones.
+    if (ctx->lc_opcode == 0x2A || ctx->lc_opcode == 0x2C) {
+        p25_lcw_harris_gps_part_a(ctx, (uint8_t)(ctx->lc_opcode == 0x2C));
         return 1;
     }
 
-    if (ctx->lc_opcode == 0x2B) {
-        DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Block 2");
-        DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40 + 56, ctx->bits + 16, 56 * sizeof(uint8_t));
-        uint16_t check = (uint16_t)convert_bits_into_output(&ctx->state->dmr_pdu_sf[0][0], 16);
-        if (check == 0x2AA4) {
-            dsd_call_snapshot call;
-            const uint32_t source = p25_lcw_call(ctx, &call) ? (uint32_t)call.ota_source_id : 0U;
-            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], source, 0);
-        } else {
-            DSD_FPRINTF(stderr, " Missing GPS Block 1");
-        }
-        DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
+    if (ctx->lc_opcode == 0x2B || ctx->lc_opcode == 0x2D) {
+        p25_lcw_harris_gps_part_b(ctx, (uint8_t)(ctx->lc_opcode == 0x2D));
         return 1;
     }
 
@@ -1144,8 +1323,7 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-               uint8_t allow_voice_start, uint64_t ended_epoch) {
-    UNUSED(irrecoverable_errors);
+               uint8_t allow_voice_start, const dsd_event_closing_call* closing, uint64_t ended_epoch) {
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
     }
@@ -1163,6 +1341,10 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
     ctx.allow_voice_start = allow_voice_start;
+    /* Checked only from a hard RS decode that corrected every error: not a soft-erasure retry (spec 2.20), and not a
+       caller's uncorrectable verdict (the CRC/FEC publication rule). */
+    ctx.lc_hard = (uint8_t)(state->p25_p1_lcw_soft == 0U && irrecoverable_errors == 0U);
+    ctx.closing = closing;
     ctx.ended_epoch = ended_epoch;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
@@ -1194,11 +1376,11 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
 
 void
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1, 0U);
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1, NULL, 0U);
 }
 
 void
 p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
-                   uint64_t ended_epoch) {
-    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0, ended_epoch);
+                   const dsd_event_closing_call* closing, uint64_t ended_epoch) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0, closing, ended_epoch);
 }

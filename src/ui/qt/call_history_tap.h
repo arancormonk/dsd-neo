@@ -159,6 +159,8 @@ class CallHistoryTap {
         QString sessionLabel;
         QString sessionUid;
         CallHistoryModel::ClearMark clear;
+        /* The session ordinals the model has given (issue #800), with the block the tap gives new ones from. */
+        CallHistoryModel::SessionOrdinals ordinals;
     };
 
     /** @brief What the tap leaves: the clear mark as its reads settled it, the ring position it read last, and the
@@ -168,6 +170,8 @@ class CallHistoryTap {
         bool read = false;
         qulonglong pushSeq[2] = {0U, 0U};
         quint64 ring = 0U;
+        /* Every ring's session ordinal as the tap left them, the ones it gave included (issue #800). */
+        QHash<quint64, qint64> ordinals;
         /* Spill lines, oldest first, that never reached the spill (it was still unwritable at stop). Only the model
          * has them now: the next start clears what the tap holds. */
         QByteArray unwritten;

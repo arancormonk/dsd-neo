@@ -251,6 +251,8 @@ static void
 nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     if (elements_bits < 79U) {
         DSD_FPRINTF(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
+        /* A rejected header replaces the one before it: no payload may assemble under the old one. */
+        nxdn_data_call_drop_header(state);
         return;
     }
     nxdn_sdcall_header(opts, state, elements);
@@ -769,6 +771,13 @@ nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* sta
                                                    (cipher != 0U) ? 1 : 0, 1);
 }
 
+/* A data call header's destination is a group for a broadcast (0) or group (1) call type (as nxdn_vcall_kind()); a
+ * position report the call carries is qualified by it (dsd_state::dmr_data_checked_group). */
+static uint8_t
+nxdn_data_call_type_is_group(uint8_t call_type) {
+    return (uint8_t)(call_type == 0U || call_type == 1U);
+}
+
 static void
 nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     if (state == NULL || Message == NULL) {
@@ -857,6 +866,8 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_checked_group[0] = nxdn_data_call_type_is_group(call_type);
+    nxdn_data_call_bind_header(opts, state);
 
     nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
 }
@@ -986,7 +997,7 @@ nxdn_dcall_header_print(const struct nxdn_dcall_header_info* info, const dsd_sta
 }
 
 static void
-nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* info) {
+nxdn_dcall_header_apply(const dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_header_info* info) {
     DSD_MEMSET(state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
     state->data_header_blocks[0] = (info->block_count > 0U) ? (int)info->block_count : 1;
     state->data_header_padding[0] = info->pad_bytes;
@@ -997,6 +1008,8 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
     state->dmr_lrrp_target[0] = info->target;
     // Not a DMR talkgroup -- see the sibling header handler above.
     state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_checked_group[0] = nxdn_data_call_type_is_group(info->call_type);
+    nxdn_data_call_bind_header(opts, state);
 }
 
 static void
@@ -1006,6 +1019,8 @@ nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message
     }
 
     if (message_bits < 88U) {
+        /* A rejected header replaces the one before it: no payload may assemble under the old one. */
+        nxdn_data_call_drop_header(state);
         return;
     }
 
@@ -1015,11 +1030,14 @@ nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message
     struct nxdn_dcall_header_info info;
     nxdn_dcall_header_parse(&info, state, Message, message_bits);
     nxdn_dcall_header_print(&info, state);
-    nxdn_dcall_header_apply(state, &info);
+    nxdn_dcall_header_apply(opts, state, &info);
     nxdn_data_header_report_scan_activity(opts, state, info.call_type, info.source, info.target, info.cipher);
 }
 
 enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
+
+/* A format 0x06 data call's NMEA sentences are read whole (issue #800): every data call this file assembles fits. */
+_Static_assert((int)NXDN_DCALL_MAX_BYTES <= (int)NMEA_PAYLOAD_MAX_BYTES, "an NXDN NMEA payload must be read whole");
 
 struct nxdn_dcall_data_context {
     int have_events;
@@ -1073,6 +1091,12 @@ nxdn_dcall_prepare(dsd_state* state, const uint8_t* Message, size_t message_bits
 
     if (state->data_header_valid[0] == 0U) {
         DSD_FPRINTF(stderr, "Missing or Invalid Header; ");
+        return -1;
+    }
+    /* The payload belongs to the header that opened its assembly only while nothing came between them. */
+    if (!nxdn_data_call_header_bound(state)) {
+        DSD_FPRINTF(stderr, "Header No Longer Bound (Reception, Carrier or Time); ");
+        nxdn_data_call_drop_header(state);
         return -1;
     }
     if ((int)ctx->blk_num > ctx->header_blocks) {
@@ -1226,21 +1250,23 @@ nxdn_dcall_handle_reverse_gps(const dsd_opts* opts, dsd_state* state, const stru
     DSD_MEMSET(reverse_bits, 0, sizeof(reverse_bits));
     DSD_UNPACK_ARRAY_TO_BITS(reverse_bytes, reverse_bits, core_len);
     if (core_len >= 2 && (uint16_t)convert_bits_into_output(reverse_bits, 16) == 0xFFFCU) {
-        nxdn_gps_report(opts, state, reverse_bits + 16, (uint32_t)state->dmr_lrrp_source[0]);
+        /* The report after its marker: only the octets the payload carried (a short report gives no position). */
+        nxdn_gps_report(opts, state, reverse_bits + 16, ((size_t)core_len * 8U) - 16U,
+                        (uint32_t)state->dmr_lrrp_source[0], &state->nxdn_data_origin);
     }
 }
 
 static void
 nxdn_dcall_handle_crc_ok(dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
     const uint8_t opcode = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0], 8);
-    const uint8_t nmea = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 8, 8);
     const uint32_t reverse = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0], 24);
+    /* The sentences run from the octet after the opcode to the CRC32, which is not part of them; framed as their
+       parser reads them, line ends before the first sentence included. */
+    const int nmea_len = ctx->total_bytes - 1 - 4;
 
-    if (opcode == 0x06U && (nmea == (uint8_t)'$' || nmea == (uint8_t)'!')) {
-        if (ctx->total_bytes > 1) {
-            DSD_FPRINTF(stderr, "\n ");
-            nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, ctx->total_bytes - 1);
-        }
+    if (opcode == 0x06U && nmea_payload_framed(state->dmr_pdu_sf[0] + 8, nmea_len)) {
+        DSD_FPRINTF(stderr, "\n ");
+        (void)nmea_sentence_checker(opts, state, state->dmr_pdu_sf[0] + 8, 0, nmea_len, 1, &state->nxdn_data_origin);
     } else if (reverse == 0U && ctx->total_bytes > 8) {
         nxdn_dcall_handle_reverse_gps(opts, state, ctx);
     } else if (ctx->have_events) {
@@ -2187,7 +2213,8 @@ nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, cons
         char key_text[24];
         DSD_FPRINTF(stderr, " Key Loaded: %s",
                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
-        state->payload_miN = state->R;
+        state->nxdn_payload_mi = state->R;
+        state->nxdn_iv_on_air = 0U; /* loaded from the key: never an MI */
     }
     if (state->M == 1) {
         nxdn_cipher_force(state, 0x1);
@@ -3058,6 +3085,8 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 }
 
 // @p received: the DSD_CALL_CRYPTO_RX_* fields this publication carries from a checked VCALL (0 for a republish).
+// The MI is an IV received over the air (nxdn_published_mi()), never the working register a scrambled call loads
+// from the key.
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id, uint8_t received,
                           uint8_t contradicted, uint8_t enc_observed) {
@@ -3071,7 +3100,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
                                             : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
         .algid = cipher_type,
         .kid = key_id,
-        .mi = state->payload_miN,
+        .mi = nxdn_published_mi(state),
         .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
         .received = received,
         .contradicted = contradicted,
@@ -3307,10 +3336,13 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
     }
 }
 
+/* A CRC-verified VCALL_IV: its IV, received over the air, is the working IV and the MI the call publishes
+   (nxdn_published_mi()). */
 static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    state->payload_miN = nxdn_vcall_iv_extract(state, Message);
-    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
+    state->nxdn_payload_mi = nxdn_vcall_iv_extract(state, Message);
+    state->nxdn_iv_on_air = 1U;
+    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->nxdn_payload_mi);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
@@ -3323,8 +3355,7 @@ struct nxdn_scch_info {
     /* Whether the transmission is confirmed (nxdn_confirm_is_confirmed()): an SCCH's 7-bit CRC passes noise one time in
        128, so an SCCH of an unconfirmed transmission is printed and acts on nothing -- no recent activity, call end,
        cipher, key, crypto publication, tune or control channel -- until one of the next frame's checks confirms it
-       (they repeat every frame). Its IV parts are the decoder's own working state, kept either way (the call takes
-       the IV only through a confirmed publication), so a part sent before the confirmation is not lost. */
+       (they repeat every frame). */
     int acts;
     uint8_t direction;
     uint8_t sf;
@@ -3335,16 +3366,38 @@ struct nxdn_scch_info {
     uint8_t site_type;
     uint8_t site_code;
     uint8_t gu;
-    uint8_t iv_type;
+    uint8_t spare;
     uint8_t call_opt;
     uint8_t key_id;
     uint8_t cipher;
     uint16_t id;
-    unsigned long long int iv_a;
-    unsigned long long int iv_b;
-    unsigned long long int iv_c;
+    /* An INFO2, INFO3 or busy INFO4 with the reserved prefix 31 (nxdn_scch_names_reserved_prefix()): it names no
+       unit. */
+    uint8_t reserved_prefix;
+    /* Content TS 1-E does not define (nxdn_scch_content_valid(): a reserved prefix, an INFO1 or INFO3 with its Spare bit
+       set):
+       printed, and changes nothing past its own frame -- no area, control channel sync, hunt, activity or crypto. */
+    uint8_t diagnostic_only;
+    /* The field at fault when diagnostic_only (nxdn_scch_content_problem()), else NULL. */
+    const char* problem;
 };
 
+/*
+ * The SCCH's 25 layer-3 bits (NXDN TS 1-E §6.2.2.1 Fig 6.2-3, §6.5 Figs 6.5-1..6.5-10), bit 0 the Octet 0 bit 7:
+ *
+ *   0-1    Structure (Table 6.3-2: INFO4 00, INFO3 01, INFO2 10, INFO1 11)
+ *   2      Area (§6.6.3)
+ *   3-7    Repeater in Use, Go to Repeater, Free Repeater 1 or Repeater Number 1
+ *   8-12   Home Repeater / Prefix (INFO4, INFO3, INFO2), Free Repeater 2 (outbound INFO1, free repeater), Repeater
+ *          Number 2 (idle, halt repeater) or Pass Character 31 (inbound INFO1)
+ *   13-23  Unit or Group ID (INFO4, INFO3, INFO2; 2041 and 2044-2046 mark the outbound site ID and repeater status
+ *          messages); in an INFO1, Call Option (13-15), Cipher Type (16-17) and Key ID (18-23)
+ *   24     G/U (INFO4, INFO2) or Spare
+ *
+ * The site ID message puts Site Type at 3-4 and Site Code at 5-12 (Fig 6.5-8). TS 2-B §5.1.2's SCCH test vectors
+ * encode the same layout. No SCCH message carries an initialization vector: Scramble is the one cipher Type-D defines
+ * (TS 1-E Table 6.6-31, TS 1-F §16), its register loaded from the key.
+ */
 static void
 nxdn_scch_parse(const uint8_t* Message, uint8_t direction, time_t now, struct nxdn_scch_info* info) {
     DSD_MEMSET(info, 0, sizeof(*info));
@@ -3360,13 +3413,29 @@ nxdn_scch_parse(const uint8_t* Message, uint8_t direction, time_t now, struct nx
     info->site_type = (uint8_t)convert_bits_into_output(&Message[3], 2);
     info->site_code = (uint8_t)convert_bits_into_output(&Message[5], 8);
     info->gu = Message[24];
-    info->iv_a = (uint64_t)convert_bits_into_output(&Message[13], 12);
-    info->iv_b = (uint64_t)convert_bits_into_output(&Message[18], 6);
-    info->iv_c = (uint64_t)convert_bits_into_output(&Message[8], 5);
-    info->iv_type = Message[24];
+    info->spare = Message[24];
     info->call_opt = (uint8_t)convert_bits_into_output(&Message[13], 3);
     info->key_id = (uint8_t)convert_bits_into_output(&Message[18], 6);
     info->cipher = (uint8_t)convert_bits_into_output(&Message[16], 2);
+}
+
+/* The outbound status messages whose ID field is a fixed code rather than a unit (NXDN TS 1-E §6.5.3.1 Figs
+ * 6.5-5..6.5-8; INFO2 has INFO4's format, §6.5.3.3): idle (2046), halt (2045) and free (2044) repeater, and site ID
+ * (2041). The inbound INFO4 and INFO2 (Fig 6.5-1) have no such messages: their ID is a destination. */
+static int
+nxdn_scch_is_status(const struct nxdn_scch_info* info) {
+    if (info->direction != 1U || (info->sf != 0U && info->sf != 2U)) {
+        return 0;
+    }
+    return info->id == 2041U || info->id == 2044U || info->id == 2045U || info->id == 2046U;
+}
+
+/* Home Repeater / Prefix 31 is reserved (NXDN TS 1-E Table 6.6-4), and a reserved value's content is not valid (Table
+ * 9.1-1). A unit or group ID is unique only within its home repeater or prefix (§6.6.7, §6.6.8), so an INFO4, INFO3 or
+ * INFO2 with prefix 31 names no unit. The status messages' bits 8-12 are no prefix (a site code there may end in 31). */
+static int
+nxdn_scch_names_reserved_prefix(const struct nxdn_scch_info* info) {
+    return info->sf != 3U && info->rep2 == 31U && !nxdn_scch_is_status(info);
 }
 
 static void
@@ -3393,9 +3462,10 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
        confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()). */
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
-    if (!info->acts) {
+    if (!info->acts || info->diagnostic_only) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
-         * hold cannot rest on one (issue #398). */
+         * hold cannot rest on one (issue #398). Content TS 1-E does not define is not valid either: its area, like
+         * the rest of it, is kept by nothing. */
         return;
     }
     /* The area bit, which the terminal shows as "IDAS - Area" where the RAN goes; not a RAN (issue #575). The received
@@ -3436,12 +3506,15 @@ nxdn_scch_handle_site_id(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Site ID Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
     nxdn_scch_print_site_type(info->site_type);
-    if (!nxdn_idas_site_code_valid(info->site_code)) {
-        DSD_FPRINTF(stderr, "Site Code: %d (Reserved); ", info->site_code);
+    if (!nxdn_scch_site_valid(info->site_type, info->site_code)) {
+        /* The field at fault is named (nxdn_scch_content_problem()): a reserved Site Type 00 with a site's code, or a
+           reserved code. */
+        DSD_FPRINTF(stderr, "Site Code: %d; (not valid: %s) ", info->site_code,
+                    info->problem != NULL ? info->problem : "Site Code reserved");
         return;
     }
     DSD_FPRINTF(stderr, "Site Code: %d; ", info->site_code);
-    if (nxdn_confirm_scch_confirmed(state)) {
+    if (!info->diagnostic_only && nxdn_confirm_scch_confirmed(state)) {
         state->nxdn_idas_site_code = info->site_code;
         dsd_rxid_note_nxdn_idas_site(state, info->site_type, info->site_code);
     }
@@ -3544,7 +3617,8 @@ nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
  * whose repeater cannot be placed, never moves it. */
 static void
 nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U) {
+    /* A termination (31) ends the sending whatever its ID; any other message with the Null ID names no call to follow. */
+    if (!nxdn_scch_should_tune(opts, info) || info->rep1 == 0U || (info->rep1 != 31U && info->id == 0U)) {
         return;
     }
 
@@ -3595,7 +3669,8 @@ nxdn_scch_update_busy_display(const dsd_opts* opts, dsd_state* state, const stru
         // Channel-update termination signaling: positive over-the-air end evidence, for an NXDN call.
         (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
         nxdn_call_identity_end(opts, state);
-    } else if (info->rep1 != 0U) {
+    } else if (info->rep1 != 0U && info->id != 0U) {
+        /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so no activity to note. */
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
@@ -3682,12 +3757,13 @@ static void
 nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "%s", (info->gu && info->rep1 == 0U) ? "REG_COMM; " : "Busy Repeater Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
-    DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
+    DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Go to Repeater" : "Repeater in Use", info->rep1);
     DSD_FPRINTF(stderr, "Home Repeater: %d; ", info->rep2);
     nxdn_scch_update_busy_display(opts, state, info);
     /* The live call takes the message's target only when the go-to repeater is the receiver's own: a busy message for
-     * another repeater is another call. */
-    if (info->acts && info->rep1 != 31U && info->now - state->last_vc_sync_time < 1
+     * another repeater is another call. ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U
+     * bit classifies nothing, as in an INFO2 (nxdn_scch_handle_info2()). */
+    if (info->acts && info->rep1 != 31U && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
         nxdn_scch_enrich_identity(state, 0U, info->id,
@@ -3697,16 +3773,19 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
 
-/* The INFO4 messages whose ID field is a fixed code rather than a unit (NXDN TS 1-E §6.5.3.1 Figs 6.5-5..6.5-8): idle
- * (2046), halt (2045) and free (2044) repeater, and site ID (2041). Returns whether this was one. */
+/* An outbound status message (nxdn_scch_is_status()): idle, halt or free repeater, or site ID. Returns whether this was
+ * one. */
 static int
 nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* info) {
+    if (!nxdn_scch_is_status(info)) {
+        return 0;
+    }
     if (info->id == 2046U) {
         DSD_FPRINTF(stderr, "Idle Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
-        if (info->acts) {
+        if (info->acts && !info->diagnostic_only) {
             (void)dsd_recent_activity_clear(state, info->rep1);
             (void)dsd_recent_activity_clear(state, info->rep2);
         }
@@ -3720,6 +3799,10 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Free Repeater 2: %d; ", info->rep2);
+        if (info->diagnostic_only) {
+            /* A reserved Free Repeater (Table 6.6-8): no repeater is free. */
+            DSD_FPRINTF(stderr, "(not valid: %s) ", info->problem);
+        }
     } else if (info->id == 2041U) {
         nxdn_scch_handle_site_id(state, info);
     } else {
@@ -3728,13 +3811,33 @@ nxdn_scch_handle_repeater_status(dsd_state* state, const struct nxdn_scch_info* 
     return 1;
 }
 
+/* An INFO4, INFO3 or INFO2 whose content TS 1-E does not define (nxdn_scch_info::diagnostic_only): the reserved prefix
+ * (nxdn_scch_names_reserved_prefix()), or another field nxdn_scch_content_problem() names, which the print names too. It
+ * acts on nothing. A reserved-prefix message's ID field is printed only through the key redaction: some decoders read
+ * part of an encryption IV there, which no NXDN specification defines. Returns whether it was one. */
+static int
+nxdn_scch_reserved_prefix(const dsd_opts* opts, const struct nxdn_scch_info* info) {
+    if (!info->diagnostic_only) {
+        return 0;
+    }
+    if (!info->reserved_prefix) {
+        /* The field at fault (nxdn_scch_content_problem()), never a valid ID blamed in its place. */
+        DSD_FPRINTF(stderr, "\n%s  Not valid: %s (ID %d) ", KYEL, info->problem, info->id);
+        return 1;
+    }
+    char text[8];
+    DSD_FPRINTF(stderr, "\n%s  Reserved Prefix 31 (not valid); ID Field: %s ", KYEL,
+                dsd_secret_format_hex(text, sizeof text, opts->show_keys, info->id, 3U, 0));
+    return 1;
+}
+
 static void
 nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    if (info->acts) {
+    if (info->acts && !info->diagnostic_only) {
         (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
     }
 
-    if (!nxdn_scch_handle_repeater_status(state, info)) {
+    if (!nxdn_scch_handle_repeater_status(state, info) && !nxdn_scch_reserved_prefix(opts, info)) {
         nxdn_scch_handle_busy(opts, state, info);
     }
 }
@@ -3765,23 +3868,22 @@ nxdn_call_identity_follow_source_update(dsd_state* state, uint64_t before) {
     id->call_seen_m = dsd_decode_now_mono_s();
 }
 
+/* INFO3 (NXDN TS 1-E Figs 6.5-2 and 6.5-9): the sender's home repeater or prefix and unit ID. */
 static void
-nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_handle_info3(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_FPRINTF(stderr, "Source Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
-    DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
-    if (info->id == 31U) {
-        DSD_FPRINTF(stderr, "\n%s ", KYEL);
-        DSD_FPRINTF(stderr, " Call IV A: %04llX", info->iv_a);
-    } else {
-        DSD_FPRINTF(stderr, "\n%s ", KGRN);
-        DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
-                    info->id);
-        if (info->acts && info->now - state->last_vc_sync_time < 1) {
-            const uint64_t before = nxdn_live_call_transmission(state);
-            nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
-            nxdn_call_identity_follow_source_update(state, before);
-        }
+    DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Free Repeater 1" : "Repeater in Use", info->rep1);
+    if (nxdn_scch_reserved_prefix(opts, info)) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n%s ", KGRN);
+    DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
+                info->id);
+    if (info->acts && info->now - state->last_vc_sync_time < 1) {
+        const uint64_t before = nxdn_live_call_transmission(state);
+        nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
+        nxdn_call_identity_follow_source_update(state, before);
     }
 }
 
@@ -3790,77 +3892,112 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
     /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
      * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
      * destination, and name no unit, so they never become the call's target. */
-    if (info->direction == 1U && nxdn_scch_handle_repeater_status(state, info)) {
+    if (nxdn_scch_handle_repeater_status(state, info)) {
         return;
     }
     DSD_FPRINTF(stderr, "Target Message - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
-    DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
-    if (info->id == 31U) {
-        DSD_FPRINTF(stderr, "\n%s ", KYEL);
-        DSD_FPRINTF(stderr, " Call IV A: %04llX; ", info->iv_a);
-        state->payload_miN = info->iv_a << 11;
-    } else {
-        DSD_FPRINTF(stderr, "\n%s ", KGRN);
-        DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
-                    info->id);
-        /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater. */
-        if (info->acts && info->now - state->last_vc_sync_time < 1
-            && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
-            nxdn_scch_enrich_identity(state, 0U, info->id, DSD_CALL_KIND_UNKNOWN);
-            nxdn_call_identity_reconcile(opts, state, -1, 1);
-        }
+    DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Go to Repeater" : "Repeater in Use", info->rep1);
+    if (nxdn_scch_reserved_prefix(opts, info)) {
+        return;
+    }
+    if (info->rep1 == 31U) {
+        /* Repeater in Use / Go to Repeater 31 ends the sending (TS 1-E §6.5.2.1, §6.5.3.1), in an INFO2 as in an
+         * INFO4 (TS 2-E Table 5.1-5, "ISM / OSM INFO4 (EOT)": structure 00b or 10b): the call ends whatever repeater
+         * the receiver is on. An INFO2 EOT retunes nothing, as on main, so the release the frame's FACCH1 carries
+         * still runs and the receiver is never marked as following a voice channel; the hangtime return stands. */
+        nxdn_scch_update_busy_display(opts, state, info);
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n%s ", KGRN);
+    DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d TGT: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
+                info->id);
+    /* As a busy repeater message's (nxdn_scch_handle_busy()): only for the receiver's own go-to repeater, its G/U bit
+     * (INFO2 has INFO4's format, NXDN TS 1-E §6.5.2.3, §6.5.3.3) classifying the target. */
+    if (info->acts && info->id != 0U && info->now - state->last_vc_sync_time < 1
+        && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
+        /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
+        nxdn_scch_enrich_identity(state, 0U, info->id,
+                                  info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
 }
 
+/* Call Option (NXDN TS 1-E §6.6.20 Fig 6.6-7): the CC Option's Emergency, T-Type and Priority bits (bits 7, 4 and 5 of
+ * Fig 6.6-6) as bits 2, 1 and 0; T-Type 0 is a Single, 1 a Multi Trunked System. */
+static void
+nxdn_scch_print_call_option(uint8_t call_opt) {
+    DSD_FPRINTF(stderr, " %s", (call_opt & 0x2U) != 0U ? "Multi Trunked System" : "Single Trunked System");
+    if ((call_opt & 0x4U) != 0U) {
+        DSD_FPRINTF(stderr, " Emergency");
+    }
+    if ((call_opt & 0x1U) != 0U) {
+        DSD_FPRINTF(stderr, " Priority");
+    }
+    DSD_FPRINTF(stderr, " ");
+}
+
+/*
+ * INFO1 (NXDN TS 1-E Figs 6.5-3 and 6.5-10): Pass Character 31 (inbound) or Free Repeater 2 (outbound), Call Option,
+ * Cipher Type and Key ID, and a Spare bit sent as 0 (Table 9.1-1). A receiver ignores a Spare bit, so an INFO1 with it
+ * set still places its frame and is evidence like any (nxdn_scch_content_problem()), but its Call Option, Cipher Type
+ * and Key ID are not taken (D2): some decoders read part of an encryption IV in its bits 8-12 and 18-23, which no NXDN
+ * specification defines, nor how its parts would join. It never touches the decoder's working scrambler register or
+ * IV, and those fields are printed only through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
+ * decoder names them, are Type-C's, TS 1-A): a call option naming one is kept like any other. Its published MI is
+ * only an IV received over the air (nxdn_published_mi()), never the scrambler register an earlier Scramble call left.
+ */
 static void
 nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    uint8_t duplex_mode[32] = {0};
-    uint8_t transmission_mode[32] = {0};
     DSD_FPRINTF(stderr, "Call Option - ");
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
-    DSD_FPRINTF(stderr, "Free Repeater 1: %d; ", info->rep1);
-    if (info->iv_type == 0U) {
-        DSD_FPRINTF(stderr, "Free Repeater 2: %d; ", info->rep2);
-        DSD_FPRINTF(stderr, "\n%s ", KYEL);
-        NXDN_Voice_Call_Option_To_Str(info->call_opt, duplex_mode, transmission_mode);
-        DSD_FPRINTF(stderr, " %s %s ", duplex_mode, transmission_mode);
-        if (info->cipher) {
-            DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
-            DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
+    DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Free Repeater 1" : "Repeater in Use", info->rep1);
+    if (info->spare != 0U) {
+        char text[8];
+        const unsigned long long fields = ((unsigned long long)info->rep2 << 6) | info->key_id;
+        DSD_FPRINTF(stderr, "\n%s  Spare Bit Set (call option not taken); Fields: %s; ", KYEL,
+                    dsd_secret_format_hex(text, sizeof text, opts->show_keys, fields, 3U, 0));
+        if (info->diagnostic_only) {
+            /* Another field refuses the whole message (nxdn_scch_content_problem()), not just its call option. */
+            DSD_FPRINTF(stderr, "(not valid: %s) ", info->problem);
         }
-        if (!info->acts) {
-            return;
-        }
-        // One SCCH observation must not flip the classification the VCALLs established -- in
-        // either direction: a corrupt call option could mute a clear call, or silently unmute
-        // an encrypted one mid-stream. The hysteresis holds it until it repeats.
-        state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
-        state->nxdn_key = info->key_id;
-        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
-                                  DSD_CALL_ENC_OBSERVED_NONE);
-    } else {
-        DSD_FPRINTF(stderr, "\n%s ", KYEL);
-        DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);
-        DSD_FPRINTF(stderr, "Call IV C: %04llX; ", info->iv_c);
-        state->payload_miN = state->payload_miN | (info->iv_c << 6) | info->iv_b;
-        DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
-        if (!info->acts) {
-            return;
-        }
-        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
-                                  DSD_CALL_ENC_OBSERVED_NONE);
+        return;
     }
+    DSD_FPRINTF(stderr, "%s: %d; ", info->direction == 1U ? "Free Repeater 2" : "Pass Character", info->rep2);
+    if (info->diagnostic_only) {
+        /* An inbound INFO1's Pass Character is fixed at 31 (TS 1-E Fig 6.5-3), an outbound one's Free Repeaters are not
+           the reserved 31 (Table 6.6-8): another value is not this message. */
+        DSD_FPRINTF(stderr, "(not valid: %s) ", info->problem);
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n%s ", KYEL);
+    nxdn_scch_print_call_option(info->call_opt);
+    if (info->cipher) {
+        DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
+        DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
+    }
+    if (!info->acts) {
+        return;
+    }
+    // One SCCH observation must not flip the classification the VCALLs established -- in
+    // either direction: a corrupt call option could mute a clear call, or silently unmute
+    // an encrypted one mid-stream. The hysteresis holds it until it repeats.
+    state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
+    state->nxdn_key = info->key_id;
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
+                              DSD_CALL_ENC_OBSERVED_NONE);
 }
 
-//SCCH messages have a unique format that can be used in a super frame, but each 'unit'
-//can also (mostly) be decoded seperately, except an enc IV
+/* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
 void
 NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
     const time_t now = dsd_decode_time();
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
     info.acts = nxdn_confirm_is_confirmed(state);
+    info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
+    info.problem = nxdn_scch_content_problem(Message, direction);
+    info.diagnostic_only = (uint8_t)(info.problem != NULL);
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);
@@ -3870,7 +4007,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
         nxdn_scch_handle_info4(opts, state, &info);
     }
     if (info.opcode == 0x05U || info.opcode == 0x01U) {
-        nxdn_scch_handle_info3(state, &info);
+        nxdn_scch_handle_info3(opts, state, &info);
     }
     if (info.opcode == 0x06U || info.opcode == 0x02U) {
         nxdn_scch_handle_info2(opts, state, &info);

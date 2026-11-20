@@ -2605,10 +2605,34 @@ tetra_calls_unfollowed(dsd_opts* opts, dsd_state* state) {
     (void)dsd_tg_policy_clear_active_call(state, -1);
 }
 
+int
+tetra_calls_protocol(const dsd_state* state) {
+    return calls_protocol(state);
+}
+
 uint32_t
 tetra_calls_addressed_ssi(const tetra_mac_sdu* sdu) {
     uint32_t ssi = 0;
     return sdu_ssi(sdu, &ssi) ? ssi : 0u;
+}
+
+tetra_calls_party
+tetra_calls_addressed_party(const tetra_mac_sdu* sdu, uint32_t* value) {
+    uint32_t ssi = 0;
+    tetra_calls_party party = TETRA_CALLS_PARTY_NONE;
+    if (sdu_ssi(sdu, &ssi)) {
+        if (address_is_smi(&sdu->addr)) {
+            party = TETRA_CALLS_PARTY_SMI;
+        } else if (sdu->addr.type == TETRA_MAC_ADDR_USSI) {
+            party = TETRA_CALLS_PARTY_USSI;
+        } else {
+            party = TETRA_CALLS_PARTY_SSI;
+        }
+    }
+    if (value) {
+        *value = party != TETRA_CALLS_PARTY_NONE ? ssi : 0u;
+    }
+    return party;
 }
 
 void

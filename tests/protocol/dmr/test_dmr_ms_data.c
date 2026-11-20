@@ -181,6 +181,18 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 }
 
 void
+dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
 dsd_symbol_arm_hunt_sync_anchor(dsd_state* state) {
     (void)state;
     if (g_hunt_arm_calls < (int)(sizeof(g_hunt_arm_at) / sizeof(g_hunt_arm_at[0]))) {

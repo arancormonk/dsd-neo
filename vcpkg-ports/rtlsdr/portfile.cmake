@@ -1,3 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+# This file, usage, vcpkg.json and the three .diff files are copied from vcpkg's
+# builtin port, ports/rtlsdr at the manifest baseline, vcpkg commit
+# 9eec002df1cd109f8f104cd966a763daf9751489; Copyright (c) Microsoft Corporation,
+# MIT license in vcpkg-ports/LICENSE-vcpkg.txt. dsd-neo's changes (the source
+# pin, the rebased .diff files, the patch series below and these comments) are
+# GPL-3.0-or-later.
 # Overlay of vcpkg's builtin rtlsdr port (stuck at 2.0.2, which predates the
 # RTL-SDR Blog V4 Lite). Pinned to the arancormonk/rtl-sdr mirror at the same
 # commit as RTL_SDR_SHA in tools/ci-dependency-pins.env: osmocom v2.0.3, the

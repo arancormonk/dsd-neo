@@ -203,7 +203,10 @@ Item {
                 screen.noticeIsProblem = true;
             }},
             {file: "KeySheet"},
-            {file: "LicensesScreen"},
+            // Open on a file, so its text is checked; every branch shown adds the list.
+            {file: "LicensesScreen", open: function (screen) {
+                screen.openNotice("LICENSE", null);
+            }},
             // Issue #646: the Listen tabs as Listen fills them.
             {file: "ListenTabs", properties: {model: [{id: "systems", label: "Systems"}, {id: "scanLists", label: "Scan lists"},
                 {id: "explore", label: "Explore"}], currentId: "systems"}},
@@ -304,8 +307,11 @@ Item {
             {file: "PrivateTag.qml", name: "tag", readBy: otherSlotIdentity,
                 reason: "Beside the other slot's call, whose identity line reads its tags (PRIVATE even where the tag has no room)."},
             {file: "EncTag.qml", name: "tag", when: function (text) {
-                    var row = text.parent ? text.parent.parent ? text.parent.parent.parent : null : null;
-                    return row !== null && row.metaText !== undefined && /\bencrypted\b/.test(row.metaText);
+                    // The call row the tag is in, however deep (its text sits inside the row's node).
+                    var row = text.parent;
+                    while (row && row.metaText === undefined)
+                        row = row.parent;
+                    return !!row && /\bencrypted\b/.test(row.metaText);
                 },
                 reason: "In a call row whose meta line already says \"encrypted\", which the row's description reads; reading ENC as well would say it twice."},
             {file: "TalkgroupCard.qml", name: /^(talkgroupBadge|talkgroupCardName|talkgroupCardTags|temporaryTgAvoidBadge)$/,

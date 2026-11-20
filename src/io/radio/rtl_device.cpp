@@ -123,6 +123,9 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Types.hpp>
 #include <exception>
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include <utility> /* the stream-argument seam walks the arguments' pairs */
+#endif
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 #include <stdexcept> /* the SoapySDR test drivers throw */
 #endif
 
@@ -455,6 +458,11 @@ struct rtl_device {
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
     std::atomic<uint64_t> capture_mute_pending_bytes{0U};
+    /* RESETs recorded in the capture (rtl_device_record_capture_reset(), under the input ring's generation_m), and the
+       count the SoapySDR reader last followed: a replay restarts its Fs/4 rotation at a RESET, so the reader restarts
+       its own before its first record after one (soapy_follow_capture_reset()). */
+    std::atomic<uint64_t> capture_reset_seq{0U};
+    uint64_t reader_capture_reset_seen = 0U;
     uint64_t replay_initial_center_frequency_hz = 0U;
     uint64_t replay_initial_capture_center_frequency_hz = 0U;
     dsd_iq_replay_source* replay_src = nullptr;
@@ -482,6 +490,9 @@ struct rtl_device {
     uint64_t soapy_last_overflow_log_ns = 0U;
     int soapy_profile_id = 0;
     int soapy_requested_bandwidth_hz = 0;
+    /* The filter and rate the last bandwidth notice was logged for, so a retune that applies them again stays quiet. */
+    double soapy_bandwidth_noted_hz = 0.0;
+    uint32_t soapy_bandwidth_noted_rate_hz = 0U;
     uint32_t soapy_startup_center_freq_hz = 0U;
     /* Memoized rtl_device_nearest_supported_rate answer; valid while the device configuration
        (and therefore its rate grid) is unchanged. actual == 0 means empty. */
@@ -1290,7 +1301,7 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
             input_ring_request_discard(s->input_ring);
         }
 #endif
-        if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+        if (!input_ring_commit_if_generation(s->input_ring, produced, discard_generation)) {
             if (moments && need > 0U) {
                 (void)dsd_input_level_cu8_moments_accumulate(moments, src + done, need);
             }
@@ -1298,7 +1309,6 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
                 rtl_handle_u8_ring_generation_stale(s, src, done, need, &carry, &phase, fs4_shift_active, produced);
             break;
         }
-        input_ring_commit(s->input_ring, produced);
     }
 
     rtl_u8_finalize_state final_state = {
@@ -1315,6 +1325,60 @@ rtl_submit_capture_bytes(struct rtl_device* s, const void* data, size_t bytes) {
         return;
     }
     (void)dsd_iq_capture_submit(s->iq_capture_writer, data, bytes);
+}
+
+static inline void rtl_record_capture_mute(struct rtl_device* s, uint64_t duration_bytes, const char* reason);
+
+/* Called by the reader with the ring's generation_m held, before it records a read or a MUTE: a RESET recorded since
+ * its last record restarts its Fs/4 rotation at phase 0, as the replay's does at that RESET, so the two stay in step
+ * over what follows it in the capture. */
+static inline void
+soapy_follow_capture_reset(struct rtl_device* s) {
+    const uint64_t seq = s->capture_reset_seq.load(std::memory_order_acquire);
+    if (seq != s->reader_capture_reset_seen) {
+        s->reader_capture_reset_seen = seq;
+        s->rot_phase = 0;
+    }
+}
+
+#ifdef USE_SOAPYSDR
+/* A reader's MUTE of @p bytes, ordered with a RESET as its reads are (soapy_follow_capture_reset()). */
+static void
+soapy_record_reader_mute(struct rtl_device* s, uint64_t bytes, const char* reason) {
+    if (!s || !s->iq_capture_writer) {
+        return;
+    }
+    if (!s->input_ring) {
+        rtl_record_capture_mute(s, bytes, reason);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
+    soapy_follow_capture_reset(s);
+    rtl_record_capture_mute(s, bytes, reason);
+}
+#endif
+
+/* Record @p bytes of a read taken as of @p generation in the I/Q capture, unless a retune's purge came since: the
+ * purge comes before the retune's RETUNE record, so holding the ring's generation lock (as a purge request does) keeps
+ * a read the purge overtook out of the capture, where a replay would take it for the new frequency's input. Such a read
+ * leaves a retune MUTE of its length instead, as a reconfigure hold's does, so the replay's clock and Fs/4 rotation
+ * step over the samples the live stream stepped over. */
+static void
+rtl_submit_capture_bytes_as_of(struct rtl_device* s, const void* data, size_t bytes, uint64_t generation) {
+    if (!s || !s->iq_capture_writer) {
+        return;
+    }
+    if (!s->input_ring) {
+        rtl_submit_capture_bytes(s, data, bytes);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
+    soapy_follow_capture_reset(s);
+    if (input_ring_discard_generation_matches(s->input_ring, generation)) {
+        rtl_submit_capture_bytes(s, data, bytes);
+        return;
+    }
+    rtl_record_capture_mute(s, (uint64_t)bytes, "retune_reconfigure");
 }
 
 static inline dsd_input_level_source
@@ -1613,16 +1677,47 @@ soapy_handle_no_space(struct input_ring_state* ring, size_t need, int apply_rot,
     }
 }
 
+/* soapy_handle_no_space() for a read taken as of @p generation that the ring has no room for: a purge since dropped the
+ * read anyway, so it is counted and stepped over without a gap mark, as soapy_finalize_generation() does for one the
+ * ring took. The check holds generation_m, as a purge request does. */
+static inline void
+soapy_handle_no_space_as_of(struct input_ring_state* ring, size_t need, int apply_rot, int* phase,
+                            uint64_t generation) {
+    if (!ring) {
+        return;
+    }
+    int current = 0;
+    {
+        std::lock_guard<std::mutex> lock(ring->generation_m);
+        current = input_ring_discard_generation_matches(ring, generation);
+    }
+    if (current) {
+        soapy_handle_no_space(ring, need, apply_rot, phase);
+        return;
+    }
+    rtl_accumulate_ring_drops(ring, need);
+    if (apply_rot && phase) {
+        *phase = rtl_capture_phase_advance_pairs(*phase, need / 2U);
+    }
+}
+
+/* Commit @p produced reserved floats of a read of @p need floats as of @p discard_generation, indivisibly from a purge
+ * request (input_ring_commit_if_generation()). A purge since drops the whole read, the reservation and what was not yet
+ * reserved: all of it is counted, and the Fs/4 rotation steps over the part not yet copied, but no gap is marked, as
+ * for a read the ring took whole (the purge discards around it); returns 1 then. */
 static inline int
-soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_generation, size_t produced) {
+soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_generation, size_t produced, size_t need,
+                          int apply_rot, int* phase) {
     if (!ring) {
         return 1;
     }
-    if (!input_ring_discard_generation_matches(ring, discard_generation)) {
-        rtl_accumulate_ring_drops(ring, produced);
+    if (!input_ring_commit_if_generation(ring, produced, discard_generation)) {
+        rtl_accumulate_ring_drops(ring, need > produced ? need : produced);
+        if (apply_rot && phase && need > produced) {
+            *phase = rtl_capture_phase_advance_pairs(*phase, (need - produced) / 2U);
+        }
         return 1;
     }
-    input_ring_commit(ring, produced);
     return 0;
 }
 
@@ -1692,8 +1787,12 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
 }
 #endif
 
+/* Write @p num_elems CF32 pairs into the input ring as of @p generation, the ring's discard generation the reader took
+ * before it judged the block against a retune's mute: a purge since (a retune) drops the rest of the block, so samples
+ * from before a retune never commit after it. */
 static size_t
-soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot, int bounded) {
+soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot, int bounded,
+                         uint64_t generation) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1704,20 +1803,20 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
-        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
+        const uint64_t discard_generation = generation;
         float *p1 = NULL, *p2 = NULL;
         size_t w1 = 0U;
         size_t w2 = 0U;
         size_t produced = soapy_reserve_even_ring_segments(s->input_ring, need, &p1, &w1, &p2, &w2);
         if (produced == 0U) {
-            soapy_handle_no_space(s->input_ring, need, apply_rot, &phase);
+            soapy_handle_no_space_as_of(s->input_ring, need, apply_rot, &phase, discard_generation);
             break;
         }
         size_t src_idx = done / 2U;
         soapy_copy_cf32_samples(p1, src + src_idx * 2, w1 / 2U, apply_rot, &phase, bounded);
         src_idx += w1 / 2U;
         soapy_copy_cf32_samples(p2, src + src_idx * 2, w2 / 2U, apply_rot, &phase, bounded);
-        if (soapy_finalize_generation(s->input_ring, discard_generation, produced)) {
+        if (soapy_finalize_generation(s->input_ring, discard_generation, produced, need, apply_rot, &phase)) {
             break;
         }
         done += produced;
@@ -1735,8 +1834,10 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elem
 }
 
 #ifdef USE_SOAPYSDR
+/* As soapy_write_cf32_to_ring(), for CS16 pairs. */
 static size_t
-soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot) {
+soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot,
+                         uint64_t generation) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1748,20 +1849,20 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     size_t done = 0;
     int phase = s->rot_phase & 3;
     while (need > 0) {
-        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
+        const uint64_t discard_generation = generation;
         float *p1 = NULL, *p2 = NULL;
         size_t w1 = 0U;
         size_t w2 = 0U;
         size_t produced = soapy_reserve_even_ring_segments(s->input_ring, need, &p1, &w1, &p2, &w2);
         if (produced == 0U) {
-            soapy_handle_no_space(s->input_ring, need, apply_rot, &phase);
+            soapy_handle_no_space_as_of(s->input_ring, need, apply_rot, &phase, discard_generation);
             break;
         }
         size_t src_idx = done / 2U;
         soapy_copy_cs16_samples(p1, src + (src_idx * 2U), w1 / 2U, scale, apply_rot, &phase);
         src_idx += w1 / 2U;
         soapy_copy_cs16_samples(p2, src + (src_idx * 2U), w2 / 2U, scale, apply_rot, &phase);
-        if (soapy_finalize_generation(s->input_ring, discard_generation, produced)) {
+        if (soapy_finalize_generation(s->input_ring, discard_generation, produced, need, apply_rot, &phase)) {
             break;
         }
         done += produced;
@@ -2216,11 +2317,9 @@ replay_commit_or_drop_reserved(struct input_ring_state* ring, uint64_t discard_g
     if (!ring || grant == 0U) {
         return;
     }
-    if (!input_ring_discard_generation_matches(ring, discard_generation)) {
+    if (!input_ring_commit_if_generation(ring, grant, discard_generation)) {
         rtl_accumulate_ring_drops(ring, grant);
-        return;
     }
-    input_ring_commit(ring, grant);
 }
 
 /* Copy one whole chunk into the input ring, number it and commit it. Its metadata, generation included, reaches the
@@ -3154,6 +3253,21 @@ rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conversion, 
     rtl_device dev{};
     rtl_device_test_conversion_apply(conversion, &dev);
     return rtl_device_signal_clip_level(&dev, fs4_shift_active);
+}
+
+extern "C" int
+rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requested_hz, uint32_t* out_planned_hz,
+                             uint32_t* out_written_hz) {
+    if (!out_planned_hz || !out_written_hz || backend == RTL_DEVICE_TEST_BACKEND_SOAPY) {
+        return -1;
+    }
+    rtl_device dev{};
+    dev.backend = backend;
+    dev.rate = device_rate_hz;
+    if (rtl_device_nearest_supported_rate(&dev, requested_hz, out_planned_hz) != 0) {
+        return -1;
+    }
+    return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
 }
 
 extern "C" int
@@ -4605,6 +4719,12 @@ soapy_set_cached_format(struct rtl_device* dev, const std::string& format) {
     soapy_set_cs16_full_scale(dev, format);
 }
 
+/* The profile the device runs (soapy_select_profile_locked()). */
+static const dsdneo::SoapyProfile&
+rtl_device_soapy_profile(const struct rtl_device* dev) {
+    return dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+}
+
 static void
 soapy_select_profile_locked(struct rtl_device* dev) {
     if (!dev) {
@@ -5125,6 +5245,17 @@ soapy_capture_event_bytes(const struct rtl_device* dev, size_t elements) {
     return 0U;
 }
 
+/* The stream arguments setupStream() gets for @p dev's driver. */
+static SoapySDR::Kwargs
+soapy_stream_args_for(const struct rtl_device* dev) {
+    SoapySDR::Kwargs args;
+    dsdneo::SoapyStreamQueue queue{};
+    if (dev && dsdneo::soapy_driver_stream_queue(dev->soapy_driver_key, &queue)) {
+        args[queue.arg_key] = queue.arg_value;
+    }
+    return args;
+}
+
 /* Set up and activate the RX stream, under soapy_lock: 0, activateStream()'s error code, or -EIO for any other
  * failure. @p io_mtu_elems takes the stream's MTU when the driver reports one. Throws what the driver throws. */
 static int
@@ -5145,7 +5276,7 @@ soapy_open_stream_locked(struct rtl_device* dev, size_t* io_mtu_elems) {
         return -EIO;
     }
     std::vector<size_t> channels(1, 0);
-    SoapySDR::Kwargs args;
+    const SoapySDR::Kwargs args = soapy_stream_args_for(dev);
     dev->soapy_stream = dev->soapy_dev->setupStream(SOAPY_SDR_RX, stream_format, channels, args);
     if (!dev->soapy_stream) {
         DSD_FPRINTF(stderr, "SoapySDR: setupStream returned null.\n");
@@ -5252,9 +5383,10 @@ soapy_reader_let_controls_in(const struct rtl_device* dev) {
 }
 
 static int
-soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure) {
+soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure,
+                         uint64_t* out_generation) {
     *receiver_failure = 0;
-    if (!dev || !buffs) {
+    if (!dev || !buffs || !out_generation) {
         return INT_MIN;
     }
     soapy_reader_let_controls_in(dev);
@@ -5262,6 +5394,9 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for readStream.\n");
         return INT_MIN;
     }
+    /* Right before the read, under the lock a retune's programming takes: a retune that finished while the reader
+       waited for the lock leaves the read the new generation. */
+    *out_generation = input_ring_discard_generation(dev->input_ring);
     /* No control hold here: a read that hangs, or keeps timing out, holding the lock is the silence the progress
      * monitor watches for. */
     int ret = INT_MIN;
@@ -5289,7 +5424,7 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
  * rotation moves on by that one sample here too, as the replay's does over the MUTE, keeping the two in step. */
 static void
 soapy_note_driver_overflow(struct rtl_device* dev) {
-    rtl_record_capture_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
+    soapy_record_reader_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
     rtl_finish_capture_mute_span(dev);
     if (fs4_shift_capture_active(dev)) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, 1U);
@@ -5347,11 +5482,11 @@ soapy_consume_mute_prefix(struct rtl_device* dev, size_t frame_elems, int apply_
     if (consumed_mute_bytes > mute_bytes) {
         consumed_mute_bytes = mute_bytes;
     }
+    if (drop_elems > 0U) {
+        soapy_record_reader_mute(dev, soapy_capture_event_bytes(dev, drop_elems), "retune_mute");
+    }
     if (apply_rot && drop_elems > 0U) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, drop_elems);
-    }
-    if (drop_elems > 0U) {
-        rtl_record_capture_mute(dev, soapy_capture_event_bytes(dev, drop_elems), "retune_mute");
     }
     dev->mute.fetch_sub(consumed_mute_bytes, std::memory_order_relaxed);
     if (consumed_mute_bytes >= mute_bytes) {
@@ -5366,11 +5501,11 @@ soapy_handle_reconfigure_hold(struct rtl_device* dev, size_t kept_elems, int app
     if (!rtl_capture_reconfigure_hold_active(dev)) {
         return 0;
     }
+    if (kept_elems > 0U) {
+        soapy_record_reader_mute(dev, soapy_capture_event_bytes(dev, kept_elems), "retune_reconfigure");
+    }
     if (apply_rot && kept_elems > 0U) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, kept_elems);
-    }
-    if (kept_elems > 0U) {
-        rtl_record_capture_mute(dev, soapy_capture_event_bytes(dev, kept_elems), "retune_reconfigure");
     }
     return 1;
 }
@@ -5378,21 +5513,21 @@ soapy_handle_reconfigure_hold(struct rtl_device* dev, size_t kept_elems, int app
 static void
 soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elems,
                      const std::vector<std::complex<float>>& cf32_buf, const std::vector<int16_t>& cs16_buf,
-                     int apply_rot) {
+                     int apply_rot, uint64_t generation) {
     if (!dev || kept_elems == 0U) {
         return;
     }
     if (dev->soapy_format == SOAPY_FMT_CF32) {
         const std::complex<float>* src = cf32_buf.data() + drop_elems;
-        rtl_submit_capture_bytes(dev, src, kept_elems * sizeof(std::complex<float>));
+        rtl_submit_capture_bytes_as_of(dev, src, kept_elems * sizeof(std::complex<float>), generation);
         rtl_publish_cf32_input_level(reinterpret_cast<const float*>(src), kept_elems * 2U);
-        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot, 1);
+        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot, 1, generation);
         return;
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
-    rtl_submit_capture_bytes(dev, src, kept_elems * 2U * sizeof(int16_t));
+    rtl_submit_capture_bytes_as_of(dev, src, kept_elems * 2U * sizeof(int16_t), generation);
     rtl_publish_cs16_input_level(src, kept_elems * 2U, dev->soapy_cs16_full_scale);
-    (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot);
+    (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot, generation);
 }
 
 /* The SoapySDR reader's loop, while the device runs and the session does not end: 0 once either stopped it, else the
@@ -5409,7 +5544,11 @@ soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex
             return -EIO;
         }
 
-        int ret = soapy_read_stream_locked(s, buffs, mtu_elems, receiver_failure);
+        /* Taken right before the read (soapy_read_stream_locked()): a retune that completes while the read returns,
+           or before the block is judged against its mute, purges the input after this, so the block is dropped at its
+           write (a purge from here on). */
+        uint64_t generation = 0U;
+        int ret = soapy_read_stream_locked(s, buffs, mtu_elems, receiver_failure, &generation);
         if (ret == INT_MIN) {
             return -EIO;
         }
@@ -5438,7 +5577,7 @@ soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex
         if (soapy_handle_reconfigure_hold(s, kept_elems, apply_rot)) {
             continue;
         }
-        soapy_submit_samples(s, drop_elems, kept_elems, *cf32_buf, *cs16_buf, apply_rot);
+        soapy_submit_samples(s, drop_elems, kept_elems, *cf32_buf, *cs16_buf, apply_rot, generation);
     }
     return 0;
 }
@@ -5568,6 +5707,8 @@ airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64
     if (!dev->run.load(std::memory_order_acquire)) {
         return;
     }
+    /* Before the block is judged against a retune's mute, as the SoapySDR reader takes it. */
+    const uint64_t generation = input_ring_discard_generation(dev->input_ring);
     if (dropped) {
         rtl_accumulate_ring_drops(dev->input_ring, (size_t)dropped * 2U);
         rtl_record_capture_mute(dev, dropped * 2U * sizeof(float), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
@@ -5595,9 +5736,9 @@ airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64
     if (!pairs) {
         return;
     }
-    rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
+    rtl_submit_capture_bytes_as_of(dev, samples, pairs * 2U * sizeof(float), generation);
     rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
-    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0);
+    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0, generation);
 }
 
 /* libairspy's single consumer owns sample ingestion; the monitor only observes
@@ -5669,17 +5810,33 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     dev.backend = RTL_BACKEND_SOAPY;
     dev.soapy_format = SOAPY_FMT_CF32;
     dev.input_ring = &ring;
+    dev.iq_capture_writer = request->capture_writer;
     dev.rot_phase = request->start_phase & 3;
     std::vector<std::complex<float>> cf32_buf(request->pairs);
     const std::vector<int16_t> cs16_buf;
     DSD_MEMCPY(cf32_buf.data(), request->samples, request->pairs * 2U * sizeof(float));
-    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    /* Taken where the reader takes it, before the read (soapy_read_stream_locked()). */
+    const uint64_t generation = input_ring_discard_generation(&ring);
+    if (request->purge_before_write) {
+        input_ring_request_discard(&ring);
+    }
+    if (request->reset_rate_hz != 0U) {
+        (void)rtl_device_record_capture_reset(&dev, 100000000U, 100000000U, request->reset_rate_hz, "retune");
+    }
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0, generation);
     size_t count = std::min(input_ring_used(&ring), *output_count);
     for (size_t i = 0; i < count; ++i) {
         output[i] = ring.buffer[(request->start + i) % ring.capacity];
     }
     *output_count = count;
     *out_phase = dev.rot_phase;
+    if (request->out_drops) {
+        *request->out_drops = ring.producer_drops.load();
+    }
+    if (request->out_gap_marks) {
+        *request->out_gap_marks = (size_t)(ring.gap_write.load() - ring.gap_read.load());
+    }
+    dev.iq_capture_writer = nullptr;
     input_ring_destroy(&ring);
     return 0;
 }
@@ -5717,7 +5874,8 @@ rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* requ
     const std::vector<std::complex<float>> cf32_buf;
     std::vector<int16_t> cs16_buf(request->pairs * 2U);
     DSD_MEMCPY(cs16_buf.data(), request->samples, request->pairs * 2U * sizeof(int16_t));
-    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0,
+                         input_ring_discard_generation(&ring));
     size_t count = std::min(input_ring_used(&ring), *output_count);
     for (size_t i = 0; i < count; ++i) {
         output[i] = ring.buffer[(request->start + i) % ring.capacity];
@@ -10494,8 +10652,9 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
  * @param samp_rate Sample rate in Hz.
  * @return 0 on success, negative on failure.
  */
-int
-rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
+static int
+rtl_device_set_sample_rate_impl(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz) {
+    *out_written_hz = samp_rate;
     if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
         int rc = airspy_source_rate(dev->airspy, samp_rate);
         if (!rc) {
@@ -10537,6 +10696,8 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
                     soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
                 std::vector<dsdneo::SoapyRange> ranges =
                     soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+                /* The rate asked for, as the device advertises it: the plan already chose the profile's preferred
+                   rate (rtl_device_nearest_supported_rate()), and a rollback asks for the rate it saved. */
                 applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
             } catch (const std::exception&) {
                 applied = requested;
@@ -10545,16 +10706,41 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
                 DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested, applied);
             }
             dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
-            applied_rate = (uint32_t)std::lround(applied);
+            /* llround, not lround: long is 32 bits on Windows. An advertised rate past 32 bits is recorded as the
+               largest one, which every capture ceiling refuses. */
+            applied_rate = applied >= (double)UINT32_MAX ? UINT32_MAX : (uint32_t)std::llround(applied);
             return 0;
         });
         if (rc == 0) {
             dev->rate = applied_rate;
+            *out_written_hz = applied_rate;
         }
         return rc;
     }
 #endif
     return -1;
+}
+
+int
+rtl_device_set_sample_rate_written(struct rtl_device* dev, uint32_t samp_rate, uint32_t* out_written_hz) {
+    uint32_t written_hz = 0U;
+    const int rc = rtl_device_set_sample_rate_impl(dev, samp_rate, &written_hz);
+    if (rc == 0 && out_written_hz) {
+        *out_written_hz = written_hz;
+    }
+    return rc;
+}
+
+/**
+ * @brief Set device sample rate.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param samp_rate Sample rate in Hz.
+ * @return 0 on success, negative on failure.
+ */
+int
+rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
+    return rtl_device_set_sample_rate_written(dev, samp_rate, NULL);
 }
 
 /**
@@ -10567,26 +10753,38 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
  * not pay a driver round-trip; `rtl_device_store_soapy_config_request` clears the
  * cache because driver settings (for example the SDDC ADC clock) can move the grid.
  */
-int
-// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
-rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
-    if (dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
-        *out_actual = dev->rate;
-        return 0;
-    }
-    if (!dev || requested == 0U || !out_actual) {
-        return -1;
-    }
-    *out_actual = requested;
-    if (dev->backend != RTL_BACKEND_SOAPY) {
-        return 0;
-    }
+/* No limit on the rate a write query answers with (rtl_device_rate_written_for()): above every uint32_t limit, so a
+   caller's UINT32_MAX stays a limit like any other (rtl_device_rate_written_within()). */
+static const uint64_t kNoRateLimit = UINT64_MAX;
+
 #ifdef USE_SOAPYSDR
+/* The rate a write programs for @p requested among the advertised @p listed rates and @p ranges: with no limit
+ * (@p limit_hz kNoRateLimit) the setter's own choice (soapy_nearest_sample_rate(), as rtl_device_set_sample_rate()
+ * writes), else the nearest advertised point within the limit (soapy_nearest_sample_rate_within(), a point the setter
+ * keeps). @p out_found false when nothing advertised is within it. */
+static double
+soapy_rate_written(uint32_t requested, uint64_t limit_hz, const std::vector<double>& listed,
+                   const std::vector<dsdneo::SoapyRange>& ranges, bool* out_found) {
+    if (limit_hz == kNoRateLimit) {
+        bool adjusted = false;
+        *out_found = true;
+        return dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+    }
+    return dsdneo::soapy_nearest_sample_rate_within((double)requested, (double)limit_hz, listed, ranges, out_found);
+}
+
+/* The SoapySDR half of rtl_device_supported_rate(): the advertised rate for @p requested, with the profile's
+ * preference (cached per request while the device stays configured) or without it, the rate a write programs, among
+ * the advertised rates not above @p max_hz. */
+static int
+soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_preference, uint64_t limit_hz,
+                     uint32_t* out_actual) {
     /* The cache is read and refreshed under the Soapy lock so concurrent callers never
        observe a torn requested/actual pair. */
     uint32_t actual = 0U;
     int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
-        if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
+        if (with_preference && dev->soapy_nearest_rate_cache_requested == requested
+            && dev->soapy_nearest_rate_cache_actual != 0U) {
             actual = dev->soapy_nearest_rate_cache_actual;
             return 0;
         }
@@ -10594,13 +10792,20 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
         std::vector<dsdneo::SoapyRange> ranges =
             soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-        double applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
-        if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
+        bool found = true;
+        double applied = with_preference
+                             ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested,
+                                                                 listed, ranges, &adjusted)
+                             : soapy_rate_written(requested, limit_hz, listed, ranges, &found);
+        /* In whole Hz, as the selection rounds: a rate that rounds to UINT32_MAX fits. */
+        if (!found || !(applied > 0.0) || !(applied < (double)UINT32_MAX + 0.5)) {
             return -1;
         }
-        actual = (uint32_t)std::lround(applied);
-        dev->soapy_nearest_rate_cache_requested = requested;
-        dev->soapy_nearest_rate_cache_actual = actual;
+        actual = (uint32_t)std::llround(applied);
+        if (with_preference) {
+            dev->soapy_nearest_rate_cache_requested = requested;
+            dev->soapy_nearest_rate_cache_actual = actual;
+        }
         return 0;
     });
     if (rc != 0 || actual == 0U) {
@@ -10608,9 +10813,57 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
     }
     *out_actual = actual;
     return 0;
+}
+#endif
+
+/* The rate for @p requested: with @p with_preference the rate the stream plans with (a native Airspy's own, a SoapySDR
+ * profile's preference), else the rate a write programs, among those not above @p limit_hz (kNoRateLimit: none). */
+static int
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
+rtl_device_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual, bool with_preference,
+                          uint64_t limit_hz) {
+    /* A native Airspy picks its own rate, which the stream plans with; a write programs the rate it is given. */
+    if (with_preference && dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
+        *out_actual = dev->rate;
+        return 0;
+    }
+    if (!dev || requested == 0U || !out_actual) {
+        return -1;
+    }
+    if (dev->backend != RTL_BACKEND_SOAPY) {
+        if (requested > limit_hz) {
+            return -1;
+        }
+        *out_actual = requested;
+        return 0;
+    }
+#ifdef USE_SOAPYSDR
+    return soapy_supported_rate(dev, requested, with_preference, limit_hz, out_actual);
 #else
+    (void)with_preference;
     return -1;
 #endif
+}
+
+int
+rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+    return rtl_device_supported_rate(dev, requested, out_actual, true, kNoRateLimit);
+}
+
+/**
+ * @brief Report the rate rtl_device_set_sample_rate() would write for @p requested (see the header).
+ */
+int
+rtl_device_rate_written_for(struct rtl_device* dev, uint32_t requested, uint32_t* out_written) {
+    return rtl_device_supported_rate(dev, requested, out_written, false, kNoRateLimit);
+}
+
+/**
+ * @brief Report the rate to write for @p requested that does not exceed @p max_hz (see the header).
+ */
+int
+rtl_device_rate_written_within(struct rtl_device* dev, uint32_t requested, uint32_t max_hz, uint32_t* out_written) {
+    return rtl_device_supported_rate(dev, requested, out_written, false, max_hz);
 }
 
 dsd_rate_plan_backend
@@ -10664,12 +10917,21 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
             actual = dev->soapy_dev->getSampleRate(SOAPY_SDR_RX, 0);
             return 0;
         });
-        if (rc == 0 && actual > 0.0) {
-            uint32_t rounded = (uint32_t)std::lround(actual);
-            dev->rate = rounded;
-            return (int)rounded;
+        if (rc == 0 && dsd::io::radio::rtl_is_finite(actual) && actual > 0.0) {
+            /* Checked before it is narrowed: a read-back past INT_MAX Hz is no capture rate, so it reports INT_MAX,
+               which every capture ceiling refuses, and the rate the device was given stays. */
+            if (actual >= (double)INT_MAX) {
+                return INT_MAX;
+            }
+            const int rounded = (int)std::llround(actual);
+            dev->rate = (uint32_t)rounded;
+            return rounded;
         }
 #endif
+        /* No usable read-back: the rate written stands for it, bounded the same way. */
+        if (dev->rate >= (uint32_t)INT_MAX) {
+            return INT_MAX;
+        }
         return (dev->rate > 0) ? (int)dev->rate : -1;
     }
     return (int)dev->rate;
@@ -11241,6 +11503,78 @@ rtl_device_choose_soapy_bandwidth(const struct rtl_device* dev, uint32_t bw_hz) 
                                              profile.default_bandwidth_hz);
 }
 
+/* Whether a bandwidth notice for @p applied_hz at the device's rate is new since the last one logged. */
+static bool
+soapy_bandwidth_notice_is_new(struct rtl_device* dev, double applied_hz) {
+    if (std::fabs(dev->soapy_bandwidth_noted_hz - applied_hz) <= 0.5
+        && dev->soapy_bandwidth_noted_rate_hz == dev->rate) {
+        return false;
+    }
+    dev->soapy_bandwidth_noted_hz = applied_hz;
+    dev->soapy_bandwidth_noted_rate_hz = dev->rate;
+    return true;
+}
+
+/* The capture runs the Fs/4 shift, so the channel sits a quarter of the rate off centre: a profile's default filter
+ * that would cut it (@p applied_hz, as the device's ranges snap it) opens to the narrowest supported one that keeps it
+ * (soapy_floor_bandwidth()). Returns the bandwidth to write; @p out_opened says whether it was opened. */
+static double
+soapy_open_default_bandwidth(const struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice,
+                             const std::vector<dsdneo::SoapyRange>& ranges, double applied_hz, bool* out_opened) {
+    *out_opened = false;
+    if (choice.explicit_request || !fs4_shift_capture_active(dev) || dev->rate == 0U
+        || !dsdneo::soapy_bandwidth_cuts_offset(applied_hz, (double)dev->rate)) {
+        return applied_hz;
+    }
+    const double opened_hz =
+        dsdneo::soapy_floor_bandwidth(dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), ranges);
+    *out_opened = opened_hz > applied_hz + 0.5;
+    return *out_opened ? opened_hz : applied_hz;
+}
+
+/* The filter the driver runs once @p written_hz was written: what getBandwidth() reports, or the value written when it
+ * reports none (SoapySDR's default) or fails. A driver can keep its old filter without throwing. */
+static double
+soapy_bandwidth_readback_locked(struct rtl_device* dev, double written_hz) {
+    try {
+        const double reported_hz = dev->soapy_dev->getBandwidth(SOAPY_SDR_RX, 0);
+        if (dsd::io::radio::rtl_is_finite(reported_hz) && reported_hz > 0.0) {
+            return reported_hz;
+        }
+    } catch (const std::exception&) {
+        /* No report: the write stands for it. */
+        return written_hz;
+    }
+    return written_hz;
+}
+
+/* Whether a filter notice can apply: only the Fs/4 offset channel's needs are judged. */
+static bool
+soapy_bandwidth_notice_applies(const struct rtl_device* dev) {
+    return fs4_shift_capture_active(dev) && dev->rate != 0U;
+}
+
+/* The notice for the filter the driver runs (@p running_hz) once the write took, once per filter and rate: a profile
+ * default opened (@p opened) to keep the channel says so; any filter, default or explicit, narrower than the Fs/4
+ * offset channel needs is warned about. The caller checks soapy_bandwidth_notice_applies() first. */
+static void
+soapy_note_bandwidth(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice, bool opened,
+                     double running_hz) {
+    const bool cuts = dsdneo::soapy_bandwidth_cuts_offset(running_hz, (double)dev->rate);
+    if ((!cuts && !opened) || !soapy_bandwidth_notice_is_new(dev, running_hz)) {
+        return;
+    }
+    if (!cuts) {
+        DSD_FPRINTF(stderr,
+                    "SoapySDR: opened the profile's %d Hz bandwidth to %.0f Hz for the channel %u Hz off centre.\n",
+                    choice.bandwidth_hz, running_hz, dev->rate / 4U);
+        return;
+    }
+    LOG_WARN("SoapySDR: bandwidth %.0f Hz is narrower than %.0f Hz, which keeps the channel (%u Hz off centre, a "
+             "quarter of the %u Hz sample rate) at every DSP bandwidth.\n",
+             running_hz, dsdneo::soapy_fs4_channel_floor_hz((double)dev->rate), dev->rate / 4U, dev->rate);
+}
+
 static int
 rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::SoapyBandwidthChoice& choice) {
     if (!choice.should_apply) {
@@ -11266,10 +11600,17 @@ rtl_device_apply_soapy_bandwidth_locked(struct rtl_device* dev, const dsdneo::So
         }
         return choice.explicit_request ? DSD_ERR_NOT_SUPPORTED : 0;
     }
-    if (std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
+    bool opened = false;
+    applied_hz = soapy_open_default_bandwidth(dev, choice, ranges, applied_hz, &opened);
+    /* A write the driver refuses throws past every notice: nothing is said about a filter it did not take. */
+    dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
+    if (!opened && std::fabs(applied_hz - (double)choice.bandwidth_hz) > 0.5) {
         DSD_FPRINTF(stderr, "SoapySDR: adjusted bandwidth from %d Hz to %.0f Hz.\n", choice.bandwidth_hz, applied_hz);
     }
-    dev->soapy_dev->setBandwidth(SOAPY_SDR_RX, 0, applied_hz);
+    /* The read-back is a driver round trip, made only when a notice can follow. */
+    if (soapy_bandwidth_notice_applies(dev)) {
+        soapy_note_bandwidth(dev, choice, opened, soapy_bandwidth_readback_locked(dev, applied_hz));
+    }
     return 0;
 }
 #endif
@@ -12531,18 +12872,86 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     void
     setSampleRate(const int, const size_t, const double rate) override {
+        const size_t write = (size_t)fake_->rate_writes;
         fake_->rate_writes++;
+        if (fake_->rate_write_refused_at > 0 && (size_t)fake_->rate_write_refused_at == write + 1U) {
+            throw std::runtime_error("sample rate refused");
+        }
         fake_->rate_hz = rate;
+        if (fake_->delivered_by_write && write < fake_->delivered_by_write_count) {
+            fake_->readback_rate_hz = fake_->delivered_by_write[write];
+        }
+        if (fake_->rate_write_throws) {
+            throw std::runtime_error("sample rate write failed");
+        }
     }
 
     double
     getSampleRate(const int, const size_t) const override {
-        return fake_->rate_hz;
+        return fake_->readback_rate_hz > 0.0 ? fake_->readback_rate_hz : fake_->rate_hz;
+    }
+
+    std::vector<double>
+    listSampleRates(const int, const size_t) const override {
+        return points(fake_->listed_rates, fake_->listed_rate_count);
+    }
+
+    SoapySDR::RangeList
+    getSampleRateRange(const int, const size_t) const override {
+        return ranges(fake_->rate_ranges, fake_->rate_range_count);
     }
 
     void
-    setBandwidth(const int, const size_t, const double) override {
+    setBandwidth(const int, const size_t, const double bw) override {
         fake_->bandwidth_writes++;
+        if (fake_->bandwidth_write_throws > 0) {
+            fake_->bandwidth_write_throws--;
+            throw std::runtime_error("bandwidth write failed");
+        }
+        fake_->last_bandwidth_hz = bw;
+    }
+
+    double
+    getBandwidth(const int, const size_t) const override {
+        fake_->bandwidth_reads++;
+        return fake_->readback_bandwidth_hz > 0.0 ? fake_->readback_bandwidth_hz : fake_->last_bandwidth_hz;
+    }
+
+    std::vector<double>
+    listBandwidths(const int, const size_t) const override {
+        return points(fake_->bandwidths, fake_->bandwidth_count);
+    }
+
+    SoapySDR::RangeList
+    getBandwidthRange(const int, const size_t) const override {
+        if (fake_->bandwidth_range_count > 0U) {
+            return ranges(fake_->bandwidth_ranges, fake_->bandwidth_range_count);
+        }
+        SoapySDR::RangeList out;
+        for (double bw : points(fake_->bandwidths, fake_->bandwidth_count)) {
+            out.emplace_back(bw, bw);
+        }
+        return out;
+    }
+
+    std::string
+    getHardwareKey(void) const override {
+        return fake_->hardware_key ? fake_->hardware_key : "";
+    }
+
+  private:
+    static std::vector<double>
+    points(const double* values, size_t count) {
+        return values ? std::vector<double>(values, values + count) : std::vector<double>();
+    }
+
+    static SoapySDR::RangeList
+    ranges(const rtl_device_test_soapy_range* values, size_t count) {
+        SoapySDR::RangeList out;
+        for (size_t i = 0; values && i < count; i++) {
+            out.emplace_back(values[i].minimum, values[i].maximum, values[i].step);
+        }
+        return out;
     }
 };
 } // namespace
@@ -12569,8 +12978,12 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
     if (fake->cf32_stream) {
         dev->soapy_format = SOAPY_FMT_CF32;
     }
-    if (fake->driver_key) {
+    dev->soapy_requested_bandwidth_hz = fake->bandwidth_request_hz;
+    if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
         rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
+        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), fake->hardware_key);
+        rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
+                             fake->requested_profile);
         soapy_select_profile_locked(dev);
     }
     return dev;
@@ -12626,6 +13039,39 @@ rtl_device_test_soapy_device(struct input_ring_state* ring, const rtl_device_tes
     (void)ring;
     (void)driver;
     return nullptr;
+#endif
+}
+
+extern "C" void
+rtl_device_test_soapy_device_set_driver_key(struct rtl_device* dev, const char* driver_key) {
+#ifdef USE_SOAPYSDR
+    if (dev) {
+        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), driver_key);
+        soapy_select_profile_locked(dev);
+    }
+#else
+    (void)dev;
+    (void)driver_key;
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_stream_args(const struct rtl_device* dev, char* out, size_t out_size) {
+#ifdef USE_SOAPYSDR
+    if (!dev || !out || out_size == 0U) {
+        return -1;
+    }
+    std::string text;
+    for (const auto& kv : soapy_stream_args_for(dev)) {
+        text += (text.empty() ? "" : ",") + kv.first + "=" + kv.second;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", text.c_str());
+    return 0;
+#else
+    (void)dev;
+    (void)out;
+    (void)out_size;
+    return -1;
 #endif
 }
 
@@ -12745,6 +13191,19 @@ rtl_device_test_usb_tuner_device_free(struct rtl_device* dev) {
     }
 }
 #endif
+
+uint64_t
+rtl_device_retune_backlog_samples(const struct rtl_device* dev) {
+#ifdef USE_SOAPYSDR
+    dsdneo::SoapyStreamQueue queue{};
+    if (dev && dev->backend == RTL_BACKEND_SOAPY && dsdneo::soapy_driver_stream_queue(dev->soapy_driver_key, &queue)) {
+        return (uint64_t)queue.backlog_samples;
+    }
+#else
+    (void)dev;
+#endif
+    return 0U;
+}
 
 /**
  * @brief Mute the incoming raw input stream for a specified number of bytes.
@@ -13265,7 +13724,17 @@ rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequenc
     event.capture_center_frequency_hz = capture_center_frequency_hz;
     event.sample_rate_hz = sample_rate_hz;
     rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "reset");
-    return rtl_record_capture_event(dev, &event);
+    if (!dev->input_ring) {
+        const int rc = rtl_record_capture_event(dev, &event);
+        dev->capture_reset_seq.fetch_add(1U, std::memory_order_acq_rel);
+        return rc;
+    }
+    /* Under the lock the reader records under, so its records fall wholly before or after this RESET, and it
+       restarts its rotation exactly at it (soapy_follow_capture_reset()). */
+    std::lock_guard<std::mutex> lock(dev->input_ring->generation_m);
+    const int rc = rtl_record_capture_event(dev, &event);
+    dev->capture_reset_seq.fetch_add(1U, std::memory_order_acq_rel);
+    return rc;
 }
 
 uint32_t

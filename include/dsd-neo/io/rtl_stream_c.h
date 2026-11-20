@@ -763,6 +763,20 @@ int rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int rtl_stream_get_request_rate_hz(void);
 
 /**
+ * @brief When the input came back from the last retune's mute, on the decode clock.
+ *
+ * A retune arms a mute that discards the samples the device can still deliver from before it (a HackRF's whole
+ * bounded queue, hundreds of milliseconds at low rates); nothing reaches the demodulator until it ends. A caller that
+ * times listening on the new frequency (the trunk scan's idle dwell) starts its window when the first sample after
+ * the mute reaches the demodulator, or, if none has a second after the mute should have ended, then.
+ *
+ * @param out_ns Receives the dsd_decode_now_mono_ns() time listening began, when this returns 1.
+ * @return 1 with @p out_ns set; -1 while the last retune's input is still muted; 0 when no retune armed a mute since
+ *         the stream started (or no stream runs).
+ */
+int rtl_stream_input_listening_since_ns(uint64_t* out_ns);
+
+/**
  * @brief Report the complex I/Q rate the front end runs at (issue #806).
  *
  * The rate after the half-band chain and the live rate step, which the channel filter, the FSK discriminator, the

@@ -50,6 +50,12 @@ expect_eq_u8(const char* tag, uint8_t got, uint8_t want) {
 }
 
 static int
+close_double(double got, double want, double tolerance) {
+    const double diff = got - want;
+    return diff <= tolerance && diff >= -tolerance;
+}
+
+static int
 expect_close_double(const char* tag, double got, double want, double tolerance) {
     double diff = got - want;
     if (diff < 0.0) {
@@ -375,37 +381,36 @@ test_stream_1600_arbitrary_assemble(void) {
     return err;
 }
 
+/* Issue #800 2.2: the GNSS META parser reads the 14 META bytes themselves (META byte k at meta[k]). A field outside
+ * its range is unknown, never another value: -2^23 (never used) for a coordinate, above 359 for the bearing. */
 static int
-test_parse_gnss_v2(void) {
+test_parse_gnss_meta(void) {
     const uint16_t bearing = 300U;
     const uint32_t latitude_raw = 0x400000U;
     const uint32_t longitude_raw = 0xC00000U;
     const uint16_t altitude = 3000U;
     const uint16_t speed = 0x123U;
-    const uint16_t reserved = 0x000U;
 
-    uint8_t input[15];
-    DSD_MEMSET(input, 0, sizeof(input));
-    input[0] = 0x81U;
-    input[1] = 0x12U;
-    input[2] = (uint8_t)((0xFU << 4U) | (3U << 1U) | ((bearing >> 8U) & 0x1U));
-    input[3] = (uint8_t)(bearing & 0xFFU);
-    input[4] = (uint8_t)(latitude_raw >> 16U);
-    input[5] = (uint8_t)(latitude_raw >> 8U);
-    input[6] = (uint8_t)latitude_raw;
-    input[7] = (uint8_t)(longitude_raw >> 16U);
-    input[8] = (uint8_t)(longitude_raw >> 8U);
-    input[9] = (uint8_t)longitude_raw;
-    input[10] = (uint8_t)(altitude >> 8U);
-    input[11] = (uint8_t)altitude;
-    input[12] = (uint8_t)(speed >> 4U);
-    input[13] = (uint8_t)(((speed & 0xFU) << 4U) | (reserved >> 8U));
-    input[14] = (uint8_t)reserved;
+    uint8_t meta[M17_META_BYTES];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    meta[0] = 0x12U;
+    meta[1] = (uint8_t)((0xFU << 4U) | (3U << 1U) | ((bearing >> 8U) & 0x1U));
+    meta[2] = (uint8_t)(bearing & 0xFFU);
+    meta[3] = (uint8_t)(latitude_raw >> 16U);
+    meta[4] = (uint8_t)(latitude_raw >> 8U);
+    meta[5] = (uint8_t)latitude_raw;
+    meta[6] = (uint8_t)(longitude_raw >> 16U);
+    meta[7] = (uint8_t)(longitude_raw >> 8U);
+    meta[8] = (uint8_t)longitude_raw;
+    meta[9] = (uint8_t)(altitude >> 8U);
+    meta[10] = (uint8_t)altitude;
+    meta[11] = (uint8_t)(speed >> 4U);
+    meta[12] = (uint8_t)((speed & 0xFU) << 4U);
 
     struct m17_gnss_result res;
-    int rc = m17_parse_gnss_v2(input, sizeof(input), &res);
+    int rc = m17_parse_gnss_meta(meta, sizeof(meta), &res);
     if (rc != 0) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 failed: rc=%d\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta failed: rc=%d\n", rc);
         return 1;
     }
 
@@ -415,58 +420,66 @@ test_parse_gnss_v2(void) {
     err |= expect_eq_u8("gnss validity", res.validity, 0xFU);
     err |= expect_eq_u8("gnss radius_exponent", res.radius_exponent, 3U);
     err |= expect_eq_u64("gnss bearing", res.bearing_deg, bearing);
+    err |= expect_eq_u64("gnss latitude raw", (uint64_t)(int64_t)res.latitude_raw, (uint64_t)(int64_t)0x400000);
+    err |= expect_eq_u64("gnss longitude raw", (uint64_t)(int64_t)res.longitude_raw, (uint64_t)(int64_t)-4194304);
+    err |= expect_eq_u64("gnss altitude raw", res.altitude_raw, altitude);
+    err |= expect_eq_u64("gnss speed raw", res.speed_raw, speed);
     err |= expect_close_double("gnss latitude", res.latitude_deg, ((double)(int32_t)latitude_raw * 90.0) / 8388607.0,
                                0.000001);
     err |= expect_close_double("gnss longitude", res.longitude_deg, ((double)-4194304 * 180.0) / 8388607.0, 0.000001);
     err |= expect_close_double("gnss radius", res.radius_m, 8.0, 0.000001);
     err |= expect_close_double("gnss speed", res.speed_kmh, 145.5, 0.000001);
     err |= expect_close_double("gnss altitude", res.altitude_m, 1000.0, 0.000001);
-    err |= expect_eq_u64("gnss reserved", res.reserved, reserved);
+    err |= expect_eq_u64("gnss reserved", res.reserved, 0U);
     err |= expect_eq_u8("gnss invalid-zero mask", res.invalid_zero_fields, 0U);
+    err |= expect_eq_u8("gnss in range", res.out_of_range_fields, 0U);
 
-    input[0] = 0x91U;
-    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 0x91 failed: rc=%d\n", rc);
-        err |= 1;
-    }
-
-    input[0] = 0x05U;
-    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
-    if (rc != -3) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 invalid protocol: got rc=%d want -3\n", rc);
-        err |= 1;
-    }
-
-    rc = m17_parse_gnss_v2(input, 14U, &res);
+    rc = m17_parse_gnss_meta(meta, M17_META_BYTES - 1U, &res);
     if (rc != -2) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 short input: got rc=%d want -2\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta short input: got rc=%d want -2\n", rc);
         err |= 1;
     }
 
-    input[0] = 0x81U;
-    input[13] |= 0x01U;
-    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
+    meta[12] |= 0x01U;
+    rc = m17_parse_gnss_meta(meta, sizeof(meta), &res);
     if (rc != -4) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 reserved bits: got rc=%d want -4\n", rc);
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta reserved bits: got rc=%d want -4\n", rc);
         err |= 1;
     }
-    input[13] &= 0xF0U;
+    meta[12] &= 0xF0U;
 
-    input[2] = (uint8_t)((0x2U << 4U) | 0x01U);
-    input[3] = 0x68U; // 360 degrees is invalid when velocity is marked valid.
-    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
-    if (rc != -5) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 invalid bearing: got rc=%d want -5\n", rc);
+    /* 360 degrees with velocity valid: the bearing is unknown, the speed stays. */
+    meta[1] = (uint8_t)((0x2U << 4U) | 0x01U);
+    meta[2] = 0x68U;
+    rc = m17_parse_gnss_meta(meta, sizeof(meta), &res);
+    if (rc != 0 || res.out_of_range_fields != 0x2U || res.bearing_deg != 0U
+        || !close_double(res.speed_kmh, 145.5, 0.000001)) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta bearing 360: rc=%d mask=%02X bearing=%u\n", rc,
+                    res.out_of_range_fields, res.bearing_deg);
         err |= 1;
     }
 
-    input[2] = (uint8_t)(3U << 1U);
-    input[3] = 0x01U;
-    rc = m17_parse_gnss_v2(input, sizeof(input), &res);
-    if (rc != 0 || res.invalid_zero_fields != 0xFU || res.latitude_deg != 0.0 || res.longitude_deg != 0.0
-        || res.altitude_m != 0.0f || res.speed_kmh != 0.0f || res.bearing_deg != 0U || res.radius_m != 0.0f) {
-        DSD_FPRINTF(stderr, "m17_parse_gnss_v2 invalid-field zeroing failed: rc=%d mask=%02X\n", rc,
+    /* -2^23 (never used): the coordinates are unknown. */
+    meta[1] = (uint8_t)(0x8U << 4U);
+    meta[2] = 0U;
+    meta[3] = 0x80U;
+    meta[4] = 0x00U;
+    meta[5] = 0x00U;
+    rc = m17_parse_gnss_meta(meta, sizeof(meta), &res);
+    if (rc != 0 || res.out_of_range_fields != 0x8U || !close_double(res.latitude_deg, 0.0, 0.000001)) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta -2^23: rc=%d mask=%02X\n", rc, res.out_of_range_fields);
+        err |= 1;
+    }
+    meta[3] = (uint8_t)(latitude_raw >> 16U);
+
+    meta[1] = (uint8_t)(3U << 1U);
+    meta[2] = 0x01U;
+    rc = m17_parse_gnss_meta(meta, sizeof(meta), &res);
+    if (rc != 0 || res.invalid_zero_fields != 0xFU || !close_double(res.latitude_deg, 0.0, 0.000001)
+        || !close_double(res.longitude_deg, 0.0, 0.000001) || !close_double(res.altitude_m, 0.0, 0.000001)
+        || !close_double(res.speed_kmh, 0.0, 0.000001) || res.bearing_deg != 0U
+        || !close_double(res.radius_m, 0.0, 0.000001)) {
+        DSD_FPRINTF(stderr, "m17_parse_gnss_meta invalid-field zeroing failed: rc=%d mask=%02X\n", rc,
                     res.invalid_zero_fields);
         err |= 1;
     }
@@ -523,16 +536,16 @@ test_text_meta_blocks(void) {
     return err;
 }
 
+/* Issue #800 N1: the Extended Callsign META parser reads the 14 META bytes themselves. */
 static int
 test_extended_callsign_meta(void) {
-    uint8_t input[15];
-    DSD_MEMSET(input, 0, sizeof(input));
-    input[0] = 0x82U;
-    write_be48(input + 1, 0x9FDD51ULL);
-    write_be48(input + 7, 0x9FDD51ULL);
+    uint8_t meta[M17_META_BYTES];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    write_be48(meta, 0x9FDD51ULL);
+    write_be48(meta + 6, 0x9FDD51ULL);
 
     struct m17_extended_callsign_result ext;
-    int rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    int rc = m17_parse_extended_callsign_meta(meta, sizeof(meta), &ext);
     int err = 0;
     if (rc != 0 || strcmp(ext.field1_csd, "AB1CD") != 0 || strcmp(ext.field2_csd, "AB1CD") != 0
         || ext.has_field2 != 1U) {
@@ -541,16 +554,22 @@ test_extended_callsign_meta(void) {
         err |= 1;
     }
 
-    input[14] = 0x01U;
-    rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    rc = m17_parse_extended_callsign_meta(meta, sizeof(meta) - 1U, &ext);
+    if (rc != -2) {
+        DSD_FPRINTF(stderr, "extended callsign short input: got rc=%d want -2\n", rc);
+        err |= 1;
+    }
+
+    meta[13] = 0x01U;
+    rc = m17_parse_extended_callsign_meta(meta, sizeof(meta), &ext);
     if (rc != -4) {
         DSD_FPRINTF(stderr, "extended callsign reserved tail: got rc=%d want -4\n", rc);
         err |= 1;
     }
-    input[14] = 0x00U;
+    meta[13] = 0x00U;
 
-    write_be48(input + 1, M17_ADDRESS_BROADCAST);
-    rc = m17_parse_extended_callsign_meta(input, sizeof(input), &ext);
+    write_be48(meta, M17_ADDRESS_BROADCAST);
+    rc = m17_parse_extended_callsign_meta(meta, sizeof(meta), &ext);
     if (rc != -5) {
         DSD_FPRINTF(stderr, "extended callsign invalid field1: got rc=%d want -5\n", rc);
         err |= 1;
@@ -569,7 +588,7 @@ main(void) {
     err |= test_signature_digest();
     err |= test_signature_collector();
     err |= test_stream_1600_arbitrary_assemble();
-    err |= test_parse_gnss_v2();
+    err |= test_parse_gnss_meta();
     err |= test_text_meta_blocks();
     err |= test_extended_callsign_meta();
 

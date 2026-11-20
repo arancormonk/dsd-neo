@@ -56,7 +56,9 @@ typedef struct {
  * touches the single-consumer accessors' state. Any thread, any number of tap threads, each with its own @p out and
  * @p cursor.
  *
- * After the decoder stops, the last published rings stay, so a read after a stop still finds the final commits.
+ * After the decoder stops, the last published rings stay, so a read after a stop still finds the final commits: the
+ * engine publishes them at the end of every run whose lifecycle started, with or without a stop hook (Android passes
+ * only a start hook).
  *
  * @param slot History slot, 0 or 1.
  * @param out Receives the ring on a copy.

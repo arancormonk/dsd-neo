@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/position.h"
 
 static const dsd_state* g_stub_state;
 
@@ -340,16 +341,97 @@ dsd_event_enrich_gps(dsd_state* state, uint8_t slot, int protocol, uint64_t epoc
     return 1;
 }
 
-// The open-call detail write, against the stub call: written while the slot's call is active, declined otherwise.
+// The position writers (issue #800), against the stub call: an admitted report (rev set) goes into row 0 with its text
+// while the slot's call is the epoch (ACTIVE unless the call was captured closing) and names the report's source. No
+// sender-scope or rev ordering: tests that need those link the real event code.
+static int
+stub_write_position(dsd_state* state, uint8_t slot, uint64_t epoch, int allow_ended, const dsd_position_fix* fix,
+                    const char* gps_text) {
+    dsd_call_snapshot call;
+    if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U
+        || fix == NULL || fix->rev == 0U || gps_text == NULL) {
+        return -1;
+    }
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.epoch != epoch
+        || (!allow_ended && call.phase != DSD_CALL_PHASE_ACTIVE)
+        || (fix->source_id != 0U && call.ota_source_id != fix->source_id)) {
+        return 0;
+    }
+    Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
+    DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps_text);
+    DSD_MEMSET(&item->pos, 0, sizeof(item->pos));
+    item->pos.valid = 1U;
+    item->pos.rev = fix->rev;
+    item->pos.proc_instance = fix->proc_instance;
+    item->pos.rx_time_s = fix->rx_time_s;
+    item->pos.lat_e7 = fix->lat_e7;
+    item->pos.lon_e7 = fix->lon_e7;
+    item->pos.err_m = fix->err_m;
+    item->pos.flags = fix->flags;
+    item->pos.kind = fix->kind;
+    item->pos.rx_clock = fix->rx_clock;
+    item->pos.scope = fix->sender_scope;
+    item->pos.identity_freq_hz = fix->identity_freq_hz;
+    state->event_history_s[slot].revision++;
+    return 1;
+}
+
+int
+dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_position_fix* fix, const char* gps_text) {
+    (void)opts;
+    return stub_write_position(state, slot, epoch, 0, fix, gps_text);
+}
+
+int
+dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_closing_call* out) {
+    dsd_call_snapshot call;
+    if (state == NULL || out == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.epoch == 0U || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    out->epoch = call.epoch;
+    out->source_id = call.ota_source_id;
+    out->protocol = call.protocol;
+    out->slot = slot;
+    out->valid = 1U;
+    return 1;
+}
+
+int
+dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
+                                  const dsd_position_fix* fix, const char* gps_text) {
+    (void)opts;
+    if (closing == NULL) {
+        return -1;
+    }
+    return closing->valid ? stub_write_position(state, closing->slot, closing->epoch, 1, fix, gps_text) : 0;
+}
+
+int
+dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text) {
+    dsd_call_snapshot call;
+    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    const uint64_t epoch = dsd_call_state_get(state, slot, &call) > 0 ? call.epoch : 0U;
+    return epoch != 0U ? stub_write_position(state, slot, epoch, 0, fix, gps_text) : 0;
+}
+
+// The open-call detail write, against the stub call: written while the slot's call is active and of the detail's
+// protocol family, declined otherwise.
 int
 dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
                                const char* value) {
-    (void)protocol;
     dsd_call_snapshot call;
     if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || value == NULL) {
         return -1;
     }
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || dsd_sync_protocol_family(call.protocol) != dsd_sync_protocol_family(protocol)) {
         return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
