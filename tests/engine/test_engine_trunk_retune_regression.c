@@ -463,6 +463,8 @@ dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_sca
     return g_trunk_scan_active_landing.symbol_rate_hz > 0 ? 1 : 0;
 }
 
+#ifdef USE_RADIO
+/* Only the radio cases park a target. */
 /* Park a target of class @p mode, whose landing runs @p symbol_rate_hz over @p levels on the CQPSK chain (@p cqpsk) or
  * the FSK discriminator, with @p channel_profile: the class facts the coordinator resolves
  * (dsd_trunk_scan_type_landing()). A rate of 0 parks nothing. */
@@ -487,6 +489,7 @@ park_gfsk(int symbol_rate_hz) {
     park_landing(symbol_rate_hz == 2400 ? DSD_SCAN_MODE_NXDN48 : DSD_SCAN_MODE_DMR, symbol_rate_hz, 4, 0,
                  symbol_rate_hz == 2400 ? RTL_STREAM_CHANNEL_PROFILE_6K25 : RTL_STREAM_CHANNEL_PROFILE_12K5);
 }
+#endif
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
