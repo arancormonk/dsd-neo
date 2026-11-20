@@ -436,6 +436,13 @@ test_udp_report_protocol(dsd_opts* opts, dsd_state* state, int carried_by_p25, i
     DSD_FPRINTF(stderr, "\nLIP over %s on an open %s call: active GPS='%s'\n", carried_by_p25 ? "P25" : "DMR",
                 call_is_p25 ? "P25" : "DMR", active->gps_s);
     CHECK(!filed);
+    /* The report is not discarded: its carrier's committed data notice takes it, as a notice of that carrier's
+       protocol. */
+    const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
+    DSD_FPRINTF(stderr, "LIP over %s: notice systype=%d GPS='%s'\n", carried_by_p25 ? "P25" : "DMR", notice->systype,
+                notice->gps_s);
+    CHECK(notice_has_position(notice, 111U));
+    CHECK(carried_by_p25 ? DSD_SYNC_IS_P25P1(notice->systype) : DSD_SYNC_IS_DMR(notice->systype));
     return failed;
 }
 
