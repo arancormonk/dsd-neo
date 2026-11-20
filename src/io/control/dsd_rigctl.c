@@ -291,6 +291,42 @@ Recv(dsd_socket_t sockfd, char* buf) {
     return true;
 }
 
+/* Read a reply into @p buf (BUFSIZE + 1 bytes, terminated) up to its first newline, over as many reads as TCP splits it
+   into (a peer's "RPRT 0", or a frequency reading, and its newline can arrive apart, and a part left unread would be
+   taken for the next request's reply); @p len is the bytes read. The whole line has one receive timeout
+   (connect_recv_timeout_ms()), on the real clock from the first read: each read waits only for what is left of it, so
+   a peer that sends its reply in slow pieces holds the decoder no longer than one that sends nothing. 0 when the reply
+   ends (EOF), runs out of that time or fills the buffer before its newline. */
+static int
+rigctl_recv_line(dsd_socket_t sockfd, char* buf, size_t* len) {
+    *len = 0U;
+    buf[0] = '\0';
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + connect_recv_timeout_ms();
+    while (memchr(buf, '\n', *len) == NULL) {
+        if (*len >= BUFSIZE) {
+            return 0;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (now_ms >= deadline_ms) {
+            return 0;
+        }
+        const int ready = dsd_socket_wait(sockfd, DSD_SOCKET_WAIT_READ, (unsigned int)(deadline_ms - now_ms));
+        if (ready < 0) {
+            return 0;
+        }
+        if (ready == 0) {
+            continue; /* the time ran out, or a signal cut the wait short: the deadline decides */
+        }
+        const int n = dsd_socket_recv(sockfd, buf + *len, BUFSIZE - *len, 0);
+        if (n <= 0) {
+            return 0;
+        }
+        *len += (size_t)n;
+        buf[*len] = '\0';
+    }
+    return 1;
+}
+
 /**
  * @brief Query current tuned frequency via RIGCTL.
  *
@@ -302,12 +338,15 @@ Recv(dsd_socket_t sockfd, char* buf) {
 long int
 GetCurrentFreq(dsd_socket_t sockfd) {
     long int freq = 0;
-    char buf[BUFSIZE + 1]; /* Recv() terminates a full BUFSIZE-byte reply */
+    char buf[BUFSIZE + 1]; /* rigctl_recv_line() terminates a full BUFSIZE-byte reply */
     char* ptr;
     const char* token;
     char* saveptr = NULL;
+    size_t len = 0U;
 
-    if (!Send(sockfd, "f\n") || !Recv(sockfd, buf)) {
+    /* The whole first line (rigctl_recv_line()): a reading split over two reads is read whole, not taken short with
+       the rest left for the next command. */
+    if (!Send(sockfd, "f\n") || !rigctl_recv_line(sockfd, buf, &len)) {
         return 0;
     }
 
@@ -348,41 +387,15 @@ static uint32_t s_last_freq = 0U;
    status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
 enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED = 2 };
 
-/* Read the reply into @p buf (BUFSIZE + 1 bytes) up to its first newline, over as many reads as TCP splits it into
-   (a peer's "RPRT 0" and its newline can arrive apart, and a newline left unread would be taken for the next
-   request's reply), and say what it states: exactly one line "RPRT", a space, an optional minus and digits, then the
-   newline (after an optional CR). The whole line has one receive timeout (connect_recv_timeout_ms()), on the real
-   clock from the first read: each read waits only for what is left of it, so a peer that sends its reply in slow
-   pieces holds the decoder no longer than one that sends nothing. A reply that ends (EOF), runs out of that time or
-   fills the buffer before its newline, one with anything else in it (another line, a NUL: the line must end the bytes
-   received), or none is unknown. A reply that comes after its request timed out is read as the next request's: as on
-   every rigctl request, the client cannot tell. */
+/* Read the reply (rigctl_recv_line()) and say what it states: exactly one line "RPRT", a space, an optional minus and
+   digits, then the newline (after an optional CR). A reply cut short (rigctl_recv_line()), one with anything else in it
+   (another line, a NUL: the line must end the bytes received), or none is unknown. A reply that comes after its
+   request timed out is read as the next request's: as on every rigctl request, the client cannot tell. */
 static int
 rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
     size_t len = 0U;
-    buf[0] = '\0';
-    const uint64_t deadline_ms = dsd_realtime_mono_ms() + connect_recv_timeout_ms();
-    while (memchr(buf, '\n', len) == NULL) {
-        if (len >= BUFSIZE) {
-            return RIGCTL_FREQ_UNKNOWN;
-        }
-        const uint64_t now_ms = dsd_realtime_mono_ms();
-        if (now_ms >= deadline_ms) {
-            return RIGCTL_FREQ_UNKNOWN;
-        }
-        const int ready = dsd_socket_wait(sockfd, DSD_SOCKET_WAIT_READ, (unsigned int)(deadline_ms - now_ms));
-        if (ready < 0) {
-            return RIGCTL_FREQ_UNKNOWN;
-        }
-        if (ready == 0) {
-            continue; /* the time ran out, or a signal cut the wait short: the deadline decides */
-        }
-        const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
-        if (n <= 0) {
-            return RIGCTL_FREQ_UNKNOWN;
-        }
-        len += (size_t)n;
-        buf[len] = '\0';
+    if (!rigctl_recv_line(sockfd, buf, &len)) {
+        return RIGCTL_FREQ_UNKNOWN;
     }
     if (strlen(buf) != len || strncmp(buf, "RPRT ", 5) != 0) {
         return RIGCTL_FREQ_UNKNOWN;

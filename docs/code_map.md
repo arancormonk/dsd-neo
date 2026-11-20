@@ -7925,7 +7925,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   reply, and that audio is kept (`ENGINE_RIGCTL_RETUNE`, `test_new_audio_before_the_reply()`, every leg; the io_control
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
   refused request or a lost reply installs nothing. Only a complete numeric RPRT line says what a frequency request did
-  (`rigctl_read_freq_reply()`: read up to its newline over as many reads as TCP splits it into, so `RPRT 0` and its
+  (`rigctl_read_freq_reply()`, through `rigctl_recv_line()`, which `GetCurrentFreq()` reads an `f` reading through
+  too: read up to its newline over as many reads as TCP splits it into, so `RPRT 0` and its
   newline apart still confirm and no newline is left for the next request's reply, with one receive timeout for the
   whole line on the real clock, each read waiting only for what is left of it, so a reply in slow pieces holds the
   decoder no longer than none at all; exactly `RPRT`, a space, an
@@ -7938,6 +7939,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the next tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed
   before (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()` and
   `test_set_freq_reads_a_split_reply_whole()`, `test_set_freq_bounds_a_slow_split_reply_by_one_timeout()`,
+  `test_get_current_freq_reads_a_split_reply_whole()`,
   `ENGINE_RIGCTL_RETUNE`
   `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). A limit, as before #834: a reply that comes after
   its request timed out stays on the connection and is read as the next request's, whichever command that is (a

@@ -1563,6 +1563,30 @@ test_get_current_freq_parses_first_line_and_errors(void) {
     return 0;
 }
 
+/* A frequency reading TCP splits over two reads is read whole, up to its newline, not taken short with the rest left
+ * for the next command's reply: the tune after it is still confirmed. Its pieces share one receive timeout. */
+static int
+test_get_current_freq_reads_a_split_reply_whole(void) {
+    reset_stubs();
+    push_response("451");
+    push_response("000000\n");
+    assert(GetCurrentFreq(103) == 451000000L);
+    assert(g_response_index == 2U);
+    push_response("RPRT 0\n");
+    assert(SetFreq(103, 451012500L));
+    assert(RigctlConfirmedFreq(103) == 451012500U);
+
+    /* A reading whose newline comes after the timeout is unknown, and its newline stays unread. */
+    reset_stubs();
+    const uint64_t started = g_now_ms;
+    push_response_after("451", 1000U);
+    push_response_after("000000\n", 600U);
+    assert(GetCurrentFreq(104) == 0L);
+    assert(g_now_ms - started == 1500U);
+    assert(g_response_index == 1U);
+    return 0;
+}
+
 static int
 test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     reset_stubs();
@@ -3286,6 +3310,7 @@ main(void) {
     rc |= test_set_freq_reads_a_split_reply_whole();
     rc |= test_set_freq_bounds_a_slow_split_reply_by_one_timeout();
     rc |= test_get_current_freq_parses_first_line_and_errors();
+    rc |= test_get_current_freq_reads_a_split_reply_whole();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();
     rc |= test_scan_restore_keeps_the_record_of_a_session_passband();
