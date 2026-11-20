@@ -1967,7 +1967,7 @@ put_bits(uint8_t* bits, int at, int n, uint32_t value) {
  * source @p src to 0x800001, with channel reservation type @p type and reservation time remaining @p time (units of 6
  * frames): its SCH/S and SCH/H applied and handed to the call records as the decoder does. */
 static void
-dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t frame) {
+dmo_dsb_reserved_mni(session* s, uint32_t src, uint32_t mni, uint32_t type, uint32_t time, uint8_t frame) {
     uint8_t bits[128];
     DSD_MEMSET(bits, 0, sizeof bits);
     bits_of(k_dmo_sch_s, bits);
@@ -1977,6 +1977,7 @@ dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t
     DSD_MEMSET(bits, 0, sizeof bits);
     bits_of(k_dmo_sch_h, bits);
     put_bits(bits, 42, 24, src);
+    put_bits(bits, 66, 24, mni);
     put_bits(bits, 90, 5, TETRA_DMO_MSG_RESERVED);
     put_bits(bits, 95, 1, type);
     put_bits(bits, 96, 6, time);
@@ -1989,10 +1990,19 @@ dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t
     tetra_dmo_sync_h_t sync_h;
     (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
     assert(sync_h.has_addrs && sync_h.md_ok && sync_h.msg_type == TETRA_DMO_MSG_RESERVED && sync_h.src == src
-           && sync_h.dst == 0x800001u && sync_h.e[TETRA_DMO_E_RESERVATION_TYPE] == type
+           && sync_h.mni == mni && sync_h.dst == 0x800001u && sync_h.e[TETRA_DMO_E_RESERVATION_TYPE] == type
            && sync_h.e[TETRA_DMO_E_RESERVATION] == time);
     tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
     tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
+/* The MNI of the k_dmo_sch_h vector's source: 753/2361. */
+#define TEST_DMO_MNI 0xBC4939u
+
+/* dmo_dsb_reserved_mni() from the vector's network. */
+static void
+dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t frame) {
+    dmo_dsb_reserved_mni(s, src, TEST_DMO_MNI, type, time, frame);
 }
 
 /* A DM-RESERVED of the call on the channel after a call transaction (EN 300 396-3 clause 8.4.6.1) says its master has
@@ -2075,6 +2085,17 @@ test_direct_mode_reservation_keeps(void) {
     assert(ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
     dmo_dsb_reserved(&s, 200u, 0u, 0u, 6u);
     assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).epoch == epoch);
+    /* The same SSI on a co-channel network (another MNI) is another source: neither the transmission nor the call is
+       its to end (clause 8.5.2.1.1 binds the source address to its MNI). */
+    dmo_dsb_reserved_mni(&s, 100u, 0x123456u, 0u, 5u, 6u);
+    dmo_dsb_reserved_mni(&s, 100u, 0x123456u, 0u, 0u, 6u);
+    call = canonical(s.state);
+    if (call.phase != DSD_CALL_PHASE_ACTIVE || !ts->calls.dmo.active || !ts->dmo_dcc_valid) {
+        DSD_FPRINTF(stderr, "FAIL DM-RESERVED of another network's SSI 100: call %d, record %d, colour code %d\n",
+                    (int)call.phase, ts->calls.dmo.active, ts->dmo_dcc_valid);
+    }
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && ts->calls.dmo.active && ts->calls.dmo.in_tx);
+    assert(ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
     /* DM-RESERVED goes in a DSB (clause 8.4.6.1): a DMAC-DATA of that message type, or a DSB whose frame number held a
        reserved value, is not taken for one. */
     dmo_data(&s, TETRA_DMO_MSG_RESERVED, 100u, 0x800001u, 0);

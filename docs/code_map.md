@@ -14600,8 +14600,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
   `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
   inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
-  off the carrier the receiver is on now, and `tetra_frame_leave()` publishes nothing of a lost burst, an interrupted
-  one on the same carrier included, so the publication stays as it was until the next burst that is not lost
+  off the carrier the receiver is on now. The DSB takes direct mode on (`tetra_enter_dmo()`, which ends what the
+  trunked carrier left: its calls, fragments and uplink protection) only after that check, so an interrupted DSB on
+  the same trunked carrier leaves its calls as they were. `tetra_frame_leave()` publishes nothing of a lost burst, an
+  interrupted one on the same carrier included, so the publication stays as it was until the next burst that is not lost
   (`TETRA_BURST_CUT`, through `--wrap` seams around the symbol readers). A lost burst closes with proof NONE whatever
   its blocks proved before the loss, a first block whose grant retuned the receiver included; through `processFrame()`
   it settles UNPRODUCTIVE across a boundary and WITHHELD for an interruption (`process_frame_settle_verdict()`;
@@ -14975,8 +14977,9 @@ single "current call".
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
   traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. DM-RESERVED
   (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
-  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (its source the call's, clause
-  8.5.2.1.1, and the transmission's source and MNI for its colour code and protection) one after a call transaction
+  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (its source address and MNI the
+  call's and its transmission's, clause 8.5.2.1.1, one rule for both, `tetra_dmo_same_party()`: co-channel networks may
+  share an SSI, so the same source under another MNI is another call's) one after a call transaction
   ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
   or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway

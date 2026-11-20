@@ -296,6 +296,11 @@ typedef enum {
  * frame not known, the reservation runs to the end of the next one (clause 8.4.5.1.8 note 2). */
 tetra_dmo_reservation_e tetra_dmo_reservation(const tetra_dmo_sync_h_t* h);
 
+/* 1 when @p h is from source @p src of network @p mni: a source address together with its MNI, the identity a
+ * DM-RESERVED shall repeat from the set-up of its call (EN 300 396-3 clause 8.5.2.1.1). The SSI alone is no such
+ * identity: co-channel networks may share it. */
+int tetra_dmo_same_party(uint32_t src, uint32_t mni, const tetra_dmo_sync_h_t* h);
+
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next
  * carrier is trunked until its own DSB says otherwise. Never creates TETRA state. */

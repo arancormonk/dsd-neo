@@ -761,14 +761,15 @@ tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
    block's 15 dibits skipped after it, so the burst consumes as many dibits as a trunked one. A read that a carrier
    boundary crossed (a replay retune inside it) or an input interruption cut is lost (tetra_confirm_burst_current()):
    nothing of the burst is applied, logged as a call or published, so the mode, DM colour code, protection and call it
-   describes never land on the carrier the receiver is on now. Returns 1 when the burst was taken, for its polarity. */
+   describes never land on the carrier the receiver is on now, and an interrupted read on the same trunked carrier
+   ends none of its calls (tetra_enter_dmo() runs after the check). Returns 1 when the burst was taken, for its
+   polarity. */
 static int
 tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;
     }
-    tetra_enter_dmo(opts, state);
     uint8_t b2_dibits[SB_BKN2_DIBITS];
     float b2_soft[SB_BKN2_DIBITS];
     uint16_t b2_costs[NB_BLOCK_BITS];
@@ -781,6 +782,9 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     if (!tetra_confirm_burst_current(state)) {
         return 0;
     }
+    /* Direct mode is taken on only for a burst read whole: a cut one leaves the trunked carrier, its calls, fragments
+     * and uplink protection as they were. */
+    tetra_enter_dmo(opts, state);
     (void)tetra_dmo_parse_sync_s(sch_s, &s);
 
     tetra_expand_sb_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);

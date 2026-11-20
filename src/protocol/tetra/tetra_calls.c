@@ -1999,6 +1999,7 @@ dmo_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
 static void
 dmo_call_forget(tetra_dmo_call_t* d) {
     d->src = 0u;
+    d->mni = 0u;
     d->dst = 0u;
     d->active = 0;
     d->in_tx = 0;
@@ -2014,12 +2015,13 @@ dmo_call_forget(tetra_dmo_call_t* d) {
  * the DM-SDU, each when the security class left it clear. */
 static void
 dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    if (!d->active || d->src != h->src || (!h->dst_encrypted && d->dst != h->dst)) {
+    if (!d->active || d->src != h->src || d->mni != h->mni || (!h->dst_encrypted && d->dst != h->dst)) {
         dmo_call_forget(d);
     }
     d->active = 1;
     d->addressed = 1;
     d->src = h->src;
+    d->mni = h->mni;
     d->dst = h->dst_encrypted ? 0u : h->dst;
     if (h->md_ok) {
         d->circuit_mode = (uint8_t)h->e[TETRA_DMO_E_CIRCUIT_MODE];
@@ -2079,13 +2081,12 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
 }
 
 /* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5): the call is open and the
- * reservation's source address is the call's, the master's, which a DM-RESERVED shall carry as the set-up that started
- * the transmission did. */
+ * reservation's source address and MNI are the call's, the master's, which a DM-RESERVED shall carry as the set-up that
+ * started the transmission did. The same rule as the transmission's (tetra_dmo_same_party(), dmo_apply_reserved()): a
+ * co-channel network may use the same SSI. */
 static int
 dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    /* The source only: dmo_apply_reserved() matches the MNI too, through the colour code seed. They differ only for a
-       PDU of the same source under another MNI, which clause 8.5.2.1.1 forbids, and then at most one call ends early. */
-    return d->active && d->src == h->src;
+    return d->active && tetra_dmo_same_party(d->src, d->mni, h);
 }
 
 /* A DM-RESERVED whose SCH/H passed its CRC (tetra_dmo_reservation()). It never opens traffic or a call, and one for

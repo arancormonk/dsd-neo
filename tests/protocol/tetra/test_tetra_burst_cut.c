@@ -29,6 +29,7 @@
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -379,8 +380,57 @@ test_lost_burst_publishes_nothing(void) {
     session_close(&s);
 }
 
+/* A DSB an input interruption cut on a trunked carrier, the carrier the same: the trunked carrier's call is left as it
+   was. Direct mode is taken on (tetra_enter_dmo(): what the trunked carrier left ends) only for a DSB read whole, so the
+   anonymous call its speech published stays on, with its timeslot's partial TM-SDU, its signalling encryption and the
+   heard timeslot, and the decoder stays in trunked mode. The same DSB read whole ends them, its own call taking
+   canonical slot 0. */
+static void
+test_cut_dsb_keeps_the_trunked_call(void) {
+    for (int whole = 0; whole <= 1; whole++) {
+        session s = session_open();
+        assert(sb(&s, 0, -1, CUT_BOUNDARY) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        tetra_state_t* ts = tetra_st_existing(s.state);
+        ts->tn = 2;
+        ts->calls.slot_enc[2] = 1u + 0u;
+        ts->mac_frag[2].active = 1;
+        ts->mac_frag[2].nbits = 40;
+        const uint8_t speech[TETRA_SPEECH_FULL_BITS] = {0};
+        tetra_voice_full_slot(s.opts, s.state, speech, 1);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof call);
+        assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        assert(ts->calls.published == TETRA_PUB_ANON && ts->calls.heard && ts->calls.heard_tn == 2);
+        const uint64_t epoch = call.epoch;
+
+        (void)dsb(&s, 0, 0, whole ? -1 : 40, CUT_INTERRUPT);
+        s.state->input_interrupted = 0;
+        DSD_MEMSET(&call, 0, sizeof call);
+        const int active = dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+        if (whole) {
+            /* Direct mode: the anonymous call ended, and the DSB's DM-OCCUPIED is the call on the channel now. */
+            assert(ts->dmo && active && call.epoch != epoch && ts->calls.published == TETRA_PUB_DMO);
+            assert(!ts->calls.heard && ts->calls.slot_enc[2] == 0u && !ts->mac_frag[2].active);
+        } else {
+            const int ok = !ts->dmo && active && call.epoch == epoch && ts->calls.published == TETRA_PUB_ANON
+                           && ts->calls.heard && ts->calls.heard_tn == 2 && ts->calls.slot_enc[2] == 1u
+                           && ts->mac_frag[2].active && ts->mac_frag[2].nbits == 40;
+            if (!ok) {
+                DSD_FPRINTF(stderr,
+                            "FAIL interrupted DSB on a trunked carrier: dmo=%d call active=%d published=%d heard=%d "
+                            "slot_enc=%u fragment=%d\n",
+                            ts->dmo, active, ts->calls.published, ts->calls.heard, (unsigned)ts->calls.slot_enc[2],
+                            ts->mac_frag[2].active);
+            }
+            assert(ok);
+        }
+        session_close(&s);
+    }
+}
+
 int
 main(void) {
+    test_cut_dsb_keeps_the_trunked_call();
     test_lost_burst_publishes_nothing();
     test_dsb_tail_after_a_good_sch_h(CUT_BOUNDARY);
     test_dsb_tail_after_a_good_sch_h(CUT_INTERRUPT);

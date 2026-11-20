@@ -1299,6 +1299,9 @@ dmo_transmission_over(tetra_state_t* ts) {
     ts->dmo_tx_ksg = 0U;
     ts->dmo_tx_key_number = 0U;
     ts->dmo_tx_seed = 0U;
+    ts->dmo_tx_src = 0U;
+    ts->dmo_tx_mni = 0U;
+    ts->dmo_tx_party = 0U;
     dmo_set_crypt(ts, TETRA_DMO_CRYPT_UNKNOWN);
 }
 
@@ -1314,6 +1317,9 @@ dmo_start_transmission(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, uint8_t a
     ts->dmo_tx_ksg = keyed ? (uint8_t)(s->ksg & 0xFu) : 0U;
     ts->dmo_tx_key_number = keyed ? (uint8_t)(s->key_number & 0x1Fu) : 0U;
     ts->dmo_tx_seed = seed;
+    ts->dmo_tx_src = 0U;
+    ts->dmo_tx_mni = 0U;
+    ts->dmo_tx_party = 0U;
     ts->dmo_tx_seq++;
     dmo_set_crypt(ts, crypt);
 }
@@ -1398,6 +1404,9 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
     if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && other_class)) {
         dmo_learn_dcc(ts, s, h);
         dmo_start_transmission(ts, s, s->enc_state, crypt, seed);
+        ts->dmo_tx_src = h->src;
+        ts->dmo_tx_mni = h->mni;
+        ts->dmo_tx_party = 1U;
         return;
     }
     dmo_learn_dcc(ts, s, h);
@@ -1422,18 +1431,25 @@ tetra_dmo_reservation(const tetra_dmo_sync_h_t* h) {
     return h->e[TETRA_DMO_E_RESERVATION_TYPE] != 0u ? TETRA_DMO_RSV_GATEWAY_SETUP : TETRA_DMO_RSV_AFTER_TX;
 }
 
+int
+tetra_dmo_same_party(uint32_t src, uint32_t mni, const tetra_dmo_sync_h_t* h) {
+    return h && h->src == src && h->mni == mni;
+}
+
 /* A DM-RESERVED of the transmission in progress after it, or at the end of the call (tetra_dmo_reservation()): the
  * master is no longer transmitting (EN 300 396-3 clause 8.6.2, case 3, a DM-TX CEASED that went unheard), so the
  * transmission is over as at that DM-TX CEASED. Only the master's: its source address and MNI are those of the
- * set-up that started the transmission (clause 8.5.2.1.1), which the transmission's colour code seed names. A
- * reservation during a gateway set-up leaves the set-up as it was, and one of another source is another call's. */
+ * set-up that started the transmission (clause 8.5.2.1.1). A source address alone names no one across networks: two
+ * co-channel networks may use the same SSI, so a reservation of the same source under another MNI is another call's,
+ * as is one of another source; a reservation during a gateway set-up leaves the set-up as it was. */
 static void
-dmo_apply_reserved(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+dmo_apply_reserved(tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
     const tetra_dmo_reservation_e rsv = tetra_dmo_reservation(h);
     if (rsv != TETRA_DMO_RSV_AFTER_TX && rsv != TETRA_DMO_RSV_ENDED) {
         return;
     }
-    if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && dmo_source_seed(s, h) == ts->dmo_tx_seed) {
+    if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && ts->dmo_tx_party
+        && tetra_dmo_same_party(ts->dmo_tx_src, ts->dmo_tx_mni, h)) {
         dmo_transmission_over(ts);
     }
 }
@@ -1451,7 +1467,7 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     } else if (role == DMO_ROLE_END) {
         dmo_transmission_over(ts);
     } else if (h->msg_type == TETRA_DMO_MSG_RESERVED) {
-        dmo_apply_reserved(ts, s, h);
+        dmo_apply_reserved(ts, h);
     }
 }
 
