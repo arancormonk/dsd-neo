@@ -1223,7 +1223,10 @@ source that is suspended or stops sending holds the scan, its timers included, u
 Under `-Y`, whether or not skip-silent is on, only frames whose content passed their protocol's checks keep a row past
 its hangtime. Noise that keeps looking like the start of a frame, NXDN48 noise in particular, used to keep a `-Y` row on
 an empty channel until the visit cap, or for good with no cap. Now the row leaves once `-t` has passed since it landed
-or since its last checked frame, whichever is later. A frame whose verdict is still open (one that passed part of its
+or since its last checked frame, whichever is later. On an RTL-SDR-family receiver the row also stays until `-t` has
+passed since the radio started listening again after the retune: a retune mutes the input for a moment (over half a
+second on a HackRF at its lowest rates), and a row is never left before it has been heard for `-t`. The Scan Timing
+countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
 such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice, X2-TDMA and TETRA frames, which
 have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
