@@ -515,7 +515,7 @@ audio input) sound no alert.
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 | `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
 | `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
-| `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
+| `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other

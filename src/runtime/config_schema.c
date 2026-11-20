@@ -236,8 +236,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {
         "recording",
         "rdio_unknown_talkgroup",
-        "rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input); 0 leaves "
-        "them unexported",
+        "rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an "
+        "SDRTrunk .mbe call played with -r); 0 leaves them unexported",
         "0",
         NULL,
         DSDCFG_TYPE_INT,

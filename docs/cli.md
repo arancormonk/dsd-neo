@@ -392,9 +392,9 @@ Windows console runs:
   0 to 2147483647. 0, the default, leaves those calls unexported. A call with a frequency always uses the frequency in
   kHz. INI: `[recording] rdio_analog_talkgroup`. Both values are refused outside their range, never clamped.
 - `--rdio-unknown-talkgroup <N>` rdio-scanner talkgroup for digital calls that carry no talkgroup and were heard with
-  no known frequency (an audio input, or played files), 0 to 2147483647. 0, the default, leaves those calls
-  unexported. A call with a frequency always uses the frequency in kHz. It is refused outside its range, never
-  clamped. INI: `[recording] rdio_unknown_talkgroup`. See [Digital calls with no talkgroup in
+  no known frequency (an audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647. 0, the default,
+  leaves those calls unexported. A call with a frequency always uses the frequency in kHz. It is refused outside its
+  range, never clamped. INI: `[recording] rdio_unknown_talkgroup`. See [Digital calls with no talkgroup in
   rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner).
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
@@ -418,9 +418,10 @@ Windows console runs:
   `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
   These are known-key playback modes, not key recovery.
   With `-P`, each played file is a recording of its own, and each call in an SDRTrunk export is recorded under its own
-  history row, filed at its first frame's `time`. Played calls carry no frequency or access code, so in rdio-scanner
-  a call with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no talkgroup in
-  rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)).
+  history row, filed at its first frame's `time`. Only those SDRTrunk calls are exported to rdio-scanner. They carry
+  no frequency or access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no
+  talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file
+  names no call: it is recorded, one recording per file, and never exported.
 - `-c <file>` Save symbol captures to a .bin file
 - `--symbol-capture-format <soft|legacy>` Select the current soft/v2 writer. `legacy` remains accepted as an alias; it
   does not reactivate the removed one-byte writer.
@@ -715,10 +716,11 @@ Which calls get a number:
   exported.
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 452.3125 MHz is talkgroup `452312`. On
   a trunked system that is the voice channel's frequency.
-- A call heard with no known frequency (an audio input such as PulseAudio, UDP, TCP or a WAV file, or files played
-  with `-r`) is exported under `--rdio-unknown-talkgroup <n>` when it is set. A trunked call followed through rigctl
-  still knows its voice channel's frequency. With neither, the call is recorded but not exported, and the first time
-  that happens in a run one log line says so.
+- A call heard with no known frequency (an audio input such as PulseAudio, UDP, TCP or a WAV file, or a call of an
+  SDRTrunk `.mbe` export played with `-r`) is exported under `--rdio-unknown-talkgroup <n>` when it is set. A trunked
+  call followed through rigctl still knows its voice channel's frequency. With neither, the call is recorded but not
+  exported, and the first time that happens in a run one log line says so. Raw `.imb`, `.amb` and `.dmb` files played
+  with `-r` name no call, so they are recorded (one recording per file) and never exported.
 - The number is used only for the export. The call history, the journal, the file name, the app and the talkgroup
   rules (`stream=off` and the rest) still see no talkgroup, so no talkgroup row ever matches the number.
 
