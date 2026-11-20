@@ -26237,6 +26237,12 @@ if(Python3_Interpreter_FOUND)
     # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
+        # The tests' folders, and the scripts' own, go under the build tree, not the
+        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
+        # from the root down, so each resolution under a temp folder that holds many
+        # thousand entries costs a full read of it.
+        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
+        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
         # About 30 runs of the script under pwsh: a busy machine can take minutes, so
         # the class runs as two entries that ctest -j runs side by side. Each keeps
         # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
@@ -26253,7 +26259,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 300
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
             )
         endforeach()
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
@@ -26273,7 +26279,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 600
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
             )
         endforeach()
     endif()

@@ -4432,7 +4432,10 @@ Each entry sets `DSD_NEO_TEST_SHARD=<i>/<n>`, and the module's `load_tests` hook
 names, chosen from measured times, and a share of any test the table does not
 name, so a new test runs in exactly one entry. A test in shard 1 checks that the
 shards run every test of the class once. Without the variable the module runs
-every test, as before. Passing runs of `verify_release_tree.ps1` that only show a
+every test, as before. The entries also set `TMPDIR` to `pwsh-test-scratch` in
+the build tree: off Windows, pwsh reads every folder of a path it resolves from
+the root down, so under a system temp folder that holds many thousand entries
+each resolution costs a full read of it, and a class ran about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
 tree passes steps 0-3 before or after a test's change use its `-SkipProgramRuns`
 switch; `test_verify_release_tree`, every refusal and the release jobs run the
 whole script.

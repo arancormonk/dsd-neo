@@ -1975,30 +1975,29 @@ class SoapyReleaseScripts(unittest.TestCase):
 
 
 # The SoapyReleaseScripts tests each entry TOOLS_SOAPY_RELEASE_SCRIPTS_1 to _4 runs (DSD_NEO_TEST_SHARD), chosen from
-# measured times so the four take about as long: about 100 s each at a 1-minute load of 15-30 on a 32-thread desktop,
-# where the whole class takes about 400 s. The staging tests weigh most, and the most under load. A test this table
-# does not name still runs in exactly one entry (unittest_shards).
+# measured times so the four take about as long: about 34 s each when eight tests run at once on a 32-thread desktop,
+# where the whole class takes about 135 s. A test this table does not name still runs in exactly one entry
+# (unittest_shards).
 RELEASE_SCRIPT_SHARDS = (
-    ("test_stage_release_tree_keeps_notice_sources_in_their_roots", "test_stage_release_tree_needs_an_empty_folder",
-     "test_stage_release_tree_takes_the_runtime_from_the_toolset", "test_stage_release_tree_sees_hidden_modules"),
+    ("test_stage_release_tree_refusals", "test_verify_release_tree_needs_a_record_and_notices_for_every_file",
+     "test_verify_release_tree", "test_verify_release_tree_reads_every_dependency_name",
+     "test_verify_release_tree_needs_the_runtime_notice_with_the_runtime",
+     "test_verify_release_tree_refuses_the_debug_runtime", "test_dumpbin_readers_refuse_lines_they_cannot_read"),
+    ("test_verify_release_tree_follows_imports_whatever_the_suffix",
+     "test_verify_release_tree_needs_the_runtime_record_with_the_runtime", "test_isolated_process_runner",
+     "test_stage_release_tree_takes_the_vcpkg_tree_of_the_build", "test_verify_release_tree_sees_hidden_files",
+     "test_stage_release_tree", "test_verify_release_tree_in_a_folder_with_brackets", "test_scripts_parse"),
+    ("test_stage_release_tree_keeps_notice_sources_in_their_roots",
+     "test_verify_release_tree_checks_the_text_of_every_notice",
+     "test_verify_release_tree_refuses_unrecorded_runtime_dlls",
+     "test_stage_release_tree_takes_the_runtime_from_the_toolset",
+     "test_verify_release_tree_refuses_dlls_only_the_build_machine_has",
+     "test_verify_release_tree_needs_one_copy_of_each_shared_library", "test_dumpbin_readers_read_every_name"),
     ("test_stage_release_tree_needs_the_developer_shell_of_the_build",
      "test_stage_release_tree_checks_the_text_of_repository_notices",
-     "test_stage_release_tree_takes_the_vcpkg_tree_of_the_build", "test_stage_release_tree",
-     "test_stage_release_tree_in_a_folder_with_brackets"),
-    ("test_stage_release_tree_refusals", "test_verify_release_tree_follows_imports_whatever_the_suffix",
-     "test_verify_release_tree_needs_a_record_and_notices_for_every_file", "test_verify_release_tree",
-     "test_verify_release_tree_checks_the_text_of_every_notice",
-     "test_verify_release_tree_needs_one_copy_of_each_shared_library",
-     "test_verify_release_tree_in_a_folder_with_brackets"),
-    ("test_verify_release_tree_needs_the_runtime_record_with_the_runtime",
-     "test_verify_release_tree_refuses_images_of_another_machine",
-     "test_verify_release_tree_refuses_unrecorded_runtime_dlls", "test_verify_release_tree_sees_hidden_files",
-     "test_verify_release_tree_refusals", "test_isolated_process_runner",
-     "test_verify_release_tree_reads_every_dependency_name",
-     "test_verify_release_tree_needs_the_runtime_notice_with_the_runtime",
-     "test_verify_release_tree_refuses_dlls_only_the_build_machine_has",
-     "test_verify_release_tree_refuses_the_debug_runtime", "test_dumpbin_readers_refuse_lines_they_cannot_read",
-     "test_dumpbin_readers_read_every_name", "test_readers_on_windows_output", "test_scripts_parse"),
+     "test_verify_release_tree_refuses_images_of_another_machine", "test_verify_release_tree_refusals",
+     "test_stage_release_tree_needs_an_empty_folder", "test_stage_release_tree_in_a_folder_with_brackets",
+     "test_stage_release_tree_sees_hidden_modules", "test_readers_on_windows_output"),
 )
 
 
