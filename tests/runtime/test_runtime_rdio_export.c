@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utime.h>
 #endif
 #include <stdint.h>
 #include <stdio.h>
@@ -3863,6 +3864,42 @@ test_upload_private_name_rule(void) {
         DSD_FPRINTF(stderr, "private name rule: NULL names no private input\n");
         rc = 1;
     }
+
+    static const struct {
+        const char* name;
+        const char* token; // NULL: none
+    } tokens[] = {
+        {"call.0123456789ABCDEF.rdio-upload-audio", "0123456789ABCDEF"},
+        {"call.0123456789ABCDEF.7.rdio-upload-meta", "0123456789ABCDEF"},
+        {"call.0123456789ABCDEF.63.rdio-upload-audio", "0123456789ABCDEF"},
+        {"call.1111111111111111.rdio-upload-meta", "1111111111111111"},
+        {"a.b.1111111111111111.12.rdio-upload-meta", "1111111111111111"},
+        {"call.rdio-upload-audio", NULL},
+        {"call.7.rdio-upload-meta", NULL},
+        {"call.0123456789abcdef.rdio-upload-audio", NULL},
+        {"call.0123456789ABCDE.rdio-upload-audio", NULL},
+        {"call0123456789ABCDEF.rdio-upload-audio", NULL},
+        {"call.0123456789ABCDEF.123.rdio-upload-audio", NULL},
+        {"call.0123456789ABCDEF.wav", NULL},
+    };
+
+    for (size_t i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
+        char got[32] = "";
+        const int found = dsd_rdio_upload_private_name_token(tokens[i].name, got, sizeof(got));
+        if (found != (tokens[i].token != NULL) || (found && strcmp(got, tokens[i].token) != 0)) {
+            DSD_FPRINTF(stderr, "private name token: '%s' gave %d '%s'\n", tokens[i].name, found, got);
+            rc = 1;
+        }
+    }
+    char own[32] = "";
+    char again[32] = "";
+    char small[16];
+    if (dsd_rdio_upload_private_token_text(own, sizeof(own)) != 0 || strlen(own) != 16U
+        || dsd_rdio_upload_private_token_text(again, sizeof(again)) != 0 || strcmp(own, again) != 0
+        || dsd_rdio_upload_private_token_text(small, sizeof(small)) != -1) {
+        DSD_FPRINTF(stderr, "private name token: this process's token '%s' is not one stable 16-digit value\n", own);
+        rc = 1;
+    }
     return rc;
 }
 
@@ -4068,11 +4105,29 @@ test_both_mode_refused_upload_leaves_no_private_inputs(void) {
 }
 
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_TEST_HOUR_S (60 * 60)
+
+// A one-byte file @p leaf in @p dir, last modified @p age_s seconds ago by the wall clock.
+static int
+rdio_test_touch_aged(const char* dir, const char* leaf, long age_s) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof(path), dir, leaf) != 0
+        || write_bytes_file(path, (const unsigned char*)"x", 1U) != 0) {
+        return 1;
+    }
+    struct utimbuf times;
+    times.actime = dsd_realtime_time() - (time_t)age_s;
+    times.modtime = times.actime;
+    if (utime(path, &times) != 0) {
+        DSD_FPRINTF(stderr, "utime(%s) failed: %s\n", path, strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
 static int
 rdio_test_touch(const char* dir, const char* leaf) {
-    char path[DSD_TEST_PATH_MAX];
-    return dsd_test_path_join(path, sizeof(path), dir, leaf) != 0
-           || write_bytes_file(path, (const unsigned char*)"x", 1U) != 0;
+    return rdio_test_touch_aged(dir, leaf, 0);
 }
 
 static int
@@ -4094,14 +4149,32 @@ rdio_test_expect_leaves(const char* label, const char* dir, const char* const* l
     return rc;
 }
 
-static const char* const k_rdio_leftovers[] = {"old.rdio-upload-audio", "old.rdio-upload-meta",
-                                               "old.7.rdio-upload-meta"};
-static const char* const k_rdio_planted[] = {"planted.rdio-upload-audio"};
+// Another run's (other tokens, or the token-less form) private inputs, older than the day floor.
+static const char* const k_rdio_leftovers[] = {"old.0123456789ABCDEF.rdio-upload-audio",
+                                               "old.0123456789ABCDEF.7.rdio-upload-meta",
+                                               "old.1111111111111111.rdio-upload-meta", "legacy.rdio-upload-audio"};
+// Another run's, made after the first run's clearing: 48 hours old.
+static const char* const k_rdio_planted[] = {"planted.0123456789ABCDEF.rdio-upload-audio"};
+// Another run's, 23 hours old: younger than the day floor, so still possibly live.
+static const char* const k_rdio_fresh[] = {"fresh.0123456789ABCDEF.rdio-upload-audio"};
+// Another run's, 25 hours old, made before a run whose own uploads could outlast that.
+static const char* const k_rdio_slow[] = {"slow.0123456789ABCDEF.rdio-upload-meta"};
 static const char* const k_rdio_not_leftovers[] = {"user.audio", "user.meta", "keep.rdio-upload-audio.wav",
                                                    "keep.json",  "keep.wav",  "keep.RDIO-UPLOAD-META"};
 
+// This process's own private input name for @p base, 48 hours old: never the cleanup's to remove.
+static int
+rdio_test_own_leftover(const char* dir, const char* base, char* out_leaf, size_t out_size) {
+    char token[32];
+    if (dsd_rdio_upload_private_token_text(token, sizeof(token)) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(out_leaf, out_size, "%s.%s.rdio-upload-audio", base, token);
+    return rdio_test_touch_aged(dir, out_leaf, 48L * RDIO_TEST_HOUR_S);
+}
+
 // The first run of the leftover test: API-only and DirWatch-only exports leave the leftovers alone, the first "both"
-// export clears them, and a second one in the same folder and run does not clear again.
+// export clears another run's old ones, and a second one in the same folder and run does not clear again.
 static int
 rdio_leftover_first_run(const dsd_opts* base, Event_History_I* hist, const char* dir, const char* other) {
     rdio_test_http_server server;
@@ -4129,8 +4202,9 @@ rdio_leftover_first_run(const dsd_opts* base, Event_History_I* hist, const char*
     opts->rdio_mode = DSD_RDIO_MODE_BOTH;
     rc |= rdio_both_publish(opts, hist, dir, "both_first", "RIFF-both-first", 1202, wav, json);
     rc |= rdio_test_expect_leaves("leftovers, first both export", dir, k_rdio_leftovers, n_left, 0);
+    rc |= rdio_test_expect_leaves("leftovers, another run's fresh one", dir, k_rdio_fresh, 1U, 1);
     // Made after this run cleared the folder: this run does not clear it again.
-    rc |= rdio_test_touch(dir, "planted.rdio-upload-audio");
+    rc |= rdio_test_touch_aged(dir, k_rdio_planted[0], 48L * RDIO_TEST_HOUR_S);
     rc |= rdio_both_publish(opts, hist, dir, "both_second", "RIFF-both-second", 1203, wav, json);
     dsd_rdio_upload_shutdown();
     if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
@@ -4146,11 +4220,30 @@ rdio_leftover_first_run(const dsd_opts* base, Event_History_I* hist, const char*
     free(opts);
     return rc;
 }
+
+// The leftover test's files: another run's old leftovers in @p dir and @p other, another run's fresh one, this
+// process's own old one (its leaf in @p own_leaf), and names that are not private inputs, all but the fresh one 25 or
+// 48 hours old.
+static int
+rdio_leftover_setup(const char* dir, const char* other, char* own_leaf, size_t own_leaf_size) {
+    int rc = 0;
+    for (size_t i = 0; rc == 0 && i < sizeof(k_rdio_leftovers) / sizeof(k_rdio_leftovers[0]); i++) {
+        rc |= rdio_test_touch_aged(dir, k_rdio_leftovers[i], 25L * RDIO_TEST_HOUR_S);
+        rc |= rdio_test_touch_aged(other, k_rdio_leftovers[i], 25L * RDIO_TEST_HOUR_S);
+    }
+    for (size_t i = 0; rc == 0 && i < sizeof(k_rdio_not_leftovers) / sizeof(k_rdio_not_leftovers[0]); i++) {
+        rc |= rdio_test_touch_aged(dir, k_rdio_not_leftovers[i], 48L * RDIO_TEST_HOUR_S);
+    }
+    rc |= rdio_test_touch_aged(dir, k_rdio_fresh[0], 23L * RDIO_TEST_HOUR_S);
+    rc |= rdio_test_own_leftover(dir, "mine", own_leaf, own_leaf_size);
+    return rc;
+}
 #endif
 
-// Issue #888 B15: what a killed run left behind goes when the next run first exports to that folder in "both" mode,
-// once per run and folder: only dsd-neo's own private names, in that folder only, and never in API-only or
-// DirWatch-only mode.
+// Issue #888 B15: what a killed run left behind goes when a later run first exports to that folder in "both" mode,
+// once per run and folder: only dsd-neo's private names, in that folder only, never this process's own (its token),
+// and another run's only once older than a day or than this run's longest possible upload backlog, whichever is
+// longer, so a second run exporting to the same folder keeps its live inputs. Never in API-only or DirWatch-only mode.
 static int
 test_both_mode_clears_leftovers_once_per_run(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -4158,12 +4251,11 @@ test_both_mode_clears_leftovers_once_per_run(void) {
 #else
     char dir[DSD_TEST_PATH_MAX] = {0};
     char other[DSD_TEST_PATH_MAX] = {0};
+    char own_leaf[128] = {0};
     char wav[DSD_TEST_PATH_MAX];
     char json[DSD_TEST_PATH_MAX];
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
-    const size_t n_left = sizeof(k_rdio_leftovers) / sizeof(k_rdio_leftovers[0]);
-    const size_t n_keep = sizeof(k_rdio_not_leftovers) / sizeof(k_rdio_not_leftovers[0]);
     if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_leftovers")
         || !dsd_test_mkdtemp(other, sizeof(other), "dsdneo_rdio_leftovers_other")) {
         rdio_test_remove_dir_tree(dir);
@@ -4171,23 +4263,22 @@ test_both_mode_clears_leftovers_once_per_run(void) {
         free(opts);
         return 1;
     }
-    int rc = 0;
-    for (size_t i = 0; rc == 0 && i < n_left; i++) {
-        rc |= rdio_test_touch(dir, k_rdio_leftovers[i]) | rdio_test_touch(other, k_rdio_leftovers[i]);
-    }
-    for (size_t i = 0; rc == 0 && i < n_keep; i++) {
-        rc |= rdio_test_touch(dir, k_rdio_not_leftovers[i]);
-    }
+    int rc = rdio_leftover_setup(dir, other, own_leaf, sizeof(own_leaf));
     if (rc == 0) {
         rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
         rc |= rdio_leftover_first_run(opts, hist, dir, other);
     }
+    const char* const own[] = {own_leaf};
+    rc |= rdio_test_expect_leaves("leftovers, this process's own", dir, own, 1U, 1);
+    // The next run waits up to 1000 s an attempt: 129 such uploads outlast a day, so the 25-hour-old one stays.
+    rc |= rdio_test_touch_aged(dir, k_rdio_slow[0], 25L * RDIO_TEST_HOUR_S);
     rdio_test_http_server server;
     if (rc == 0 && rdio_test_http_server_start(&server, opts->rdio_api_url, sizeof(opts->rdio_api_url)) == 0) {
-        // The next run's first "both" export there clears what the last one made after its own clearing.
         opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+        opts->rdio_upload_timeout_ms = 1000000;
         rc |= rdio_both_publish(opts, hist, dir, "next_run", "RIFF-next-run", 1204, wav, json);
         rc |= rdio_test_expect_leaves("leftovers, next run", dir, k_rdio_planted, 1U, 0);
+        rc |= rdio_test_expect_leaves("leftovers, next run's longer backlog", dir, k_rdio_slow, 1U, 1);
         dsd_rdio_upload_shutdown();
         if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
             rc = 1;
@@ -4195,9 +4286,14 @@ test_both_mode_clears_leftovers_once_per_run(void) {
     } else {
         rc = 1;
     }
-    rc |= rdio_test_expect_leaves("leftovers, not ours", dir, k_rdio_not_leftovers, n_keep, 1);
-    if (rdio_test_private_inputs_in(dir, NULL) != 0) {
-        DSD_FPRINTF(stderr, "leftovers: private inputs left after the last run\n");
+    rc |= rdio_test_expect_leaves("leftovers, not ours", dir, k_rdio_not_leftovers,
+                                  sizeof(k_rdio_not_leftovers) / sizeof(k_rdio_not_leftovers[0]), 1);
+    rc |= rdio_test_expect_leaves("leftovers, kept to the end", dir, k_rdio_fresh, 1U, 1);
+    rc |= rdio_test_expect_leaves("leftovers, this process's own at the end", dir, own, 1U, 1);
+    // What is left: the fresh one, the slow one and this process's own; none of the runs' uploads.
+    const int private_inputs = rdio_test_private_inputs_in(dir, NULL);
+    if (private_inputs != 3) {
+        DSD_FPRINTF(stderr, "leftovers: %d private inputs at the end, want the 3 kept\n", private_inputs);
         rc = 1;
     }
     rdio_test_remove_dir_tree(dir);

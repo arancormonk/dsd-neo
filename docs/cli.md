@@ -376,10 +376,12 @@ Windows console runs:
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls and
   conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner))
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
-    `<name>.rdio-upload-audio` and `<name>.rdio-upload-meta` (a hard link where the drive supports one, else a copy)
-    and removed when that upload ends, sent or not. A DirWatch with "delete after" on the same folder can then take
-    the WAV and JSON without costing the API upload its files. No rdio-scanner watch reads those two names. Copies a
-    run left behind (it was killed, say) are removed the next time a `both` run exports a call to that folder.
+    `<name>.<run id>.rdio-upload-audio` and `<name>.<run id>.rdio-upload-meta` (a hard link where the drive supports
+    one, else a copy) and removed when that upload ends, sent or not. A DirWatch with "delete after" on the same
+    folder can then take the WAV and JSON without costing the API upload its files. No rdio-scanner watch reads those
+    names. Copies another run left behind (it was killed, say) are removed the next time a `both` run exports a call
+    to that folder, once they are more than a day old (longer with long upload timeouts), so two runs can share a
+    folder.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
   `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:

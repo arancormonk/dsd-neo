@@ -30,9 +30,22 @@ int dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int 
  * ends in ".rdio-upload-audio" or ".rdio-upload-meta" (exact case) after at least one other character. Neither
  * suffix is one an rdio-scanner watch reads (6.6.3 and v8 look at the last extension only: ".json" for a
  * trunk-recorder watch, ".mp3" for SDRTrunk and DSDPlus, the configured one, ".wav" by default, for the default
- * type). The leftover cleanup removes only names this answers 1 for.
+ * type). The leftover cleanup removes only names this answers 1 for, never this process's own (by its token), and
+ * another run's only once it is old enough that no upload can still read it.
  */
 int dsd_rdio_upload_private_name(const char* name);
+
+/*
+ * This process's token, which every private input name it makes carries ("<base>.<token>[.<index>].rdio-upload-…",
+ * 16 uppercase hex digits, drawn once at first use), into @p out: 0, or -1 when @p out holds fewer than 17 bytes.
+ */
+int dsd_rdio_upload_private_token_text(char* out, size_t out_size);
+
+/*
+ * The token in a private input name (dsd_rdio_upload_private_name()), copied into @p out (17 bytes or more): 1, or 0
+ * when the name carries none. An index after the token is one or two digits.
+ */
+int dsd_rdio_upload_private_name_token(const char* name, char* out, size_t out_size);
 
 /*
  * For tests: @p observer (NULL for none) sees every upload job as it is released, sent, dropped or abandoned at the

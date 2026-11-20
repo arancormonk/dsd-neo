@@ -5300,17 +5300,22 @@ suite runs under this compiler.
     a DirWatch with delete-after on that folder removes the pair once it takes it. So at enqueue, and only in `both`
     mode, `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair: a hard link of the WAV
     (`dsd_hard_link()`, a copy where the file system has none) and a copy of the sidecar, named
-    `<base>[.<N>].rdio-upload-audio` / `.rdio-upload-meta` (the first free N), which no 6.6.3 or v8 watch reads (they
+    `<base>.<token>[.<N>].rdio-upload-audio` / `.rdio-upload-meta` (the token: 16 uppercase hex digits drawn once per
+    process with `dsd_nonce_fill()`; N the first free index, 1 to 63), which no 6.6.3 or v8 watch reads (they
     look at the last extension only: `.json`, `.mp3`, or the default type's configured one, `.wav` by default). The
     worker uploads from them under the published names (`curl_mime_filename()`), and the job's release
     (`dsd_rdio_upload_job_free()`: sent, failed, cancelled, dropped at shutdown, or never queued) removes them; the
     public pair is published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names,
     and API-only and DirWatch-only runs make no private inputs. A run that ends without that release (killed, a
     removal that failed, a failed join) leaves them behind: the first `both` export into a folder in each run (the
-    per-run list resets at `dsd_rdio_upload_shutdown()`) first removes, from that folder alone, every name
-    `dsd_rdio_upload_private_name()` (`rdio_export_internal.h`) matches that no queued or in-flight job uploads from.
-    The clearing, the copies and the enqueue run under `g_rdio_private_mutex`, taken before the queue's mutex. A
-    copy that cannot be made fails the export (no job, journal `rdio` false), as a full queue does.
+    per-run list, under `g_rdio_private_mutex`, resets at `dsd_rdio_upload_shutdown()`) first removes, from that
+    folder alone, names `dsd_rdio_upload_private_name()` (`rdio_export_internal.h`) matches, never one carrying this
+    process's token (`dsd_rdio_upload_private_name_token()`), and another run's (another token, or none) only when its
+    modification time is older than `dsd_rdio_leftover_min_age_s()`: a day, or (queue max + 1) x attempts x
+    (timeout + 150 ms backoff) at this run's settings when that is longer. So a second run exporting to the same
+    folder keeps its live inputs. The age is wall-clock (`dsd_realtime_time()` against `st_mtime` from
+    `dsd_stat_path()`), not a decode decision. A copy that cannot be made fails the export (no job, journal `rdio`
+    false), as a full queue does.
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
     decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
@@ -5323,9 +5328,9 @@ suite runs under this compiler.
     the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
     BOTH mode and holds; issue #888 B15: a held first upload while the second pair is deleted as a watch would, the
     second request's audio, meta and part names, private inputs gone after success, refusal, Stop and a full queue,
-    the leftover clearing once per run and folder, the private-name rule), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM
-    exports through the real closer, the per-run skip line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller
-    passes).
+    the leftover clearing once per run and folder by token and age, the private-name and token rules),
+    `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
+    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
