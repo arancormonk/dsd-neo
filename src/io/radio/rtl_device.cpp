@@ -1322,9 +1322,13 @@ rtl_submit_capture_bytes(struct rtl_device* s, const void* data, size_t bytes) {
     (void)dsd_iq_capture_submit(s->iq_capture_writer, data, bytes);
 }
 
+static inline void rtl_record_capture_mute(struct rtl_device* s, uint64_t duration_bytes, const char* reason);
+
 /* Record @p bytes of a read taken as of @p generation in the I/Q capture, unless a retune's purge came since: the
  * purge comes before the retune's RETUNE record, so holding the ring's generation lock (as a purge request does) keeps
- * a read the purge overtook out of the capture, where a replay would take it for the new frequency's input. */
+ * a read the purge overtook out of the capture, where a replay would take it for the new frequency's input. Such a read
+ * leaves a retune MUTE of its length instead, as a reconfigure hold's does, so the replay's clock and Fs/4 rotation
+ * step over the samples the live stream stepped over. */
 static void
 rtl_submit_capture_bytes_as_of(struct rtl_device* s, const void* data, size_t bytes, uint64_t generation) {
     if (!s || !s->iq_capture_writer) {
@@ -1334,10 +1338,14 @@ rtl_submit_capture_bytes_as_of(struct rtl_device* s, const void* data, size_t by
         rtl_submit_capture_bytes(s, data, bytes);
         return;
     }
-    std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
-    if (input_ring_discard_generation_matches(s->input_ring, generation)) {
-        rtl_submit_capture_bytes(s, data, bytes);
+    {
+        std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
+        if (input_ring_discard_generation_matches(s->input_ring, generation)) {
+            rtl_submit_capture_bytes(s, data, bytes);
+            return;
+        }
     }
+    rtl_record_capture_mute(s, (uint64_t)bytes, "retune_reconfigure");
 }
 
 static inline dsd_input_level_source
@@ -1637,8 +1645,9 @@ soapy_handle_no_space(struct input_ring_state* ring, size_t need, int apply_rot,
 }
 
 /* Commit @p produced reserved floats of a read of @p need floats as of @p discard_generation, indivisibly from a purge
- * request (input_ring_commit_if_generation()). A purge since drops the whole rest of the read, the reservation and
- * what was not yet reserved, counted and stepped over as soapy_handle_no_space() does; returns 1 then. */
+ * request (input_ring_commit_if_generation()). A purge since drops the whole read, the reservation and what was not yet
+ * reserved: all of it is counted, and the Fs/4 rotation steps over the part not yet copied, but no gap is marked, as
+ * for a read the ring took whole (the purge discards around it); returns 1 then. */
 static inline int
 soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_generation, size_t produced, size_t need,
                           int apply_rot, int* phase) {
@@ -1646,9 +1655,9 @@ soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_genera
         return 1;
     }
     if (!input_ring_commit_if_generation(ring, produced, discard_generation)) {
-        rtl_accumulate_ring_drops(ring, produced);
-        if (need > produced) {
-            soapy_handle_no_space(ring, need - produced, apply_rot, phase);
+        rtl_accumulate_ring_drops(ring, need > produced ? need : produced);
+        if (apply_rot && phase && need > produced) {
+            *phase = rtl_capture_phase_advance_pairs(*phase, (need - produced) / 2U);
         }
         return 1;
     }
@@ -5317,9 +5326,10 @@ soapy_reader_let_controls_in(const struct rtl_device* dev) {
 }
 
 static int
-soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure) {
+soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure,
+                         uint64_t* out_generation) {
     *receiver_failure = 0;
-    if (!dev || !buffs) {
+    if (!dev || !buffs || !out_generation) {
         return INT_MIN;
     }
     soapy_reader_let_controls_in(dev);
@@ -5327,6 +5337,9 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for readStream.\n");
         return INT_MIN;
     }
+    /* Right before the read, under the lock a retune's programming takes: a retune that finished while the reader
+       waited for the lock leaves the read the new generation. */
+    *out_generation = input_ring_discard_generation(dev->input_ring);
     /* No control hold here: a read that hangs, or keeps timing out, holding the lock is the silence the progress
      * monitor watches for. */
     int ret = INT_MIN;
@@ -5474,10 +5487,11 @@ soapy_read_loop(struct rtl_device* s, size_t mtu_elems, std::vector<std::complex
             return -EIO;
         }
 
-        /* Before the read: a retune that completes while the read returns, or before the block is judged against its
-           mute, purges the input after this, so the block is dropped at its write (a purge from here on). */
-        const uint64_t generation = input_ring_discard_generation(s->input_ring);
-        int ret = soapy_read_stream_locked(s, buffs, mtu_elems, receiver_failure);
+        /* Taken right before the read (soapy_read_stream_locked()): a retune that completes while the read returns,
+           or before the block is judged against its mute, purges the input after this, so the block is dropped at its
+           write (a purge from here on). */
+        uint64_t generation = 0U;
+        int ret = soapy_read_stream_locked(s, buffs, mtu_elems, receiver_failure, &generation);
         if (ret == INT_MIN) {
             return -EIO;
         }
@@ -5739,11 +5753,12 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     dev.backend = RTL_BACKEND_SOAPY;
     dev.soapy_format = SOAPY_FMT_CF32;
     dev.input_ring = &ring;
+    dev.iq_capture_writer = request->capture_writer;
     dev.rot_phase = request->start_phase & 3;
     std::vector<std::complex<float>> cf32_buf(request->pairs);
     const std::vector<int16_t> cs16_buf;
     DSD_MEMCPY(cf32_buf.data(), request->samples, request->pairs * 2U * sizeof(float));
-    /* Taken where the reader takes it, before the mute check (soapy_read_loop()). */
+    /* Taken where the reader takes it, before the read (soapy_read_stream_locked()). */
     const uint64_t generation = input_ring_discard_generation(&ring);
     if (request->purge_before_write) {
         input_ring_request_discard(&ring);
@@ -5755,6 +5770,13 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     }
     *output_count = count;
     *out_phase = dev.rot_phase;
+    if (request->out_drops) {
+        *request->out_drops = ring.producer_drops.load();
+    }
+    if (request->out_gap_marks) {
+        *request->out_gap_marks = (size_t)(ring.gap_write.load() - ring.gap_read.load());
+    }
+    dev.iq_capture_writer = nullptr;
     input_ring_destroy(&ring);
     return 0;
 }
@@ -10715,7 +10737,8 @@ soapy_supported_rate(struct rtl_device* dev, uint32_t requested, bool with_prefe
                              ? dsdneo::soapy_profile_sample_rate(rtl_device_soapy_profile(dev), (double)requested,
                                                                  listed, ranges, &adjusted)
                              : soapy_rate_written(requested, limit_hz, listed, ranges, &found);
-        if (!found || !(applied > 0.0) || applied > (double)UINT32_MAX) {
+        /* In whole Hz, as the selection rounds: a rate that rounds to UINT32_MAX fits. */
+        if (!found || !(applied > 0.0) || !(applied < (double)UINT32_MAX + 0.5)) {
             return -1;
         }
         actual = (uint32_t)std::llround(applied);

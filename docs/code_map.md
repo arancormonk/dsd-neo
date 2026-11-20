@@ -3925,10 +3925,12 @@ suite runs under this compiler.
     a second mark at one place is the same gap, and a producer with `INPUT_RING_GAP_SLOTS` pending moves the newest.
     Test: `RUNTIME_INPUT_RING_GAP` (arbitrary short blocks on one thread and two, purge, duplicate, full queue).
     A producer commit that depends on the discard generation (`input_ring_commit_if_generation()`) and a purge
-    request (`input_ring_request_discard()`) both hold `generation_m`, so a purge falls wholly before or after such a
-    commit; the SoapySDR and native Airspy readers take the generation before their read, and record a read in the
-    I/Q capture under the same lock, only while the generation holds (a purge comes before the retune's RETUNE
-    record). A stale read is dropped whole, counted and stepped over by the Fs/4 rotation. Test:
+    request (`input_ring_request_discard()`) both hold `generation_m`, so a purge falls wholly before or after such
+    a commit (`test_commit_hook` lets a test act between the check and the commit). The SoapySDR reader takes the
+    generation under `soapy_lock` right before `readStream()`, the native Airspy reader as its callback starts; both
+    record a read in the I/Q capture under the same lock, only while the generation holds (a purge comes before the
+    retune's RETUNE record), and a stale read leaves a `retune_reconfigure` MUTE of its length there instead. A
+    stale read is dropped whole: counted and stepped over by the Fs/4 rotation, with no gap mark. Test:
     `RUNTIME_INPUT_RING_INIT`, `IO_RTL_REPLAY_EOF_AND_CF32`.
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,

@@ -277,6 +277,11 @@ typedef struct {
     int start_phase;
     /* A retune's input purge after the reader judged the read against the mute and before it wrote the read. */
     int purge_before_write;
+    /* Optional: the I/Q capture the read is recorded in (left open; the caller closes it). */
+    struct dsd_iq_capture_writer* capture_writer;
+    /* Optional outputs: the ring's producer drops and its pending gap marks after the read. */
+    uint64_t* out_drops;
+    size_t* out_gap_marks;
 } rtl_device_test_soapy_cf32_request;
 
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
