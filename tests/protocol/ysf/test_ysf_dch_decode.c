@@ -1427,6 +1427,8 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.ysf_dt == 2U);
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
+    /* Issue #890: with no scan running nobody reads checked media, so the voice path keeps none. */
+    assert(call.checked_media_updated_m <= 0.0);
     assert(strcmp(state.err_str, "========") == 0);
     // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers and gained once (x3) into the short
     // frame the mixers play, in float output as in 16-bit output.
@@ -1496,6 +1498,7 @@ run_vd_type2_frame_info(int refused) {
 
     g_ysf_info_count = 0;
     g_ysf_info_bad_calls = 0;
+    opts.trunk_scan_enabled = 1; /* a scan that reads checked media (issue #890) */
     begin_test_ysf_call(&state);
     dsd_voice_chain_set_observer_for_test(ysf_info_observe, NULL);
     processYSF(&opts, &state);

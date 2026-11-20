@@ -371,7 +371,7 @@ static double g_gated_note_begun;
 double
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25p1_ldu_gated_voice_begin(const dsd_opts* opts) {
-    return opts && opts->scan_voice_only == 1 ? 7.0 : -1.0;
+    return dsd_opts_scan_uses_checked_media(opts) ? 7.0 : -1.0;
 }
 
 void
@@ -1185,17 +1185,21 @@ test_ldu2_gated_voice_is_credited_by_its_encryption_sync(void) {
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
-    for (int c = 0; c < 3; c++) {
+    for (int c = 0; c < 4; c++) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         reset_hook_counters();
-        opts.scan_voice_only = 1;
+        opts.trunk_scan_enabled = 1;
+        /* Case 3: the unmute override plays the undecryptable voice, which still earns no vocoder credit. */
+        opts.trunk_tune_enc_calls = c == 3 ? 1 : 0;
+        opts.unmute_encrypted_p25 = c == 3 ? 1 : 0;
         state.p25_crypto_state[0] = c == 2 ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_BLOCKED;
         g_hard_rs_result = c == 1 ? 1 : 0;
         g_soft_rs_result = 1; /* no soft recovery either */
         g_gated_note_calls = 0;
         processLDU2(&opts, &state);
-        const char* what = c == 0 ? "gated, checked" : (c == 1 ? "gated, RS failed" : "decoded");
+        static const char* const whats[] = {"gated, checked", "gated, RS failed", "decoded", "unmuted, undecryptable"};
+        const char* what = whats[c];
         if (g_gated_note_calls != 1 || g_gated_note_gated != (c != 2) || g_gated_note_checked != (c != 1)
             || g_gated_note_begun < 6.5) {
             DSD_FPRINTF(stderr, "LDU2 gated voice %s: %d notes, gated %d, checked %d, begun %.1f\n", what,

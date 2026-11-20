@@ -93,7 +93,7 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
 
 double
 p25p1_ldu_gated_voice_begin(const dsd_opts* opts) {
-    return opts && opts->scan_voice_only == 1 ? dsd_decode_now_mono_s() : -1.0;
+    return dsd_opts_scan_uses_checked_media(opts) ? dsd_decode_now_mono_s() : -1.0;
 }
 
 void

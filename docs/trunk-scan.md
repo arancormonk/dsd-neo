@@ -226,8 +226,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)).
   Decoded voice is a frame the vocoder decoded with nothing concealed: a frame that failed, or that the vocoder
   repeated, muted or replaced, plays as before but never holds, and M17 voice holds only in a build with Codec2.
-  Encrypted P25 voice with no key, which is never decoded, holds once its LDU's link control or encryption sync
-  (Phase 1) or its ESS (Phase 2) passed the Reed-Solomon check. It
+  Encrypted P25 voice with no key, which the decoder cannot decrypt, holds once its LDU's link control or encryption
+  sync (Phase 1) or its ESS (Phase 2) passed the Reed-Solomon check. It
   must be heard on the target's own visit: a call from the target before, or voice decoded while the scan is still
   tuning to the target, holds nothing. The per-target `dwell_ms` is the qualify window in which voice must appear and
   `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next

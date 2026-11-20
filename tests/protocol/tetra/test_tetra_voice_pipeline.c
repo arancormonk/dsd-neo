@@ -259,19 +259,25 @@ test_checked_media_is_the_good_decoded_frames(void) {
     expect(fixture_open(&f) == 0, "checked media: fixture");
     uint8_t bits[TETRA_SPEECH_FULL_BITS];
     burst_bits(bits, TETRA_SPEECH_FULL_BITS, 3U);
-    dsd_decode_clock_use_test(70000000000ULL);
+    dsd_decode_clock_use_test(69900000000ULL);
     tetra_confirm_note_signalling(f.state); /* a CRC-16 block proved the carrier: anonymous speech opens a call */
-    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good: decodes 1, 2 */
     dsd_call_snapshot call;
+    /* No scan running: nobody reads checked media, so the voice path keeps none. */
+    tetra_voice_full_slot(f.opts, f.state, bits, 1);
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m <= 0.0,
+           "checked media: none with no scan running");
+    f.opts->trunk_scan_enabled = 1;
+    dsd_decode_clock_test_set_ns(70000000000ULL);
+    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good: decodes 3, 4 */
     expect(dsd_call_state_get(f.state, 0U, &call) > 0 && fabs(call.checked_media_updated_m - 70.0) < 1e-6,
            "checked media: good frames are checked media");
     dsd_decode_clock_test_set_ns(70060000000ULL);
-    tetra_voice_full_slot(f.opts, f.state, bits, 0); /* bad: 3, 4 concealed */
+    tetra_voice_full_slot(f.opts, f.state, bits, 0); /* bad: 5, 6 concealed */
     expect(voice_of(&f)->concealed == 2 && dsd_call_state_get(f.state, 0U, &call) > 0
                && fabs(call.checked_media_updated_m - 70.0) < 1e-6,
            "checked media: concealed frames play but are no checked media");
     dsd_decode_clock_test_set_ns(70120000000ULL);
-    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good again: 5, 6 */
+    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good again: 7, 8 */
     expect(dsd_call_state_get(f.state, 0U, &call) > 0 && fabs(call.checked_media_updated_m - 70.12) < 1e-6
                && fabs(call.checked_media_started_m - 70.0) < 1e-6,
            "checked media: the next good frames extend it");

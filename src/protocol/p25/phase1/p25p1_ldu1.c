@@ -472,8 +472,9 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     const uint32_t carrier_seq = state->carrier_seq;
     const double gated_begun_m = p25p1_ldu_gated_voice_begin(opts);
     p25p1_ldu1_collect_voice_and_data(opts, state, &ctx);
-    /* Whether the crypto gate kept this LDU's voice from the vocoder (issue #890), before its link control applies. */
-    const int voice_gated = !p25_crypto_audio_permitted(opts, state, 0);
+    /* Whether this LDU's voice earns no vocoder credit (issue #890): encrypted with no key, kept from the vocoder or
+       played under the unmute override undecrypted, read before its link control applies. */
+    const int voice_gated = !p25_crypto_audio_permitted(NULL, state, 0);
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
     }

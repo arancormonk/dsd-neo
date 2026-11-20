@@ -2139,6 +2139,11 @@ test_process_mbe_frame_dstar_checked_media_follows_the_decode(void) {
     dsd_decode_clock_use_test(1000000000000ULL);
     uint64_t now_ns = 1000000000000ULL;
     dsd_call_snapshot call;
+    /* No scan running: nobody reads checked media, so the vocoder keeps none (no lock, no clock read for it). */
+    processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, good, NULL);
+    rc |= expect_eq_int("dstar-checked no scan: a call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_eq_int("dstar-checked no scan: no checked media", call.checked_media_updated_m > 0.0, 0);
+    opts.trunk_scan_enabled = 1;
     for (int f = 0; f < 6; f++) {
         now_ns += 20000000ULL;
         dsd_decode_clock_test_set_ns(now_ns);
@@ -2174,6 +2179,46 @@ test_process_mbe_frame_dstar_checked_media_follows_the_decode(void) {
                         fabs(call.checked_media_updated_m - checked_before) < 1e-9, 1);
     dsd_decode_clock_use_system();
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* Issue #890: P25 speech the decoder cannot decrypt (encrypted, no key, played under the unmute override) earns no
+ * vocoder credit, however cleanly mbelib decodes the ciphertext: its scan credit is the checked LDU or ESS. The same
+ * frames of a clear call do earn it. */
+static int
+test_process_mbe_frame_p25_undecryptable_speech_earns_no_checked_media(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur, prev, prev_enhanced, cur2, prev2, prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    for (int clear = 0; clear <= 1; clear++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        pass_through_voice_chain(&opts);
+        opts.floating_point = 1;
+        opts.audio_gain = 1.0f;
+        opts.audio_gainR = 1.0f;
+        opts.trunk_scan_enabled = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.unmute_encrypted_p25 = 1;
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.p25_crypto_state[0] = clear ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_BLOCKED;
+        dsd_decode_clock_use_test(2000000000000ULL);
+        for (int f = 0; f < 8; f++) {
+            dsd_decode_clock_test_set_ns(2000000000000ULL + ((uint64_t)f * 20000000ULL));
+            load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+            processMbeFrame(&opts, &state, owner_of(state.synctype), imbe_fr, NULL, NULL);
+        }
+        dsd_call_snapshot call;
+        rc |= expect_eq_int("p25-undecryptable: a call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+        rc |= expect_eq_int("p25-undecryptable: speech marks media", call.media_updated_m > 0.0, 1);
+        rc |= expect_eq_int(clear ? "p25-undecryptable: clear speech is checked media"
+                                  : "p25-undecryptable: undecryptable speech is no checked media",
+                            call.checked_media_updated_m > 0.0, clear);
+        dsd_decode_clock_use_system();
+        dsd_state_ext_free_all(&state);
+    }
     return rc;
 }
 
@@ -7592,6 +7637,7 @@ main(void) {
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400();
     rc |= test_process_mbe_frame_dstar_checked_media_follows_the_decode();
+    rc |= test_process_mbe_frame_p25_undecryptable_speech_earns_no_checked_media();
     rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();

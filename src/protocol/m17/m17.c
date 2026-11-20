@@ -1089,7 +1089,7 @@ m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* sampl
     }
     static const dsd_voice_frame_info k_received = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
     static const dsd_voice_frame_info k_tx_monitor = {(uint8_t)DSD_VOICE_MEDIA_TX_MONITOR, 1U, 1U, 0U};
-    if (!s_m17_monitoring_local_tx) {
+    if (!s_m17_monitoring_local_tx && dsd_opts_scan_uses_checked_media(opts)) {
         /* Received speech Codec2 decoded is the scan's voice credit (issue #890); the media mark before the payload is
            decoded, which a build without Codec2 makes too, is not. */
         (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_M17_STR_POS, 0.0);

@@ -26,13 +26,14 @@ void p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_isch(const dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey);
-/* A voice frame of @p slot the crypto gate kept from the vocoder (issue #890): under --scan-voice-only the first one
-   since the slot's last ESS is noted, and the next ESS whose RS check passes with no soft erasure makes them the slot
-   call's checked media; a failed ESS, a frame reset and a carrier forget drop them. A 2V burst's ESS is settled before
-   its own two voice frames are decoded (process_2V()), so those two wait for the next superframe's ESS; the voice
-   probe's clamp to the call's start (dsd_call_snapshot::started_m) bounds a span reaching back to frames that waited
-   across a new call. */
-void p25p2_note_gated_voice_frame(const dsd_opts* opts, int slot);
+/* A voice frame of @p slot that earns no vocoder credit, encrypted with no key (issue #890): while a scan can use
+   checked media (dsd_opts_scan_uses_checked_media()) the first one since the slot's last ESS is noted in @p state with
+   its scan observation origin, and a frame of another origin starts the span again. The next ESS whose RS check passes
+   with no soft erasure makes them the slot call's checked media, only when the ESS is read under the same origin; a
+   failed ESS and a carrier forget drop them. A 2V burst's ESS is settled before its own two voice frames are decoded
+   (process_2V()), so those two wait for the next superframe's ESS; the voice probe's clamp to the call's start
+   (dsd_call_snapshot::started_m) bounds a span reaching back to frames that waited across a new call. */
+void p25p2_note_gated_voice_frame(const dsd_opts* opts, dsd_state* state, int slot);
 void p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 void p25p2_process_duid(dsd_opts* opts, dsd_state* state);
 /* Descramble the buffered superframe with the seed in force (WACN, SYSID, p2_cc), which a burst decoded from it then

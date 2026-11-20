@@ -7889,6 +7889,39 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
     coord->stop_source_key = state->carrier_source_key;
 }
 
+/* Whether the stream a restart reopened (@p opened) is where the stop found the target on air: the scan running, the
+   target the stop noted still the active one, and the new stream on the same radio source and frequency. */
+static int
+trunk_scan_reopened_where_stopped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                  int opened) {
+    return opened && !coord->paused && coord->active == coord->stop_target && coord->active < coord->count
+           && dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz);
+}
+
+/* The target landed before the stop, with no park in flight, and the stream reopened where it was (issue #890): it
+   lands again, under a new visit, so what was read before the restart stays the old visit's and traffic after it holds
+   the target. The visit's clocks and the hold it earned go on. */
+static void
+trunk_scan_reland_after_reopen(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int opened) {
+    if (trunk_scan_reopened_where_stopped(opts, state, coord, opened) && !coord->targets[coord->active].tune_pending) {
+        trunk_scan_note_landing(state, coord, &coord->targets[coord->active], 0U);
+    }
+}
+
+/* The park in flight at the stop, @p request: when the new stream opened on the frequency it asked for, the receiver is
+   there, so the park landed. */
+static void
+trunk_scan_land_park_at_reopen(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                               uint64_t request, int opened) {
+    if (request == 0U || !trunk_scan_reopened_where_stopped(opts, state, coord, opened)) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending && rt->tune_request_id == request) {
+        dsd_trunk_tuning_request_land_at_reopen(request);
+    }
+}
+
 void
 dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, int opened) {
     dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
@@ -7896,29 +7929,12 @@ dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, in
         return;
     }
     const int landed = coord->stop_landed;
-    coord->stop_landed = 0;
-    if (landed) {
-        /* The target landed before the stop and the stream reopened where it was (issue #890): it lands again, under
-           a new visit, so what was read before the restart stays the old visit's and traffic after it holds the
-           target. The visit's clocks and the hold it earned go on. */
-        if (opened && !coord->paused && coord->active == coord->stop_target && coord->active < coord->count
-            && !coord->targets[coord->active].tune_pending
-            && dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz)) {
-            trunk_scan_note_landing(state, coord, &coord->targets[coord->active], 0U);
-        }
-        return;
-    }
     const uint64_t request = coord->stop_request;
+    coord->stop_landed = 0;
     coord->stop_request = 0U;
-    if (!opened || request == 0U || coord->paused || coord->active != coord->stop_target
-        || coord->active >= coord->count) {
-        return;
+    if (landed) {
+        trunk_scan_reland_after_reopen(opts, state, coord, opened);
+    } else {
+        trunk_scan_land_park_at_reopen(opts, state, coord, request, opened);
     }
-    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (!rt->tune_pending || rt->tune_request_id != request
-        || !dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz)) {
-        return;
-    }
-    /* The new stream opened on the frequency the park asked for: the receiver is there, so the park landed. */
-    dsd_trunk_tuning_request_land_at_reopen(request);
 }

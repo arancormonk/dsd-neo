@@ -540,8 +540,8 @@ test_ldu_process_imbe_cut_by_an_input_interruption_is_not_vocoded(void) {
 
 /* Issue #890: an LDU whose voice the crypto gate kept from the vocoder gives its call checked media from the LDU's
    start to now, once its link control or encryption sync passed the hard RS check; one whose check failed or leaned on
-   soft erasures, or whose voice the vocoder decoded, gives none. With --scan-voice-only off nothing is done: no clock
-   read, no stamp. */
+   soft erasures, or whose voice the vocoder decoded, gives none. With no scan running nothing is done: no clock read,
+   no stamp. */
 static int
 test_ldu_gated_voice_checked_media(void) {
     static dsd_opts opts;
@@ -554,11 +554,11 @@ test_ldu_gated_voice_checked_media(void) {
     double begun = p25p1_ldu_gated_voice_begin(&opts);
     p25p1_ldu_note_gated_voice(&opts, &state, begun, 1, 1);
     if (begun >= 0.0 || g_clock_reads != 0 || g_checked_media_calls != 0) {
-        DSD_FPRINTF(stderr, "gated voice: voice-only off did work (%d reads, %d stamps)\n", g_clock_reads,
+        DSD_FPRINTF(stderr, "gated voice: no scan running did work (%d reads, %d stamps)\n", g_clock_reads,
                     g_checked_media_calls);
         rc = 1;
     }
-    opts.scan_voice_only = 1;
+    opts.scanner_mode = 1;
     begun = p25p1_ldu_gated_voice_begin(&opts);
     p25p1_ldu_note_gated_voice(&opts, &state, begun, 1, 0); /* a failed or soft-recovered RS check */
     p25p1_ldu_note_gated_voice(&opts, &state, begun, 0, 1); /* voice the vocoder decoded */

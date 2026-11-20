@@ -6,6 +6,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
@@ -266,7 +267,7 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     v->frames++;
     if (bad) {
         v->concealed++;
-    } else if (route->admitted) {
+    } else if (route->admitted && dsd_opts_scan_uses_checked_media(opts)) {
         /* A good frame the codec decoded is the scan's voice credit (issue #890); a concealed one plays but is none. */
         (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_TETRA_NDB_POS, 0.0);
     }

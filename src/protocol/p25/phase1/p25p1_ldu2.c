@@ -495,8 +495,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     const double gated_begun_m = p25p1_ldu_gated_voice_begin(opts);
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
-    /* Whether the crypto gate kept this LDU's voice from the vocoder (issue #890), before its encryption sync applies. */
-    const int voice_gated = !p25_crypto_audio_permitted(opts, state, 0);
+    /* Whether this LDU's voice earns no vocoder credit (issue #890): encrypted with no key, kept from the vocoder or
+       played under the unmute override undecrypted, read before its encryption sync applies. */
+    const int voice_gated = !p25_crypto_audio_permitted(NULL, state, 0);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The encryption sync is
            read whole by the seventh voice frame but decodes only now, so it would publish the carrier left's

@@ -2525,9 +2525,9 @@ channel is delayed.
   `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
-  voice without a key holds unless the talkgroup policy blocks it; P25 voice the decoder mutes for want of a key counts
-  once the Reed-Solomon check of its LDU's link control or encryption sync (Phase 1) or of its ESS (Phase 2) passed.
-  Unknown identity counts as voice. The last-media
+  voice without a key holds unless the talkgroup policy blocks it; P25 voice the decoder cannot decrypt (muted, or
+  played under the unmute override) counts once the Reed-Solomon check of its LDU's link control or encryption sync
+  (Phase 1) or of its ESS (Phase 2) passed. Unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
   scanner's next tick. The voice gate never applies to an analog row, where there is no decoded voice to wait for:
   an `nfm` or `am` row, and every row of an untyped list scanned under `-fA` or `-fM`, holds on its carrier under `-t`

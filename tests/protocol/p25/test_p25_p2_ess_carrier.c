@@ -242,14 +242,19 @@ test_ess_proof_renders_the_slots_again(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
-/* Issue #890: slot 0's call on a carrier whose seed is in force, its voice frames kept from the vocoder by the crypto
-   gate (encrypted, no key) from @p gated_at_ns: the next ESS whose RS check passed with no soft erasure makes them the
-   call's checked media, from the first gated frame to the ESS; an ESS that leaned on soft erasures, one after a carrier
-   forget, and any with --scan-voice-only off give none. Returns the call's checked media span, or -1 for none. */
+/* Issue #890: slot 0's call on a carrier whose seed is in force, its voice frames earning no vocoder credit (encrypted,
+   no key) from 50.0 s: the next ESS whose RS check passed with no soft erasure makes them the call's checked media,
+   from the first such frame to the ESS. An ESS that leaned on soft erasures, one after a carrier forget, and any with no
+   scan running give none. With @p land_at 1 a scan landing comes after the first gated frame and before the ESS, with
+   no further gated frame: the span read before the landing is no checked media of the visit the ESS is read on. With
+   @p land_at 2 the landing comes between two gated frames: the span starts again at the second one. Returns the call's
+   checked media span, or -1 for none. */
+enum { GATED_SCAN_OFF = 0, GATED_SCAN_ON = 1 };
+
 static double
-gated_voice_span_after_ess(dsd_opts* opts, dsd_state* state, int voice_only, int strong, int forget) {
+gated_voice_span_after_ess(dsd_opts* opts, dsd_state* state, int scan, int strong, int forget, int land_at) {
     reset_session(opts, state);
-    opts->scan_voice_only = voice_only;
+    opts->trunk_scan_enabled = scan;
     seed_site(opts, state, 0x456ULL);
     const dsd_call_observation obs = {
         .protocol = DSD_SYNC_P25P2_POS,
@@ -258,10 +263,16 @@ gated_voice_span_after_ess(dsd_opts* opts, dsd_state* state, int voice_only, int
         .ota_target_id = 101U,
     };
     (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    state->scan_landing_visit = 3U;
     dsd_decode_clock_test_set_ns(50000000000ULL);
-    p25p2_note_gated_voice_frame(opts, 0);
+    p25p2_note_gated_voice_frame(opts, state, 0);
+    if (land_at != 0) {
+        state->scan_landing_visit = 4U; /* the same carrier, a new landing */
+    }
     dsd_decode_clock_test_set_ns(50300000000ULL);
-    p25p2_note_gated_voice_frame(opts, 0); /* later gated frames keep the first one's time */
+    if (land_at != 1) {
+        p25p2_note_gated_voice_frame(opts, state, 0); /* on one origin, later frames keep the first one's time */
+    }
     if (forget) {
         p25p2_frame_forget_carrier(state);
     }
@@ -284,12 +295,21 @@ static int
 test_gated_voice_is_credited_by_a_checked_ess(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
     dsd_decode_clock_use_test(40000000000ULL);
-    const double checked = gated_voice_span_after_ess(opts, state, 1, 1, 0);
+    const double checked = gated_voice_span_after_ess(opts, state, GATED_SCAN_ON, 1, 0, 0);
     rc |= expect_int("gated voice, hard ESS: checked media from the first gated frame", fabs(checked - 0.36) < 1e-6, 1);
-    rc |= expect_int("gated voice, soft-erased ESS: none", gated_voice_span_after_ess(opts, state, 1, 0, 0) < 0.0, 1);
-    rc |= expect_int("gated voice, voice-only off: none", gated_voice_span_after_ess(opts, state, 0, 1, 0) < 0.0, 1);
+    rc |= expect_int("gated voice, soft-erased ESS: none",
+                     gated_voice_span_after_ess(opts, state, GATED_SCAN_ON, 0, 0, 0) < 0.0, 1);
+    rc |= expect_int("gated voice, no scan running: none",
+                     gated_voice_span_after_ess(opts, state, GATED_SCAN_OFF, 1, 0, 0) < 0.0, 1);
     /* After a carrier forget the ESS_B is stale and nothing decodes: the gated frames of the carrier left go too. */
-    rc |= expect_int("gated voice, carrier forgotten: none", gated_voice_span_after_ess(opts, state, 1, 1, 1) < 0.0, 1);
+    rc |= expect_int("gated voice, carrier forgotten: none",
+                     gated_voice_span_after_ess(opts, state, GATED_SCAN_ON, 1, 1, 0) < 0.0, 1);
+    /* A landing between the gated frames and their ESS: what was heard before it is not the new visit's. */
+    rc |= expect_int("gated voice, landed before the ESS: none",
+                     gated_voice_span_after_ess(opts, state, GATED_SCAN_ON, 1, 0, 1) < 0.0, 1);
+    const double after_landing = gated_voice_span_after_ess(opts, state, GATED_SCAN_ON, 1, 0, 2);
+    rc |= expect_int("gated voice, landed between gated frames: the span starts at the frame after it",
+                     fabs(after_landing - 0.06) < 1e-6, 1);
     dsd_decode_clock_use_system();
     return rc;
 }

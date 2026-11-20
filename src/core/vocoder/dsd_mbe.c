@@ -2744,11 +2744,19 @@ mbe_checked_media_slot(int protocol, int current_slot) {
    media mark before the decode is. */
 static void
 mbe_note_checked_media(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH) {
+    /* No scan to read it: nothing more on the voice path. */
+    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH || !dsd_opts_scan_uses_checked_media(opts)) {
         return;
     }
     const int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
     const uint8_t slot = mbe_checked_media_slot(protocol, state->currentslot);
+    /* P25 speech the decoder cannot decrypt (encrypted, no key, played under the unmute override) is no vocoder credit:
+       an IMBE or AMBE+2 decode of ciphertext tells nothing of the transmission. Its scan credit is the checked
+       signalling of its LDU or ESS instead (p25p1_ldu_note_gated_voice(), p25p2_note_gated_voice_frame()). */
+    if ((frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P1 || frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2)
+        && !p25_crypto_audio_permitted(NULL, state, slot)) {
+        return;
+    }
     if (!dsd_receive_current_allows(opts, state, slot)) {
         return;
     }
