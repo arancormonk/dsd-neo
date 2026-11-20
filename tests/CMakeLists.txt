@@ -15725,10 +15725,13 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_dmr_data_header_air
         protocol/dmr/test_dmr_data_header_air.c
         test_support/dmr_bptc_test_encoder.c
+        test_support/dmr_rs_test_encoder.c
     )
     target_include_directories(
         dsd-neo_test_dmr_data_header_air
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/dmr
     )
     target_link_libraries(
         dsd-neo_test_dmr_data_header_air
@@ -15747,6 +15750,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=getDibitSoft"
             "LINKER:--wrap=get_dibit_and_analog_signal"
+            "LINKER:--wrap=getSymbol"
     )
     add_test(NAME DMR_DATA_HEADER_AIR COMMAND dsd-neo_test_dmr_data_header_air)
 endif()

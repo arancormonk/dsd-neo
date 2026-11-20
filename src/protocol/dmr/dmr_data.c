@@ -173,12 +173,17 @@ dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
         dmr_mono_slot_note(ctx->state, 1, tact_bits[1]);
         ctx->state->currentslot = 0;
     } else if (ctx->opts->dmr_mono == 1 && ctx->state->dmr_stereo == 0) {
-        /* A standalone burst on the single-slot decoder is judged by its own CACH slot for its dispatch, whether it is
-           folded onto lane 0 (without trunking) or stays on that slot (under trunking;
-           dmr_mono_folds_standalone_burst()): dmr_data_sync() set the voice lane's proof aside and restores it
-           after. */
+        /* A standalone burst on the single-slot decoder is judged by its own CACH slot for its dispatch:
+           dmr_data_sync() set the voice lane's proof aside and restores it after. Folded onto lane 0 (without
+           trunking, dmr_mono_folds_standalone_burst()), the lane names that slot. Under trunking the burst stays on
+           its slot and is decoded as the two-slot decoder decodes it, with no lane proof, as dmrBSBootstrap() decodes
+           the voice that follows: the burst then carries the one slot identity its call's voice carries (the lane's
+           receive slot, dsd_position_dmr_air(), issue #800), so a checked header's source names an embedded GPS LC of
+           that voice. */
         ctx->folded_slot = (uint8_t)(DSD_DMR_MONO_RX_TS1 + (tact_bits[1] & 1U));
-        ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
+        if (dmr_mono_folds_standalone_burst(ctx->opts, ctx->state)) {
+            ctx->state->dmr_mono_rx_slot = ctx->folded_slot;
+        }
     }
     return 1;
 }

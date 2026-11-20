@@ -4,7 +4,8 @@
  * Issue #800, fail closed: a DMR data packet's blocks bind to its data header only when they came in a burst of the
  * same sender kind (by its sync word) on the same over-the-air slot, on the same reception. The bursts go through the
  * real single-slot data path (dmrMSData() -> dmr_data_sync() -> the burst handler -> the data header and the block
- * assembler); only the symbol reader is replaced (linker wraps of getDibitSoft and get_dibit_and_analog_signal), and
+ * assembler); only the symbol reader is replaced (linker wraps of getDibitSoft, get_dibit_and_analog_signal and
+ * getSymbol), and
  * each burst's sync word and sync type are what frame sync leaves for it.
  *
  * The packet is a UDT (TS 102 361-4) from radio 123456 whose one block is a LIP short location report (22.5 S, 45 W):
@@ -31,6 +32,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dmr_bptc_test_encoder.h"
+#include "dmr_cach.h"
+#include "dmr_rs_test_encoder.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -40,6 +43,8 @@
 int __wrap_getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
 // NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
+float __wrap_getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 
 /* The burst's live half (54 dibits), then filler for the reads past it. */
 static int g_live[54];
@@ -66,6 +71,16 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
         *out_analog_signal = 0;
     }
     return 1;
+}
+
+/* A repeater burst read on the two-slot path's single-slot form reads past its tail symbol by symbol (skipDibit()): no
+   input stands behind it. */
+float
+__wrap_getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
+    (void)opts;
+    (void)state;
+    (void)have_sync;
+    return 0.0F;
 }
 
 static void
@@ -303,6 +318,127 @@ send_lane0_packet(dsd_opts* opts, dsd_state* state, uint8_t header_slot, uint8_t
     return dsd_position_feed_copy_since(state, 0U, kept, 4U, &meta);
 }
 
+/* The voice LC header of radio 1001's group call to 2002 (FLCO 0), its RS(12,9) parity under the voice LC header mask. */
+static void
+voice_lc_header(uint8_t out[12]) {
+    static const uint8_t lc[9] = {0, 0, 0, 0, 0x07, 0xD2, 0, 0x03, 0xE9};
+    DSD_MEMCPY(out, lc, sizeof lc);
+    dmr_test_encode_rs_12_9(lc, out + 9);
+    for (size_t i = 9; i < 12U; ++i) {
+        out[i] ^= 0x96U;
+    }
+}
+
+/* The CACH dibits (0-11) of a repeater burst on slot @p slot (0: TS1, 1: TS2): a TACT whose Hamming(7,4) check passes,
+   the rest of the CACH zero. */
+static int
+put_cach(int dibits[144], unsigned slot) {
+    unsigned char tact[7] = {0};
+    unsigned char check[7];
+    tact[1] = (unsigned char)(slot & 1U);
+    for (unsigned parity = 0; parity < 8U; parity++) {
+        for (unsigned b = 0; b < 3U; b++) {
+            tact[4U + b] = (unsigned char)((parity >> (2U - b)) & 1U);
+        }
+        DSD_MEMCPY(check, tact, sizeof check);
+        if (Hamming_7_4_decode(check) && memcmp(check, tact, sizeof check) == 0) {
+            uint8_t cach[24] = {0};
+            for (size_t i = 0; i < 7U; i++) {
+                cach[i] = tact[i];
+            }
+            for (size_t i = 0; i < 12U; i++) {
+                dibits[i] = (cach[dmr_cach_interleave[2U * i]] << 1) | cach[dmr_cach_interleave[(2U * i) + 1U]];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Issue #800 with -fr -T: under trunking the single-slot decoder decodes a repeater's standalone bursts and its voice
+   on both slots, as the two-slot decoder does (dmr_mono_folds_standalone_burst(), dmr_bootstrap_mono()). A checked
+   standalone voice LC header on TS2 (the real dmr_data_sync() the engine dispatches it to), then the embedded GPS LC of
+   that call's voice on TS2, decoded in the state dmrBSBootstrap() leaves (dmr_mono_slot_forget(), two-slot): the
+   header's checked source names the fix. 1 when the feed holds the report as radio 1001's, 0 when it holds it
+   anonymous, -1 for anything else. */
+static int
+send_trunked_mono_header_then_gps(dsd_opts* opts, dsd_state* state) {
+    reset_state(state);
+    if (dsd_position_feed_start(state) != 0) {
+        return -1;
+    }
+    opts->dmr_mono = 1;
+    opts->trunk_enable = 1;
+    state->dmr_stereo = 0;
+    /* The carrier's colour code already locked (slot types of colour code 1), as on a voice channel the grant tuned. */
+    state->dmr_confidence_locked = 1U;
+    state->dmr_confidence_color_code = 1U;
+    state->dmr_color_code = 1;
+    uint8_t hdr[12];
+    voice_lc_header(hdr);
+    /* The burst's first 90 dibits as frame sync buffered them, then room for the dibits its tail is read past into. */
+    static int payload[256];
+    static int dibit_buf[256];
+    int dibits[144];
+    if (!build_burst(DMR_BS_DATA_SYNC, 0x01U, hdr, dibits, 0) || !put_cach(dibits, 1U)) {
+        return -1;
+    }
+    for (size_t i = 0; i < 90U; i++) {
+        payload[i] = dibits[i];
+    }
+    for (size_t i = 0; i < 54U; i++) {
+        g_live[i] = dibits[90U + i];
+    }
+    g_live_next = 0;
+    state->dmr_payload_buf = payload;
+    state->dmr_payload_p = payload + 90;
+    state->dibit_buf = dibit_buf;
+    state->dibit_buf_p = dibit_buf;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dsd_rxid_note_sync(state, state->synctype);
+    dmr_data_sync(opts, state);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id != 1001U) {
+        DSD_FPRINTF(stderr, "\n-fr -T: the TS2 header opened no call on its slot\n");
+        return -1;
+    }
+
+    /* The call's voice: dmrBSBootstrap() decodes it on both slots. */
+    state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
+    state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;
+    state->dmr_stereo = 1;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_rxid_note_sync(state, state->synctype);
+    state->currentslot = 1;
+    uint8_t gps[96] = {0};
+    set_bits(gps, 2, 6, 0x08);
+    set_bits(gps, 20, 3, 1);
+    set_bits(gps, 23, 1, 1);
+    set_bits(gps, 24, 24, 0xC00000);
+    set_bits(gps, 48, 1, 1);
+    set_bits(gps, 49, 23, 0x600000);
+    uint32_t errors = 0;
+    dmr_flco(opts, state, gps, 1U, &errors, 3U);
+    opts->dmr_mono = 0;
+    opts->trunk_enable = 0;
+    state->dmr_stereo = 0;
+
+    dsd_position_fix kept[4];
+    dsd_position_feed_meta meta;
+    const int n = dsd_position_feed_copy_since(state, 0U, kept, 4U, &meta);
+    if (n != 1 || kept[0].lat_e7 != -225000000 || kept[0].lon_e7 != -450000000) {
+        return -1;
+    }
+    if (kept[0].source_id == 1001U && kept[0].target_id == 2002U
+        && (kept[0].flags & DSD_POS_FLAG_SOURCE_UNVERIFIED) == 0U) {
+        return 1;
+    }
+    return kept[0].source_id == 0U ? 0 : -1;
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -364,6 +500,11 @@ main(void) {
                         (unsigned)lane0[i].header_slot, (unsigned)lane0[i].block_slot, got, lane0[i].want);
             failed = 1;
         }
+    }
+    const int trunked = send_trunked_mono_header_then_gps(&opts, &state);
+    if (trunked != 1) {
+        DSD_FPRINTF(stderr, "\n-fr -T, TS2 voice LC header then its embedded GPS on TS2: got %d, want 1\n", trunked);
+        failed = 1;
     }
     dsd_state_ext_free_all(&state);
     free(state.event_history_s);

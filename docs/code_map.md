@@ -3846,7 +3846,10 @@ suite runs under this compiler.
   `dsd_key_dmr_forced_clear()`, and the TYT Basic, TYT AP, Retevis AP, TYT EP and AnyTone keys, whose class stays as
   before), the `-S` keystream, or `-4` with a Basic or Hytera key. On the single-slot decoder under trunking (`-fr -T`), whose voice runs on both slots, an LC
   decoded on its own stays on the slot its burst's CACH proved, as on the dual-slot decoder
-  (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Without
+  (`dmr_mono_folds_standalone_burst()`): its call, terminator, crypto, keys and release are that slot's. Its burst
+  sets no lane proof (`dsd_state::dmr_mono_rx_slot` stays clear, `dmr_data_collect_cach()`), as `dmrBSBootstrap()`
+  sets none for the voice that follows, so header and voice carry one slot identity (`dsd_position_dmr_air()`) and a
+  checked header's source names the call's embedded GPS (issue #800, test `DMR_DATA_HEADER_AIR`). Without
   trunking the single-slot decoder is as on main: it folds every slot 2 LC onto lane 0, where both slots' voice is
   decoded, while a PI header and data stay on their own slot's fields. Its limit: both timeslots share the one lane, so
   one slot's LC, terminator, crypto and call state act on the other slot's call there, and no hold keeps an unknown
