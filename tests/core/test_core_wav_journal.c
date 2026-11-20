@@ -38,6 +38,9 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
+#include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -66,6 +69,8 @@
 #include "edacs_internal.h"
 #include "snapshot_internal.h"
 #include "test_support.h"
+#include "tetra_confirm.h"
+#include "tetra_state.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
 #include "wav_journal.h"
@@ -3683,6 +3688,178 @@ test_edacs_grant_leaves_owned_audio_to_its_row(void) {
     return rc;
 }
 
+/* --- Issue #888 B19: the first call TETRA admits on a slot does not take the audio its file held before. --- */
+
+typedef enum {
+    TETRA_FIRST_ANON =
+        0,           /* trunked-mode speech no call record names, admitted once a CRC-16 block proves the carrier */
+    TETRA_FIRST_DMO, /* direct-mode speech heard before the DM-SETUP that names its call */
+} tetra_first_kind;
+
+#define TETRA_FIRST_BURST_FRAMES 480 /* one full slot: two 240-sample speech frames at 8 kHz */
+
+/* Not trunking, the TDMA clock on timeslot 1, clear speech: what the speech path plays it also records. */
+static void
+tetra_first_rig(rig* r, tetra_first_kind kind) {
+    r->opts->audio_out = 0;
+    r->opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    r->opts->rdio_system_id = 48;
+    r->state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    tetra_state_t* ts = tetra_st(r->state);
+    ts->tdma_valid = 1;
+    ts->tn = 1;
+    if (kind == TETRA_FIRST_DMO) {
+        ts->dmo = 1;
+        ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
+    }
+}
+
+/* @p bursts good full-slot speech bursts through the speech path (the real codec, the record gate, the slot file). */
+static void
+tetra_first_speech(rig* r, int bursts) {
+    uint8_t bits[TETRA_SPEECH_FULL_BITS];
+    for (int i = 0; i < TETRA_SPEECH_FULL_BITS; i++) {
+        bits[i] = (uint8_t)(((unsigned)i * 7U + 3U) >> 2U) & 1U;
+    }
+    for (int b = 0; b < bursts; b++) {
+        tetra_voice_full_slot(r->opts, r->state, bits, 1);
+    }
+}
+
+/* What admits the call: a CRC-16 signalling block proving the carrier, or the DM-SETUP of the direct-mode call. */
+static void
+tetra_first_admit(rig* r, tetra_first_kind kind) {
+    if (kind == TETRA_FIRST_DMO) {
+        tetra_state_t* ts = tetra_st(r->state);
+        ts->calls.dmo.active = 1;
+        ts->calls.dmo.dst = 1234U;
+        ts->calls.dmo.src = 2345U;
+        return;
+    }
+    tetra_confirm_burst_begin(r->state);
+    tetra_confirm_note_signalling(r->state);
+    (void)tetra_confirm_burst_end(r->state);
+}
+
+/* The published recordings in the rig's folder, by length. */
+typedef struct {
+    const char* dir;
+    sf_count_t prefill_frames;
+    sf_count_t call_frames;
+    int prefill;         /* recordings @c prefill_frames long */
+    int prefill_sidecar; /* of those, with an rdio-scanner sidecar */
+    int call;            /* recordings @c call_frames long */
+    int other;           /* any other length: the call's audio with the earlier audio in front */
+} tetra_first_files;
+
+static int
+tetra_first_files_cb(const char* name, void* user) {
+    tetra_first_files* files = (tetra_first_files*)user;
+    const size_t len = strlen(name);
+    if (len < 4 || strcmp(name + len - 4, ".wav") != 0 || strncmp(name, "TEMP_", 5) == 0) {
+        return 0;
+    }
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, files->dir, name) != 0) {
+        return 0;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    SNDFILE* f = sf_open(path, SFM_READ, &info);
+    if (f != NULL) {
+        (void)sf_close(f);
+    }
+    if (info.frames == files->prefill_frames) {
+        files->prefill++;
+        char sidecar[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(sidecar, sizeof sidecar, "%.*s.json", (int)(strlen(path) - 4), path);
+        FILE* s = dsd_fopen_existing_regular_file(sidecar, "rb");
+        if (s != NULL) {
+            files->prefill_sidecar++;
+            (void)fclose(s);
+        }
+    } else if (info.frames == files->call_frames) {
+        files->call++;
+    } else {
+        files->other++;
+    }
+    return 0;
+}
+
+/* Speech written to slot 1's file before anything admits a call (300 ms: before signalling proves the carrier, or
+   before the DM-SETUP), then the call's first speech admits it and its own audio follows (120 ms). The admission
+   closes the earlier audio as no row's, unexported; the call's recording holds its own audio alone, under its row.
+   Without it the first call's commit published both under the call's row. With the journal on and off. */
+static int
+test_tetra_first_call_leaves_unowned_audio(void) {
+    static const char* const k_kind[] = {"tetra anonymous call", "tetra direct-mode call"};
+    int rc = 0;
+    for (int kind = TETRA_FIRST_ANON; kind <= TETRA_FIRST_DMO; kind++) {
+        for (int with_journal = 1; with_journal >= 0; with_journal--) {
+            char tag[160];
+            rig r;
+            rc |= rig_open_ex(&r, "dsdneo_journal_tetra_first", with_journal);
+            tetra_first_rig(&r, (tetra_first_kind)kind);
+            submit(&r, DSD_APP_CMD_WAV_START);
+            char prefill[64];
+            slot_id(&r, 0, prefill, sizeof prefill);
+            tetra_first_speech(&r, 5);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: no call before it is admitted", k_kind[kind]);
+            rc |= expect_int(tag, (long long)call_epoch(&r), 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier speech is in the slot file", k_kind[kind]);
+            rc |= expect_int(tag, (long long)dsd_wav_segment_frames(r.opts->wav_out_f), 5LL * TETRA_FIRST_BURST_FRAMES);
+            clock_at(g_now_s + 1);
+            tetra_first_admit(&r, (tetra_first_kind)kind);
+            tetra_first_speech(&r, 2);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: its speech admitted the call", k_kind[kind]);
+            rc |= expect_true(tag, call_epoch(&r) != 0U);
+            char own_id[64];
+            slot_id(&r, 0, own_id, sizeof own_id);
+            clock_at(g_now_s + 2);
+            end_call(&r, DSD_CALL_END_TERMINATOR);
+
+            if (with_journal) {
+                reload(&r);
+                const char* left = NULL;
+                const char* own = NULL;
+                const char* pub = NULL;
+                for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+                    if (strcmp(field_s(pub, "id"), prefill) == 0) {
+                        left = pub;
+                    } else if (strcmp(field_s(pub, "id"), own_id) == 0) {
+                        own = pub;
+                    }
+                }
+                DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier speech", k_kind[kind]);
+                rc |= expect_orphan(tag, left, 0, 300);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: the call records in a file of its own", k_kind[kind]);
+                rc |= expect_true(tag, own != NULL && strcmp(own_id, prefill) != 0);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: holding only its own audio", k_kind[kind]);
+                rc |= expect_int(tag, own ? field_ll(own, "duration_ms") : -9, 120);
+                DSD_SNPRINTF(tag, sizeof tag, "%s: under its row", k_kind[kind]);
+                rc |= expect_int(tag, own ? field_ll(own, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+            }
+            tetra_first_files files;
+            DSD_MEMSET(&files, 0, sizeof files);
+            files.dir = r.dir;
+            files.prefill_frames = 5 * TETRA_FIRST_BURST_FRAMES;
+            files.call_frames = 2 * TETRA_FIRST_BURST_FRAMES;
+            (void)dsd_dir_list(r.dir, tetra_first_files_cb, &files);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier speech is published once", k_kind[kind]);
+            rc |= expect_int(tag, files.prefill, 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: and not exported", k_kind[kind]);
+            rc |= expect_int(tag, files.prefill_sidecar, 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the call's recording holds its audio alone", k_kind[kind]);
+            rc |= expect_int(tag, files.call, 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: no recording mixes the two", k_kind[kind]);
+            rc |= expect_int(tag, files.other, 0);
+            r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+            rig_close(&r);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -3749,6 +3926,7 @@ main(void) {
     rc |= test_d7_stream_off_stays_local();
     rc |= test_edacs_grant_closes_unowned_audio_first();
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
+    rc |= test_tetra_first_call_leaves_unowned_audio();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

@@ -2515,7 +2515,8 @@ suite runs under this compiler.
   - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
     continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no active
     call owns (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with
-    no active call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
+    no active call), which no commit would close and the next admitted call's commit would otherwise publish as its
+    own (a TETRA admission closes it first). `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
     slot file that holds frames (`dsd_wav_segment_frames()`, libsndfile's count, read through `wav_segment_info()` as a
     close reads its length) while its slot has no active canonical call, publishes it without an rdio-scanner export and
     reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). It is published pending on the
@@ -2545,7 +2546,12 @@ suite runs under this compiler.
     granted call, whatever its tune moved (issue #888): the grant's row would otherwise name the audio no call owns, and
     the analog rotation after the sync (or a ProVoice call's commit) would publish and export it as the granted call's.
     An outgoing call still active keeps its file, which the commit that the incoming observation brings closes under
-    its row. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
+    its row. A TETRA call admitted on a slot with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous
+    call once signalling proves the carrier, a call record's or the direct-mode call's first publication) runs the
+    flush before it observes the call (issue #888), so the speech that reached the slot file before (ahead of the
+    proof or the DM-SETUP, or trailing an ended call) closes as no row's or the held epoch's, unexported, and the
+    first call's recording holds its own audio alone; a call already active (a republication, a reallocation) runs
+    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
     `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
     this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
     anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
@@ -2629,7 +2635,10 @@ suite runs under this compiler.
   ending the call heard since a failed park, and at an EDACS grant on the carrier the receiver is on (an analog group
   call, an analog all-call and a ProVoice call, journal on and off: the earlier audio published once as no row's and
   unexported, the granted call's recording only its own; an outgoing call still active keeps its audio under its
-  row, exported); the write and pending-list seams in
+  row, exported), and at the first TETRA call admitted after speech its file took with no call (an anonymous call
+  once the carrier is proven, a direct-mode call once named, through the real speech path, journal on and off: the
+  earlier speech one recording of no row's, unexported, the call's only its own under its row); the write and
+  pending-list seams in
   `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
   control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
   carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's

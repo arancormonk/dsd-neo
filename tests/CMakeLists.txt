@@ -11211,6 +11211,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/core/file
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 target_compile_definitions(
     dsd-neo_test_core_wav_journal
