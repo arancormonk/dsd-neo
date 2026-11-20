@@ -2654,6 +2654,16 @@ main(int argc, char** argv) {
         assert(index.lookup(n.hz + 2000, 12500).size() == 1);
         assert(index.lookup(n.hz + 5000, 12500).isEmpty());
     }
+    // A saved TETRA (-fT) system runs a 25 kHz carrier (EN 300 392-2 4.5.1, EN 300 396-2 4.5 and 6.2): a 25 kHz
+    // channel tuned 10 kHz off its frequency is that system, one 13 kHz off is not. -ft (P25, the case is significant)
+    // keeps its 12.5 kHz channel.
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("TETRA site")},
+                        {QStringLiteral("decodeFlag"), QStringLiteral("-fT")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("468.000000")}}));
+    assert(index.tunedNames(468010000, 25000) == QStringList{QStringLiteral("TETRA site")});
+    assert(index.lookup(467990000, 25000).size() == 1);
+    assert(index.lookup(468013000, 25000).isEmpty());
+    assert(index.lookup(457510000, 25000).isEmpty());
     const QString narrowModes = temp.filePath(QStringLiteral("narrow-modes.csv"));
     f = dsd_fopen_private(narrowModes.toUtf8().constData(), "wb");
     assert(f);

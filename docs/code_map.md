@@ -15168,8 +15168,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row
   that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
   6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). NXDN48, dPMR and D-STAR are the 6.25 kHz modes,
-  as the receiver's channel filter has them; decode flags compare exactly (`-fm` is dPMR,
-  `-fM` AM) and mode or type names without case. Only the width option of the channel's own
+  as the receiver's channel filter has them, and a saved TETRA (`-fT`) system is a 25 kHz
+  carrier; decode flags compare exactly (`-fm` is dPMR, `-fM` AM, `-fT` TETRA, `-ft` P25)
+  and mode or type names without case. Only the width option of the channel's own
   analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
   `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
   NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
