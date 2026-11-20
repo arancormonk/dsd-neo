@@ -512,9 +512,9 @@ dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
  * modulation of its own on rf_mod 1), and on for TETRA DMO, which runs only on the CQPSK chain. Under --trunk-scan the
  * scopes are the coordinator's, one per target type's class, so this is the rule the engine attaches the digital
  * family by (dsd_engine_prepare_digital_family()), with the CQPSK state its landing profile queues
- * (dsd_engine_trunk_scan_active_class_landing()): the decoder is timed, and a republish asks, for the CQPSK state the tune
- * lands. A -Y row of the same modes, and a P25 target with no modulation, make no choice of their own: they land with
- * @p decoder_cqpsk where an open of the mode would, DSD_NEO_CQPSK deciding when set. */
+ * (dsd_engine_trunk_scan_active_class_landing()): the decoder is timed, and a republish asks, for the CQPSK state the
+ * tune lands. A -Y row of the same modes, and a P25 target with no modulation, make no choice of their own: they land
+ * with @p decoder_cqpsk where an open of the mode would, DSD_NEO_CQPSK deciding when set. */
 static int
 scan_scope_cqpsk_choice(const dsd_opts* opts, const scan_scope* scope, int decoder_cqpsk, int* out_cqpsk) {
     *out_cqpsk = decoder_cqpsk ? 1 : 0;

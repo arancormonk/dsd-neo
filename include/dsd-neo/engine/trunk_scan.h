@@ -597,8 +597,8 @@ int dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_stat
 int dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
- * @brief The class part of the parked trunk-scan target's landing (issue #890), which replaced the GFSK-only rate query:
- * dsd_trunk_scan_type_landing() of its type.
+ * @brief The class part of the parked trunk-scan target's landing (issue #890), which replaced the GFSK-only rate
+ * query: dsd_trunk_scan_type_landing() of its type.
  *
  * The tuning layer cannot derive this on its own. `state->rf_mod == 2` is true for both the 4800 sym/s targets (DMR,
  * NXDN96) and the 2400 sym/s ones (NXDN48), a -m lock leaves rf_mod at the locked value for a target with no modulation
@@ -620,8 +620,8 @@ int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* 
 int dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_scan_landing* out);
 
 /**
- * @brief The whole landing profile of the parked trunk-scan target (issue #890), rates and timings included: the one its
- * last park resolved and applied (the eligibility of a TETRA DMO target judges the TED rule from it).
+ * @brief The whole landing profile of the parked trunk-scan target (issue #890), rates and timings included: the one
+ * its last park resolved and applied (the eligibility of a TETRA DMO target judges the TED rule from it).
  *
  * Decoder thread only: every park rewrites it. A tune off the decoder thread asks
  * dsd_engine_trunk_scan_active_class_landing() instead.

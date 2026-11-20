@@ -970,13 +970,14 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   per type at its enum value, read by `trunk_scan_type_is_conventional()` and its siblings; a type appended without its
   row fails the build at the table's size assert, and every row is written with designated members, so a row deleted
   from the middle reads as zeros (scan class INHERIT, which `ENGINE_TRUNK_SCAN` checks every type against, and
-  `TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE`, 0, so it claims no family). The trunking flag a parked target sets is `!conventional`. `k_trunk_scan_types[]` is the one spelling table: the parser,
-  the invalid-type list and `dsd_trunk_scan_target_type_name()` (which app-control's document inspector uses) read it.
-  The simplex types are conventional only: `chan_csv` and `p25_bandplan_csv` are refused as for every conventional
-  type, a `<family>-trunk` spelling is told `conventional only (use <family>-conventional)`, and the modulation column
-  takes only empty or `auto` (anything else: `<type> targets take only auto or an empty cell`, the cell echoed to 48 bytes). The conventional
-  families `TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF` .. `_TETRA_DMO` (3-7) name each simplex type's own family; no
-  protocol reports for them yet.
+  `TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE`, 0, so it claims no family). The trunking flag a parked target sets is
+  `!conventional`. `k_trunk_scan_types[]` is the one spelling table: the parser, the invalid-type list and
+  `dsd_trunk_scan_target_type_name()` (which app-control's document inspector uses) read it. The simplex types are
+  conventional only: `chan_csv` and `p25_bandplan_csv` are refused as for every conventional type, a `<family>-trunk`
+  spelling is told `conventional only (use <family>-conventional)`, and the modulation column takes only empty or `auto`
+  (anything else: `<type> targets take only auto or an empty cell`, the cell echoed to 48 bytes). The conventional
+  families `TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF` .. `_TETRA_DMO` (4-8, after `_NONE` 0) name each simplex type's own
+  family; no protocol reports for them yet.
 - Diagnostics (issue #890 B1): `DSD_TRUNK_SCAN_ROW_ERROR_MAX` (512) holds any row message, the unknown-type one with
   every spelling (258 bytes) after a cell echoed to 48 bytes; `DSD_TRUNK_SCAN_ERROR_MAX` (2048) holds that after a list
   path. The list loaders (`trunk_scan_load_list_csv()`, app-control's `validate_load_list()`) and the CLI start
@@ -986,10 +987,10 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   target, at every park (`trunk_scan_switch_to()`: rotations, retries, go-to, resume) and at a walk's rollback, always
   after the target's snapshot is restored, so a snapshot saved under another class cannot leave its timing or `rf_mod`
   behind. It holds the class's symbol rate, levels and hunt profile (`dsd_scan_mode_profile()`), the decoder's `rf_mod`
-  (the target's modulation; under `auto` or with no `-m` lock the class's own, `dsd_scan_mode_auto_rf_mod()`, or for
-  P25 the one learned on the site; otherwise the lock's, which keeps owning symbol slicing), the chain (`cqpsk`: P25 by
-  its `rf_mod`, TETRA DMO on, every other class off) and its channel filter (`dsd_rtl_channel_profile_for()`: 12.5 kHz
-  for DMR, NXDN96, YSF and M17, 6.25 kHz for NXDN48, dPMR and D-STAR, the TETRA filter for TETRA DMO), and two rates:
+  (the target's modulation; under `auto` or with no `-m` lock the class's own, `dsd_scan_mode_auto_rf_mod()`, or for P25
+  the one learned on the site; otherwise the lock's, which keeps owning symbol slicing), the chain (`cqpsk`: P25 by its
+  `rf_mod`, TETRA DMO on, every other class off) and its channel filter (`dsd_rtl_channel_profile_for()`: 12.5 kHz for
+  DMR, NXDN96, YSF and M17, 6.25 kHz for NXDN48, dPMR and D-STAR, the TETRA filter for TETRA DMO), and two rates:
   `output_rate_hz`, the decoder-output rate the landing delivers (`dsd_scan_mode_symbol_timing_rate_hz()`, the digital
   family's landing when the tune switches family), with `samples_per_symbol`/`symbol_center` timed for it, and
   `complex_rate_hz` (`dsd_engine_scan_dsp_rate_hz()`, 0 when no stream publishes one) with `ted_sps` timed for that
@@ -1000,19 +1001,20 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   `dsd_engine_trunk_scan_active_class_landing()` (`dsd_engine_prepare_landing_rtl_chain()` in `trunk_tuning.c`: rate,
   levels, CQPSK state and filter, the TED from the complex rate), which replaced the GFSK-only
   `dsd_engine_trunk_scan_active_gfsk_symbol_rate()` and its hard-coded four levels and `rf_mod` 2. Threads: the class
-  part reads only the parked index and that target's type, which nothing rewrites after the load, so the P25
-  watchdog's tunes off the decoder thread may ask it, as they asked the query it replaced; the whole resolved landing
-  (`dsd_engine_trunk_scan_active_landing()`, rates and timings) is rewritten at every park and is the decoder
-  thread's only. Under a `-m` lock with no modulation of its own, a simplex target's `rf_mod` is the lock's
-  (`dsd_opts_modulation()`), never what its snapshot restored; DMR and NXDN keep the decoder's, as before. P25 keeps its own chain (`dsd_engine_prepare_p25_cc_rtl_chain()`, learned modulation) and
-  DMR/NXDN land exactly as before. The live reapply after a command (`dsd_scan_mode_resume()`) times the row from the
-  same class table and CQPSK rule (`scan_scope_cqpsk_choice()`), and the republish asks for the same chain
-  (`svc_publish_symbol_profile()`). `dsd_trunk_scan_type_landing()` gives the class part for any type with no live
-  state (rates 0), for a prospective check. `dsd_trunk_scan_landing_ted_agrees()` is the TETRA chain's TED rule
-  (issue #890 F5, the DSP's `dsd_demod_tetra_chain_wanted()`): the effective TED samples per symbol (an explicit
-  override, else the applied ones) and the applied ones must equal the landing's `ted_sps`; an override that gives the
-  rate's samples per symbol is honoured, and an unknown or inexact complex rate never agrees. The eligibility of a
-  TETRA DMO target (session rate, verification at tune completion) builds on these two.
+  part reads only the parked index and that target's type, which nothing rewrites after the load, so the P25 watchdog's
+  tunes off the decoder thread may ask it, as they asked the query it replaced; the whole resolved landing
+  (`dsd_engine_trunk_scan_active_landing()`, rates and timings) is rewritten at every park and is the decoder thread's
+  only. Under a `-m` lock with no modulation of its own, a simplex target's `rf_mod` is the lock's
+  (`dsd_opts_modulation()`), never what its snapshot restored; DMR and NXDN keep the decoder's, as before. P25 keeps its
+  own chain (`dsd_engine_prepare_p25_cc_rtl_chain()`, learned modulation) and DMR/NXDN land exactly as before. The live
+  reapply after a command (`dsd_scan_mode_resume()`) times the row from the same class table and CQPSK rule
+  (`scan_scope_cqpsk_choice()`), and the republish asks for the same chain (`svc_publish_symbol_profile()`).
+  `dsd_trunk_scan_type_landing()` gives the class part for any type with no live state (rates 0), for a prospective
+  check. `dsd_trunk_scan_landing_ted_agrees()` is the TETRA chain's TED rule (issue #890 F5, the DSP's
+  `dsd_demod_tetra_chain_wanted()`): the effective TED samples per symbol (an explicit override, else the applied ones)
+  and the applied ones must equal the landing's `ted_sps`; an override that gives the rate's samples per symbol is
+  honoured, and an unknown or inexact complex rate never agrees. The eligibility of a TETRA DMO target (session rate,
+  verification at tune completion) builds on these two.
 
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
   `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the target count is bounded by a memory

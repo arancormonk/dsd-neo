@@ -15964,8 +15964,9 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
 /* The decoder's side of the rule (issue #583): a trunk-scan target's scope says its CQPSK choice is its own when it is
  * P25 with a modulation value (auto, c4fm or cqpsk) or any other digital class (DMR/NXDN at either rate, and the
  * simplex classes, issue #890: dPMR, D-STAR, YSF and M17 with CQPSK off, TETRA DMO with it on, whatever the caller's
- * CQPSK state), and the landing rate is asked with cqpsk_explicit set then. A P25 target without a modulation, and a -Y row
- * of any of those modes, are asked without it: they land where an open of the mode would, as DSD_NEO_CQPSK says. */
+ * CQPSK state), and the landing rate is asked with cqpsk_explicit set then. A P25 target without a modulation, and a
+ * -Y row of any of those modes, are asked without it: they land where an open of the mode would, as DSD_NEO_CQPSK
+ * says. */
 static int
 test_symbol_timing_explicit_follows_the_scope(void) {
     static dsd_opts opts;

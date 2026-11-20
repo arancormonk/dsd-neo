@@ -1201,9 +1201,10 @@ app show where the check stands, in place of `Idle dwell`, the voice gate's `Qua
   the channel reads busy, the usual phrase comes back and the channel keeps its normal timing.
 - `No check: input`, `No check: tuner`, `No check: rate`, `No check: width`, `No check: modes` or `No check: mode`
   (a TETRA DMO row or target): this channel cannot be checked, for the reason named in the list above, and keeps its
-  normal timing. On a `-Y` scan it shows while the channel the receiver is on has carried no call, and goes once a call is heard there, a digital call or an analog
-  call that passed the squelch and any tone check: on a row, from the moment the scan landed on it; before the first
-  row, or after a channel change that failed or an input switch, from that moment.
+  normal timing. On a `-Y` scan it shows while the channel the receiver is on has carried no call, and goes once a
+  call is heard there, a digital call or an analog call that passed the squelch and any tone check: on a row, from the
+  moment the scan landed on it; before the first row, or after a channel change that failed or an input switch, from
+  that moment.
 
 The countdown beside the phrase is the same either way. A trunked target shows neither. In the Qt and Android app a
 screen reader also hears what the phrase means, once each time it changes, for example "Skip silent channels can't

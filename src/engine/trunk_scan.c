@@ -1046,8 +1046,8 @@ scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_
         scan_set_error(parse->err, parse->err_sz, "row %u: an analog target takes no modulation", parse->row);
         return -1;
     }
-    /* One modulation per simplex class (issue #890): auto names it; anything else is a setting the class lacks. The cell
-       is echoed as an unknown type's is (TRUNK_SCAN_TYPE_ECHO_MAX). */
+    /* One modulation per simplex class (issue #890): auto names it; anything else is a setting the class lacks. The
+       cell is echoed as an unknown type's is (TRUNK_SCAN_TYPE_ECHO_MAX). */
     if (trunk_scan_type_is_simplex_digital(target->type) && modulation_s[0] != '\0'
         && strcmp(modulation_s, "auto") != 0) {
         const size_t len = strlen(modulation_s);
